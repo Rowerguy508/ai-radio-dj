@@ -1,0 +1,3 @@
+module.exports=[59609,(a,b,c)=>{let{createClientModuleProxy:d}=a.r(42660);a.n(d("[project]/clawd/ai-radio-dj/node_modules/next/dist/client/components/builtin/global-error.js <module evaluation>"))},45895,(a,b,c)=>{let{createClientModuleProxy:d}=a.r(42660);a.n(d("[project]/clawd/ai-radio-dj/node_modules/next/dist/client/components/builtin/global-error.js"))},55734,a=>{"use strict";a.i(59609);var b=a.i(45895);a.n(b)}];
+
+//# sourceMappingURL=898d0_next_dist_client_components_builtin_global-error_ad7042ec.js.map

@@ -1,0 +1,3 @@
+module.exports=[64433,a=>{a.v({className:"inter_5972bc34-module__OU16Qa__className"})},23259,a=>{"use strict";var b=a.i(89750),c=a.i(64433);let d={className:c.default.className,style:{fontFamily:"'Inter', 'Inter Fallback'",fontStyle:"normal"}};function e({children:a}){return(0,b.jsxs)("html",{lang:"en",children:[(0,b.jsx)("head",{children:(0,b.jsx)("script",{src:"https://js-cdn.music.apple.com/musickit/v3/musickit.js",async:!0})}),(0,b.jsx)("body",{className:d.className,children:a})]})}null!=c.default.variable&&(d.variable=c.default.variable),a.s(["default",()=>e,"metadata",0,{title:"AI Radio DJ",description:"Your personal AI-hosted radio station with customized commentary and music"}],23259)}];
+
+//# sourceMappingURL=%5Broot-of-the-server%5D__1f461a47._.js.map

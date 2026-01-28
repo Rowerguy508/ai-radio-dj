@@ -33,35 +33,24 @@ export function Player() {
     const audio = audioRef.current;
     if (!audio) return;
 
-    const handleLoadedData = () => {
+    const handleEnded = () => {
+      nextTrack();
+    };
+
+    const handleCanPlay = () => {
       if (isPlaying) {
         audio.play().catch((e) => console.log('Auto-play blocked:', e));
       }
     };
 
-    const handleEnded = () => {
-      nextTrack();
-    };
-
-    audio.addEventListener('loadeddata', handleLoadedData);
     audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('canplay', handleCanPlay);
 
     return () => {
-      audio.removeEventListener('loadeddata', handleLoadedData);
       audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('canplay', handleCanPlay);
     };
   }, [nextTrack, isPlaying]);
-
-  // Handle play/pause
-  useEffect(() => {
-    if (audioRef.current) {
-      if (isPlaying) {
-        audioRef.current.play().catch((e) => console.log('Play failed:', e));
-      } else {
-        audioRef.current.pause();
-      }
-    }
-  }, [isPlaying, audioSrc]);
 
   // Handle volume
   useEffect(() => {
@@ -97,8 +86,32 @@ export function Player() {
     setProgress(time);
   };
 
-  const handlePlayPause = () => {
-    setIsPlaying(!isPlaying);
+  const handlePlayPause = async () => {
+    if (!audioRef.current) {
+      setIsPlaying(!isPlaying);
+      return;
+    }
+    
+    try {
+      if (isPlaying) {
+        audioRef.current.pause();
+      } else {
+        await audioRef.current.play();
+      }
+      setIsPlaying(!isPlaying);
+    } catch (e) {
+      console.log('Play error:', e);
+      // Try loading the audio first
+      audioRef.current.load();
+      setTimeout(async () => {
+        try {
+          await audioRef.current?.play();
+          setIsPlaying(true);
+        } catch (e2) {
+          console.log('Retry play failed:', e2);
+        }
+      }, 100);
+    }
   };
 
   const handleNext = () => {
