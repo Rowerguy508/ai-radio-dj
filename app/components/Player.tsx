@@ -1,15 +1,15 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, SkipForward, SkipBack, Volume2, VolumeX, Settings } from 'lucide-react';
+import { Play, Pause, SkipForward, SkipBack, Volume2, VolumeX } from 'lucide-react';
 import { useRadioStore, Track } from '@/lib/store/radio';
 
 export function Player() {
   const {
     isPlaying,
     currentTrack,
+    queue,
     volume,
-    crossfadeDuration,
     setIsPlaying,
     setVolume,
     nextTrack,
@@ -19,17 +19,49 @@ export function Player() {
   const [isMuted, setIsMuted] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [audioSrc, setAudioSrc] = useState<string | undefined>(undefined);
+
+  // Update audio source when track changes
+  useEffect(() => {
+    if (currentTrack?.previewUrl !== audioSrc) {
+      setAudioSrc(currentTrack?.previewUrl);
+    }
+  }, [currentTrack]);
+
+  // Handle play/pause and track changes
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handleLoadedData = () => {
+      if (isPlaying) {
+        audio.play().catch((e) => console.log('Auto-play blocked:', e));
+      }
+    };
+
+    const handleEnded = () => {
+      nextTrack();
+    };
+
+    audio.addEventListener('loadeddata', handleLoadedData);
+    audio.addEventListener('ended', handleEnded);
+
+    return () => {
+      audio.removeEventListener('loadeddata', handleLoadedData);
+      audio.removeEventListener('ended', handleEnded);
+    };
+  }, [nextTrack, isPlaying]);
 
   // Handle play/pause
   useEffect(() => {
     if (audioRef.current) {
       if (isPlaying) {
-        audioRef.current.play();
+        audioRef.current.play().catch((e) => console.log('Play failed:', e));
       } else {
         audioRef.current.pause();
       }
     }
-  }, [isPlaying]);
+  }, [isPlaying, audioSrc]);
 
   // Handle volume
   useEffect(() => {
@@ -65,28 +97,53 @@ export function Player() {
     setProgress(time);
   };
 
+  const handlePlayPause = () => {
+    setIsPlaying(!isPlaying);
+  };
+
+  const handleNext = () => {
+    nextTrack();
+  };
+
+  const handlePrev = () => {
+    if (queue.length > 0) {
+      // Go back to previous track logic would go here
+      setIsPlaying(true);
+    }
+  };
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Get current track from queue if available
+  const displayTrack = currentTrack || (queue.length > 0 ? queue[0] : null);
+
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-zinc-900 border-t border-zinc-800 p-4">
-      <audio ref={audioRef} src={currentTrack?.previewUrl} />
+    <div className="fixed bottom-0 left-0 right-0 bg-zinc-900 border-t border-zinc-800 p-4 z-50">
+      <audio 
+        ref={audioRef} 
+        src={audioSrc}
+        preload="auto"
+      />
 
       {/* Track Info */}
       <div className="flex items-center gap-4 mb-4">
-        {currentTrack?.artworkUrl && (
+        {displayTrack?.artworkUrl && (
           <img
-            src={currentTrack.artworkUrl}
-            alt={currentTrack.title}
+            src={displayTrack.artworkUrl}
+            alt={displayTrack.title}
             className="w-16 h-16 rounded-lg object-cover"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = 'none';
+            }}
           />
         )}
         <div className="flex-1">
-          <h3 className="text-white font-medium">{currentTrack?.title || 'No track playing'}</h3>
-          <p className="text-zinc-400 text-sm">{currentTrack?.artistName || 'Select a station'}</p>
+          <h3 className="text-white font-medium">{displayTrack?.title || 'No track playing'}</h3>
+          <p className="text-zinc-400 text-sm">{displayTrack?.artistName || 'Select a station to start'}</p>
         </div>
       </div>
 
@@ -109,17 +166,20 @@ export function Player() {
       {/* Controls */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <button className="p-2 text-zinc-400 hover:text-white transition-colors">
+          <button 
+            onClick={handlePrev}
+            className="p-2 text-zinc-400 hover:text-white transition-colors"
+          >
             <SkipBack size={20} />
           </button>
           <button
-            onClick={() => setIsPlaying(!isPlaying)}
-            className="p-3 bg-white rounded-full text-black hover:bg-zinc-200 transition-colors"
+            onClick={handlePlayPause}
+            className="p-3 bg-white rounded-full text-black hover:bg-zinc-200 transition-colors flex items-center justify-center"
           >
             {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" />}
           </button>
           <button
-            onClick={nextTrack}
+            onClick={handleNext}
             className="p-2 text-zinc-400 hover:text-white transition-colors"
           >
             <SkipForward size={20} />

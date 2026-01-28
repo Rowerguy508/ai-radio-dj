@@ -40,7 +40,7 @@ const STATION_TEMPLATES = [
 ];
 
 export function StationSelector() {
-  const { stations, currentStation, setCurrentStation, isPlaying, setIsPlaying, addStation, setQueue } = useRadioStore();
+  const { stations, currentStation, setCurrentStation, setCurrentTrack, isPlaying, setIsPlaying, addStation, setQueue } = useRadioStore();
   const [showCreate, setShowCreate] = useState(false);
 
   const handleSelectStation = (station: Station) => {
@@ -78,6 +78,7 @@ export function StationSelector() {
       },
     ];
     setQueue(sampleTracks);
+    setCurrentTrack(sampleTracks[0]); // Set first track as current
   };
 
   const handleCreateFromTemplate = (template: typeof STATION_TEMPLATES[0]) => {
