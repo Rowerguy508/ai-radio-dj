@@ -1,0 +1,11 @@
+[00:00:00.759] Server  LOG     ✓ Ready in 488ms
+[00:00:29.567] Server  WARN    ⚠ Cross origin request detected from 127.0.0.1 to /_next/* resource. In a future major version of Next.js, you will need to explicitly configure "allowedDevOrigins" in next.config to allow this.
+Read more: https://nextjs.org/docs/app/api-reference/config/next-config-js/allowedDevOrigins
+[00:00:29.844] Browser LOG     MusicKit initialized
+[00:01:32.768] Browser ERROR   unhandledRejection: undefined
+[00:01:47.968] Browser ERROR   unhandledRejection: undefined
+[00:04:00.247] Server  LOG     ✓ Compiled in 66ms
+[00:04:16.429] Browser ERROR   unhandledRejection: undefined
+[00:04:17.319] Server  LOG     ✓ Compiled in 79ms
+[00:04:21.201] Browser ERROR   unhandledRejection: undefined
+[00:04:47.604] Server  LOG     ✓ Compiled in 15ms

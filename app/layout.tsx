@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
-import MusicKitInit from './musickit-init';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -18,14 +17,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/* Apple MusicKit Script */}
-        <script
-          src="https://assets.applemusickit.com/apple-musickit.js"
-          async
-        />
+        {/* Apple MusicKit Script - loaded by player.tsx */}
       </head>
       <body className={inter.className}>
-        <MusicKitInit />
         {children}
       </body>
     </html>

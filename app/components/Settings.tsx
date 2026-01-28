@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { X, Volume2, Mic, Sliders, Save } from 'lucide-react';
+import { X, Volume2, Mic, Sliders, Save, User, ChevronDown } from 'lucide-react';
 import { useRadioStore } from '@/lib/store/radio';
 
 export function Settings() {
@@ -14,9 +14,11 @@ export function Settings() {
     setCrossfadeDuration,
     currentStation,
     updateStation,
+    voices,
   } = useRadioStore();
 
   const [localStation, setLocalStation] = useState(currentStation);
+  const [showVoiceDropdown, setShowVoiceDropdown] = useState(false);
 
   if (!showSettings) return null;
 
@@ -26,9 +28,11 @@ export function Settings() {
     }
   };
 
+  const selectedVoice = voices.find(v => v.voiceId === localStation?.voiceId) || voices[0];
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-zinc-900 rounded-xl w-full max-w-md p-6 m-4">
+      <div className="bg-zinc-900 rounded-xl w-full max-w-md p-6 m-4 max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-xl font-bold text-white">Settings</h2>
@@ -38,6 +42,57 @@ export function Settings() {
           >
             <X size={20} />
           </button>
+        </div>
+
+        {/* Voice Selection */}
+        <div className="mb-6">
+          <label className="flex items-center gap-3 text-zinc-400 text-sm mb-2">
+            <User size={18} />
+            AI Voice
+          </label>
+          
+          <div className="relative">
+            <button
+              onClick={() => setShowVoiceDropdown(!showVoiceDropdown)}
+              className="w-full flex items-center justify-between p-4 bg-zinc-800 rounded-lg hover:bg-zinc-700 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
+                  <span className="text-white font-medium">{selectedVoice?.name[0]}</span>
+                </div>
+                <div className="text-left">
+                  <p className="text-white font-medium">{selectedVoice?.name}</p>
+                  <p className="text-zinc-500 text-xs">{selectedVoice?.personality}</p>
+                </div>
+              </div>
+              <ChevronDown size={18} className={`text-zinc-400 transition-transform ${showVoiceDropdown ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showVoiceDropdown && (
+              <div className="absolute top-full left-0 right-0 mt-2 bg-zinc-800 rounded-lg overflow-hidden z-10 shadow-xl border border-zinc-700">
+                {voices.map((voice) => (
+                  <button
+                    key={voice.id}
+                    onClick={() => {
+                      setLocalStation(localStation ? { ...localStation, voiceId: voice.voiceId, voiceName: voice.name } : null);
+                      setShowVoiceDropdown(false);
+                    }}
+                    className={`w-full flex items-center gap-3 p-3 hover:bg-zinc-700 transition-colors ${
+                      localStation?.voiceId === voice.voiceId ? 'bg-zinc-700' : ''
+                    }`}
+                  >
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
+                      <span className="text-white text-sm font-medium">{voice.name[0]}</span>
+                    </div>
+                    <div className="text-left">
+                      <p className="text-white text-sm">{voice.name}</p>
+                      <p className="text-zinc-500 text-xs">{voice.personality}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Commentary Toggle */}

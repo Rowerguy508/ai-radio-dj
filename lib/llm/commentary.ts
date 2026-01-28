@@ -41,8 +41,9 @@ interface CommentaryResponse {
 class CommentaryGenerator {
   private gatewayUrl: string;
 
-  constructor(gatewayUrl: string = 'http://127.0.0.1:18789') {
-    this.gatewayUrl = gatewayUrl;
+  constructor(gatewayUrl?: string) {
+    // Use env var in production, local gateway in development
+    this.gatewayUrl = gatewayUrl || process.env.LLM_GATEWAY_URL || 'http://127.0.0.1:18789';
   }
 
   // Generate commentary for a track
@@ -51,6 +52,15 @@ class CommentaryGenerator {
 
     const systemPrompt = this.buildSystemPrompt(context);
     const userPrompt = this.buildUserPrompt(context, style);
+
+    // Skip gateway in serverless environments (no local access)
+    if (this.gatewayUrl.startsWith('http://127.0.0.1') || this.gatewayUrl.startsWith('http://localhost')) {
+      const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME;
+      if (isServerless) {
+        console.log('Skipping local gateway in serverless env, using fallback');
+        return this.generateFallbackCommentary(context);
+      }
+    }
 
     try {
       const response = await fetch(`${this.gatewayUrl}/v1/chat/completions`, {
@@ -194,6 +204,14 @@ Remember: You're creating an immersive radio experience, not just reading track 
   // Generate a playlist introduction
   async generateStationIntro(stationName: string, genres: string[]): Promise<string> {
     const prompt = `Create a short, engaging radio intro for a station called "${stationName}" that plays ${genres.join(', ')}. Keep it under 50 words. Make it feel like a real radio DJ opening.`;
+
+    // Skip gateway in serverless environments
+    if (this.gatewayUrl.startsWith('http://127.0.0.1') || this.gatewayUrl.startsWith('http://localhost')) {
+      const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME;
+      if (isServerless) {
+        return `Welcome to ${stationName}! Let's get into the vibe.`;
+      }
+    }
 
     try {
       const response = await fetch(`${this.gatewayUrl}/v1/chat/completions`, {

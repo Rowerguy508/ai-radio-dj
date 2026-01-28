@@ -97,10 +97,16 @@ export const useRadioStore = create<RadioState>()(
       volume: 0.7,
       crossfadeDuration: 5,
       stations: [],
-      voices: [],
       showSettings: false,
       showVoiceSelector: false,
       commentaryEnabled: true,
+      voices: [
+        { id: '1', name: 'Alex', voiceId: '21m00Tcm4TlvDq8ikWAM', style: 0.5, language: 'English', personality: 'Professional & Warm' },
+        { id: '2', name: 'Sarah', voiceId: 'AZnzlk1XvdvUeBnG7F4o', style: 0.6, language: 'English', personality: 'Energetic & Friendly' },
+        { id: '3', name: 'James', voiceId: 'Fljq6R8y61NddGlE9krf', style: 0.4, language: 'English', personality: 'Deep & Authoritative' },
+        { id: '4', name: 'Bella', voiceId: 'EXAVITQu4vr4xnSDxMaL', style: 0.7, language: 'English', personality: 'Soft & Smooth' },
+        { id: '5', name: 'Daniel', voiceId: 'nPczCjz82KWdKScP46A1', style: 0.5, language: 'English', personality: 'Casual & Cool' },
+      ],
 
       // Actions
       setCurrentTrack: (track) => set({ currentTrack: track }),

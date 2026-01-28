@@ -1,3 +1,0 @@
-module.exports=[18622,(a,b,c)=>{b.exports=a.x("next/dist/compiled/next-server/app-page-turbo.runtime.prod.js",()=>require("next/dist/compiled/next-server/app-page-turbo.runtime.prod.js"))},48889,(a,b,c)=>{"use strict";b.exports=a.r(18622)},50840,(a,b,c)=>{"use strict";b.exports=a.r(48889).vendored["react-ssr"].React},57520,a=>{"use strict";var b=a.i(50840);function c(){return(0,b.useEffect)(()=>{window.MusicKit&&window.MusicKit.configure({developerToken:process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN||"",app:{name:"RAY.DO",build:"1.0.0"}})},[]),null}a.s(["default",()=>c])}];
-
-//# sourceMappingURL=%5Broot-of-the-server%5D__4dae4cf7._.js.map

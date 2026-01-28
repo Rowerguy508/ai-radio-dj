@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, SkipForward, SkipBack, Volume2, VolumeX } from 'lucide-react';
 import { useRadioStore, Track } from '@/lib/store/radio';
+import { useAppleMusic } from '@/lib/apple-music/player';
 
 export function Player() {
   const {
@@ -14,116 +15,159 @@ export function Player() {
     setVolume,
     nextTrack,
   } = useRadioStore();
+  
+  const { play, pause, skip } = useAppleMusic();
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [audioSrc, setAudioSrc] = useState<string | undefined>(undefined);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const [useHtml5Audio, setUseHtml5Audio] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const progressInterval = useRef<NodeJS.Timeout | null>(null);
 
-  // Update audio source when track changes
+  // Detect if we should use HTML5 audio (demo tracks)
   useEffect(() => {
-    if (currentTrack?.previewUrl !== audioSrc) {
-      setAudioSrc(currentTrack?.previewUrl);
+    if (currentTrack?.previewUrl?.includes('pixabay.com')) {
+      setUseHtml5Audio(true);
+    } else {
+      setUseHtml5Audio(false);
     }
   }, [currentTrack]);
 
-  // Handle play/pause and track changes
+  // HTML5 Audio for demo tracks
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
+    if (!useHtml5Audio || !currentTrack?.previewUrl) return;
 
-    const handleEnded = () => {
-      nextTrack();
-    };
+    console.log('Setting up HTML5 audio for:', currentTrack.previewUrl);
 
-    const handleCanPlay = () => {
-      if (isPlaying) {
-        audio.play().catch((e) => console.log('Auto-play blocked:', e));
-      }
-    };
+    if (!audioRef.current) {
+      audioRef.current = new Audio();
+      audioRef.current.crossOrigin = 'anonymous';
+      
+      audioRef.current.addEventListener('ended', () => {
+        console.log('HTML5 audio ended');
+        nextTrack();
+      });
+      
+      audioRef.current.addEventListener('canplay', () => {
+        console.log('HTML5 audio can play');
+      });
+      
+      audioRef.current.addEventListener('error', (e) => {
+        console.log('HTML5 audio error:', audioRef.current?.error);
+      });
+    }
 
-    audio.addEventListener('ended', handleEnded);
-    audio.addEventListener('canplay', handleCanPlay);
+    audioRef.current.src = currentTrack.previewUrl;
+    audioRef.current.load();
+
+    if (isPlaying) {
+      audioRef.current.play().catch(e => {
+        console.log('HTML5 play error:', e);
+        setAudioError('Click play to enable audio');
+      });
+    }
 
     return () => {
-      audio.removeEventListener('ended', handleEnded);
-      audio.removeEventListener('canplay', handleCanPlay);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      }
     };
-  }, [nextTrack, isPlaying]);
+  }, [useHtml5Audio, currentTrack, isPlaying, nextTrack]);
 
-  // Handle volume
+  // Play/Pause for HTML5 audio
+  useEffect(() => {
+    if (!useHtml5Audio || !audioRef.current) return;
+
+    if (isPlaying) {
+      audioRef.current.play().catch(e => {
+        console.log('HTML5 play error:', e);
+      });
+    } else {
+      audioRef.current.pause();
+    }
+  }, [isPlaying, useHtml5Audio]);
+
+  // Progress tracking for HTML5 audio
+  useEffect(() => {
+    if (!useHtml5Audio) return;
+
+    progressInterval.current = setInterval(() => {
+      if (audioRef.current) {
+        setProgress(audioRef.current.currentTime);
+        setDuration(audioRef.current.duration || 0);
+      }
+    }, 500);
+
+    return () => {
+      if (progressInterval.current) {
+        clearInterval(progressInterval.current);
+      }
+    };
+  }, [useHtml5Audio]);
+
+  // Volume for HTML5 audio
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.volume = isMuted ? 0 : volume;
     }
   }, [volume, isMuted]);
 
-  // Track progress
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const updateProgress = () => {
-      setProgress(audio.currentTime);
-      setDuration(audio.duration || 0);
-    };
-
-    audio.addEventListener('timeupdate', updateProgress);
-    audio.addEventListener('loadedmetadata', updateProgress);
-
-    return () => {
-      audio.removeEventListener('timeupdate', updateProgress);
-      audio.removeEventListener('loadedmetadata', updateProgress);
-    };
-  }, []);
-
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
-    if (audioRef.current) {
+    if (useHtml5Audio && audioRef.current) {
       audioRef.current.currentTime = time;
+      setProgress(time);
     }
-    setProgress(time);
   };
 
-  const handlePlayPause = async () => {
-    if (!audioRef.current) {
-      setIsPlaying(!isPlaying);
-      return;
+  const handlePlayPause = useCallback(() => {
+    if (useHtml5Audio) {
+      if (isPlaying) {
+        audioRef.current?.pause();
+        setIsPlaying(false);
+      } else {
+        audioRef.current?.play().catch(e => {
+          console.log('Play error:', e);
+          setAudioError('Click failed. Try again.');
+        });
+        setIsPlaying(true);
+      }
+    } else {
+      // Use Apple Music controls
+      if (isPlaying) {
+        pause();
+        setIsPlaying(false);
+      } else {
+        play();
+        setIsPlaying(true);
+      }
+    }
+  }, [useHtml5Audio, isPlaying, setIsPlaying, play, pause]);
+
+  const handleNext = useCallback(() => {
+    // Dispatch skip event for tracking
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('raydo:skip'));
     }
     
-    try {
-      if (isPlaying) {
-        audioRef.current.pause();
-      } else {
-        await audioRef.current.play();
-      }
-      setIsPlaying(!isPlaying);
-    } catch (e) {
-      console.log('Play error:', e);
-      // Try loading the audio first
-      audioRef.current.load();
-      setTimeout(async () => {
-        try {
-          await audioRef.current?.play();
-          setIsPlaying(true);
-        } catch (e2) {
-          console.log('Retry play failed:', e2);
-        }
-      }, 100);
+    if (useHtml5Audio) {
+      nextTrack();
+    } else {
+      skip();
+      nextTrack();
     }
-  };
+  }, [useHtml5Audio, skip, nextTrack]);
 
-  const handleNext = () => {
-    nextTrack();
-  };
-
-  const handlePrev = () => {
-    if (queue.length > 0) {
-      // Go back to previous track logic would go here
-      setIsPlaying(true);
+  const handlePrev = useCallback(() => {
+    // Apple Music doesn't have a reliable "previous" - just restart current
+    if (useHtml5Audio && audioRef.current) {
+      audioRef.current.currentTime = 0;
+      setProgress(0);
     }
-  };
+  }, [useHtml5Audio]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -131,16 +175,24 @@ export function Player() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Get current track from queue if available
   const displayTrack = currentTrack || (queue.length > 0 ? queue[0] : null);
 
   return (
     <div className="fixed bottom-0 left-0 right-0 bg-zinc-900 border-t border-zinc-800 p-4 z-50">
-      <audio 
-        ref={audioRef} 
-        src={audioSrc}
-        preload="auto"
-      />
+      {/* Audio type indicator */}
+      {useHtml5Audio && (
+        <div className="mb-2 text-xs text-yellow-400">
+          🎵 Demo Tracks (Pixabay)
+        </div>
+      )}
+
+      {/* Error message */}
+      {audioError && (
+        <div className="mb-2 p-2 bg-red-500/20 text-red-400 text-xs rounded flex items-center justify-between">
+          <span>{audioError}</span>
+          <button onClick={() => setAudioError(null)} className="text-red-300">×</button>
+        </div>
+      )}
 
       {/* Track Info */}
       <div className="flex items-center gap-4 mb-4">
@@ -156,18 +208,7 @@ export function Player() {
         )}
         <div className="flex-1">
           <h3 className="text-white font-medium">{displayTrack?.title || 'No track playing'}</h3>
-          <p className="text-zinc-400 text-sm">{displayTrack?.artistName || 'Select a station to start'}</p>
-          {displayTrack?.spotifyUri && (
-            <a
-              href={displayTrack.spotifyUri}
-              className="text-[#1DB954] text-xs hover:underline flex items-center gap-1 mt-1"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
-              </svg>
-              Open in Spotify
-            </a>
-          )}
+          <p className="text-zinc-400 text-sm">{displayTrack?.artistName || 'Click Start AI Radio'}</p>
         </div>
       </div>
 
