@@ -47,16 +47,16 @@ export function StationSelector() {
     setCurrentStation(station);
     setIsPlaying(true);
     
-    // Demo: Add some sample tracks with audio
+    // Demo: Add some sample tracks with audio (using reliable CDN sources)
     const sampleTracks: Track[] = [
       {
         id: `track-${Date.now()}-1`,
         title: 'Ambient Dreams',
         artistName: 'RAY.DO Demo',
         albumName: 'Chill Vibes',
-        duration: 30,
+        duration: 33,
         artworkUrl: 'https://picsum.photos/seed/ambient/200',
-        previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+        previewUrl: 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112762.mp3',
       },
       {
         id: `track-${Date.now()}-2`,
@@ -65,7 +65,7 @@ export function StationSelector() {
         albumName: 'Future Sounds',
         duration: 30,
         artworkUrl: 'https://picsum.photos/seed/electronic/200',
-        previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+        previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/24/audio_6d8d6b1f0a.mp3?filename=techno-future-bass-10711.mp3',
       },
       {
         id: `track-${Date.now()}-3`,
@@ -74,7 +74,7 @@ export function StationSelector() {
         albumName: 'Bass Nation',
         duration: 30,
         artworkUrl: 'https://picsum.photos/seed/bass/200',
-        previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
+        previewUrl: 'https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f9d2c.mp3?filename=heavy-bass-ronnie-15737.mp3',
       },
     ];
     setQueue(sampleTracks);
