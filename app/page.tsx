@@ -6,27 +6,27 @@ import { Player } from './components/Player';
 import { StationSelector } from './components/StationSelector';
 import { Visualizer } from './components/Visualizer';
 import { useRadioStore } from '@/lib/store/radio';
-import { SpotifyProvider, useSpotify } from '@/lib/spotify/player';
+import { AppleMusicProvider, useAppleMusic } from '@/lib/apple-music/player';
 
-function SpotifyDashboard() {
-  const { user, isAuthenticated, playlists, connectSpotify, createRadioStation, isLoading } = useSpotify();
+function AppleMusicDashboard() {
+  const { user, isAuthenticated, playlists, connectAppleMusic, disconnect, createRadioStation, isLoading } = useAppleMusic();
   const { isPlaying, currentTrack } = useRadioStore();
   const [selectedMood, setSelectedMood] = useState<'chill' | 'hype' | 'balanced'>('balanced');
 
   if (!isAuthenticated) {
     return (
-      <div className="mb-8 p-6 bg-gradient-to-r from-green-500/10 to-green-600/10 border border-green-500/20 rounded-xl">
+      <div className="mb-8 p-6 bg-gradient-to-r from-red-500/10 to-red-600/10 border border-red-500/20 rounded-xl">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-semibold text-green-400 mb-1">🎧 Connect Spotify</h3>
-            <p className="text-zinc-400">Sign in with Spotify to stream real music and create personalized radio stations</p>
+            <h3 className="text-lg font-semibold text-red-400 mb-1">🎧 Connect Apple Music</h3>
+            <p className="text-zinc-400">Sign in with Apple Music to stream real music and create personalized radio stations</p>
           </div>
-          <button
-            onClick={connectSpotify}
-            className="px-6 py-3 bg-[#1DB954] hover:bg-[#1ed760] text-black font-semibold rounded-lg transition-colors"
-          >
-            Connect Spotify
-          </button>
+            <button
+              onClick={connectAppleMusic}
+              className="px-6 py-3 bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-400 hover:to-pink-400 text-white font-semibold rounded-lg transition-colors"
+            >
+              Connect Apple Music
+            </button>
         </div>
       </div>
     );
@@ -36,15 +36,15 @@ function SpotifyDashboard() {
     <>
       {/* User Header */}
       <div className="mb-8 p-4 bg-zinc-900/50 rounded-xl flex items-center gap-4">
-        {user?.images?.[0] && (
-          <img src={user.images[0].url} alt={user.display_name} className="w-12 h-12 rounded-full" />
-        )}
+        <div className="w-12 h-12 bg-gradient-to-br from-red-500 to-pink-500 rounded-full flex items-center justify-center text-white font-bold">
+          {user?.name?.charAt(0) || 'A'}
+        </div>
         <div className="flex-1">
-          <p className="text-zinc-400 text-sm">Signed in as</p>
-          <p className="text-white font-medium">{user?.display_name}</p>
+          <p className="text-zinc-400 text-sm">Signed in with Apple Music</p>
+          <p className="text-white font-medium">{user?.name}</p>
         </div>
         <button
-          onClick={() => window.location.href = '/api/spotify/disconnect'}
+          onClick={disconnect}
           className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm"
         >
           Disconnect
@@ -55,7 +55,7 @@ function SpotifyDashboard() {
       <div className="mb-8 p-6 bg-zinc-900/50 rounded-xl">
         <h3 className="text-lg font-semibold text-white mb-4">🎵 Create AI Radio Station</h3>
         <p className="text-zinc-400 text-sm mb-4">
-          Select a mood and the AI DJ will weave commentary between songs from your Spotify library
+          Select a mood and the AI DJ will weave commentary between songs from your Apple Music library
         </p>
         
         <div className="flex gap-3 mb-4">
@@ -95,15 +95,15 @@ function SpotifyDashboard() {
                 key={playlist.id}
                 className="p-4 bg-zinc-900/50 rounded-xl hover:bg-zinc-800 transition-colors cursor-pointer group"
               >
-                {playlist.images[0] && (
+                {playlist.artwork && (
                   <img 
-                    src={playlist.images[0].url} 
+                    src={playlist.artwork.url.replace('{w}', '200').replace('{h}', '200')}
                     alt={playlist.name}
                     className="w-full aspect-square object-cover rounded-lg mb-3"
                   />
                 )}
                 <p className="text-white font-medium truncate">{playlist.name}</p>
-                <p className="text-zinc-500 text-sm">{playlist.tracks.total} tracks</p>
+                <p className="text-zinc-500 text-sm">{playlist.trackCount} tracks</p>
               </div>
             ))}
           </div>
@@ -154,12 +154,12 @@ function HomeContent() {
       <header className="sticky top-0 z-10 bg-black/80 backdrop-blur-lg border-b border-zinc-800">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-pink-500 rounded-lg flex items-center justify-center">
+            <div className="w-10 h-10 bg-gradient-to-br from-red-500 to-pink-500 rounded-lg flex items-center justify-center">
               <span className="text-xl">🎵</span>
             </div>
             <div>
               <h1 className="text-xl font-bold">RAY.DO</h1>
-              <p className="text-xs text-zinc-500">AI Radio DJ with Spotify</p>
+              <p className="text-xs text-zinc-500">AI Radio DJ with Apple Music</p>
             </div>
           </div>
 
@@ -168,7 +168,6 @@ function HomeContent() {
             className="p-2 text-zinc-400 hover:text-white transition-colors"
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
               <circle cx="12" cy="12" r="3" />
             </svg>
           </button>
@@ -177,7 +176,7 @@ function HomeContent() {
 
       {/* Main Content */}
       <main className="max-w-6xl mx-auto px-6 py-8 pb-32">
-        <SpotifyDashboard />
+        <AppleMusicDashboard />
 
         {/* Visualizer */}
         <div className="mt-6">
@@ -196,7 +195,7 @@ function HomeContent() {
           </div>
           <div className="p-4 bg-zinc-900 rounded-lg">
             <p className="text-zinc-400 text-sm">Music Source</p>
-            <p className="text-white font-medium mt-1">Your Spotify Library</p>
+            <p className="text-white font-medium mt-1">Your Apple Music Library</p>
           </div>
         </div>
       </main>
@@ -212,8 +211,8 @@ function HomeContent() {
 
 export default function Home() {
   return (
-    <SpotifyProvider>
+    <AppleMusicProvider>
       <HomeContent />
-    </SpotifyProvider>
+    </AppleMusicProvider>
   );
 }

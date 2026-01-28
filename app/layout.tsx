@@ -1,12 +1,13 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
+import MusicKitInit from './musickit-init';
 
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'AI Radio DJ',
-  description: 'Your personal AI-hosted radio station with customized commentary and music',
+  title: 'RAY.DO - AI Radio DJ',
+  description: 'Your personal AI-hosted radio station with Apple Music integration',
 };
 
 export default function RootLayout({
@@ -17,13 +18,16 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/* Apple Music Kit Script */}
+        {/* Apple MusicKit Script */}
         <script
-          src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"
+          src="https://assets.applemusickit.com/apple-musickit.js"
           async
         />
       </head>
-      <body className={inter.className}>{children}</body>
+      <body className={inter.className}>
+        <MusicKitInit />
+        {children}
+      </body>
     </html>
   );
 }
