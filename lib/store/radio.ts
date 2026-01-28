@@ -10,6 +10,7 @@ export interface Track {
   artworkUrl?: string;
   duration: number; // seconds
   previewUrl?: string;
+  spotifyUri?: string; // For full playback on Spotify app
 }
 
 export interface Station {

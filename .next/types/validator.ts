@@ -83,6 +83,15 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/spotify/disconnect/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/spotify/disconnect">> = Specific
+  const handler = {} as typeof import("../../app/api/spotify/disconnect/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/api/stations/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/api/stations">> = Specific

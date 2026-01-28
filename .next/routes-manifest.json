@@ -59,6 +59,12 @@
       "namedRegex": "^/api/spotify/callback(?:/)?$"
     },
     {
+      "page": "/api/spotify/disconnect",
+      "regex": "^/api/spotify/disconnect(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/spotify/disconnect(?:/)?$"
+    },
+    {
       "page": "/api/stations",
       "regex": "^/api/stations(?:/)?$",
       "routeKeys": {},
