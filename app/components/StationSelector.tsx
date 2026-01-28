@@ -47,31 +47,34 @@ export function StationSelector() {
     setCurrentStation(station);
     setIsPlaying(true);
     
-    // Demo: Add some sample tracks for the selected station
+    // Demo: Add some sample tracks with audio
     const sampleTracks: Track[] = [
       {
         id: `track-${Date.now()}-1`,
-        title: 'Sample Track 1',
-        artistName: 'Demo Artist',
-        albumName: 'Demo Album',
-        duration: 180,
-        artworkUrl: 'https://picsum.photos/200',
+        title: 'Ambient Dreams',
+        artistName: 'RAY.DO Demo',
+        albumName: 'Chill Vibes',
+        duration: 30,
+        artworkUrl: 'https://picsum.photos/seed/ambient/200',
+        previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
       },
       {
         id: `track-${Date.now()}-2`,
-        title: 'Sample Track 2',
-        artistName: 'Demo Artist',
-        albumName: 'Demo Album',
-        duration: 210,
-        artworkUrl: 'https://picsum.photos/201',
+        title: 'Electronic Pulse',
+        artistName: 'RAY.DO Demo',
+        albumName: 'Future Sounds',
+        duration: 30,
+        artworkUrl: 'https://picsum.photos/seed/electronic/200',
+        previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
       },
       {
         id: `track-${Date.now()}-3`,
-        title: 'Sample Track 3',
-        artistName: 'Another Artist',
-        albumName: 'Another Album',
-        duration: 195,
-        artworkUrl: 'https://picsum.photos/202',
+        title: 'Deep Bass',
+        artistName: 'RAY.DO Demo',
+        albumName: 'Bass Nation',
+        duration: 30,
+        artworkUrl: 'https://picsum.photos/seed/bass/200',
+        previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
       },
     ];
     setQueue(sampleTracks);
