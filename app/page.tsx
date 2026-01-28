@@ -4,10 +4,11 @@ import { useState, useEffect } from 'react';
 import { Settings } from './components/Settings';
 import { Player } from './components/Player';
 import { StationSelector } from './components/StationSelector';
+import { Visualizer } from './components/Visualizer';
 import { useRadioStore } from '@/lib/store/radio';
 
 export default function Home() {
-  const { toggleSettings, commentaryEnabled } = useRadioStore();
+  const { toggleSettings, commentaryEnabled, isPlaying } = useRadioStore();
   const [isLoading, setIsLoading] = useState(true);
 
   // Simulate initial loading
@@ -66,6 +67,11 @@ export default function Home() {
         )}
 
         <StationSelector />
+
+        {/* Visualizer */}
+        <div className="mt-6">
+          <Visualizer isPlaying={isPlaying} />
+        </div>
 
         {/* Quick Stats */}
         <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-4">

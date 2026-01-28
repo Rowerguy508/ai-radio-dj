@@ -39,46 +39,43 @@ const STATION_TEMPLATES = [
   },
 ];
 
+// Different music streams per station
+const STATION_MUSIC: Record<string, Track[]> = {
+  'Chill Focus': [
+    { id: 'chill-1', title: 'Midnight City', artistName: 'M83', albumName: 'Hurry Up, We\'re Dreaming', duration: 243, artworkUrl: 'https://picsum.photos/seed/chill1/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
+    { id: 'chill-2', title: 'Intro', artistName: 'The xx', albumName: 'xx', duration: 120, artworkUrl: 'https://picsum.photos/seed/chill2/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3' },
+    { id: 'chill-3', title: 'Porcelain', artistName: 'Moby', albumName: 'Play', duration: 200, artworkUrl: 'https://picsum.photos/seed/chill3/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3' },
+  ],
+  'Hype Mode': [
+    { id: 'hype-1', title: 'Stronger', artistName: 'Kanye West', albumName: 'Graduation', duration: 312, artworkUrl: 'https://picsum.photos/seed/hype1/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3' },
+    { id: 'hype-2', title: 'Levels', artistName: 'Avicii', albumName: 'True', duration: 198, artworkUrl: 'https://picsum.photos/seed/hype2/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3' },
+    { id: 'hype-3', title: 'Turn Down for What', artistName: 'DJ Snake', albumName: 'You Know It Ain\'t Right', duration: 215, artworkUrl: 'https://picsum.photos/seed/hype3/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3' },
+  ],
+  'Morning Coffee': [
+    { id: 'coffee-1', title: 'Sunrise', artistName: 'Norah Jones', albumName: 'Come Away With Me', duration: 195, artworkUrl: 'https://picsum.photos/seed/coffee1/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3' },
+    { id: 'coffee-2', title: 'Banana Pancakes', artistName: 'Jack Johnson', albumName: 'In Between Dreams', duration: 187, artworkUrl: 'https://picsum.photos/seed/coffee2/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3' },
+    { id: 'coffee-3', title: 'Put Your Records On', artistName: 'Corinne Bailey Rae', albumName: 'Corinne Bailey Rae', duration: 221, artworkUrl: 'https://picsum.photos/seed/coffee3/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3' },
+  ],
+  'Deep Dive': [
+    { id: 'deep-1', title: 'Midnight', artistName: 'Lane 8', albumName: 'Reviver', duration: 267, artworkUrl: 'https://picsum.photos/seed/deep1/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3' },
+    { id: 'deep-2', title: 'Hearts', artistName: 'Odesza', albumName: 'My Friends Never Die', duration: 234, artworkUrl: 'https://picsum.photos/seed/deep2/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-11.mp3' },
+    { id: 'deep-3', title: 'Spectrum', artistName: 'Zedd', albumName: 'Clarity', duration: 248, artworkUrl: 'https://picsum.photos/seed/deep3/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3' },
+  ],
+};
+
 export function StationSelector() {
-  const { stations, currentStation, setCurrentStation, setCurrentTrack, isPlaying, setIsPlaying, addStation, setQueue } = useRadioStore();
+  const { currentStation, setCurrentStation, setCurrentTrack, isPlaying, setIsPlaying, setQueue } = useRadioStore();
   const [showCreate, setShowCreate] = useState(false);
 
   const handleSelectStation = (station: Station) => {
     setCurrentStation(station);
     setIsPlaying(true);
     
-    // Demo: Add some sample tracks with audio (SoundHelix - public domain)
-    const sampleTracks: Track[] = [
-      {
-        id: `track-${Date.now()}-1`,
-        title: 'Ambient Dreams',
-        artistName: 'RAY.DO Demo',
-        albumName: 'Chill Vibes',
-        duration: 33,
-        artworkUrl: 'https://picsum.photos/seed/ambient/200',
-        previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-      },
-      {
-        id: `track-${Date.now()}-2`,
-        title: 'Electronic Pulse',
-        artistName: 'RAY.DO Demo',
-        albumName: 'Future Sounds',
-        duration: 30,
-        artworkUrl: 'https://picsum.photos/seed/electronic/200',
-        previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-      },
-      {
-        id: `track-${Date.now()}-3`,
-        title: 'Deep Bass',
-        artistName: 'RAY.DO Demo',
-        albumName: 'Bass Nation',
-        duration: 30,
-        artworkUrl: 'https://picsum.photos/seed/bass/200',
-        previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
-      },
-    ];
-    setQueue(sampleTracks);
-    setCurrentTrack(sampleTracks[0]); // Set first track as current
+    // Get genre-specific music for this station
+    const tracks = STATION_MUSIC[station.name] || STATION_MUSIC['Chill Focus'];
+    setQueue(tracks);
+    setCurrentTrack(tracks[0]);
+  };
   };
 
   const handleCreateFromTemplate = (template: typeof STATION_TEMPLATES[0]) => {
