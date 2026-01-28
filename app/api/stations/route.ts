@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createAdminClient } from '@/lib/database/supabase';
 
 // GET - Fetch user's stations
 export async function GET(request: NextRequest) {
@@ -11,10 +10,20 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ stations: [] });
     }
 
-    // Try Supabase, but return empty array if not configured
+    // Return empty if Supabase not configured
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+      return NextResponse.json({ stations: [] });
+    }
+
     try {
+      const { createAdminClient } = await import('@/lib/database/supabase');
       const supabase = createAdminClient();
-      const { data: stations, error } = await supabase
+      
+      if (!supabase) {
+        return NextResponse.json({ stations: [] });
+      }
+
+      const { data: stations, error } = await (supabase as any)
         .from('stations')
         .select('*')
         .eq('user_id', userId)

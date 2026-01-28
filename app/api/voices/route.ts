@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createAdminClient } from '@/lib/database/supabase';
 
 // GET - Fetch user's voices
 export async function GET(request: NextRequest) {
@@ -14,16 +13,31 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const supabase = createAdminClient();
-    const { data: voices, error } = await supabase
-      .from('voices')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+    // Return empty if Supabase not configured
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+      return NextResponse.json({ voices: [] });
+    }
 
-    if (error) throw error;
+    try {
+      const { createAdminClient } = await import('@/lib/database/supabase');
+      const supabase = createAdminClient();
+      
+      if (!supabase) {
+        return NextResponse.json({ voices: [] });
+      }
 
-    return NextResponse.json({ voices });
+      const { data: voices, error } = await (supabase as any)
+        .from('voices')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      return NextResponse.json({ voices });
+    } catch (supabaseError) {
+      return NextResponse.json({ voices: [] });
+    }
   } catch (error) {
     console.error('Fetch voices error:', error);
     return NextResponse.json(
@@ -54,8 +68,43 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Return success without Supabase
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+      return NextResponse.json({
+        voice: {
+          id: `local-${Date.now()}`,
+          user_id: userId,
+          name,
+          voice_id: voiceId,
+          style: style ?? 0.5,
+          language: language ?? 'en',
+          personality,
+          is_default: isDefault ?? false,
+        },
+        local: true
+      });
+    }
+
+    const { createAdminClient } = await import('@/lib/database/supabase');
     const supabase = createAdminClient();
-    const { data: voice, error } = await supabase
+    
+    if (!supabase) {
+      return NextResponse.json({
+        voice: {
+          id: `local-${Date.now()}`,
+          user_id: userId,
+          name,
+          voice_id: voiceId,
+          style: style ?? 0.5,
+          language: language ?? 'en',
+          personality,
+          is_default: isDefault ?? false,
+        },
+        local: true
+      });
+    }
+
+    const { data: voice, error } = await (supabase as any)
       .from('voices')
       .insert({
         user_id: userId,
@@ -94,8 +143,19 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
+    // Return success without Supabase
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+      return NextResponse.json({ success: true, local: true });
+    }
+
+    const { createAdminClient } = await import('@/lib/database/supabase');
     const supabase = createAdminClient();
-    const { error } = await supabase
+    
+    if (!supabase) {
+      return NextResponse.json({ success: true, local: true });
+    }
+
+    const { error } = await (supabase as any)
       .from('voices')
       .delete()
       .eq('id', id);

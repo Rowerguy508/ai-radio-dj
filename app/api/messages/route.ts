@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createAdminClient } from '@/lib/database/supabase';
 
 // GET - Fetch pending messages
 export async function GET(request: NextRequest) {
@@ -15,8 +14,19 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Return empty if Supabase not configured
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+      return NextResponse.json({ messages: [] });
+    }
+
+    const { createAdminClient } = await import('@/lib/database/supabase');
     const supabase = createAdminClient();
-    const { data: messages, error } = await supabase
+    
+    if (!supabase) {
+      return NextResponse.json({ messages: [] });
+    }
+
+    const { data: messages, error } = await (supabase as any)
       .from('message_queue')
       .select('*')
       .eq('user_id', userId)
@@ -50,8 +60,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Return success without Supabase
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+      return NextResponse.json({ message: { id: `local-${Date.now()}`, content }, local: true });
+    }
+
+    const { createAdminClient } = await import('@/lib/database/supabase');
     const supabase = createAdminClient();
-    const { data: message, error } = await supabase
+    
+    if (!supabase) {
+      return NextResponse.json({ message: { id: `local-${Date.now()}`, content }, local: true });
+    }
+
+    const { data: message, error } = await (supabase as any)
       .from('message_queue')
       .insert({
         user_id: userId,
@@ -91,8 +112,19 @@ export async function PATCH(request: NextRequest) {
     if (action === 'read') updateData.read_at = new Date().toISOString();
     if (action === 'dismiss') updateData.dismissed = value;
 
+    // Return success without Supabase
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+      return NextResponse.json({ success: true, local: true });
+    }
+
+    const { createAdminClient } = await import('@/lib/database/supabase');
     const supabase = createAdminClient();
-    const { data: message, error } = await supabase
+    
+    if (!supabase) {
+      return NextResponse.json({ success: true, local: true });
+    }
+
+    const { data: message, error } = await (supabase as any)
       .from('message_queue')
       .update(updateData)
       .eq('id', messageId)

@@ -3,6 +3,7 @@
   "/_not-found/page": "/_not-found",
   "/api/commentary/route": "/api/commentary",
   "/api/messages/route": "/api/messages",
+  "/api/spotify/callback/route": "/api/spotify/callback",
   "/api/stations/route": "/api/stations",
   "/api/telegram/route": "/api/telegram",
   "/api/telegram/set-webhook/route": "/api/telegram/set-webhook",

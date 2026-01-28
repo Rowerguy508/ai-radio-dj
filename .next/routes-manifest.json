@@ -53,6 +53,12 @@
       "namedRegex": "^/api/messages(?:/)?$"
     },
     {
+      "page": "/api/spotify/callback",
+      "regex": "^/api/spotify/callback(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/spotify/callback(?:/)?$"
+    },
+    {
       "page": "/api/stations",
       "regex": "^/api/stations(?:/)?$",
       "routeKeys": {},

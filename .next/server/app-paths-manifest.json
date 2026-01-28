@@ -3,6 +3,7 @@
   "/_not-found/page": "app/_not-found/page.js",
   "/api/commentary/route": "app/api/commentary/route.js",
   "/api/messages/route": "app/api/messages/route.js",
+  "/api/spotify/callback/route": "app/api/spotify/callback/route.js",
   "/api/stations/route": "app/api/stations/route.js",
   "/api/telegram/route": "app/api/telegram/route.js",
   "/api/telegram/set-webhook/route": "app/api/telegram/set-webhook/route.js",

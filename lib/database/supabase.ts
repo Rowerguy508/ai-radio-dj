@@ -1,28 +1,49 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Cloud-native database access
-// All queries go through Supabase API (PostgREST)
+// Check if Supabase is configured
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+export const isSupabaseConfigured = !!(supabaseUrl && supabaseAnonKey && 
+  supabaseUrl.includes('supabase') && 
+  !supabaseAnonKey.includes('IySJ4nDI8O6czOkejs4hWwHyeXXL'));
+
+let adminClient: ReturnType<typeof createClient> | null = null;
+let browserClient: ReturnType<typeof createClient> | null = null;
 
 // Server-side client with service role (for admin operations)
 export function createAdminClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    }
-  );
+  if (!isSupabaseConfigured) {
+    console.warn('Supabase not configured - using local-only mode');
+    return null;
+  }
+  if (!adminClient) {
+    adminClient = createClient(
+      supabaseUrl!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
+      }
+    );
+  }
+  return adminClient;
 }
 
 // Client-side (for browser) - uses anon key with RLS
 export const createBrowserClient = () => {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  if (!isSupabaseConfigured) {
+    return null;
+  }
+  if (!browserClient) {
+    browserClient = createClient(
+      supabaseUrl!,
+      supabaseAnonKey!
+    );
+  }
+  return browserClient;
 };
 
 // Database types (for TypeScript)
