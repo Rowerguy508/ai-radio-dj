@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Plus, Zap, Wind, Coffee, Music, Settings, Play, Pause } from 'lucide-react';
-import { useRadioStore, Station } from '@/lib/store/radio';
+import { useRadioStore, Station, Track } from '@/lib/store/radio';
 
 const STATION_TEMPLATES = [
   {
@@ -40,12 +40,41 @@ const STATION_TEMPLATES = [
 ];
 
 export function StationSelector() {
-  const { stations, currentStation, setCurrentStation, isPlaying, setIsPlaying, addStation } = useRadioStore();
+  const { stations, currentStation, setCurrentStation, isPlaying, setIsPlaying, addStation, setQueue } = useRadioStore();
   const [showCreate, setShowCreate] = useState(false);
 
   const handleSelectStation = (station: Station) => {
     setCurrentStation(station);
     setIsPlaying(true);
+    
+    // Demo: Add some sample tracks for the selected station
+    const sampleTracks: Track[] = [
+      {
+        id: `track-${Date.now()}-1`,
+        title: 'Sample Track 1',
+        artistName: 'Demo Artist',
+        albumName: 'Demo Album',
+        duration: 180,
+        artworkUrl: 'https://picsum.photos/200',
+      },
+      {
+        id: `track-${Date.now()}-2`,
+        title: 'Sample Track 2',
+        artistName: 'Demo Artist',
+        albumName: 'Demo Album',
+        duration: 210,
+        artworkUrl: 'https://picsum.photos/201',
+      },
+      {
+        id: `track-${Date.now()}-3`,
+        title: 'Sample Track 3',
+        artistName: 'Another Artist',
+        albumName: 'Another Album',
+        duration: 195,
+        artworkUrl: 'https://picsum.photos/202',
+      },
+    ];
+    setQueue(sampleTracks);
   };
 
   const handleCreateFromTemplate = (template: typeof STATION_TEMPLATES[0]) => {

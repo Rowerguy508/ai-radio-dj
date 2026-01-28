@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 // Types
 export interface Track {
@@ -44,7 +45,7 @@ export interface RadioState {
   volume: number;
   crossfadeDuration: number;
 
-  // Stations (loaded from cloud)
+  // Stations (local storage with optional cloud sync)
   stations: Station[];
   voices: Voice[];
 
@@ -66,121 +67,137 @@ export interface RadioState {
   toggleVoiceSelector: () => void;
   toggleCommentary: () => void;
 
-  // Cloud sync actions (call API to persist)
-  addStation: (station: Station) => Promise<void>;
-  updateStation: (id: string, updates: Partial<Station>) => Promise<void>;
-  removeStation: (id: string) => Promise<void>;
+  // Local station management
+  addStation: (station: Station) => void;
+  updateStation: (id: string, updates: Partial<Station>) => void;
+  removeStation: (id: string) => void;
 
   // Voice management
-  addVoice: (voice: Voice) => Promise<void>;
-  removeVoice: (id: string) => Promise<void>;
+  addVoice: (voice: Voice) => void;
+  removeVoice: (id: string) => void;
 
-  // Cloud sync
+  // Cloud sync (optional)
+  syncToCloud: (userId: string) => Promise<void>;
   loadFromCloud: (userId: string) => Promise<void>;
 }
 
-// Create the store (no local persistence - everything in cloud)
-export const useRadioStore = create<RadioState>((set, get) => ({
-  // Initial state
-  isPlaying: false,
-  currentTrack: null,
-  currentStation: null,
-  queue: [],
-  volume: 0.7,
-  crossfadeDuration: 5,
-  stations: [],
-  voices: [],
-  showSettings: false,
-  showVoiceSelector: false,
-  commentaryEnabled: true,
+// Demo user ID for local-first mode
+const DEMO_USER_ID = 'demo-user-raydo';
 
-  // Actions
-  setCurrentTrack: (track) => set({ currentTrack: track }),
-  setCurrentStation: (station) => set({ currentStation: station }),
-  setIsPlaying: (playing) => set({ isPlaying: playing }),
-  setVolume: (volume) => set({ volume }),
-  setCrossfadeDuration: (duration) => set({ crossfadeDuration: duration }),
-  setQueue: (queue) => set({ queue }),
-  addToQueue: (track) =>
-    set((state) => ({ queue: [...state.queue, track] })),
+// Create the store with local persistence
+export const useRadioStore = create<RadioState>()(
+  persist(
+    (set, get) => ({
+      // Initial state
+      isPlaying: false,
+      currentTrack: null,
+      currentStation: null,
+      queue: [],
+      volume: 0.7,
+      crossfadeDuration: 5,
+      stations: [],
+      voices: [],
+      showSettings: false,
+      showVoiceSelector: false,
+      commentaryEnabled: true,
 
-  nextTrack: () => {
-    const { queue } = get();
-    if (queue.length > 0) {
-      const [next, ...rest] = queue;
-      set({ currentTrack: next, queue: rest });
+      // Actions
+      setCurrentTrack: (track) => set({ currentTrack: track }),
+      setCurrentStation: (station) => set({ currentStation: station }),
+      setIsPlaying: (playing) => set({ isPlaying: playing }),
+      setVolume: (volume) => set({ volume }),
+      setCrossfadeDuration: (duration) => set({ crossfadeDuration: duration }),
+      setQueue: (queue) => set({ queue }),
+      addToQueue: (track) =>
+        set((state) => ({ queue: [...state.queue, track] })),
+
+      nextTrack: () => {
+        const { queue } = get();
+        if (queue.length > 0) {
+          const [next, ...rest] = queue;
+          set({ currentTrack: next, queue: rest });
+        }
+      },
+
+      toggleSettings: () => set((state) => ({ showSettings: !state.showSettings })),
+      toggleVoiceSelector: () =>
+        set((state) => ({ showVoiceSelector: !state.showVoiceSelector })),
+      toggleCommentary: () =>
+        set((state) => ({ commentaryEnabled: !state.commentaryEnabled })),
+
+      // Local station management (no cloud sync needed for basic functionality)
+      addStation: (station) => {
+        set((state) => ({ stations: [...state.stations, station] }));
+      },
+
+      updateStation: (id, updates) => {
+        set((state) => ({
+          stations: state.stations.map((s) =>
+            s.id === id ? { ...s, ...updates } : s
+          ),
+        }));
+      },
+
+      removeStation: (id) => {
+        set((state) => ({
+          stations: state.stations.filter((s) => s.id !== id),
+        }));
+      },
+
+      // Voice management
+      addVoice: (voice) => {
+        set((state) => ({ voices: [...state.voices, voice] }));
+      },
+
+      removeVoice: (id) => {
+        set((state) => ({
+          voices: state.voices.filter((v) => v.id !== id),
+        }));
+      },
+
+      // Cloud sync (optional - fails silently if Supabase not configured)
+      syncToCloud: async (userId: string) => {
+        const { stations, voices } = get();
+        try {
+          await fetch('/api/stations/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, stations, voices }),
+          });
+        } catch (e) {
+          console.warn('Cloud sync skipped (Supabase not configured)');
+        }
+      },
+
+      loadFromCloud: async (userId: string) => {
+        try {
+          const [stationsRes, voicesRes] = await Promise.all([
+            fetch(`/api/stations?userId=${userId}`),
+            fetch(`/api/voices?userId=${userId}`),
+          ]);
+
+          if (stationsRes.ok) {
+            const stationsData = await stationsRes.json();
+            const voicesData = await voicesRes.json();
+            set({ stations: stationsData.stations || [], voices: voicesData.voices || [] });
+          }
+        } catch (e) {
+          console.warn('Cloud load skipped (Supabase not configured), using local data');
+        }
+      },
+    }),
+    {
+      name: 'raydo-radio-storage',
+      partialize: (state) => ({
+        stations: state.stations,
+        voices: state.voices,
+        volume: state.volume,
+        crossfadeDuration: state.crossfadeDuration,
+        commentaryEnabled: state.commentaryEnabled,
+      }),
     }
-  },
-
-  toggleSettings: () => set((state) => ({ showSettings: !state.showSettings })),
-  toggleVoiceSelector: () =>
-    set((state) => ({ showVoiceSelector: !state.showVoiceSelector })),
-  toggleCommentary: () =>
-    set((state) => ({ commentaryEnabled: !state.commentaryEnabled })),
-
-  // Cloud-synced station management
-  addStation: async (station) => {
-    set((state) => ({ stations: [...state.stations, station] }));
-    // TODO: Sync to Supabase
-    await fetch('/api/stations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(station),
-    });
-  },
-
-  updateStation: async (id, updates) => {
-    set((state) => ({
-      stations: state.stations.map((s) =>
-        s.id === id ? { ...s, ...updates } : s
-      ),
-    }));
-    // TODO: Sync to Supabase
-    await fetch(`/api/stations/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    });
-  },
-
-  removeStation: async (id) => {
-    set((state) => ({
-      stations: state.stations.filter((s) => s.id !== id),
-    }));
-    // TODO: Sync to Supabase
-    await fetch(`/api/stations/${id}`, { method: 'DELETE' });
-  },
-
-  // Cloud-synced voice management
-  addVoice: async (voice) => {
-    set((state) => ({ voices: [...state.voices, voice] }));
-    await fetch('/api/voices', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(voice),
-    });
-  },
-
-  removeVoice: async (id) => {
-    set((state) => ({
-      voices: state.voices.filter((v) => v.id !== id),
-    }));
-    await fetch(`/api/voices/${id}`, { method: 'DELETE' });
-  },
-
-  // Load all data from cloud
-  loadFromCloud: async (userId) => {
-    const [stationsRes, voicesRes] = await Promise.all([
-      fetch(`/api/stations?userId=${userId}`),
-      fetch(`/api/voices?userId=${userId}`),
-    ]);
-
-    const stations = await stationsRes.json();
-    const voices = await voicesRes.json();
-
-    set({ stations: stations.stations || [], voices: voices.voices || [] });
-  },
-}));
+  )
+);
 
 // Selectors
 export const useCurrentTrack = () => useRadioStore((state) => state.currentTrack);
