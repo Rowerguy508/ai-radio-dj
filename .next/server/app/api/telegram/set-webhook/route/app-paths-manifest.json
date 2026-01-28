@@ -1,0 +1,3 @@
+{
+  "/api/telegram/set-webhook/route": "app/api/telegram/set-webhook/route.js"
+}

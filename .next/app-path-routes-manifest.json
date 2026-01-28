@@ -4,6 +4,8 @@
   "/api/commentary/route": "/api/commentary",
   "/api/messages/route": "/api/messages",
   "/api/stations/route": "/api/stations",
+  "/api/telegram/route": "/api/telegram",
+  "/api/telegram/set-webhook/route": "/api/telegram/set-webhook",
   "/api/voice/route": "/api/voice",
   "/api/voices/route": "/api/voices",
   "/api/webhooks/telegram/route": "/api/webhooks/telegram",

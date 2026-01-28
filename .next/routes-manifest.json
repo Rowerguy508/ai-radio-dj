@@ -59,6 +59,18 @@
       "namedRegex": "^/api/stations(?:/)?$"
     },
     {
+      "page": "/api/telegram",
+      "regex": "^/api/telegram(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/telegram(?:/)?$"
+    },
+    {
+      "page": "/api/telegram/set-webhook",
+      "regex": "^/api/telegram/set\\-webhook(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/telegram/set\\-webhook(?:/)?$"
+    },
+    {
       "page": "/api/voice",
       "regex": "^/api/voice(?:/)?$",
       "routeKeys": {},

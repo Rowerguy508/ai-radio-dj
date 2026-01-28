@@ -64,7 +64,7 @@ const STATION_MUSIC: Record<string, Track[]> = {
 };
 
 export function StationSelector() {
-  const { currentStation, setCurrentStation, setCurrentTrack, isPlaying, setIsPlaying, setQueue } = useRadioStore();
+  const { currentStation, setCurrentStation, setCurrentTrack, isPlaying, setIsPlaying, setQueue, addStation, stations } = useRadioStore();
   const [showCreate, setShowCreate] = useState(false);
 
   const handleSelectStation = (station: Station) => {
@@ -75,7 +75,6 @@ export function StationSelector() {
     const tracks = STATION_MUSIC[station.name] || STATION_MUSIC['Chill Focus'];
     setQueue(tracks);
     setCurrentTrack(tracks[0]);
-  };
   };
 
   const handleCreateFromTemplate = (template: typeof STATION_TEMPLATES[0]) => {
