@@ -40,17 +40,6 @@ interface AppleMusicContextType {
 
 const AppleMusicContext = createContext<AppleMusicContextType | null>(null);
 
-// Apple Music developer token generator (simplified - use MusicKit for production)
-function generateDeveloperToken(): string {
-  const keyId = process.env.NEXT_PUBLIC_APPLE_MUSIC_KEY_ID;
-  const teamId = process.env.NEXT_PUBLIC_APPLE_MUSIC_TEAM_ID;
-  const secretKey = process.env.APPLE_MUSIC_PRIVATE_KEY;
-  
-  // In production, use MusicKit JS for authentication
-  // This is a placeholder for the token generation logic
-  return '';
-}
-
 export function AppleMusicProvider({ children }: { children: ReactNode }) {
   const { setQueue, setCurrentTrack, setIsPlaying } = useRadioStore();
   const [user, setUser] = useState<AppleMusicUser | null>(null);
@@ -58,48 +47,59 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
   const [playlists, setPlaylists] = useState<AppleMusicPlaylist[]>([]);
   const [musicKit, setMusicKit] = useState<any>(null);
 
-  // Initialize MusicKit
+  // Initialize MusicKit (script is loaded in layout.tsx)
   useEffect(() => {
     const initMusicKit = async () => {
       if ((window as any).MusicKit) {
         const mk = (window as any).MusicKit;
-        
-        // Configure MusicKit
+
         mk.configure({
-          developerToken: generateDeveloperToken(),
+          developerToken: process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN || '',
           app: {
             name: 'RAY.DO',
             build: '1.0.0',
           },
         });
 
-        // Check for existing session
-        const musicUserToken = await mk.getMusicUserToken();
-        if (musicUserToken) {
-          const userInfo = await mk.api.userInformation();
-          setUser({
-            name: userInfo.attributes?.name || 'Apple Music User',
-            email: userInfo.attributes?.email || '',
-            id: userInfo.id,
-          });
-          setPlaylists(await mk.api.userPlaylists());
+        try {
+          const musicUserToken = await mk.getMusicUserToken();
+          if (musicUserToken) {
+            const userInfo = await mk.api.userInformation();
+            setUser({
+              name: userInfo.attributes?.name || 'Apple Music User',
+              email: userInfo.attributes?.email || '',
+              id: userInfo.id,
+            });
+            const userPlaylists = await mk.api.userPlaylists();
+            setPlaylists(userPlaylists.map((p: any) => ({
+              id: p.id,
+              name: p.attributes.name,
+              description: p.attributes.description,
+              artwork: p.attributes.artwork,
+              trackCount: p.attributes.trackCount,
+            })));
+          }
+        } catch (e) {
+          console.log('No existing Apple Music session');
         }
 
         setMusicKit(mk);
       }
     };
 
-    // Load MusicKit script
-    const script = document.createElement('script');
-    script.src = 'https://assets.applemusickit.com/apple-musickit.js';
-    script.onload = initMusicKit;
-    document.head.appendChild(script);
-
-    return () => {
-      if (musicKit) {
-        musicKit.unconfigure();
-      }
-    };
+    // Wait for MusicKit script to load (already in <head> from layout.tsx)
+    if ((window as any).MusicKit) {
+      initMusicKit();
+    } else {
+      const checkInterval = setInterval(() => {
+        if ((window as any).MusicKit) {
+          clearInterval(checkInterval);
+          initMusicKit();
+        }
+      }, 200);
+      // Stop checking after 10s
+      setTimeout(() => clearInterval(checkInterval), 10000);
+    }
   }, []);
 
   const connectAppleMusic = async () => {

@@ -1,15 +1,14 @@
-// LLM Commentary Generator using Clawdbot's local gateway
+// AI Commentary Generator using Anthropic Claude API
 
-interface TrackInfo {
+export interface TrackInfo {
   title: string;
   artist: string;
   album?: string;
   year?: number;
   genre?: string;
-  bpm?: number;
 }
 
-interface CommentaryContext {
+export interface CommentaryContext {
   station: {
     name: string;
     energy: number; // 0-1
@@ -18,222 +17,130 @@ interface CommentaryContext {
   previousTrack?: TrackInfo;
   currentTrack: TrackInfo;
   nextTrack?: TrackInfo;
-  timeOfDay?: string; // 'morning', 'afternoon', 'evening', 'night'
-  recentMessages?: string[]; // Messages to read
-  calendarEvent?: string; // Upcoming event
-  weather?: string;
+  timeOfDay?: string;
   isFirstTrack?: boolean;
   isTransition?: boolean;
-  isEnding?: boolean;
 }
 
-interface CommentaryRequest {
-  context: CommentaryContext;
-  maxLength?: number;
-  style?: 'short' | 'medium' | 'long';
-}
-
-interface CommentaryResponse {
+export interface CommentaryResponse {
   text: string;
-  audioDuration?: number;
+  estimatedDuration: number; // seconds
 }
 
-class CommentaryGenerator {
-  private gatewayUrl: string;
-
-  constructor(gatewayUrl: string = 'http://127.0.0.1:18789') {
-    this.gatewayUrl = gatewayUrl;
+// Server-side only: generate commentary via Claude API
+export async function generateCommentary(
+  context: CommentaryContext,
+  style: 'short' | 'medium' | 'long' = 'medium'
+): Promise<CommentaryResponse> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return generateFallbackCommentary(context);
   }
 
-  // Generate commentary for a track
-  async generateCommentary(request: CommentaryRequest): Promise<CommentaryResponse> {
-    const { context, maxLength = 200, style = 'medium' } = request;
+  const systemPrompt = buildSystemPrompt(context);
+  const userPrompt = buildUserPrompt(context, style);
 
-    const systemPrompt = this.buildSystemPrompt(context);
-    const userPrompt = this.buildUserPrompt(context, style);
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
+      }),
+    });
 
-    try {
-      const response = await fetch(`${this.gatewayUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'minimax/MiniMax-M2.1',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          max_tokens: 500,
-          temperature: 0.8,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Gateway error: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      const text = data.choices?.[0]?.message?.content || '';
-
-      return {
-        text: text.slice(0, maxLength),
-        audioDuration: this.estimateAudioDuration(text),
-      };
-    } catch (error) {
-      console.error('Commentary generation failed:', error);
-      // Fallback to simple template
-      return this.generateFallbackCommentary(context);
-    }
-  }
-
-  // Build system prompt based on station settings
-  private buildSystemPrompt(context: CommentaryContext): string {
-    const { station } = context;
-
-    let personality = '';
-
-    switch (station.style) {
-      case 'chill':
-        personality = `You are a smooth, laid-back radio host. You're warm, relaxed, and speak in a calm, soothing tone. You make listeners feel comfortable and focused. You're not overly excited - you appreciate good music and share insights thoughtfully.`;
-        break;
-      case 'hype':
-        personality = `You're an energetic, enthusiastic radio host! You get excited about great tracks, you pump up the audience, and you make every song feel like a special moment. Your energy is infectious and you love building anticipation.`;
-        break;
-      default:
-        personality = `You're a friendly, engaging radio host who balances energy with sophistication. You're knowledgeable about music, tell interesting stories, and keep listeners entertained without being overwhelming.`;
+    if (!response.ok) {
+      throw new Error(`Claude API error: ${response.status}`);
     }
 
-    return `${personality}
-
-You are the AI DJ for "${station.name}" station.
-
-Your rules:
-- Keep commentary under 150 words
-- Never break character - stay in radio host mode
-- Make it feel natural, like real radio
-- Include personal touches when appropriate
-- Adapt your energy level: ${station.energy < 0.3 ? 'very chill' : station.energy < 0.7 ? 'balanced' : 'high energy'}
-- If there are messages or calendar events, weave them in naturally
-
-Remember: You're creating an immersive radio experience, not just reading track info.`;
-  }
-
-  // Build user prompt for the specific situation
-  private buildUserPrompt(context: CommentaryContext, style: 'short' | 'medium' | 'long'): string {
-    let prompt = `Generate ${style} radio commentary for this track:\n\n`;
-
-    prompt += `Current Track: "${context.currentTrack.title}" by ${context.currentTrack.artist}`;
-    if (context.currentTrack.album) prompt += ` from the album "${context.currentTrack.album}"`;
-    if (context.currentTrack.year) prompt += ` (${context.currentTrack.year})`;
-    if (context.currentTrack.genre) prompt += ` - Genre: ${context.currentTrack.genre}`;
-    prompt += '\n';
-
-    if (context.previousTrack) {
-      prompt += `Previous Track: "${context.previousTrack.title}" by ${context.previousTrack.artist}\n`;
-    }
-
-    if (context.nextTrack) {
-      prompt += `Up Next: "${context.nextTrack.title}" by ${context.nextTrack.artist}\n`;
-    }
-
-    if (context.isFirstTrack) {
-      prompt += `\nThis is the first track of the station - welcome the listener!\n`;
-    }
-
-    if (context.isTransition) {
-      prompt += `\nThis is a transition between tracks - smooth handoff!\n`;
-    }
-
-    if (context.isEnding) {
-      prompt += `\nThis is the end of a set - sign off smoothly!\n`;
-    }
-
-    if (context.recentMessages && context.recentMessages.length > 0) {
-      prompt += `\nMessages to read:\n${context.recentMessages.join('\n')}\n`;
-    }
-
-    if (context.calendarEvent) {
-      prompt += `\nCalendar note: ${context.calendarEvent}\n`;
-    }
-
-    if (context.timeOfDay) {
-      prompt += `\nTime of day: ${context.timeOfDay}\n`;
-    }
-
-    prompt += `\nGenerate the commentary now:`;
-
-    return prompt;
-  }
-
-  // Estimate audio duration based on word count
-  private estimateAudioDuration(text: string): number {
-    const wordsPerMinute = 150; // Average speaking rate
-    const wordCount = text.split(/\s+/).length;
-    return Math.ceil((wordCount / wordsPerMinute) * 60);
-  }
-
-  // Fallback when LLM fails
-  private generateFallbackCommentary(context: CommentaryContext): CommentaryResponse {
-    const { currentTrack, station, isFirstTrack } = context;
-
-    let text = '';
-
-    if (isFirstTrack) {
-      text = `Welcome to ${station.name}! Up first, we've got "${currentTrack.title}" by ${currentTrack.artist}. Let's go.`;
-    } else {
-      text = `You're listening to "${currentTrack.title}" by ${currentTrack.artist} on ${station.name}.`;
-    }
+    const data = await response.json();
+    const text = data.content?.[0]?.text || '';
 
     return {
       text,
-      audioDuration: this.estimateAudioDuration(text),
+      estimatedDuration: estimateAudioDuration(text),
     };
-  }
-
-  // Generate a playlist introduction
-  async generateStationIntro(stationName: string, genres: string[]): Promise<string> {
-    const prompt = `Create a short, engaging radio intro for a station called "${stationName}" that plays ${genres.join(', ')}. Keep it under 50 words. Make it feel like a real radio DJ opening.`;
-
-    try {
-      const response = await fetch(`${this.gatewayUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'minimax/MiniMax-M2.1',
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 200,
-          temperature: 0.8,
-        }),
-      });
-
-      const data = await response.json();
-      return data.choices?.[0]?.message?.content || `Welcome to ${stationName}!`;
-    } catch {
-      return `Welcome to ${stationName}! Let's get into the vibe.`;
-    }
+  } catch (error) {
+    console.error('Commentary generation failed:', error);
+    return generateFallbackCommentary(context);
   }
 }
 
-// Factory function
-export function createCommentaryGenerator(gatewayUrl?: string): CommentaryGenerator {
-  return new CommentaryGenerator(gatewayUrl);
+function buildSystemPrompt(context: CommentaryContext): string {
+  const { station } = context;
+
+  const personalities: Record<string, string> = {
+    chill: `You are a smooth, laid-back radio host. Warm, relaxed, calm tone. You make listeners feel comfortable. Not overly excited - you appreciate good music and share insights thoughtfully.`,
+    hype: `You're an energetic, enthusiastic radio host! You get excited about great tracks, pump up the audience, and make every song feel special. Your energy is infectious.`,
+    balanced: `You're a friendly, engaging radio host who balances energy with sophistication. Knowledgeable about music, you tell interesting stories and keep listeners entertained.`,
+  };
+
+  return `${personalities[station.style] || personalities.balanced}
+
+You are the AI DJ for "${station.name}".
+
+Rules:
+- Keep commentary under 100 words
+- Stay in radio host character at all times
+- Make it feel natural, like real radio
+- Energy level: ${station.energy < 0.3 ? 'very chill' : station.energy < 0.7 ? 'balanced' : 'high energy'}
+- Output ONLY the spoken words - no stage directions, no quotes, no asterisks`;
 }
 
-// Pre-built templates for different scenarios
-export const COMMENTARY_TEMPLATES = {
-  trackIntro: (track: TrackInfo) =>
-    `Up next, we've got "${track.title}" by ${track.artist}.`,
+function buildUserPrompt(
+  context: CommentaryContext,
+  style: 'short' | 'medium' | 'long'
+): string {
+  const wordLimits = { short: 30, medium: 60, long: 100 };
+  let prompt = `Generate a ${style} DJ commentary (max ${wordLimits[style]} words).\n\n`;
 
-  artistShoutout: (artist: string, station: string) =>
-    `Big shoutout to all the ${artist} fans out there tuning into ${station}!`,
+  prompt += `Now playing: "${context.currentTrack.title}" by ${context.currentTrack.artist}`;
+  if (context.currentTrack.album) prompt += ` from "${context.currentTrack.album}"`;
+  prompt += '\n';
 
-  transition: (from: TrackInfo, to: TrackInfo) =>
-    `That was "${from.title}" by ${from.artist}. Coming up next, "${to.title}" by ${to.artist}.`,
+  if (context.previousTrack) {
+    prompt += `Previous: "${context.previousTrack.title}" by ${context.previousTrack.artist}\n`;
+  }
+  if (context.nextTrack) {
+    prompt += `Up next: "${context.nextTrack.title}" by ${context.nextTrack.artist}\n`;
+  }
+  if (context.isFirstTrack) {
+    prompt += `\nThis is the first track - welcome the listener!\n`;
+  }
+  if (context.isTransition) {
+    prompt += `\nTransition between tracks - smooth handoff.\n`;
+  }
+  if (context.timeOfDay) {
+    prompt += `Time: ${context.timeOfDay}\n`;
+  }
 
-  weather: (weather: string, station: string) =>
-    `It's ${weather} outside on ${station}.`,
+  return prompt;
+}
 
-  calendar: (event: string) =>
-    `Heads up - you've got ${event} coming up.`,
-};
+function estimateAudioDuration(text: string): number {
+  const wordsPerMinute = 150;
+  const wordCount = text.split(/\s+/).length;
+  return Math.ceil((wordCount / wordsPerMinute) * 60);
+}
+
+function generateFallbackCommentary(context: CommentaryContext): CommentaryResponse {
+  const { currentTrack, station, isFirstTrack } = context;
+
+  let text: string;
+  if (isFirstTrack) {
+    text = `Welcome to ${station.name}! Kicking things off with "${currentTrack.title}" by ${currentTrack.artist}. Let's go.`;
+  } else if (context.previousTrack) {
+    text = `That was "${context.previousTrack.title}" by ${context.previousTrack.artist}. Now here's "${currentTrack.title}" by ${currentTrack.artist} on ${station.name}.`;
+  } else {
+    text = `You're listening to "${currentTrack.title}" by ${currentTrack.artist} on ${station.name}.`;
+  }
+
+  return { text, estimatedDuration: estimateAudioDuration(text) };
+}
