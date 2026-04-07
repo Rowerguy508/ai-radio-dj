@@ -1,4 +1,4 @@
-// AI Commentary Generator using Anthropic Claude API
+// AI Commentary Generator using MiniMax API
 
 export interface TrackInfo {
   title: string;
@@ -27,12 +27,12 @@ export interface CommentaryResponse {
   estimatedDuration: number; // seconds
 }
 
-// Server-side only: generate commentary via Claude API
+// Server-side only: generate commentary via MiniMax API (OpenAI-compatible)
 export async function generateCommentary(
   context: CommentaryContext,
   style: 'short' | 'medium' | 'long' = 'medium'
 ): Promise<CommentaryResponse> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.MINIMAX_API_KEY;
   if (!apiKey) {
     return generateFallbackCommentary(context);
   }
@@ -41,27 +41,29 @@ export async function generateCommentary(
   const userPrompt = buildUserPrompt(context, style);
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch('https://api.minimaxi.chat/v1/text/chatcompletion_v2', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
+        'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
+        model: 'MiniMax-Text-01',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
         max_tokens: 300,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
+        temperature: 0.8,
       }),
     });
 
     if (!response.ok) {
-      throw new Error(`Claude API error: ${response.status}`);
+      throw new Error(`MiniMax API error: ${response.status}`);
     }
 
     const data = await response.json();
-    const text = data.content?.[0]?.text || '';
+    const text = data.choices?.[0]?.message?.content || '';
 
     return {
       text,
