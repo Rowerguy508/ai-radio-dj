@@ -3,93 +3,48 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 255, 255, 255;
-  --background-start-rgb: 0, 0, 0;
-  --background-end-rgb: 0, 0, 0;
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
 
-.font-sans {
-  font-family: var(--font-sans);
-}
+* { -webkit-tap-highlight-color: transparent; }
 
-body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
-}
+html, body { background: #000; color: #fff; font-family: var(--font-sans); }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
 
-::-webkit-scrollbar-track {
-  background: #18181b;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #3f3f46;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
-}
-
-/* Range input styling */
+/* Range inputs */
 input[type='range'] {
   -webkit-appearance: none;
   appearance: none;
   background: transparent;
   cursor: pointer;
 }
-
 input[type='range']::-webkit-slider-runnable-track {
-  background: #3f3f46;
-  height: 4px;
+  background: #27272a;
+  height: 3px;
   border-radius: 2px;
 }
-
 input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  margin-top: -4px;
-  background-color: white;
-  height: 12px;
-  width: 12px;
+  margin-top: -5px;
+  background: #fff;
+  height: 13px;
+  width: 13px;
   border-radius: 50%;
 }
-
 input[type='range']::-moz-range-track {
-  background: #3f3f46;
-  height: 4px;
+  background: #27272a;
+  height: 3px;
   border-radius: 2px;
 }
-
 input[type='range']::-moz-range-thumb {
-  background-color: white;
-  height: 12px;
-  width: 12px;
+  background: #fff;
+  height: 13px;
+  width: 13px;
   border-radius: 50%;
   border: none;
-}
-
-/* Animation utilities */
-@keyframes pulse-subtle {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.7;
-  }
-}
-
-.animate-pulse-subtle {
-  animation: pulse-subtle 2s ease-in-out infinite;
 }

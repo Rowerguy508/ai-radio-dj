@@ -97,21 +97,33 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const connectAppleMusic = async () => {
-    // If musicKit isn't set yet, try one more time
     let mk = musicKit;
-    if (!mk && (window as any).MusicKit) {
-      mk = (window as any).MusicKit;
-      try {
-        mk.configure({
-          developerToken: process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN || '',
-          app: { name: 'RAY.DO', build: '1.0.0' },
+
+    // If musicKit isn't set yet, wait for the script to load
+    if (!mk) {
+      if (!(window as any).MusicKit) {
+        // Wait up to 5 seconds for the script
+        await new Promise<void>((resolve) => {
+          const onLoaded = () => { document.removeEventListener('musickitloaded', onLoaded); resolve(); };
+          document.addEventListener('musickitloaded', onLoaded);
+          setTimeout(() => { document.removeEventListener('musickitloaded', onLoaded); resolve(); }, 5000);
         });
-      } catch {}
-      setMusicKit(mk);
+      }
+
+      if ((window as any).MusicKit) {
+        mk = (window as any).MusicKit;
+        try {
+          mk.configure({
+            developerToken: process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN || '',
+            app: { name: 'RAY.DO', build: '1.0.0' },
+          });
+        } catch {}
+        setMusicKit(mk);
+      }
     }
 
     if (!mk) {
-      alert('Apple Music not loaded yet. Please wait a moment and try again.');
+      alert('Could not load Apple Music. Check your internet connection and try again.');
       return;
     }
 
