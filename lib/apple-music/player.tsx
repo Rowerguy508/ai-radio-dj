@@ -28,14 +28,18 @@ interface AppleMusicContextType {
 
 const AppleMusicContext = createContext<AppleMusicContextType | null>(null);
 
-function getMusicKitInstance(): any | null {
+// Get the MusicKit instance that was configured by musickit-init.tsx
+function getMusicInstance(): any | null {
+  // First check our stored instance
+  if ((window as any).__musicKitInstance) {
+    return (window as any).__musicKitInstance;
+  }
+  // Fallback: try MusicKit.getInstance()
   try {
     const MK = (window as any).MusicKit;
-    if (!MK) return null;
-    return MK.getInstance();
-  } catch {
-    return null;
-  }
+    if (MK) return MK.getInstance();
+  } catch {}
+  return null;
 }
 
 export function AppleMusicProvider({ children }: { children: ReactNode }) {
@@ -43,42 +47,49 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppleMusicUser | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [playlists, setPlaylists] = useState<AppleMusicPlaylist[]>([]);
-  const [ready, setReady] = useState(false);
+  const [instance, setInstance] = useState<any>(null);
 
-  // Wait for MusicKit to be configured and get an instance
+  // Wait for MusicKit to be configured
   useEffect(() => {
-    const check = () => {
-      const instance = getMusicKitInstance();
-      if (instance) {
-        setReady(true);
-        // If already authorized, restore session
-        if (instance.isAuthorized) {
+    const onReady = () => {
+      const mk = getMusicInstance();
+      if (mk) {
+        setInstance(mk);
+        // Check if already authorized from a previous session
+        if (mk.isAuthorized) {
           setUser({ name: 'Apple Music User', id: 'apple-user' });
-          loadPlaylists(instance);
+          loadPlaylists(mk);
         }
-        return true;
       }
-      return false;
     };
 
-    if (check()) return;
-
-    // Poll until MusicKit is ready (script loads async)
-    const interval = setInterval(() => {
-      if (check()) clearInterval(interval);
-    }, 300);
-    const timeout = setTimeout(() => clearInterval(interval), 15000);
-
-    return () => {
-      clearInterval(interval);
-      clearTimeout(timeout);
-    };
+    // Check immediately
+    const mk = getMusicInstance();
+    if (mk) {
+      onReady();
+    } else {
+      // Wait for the musickitconfigured event from musickit-init.tsx
+      window.addEventListener('musickitconfigured', onReady);
+      return () => window.removeEventListener('musickitconfigured', onReady);
+    }
   }, []);
 
-  const loadPlaylists = async (instance: any) => {
+  const loadPlaylists = async (mk: any) => {
     try {
-      const result = await instance.api.music('/v1/me/library/playlists', { limit: 20 });
-      const items = result?.data?.data || [];
+      // MusicKit JS v1 uses mk.api.library.playlists()
+      // MusicKit JS v3 uses mk.api.music('/v1/me/library/playlists')
+      // Try v3 first, fallback to v1
+      let items: any[] = [];
+      try {
+        const result = await mk.api.music('/v1/me/library/playlists', { limit: 20 });
+        items = result?.data?.data || [];
+      } catch {
+        // v1 fallback
+        try {
+          items = await mk.api.library.playlists() || [];
+        } catch {}
+      }
+
       setPlaylists(items.map((p: any) => ({
         id: p.id,
         name: p.attributes?.name || 'Untitled',
@@ -92,37 +103,43 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
   };
 
   const connectAppleMusic = useCallback(async () => {
-    const instance = getMusicKitInstance();
-    if (!instance) {
-      alert('Apple Music is not available. Make sure you have a developer token configured.');
+    let mk = instance || getMusicInstance();
+    if (!mk) {
+      alert('Apple Music is not available. Make sure your developer token is configured in Vercel environment variables.');
       return;
     }
 
     setIsLoading(true);
     try {
-      await instance.authorize();
+      // This opens Apple's OAuth popup
+      await mk.authorize();
+      setInstance(mk);
       setUser({ name: 'Apple Music User', id: 'apple-user' });
-      await loadPlaylists(instance);
-    } catch (e) {
+      await loadPlaylists(mk);
+    } catch (e: any) {
       console.error('Apple Music auth failed:', e);
-      alert('Apple Music authorization failed. Check your developer token.');
+      if (e?.message?.includes('token') || e?.name === 'AUTHORIZATION_ERROR') {
+        alert('Apple Music authorization failed. Your developer token may be invalid or expired.');
+      } else {
+        alert('Apple Music authorization was cancelled or failed.');
+      }
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [instance]);
 
   const disconnect = useCallback(() => {
-    const instance = getMusicKitInstance();
-    if (instance) {
-      try { instance.unauthorize(); } catch {}
+    const mk = instance || getMusicInstance();
+    if (mk) {
+      try { mk.unauthorize(); } catch {}
     }
     setUser(null);
     setPlaylists([]);
-  }, []);
+  }, [instance]);
 
   const createRadioStation = useCallback(async (mood: 'chill' | 'hype' | 'balanced') => {
-    const instance = getMusicKitInstance();
-    if (!instance || !instance.isAuthorized) {
+    const mk = instance || getMusicInstance();
+    if (!mk || !mk.isAuthorized) {
       await connectAppleMusic();
       return;
     }
@@ -135,14 +152,23 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
         balanced: 'pop',
       };
 
-      // Search for tracks by genre
-      const result = await instance.api.music('/v1/catalog/us/search', {
-        term: genreSeeds[mood],
-        types: 'songs',
-        limit: 20,
-      });
-
-      const songs = result?.data?.results?.songs?.data || [];
+      // Search for tracks
+      let songs: any[] = [];
+      try {
+        // v3 API
+        const result = await mk.api.music(`/v1/catalog/${mk.storefrontId || 'us'}/search`, {
+          term: genreSeeds[mood],
+          types: 'songs',
+          limit: 20,
+        });
+        songs = result?.data?.results?.songs?.data || [];
+      } catch {
+        // v1 fallback
+        try {
+          const result = await mk.api.search(genreSeeds[mood], { types: 'songs', limit: 20 });
+          songs = result?.songs?.data || [];
+        } catch {}
+      }
 
       const radioTracks = songs.map((t: any) => ({
         id: t.id,
@@ -164,7 +190,7 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-  }, [connectAppleMusic, setQueue, setCurrentTrack, setIsPlaying]);
+  }, [instance, connectAppleMusic, setQueue, setCurrentTrack, setIsPlaying]);
 
   return (
     <AppleMusicContext.Provider
