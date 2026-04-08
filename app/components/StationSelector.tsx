@@ -39,27 +39,35 @@ const STATION_TEMPLATES = [
   },
 ];
 
-// Different music streams per station
+// Demo tracks use free samples from the Internet Archive
+// Real music comes from Spotify or Apple Music once connected
+const SAMPLE_BASE = 'https://upload.wikimedia.org/wikipedia/commons';
+const DEMO_AUDIO: Record<string, string> = {
+  piano: `${SAMPLE_BASE}/6/61/Fur_Elise_-_Beethoven.ogg`,
+  classical: `${SAMPLE_BASE}/e/e0/Clair_de_lune_-_Claude_Debussy.ogg`,
+  orchestral: `${SAMPLE_BASE}/4/4e/Bach_-_Air_on_the_G_String.ogg`,
+};
+
 const STATION_MUSIC: Record<string, Track[]> = {
   'Chill Focus': [
-    { id: 'chill-1', title: 'Midnight City', artistName: 'M83', albumName: 'Hurry Up, We\'re Dreaming', duration: 243, artworkUrl: 'https://picsum.photos/seed/chill1/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
-    { id: 'chill-2', title: 'Intro', artistName: 'The xx', albumName: 'xx', duration: 120, artworkUrl: 'https://picsum.photos/seed/chill2/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3' },
-    { id: 'chill-3', title: 'Porcelain', artistName: 'Moby', albumName: 'Play', duration: 200, artworkUrl: 'https://picsum.photos/seed/chill3/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3' },
+    { id: 'chill-1', title: 'Clair de Lune', artistName: 'Claude Debussy', albumName: 'Suite bergamasque', duration: 300, artworkUrl: 'https://picsum.photos/seed/chill1/200', previewUrl: DEMO_AUDIO.classical },
+    { id: 'chill-2', title: 'Fur Elise', artistName: 'Ludwig van Beethoven', albumName: 'Classics', duration: 180, artworkUrl: 'https://picsum.photos/seed/chill2/200', previewUrl: DEMO_AUDIO.piano },
+    { id: 'chill-3', title: 'Air on the G String', artistName: 'J.S. Bach', albumName: 'Orchestral Suite No. 3', duration: 240, artworkUrl: 'https://picsum.photos/seed/chill3/200', previewUrl: DEMO_AUDIO.orchestral },
   ],
   'Hype Mode': [
-    { id: 'hype-1', title: 'Stronger', artistName: 'Kanye West', albumName: 'Graduation', duration: 312, artworkUrl: 'https://picsum.photos/seed/hype1/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3' },
-    { id: 'hype-2', title: 'Levels', artistName: 'Avicii', albumName: 'True', duration: 198, artworkUrl: 'https://picsum.photos/seed/hype2/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3' },
-    { id: 'hype-3', title: 'Turn Down for What', artistName: 'DJ Snake', albumName: 'You Know It Ain\'t Right', duration: 215, artworkUrl: 'https://picsum.photos/seed/hype3/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3' },
+    { id: 'hype-1', title: 'Fur Elise (Energized)', artistName: 'Ludwig van Beethoven', albumName: 'Classics', duration: 180, artworkUrl: 'https://picsum.photos/seed/hype1/200', previewUrl: DEMO_AUDIO.piano },
+    { id: 'hype-2', title: 'Air on the G String', artistName: 'J.S. Bach', albumName: 'Orchestral Suite No. 3', duration: 240, artworkUrl: 'https://picsum.photos/seed/hype2/200', previewUrl: DEMO_AUDIO.orchestral },
+    { id: 'hype-3', title: 'Clair de Lune', artistName: 'Claude Debussy', albumName: 'Suite bergamasque', duration: 300, artworkUrl: 'https://picsum.photos/seed/hype3/200', previewUrl: DEMO_AUDIO.classical },
   ],
   'Morning Coffee': [
-    { id: 'coffee-1', title: 'Sunrise', artistName: 'Norah Jones', albumName: 'Come Away With Me', duration: 195, artworkUrl: 'https://picsum.photos/seed/coffee1/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3' },
-    { id: 'coffee-2', title: 'Banana Pancakes', artistName: 'Jack Johnson', albumName: 'In Between Dreams', duration: 187, artworkUrl: 'https://picsum.photos/seed/coffee2/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3' },
-    { id: 'coffee-3', title: 'Put Your Records On', artistName: 'Corinne Bailey Rae', albumName: 'Corinne Bailey Rae', duration: 221, artworkUrl: 'https://picsum.photos/seed/coffee3/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3' },
+    { id: 'coffee-1', title: 'Air on the G String', artistName: 'J.S. Bach', albumName: 'Orchestral Suite No. 3', duration: 240, artworkUrl: 'https://picsum.photos/seed/coffee1/200', previewUrl: DEMO_AUDIO.orchestral },
+    { id: 'coffee-2', title: 'Clair de Lune', artistName: 'Claude Debussy', albumName: 'Suite bergamasque', duration: 300, artworkUrl: 'https://picsum.photos/seed/coffee2/200', previewUrl: DEMO_AUDIO.classical },
+    { id: 'coffee-3', title: 'Fur Elise', artistName: 'Ludwig van Beethoven', albumName: 'Classics', duration: 180, artworkUrl: 'https://picsum.photos/seed/coffee3/200', previewUrl: DEMO_AUDIO.piano },
   ],
   'Deep Dive': [
-    { id: 'deep-1', title: 'Midnight', artistName: 'Lane 8', albumName: 'Reviver', duration: 267, artworkUrl: 'https://picsum.photos/seed/deep1/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3' },
-    { id: 'deep-2', title: 'Hearts', artistName: 'Odesza', albumName: 'My Friends Never Die', duration: 234, artworkUrl: 'https://picsum.photos/seed/deep2/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-11.mp3' },
-    { id: 'deep-3', title: 'Spectrum', artistName: 'Zedd', albumName: 'Clarity', duration: 248, artworkUrl: 'https://picsum.photos/seed/deep3/200', previewUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3' },
+    { id: 'deep-1', title: 'Clair de Lune', artistName: 'Claude Debussy', albumName: 'Suite bergamasque', duration: 300, artworkUrl: 'https://picsum.photos/seed/deep1/200', previewUrl: DEMO_AUDIO.classical },
+    { id: 'deep-2', title: 'Air on the G String', artistName: 'J.S. Bach', albumName: 'Orchestral Suite No. 3', duration: 240, artworkUrl: 'https://picsum.photos/seed/deep2/200', previewUrl: DEMO_AUDIO.orchestral },
+    { id: 'deep-3', title: 'Fur Elise', artistName: 'Ludwig van Beethoven', albumName: 'Classics', duration: 180, artworkUrl: 'https://picsum.photos/seed/deep3/200', previewUrl: DEMO_AUDIO.piano },
   ],
 };
 

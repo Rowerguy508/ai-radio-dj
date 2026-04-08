@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
 import { useRadioStore } from '@/lib/store/radio';
 
 interface SpotifyUser {
@@ -10,19 +10,6 @@ interface SpotifyUser {
   images?: { url: string }[];
 }
 
-interface SpotifyTrack {
-  id: string;
-  name: string;
-  artists: { name: string }[];
-  album: {
-    name: string;
-    images: { url: string }[];
-  };
-  preview_url: string | null;
-  duration_ms: number;
-  uri: string;
-}
-
 interface SpotifyPlaylist {
   id: string;
   name: string;
@@ -30,7 +17,6 @@ interface SpotifyPlaylist {
   images: { url: string }[];
   tracks: {
     total: number;
-    items: { track: SpotifyTrack }[];
   };
 }
 
@@ -41,11 +27,35 @@ interface SpotifyContextType {
   playlists: SpotifyPlaylist[];
   connectSpotify: () => void;
   disconnect: () => void;
-  getPlaylistTracks: (playlistId: string) => Promise<SpotifyTrack[]>;
   createRadioStation: (mood: 'chill' | 'hype' | 'balanced') => Promise<void>;
 }
 
 const SpotifyContext = createContext<SpotifyContextType | null>(null);
+
+// PKCE helpers
+function generateRandomString(length: number): string {
+  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const values = crypto.getRandomValues(new Uint8Array(length));
+  return values.reduce((acc, x) => acc + possible[x % possible.length], '');
+}
+
+async function sha256(plain: string): Promise<ArrayBuffer> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  return window.crypto.subtle.digest('SHA-256', data);
+}
+
+function base64encode(input: ArrayBuffer): string {
+  const bytes = new Uint8Array(input);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary)
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+}
 
 export function SpotifyProvider({ children }: { children: ReactNode }) {
   const { setQueue, setCurrentTrack, setIsPlaying } = useRadioStore();
@@ -54,41 +64,75 @@ export function SpotifyProvider({ children }: { children: ReactNode }) {
   const [playlists, setPlaylists] = useState<SpotifyPlaylist[]>([]);
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
-  // Check for token on load
+  // On load: check for stored token or handle OAuth callback
   useEffect(() => {
     const token = localStorage.getItem('spotify_access_token');
     const expiry = localStorage.getItem('spotify_token_expiry');
-    
+
     if (token && expiry && Date.now() < parseInt(expiry)) {
       setAccessToken(token);
       fetchUserProfile(token);
+      return;
     }
-    
-    // Handle OAuth callback
+
+    // Handle PKCE callback - code comes in query params
     const params = new URLSearchParams(window.location.search);
-    const callbackToken = params.get('spotify_token');
-    const callbackExpiry = params.get('spotify_expires');
-    
-    if (callbackToken && callbackExpiry) {
-      localStorage.setItem('spotify_access_token', callbackToken);
-      localStorage.setItem('spotify_token_expiry', String(Date.now() + parseInt(callbackExpiry) * 1000));
-      setAccessToken(callbackToken);
-      fetchUserProfile(callbackToken);
+    const code = params.get('code');
+    const storedVerifier = localStorage.getItem('spotify_code_verifier');
+
+    if (code && storedVerifier) {
+      exchangeCodeForToken(code, storedVerifier);
+      // Clean up URL
       window.history.replaceState({}, '', '/');
     }
   }, []);
 
+  const exchangeCodeForToken = async (code: string, codeVerifier: string) => {
+    const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID;
+    if (!clientId) return;
+
+    try {
+      const res = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: `${window.location.origin}/api/spotify/callback`,
+          code_verifier: codeVerifier,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const token = data.access_token;
+        const expiresIn = data.expires_in || 3600;
+
+        localStorage.setItem('spotify_access_token', token);
+        localStorage.setItem('spotify_token_expiry', String(Date.now() + expiresIn * 1000));
+        localStorage.removeItem('spotify_code_verifier');
+
+        setAccessToken(token);
+        fetchUserProfile(token);
+      } else {
+        console.error('Token exchange failed:', await res.text());
+      }
+    } catch (e) {
+      console.error('Token exchange error:', e);
+    }
+  };
+
   const fetchUserProfile = async (token: string) => {
     try {
       const res = await fetch('https://api.spotify.com/v1/me', {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const userData = await res.json();
         setUser(userData);
         fetchPlaylists(token);
       } else {
-        // Token expired
         disconnect();
       }
     } catch (e) {
@@ -99,7 +143,7 @@ export function SpotifyProvider({ children }: { children: ReactNode }) {
   const fetchPlaylists = async (token: string) => {
     try {
       const res = await fetch('https://api.spotify.com/v1/me/playlists?limit=20', {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
@@ -110,81 +154,72 @@ export function SpotifyProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const connectSpotify = () => {
+  const connectSpotify = useCallback(async () => {
     const clientId = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID;
+    if (!clientId) {
+      alert('Spotify Client ID not configured.');
+      return;
+    }
+
+    // Generate PKCE challenge
+    const codeVerifier = generateRandomString(64);
+    const hashed = await sha256(codeVerifier);
+    const codeChallenge = base64encode(hashed);
+
+    localStorage.setItem('spotify_code_verifier', codeVerifier);
+
     const redirectUri = `${window.location.origin}/api/spotify/callback`;
     const scopes = [
       'user-read-email',
       'user-read-private',
       'playlist-read-private',
       'playlist-read-collaborative',
-      'streaming',
       'user-library-read',
     ].join(' ');
-    
-    const authUrl = `https://accounts.spotify.com/authorize?` +
-      `client_id=${clientId}&` +
-      `response_type=token&` +
-      `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-      `scope=${encodeURIComponent(scopes)}`;
-    
-    window.location.href = authUrl;
-  };
 
-  const disconnect = () => {
+    const authUrl = new URL('https://accounts.spotify.com/authorize');
+    authUrl.searchParams.set('client_id', clientId);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    authUrl.searchParams.set('scope', scopes);
+    authUrl.searchParams.set('code_challenge_method', 'S256');
+    authUrl.searchParams.set('code_challenge', codeChallenge);
+
+    window.location.href = authUrl.toString();
+  }, []);
+
+  const disconnect = useCallback(() => {
     localStorage.removeItem('spotify_access_token');
     localStorage.removeItem('spotify_token_expiry');
+    localStorage.removeItem('spotify_code_verifier');
     setAccessToken(null);
     setUser(null);
     setPlaylists([]);
-  };
+  }, []);
 
-  const getPlaylistTracks = async (playlistId: string): Promise<SpotifyTrack[]> => {
-    if (!accessToken) return [];
-    
-    try {
-      const res = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50`, {
-        headers: { Authorization: `Bearer ${accessToken}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        return data.items
-          .filter((item: any) => item.track && item.track.preview_url)
-          .map((item: any) => item.track);
-      }
-    } catch (e) {
-      console.error('Failed to fetch tracks:', e);
-    }
-    return [];
-  };
-
-  const createRadioStation = async (mood: 'chill' | 'hype' | 'balanced') => {
+  const createRadioStation = useCallback(async (mood: 'chill' | 'hype' | 'balanced') => {
     if (!accessToken || !user) {
       connectSpotify();
       return;
     }
 
     setIsLoading(true);
-    
     try {
-      // Get user's top tracks or recommended based on mood
-      const seedGenres = {
-        chill: ['chill', 'lo-fi', 'ambient'],
-        hype: ['hip-hop', 'party', 'electronic'],
-        balanced: ['pop', 'indie', 'acoustic']
-      }[mood];
+      const seedGenres: Record<string, string> = {
+        chill: 'chill',
+        hype: 'hip-hop',
+        balanced: 'pop',
+      };
 
-      // Get recommendations based on user's top artists (simplified)
       const recRes = await fetch(
-        `https://api.spotify.com/v1/recommendations?seed_genres=${seedGenres[0]}&limit=20`,
-        { headers: { Authorization: `Bearer ${accessToken}` }}
+        `https://api.spotify.com/v1/recommendations?seed_genres=${seedGenres[mood]}&limit=20`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
       );
 
       if (recRes.ok) {
         const recData = await recRes.json();
-        const tracks = recData.tracks.filter((t: any) => t.preview_url);
-        
-        // Convert to our format and queue
+        const tracks = (recData.tracks || []).filter((t: any) => t.preview_url);
+
         const radioTracks = tracks.map((t: any) => ({
           id: t.id,
           title: t.name,
@@ -196,16 +231,18 @@ export function SpotifyProvider({ children }: { children: ReactNode }) {
           spotifyUri: t.uri,
         }));
 
-        setQueue(radioTracks);
-        setCurrentTrack(radioTracks[0]);
-        setIsPlaying(true);
+        if (radioTracks.length > 0) {
+          setQueue(radioTracks.slice(1));
+          setCurrentTrack(radioTracks[0]);
+          setIsPlaying(true);
+        }
       }
     } catch (e) {
       console.error('Failed to create radio:', e);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [accessToken, user, connectSpotify, setQueue, setCurrentTrack, setIsPlaying]);
 
   return (
     <SpotifyContext.Provider
@@ -216,7 +253,6 @@ export function SpotifyProvider({ children }: { children: ReactNode }) {
         playlists,
         connectSpotify,
         disconnect,
-        getPlaylistTracks,
         createRadioStation,
       }}
     >

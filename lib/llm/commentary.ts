@@ -41,7 +41,7 @@ export async function generateCommentary(
   const userPrompt = buildUserPrompt(context, style);
 
   try {
-    const response = await fetch('https://api.minimaxi.chat/v1/text/chatcompletion_v2', {
+    const response = await fetch('https://api.minimaxi.chat/v1/text/chatcompletion_v2?GroupId=0', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

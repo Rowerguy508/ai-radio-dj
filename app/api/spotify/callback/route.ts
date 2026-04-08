@@ -2,15 +2,19 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const accessToken = searchParams.get('access_token');
-  const expiresIn = searchParams.get('expires_in');
+  const code = searchParams.get('code');
+  const error = searchParams.get('error');
 
-  if (!accessToken) {
-    return NextResponse.redirect(new URL('/?error=spotify_auth_failed', req.url));
+  if (error || !code) {
+    // User denied access or something went wrong
+    const redirectUrl = new URL('/', req.url);
+    redirectUrl.searchParams.set('error', error || 'spotify_auth_failed');
+    return NextResponse.redirect(redirectUrl);
   }
 
-  // Redirect to home with token in URL (for client to store)
-  const response = NextResponse.redirect(new URL(`/?spotify_token=${accessToken}&spotify_expires=${expiresIn}`, req.url));
-  
-  return response;
+  // Redirect back to homepage with the auth code
+  // The client-side SpotifyProvider will exchange it for a token using PKCE
+  const redirectUrl = new URL('/', req.url);
+  redirectUrl.searchParams.set('code', code);
+  return NextResponse.redirect(redirectUrl);
 }
