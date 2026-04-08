@@ -27,10 +27,6 @@ interface VoiceGenerationRequest {
   style?: number;
 }
 
-interface VoiceGenerationResponse {
-  audio: ArrayBuffer;
-}
-
 interface VoiceSettings {
   stability: number;
   similarity_boost: number;

@@ -13,7 +13,16 @@ interface TelegramUpdate {
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = crypto.randomUUID();
   try {
+    const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+    if (expectedSecret) {
+      const incomingSecret = req.headers.get('x-telegram-bot-api-secret-token');
+      if (incomingSecret !== expectedSecret) {
+        return NextResponse.json({ error: 'Unauthorized webhook request', requestId }, { status: 401 });
+      }
+    }
+
     const update: TelegramUpdate = await req.json();
     
     // Handle /start command
@@ -71,6 +80,7 @@ export async function POST(req: NextRequest) {
     });
     
   } catch (error) {
-    return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
+    console.error('telegram route error', { requestId, error });
+    return NextResponse.json({ error: 'Invalid request', requestId }, { status: 400 });
   }
 }
