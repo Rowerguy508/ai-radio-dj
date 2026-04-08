@@ -75,6 +75,10 @@ ELEVENLABS_API_KEY=your-api-key
 
 # Clawdbot Gateway
 CLAWDBOT_GATEWAY_URL=https://your-gateway.com  # or keep local
+
+# Telegram (optional, but recommended for webhook verification)
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+TELEGRAM_WEBHOOK_SECRET=your-random-shared-secret
 ```
 
 ## How It Works
