@@ -11,15 +11,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'MINIMAX_API_KEY not configured' }, { status: 500 });
     }
 
-    // Pick voice based on style
-    const voices: Record<string, string> = {
-      chill: 'English_Calm_Woman',
-      balanced: 'English_expressive_narrator',
-      hype: 'English_Insightful_Speaker',
+    // Pick voice and emotion based on style
+    const voiceConfig: Record<string, { voice: string; emotion: string }> = {
+      chill: { voice: 'Wise_Woman', emotion: 'neutral' },
+      balanced: { voice: 'English_expressive_narrator', emotion: 'happy' },
+      hype: { voice: 'Casual Guy', emotion: 'happy' },
     };
-    const voiceId = voices[style] || voices.balanced;
+    const config = voiceConfig[style] || voiceConfig.balanced;
 
-    // Vary speed slightly for natural feel (0.9-1.1 range)
+    // Vary speed slightly per request for natural feel
     const baseSpeed = speed || 1.0;
     const naturalSpeed = baseSpeed + (Math.random() * 0.15 - 0.075);
 
@@ -34,10 +34,11 @@ export async function POST(request: NextRequest) {
         text,
         stream: false,
         voice_setting: {
-          voice_id: voiceId,
+          voice_id: config.voice,
           speed: Math.round(naturalSpeed * 100) / 100,
           vol: 1,
           pitch: 0,
+          emotion: config.emotion,
         },
         audio_setting: {
           sample_rate: 32000,

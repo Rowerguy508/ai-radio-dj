@@ -136,19 +136,15 @@ Time: ${timeOfDay}
   }
 }
 
-// Add natural speech pauses using "..." markers
+// Convert "..." pauses to MiniMax <#X#> format for natural speech timing
 function addNaturalPauses(text: string): string {
-  // The text already has "..." from the LLM prompt. Normalize them.
-  let ssml = text
-    .replace(/\.{3,}/g, ' ... ')     // normalize ellipses
-    .replace(/\.\s+/g, '. ... ')      // add breath after sentences
-    .replace(/!\s+/g, '! ... ')       // add breath after exclamations
-    .replace(/\?\s+/g, '? ... ')      // add breath after questions
-    .replace(/,\s+/g, ', ')           // slight pause at commas (natural)
-    .replace(/\s{2,}/g, ' ')          // clean up double spaces
+  return text
+    .replace(/\.{3,}/g, ' <#0.8#> ')     // ellipses → 0.8s pause
+    .replace(/\.\s+/g, '. <#0.5#> ')      // sentence end → 0.5s breath
+    .replace(/!\s+/g, '! <#0.4#> ')       // exclamation → 0.4s
+    .replace(/\?\s+/g, '? <#0.5#> ')      // question → 0.5s
+    .replace(/\s{2,}/g, ' ')
     .trim();
-
-  return ssml;
 }
 
 function estimateDuration(text: string): number {
