@@ -21,7 +21,7 @@ interface AppleMusicContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   playlists: AppleMusicPlaylist[];
-  music: any; // MusicKit instance
+  music: any;
   connectAppleMusic: () => Promise<void>;
   disconnect: () => void;
   searchTracks: (query: string, limit?: number) => Promise<Track[]>;
@@ -29,6 +29,11 @@ interface AppleMusicContextType {
 }
 
 const AppleMusicContext = createContext<AppleMusicContextType | null>(null);
+
+// Debug logger
+function log(...args: any[]) {
+  console.log('[AppleMusic]', ...args);
+}
 
 export function AppleMusicProvider({ children }: { children: ReactNode }) {
   const { setQueue, setCurrentTrack, setIsPlaying } = useRadioStore();
@@ -39,37 +44,68 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const token = process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN || '';
+    log('Token present:', !!token, 'length:', token.length);
 
-    const configure = () => {
+    const configure = async () => {
       const MK = (window as any).MusicKit;
-      if (!MK) return;
+      if (!MK) { log('MusicKit not on window'); return; }
+      log('MusicKit found, configuring...');
+
       try {
-        const instance = MK.configure({
+        // MusicKit v3: configure() returns a Promise
+        await MK.configure({
           developerToken: token,
           app: { name: 'RAY.DO', build: '1.0.0' },
         });
+        const instance = MK.getInstance();
+        log('Configured successfully, instance:', !!instance);
+        log('isAuthorized:', instance?.isAuthorized);
         setMusic(instance);
       } catch (e) {
-        try { setMusic(MK.getInstance()); } catch {}
+        log('Configure error:', e);
+        // Try getInstance in case already configured
+        try {
+          const instance = MK.getInstance();
+          log('Got existing instance:', !!instance);
+          setMusic(instance);
+        } catch (e2) {
+          log('getInstance also failed:', e2);
+        }
       }
     };
 
     if ((window as any).MusicKit) {
       configure();
+    } else {
+      log('Waiting for MusicKit script...');
+      const onLoaded = () => { log('musickitloaded event fired'); configure(); };
+      document.addEventListener('musickitloaded', onLoaded);
+      // Polling fallback
+      const poll = setInterval(() => {
+        if ((window as any).MusicKit) {
+          log('MusicKit found via polling');
+          clearInterval(poll);
+          configure();
+        }
+      }, 500);
+      return () => {
+        document.removeEventListener('musickitloaded', onLoaded);
+        clearInterval(poll);
+      };
     }
-    const onLoaded = () => configure();
-    document.addEventListener('musickitloaded', onLoaded);
-    return () => document.removeEventListener('musickitloaded', onLoaded);
   }, []);
 
   const connectAppleMusic = async () => {
+    log('connectAppleMusic called, music:', !!music);
     if (!music) {
       alert('Apple Music is still loading. Please wait a moment and try again.');
       return;
     }
     setIsLoading(true);
     try {
+      log('Calling authorize()...');
       await music.authorize();
+      log('Authorized successfully');
       setUser({ name: 'Apple Music User', id: 'apple-user' });
       try {
         const result = await music.api.music('/v1/me/library/playlists', { limit: 25 });
@@ -81,8 +117,12 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
           artwork: p.attributes?.artwork,
           trackCount: p.attributes?.trackCount || 0,
         })));
-      } catch {}
+        log('Loaded', items.length, 'playlists');
+      } catch (e) {
+        log('Playlist load failed:', e);
+      }
     } catch (e) {
+      log('Auth failed:', e);
       console.error('Apple Music auth failed:', e);
     } finally {
       setIsLoading(false);
@@ -95,17 +135,19 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
     setPlaylists([]);
   };
 
-  // Search Apple Music catalog and return Track[]
   const searchTracks = async (query: string, limit = 20): Promise<Track[]> => {
+    log('searchTracks called, query:', query, 'music:', !!music);
     if (!music) return [];
     try {
       const storefront = music.storefrontId || 'us';
+      log('Searching catalog, storefront:', storefront);
       const result = await music.api.music(`/v1/catalog/${storefront}/search`, {
         term: query,
         types: ['songs'],
         limit,
       });
       const songs = result?.data?.results?.songs?.data || [];
+      log('Found', songs.length, 'songs');
       return songs.map((t: any) => ({
         id: t.id,
         title: t.attributes?.name || 'Unknown',
@@ -116,7 +158,7 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
         previewUrl: t.attributes?.previews?.[0]?.url,
       }));
     } catch (e) {
-      console.error('Apple Music search failed:', e);
+      log('Search failed:', e);
       return [];
     }
   };

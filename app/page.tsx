@@ -54,14 +54,15 @@ function HomeContent() {
 
     let tracks: Track[] = [];
 
-    // Try to search via connected music source
-    if (musicSource === 'apple-music' && appleMusic.isAuthenticated) {
+    // Search via Apple Music (catalog search works with just a developer token, no user auth needed)
+    if (musicSource === 'apple-music' && appleMusic.music) {
       tracks = await appleMusic.searchTracks(query, 20);
     }
     // TODO: Add Spotify searchTracks similarly
 
     // Fall back to demo tracks if no music source or search returned nothing
     if (tracks.length === 0) {
+      console.log('No tracks found from music source, using demo tracks. musicSource:', musicSource, 'appleMusicReady:', !!appleMusic.music);
       tracks = DEMO_TRACKS;
     }
 
