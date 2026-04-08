@@ -7,25 +7,71 @@ import { useCommentary } from '@/lib/hooks/useCommentary';
 
 export function Player() {
   const {
-    isPlaying, currentTrack, queue, volume, commentaryEnabled,
-    setIsPlaying, setVolume, nextTrack,
+    isPlaying, currentTrack, queue, volume, commentaryEnabled, djIntroPlayed,
+    setIsPlaying, setVolume, nextTrack, setDjIntroPlayed,
   } = useRadioStore();
 
-  const { generateCommentaryAudio, resetTrackCount } = useCommentary();
+  const { generateIntro, generateTransition, resetTrackCount } = useCommentary();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const commentaryAudioRef = useRef<HTMLAudioElement | null>(null);
   const previousTrackRef = useRef(currentTrack);
+  const introPlayedRef = useRef(false);
   const [isMuted, setIsMuted] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const [audioSrc, setAudioSrc] = useState<string | undefined>(undefined);
-  const [isPlayingCommentary, setIsPlayingCommentary] = useState(false);
+  const [djSpeaking, setDjSpeaking] = useState(false);
 
   const currentStation = useRadioStore((s) => s.currentStation);
-  useEffect(() => { resetTrackCount(); }, [currentStation?.id, resetTrackCount]);
 
-  // Load new track
+  // Reset on station change
   useEffect(() => {
+    resetTrackCount();
+    introPlayedRef.current = false;
+  }, [currentStation?.id, resetTrackCount]);
+
+  // Play DJ intro when a new station starts, BEFORE first track
+  useEffect(() => {
+    if (!currentTrack || !currentStation || djIntroPlayed || introPlayedRef.current) return;
+    if (!commentaryEnabled) { setDjIntroPlayed(true); return; }
+
+    introPlayedRef.current = true;
+    let cancelled = false;
+
+    const playIntro = async () => {
+      const audioUrl = await generateIntro(currentTrack);
+      if (cancelled) return;
+
+      if (audioUrl && audioUrl !== 'browser-tts') {
+        setDjSpeaking(true);
+        await playAudioUrl(audioUrl);
+        if (cancelled) return;
+        setDjSpeaking(false);
+      } else if (audioUrl === 'browser-tts') {
+        setDjSpeaking(true);
+        await waitForBrowserTTS();
+        if (cancelled) return;
+        setDjSpeaking(false);
+      }
+
+      setDjIntroPlayed(true);
+      // Now start the actual music
+      if (audioRef.current && currentTrack?.previewUrl) {
+        setAudioSrc(currentTrack.previewUrl);
+        setTimeout(() => {
+          audioRef.current?.load();
+          audioRef.current?.play().catch(() => {});
+        }, 200);
+      }
+    };
+
+    playIntro();
+    return () => { cancelled = true; };
+  }, [currentTrack?.id, currentStation?.id]);
+
+  // Load track audio (only after intro is done)
+  useEffect(() => {
+    if (!djIntroPlayed) return;
     if (currentTrack?.previewUrl && currentTrack.previewUrl !== audioSrc) {
       setAudioSrc(currentTrack.previewUrl);
       setTimeout(() => {
@@ -37,61 +83,70 @@ export function Player() {
     } else if (!currentTrack) {
       setAudioSrc(undefined);
     }
-  }, [currentTrack]);
+  }, [currentTrack, djIntroPlayed]);
 
-  // Commentary between tracks
+  // Helper: play an audio URL and wait for it to finish
+  const playAudioUrl = useCallback((url: string): Promise<void> => {
+    return new Promise((resolve) => {
+      const audio = commentaryAudioRef.current;
+      if (!audio) { resolve(); return; }
+      audio.src = url;
+      audio.volume = isMuted ? 0 : volume;
+      const onEnd = () => { audio.removeEventListener('ended', onEnd); resolve(); };
+      audio.addEventListener('ended', onEnd);
+      audio.play().catch(() => resolve());
+    });
+  }, [isMuted, volume]);
+
+  // Helper: wait for browser TTS to finish
+  const waitForBrowserTTS = useCallback((): Promise<void> => {
+    return new Promise((resolve) => {
+      const check = () => window.speechSynthesis?.speaking ? setTimeout(check, 200) : resolve();
+      setTimeout(check, 500);
+    });
+  }, []);
+
+  // When a track ends: play transition commentary, then next track
   const handleTrackEnd = useCallback(async () => {
     const prev = previousTrackRef.current;
     const nextInQueue = queue[0] || null;
 
-    if (commentaryEnabled && currentTrack) {
-      const url = await generateCommentaryAudio(currentTrack, prev, nextInQueue);
-
+    if (commentaryEnabled && currentTrack && nextInQueue) {
+      const url = await generateTransition(currentTrack, prev, nextInQueue);
       if (url === 'browser-tts') {
-        setIsPlayingCommentary(true);
-        await new Promise<void>(r => {
-          const check = () => window.speechSynthesis.speaking ? setTimeout(check, 200) : r();
-          setTimeout(check, 500);
-        });
-        setIsPlayingCommentary(false);
-      } else if (url && commentaryAudioRef.current) {
-        setIsPlayingCommentary(true);
-        commentaryAudioRef.current.src = url;
-        commentaryAudioRef.current.volume = isMuted ? 0 : volume;
-        try {
-          await commentaryAudioRef.current.play();
-          await new Promise<void>(r => {
-            const onEnd = () => { commentaryAudioRef.current?.removeEventListener('ended', onEnd); r(); };
-            commentaryAudioRef.current?.addEventListener('ended', onEnd);
-          });
-        } catch {}
-        setIsPlayingCommentary(false);
+        setDjSpeaking(true);
+        await waitForBrowserTTS();
+        setDjSpeaking(false);
+      } else if (url) {
+        setDjSpeaking(true);
+        await playAudioUrl(url);
+        setDjSpeaking(false);
       }
     }
 
     previousTrackRef.current = currentTrack;
     nextTrack();
-  }, [commentaryEnabled, currentTrack, queue, generateCommentaryAudio, nextTrack, isMuted, volume]);
+  }, [commentaryEnabled, currentTrack, queue, generateTransition, nextTrack, playAudioUrl, waitForBrowserTTS]);
 
-  // Audio events
+  // Audio element events
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     const onEnded = () => handleTrackEnd();
-    const onCanPlay = () => { if (isPlaying && !isPlayingCommentary) audio.play().catch(() => {}); };
+    const onCanPlay = () => { if (isPlaying && !djSpeaking && djIntroPlayed) audio.play().catch(() => {}); };
     audio.addEventListener('ended', onEnded);
     audio.addEventListener('canplay', onCanPlay);
     return () => { audio.removeEventListener('ended', onEnded); audio.removeEventListener('canplay', onCanPlay); };
-  }, [handleTrackEnd, isPlaying, isPlayingCommentary]);
+  }, [handleTrackEnd, isPlaying, djSpeaking, djIntroPlayed]);
 
-  // Volume
+  // Volume sync
   useEffect(() => {
     const v = isMuted ? 0 : volume;
     if (audioRef.current) audioRef.current.volume = v;
     if (commentaryAudioRef.current) commentaryAudioRef.current.volume = v;
   }, [volume, isMuted]);
 
-  // Progress
+  // Progress tracking
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -118,47 +173,53 @@ export function Player() {
     setProgress(t);
   };
 
+  const handleSkip = () => {
+    if (djSpeaking && commentaryAudioRef.current) {
+      commentaryAudioRef.current.pause();
+      commentaryAudioRef.current.src = '';
+      window.speechSynthesis?.cancel();
+      setDjSpeaking(false);
+    }
+    previousTrackRef.current = currentTrack;
+    nextTrack();
+  };
+
   const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
   const track = currentTrack || (queue.length > 0 ? queue[0] : null);
 
   if (!track) return null;
 
   return (
-    <div className="fixed bottom-0 inset-x-0 z-50 safe-bottom">
+    <div className="fixed bottom-0 inset-x-0 z-50">
       <audio ref={audioRef} src={audioSrc} preload="auto" />
       <audio ref={commentaryAudioRef} preload="auto" />
 
       <div className="bg-zinc-950/95 backdrop-blur-xl border-t border-white/5 px-4 pt-3 pb-4 sm:px-6">
-        {/* Commentary indicator */}
-        {isPlayingCommentary && (
+        {djSpeaking && (
           <div className="flex items-center gap-1.5 text-violet-400 text-xs mb-2">
             <Mic size={12} className="animate-pulse" />
-            <span>DJ is speaking...</span>
+            <span>{currentStation?.djName || 'DJ'} is on the mic...</span>
           </div>
         )}
 
-        {/* Track + controls row */}
         <div className="flex items-center gap-3">
           {track.artworkUrl && (
             <img src={track.artworkUrl} alt="" className="w-10 h-10 rounded-lg object-cover flex-shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
           )}
-
           <div className="flex-1 min-w-0">
             <p className="text-white text-sm font-medium truncate">{track.title}</p>
             <p className="text-zinc-500 text-xs truncate">{track.artistName}</p>
           </div>
-
           <div className="flex items-center gap-1 flex-shrink-0">
             <button onClick={handlePlayPause} className="w-10 h-10 flex items-center justify-center rounded-full bg-white text-black active:scale-90 transition-transform">
               {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
             </button>
-            <button onClick={() => { previousTrackRef.current = currentTrack; nextTrack(); }} className="p-2 text-zinc-400 active:text-white transition-colors">
+            <button onClick={handleSkip} className="p-2 text-zinc-400 active:text-white transition-colors">
               <SkipForward size={18} />
             </button>
           </div>
         </div>
 
-        {/* Progress */}
         <div className="mt-2">
           <input type="range" min={0} max={duration || 1} value={progress} onChange={handleSeek} className="w-full h-1" />
           <div className="flex justify-between text-[10px] text-zinc-600 mt-0.5">
@@ -167,7 +228,6 @@ export function Player() {
           </div>
         </div>
 
-        {/* Volume - desktop only */}
         <div className="hidden sm:flex items-center gap-2 mt-1">
           <button onClick={() => setIsMuted(!isMuted)} className="p-1 text-zinc-500">
             {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}

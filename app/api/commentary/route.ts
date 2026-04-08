@@ -4,22 +4,16 @@ import { generateCommentary } from '@/lib/llm/commentary';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { context, style } = body;
+    const { context } = body;
 
-    if (!context?.currentTrack || !context?.station) {
-      return NextResponse.json(
-        { error: 'Missing required context (currentTrack and station)' },
-        { status: 400 }
-      );
+    if (!context?.station) {
+      return NextResponse.json({ error: 'Missing station context' }, { status: 400 });
     }
 
-    const result = await generateCommentary(context, style);
+    const result = await generateCommentary(context);
     return NextResponse.json(result);
   } catch (error) {
-    console.error('Commentary generation error:', error);
-    return NextResponse.json(
-      { error: 'Failed to generate commentary' },
-      { status: 500 }
-    );
+    console.error('Commentary error:', error);
+    return NextResponse.json({ error: 'Failed to generate commentary' }, { status: 500 });
   }
 }

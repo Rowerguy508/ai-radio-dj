@@ -1,148 +1,178 @@
-// AI Commentary Generator using MiniMax API
+// AI DJ Commentary Generator using MiniMax API
 
-export interface TrackInfo {
-  title: string;
-  artist: string;
-  album?: string;
-  year?: number;
-  genre?: string;
-}
+import type { Station, Track } from '@/lib/store/radio';
 
 export interface CommentaryContext {
-  station: {
-    name: string;
-    energy: number; // 0-1
-    style: 'chill' | 'balanced' | 'hype';
-  };
-  previousTrack?: TrackInfo;
-  currentTrack: TrackInfo;
-  nextTrack?: TrackInfo;
-  timeOfDay?: string;
-  isFirstTrack?: boolean;
-  isTransition?: boolean;
+  station: Station;
+  previousTrack?: Track;
+  currentTrack?: Track;
+  nextTrack?: Track;
+  timeOfDay: string;
+  type: 'intro' | 'transition' | 'outro' | 'back-from-break';
 }
 
 export interface CommentaryResponse {
   text: string;
-  estimatedDuration: number; // seconds
+  ssml: string; // Text with pause markers for natural speech
+  estimatedDuration: number;
 }
 
-// Server-side only: generate commentary via MiniMax API (OpenAI-compatible)
-export async function generateCommentary(
-  context: CommentaryContext,
-  style: 'short' | 'medium' | 'long' = 'medium'
-): Promise<CommentaryResponse> {
-  const apiKey = process.env.MINIMAX_API_KEY;
-  if (!apiKey) {
-    return generateFallbackCommentary(context);
-  }
+function getTimeOfDay(): string {
+  const h = new Date().getHours();
+  if (h < 6) return 'late night';
+  if (h < 12) return 'morning';
+  if (h < 17) return 'afternoon';
+  if (h < 21) return 'evening';
+  return 'night';
+}
 
-  const systemPrompt = buildSystemPrompt(context);
-  const userPrompt = buildUserPrompt(context, style);
+export { getTimeOfDay };
+
+export async function generateCommentary(context: CommentaryContext): Promise<CommentaryResponse> {
+  const apiKey = process.env.MINIMAX_API_KEY;
+  if (!apiKey) return generateFallback(context);
+
+  const system = buildSystemPrompt(context);
+  const user = buildUserPrompt(context);
 
   try {
-    const response = await fetch('https://api.minimaxi.chat/v1/text/chatcompletion_v2?GroupId=0', {
+    const res = await fetch('https://api.minimaxi.chat/v1/text/chatcompletion_v2?GroupId=0', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model: 'MiniMax-Text-01',
         messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
+          { role: 'system', content: system },
+          { role: 'user', content: user },
         ],
-        max_tokens: 300,
-        temperature: 0.8,
+        max_tokens: 500,
+        temperature: 0.85,
       }),
     });
 
-    if (!response.ok) {
-      throw new Error(`MiniMax API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content || '';
+    if (!res.ok) throw new Error(`MiniMax ${res.status}`);
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content || '';
+    const text = raw.replace(/[*"]/g, '').trim();
 
     return {
       text,
-      estimatedDuration: estimateAudioDuration(text),
+      ssml: addNaturalPauses(text),
+      estimatedDuration: estimateDuration(text),
     };
-  } catch (error) {
-    console.error('Commentary generation failed:', error);
-    return generateFallbackCommentary(context);
+  } catch (e) {
+    console.error('Commentary generation failed:', e);
+    return generateFallback(context);
   }
 }
 
-function buildSystemPrompt(context: CommentaryContext): string {
-  const { station } = context;
+function buildSystemPrompt(ctx: CommentaryContext): string {
+  const { station } = ctx;
+  const name = station.djName || 'Ray';
 
-  const personalities: Record<string, string> = {
-    chill: `You are a smooth, laid-back radio host. Warm, relaxed, calm tone. You make listeners feel comfortable. Not overly excited - you appreciate good music and share insights thoughtfully.`,
-    hype: `You're an energetic, enthusiastic radio host! You get excited about great tracks, pump up the audience, and make every song feel special. Your energy is infectious.`,
-    balanced: `You're a friendly, engaging radio host who balances energy with sophistication. Knowledgeable about music, you tell interesting stories and keep listeners entertained.`,
+  const styles: Record<string, string> = {
+    chill: `You are ${name}, a smooth late-night radio DJ. Your voice is warm, unhurried, almost whispered. You take your time. You let silences breathe. Think: a vinyl bar at midnight. You use short poetic phrases, not full sentences. Mellow, intimate, genuine.`,
+    hype: `You are ${name}, a high-energy radio DJ who LIVES for the music. You're animated, punchy, rhythmic in your speech. Think: festival MC meets morning show host. Short exclamations, callbacks to the crowd, infectious excitement. You make every track feel like an event.`,
+    balanced: `You are ${name}, a charismatic radio host. Think: the best friend who always has the perfect playlist. Witty, warm, conversational. You tell quick stories, drop fun facts about artists, and keep the energy flowing naturally. Not too hyped, not too sleepy - just right.`,
   };
 
-  return `${personalities[station.style] || personalities.balanced}
+  const personality = station.djPersonality
+    ? `${styles[station.style] || styles.balanced}\n\nAdditional personality notes: ${station.djPersonality}`
+    : styles[station.style] || styles.balanced;
 
-You are the AI DJ for "${station.name}".
+  return `${personality}
 
-Rules:
-- Keep commentary under 100 words
-- Stay in radio host character at all times
-- Make it feel natural, like real radio
-- Energy level: ${station.energy < 0.3 ? 'very chill' : station.energy < 0.7 ? 'balanced' : 'high energy'}
-- Output ONLY the spoken words - no stage directions, no quotes, no asterisks`;
+You are the DJ for "${station.name}".
+${station.description ? `Station description: ${station.description}` : ''}
+${station.searchQuery ? `This station plays: ${station.searchQuery}` : ''}
+
+CRITICAL RULES:
+- Output ONLY the spoken words. No stage directions, no asterisks, no quotes, no parentheses.
+- Write in a spoken cadence. Use "..." for intentional pauses. Use short sentences. Vary rhythm.
+- Never say "I'm an AI" or break character. You ARE a radio DJ.
+- Keep it concise. Say more with less.
+- Energy: ${station.energyLevel < 0.3 ? 'very mellow, almost meditative' : station.energyLevel < 0.7 ? 'conversational, easy-going' : 'high energy, pumped up'}`;
 }
 
-function buildUserPrompt(
-  context: CommentaryContext,
-  style: 'short' | 'medium' | 'long'
-): string {
-  const wordLimits = { short: 30, medium: 60, long: 100 };
-  let prompt = `Generate a ${style} DJ commentary (max ${wordLimits[style]} words).\n\n`;
+function buildUserPrompt(ctx: CommentaryContext): string {
+  const { type, station, currentTrack, previousTrack, nextTrack, timeOfDay } = ctx;
 
-  prompt += `Now playing: "${context.currentTrack.title}" by ${context.currentTrack.artist}`;
-  if (context.currentTrack.album) prompt += ` from "${context.currentTrack.album}"`;
-  prompt += '\n';
+  switch (type) {
+    case 'intro':
+      return `Generate a station opening. This is the very first thing the listener hears when they tune in.
 
-  if (context.previousTrack) {
-    prompt += `Previous: "${context.previousTrack.title}" by ${context.previousTrack.artist}\n`;
-  }
-  if (context.nextTrack) {
-    prompt += `Up next: "${context.nextTrack.title}" by ${context.nextTrack.artist}\n`;
-  }
-  if (context.isFirstTrack) {
-    prompt += `\nThis is the first track - welcome the listener!\n`;
-  }
-  if (context.isTransition) {
-    prompt += `\nTransition between tracks - smooth handoff.\n`;
-  }
-  if (context.timeOfDay) {
-    prompt += `Time: ${context.timeOfDay}\n`;
-  }
+Station: "${station.name}"
+${station.searchQuery ? `Music style: ${station.searchQuery}` : ''}
+Time: ${timeOfDay}
+${nextTrack ? `First song coming up: "${nextTrack.title}" by ${nextTrack.artistName}` : ''}
 
-  return prompt;
+Set the mood, welcome the listener, tease what's coming. Make them feel like they just found their perfect station. 3-5 sentences. Use "..." for pauses.`;
+
+    case 'transition':
+      return `Generate a track transition.
+
+${previousTrack ? `Just played: "${previousTrack.title}" by ${previousTrack.artistName}` : ''}
+${currentTrack ? `Now playing: "${currentTrack.title}" by ${currentTrack.artistName}` : ''}
+${nextTrack ? `Coming up: "${nextTrack.title}" by ${nextTrack.artistName}` : ''}
+Time: ${timeOfDay}
+
+Quick transition - 1-3 sentences. Acknowledge what just played and introduce what's next. Use "..." for pauses.`;
+
+    case 'outro':
+      return `Generate a brief sign-off. The station is stopping.
+Station: "${station.name}"
+Time: ${timeOfDay}
+1-2 sentences. Thank the listener, keep it warm.`;
+
+    case 'back-from-break':
+      return `Welcome the listener back. Short re-intro.
+Station: "${station.name}"
+${currentTrack ? `Now playing: "${currentTrack.title}" by ${currentTrack.artistName}` : ''}
+Time: ${timeOfDay}
+1-2 sentences.`;
+
+    default:
+      return 'Generate a short DJ comment.';
+  }
 }
 
-function estimateAudioDuration(text: string): number {
-  const wordsPerMinute = 150;
-  const wordCount = text.split(/\s+/).length;
-  return Math.ceil((wordCount / wordsPerMinute) * 60);
+// Add natural speech pauses using "..." markers
+function addNaturalPauses(text: string): string {
+  // The text already has "..." from the LLM prompt. Normalize them.
+  let ssml = text
+    .replace(/\.{3,}/g, ' ... ')     // normalize ellipses
+    .replace(/\.\s+/g, '. ... ')      // add breath after sentences
+    .replace(/!\s+/g, '! ... ')       // add breath after exclamations
+    .replace(/\?\s+/g, '? ... ')      // add breath after questions
+    .replace(/,\s+/g, ', ')           // slight pause at commas (natural)
+    .replace(/\s{2,}/g, ' ')          // clean up double spaces
+    .trim();
+
+  return ssml;
 }
 
-function generateFallbackCommentary(context: CommentaryContext): CommentaryResponse {
-  const { currentTrack, station, isFirstTrack } = context;
+function estimateDuration(text: string): number {
+  const words = text.split(/\s+/).length;
+  const pauses = (text.match(/\.\.\./g) || []).length;
+  return Math.ceil((words / 150) * 60) + pauses; // ~150 wpm + 1s per pause
+}
 
+function generateFallback(ctx: CommentaryContext): CommentaryResponse {
+  const { type, station, currentTrack, nextTrack } = ctx;
   let text: string;
-  if (isFirstTrack) {
-    text = `Welcome to ${station.name}! Kicking things off with "${currentTrack.title}" by ${currentTrack.artist}. Let's go.`;
-  } else if (context.previousTrack) {
-    text = `That was "${context.previousTrack.title}" by ${context.previousTrack.artist}. Now here's "${currentTrack.title}" by ${currentTrack.artist} on ${station.name}.`;
-  } else {
-    text = `You're listening to "${currentTrack.title}" by ${currentTrack.artist} on ${station.name}.`;
+
+  switch (type) {
+    case 'intro':
+      text = `Hey... welcome to ${station.name}. ... I'm ${station.djName || 'Ray'}, and I'll be keeping you company. ... ${nextTrack ? `Let's kick things off with ${nextTrack.artistName}.` : `Let's get into it.`} ... Here we go.`;
+      break;
+    case 'transition':
+      text = currentTrack
+        ? `... That's "${currentTrack.title}" by ${currentTrack.artistName}. ... Nice. ... ${nextTrack ? `Coming up... ${nextTrack.artistName}.` : 'More music coming your way.'}`
+        : `More good music coming your way on ${station.name}. ...`;
+      break;
+    default:
+      text = `You're listening to ${station.name}. ...`;
   }
 
-  return { text, estimatedDuration: estimateAudioDuration(text) };
+  return { text, ssml: text, estimatedDuration: estimateDuration(text) };
 }
