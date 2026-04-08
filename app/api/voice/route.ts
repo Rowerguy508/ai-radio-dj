@@ -11,10 +11,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Text is required', requestId }, { status: 400 });
     }
 
-    if (style && !['chill', 'balanced', 'hype'].includes(style)) {
-      return NextResponse.json({ error: 'Invalid style value', requestId }, { status: 400 });
-    }
-
     const apiKey = process.env.MINIMAX_API_KEY;
     if (!apiKey) {
       return NextResponse.json({ error: 'MINIMAX_API_KEY not configured', requestId }, { status: 500 });

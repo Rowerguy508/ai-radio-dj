@@ -114,21 +114,21 @@ export async function POST(request: NextRequest) {
 
     if (!Number.isFinite(normalizedPriority)) {
       return NextResponse.json(
-        { error: 'Priority must be a number', requestId },
+        { error: 'User ID and content required', requestId },
         { status: 400 }
       );
     }
 
     // Return success without Supabase
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
-      return NextResponse.json({ message: { id: `local-${Date.now()}`, content: trimmedContent }, local: true, requestId });
+      return NextResponse.json({ message: { id: `local-${Date.now()}`, content }, local: true, requestId });
     }
 
     const { createAdminClient } = await import('@/lib/database/supabase');
     const supabase = createAdminClient();
     
     if (!supabase) {
-      return NextResponse.json({ message: { id: `local-${Date.now()}`, content: trimmedContent }, local: true, requestId });
+      return NextResponse.json({ message: { id: `local-${Date.now()}`, content }, local: true, requestId });
     }
 
     const { data: message, error } = await (supabase as any)
@@ -171,20 +171,6 @@ export async function PATCH(request: NextRequest) {
     if (!messageId || !action) {
       return NextResponse.json(
         { error: 'Message ID and action required', requestId },
-        { status: 400 }
-      );
-    }
-
-    if (action !== 'read' && action !== 'dismiss') {
-      return NextResponse.json(
-        { error: 'Invalid action. Use "read" or "dismiss"', requestId },
-        { status: 400 }
-      );
-    }
-
-    if (action === 'dismiss' && typeof value !== 'boolean') {
-      return NextResponse.json(
-        { error: 'Dismiss value must be boolean', requestId },
         { status: 400 }
       );
     }

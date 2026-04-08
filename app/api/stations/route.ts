@@ -17,10 +17,6 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ stations: [], requestId });
     }
 
-    if (auth.userId && auth.userId !== userId) {
-      return NextResponse.json({ error: 'Forbidden user scope', requestId }, { status: 403 });
-    }
-
     // Return empty if Supabase not configured
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
       return NextResponse.json({ stations: [], requestId });
@@ -82,14 +78,7 @@ export async function POST(request: NextRequest) {
     // Return success without Supabase (local-first mode)
     console.log('Station created (local mode):', name);
     return NextResponse.json({ 
-      station: {
-        ...body,
-        ...(auth.userId ? { user_id: auth.userId } : {}),
-        id: (typeof body.id === 'string' && body.id) ? body.id : `station-${Date.now()}`,
-        name,
-        style,
-        energyLevel,
-      },
+      station: { ...body, id: body.id || `station-${Date.now()}` },
       local: true,
       requestId,
     });
@@ -103,14 +92,8 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
-    const auth = await authorizeRequest(request, requestId);
-    if (auth.errorResponse) return auth.errorResponse;
-
-    const body = await request.json() as { stations?: unknown };
-    if (body.stations && !Array.isArray(body.stations)) {
-      return NextResponse.json({ error: 'stations must be an array', requestId }, { status: 400 });
-    }
-    console.log('Sync stations (local mode):', Array.isArray(body.stations) ? body.stations.length : 0, 'stations');
+    const body = await request.json();
+    console.log('Sync stations (local mode):', body.stations?.length, 'stations');
     return NextResponse.json({ success: true, local: true, requestId });
   } catch (error) {
     console.error('Sync error:', { requestId, error });

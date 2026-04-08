@@ -79,9 +79,6 @@ CLAWDBOT_GATEWAY_URL=https://your-gateway.com  # or keep local
 # Telegram (optional, but recommended for webhook verification)
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 TELEGRAM_WEBHOOK_SECRET=your-random-shared-secret
-
-# API Auth hardening (optional for internal dev, recommended in production)
-REQUIRE_AUTH=true
 ```
 
 ## How It Works
