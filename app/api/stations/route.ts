@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authorizeRequest } from '@/lib/auth/api';
 
 const ALLOWED_STYLES = new Set(['chill', 'balanced', 'hype']);
 
@@ -6,11 +7,18 @@ const ALLOWED_STYLES = new Set(['chill', 'balanced', 'hype']);
 export async function GET(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
+
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get('userId');
 
     if (!userId) {
       return NextResponse.json({ stations: [], requestId });
+    }
+
+    if (auth.userId && auth.userId !== userId) {
+      return NextResponse.json({ error: 'Forbidden user scope', requestId }, { status: 403 });
     }
 
     // Return empty if Supabase not configured
@@ -50,6 +58,9 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
+
     const body = await request.json() as Record<string, unknown>;
 
     const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -73,6 +84,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ 
       station: {
         ...body,
+        ...(auth.userId ? { user_id: auth.userId } : {}),
         id: (typeof body.id === 'string' && body.id) ? body.id : `station-${Date.now()}`,
         name,
         style,
@@ -91,6 +103,9 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
+
     const body = await request.json() as { stations?: unknown };
     if (body.stations && !Array.isArray(body.stations)) {
       return NextResponse.json({ error: 'stations must be an array', requestId }, { status: 400 });

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authorizeRequest } from '@/lib/auth/api';
 
 const ALLOWED_SOURCES = new Set(['telegram', 'telegram-callback', 'manual', 'calendar']);
 
@@ -6,6 +7,9 @@ const ALLOWED_SOURCES = new Set(['telegram', 'telegram-callback', 'manual', 'cal
 export async function GET(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
+
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get('userId');
     const limitRaw = parseInt(searchParams.get('limit') || '10', 10);
@@ -16,6 +20,10 @@ export async function GET(request: NextRequest) {
         { error: 'User ID required', requestId },
         { status: 400 }
       );
+    }
+
+    if (auth.userId && auth.userId !== userId) {
+      return NextResponse.json({ error: 'Forbidden user scope', requestId }, { status: 403 });
     }
 
     // Return empty if Supabase not configured
@@ -55,6 +63,9 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
+
     const body = await request.json();
     const { userId, source, content, priority = 0 } = body as {
       userId?: string;
@@ -68,6 +79,10 @@ export async function POST(request: NextRequest) {
         { error: 'User ID is required', requestId },
         { status: 400 }
       );
+    }
+
+    if (auth.userId && auth.userId !== userId) {
+      return NextResponse.json({ error: 'Forbidden user scope', requestId }, { status: 403 });
     }
 
     if (!content || typeof content !== 'string') {
@@ -143,6 +158,9 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
+
     const body = await request.json();
     const { messageId, action, value = true } = body as {
       messageId?: string;
@@ -187,12 +205,16 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ success: true, local: true, requestId });
     }
 
-    const { data: message, error } = await (supabase as any)
+    let updateQuery = (supabase as any)
       .from('message_queue')
       .update(updateData)
-      .eq('id', messageId)
-      .select()
-      .single();
+      .eq('id', messageId);
+
+    if (auth.userId) {
+      updateQuery = updateQuery.eq('user_id', auth.userId);
+    }
+
+    const { data: message, error } = await updateQuery.select().single();
 
     if (error) throw error;
 
