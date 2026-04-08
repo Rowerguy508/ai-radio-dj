@@ -5,7 +5,7 @@ import { Settings2, Radio, Mic, MicOff, Plus, Trash2, Pencil } from 'lucide-reac
 import { Player } from './components/Player';
 import { Settings } from './components/Settings';
 import { StationEditor } from './components/StationEditor';
-import { useRadioStore, Station, createDefaultStation, Track } from '@/lib/store/radio';
+import { useRadioStore, Station, Track } from '@/lib/store/radio';
 import { AppleMusicProvider, useAppleMusic } from '@/lib/apple-music/player';
 import { SpotifyProvider, useSpotify } from '@/lib/spotify/player';
 
@@ -20,12 +20,11 @@ const DEMO_TRACKS: Track[] = [
 function HomeContent() {
   const {
     toggleSettings, isPlaying, currentTrack, currentStation, commentaryEnabled, toggleCommentary,
-    setCurrentStation, setCurrentTrack, setIsPlaying, setQueue, stations, addStation,
+    setCurrentStation, setCurrentTrack, setIsPlaying, setQueue, stations,
     openStationEditor, removeStation, setDjIntroPlayed,
   } = useRadioStore();
 
   const appleMusic = useAppleMusic();
-  const spotify = useSpotify();
 
   const [musicSource, setMusicSource] = useState<MusicSource>('none');
   const [ready, setReady] = useState(false);
