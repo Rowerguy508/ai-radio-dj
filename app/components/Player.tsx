@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { Play, Pause, SkipForward, SkipBack, Volume2, VolumeX } from 'lucide-react';
-import { useRadioStore, Track } from '@/lib/store/radio';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Play, Pause, SkipForward, SkipBack, Volume2, VolumeX, Mic, MicOff } from 'lucide-react';
+import { useRadioStore } from '@/lib/store/radio';
+import { useCommentary } from '@/lib/hooks/useCommentary';
 
 export function Player() {
   const {
@@ -10,16 +11,23 @@ export function Player() {
     currentTrack,
     queue,
     volume,
+    commentaryEnabled,
     setIsPlaying,
     setVolume,
     nextTrack,
+    toggleCommentary,
   } = useRadioStore();
 
+  const { generateCommentaryAudio, resetTrackCount } = useCommentary();
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const commentaryAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previousTrackRef = useRef(currentTrack);
   const [isMuted, setIsMuted] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const [audioSrc, setAudioSrc] = useState<string | undefined>(undefined);
+  const [isPlayingCommentary, setIsPlayingCommentary] = useState(false);
 
   // Update audio source when track changes
   useEffect(() => {
@@ -28,17 +36,60 @@ export function Player() {
     }
   }, [currentTrack]);
 
+  // Reset commentary count when station changes
+  const currentStation = useRadioStore((s) => s.currentStation);
+  useEffect(() => {
+    resetTrackCount();
+  }, [currentStation?.id, resetTrackCount]);
+
+  // Play commentary between tracks, then advance
+  const handleTrackEnd = useCallback(async () => {
+    const prev = previousTrackRef.current;
+    const nextInQueue = queue[0] || null;
+
+    if (commentaryEnabled && currentTrack) {
+      // Try to generate and play commentary
+      const commentaryUrl = await generateCommentaryAudio(
+        currentTrack,
+        prev,
+        nextInQueue,
+      );
+
+      if (commentaryUrl && commentaryAudioRef.current) {
+        setIsPlayingCommentary(true);
+        commentaryAudioRef.current.src = commentaryUrl;
+        commentaryAudioRef.current.volume = isMuted ? 0 : volume;
+
+        try {
+          await commentaryAudioRef.current.play();
+          // Wait for commentary to finish
+          await new Promise<void>((resolve) => {
+            const onEnd = () => {
+              commentaryAudioRef.current?.removeEventListener('ended', onEnd);
+              resolve();
+            };
+            commentaryAudioRef.current?.addEventListener('ended', onEnd);
+          });
+        } catch (e) {
+          console.log('Commentary playback skipped:', e);
+        }
+        setIsPlayingCommentary(false);
+      }
+    }
+
+    previousTrackRef.current = currentTrack;
+    nextTrack();
+  }, [commentaryEnabled, currentTrack, queue, generateCommentaryAudio, nextTrack, isMuted, volume]);
+
   // Handle play/pause and track changes
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    const handleEnded = () => {
-      nextTrack();
-    };
+    const handleEnded = () => handleTrackEnd();
 
     const handleCanPlay = () => {
-      if (isPlaying) {
+      if (isPlaying && !isPlayingCommentary) {
         audio.play().catch((e) => console.log('Auto-play blocked:', e));
       }
     };
@@ -50,13 +101,13 @@ export function Player() {
       audio.removeEventListener('ended', handleEnded);
       audio.removeEventListener('canplay', handleCanPlay);
     };
-  }, [nextTrack, isPlaying]);
+  }, [handleTrackEnd, isPlaying, isPlayingCommentary]);
 
   // Handle volume
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = isMuted ? 0 : volume;
-    }
+    const vol = isMuted ? 0 : volume;
+    if (audioRef.current) audioRef.current.volume = vol;
+    if (commentaryAudioRef.current) commentaryAudioRef.current.volume = vol;
   }, [volume, isMuted]);
 
   // Track progress
@@ -91,17 +142,21 @@ export function Player() {
       setIsPlaying(!isPlaying);
       return;
     }
-    
+
     try {
       if (isPlaying) {
         audioRef.current.pause();
+        if (commentaryAudioRef.current) commentaryAudioRef.current.pause();
       } else {
-        await audioRef.current.play();
+        if (isPlayingCommentary && commentaryAudioRef.current) {
+          await commentaryAudioRef.current.play();
+        } else {
+          await audioRef.current.play();
+        }
       }
       setIsPlaying(!isPlaying);
     } catch (e) {
       console.log('Play error:', e);
-      // Try loading the audio first
       audioRef.current.load();
       setTimeout(async () => {
         try {
@@ -115,14 +170,14 @@ export function Player() {
   };
 
   const handleNext = () => {
-    nextTrack();
-  };
-
-  const handlePrev = () => {
-    if (queue.length > 0) {
-      // Go back to previous track logic would go here
-      setIsPlaying(true);
+    // Skip commentary if playing
+    if (isPlayingCommentary && commentaryAudioRef.current) {
+      commentaryAudioRef.current.pause();
+      commentaryAudioRef.current.src = '';
+      setIsPlayingCommentary(false);
     }
+    previousTrackRef.current = currentTrack;
+    nextTrack();
   };
 
   const formatTime = (seconds: number) => {
@@ -131,16 +186,20 @@ export function Player() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Get current track from queue if available
   const displayTrack = currentTrack || (queue.length > 0 ? queue[0] : null);
 
   return (
     <div className="fixed bottom-0 left-0 right-0 bg-zinc-900 border-t border-zinc-800 p-4 z-50">
-      <audio 
-        ref={audioRef} 
-        src={audioSrc}
-        preload="auto"
-      />
+      <audio ref={audioRef} src={audioSrc} preload="auto" />
+      <audio ref={commentaryAudioRef} preload="auto" />
+
+      {/* Commentary indicator */}
+      {isPlayingCommentary && (
+        <div className="mb-3 flex items-center gap-2 text-purple-400 text-sm">
+          <Mic size={14} className="animate-pulse" />
+          <span>AI DJ is speaking...</span>
+        </div>
+      )}
 
       {/* Track Info */}
       <div className="flex items-center gap-4 mb-4">
@@ -148,31 +207,20 @@ export function Player() {
           <img
             src={displayTrack.artworkUrl}
             alt={displayTrack.title}
-            className="w-16 h-16 rounded-lg object-cover"
+            className="w-14 h-14 rounded-lg object-cover"
             onError={(e) => {
               (e.target as HTMLImageElement).style.display = 'none';
             }}
           />
         )}
-        <div className="flex-1">
-          <h3 className="text-white font-medium">{displayTrack?.title || 'No track playing'}</h3>
-          <p className="text-zinc-400 text-sm">{displayTrack?.artistName || 'Select a station to start'}</p>
-          {displayTrack?.spotifyUri && (
-            <a
-              href={displayTrack.spotifyUri}
-              className="text-[#1DB954] text-xs hover:underline flex items-center gap-1 mt-1"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
-              </svg>
-              Open in Spotify
-            </a>
-          )}
+        <div className="flex-1 min-w-0">
+          <h3 className="text-white font-medium truncate">{displayTrack?.title || 'No track playing'}</h3>
+          <p className="text-zinc-400 text-sm truncate">{displayTrack?.artistName || 'Select a station to start'}</p>
         </div>
       </div>
 
       {/* Progress Bar */}
-      <div className="mb-4">
+      <div className="mb-3">
         <input
           type="range"
           min={0}
@@ -190,8 +238,8 @@ export function Player() {
       {/* Controls */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <button 
-            onClick={handlePrev}
+          <button
+            onClick={() => {/* previous track not implemented yet */}}
             className="p-2 text-zinc-400 hover:text-white transition-colors"
           >
             <SkipBack size={20} />
@@ -211,6 +259,15 @@ export function Player() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Commentary toggle */}
+          <button
+            onClick={toggleCommentary}
+            className={`p-2 transition-colors ${commentaryEnabled ? 'text-purple-400 hover:text-purple-300' : 'text-zinc-600 hover:text-zinc-400'}`}
+            title={commentaryEnabled ? 'DJ commentary on' : 'DJ commentary off'}
+          >
+            {commentaryEnabled ? <Mic size={18} /> : <MicOff size={18} />}
+          </button>
+
           <button
             onClick={() => setIsMuted(!isMuted)}
             className="p-2 text-zinc-400 hover:text-white transition-colors"

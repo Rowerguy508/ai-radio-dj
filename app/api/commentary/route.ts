@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createCommentaryGenerator } from '@/lib/llm/commentary';
+import { generateCommentary } from '@/lib/llm/commentary';
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { context, maxLength, style } = body;
+    const { context, style } = body;
 
-    const generator = createCommentaryGenerator();
-    const result = await generator.generateCommentary({ context, maxLength, style });
+    if (!context?.currentTrack || !context?.station) {
+      return NextResponse.json(
+        { error: 'Missing required context (currentTrack and station)' },
+        { status: 400 }
+      );
+    }
 
+    const result = await generateCommentary(context, style);
     return NextResponse.json(result);
   } catch (error) {
     console.error('Commentary generation error:', error);
