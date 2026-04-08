@@ -11,8 +11,8 @@ import { SpotifyProvider, useSpotify } from '@/lib/spotify/player';
 
 type MusicSource = 'none' | 'apple-music' | 'spotify';
 
-function AppleMusicDashboard({ onCreateStation }: { onCreateStation: (mood: 'chill' | 'hype' | 'balanced') => Promise<void> }) {
-  const { user, isAuthenticated, playlists, connectAppleMusic, disconnect, isLoading } = useAppleMusic();
+function AppleMusicDashboard() {
+  const { user, isAuthenticated, playlists, connectAppleMusic, disconnect, createRadioStation, isLoading } = useAppleMusic();
   const [selectedMood, setSelectedMood] = useState<'chill' | 'hype' | 'balanced'>('balanced');
 
   if (!isAuthenticated) {
@@ -40,7 +40,7 @@ function AppleMusicDashboard({ onCreateStation }: { onCreateStation: (mood: 'chi
       <RadioCreator
         selectedMood={selectedMood}
         setSelectedMood={setSelectedMood}
-        onStart={() => onCreateStation(selectedMood)}
+        onStart={() => createRadioStation(selectedMood)}
         isLoading={isLoading}
       />
       <PlaylistGrid playlists={playlists.map(p => ({
@@ -53,8 +53,8 @@ function AppleMusicDashboard({ onCreateStation }: { onCreateStation: (mood: 'chi
   );
 }
 
-function SpotifyDashboard({ onCreateStation }: { onCreateStation: (mood: 'chill' | 'hype' | 'balanced') => Promise<void> }) {
-  const { user, isAuthenticated, playlists, connectSpotify, disconnect, isLoading } = useSpotify();
+function SpotifyDashboard() {
+  const { user, isAuthenticated, playlists, connectSpotify, disconnect, createRadioStation, isLoading } = useSpotify();
   const [selectedMood, setSelectedMood] = useState<'chill' | 'hype' | 'balanced'>('balanced');
 
   if (!isAuthenticated) {
@@ -87,7 +87,7 @@ function SpotifyDashboard({ onCreateStation }: { onCreateStation: (mood: 'chill'
       <RadioCreator
         selectedMood={selectedMood}
         setSelectedMood={setSelectedMood}
-        onStart={() => onCreateStation(selectedMood)}
+        onStart={() => createRadioStation(selectedMood)}
         isLoading={isLoading}
       />
       <PlaylistGrid playlists={playlists.map(p => ({
@@ -296,11 +296,11 @@ function HomeContent() {
         )}
 
         {musicSource === 'apple-music' && (
-          <AppleMusicDashboard onCreateStation={async () => {}} />
+          <AppleMusicDashboard />
         )}
 
         {musicSource === 'spotify' && (
-          <SpotifyDashboard onCreateStation={async () => {}} />
+          <SpotifyDashboard />
         )}
 
         {/* Now Playing */}

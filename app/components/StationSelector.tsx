@@ -39,35 +39,34 @@ const STATION_TEMPLATES = [
   },
 ];
 
-// Demo tracks use free samples from the Internet Archive
+// Demo tracks use free samples from CDNs with CORS support
 // Real music comes from Spotify or Apple Music once connected
-const SAMPLE_BASE = 'https://upload.wikimedia.org/wikipedia/commons';
 const DEMO_AUDIO: Record<string, string> = {
-  piano: `${SAMPLE_BASE}/6/61/Fur_Elise_-_Beethoven.ogg`,
-  classical: `${SAMPLE_BASE}/e/e0/Clair_de_lune_-_Claude_Debussy.ogg`,
-  orchestral: `${SAMPLE_BASE}/4/4e/Bach_-_Air_on_the_G_String.ogg`,
+  track1: 'https://cdn.jsdelivr.net/gh/captbaritone/webamp@43434d82cfe0e37286dbbe0666072dc3190a83bc/mp3/llama-2.91.mp3',
+  track2: 'https://cdn.jsdelivr.net/npm/test-audio@2.1.0/audio/8000__cfork__cf-fx-bloibb.mp3',
+  track3: 'https://cdn.jsdelivr.net/npm/test-audio@2.1.0/audio/50775__smcameron__drips2.ogg',
 };
 
 const STATION_MUSIC: Record<string, Track[]> = {
   'Chill Focus': [
-    { id: 'chill-1', title: 'Clair de Lune', artistName: 'Claude Debussy', albumName: 'Suite bergamasque', duration: 300, artworkUrl: 'https://picsum.photos/seed/chill1/200', previewUrl: DEMO_AUDIO.classical },
-    { id: 'chill-2', title: 'Fur Elise', artistName: 'Ludwig van Beethoven', albumName: 'Classics', duration: 180, artworkUrl: 'https://picsum.photos/seed/chill2/200', previewUrl: DEMO_AUDIO.piano },
-    { id: 'chill-3', title: 'Air on the G String', artistName: 'J.S. Bach', albumName: 'Orchestral Suite No. 3', duration: 240, artworkUrl: 'https://picsum.photos/seed/chill3/200', previewUrl: DEMO_AUDIO.orchestral },
+    { id: 'chill-1', title: 'Llama Whippin Intro', artistName: 'DJ Llama', albumName: 'Demo Station', duration: 180, artworkUrl: 'https://picsum.photos/seed/chill1/200', previewUrl: DEMO_AUDIO.track1 },
+    { id: 'chill-2', title: 'Bloibb FX', artistName: 'cfork', albumName: 'Demo Station', duration: 15, artworkUrl: 'https://picsum.photos/seed/chill2/200', previewUrl: DEMO_AUDIO.track2 },
+    { id: 'chill-3', title: 'Drips', artistName: 'smcameron', albumName: 'Demo Station', duration: 10, artworkUrl: 'https://picsum.photos/seed/chill3/200', previewUrl: DEMO_AUDIO.track3 },
   ],
   'Hype Mode': [
-    { id: 'hype-1', title: 'Fur Elise (Energized)', artistName: 'Ludwig van Beethoven', albumName: 'Classics', duration: 180, artworkUrl: 'https://picsum.photos/seed/hype1/200', previewUrl: DEMO_AUDIO.piano },
-    { id: 'hype-2', title: 'Air on the G String', artistName: 'J.S. Bach', albumName: 'Orchestral Suite No. 3', duration: 240, artworkUrl: 'https://picsum.photos/seed/hype2/200', previewUrl: DEMO_AUDIO.orchestral },
-    { id: 'hype-3', title: 'Clair de Lune', artistName: 'Claude Debussy', albumName: 'Suite bergamasque', duration: 300, artworkUrl: 'https://picsum.photos/seed/hype3/200', previewUrl: DEMO_AUDIO.classical },
+    { id: 'hype-1', title: 'Llama Whippin Intro', artistName: 'DJ Llama', albumName: 'Demo Station', duration: 180, artworkUrl: 'https://picsum.photos/seed/hype1/200', previewUrl: DEMO_AUDIO.track1 },
+    { id: 'hype-2', title: 'Bloibb FX', artistName: 'cfork', albumName: 'Demo Station', duration: 15, artworkUrl: 'https://picsum.photos/seed/hype2/200', previewUrl: DEMO_AUDIO.track2 },
+    { id: 'hype-3', title: 'Drips', artistName: 'smcameron', albumName: 'Demo Station', duration: 10, artworkUrl: 'https://picsum.photos/seed/hype3/200', previewUrl: DEMO_AUDIO.track3 },
   ],
   'Morning Coffee': [
-    { id: 'coffee-1', title: 'Air on the G String', artistName: 'J.S. Bach', albumName: 'Orchestral Suite No. 3', duration: 240, artworkUrl: 'https://picsum.photos/seed/coffee1/200', previewUrl: DEMO_AUDIO.orchestral },
-    { id: 'coffee-2', title: 'Clair de Lune', artistName: 'Claude Debussy', albumName: 'Suite bergamasque', duration: 300, artworkUrl: 'https://picsum.photos/seed/coffee2/200', previewUrl: DEMO_AUDIO.classical },
-    { id: 'coffee-3', title: 'Fur Elise', artistName: 'Ludwig van Beethoven', albumName: 'Classics', duration: 180, artworkUrl: 'https://picsum.photos/seed/coffee3/200', previewUrl: DEMO_AUDIO.piano },
+    { id: 'coffee-1', title: 'Llama Whippin Intro', artistName: 'DJ Llama', albumName: 'Demo Station', duration: 180, artworkUrl: 'https://picsum.photos/seed/coffee1/200', previewUrl: DEMO_AUDIO.track1 },
+    { id: 'coffee-2', title: 'Bloibb FX', artistName: 'cfork', albumName: 'Demo Station', duration: 15, artworkUrl: 'https://picsum.photos/seed/coffee2/200', previewUrl: DEMO_AUDIO.track2 },
+    { id: 'coffee-3', title: 'Drips', artistName: 'smcameron', albumName: 'Demo Station', duration: 10, artworkUrl: 'https://picsum.photos/seed/coffee3/200', previewUrl: DEMO_AUDIO.track3 },
   ],
   'Deep Dive': [
-    { id: 'deep-1', title: 'Clair de Lune', artistName: 'Claude Debussy', albumName: 'Suite bergamasque', duration: 300, artworkUrl: 'https://picsum.photos/seed/deep1/200', previewUrl: DEMO_AUDIO.classical },
-    { id: 'deep-2', title: 'Air on the G String', artistName: 'J.S. Bach', albumName: 'Orchestral Suite No. 3', duration: 240, artworkUrl: 'https://picsum.photos/seed/deep2/200', previewUrl: DEMO_AUDIO.orchestral },
-    { id: 'deep-3', title: 'Fur Elise', artistName: 'Ludwig van Beethoven', albumName: 'Classics', duration: 180, artworkUrl: 'https://picsum.photos/seed/deep3/200', previewUrl: DEMO_AUDIO.piano },
+    { id: 'deep-1', title: 'Llama Whippin Intro', artistName: 'DJ Llama', albumName: 'Demo Station', duration: 180, artworkUrl: 'https://picsum.photos/seed/deep1/200', previewUrl: DEMO_AUDIO.track1 },
+    { id: 'deep-2', title: 'Bloibb FX', artistName: 'cfork', albumName: 'Demo Station', duration: 15, artworkUrl: 'https://picsum.photos/seed/deep2/200', previewUrl: DEMO_AUDIO.track2 },
+    { id: 'deep-3', title: 'Drips', artistName: 'smcameron', albumName: 'Demo Station', duration: 10, artworkUrl: 'https://picsum.photos/seed/deep3/200', previewUrl: DEMO_AUDIO.track3 },
   ],
 };
 

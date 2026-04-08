@@ -29,10 +29,19 @@ export function Player() {
   const [audioSrc, setAudioSrc] = useState<string | undefined>(undefined);
   const [isPlayingCommentary, setIsPlayingCommentary] = useState(false);
 
-  // Update audio source when track changes
+  // Update audio source and start playback when track changes
   useEffect(() => {
-    if (currentTrack?.previewUrl !== audioSrc) {
-      setAudioSrc(currentTrack?.previewUrl);
+    if (currentTrack?.previewUrl && currentTrack.previewUrl !== audioSrc) {
+      setAudioSrc(currentTrack.previewUrl);
+      // Give the browser a moment to update the src, then play
+      setTimeout(() => {
+        if (audioRef.current && isPlaying) {
+          audioRef.current.load();
+          audioRef.current.play().catch((e) => console.log('Auto-play blocked:', e));
+        }
+      }, 100);
+    } else if (!currentTrack) {
+      setAudioSrc(undefined);
     }
   }, [currentTrack]);
 
@@ -48,21 +57,35 @@ export function Player() {
     const nextInQueue = queue[0] || null;
 
     if (commentaryEnabled && currentTrack) {
-      // Try to generate and play commentary
       const commentaryUrl = await generateCommentaryAudio(
         currentTrack,
         prev,
         nextInQueue,
       );
 
-      if (commentaryUrl && commentaryAudioRef.current) {
+      if (commentaryUrl === 'browser-tts') {
+        // Browser TTS is already speaking via speechSynthesis
+        setIsPlayingCommentary(true);
+        // Wait for speech to finish
+        await new Promise<void>((resolve) => {
+          const check = () => {
+            if (!window.speechSynthesis.speaking) {
+              resolve();
+            } else {
+              setTimeout(check, 200);
+            }
+          };
+          setTimeout(check, 500);
+        });
+        setIsPlayingCommentary(false);
+      } else if (commentaryUrl && commentaryAudioRef.current) {
+        // ElevenLabs audio URL
         setIsPlayingCommentary(true);
         commentaryAudioRef.current.src = commentaryUrl;
         commentaryAudioRef.current.volume = isMuted ? 0 : volume;
 
         try {
           await commentaryAudioRef.current.play();
-          // Wait for commentary to finish
           await new Promise<void>((resolve) => {
             const onEnd = () => {
               commentaryAudioRef.current?.removeEventListener('ended', onEnd);
