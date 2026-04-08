@@ -24,8 +24,12 @@ function HomeContent() {
     openStationEditor, removeStation, setDjIntroPlayed,
   } = useRadioStore();
 
+  const appleMusic = useAppleMusic();
+  const spotify = useSpotify();
+
   const [musicSource, setMusicSource] = useState<MusicSource>('none');
   const [ready, setReady] = useState(false);
+  const [loadingStation, setLoadingStation] = useState<string | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem('raydo-music-source') as MusicSource;
@@ -38,14 +42,33 @@ function HomeContent() {
     localStorage.setItem('raydo-music-source', s);
   };
 
-  // Start playing a station with demo tracks (or real tracks from Apple Music / Spotify)
-  const playStation = (station: Station) => {
+  // Play a station: search for tracks using the connected music source
+  const playStation = async (station: Station) => {
+    setLoadingStation(station.id);
     setCurrentStation(station);
     setDjIntroPlayed(false);
-    // For now, use demo tracks. Real tracks come from Apple Music / Spotify "Start" buttons.
-    setQueue(DEMO_TRACKS.slice(1));
-    setCurrentTrack(DEMO_TRACKS[0]);
+
+    // Build a search query from station preferences + style
+    const styleTerms: Record<string, string> = { chill: 'chill relaxing', hype: 'upbeat energy', balanced: 'popular hits' };
+    const query = station.searchQuery || styleTerms[station.style] || 'music';
+
+    let tracks: Track[] = [];
+
+    // Try to search via connected music source
+    if (musicSource === 'apple-music' && appleMusic.isAuthenticated) {
+      tracks = await appleMusic.searchTracks(query, 20);
+    }
+    // TODO: Add Spotify searchTracks similarly
+
+    // Fall back to demo tracks if no music source or search returned nothing
+    if (tracks.length === 0) {
+      tracks = DEMO_TRACKS;
+    }
+
+    setQueue(tracks.slice(1));
+    setCurrentTrack(tracks[0]);
     setIsPlaying(true);
+    setLoadingStation(null);
   };
 
   if (!ready) return <div className="min-h-screen bg-black" />;
@@ -160,11 +183,16 @@ function HomeContent() {
                       <div key={station.id} className={`relative group rounded-2xl transition-all ${active ? 'ring-1 ring-white/20' : ''}`}>
                         <button
                           onClick={() => playStation(station)}
-                          className="w-full p-4 rounded-2xl text-left bg-zinc-900/60 hover:bg-zinc-800/60 transition-all active:scale-[0.98]"
+                          disabled={loadingStation === station.id}
+                          className="w-full p-4 rounded-2xl text-left bg-zinc-900/60 hover:bg-zinc-800/60 transition-all active:scale-[0.98] disabled:opacity-60"
                         >
                           <div className="flex items-start gap-3">
                             <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${gradients[station.style] || gradients.balanced} flex items-center justify-center flex-shrink-0 shadow-lg`}>
-                              <Radio size={14} />
+                              {loadingStation === station.id ? (
+                                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                              ) : (
+                                <Radio size={14} />
+                              )}
                             </div>
                             <div className="min-w-0 flex-1">
                               <p className="text-white text-sm font-semibold truncate">{station.name}</p>

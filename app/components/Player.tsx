@@ -32,30 +32,43 @@ export function Player() {
 
   // Play DJ intro when a new station starts, BEFORE first track
   useEffect(() => {
-    if (!currentTrack || !currentStation || djIntroPlayed || introPlayedRef.current) return;
-    if (!commentaryEnabled) { setDjIntroPlayed(true); return; }
+    // Wait until we have a track and station, and intro hasn't played yet
+    if (!currentTrack || !currentStation) return;
+    if (djIntroPlayed || introPlayedRef.current) return;
 
     introPlayedRef.current = true;
+
+    if (!commentaryEnabled) {
+      // Skip intro, go straight to music
+      setDjIntroPlayed(true);
+      return;
+    }
+
     let cancelled = false;
 
     const playIntro = async () => {
-      const audioUrl = await generateIntro(currentTrack);
-      if (cancelled) return;
+      try {
+        const audioUrl = await generateIntro(currentTrack);
+        if (cancelled) return;
 
-      if (audioUrl && audioUrl !== 'browser-tts') {
-        setDjSpeaking(true);
-        await playAudioUrl(audioUrl);
-        if (cancelled) return;
-        setDjSpeaking(false);
-      } else if (audioUrl === 'browser-tts') {
-        setDjSpeaking(true);
-        await waitForBrowserTTS();
-        if (cancelled) return;
+        if (audioUrl && audioUrl !== 'browser-tts') {
+          setDjSpeaking(true);
+          await playAudioUrl(audioUrl);
+          if (!cancelled) setDjSpeaking(false);
+        } else if (audioUrl === 'browser-tts') {
+          setDjSpeaking(true);
+          await waitForBrowserTTS();
+          if (!cancelled) setDjSpeaking(false);
+        }
+      } catch (e) {
+        console.error('DJ intro failed:', e);
         setDjSpeaking(false);
       }
 
+      if (cancelled) return;
+
+      // Mark intro as done and start the music
       setDjIntroPlayed(true);
-      // Now start the actual music
       if (audioRef.current && currentTrack?.previewUrl) {
         setAudioSrc(currentTrack.previewUrl);
         setTimeout(() => {
@@ -65,9 +78,10 @@ export function Player() {
       }
     };
 
-    playIntro();
-    return () => { cancelled = true; };
-  }, [currentTrack?.id, currentStation?.id]);
+    // Small delay to let React finish rendering before starting async work
+    const timer = setTimeout(() => playIntro(), 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [currentTrack?.id, currentStation?.id, djIntroPlayed]);
 
   // Load track audio (only after intro is done)
   useEffect(() => {
