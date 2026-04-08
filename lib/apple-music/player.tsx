@@ -36,59 +36,88 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
   const [playlists, setPlaylists] = useState<AppleMusicPlaylist[]>([]);
   const [musicKit, setMusicKit] = useState<any>(null);
 
-  // Wait for MusicKit to be configured by musickit-init.tsx
+  // Initialize MusicKit: wait for script, configure, check session
   useEffect(() => {
     const initMusicKit = async () => {
+      if (!(window as any).MusicKit) return;
+      const mk = (window as any).MusicKit;
+
       try {
-        if (!(window as any).MusicKit) return;
-        const mk = (window as any).MusicKit;
-
-        // Check for existing session
-        try {
-          const musicUserToken = await mk.getMusicUserToken();
-          if (musicUserToken) {
-            setUser({
-              name: 'Apple Music User',
-              email: '',
-              id: 'apple-user',
-            });
-          }
-        } catch (e) {
-          // No existing session, that's fine
-        }
-
-        setMusicKit(mk);
+        // Configure (safe to call multiple times - MusicKit handles it)
+        mk.configure({
+          developerToken: process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN || '',
+          app: {
+            name: 'RAY.DO',
+            build: '1.0.0',
+          },
+        });
       } catch (e) {
-        console.warn('MusicKit init error:', e);
+        // Already configured, that's fine
       }
+
+      // Check for existing session
+      try {
+        const musicUserToken = await mk.getMusicUserToken();
+        if (musicUserToken) {
+          setUser({
+            name: 'Apple Music User',
+            email: '',
+            id: 'apple-user',
+          });
+        }
+      } catch (e) {
+        // No existing session
+      }
+
+      setMusicKit(mk);
     };
 
-    // Poll for MusicKit to be ready (configured by musickit-init.tsx)
-    const check = () => {
-      if ((window as any).MusicKit) {
-        initMusicKit();
-        return true;
-      }
-      return false;
-    };
+    // MusicKit script is loaded async in layout.tsx
+    // We need to wait for it, then configure
+    if ((window as any).MusicKit) {
+      initMusicKit();
+    } else {
+      // Listen for the native MusicKit loaded event
+      const onLoaded = () => initMusicKit();
+      document.addEventListener('musickitloaded', onLoaded);
 
-    if (!check()) {
+      // Also poll as a fallback (some browsers don't fire the event reliably)
       const interval = setInterval(() => {
-        if (check()) clearInterval(interval);
-      }, 300);
-      setTimeout(() => clearInterval(interval), 15000);
+        if ((window as any).MusicKit) {
+          clearInterval(interval);
+          initMusicKit();
+        }
+      }, 500);
+
+      return () => {
+        document.removeEventListener('musickitloaded', onLoaded);
+        clearInterval(interval);
+      };
     }
   }, []);
 
   const connectAppleMusic = async () => {
-    if (!musicKit) {
-      alert('Apple Music not configured. Check your developer token.');
+    // If musicKit isn't set yet, try one more time
+    let mk = musicKit;
+    if (!mk && (window as any).MusicKit) {
+      mk = (window as any).MusicKit;
+      try {
+        mk.configure({
+          developerToken: process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN || '',
+          app: { name: 'RAY.DO', build: '1.0.0' },
+        });
+      } catch {}
+      setMusicKit(mk);
+    }
+
+    if (!mk) {
+      alert('Apple Music not loaded yet. Please wait a moment and try again.');
       return;
     }
 
     setIsLoading(true);
     try {
-      await musicKit.authorize();
+      await mk.authorize();
 
       setUser({
         name: 'Apple Music User',
@@ -96,9 +125,8 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
         id: 'apple-user',
       });
 
-      // Try to get playlists
       try {
-        const userPlaylists = await musicKit.api.userPlaylists();
+        const userPlaylists = await mk.api.userPlaylists();
         setPlaylists(userPlaylists.map((p: any) => ({
           id: p.id,
           name: p.attributes?.name || 'Untitled',
@@ -141,7 +169,6 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
 
       const genres = genreMappings[mood];
 
-      // Get recommendations from Apple Music (same API as the original working code)
       const recommendations = await musicKit.api.recommendations({
         types: ['songs'],
         'genre-names': [genres[0]],
