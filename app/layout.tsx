@@ -17,7 +17,7 @@ export default function RootLayout({
       <head>
         {/* Apple MusicKit Script */}
         <script
-          src="https://assets.applemusickit.com/apple-musickit.js"
+          src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"
           async
         />
       </head>

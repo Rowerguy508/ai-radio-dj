@@ -33,60 +33,58 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppleMusicUser | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [playlists, setPlaylists] = useState<AppleMusicPlaylist[]>([]);
-  const [musicInstance, setMusicInstance] = useState<any>(null);
+  const [music, setMusic] = useState<any>(null);
 
-  // This mirrors the exact pattern from the original working code (commit 09b110b):
-  // Load MusicKit script ourselves, configure on load, store the instance.
+  // Initialize MusicKit v3
   useEffect(() => {
     const token = process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN || '';
 
-    const configure = () => {
+    const init = async () => {
       const MK = (window as any).MusicKit;
-      if (!MK) return;
+      if (!MK || !token) return;
 
       try {
-        const instance = MK.configure({
+        // MusicKit v3: configure() is async, returns void. Use getInstance() after.
+        await MK.configure({
           developerToken: token,
           app: { name: 'RAY.DO', build: '1.0.0' },
         });
-        setMusicInstance(instance);
+        const instance = MK.getInstance();
+        setMusic(instance);
+
+        // Check for existing auth
+        if (instance.isAuthorized) {
+          setUser({ name: 'Apple Music User', id: 'apple-user' });
+        }
       } catch (e) {
-        console.error('MusicKit.configure failed:', e);
-        // If already configured, try getInstance
-        try {
-          setMusicInstance(MK.getInstance());
-        } catch {}
+        console.error('MusicKit init failed:', e);
       }
     };
 
-    // If MusicKit is already on the page (from layout.tsx script tag), configure now
     if ((window as any).MusicKit) {
-      configure();
+      init();
+    } else {
+      document.addEventListener('musickitloaded', init);
+      return () => document.removeEventListener('musickitloaded', init);
     }
-
-    // Also listen for the musickitloaded event (fires when the script finishes loading)
-    const onLoaded = () => configure();
-    document.addEventListener('musickitloaded', onLoaded);
-
-    return () => {
-      document.removeEventListener('musickitloaded', onLoaded);
-    };
   }, []);
 
   const connectAppleMusic = async () => {
-    if (!musicInstance) {
+    if (!music) {
       alert('Apple Music is still loading. Please wait a moment and try again.');
       return;
     }
 
     setIsLoading(true);
     try {
-      await musicInstance.authorize();
+      await music.authorize();
       setUser({ name: 'Apple Music User', id: 'apple-user' });
 
+      // Load playlists via v3 API
       try {
-        const userPlaylists = await musicInstance.api.library.playlists();
-        setPlaylists((userPlaylists || []).map((p: any) => ({
+        const result = await music.api.music('/v1/me/library/playlists', { limit: 25 });
+        const items = result?.data?.data || [];
+        setPlaylists(items.map((p: any) => ({
           id: p.id,
           name: p.attributes?.name || 'Untitled',
           description: p.attributes?.description,
@@ -102,13 +100,13 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
   };
 
   const disconnect = () => {
-    try { musicInstance?.unauthorize(); } catch {}
+    try { music?.unauthorize(); } catch {}
     setUser(null);
     setPlaylists([]);
   };
 
   const createRadioStation = async (mood: 'chill' | 'hype' | 'balanced') => {
-    if (!musicInstance || !musicInstance.isAuthorized) {
+    if (!music || !music.isAuthorized) {
       await connectAppleMusic();
       return;
     }
@@ -116,8 +114,16 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
     setIsLoading(true);
     try {
       const terms: Record<string, string> = { chill: 'chill', hype: 'hip hop', balanced: 'pop' };
-      const results = await musicInstance.api.search(terms[mood], { types: 'songs', limit: 20 });
-      const songs = results?.songs?.data || [];
+      const storefront = music.storefrontId || 'us';
+
+      // MusicKit v3 search API
+      const result = await music.api.music(`/v1/catalog/${storefront}/search`, {
+        term: terms[mood],
+        types: ['songs'],
+        limit: 20,
+      });
+
+      const songs = result?.data?.results?.songs?.data || [];
 
       const radioTracks = songs.map((t: any) => ({
         id: t.id,
