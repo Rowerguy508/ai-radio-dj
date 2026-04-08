@@ -2,7 +2,19 @@ import { NextRequest, NextResponse } from 'next/server';
 
 // Telegram webhook - receives messages and queues them for the radio DJ
 export async function POST(request: NextRequest) {
+  const requestId = crypto.randomUUID();
   try {
+    const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+    if (expectedSecret) {
+      const incomingSecret = request.headers.get('x-telegram-bot-api-secret-token');
+      if (incomingSecret !== expectedSecret) {
+        return NextResponse.json(
+          { error: 'Unauthorized webhook request', requestId },
+          { status: 401 }
+        );
+      }
+    }
+
     const body = await request.json();
 
     // Handle different Telegram update types
@@ -41,24 +53,24 @@ export async function POST(request: NextRequest) {
 
     if (!telegramUserId) {
       return NextResponse.json(
-        { error: 'User ID not found' },
+        { error: 'User ID not found', requestId },
         { status: 400 }
       );
     }
 
     if (textContent) {
       // Store message locally (Supabase optional)
-      console.log('Telegram message received:', { userId: telegramUserId, content: textContent });
+      console.log('Telegram message received:', { requestId, userId: telegramUserId, content: textContent });
       
       // Message queued successfully
       // In production with Supabase, you'd map telegram_user_id to supabase user_id
     }
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, requestId });
   } catch (error) {
-    console.error('Telegram webhook error:', error);
+    console.error('Telegram webhook error:', { requestId, error });
     return NextResponse.json(
-      { error: 'Webhook processing failed' },
+      { error: 'Webhook processing failed', requestId },
       { status: 500 }
     );
   }
