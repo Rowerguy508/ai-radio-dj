@@ -32,14 +32,12 @@ export function Player() {
 
   // Play DJ intro when a new station starts, BEFORE first track
   useEffect(() => {
-    // Wait until we have a track and station, and intro hasn't played yet
     if (!currentTrack || !currentStation) return;
     if (djIntroPlayed || introPlayedRef.current) return;
 
     introPlayedRef.current = true;
 
     if (!commentaryEnabled) {
-      // Skip intro, go straight to music
       setDjIntroPlayed(true);
       return;
     }
@@ -67,7 +65,6 @@ export function Player() {
 
       if (cancelled) return;
 
-      // Mark intro as done and start the music
       setDjIntroPlayed(true);
       if (audioRef.current && currentTrack?.previewUrl) {
         setAudioSrc(currentTrack.previewUrl);
@@ -78,7 +75,6 @@ export function Player() {
       }
     };
 
-    // Small delay to let React finish rendering before starting async work
     const timer = setTimeout(() => playIntro(), 300);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [currentTrack?.id, currentStation?.id, djIntroPlayed]);
@@ -99,7 +95,6 @@ export function Player() {
     }
   }, [currentTrack, djIntroPlayed]);
 
-  // Helper: play an audio URL and wait for it to finish
   const playAudioUrl = useCallback((url: string): Promise<void> => {
     return new Promise((resolve) => {
       const audio = commentaryAudioRef.current;
@@ -112,7 +107,6 @@ export function Player() {
     });
   }, [isMuted, volume]);
 
-  // Helper: wait for browser TTS to finish
   const waitForBrowserTTS = useCallback((): Promise<void> => {
     return new Promise((resolve) => {
       const check = () => window.speechSynthesis?.speaking ? setTimeout(check, 200) : resolve();
@@ -205,54 +199,102 @@ export function Player() {
   };
 
   const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+  const progressPct = duration > 0 ? (progress / duration) * 100 : 0;
   const track = currentTrack || (queue.length > 0 ? queue[0] : null);
 
   if (!track) return null;
 
   return (
-    <div className="fixed bottom-0 inset-x-0 z-50">
+    <div className="fixed bottom-0 inset-x-0 z-50 animate-slide-up">
       <audio ref={audioRef} src={audioSrc} preload="auto" />
       <audio ref={commentaryAudioRef} preload="auto" />
 
-      <div className="bg-zinc-950/95 backdrop-blur-xl border-t border-white/5 px-4 pt-3 pb-4 sm:px-6">
+      {/* Gradient edge */}
+      <div className="h-px bg-gradient-to-r from-transparent via-violet-500/30 to-transparent" />
+
+      <div className="bg-zinc-950/90 backdrop-blur-2xl border-t border-white/[0.04] px-4 pt-3 pb-4 sm:px-6">
+        {/* DJ speaking indicator */}
         {djSpeaking && (
-          <div className="flex items-center gap-1.5 text-violet-400 text-xs mb-2">
-            <Mic size={12} className="animate-pulse" />
-            <span>{currentStation?.djName || 'DJ'} is on the mic...</span>
+          <div className="flex items-center gap-2 mb-2.5 animate-fade-in">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-violet-500/10 border border-violet-500/20">
+              <Mic size={11} className="text-violet-400 animate-pulse" />
+              <span className="text-violet-300 text-[11px] font-medium">{currentStation?.djName || 'DJ'} is on the mic</span>
+            </div>
           </div>
         )}
 
-        <div className="flex items-center gap-3">
-          {track.artworkUrl && (
-            <img src={track.artworkUrl} alt="" className="w-10 h-10 rounded-lg object-cover flex-shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-          )}
-          <div className="flex-1 min-w-0">
-            <p className="text-white text-sm font-medium truncate">{track.title}</p>
-            <p className="text-zinc-500 text-xs truncate">{track.artistName}</p>
+        {/* Progress bar - full width, above controls */}
+        <div className="mb-3">
+          <div className="relative w-full h-1 bg-zinc-800/60 rounded-full overflow-hidden group cursor-pointer">
+            <div
+              className="absolute inset-y-0 left-0 bg-gradient-to-r from-violet-500 to-fuchsia-500 rounded-full transition-all duration-150"
+              style={{ width: `${progressPct}%` }}
+            />
+            <input
+              type="range"
+              min={0}
+              max={duration || 1}
+              value={progress}
+              onChange={handleSeek}
+              className="absolute inset-0 w-full opacity-0 cursor-pointer"
+            />
           </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            <button onClick={handlePlayPause} className="w-10 h-10 flex items-center justify-center rounded-full bg-white text-black active:scale-90 transition-transform">
-              {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
-            </button>
-            <button onClick={handleSkip} className="p-2 text-zinc-400 active:text-white transition-colors">
-              <SkipForward size={18} />
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-2">
-          <input type="range" min={0} max={duration || 1} value={progress} onChange={handleSeek} className="w-full h-1" />
-          <div className="flex justify-between text-[10px] text-zinc-600 mt-0.5">
+          <div className="flex justify-between text-[10px] text-zinc-600 mt-1 px-0.5">
             <span>{fmt(progress)}</span>
             <span>{fmt(duration)}</span>
           </div>
         </div>
 
-        <div className="hidden sm:flex items-center gap-2 mt-1">
-          <button onClick={() => setIsMuted(!isMuted)} className="p-1 text-zinc-500">
-            {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
-          </button>
-          <input type="range" min={0} max={1} step={0.05} value={isMuted ? 0 : volume} onChange={e => setVolume(parseFloat(e.target.value))} className="w-20 h-1" />
+        {/* Main controls */}
+        <div className="flex items-center gap-3">
+          {/* Track artwork */}
+          {track.artworkUrl ? (
+            <img
+              src={track.artworkUrl}
+              alt=""
+              className={`w-11 h-11 rounded-lg object-cover flex-shrink-0 shadow-lg transition-all duration-300 ${isPlaying ? 'shadow-violet-500/10' : 'opacity-70'}`}
+              onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            />
+          ) : (
+            <div className="w-11 h-11 rounded-lg bg-zinc-800 flex items-center justify-center flex-shrink-0">
+              <span className="text-zinc-600 text-lg">{'\u{266B}'}</span>
+            </div>
+          )}
+
+          {/* Track info */}
+          <div className="flex-1 min-w-0">
+            <p className="text-white text-sm font-medium truncate">{track.title}</p>
+            <p className="text-zinc-500 text-xs truncate">{track.artistName}</p>
+          </div>
+
+          {/* Playback buttons */}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <button
+              onClick={handlePlayPause}
+              className="w-10 h-10 flex items-center justify-center rounded-full bg-white text-black active:scale-90 transition-all duration-150 hover:shadow-lg hover:shadow-white/10"
+            >
+              {isPlaying ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" className="ml-0.5" />}
+            </button>
+            <button onClick={handleSkip} className="p-2.5 text-zinc-500 hover:text-white active:scale-90 transition-all">
+              <SkipForward size={18} />
+            </button>
+          </div>
+
+          {/* Volume control - desktop only */}
+          <div className="hidden sm:flex items-center gap-2 pl-2 border-l border-white/5">
+            <button onClick={() => setIsMuted(!isMuted)} className="p-1 text-zinc-500 hover:text-zinc-300 transition-colors">
+              {isMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={isMuted ? 0 : volume}
+              onChange={e => setVolume(parseFloat(e.target.value))}
+              className="w-20 h-1"
+            />
+          </div>
         </div>
       </div>
     </div>
