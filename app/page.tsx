@@ -50,7 +50,15 @@ function HomeContent() {
 
     // Build a search query from station preferences + style
     const styleTerms: Record<string, string> = { chill: 'chill relaxing', hype: 'upbeat energy', balanced: 'popular hits' };
-    const query = station.searchQuery || styleTerms[station.style] || 'music';
+    const raw = station.searchQuery || styleTerms[station.style] || 'music';
+
+    // Clean multi-line/descriptive input into a simple search term
+    const lines = raw.split('\n')
+      .map(l => l.replace(/\(.*?\)/g, '').replace(/["""“”]/g, '').trim())
+      .filter(l => l.length > 1);
+    const query = lines.length > 1
+      ? lines[Math.floor(Math.random() * lines.length)]
+      : (lines[0] || raw.trim());
 
     let tracks: Track[] = [];
 
