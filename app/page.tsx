@@ -58,8 +58,6 @@ function HomeContent() {
   };
 
   const playStation = async (station: Station) => {
-    // Unlock Safari audio from this user gesture (calls into Player's unlock)
-    (window as any).__raydo_unlockAudio?.();
     setLoadingStation(station.id);
     setCurrentStation(station);
     setDjIntroPlayed(false);
@@ -75,7 +73,7 @@ function HomeContent() {
       for (const term of terms.slice(0, 4)) {
         const results = await appleMusic.searchTracks(term, 25);
         for (const t of results) {
-          if (t.previewUrl && !seen.has(t.id)) {
+          if (!seen.has(t.id)) {
             seen.add(t.id);
             tracks.push(t);
           }
@@ -83,10 +81,22 @@ function HomeContent() {
         if (tracks.length >= 20) break;
       }
       shuffle(tracks);
+
+      // Use MusicKit native player for full songs + auto-advance
+      if (tracks.length > 0 && appleMusic.music.isAuthorized) {
+        try {
+          await appleMusic.playWithMusicKit(tracks);
+          setLoadingStation(null);
+          return;
+        } catch (e) {
+          console.warn('MusicKit playback failed, falling back to previews:', e);
+        }
+      }
     }
 
+    // Fallback: HTML audio with preview URLs
     if (tracks.length === 0) {
-      console.log('No playable tracks found, using demo tracks. musicSource:', musicSource, 'appleMusicReady:', !!appleMusic.music);
+      console.log('No tracks found, using demo tracks. musicSource:', musicSource);
       tracks = DEMO_TRACKS;
     }
 
@@ -457,7 +467,7 @@ function AppleMusicConnect() {
       </div>
       <MoodPicker mood={mood} setMood={setMood} />
       <button
-        onClick={() => { (window as any).__raydo_unlockAudio?.(); createRadioStation(mood); }}
+        onClick={() => createRadioStation(mood)}
         disabled={isLoading}
         className="w-full py-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-white text-sm font-medium disabled:opacity-50 transition-all border border-white/[0.04]"
       >
@@ -491,7 +501,7 @@ function SpotifyConnect() {
       </div>
       <MoodPicker mood={mood} setMood={setMood} />
       <button
-        onClick={() => { (window as any).__raydo_unlockAudio?.(); createRadioStation(mood); }}
+        onClick={() => createRadioStation(mood)}
         disabled={isLoading}
         className="w-full py-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-white text-sm font-medium disabled:opacity-50 transition-all border border-white/[0.04]"
       >

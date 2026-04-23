@@ -18,35 +18,29 @@ export interface Station {
   description?: string;
   energyLevel: number; // 0-1
   style: 'chill' | 'balanced' | 'hype';
-  // Music preferences
-  searchQuery: string; // What the user wants to hear (artists, genres, moods)
-  // DJ personality
+  searchQuery: string;
   djName: string;
-  djPersonality: string; // Custom personality prompt
-  // State
+  djPersonality: string;
   isActive: boolean;
 }
 
 export interface RadioState {
-  // Playback
   isPlaying: boolean;
   currentTrack: Track | null;
   currentStation: Station | null;
   queue: Track[];
   volume: number;
-  // Whether the DJ intro has played for the current station session
   djIntroPlayed: boolean;
+  // Whether MusicKit is handling playback (vs HTML audio)
+  usingMusicKit: boolean;
 
-  // Stations (persisted to localStorage)
   stations: Station[];
 
-  // UI
   showSettings: boolean;
   showStationEditor: boolean;
   editingStation: Station | null;
   commentaryEnabled: boolean;
 
-  // Actions
   setCurrentTrack: (track: Track | null) => void;
   setCurrentStation: (station: Station | null) => void;
   setIsPlaying: (playing: boolean) => void;
@@ -57,12 +51,11 @@ export interface RadioState {
   toggleSettings: () => void;
   toggleCommentary: () => void;
   setDjIntroPlayed: (played: boolean) => void;
+  setUsingMusicKit: (using: boolean) => void;
 
-  // Station editor
   openStationEditor: (station?: Station) => void;
   closeStationEditor: () => void;
 
-  // Station management
   addStation: (station: Station) => void;
   updateStation: (id: string, updates: Partial<Station>) => void;
   removeStation: (id: string) => void;
@@ -92,6 +85,7 @@ export const useRadioStore = create<RadioState>()(
       queue: [],
       volume: 0.7,
       djIntroPlayed: false,
+      usingMusicKit: false,
       stations: [],
       showSettings: false,
       showStationEditor: false,
@@ -105,10 +99,11 @@ export const useRadioStore = create<RadioState>()(
       setQueue: (queue) => set({ queue }),
       addToQueue: (track) => set((s) => ({ queue: [...s.queue, track] })),
       setDjIntroPlayed: (played) => set({ djIntroPlayed: played }),
+      setUsingMusicKit: (using) => set({ usingMusicKit: using }),
 
       nextTrack: () => {
-        const { queue } = get();
-        // Skip tracks without a playable URL
+        const { queue, usingMusicKit } = get();
+        if (usingMusicKit) return; // MusicKit handles its own queue
         const playable = queue.findIndex(t => t.previewUrl);
         if (playable >= 0) {
           const next = queue[playable];

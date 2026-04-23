@@ -3,72 +3,42 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, SkipForward, Volume2, VolumeX, Mic } from 'lucide-react';
 import { useRadioStore } from '@/lib/store/radio';
+import { useAppleMusic } from '@/lib/apple-music/player';
 import { useCommentary } from '@/lib/hooks/useCommentary';
 
-// Tiny valid silent WAV — used to prime audio elements for Safari autoplay
 const SILENT = 'data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQ4AAAB/f39/f39/f39/f39/fw==';
 
 export function Player() {
   const {
-    isPlaying, currentTrack, queue, volume, commentaryEnabled, djIntroPlayed,
+    isPlaying, currentTrack, queue, volume, commentaryEnabled, djIntroPlayed, usingMusicKit,
     setIsPlaying, setVolume, nextTrack, setDjIntroPlayed,
   } = useRadioStore();
 
+  const appleMusic = useAppleMusic();
   const { generateIntro, generateTransition, resetTrackCount } = useCommentary();
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const commentaryAudioRef = useRef<HTMLAudioElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const previousTrackRef = useRef(currentTrack);
   const introPlayedRef = useRef(false);
-  const unlockedRef = useRef(false);
   const [isMuted, setIsMuted] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
   const [audioSrc, setAudioSrc] = useState<string>(SILENT);
   const [djSpeaking, setDjSpeaking] = useState(false);
 
   const currentStation = useRadioStore((s) => s.currentStation);
 
-  // Unlock audio for Safari — must be called from a user gesture (click handler)
-  const unlockAudio = useCallback(() => {
-    if (unlockedRef.current) return;
-    unlockedRef.current = true;
-    console.log('[Audio] Unlocking audio for Safari...');
+  // Progress: use MusicKit progress when active, otherwise HTML audio
+  const mkProgress = appleMusic.musicKitProgress;
+  const [htmlProgress, setHtmlProgress] = useState(0);
+  const [htmlDuration, setHtmlDuration] = useState(0);
+  const progress = usingMusicKit ? mkProgress.current : htmlProgress;
+  const duration = usingMusicKit ? mkProgress.total : htmlDuration;
 
-    // Unlock Web Audio API
-    const AC = window.AudioContext || (window as any).webkitAudioContext;
-    if (AC) {
-      const ctx = new AC();
-      if (ctx.state === 'suspended') ctx.resume();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      gain.gain.value = 0;
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(0);
-      osc.stop(0.01);
-    }
-
-    // Play silent audio through both elements to "bless" them
-    [audioRef.current, commentaryAudioRef.current].forEach(a => {
-      if (!a) return;
-      a.src = SILENT;
-      a.volume = 0.01;
-      a.play().then(() => {
-        a.pause();
-        a.currentTime = 0;
-        a.volume = isMuted ? 0 : volume;
-        console.log('[Audio] Element unlocked successfully');
-      }).catch(e => {
-        console.warn('[Audio] Element unlock failed:', e.name);
-      });
-    });
-  }, [isMuted, volume]);
-
-  // Expose unlock globally so page.tsx can call it from click handlers
+  // Sync volume to MusicKit
   useEffect(() => {
-    (window as any).__raydo_unlockAudio = unlockAudio;
-    return () => { delete (window as any).__raydo_unlockAudio; };
-  }, [unlockAudio]);
+    if (usingMusicKit && appleMusic.music) {
+      appleMusic.music.volume = isMuted ? 0 : volume;
+    }
+  }, [volume, isMuted, usingMusicKit, appleMusic.music]);
 
   // Reset on station change
   useEffect(() => {
@@ -76,7 +46,57 @@ export function Player() {
     introPlayedRef.current = false;
   }, [currentStation?.id, resetTrackCount]);
 
-  // Play DJ intro when a new station starts, BEFORE first track
+  // Play commentary audio through the dedicated element
+  const playCommentaryAudio = useCallback((url: string): Promise<void> => {
+    return new Promise((resolve) => {
+      const audio = commentaryAudioRef.current;
+      if (!audio) { resolve(); return; }
+
+      // Pause MusicKit or HTML audio while DJ speaks
+      if (usingMusicKit && appleMusic.music) {
+        appleMusic.music.volume = (isMuted ? 0 : volume) * 0.15;
+      } else if (audioRef.current) {
+        audioRef.current.volume = (isMuted ? 0 : volume) * 0.15;
+      }
+
+      audio.src = url;
+      audio.volume = isMuted ? 0 : volume;
+
+      const cleanup = () => {
+        audio.removeEventListener('ended', onEnd);
+        audio.removeEventListener('error', onErr);
+        // Restore music volume
+        if (usingMusicKit && appleMusic.music) {
+          appleMusic.music.volume = isMuted ? 0 : volume;
+        } else if (audioRef.current) {
+          audioRef.current.volume = isMuted ? 0 : volume;
+        }
+      };
+      const onEnd = () => { cleanup(); resolve(); };
+      const onErr = () => { cleanup(); resolve(); };
+      audio.addEventListener('ended', onEnd);
+      audio.addEventListener('error', onErr);
+
+      audio.play().catch(e => {
+        console.warn('[DJ] Commentary play blocked:', e.name);
+        cleanup();
+        resolve();
+      });
+    });
+  }, [isMuted, volume, usingMusicKit, appleMusic.music]);
+
+  const waitForBrowserTTS = useCallback((): Promise<void> => {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 15000);
+      const check = () => {
+        if (window.speechSynthesis?.speaking) setTimeout(check, 200);
+        else { clearTimeout(timeout); resolve(); }
+      };
+      setTimeout(check, 500);
+    });
+  }, []);
+
+  // DJ intro — plays before first track, works with both MusicKit and HTML audio
   useEffect(() => {
     if (!currentTrack || !currentStation) return;
     if (djIntroPlayed || introPlayedRef.current) return;
@@ -117,71 +137,31 @@ export function Player() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [currentTrack?.id, currentStation?.id, djIntroPlayed]);
 
-  // Load and play track audio (only after intro is done)
+  // HTML audio: load and play track (only when NOT using MusicKit)
   useEffect(() => {
+    if (usingMusicKit) return;
     if (!djIntroPlayed || !currentTrack?.previewUrl) return;
     if (currentTrack.previewUrl === audioSrc && audioSrc !== SILENT) return;
 
     const url = currentTrack.previewUrl;
-    console.log('[Audio] Loading track:', currentTrack.title, url.slice(0, 80));
     setAudioSrc(url);
 
-    // Wait for React to update the src attribute, then play
     const timer = setTimeout(() => {
       const audio = audioRef.current;
       if (!audio || !isPlaying) return;
       audio.load();
-      audio.play().then(() => {
-        console.log('[Audio] Track playing successfully');
-      }).catch(e => {
-        console.warn('[Audio] Track play blocked:', e.name, '— user must tap play');
+      audio.play().catch(e => {
+        console.warn('[Audio] Track play blocked:', e.name);
       });
     }, 150);
 
     return () => clearTimeout(timer);
-  }, [currentTrack?.previewUrl, djIntroPlayed]);
+  }, [currentTrack?.previewUrl, djIntroPlayed, usingMusicKit]);
 
-  // Play commentary audio through the dedicated element
-  const playCommentaryAudio = useCallback((url: string): Promise<void> => {
-    return new Promise((resolve) => {
-      const audio = commentaryAudioRef.current;
-      if (!audio) { resolve(); return; }
-
-      console.log('[DJ] Playing commentary audio...');
-      audio.src = url;
-      audio.volume = isMuted ? 0 : volume;
-
-      const onEnd = () => { audio.removeEventListener('ended', onEnd); resolve(); };
-      const onError = () => { audio.removeEventListener('error', onError); console.warn('[DJ] Commentary audio error'); resolve(); };
-      audio.addEventListener('ended', onEnd);
-      audio.addEventListener('error', onError);
-
-      audio.play().catch(e => {
-        console.warn('[DJ] Commentary play blocked:', e.name);
-        audio.removeEventListener('ended', onEnd);
-        audio.removeEventListener('error', onError);
-        resolve();
-      });
-    });
-  }, [isMuted, volume]);
-
-  const waitForBrowserTTS = useCallback((): Promise<void> => {
-    return new Promise((resolve) => {
-      const timeout = setTimeout(resolve, 15000); // Don't hang forever
-      const check = () => {
-        if (window.speechSynthesis?.speaking) {
-          setTimeout(check, 200);
-        } else {
-          clearTimeout(timeout);
-          resolve();
-        }
-      };
-      setTimeout(check, 500);
-    });
-  }, []);
-
-  // When a track ends: play transition commentary, then next track
+  // HTML audio: track end handler
   const handleTrackEnd = useCallback(async () => {
+    if (usingMusicKit) return; // MusicKit handles its own queue
+
     const prev = previousTrackRef.current;
     const nextInQueue = queue[0] || null;
 
@@ -200,10 +180,11 @@ export function Player() {
 
     previousTrackRef.current = currentTrack;
     nextTrack();
-  }, [commentaryEnabled, currentTrack, queue, generateTransition, nextTrack, playCommentaryAudio, waitForBrowserTTS]);
+  }, [usingMusicKit, commentaryEnabled, currentTrack, queue, generateTransition, nextTrack, playCommentaryAudio, waitForBrowserTTS]);
 
-  // Audio element events
+  // HTML audio: element events (only active when not using MusicKit)
   useEffect(() => {
+    if (usingMusicKit) return;
     const audio = audioRef.current;
     if (!audio) return;
 
@@ -213,10 +194,9 @@ export function Player() {
         audio.play().catch(() => {});
       }
     };
-    const onError = (e: Event) => {
-      const src = audio.src;
-      if (src && src !== SILENT && !src.startsWith('data:')) {
-        console.warn('[Audio] Load error, skipping track. src:', src.slice(0, 80));
+    const onError = () => {
+      if (audio.src && !audio.src.startsWith('data:')) {
+        console.warn('[Audio] Load error, skipping track');
         previousTrackRef.current = currentTrack;
         nextTrack();
       }
@@ -230,34 +210,49 @@ export function Player() {
       audio.removeEventListener('canplay', onCanPlay);
       audio.removeEventListener('error', onError);
     };
-  }, [handleTrackEnd, isPlaying, djSpeaking, djIntroPlayed, audioSrc, currentTrack, nextTrack]);
+  }, [usingMusicKit, handleTrackEnd, isPlaying, djSpeaking, djIntroPlayed, audioSrc, currentTrack, nextTrack]);
 
-  // Volume sync
+  // HTML audio: volume sync
   useEffect(() => {
+    if (usingMusicKit) return;
     const v = isMuted ? 0 : volume;
     if (audioRef.current) audioRef.current.volume = v;
-    if (commentaryAudioRef.current) commentaryAudioRef.current.volume = v;
-  }, [volume, isMuted]);
+  }, [volume, isMuted, usingMusicKit]);
 
-  // Progress tracking
+  // HTML audio: progress tracking
   useEffect(() => {
+    if (usingMusicKit) return;
     const audio = audioRef.current;
     if (!audio) return;
     const update = () => {
       if (audio.src && !audio.src.startsWith('data:')) {
-        setProgress(audio.currentTime);
-        setDuration(audio.duration || 0);
+        setHtmlProgress(audio.currentTime);
+        setHtmlDuration(audio.duration || 0);
       }
     };
     audio.addEventListener('timeupdate', update);
     audio.addEventListener('loadedmetadata', update);
     return () => { audio.removeEventListener('timeupdate', update); audio.removeEventListener('loadedmetadata', update); };
-  }, []);
+  }, [usingMusicKit]);
 
-  // Play/pause — this is a direct user gesture, so play() always works here
+  // Commentary audio volume sync
+  useEffect(() => {
+    if (commentaryAudioRef.current) {
+      commentaryAudioRef.current.volume = isMuted ? 0 : volume;
+    }
+  }, [volume, isMuted]);
+
   const handlePlayPause = async () => {
-    unlockAudio();
+    if (usingMusicKit) {
+      if (isPlaying) {
+        appleMusic.musicKitPause();
+      } else {
+        await appleMusic.musicKitPlay();
+      }
+      return;
+    }
 
+    // HTML audio path
     const audio = audioRef.current;
     if (!audio) { setIsPlaying(!isPlaying); return; }
 
@@ -267,49 +262,44 @@ export function Player() {
       return;
     }
 
-    // Make sure the audio has the right source
     if (currentTrack?.previewUrl) {
       if (audioSrc === SILENT || audio.src !== currentTrack.previewUrl) {
-        const url = currentTrack.previewUrl;
-        setAudioSrc(url);
-        audio.src = url;
+        audio.src = currentTrack.previewUrl;
+        setAudioSrc(currentTrack.previewUrl);
         audio.load();
       }
-
       try {
         await audio.play();
-        console.log('[Audio] Play via button succeeded');
         setIsPlaying(true);
       } catch (e) {
-        console.error('[Audio] Play via button failed:', (e as Error).name);
-        // Last resort: reload and retry
-        audio.load();
-        await new Promise(r => setTimeout(r, 200));
-        try {
-          await audio.play();
-          setIsPlaying(true);
-        } catch {
-          console.error('[Audio] Play failed completely');
-        }
+        console.error('[Audio] Play failed:', (e as Error).name);
       }
     }
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const t = parseFloat(e.target.value);
-    if (audioRef.current) audioRef.current.currentTime = t;
-    setProgress(t);
+    if (usingMusicKit && appleMusic.music) {
+      appleMusic.music.seekToTime(t);
+    } else if (audioRef.current) {
+      audioRef.current.currentTime = t;
+    }
   };
 
-  const handleSkip = () => {
+  const handleSkip = async () => {
     if (djSpeaking && commentaryAudioRef.current) {
       commentaryAudioRef.current.pause();
       commentaryAudioRef.current.src = SILENT;
       window.speechSynthesis?.cancel();
       setDjSpeaking(false);
     }
-    previousTrackRef.current = currentTrack;
-    nextTrack();
+
+    if (usingMusicKit) {
+      await appleMusic.musicKitSkip();
+    } else {
+      previousTrackRef.current = currentTrack;
+      nextTrack();
+    }
   };
 
   const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
@@ -320,14 +310,13 @@ export function Player() {
 
   return (
     <div className="fixed bottom-0 inset-x-0 z-50 animate-slide-up">
-      <audio ref={audioRef} src={audioSrc} preload="auto" playsInline />
+      {/* HTML audio elements — only used for non-MusicKit playback + commentary */}
+      <audio ref={audioRef} src={usingMusicKit ? SILENT : audioSrc} preload="auto" playsInline />
       <audio ref={commentaryAudioRef} src={SILENT} preload="auto" playsInline />
 
-      {/* Gradient edge */}
       <div className="h-px bg-gradient-to-r from-transparent via-violet-500/30 to-transparent" />
 
       <div className="bg-zinc-950/90 backdrop-blur-2xl border-t border-white/[0.04] px-4 pt-3 pb-4 sm:px-6">
-        {/* DJ speaking indicator */}
         {djSpeaking && (
           <div className="flex items-center gap-2 mb-2.5 animate-fade-in">
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-violet-500/10 border border-violet-500/20">
@@ -337,7 +326,6 @@ export function Player() {
           </div>
         )}
 
-        {/* Progress bar */}
         <div className="mb-3">
           <div className="relative w-full h-1 bg-zinc-800/60 rounded-full overflow-hidden group cursor-pointer">
             <div
@@ -359,7 +347,6 @@ export function Player() {
           </div>
         </div>
 
-        {/* Main controls */}
         <div className="flex items-center gap-3">
           {track.artworkUrl ? (
             <img
