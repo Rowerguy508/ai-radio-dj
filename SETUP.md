@@ -7,9 +7,8 @@ You have an existing Supabase project: **Rowerguy508's Project**
 ### Step 1: Get Your Supabase Credentials
 
 1. Go to: https://supabase.com/dashboard
-2. Login with: `angel.estrada@diomsinc.com`
-3. Password from your Passwords.csv: `mixjuz-vonkIj-9qyphi`
-4. Click on **Rowerguy508's Project** (or create a new project named `ai-radio-dj`)
+2. Login with your own Supabase account credentials
+3. Open your target project (or create a new project named `ai-radio-dj`)
 
 ### Step 2: Get API Keys
 

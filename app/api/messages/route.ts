@@ -2,28 +2,30 @@ import { NextRequest, NextResponse } from 'next/server';
 
 // GET - Fetch pending messages
 export async function GET(request: NextRequest) {
+  const requestId = crypto.randomUUID();
   try {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get('userId');
-    const limit = parseInt(searchParams.get('limit') || '10');
+    const limitRaw = parseInt(searchParams.get('limit') || '10', 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 100) : 10;
 
     if (!userId) {
       return NextResponse.json(
-        { error: 'User ID required' },
+        { error: 'User ID required', requestId },
         { status: 400 }
       );
     }
 
     // Return empty if Supabase not configured
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
-      return NextResponse.json({ messages: [] });
+      return NextResponse.json({ messages: [], requestId });
     }
 
     const { createAdminClient } = await import('@/lib/database/supabase');
     const supabase = createAdminClient();
     
     if (!supabase) {
-      return NextResponse.json({ messages: [] });
+      return NextResponse.json({ messages: [], requestId });
     }
 
     const { data: messages, error } = await (supabase as any)
@@ -37,11 +39,11 @@ export async function GET(request: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ messages });
+    return NextResponse.json({ messages, requestId });
   } catch (error) {
-    console.error('Fetch messages error:', error);
+    console.error('Fetch messages error:', { requestId, error });
     return NextResponse.json(
-      { error: 'Failed to fetch messages' },
+      { error: 'Failed to fetch messages', requestId },
       { status: 500 }
     );
   }
@@ -49,27 +51,28 @@ export async function GET(request: NextRequest) {
 
 // POST - Add a new message
 export async function POST(request: NextRequest) {
+  const requestId = crypto.randomUUID();
   try {
     const body = await request.json();
     const { userId, source, content, priority = 0 } = body;
 
     if (!userId || !content) {
       return NextResponse.json(
-        { error: 'User ID and content required' },
+        { error: 'User ID and content required', requestId },
         { status: 400 }
       );
     }
 
     // Return success without Supabase
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
-      return NextResponse.json({ message: { id: `local-${Date.now()}`, content }, local: true });
+      return NextResponse.json({ message: { id: `local-${Date.now()}`, content }, local: true, requestId });
     }
 
     const { createAdminClient } = await import('@/lib/database/supabase');
     const supabase = createAdminClient();
     
     if (!supabase) {
-      return NextResponse.json({ message: { id: `local-${Date.now()}`, content }, local: true });
+      return NextResponse.json({ message: { id: `local-${Date.now()}`, content }, local: true, requestId });
     }
 
     const { data: message, error } = await (supabase as any)
@@ -85,11 +88,11 @@ export async function POST(request: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ message });
+    return NextResponse.json({ message, requestId });
   } catch (error) {
-    console.error('Add message error:', error);
+    console.error('Add message error:', { requestId, error });
     return NextResponse.json(
-      { error: 'Failed to add message' },
+      { error: 'Failed to add message', requestId },
       { status: 500 }
     );
   }
@@ -97,13 +100,14 @@ export async function POST(request: NextRequest) {
 
 // PATCH - Mark message as read/dismissed
 export async function PATCH(request: NextRequest) {
+  const requestId = crypto.randomUUID();
   try {
     const body = await request.json();
     const { messageId, action, value = true } = body;
 
     if (!messageId || !action) {
       return NextResponse.json(
-        { error: 'Message ID and action required' },
+        { error: 'Message ID and action required', requestId },
         { status: 400 }
       );
     }
@@ -114,14 +118,14 @@ export async function PATCH(request: NextRequest) {
 
     // Return success without Supabase
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
-      return NextResponse.json({ success: true, local: true });
+      return NextResponse.json({ success: true, local: true, requestId });
     }
 
     const { createAdminClient } = await import('@/lib/database/supabase');
     const supabase = createAdminClient();
     
     if (!supabase) {
-      return NextResponse.json({ success: true, local: true });
+      return NextResponse.json({ success: true, local: true, requestId });
     }
 
     const { data: message, error } = await (supabase as any)
@@ -133,11 +137,11 @@ export async function PATCH(request: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ message });
+    return NextResponse.json({ message, requestId });
   } catch (error) {
-    console.error('Update message error:', error);
+    console.error('Update message error:', { requestId, error });
     return NextResponse.json(
-      { error: 'Failed to update message' },
+      { error: 'Failed to update message', requestId },
       { status: 500 }
     );
   }
