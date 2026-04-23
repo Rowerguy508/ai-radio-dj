@@ -42,35 +42,54 @@ function HomeContent() {
     localStorage.setItem('raydo-music-source', s);
   };
 
+  // Clean multi-line/descriptive search input into simple search terms
+  const parseSearchTerms = (raw: string): string[] => {
+    const lines = raw.split('\n')
+      .map(l => l.replace(/\(.*?\)/g, '').replace(/[“”””“”‘’]/g, '').trim())
+      .filter(l => l.length > 1 && !/^[-–—•*]$/.test(l));
+    return lines.length > 0 ? lines : [raw.trim()];
+  };
+
+  // Shuffle array in-place (Fisher-Yates)
+  const shuffle = <T,>(arr: T[]): T[] => {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  };
+
   // Play a station: search for tracks using the connected music source
   const playStation = async (station: Station) => {
     setLoadingStation(station.id);
     setCurrentStation(station);
     setDjIntroPlayed(false);
 
-    // Build a search query from station preferences + style
     const styleTerms: Record<string, string> = { chill: 'chill relaxing', hype: 'upbeat energy', balanced: 'popular hits' };
     const raw = station.searchQuery || styleTerms[station.style] || 'music';
-
-    // Clean multi-line/descriptive input into a simple search term
-    const lines = raw.split('\n')
-      .map(l => l.replace(/\(.*?\)/g, '').replace(/["""“”]/g, '').trim())
-      .filter(l => l.length > 1);
-    const query = lines.length > 1
-      ? lines[Math.floor(Math.random() * lines.length)]
-      : (lines[0] || raw.trim());
+    const terms = shuffle(parseSearchTerms(raw));
 
     let tracks: Track[] = [];
 
-    // Search via Apple Music (catalog search works with just a developer token, no user auth needed)
     if (musicSource === 'apple-music' && appleMusic.music) {
-      tracks = await appleMusic.searchTracks(query, 20);
+      // Try multiple terms until we get results, combine for variety
+      const seen = new Set<string>();
+      for (const term of terms.slice(0, 4)) {
+        const results = await appleMusic.searchTracks(term, 25);
+        for (const t of results) {
+          if (t.previewUrl && !seen.has(t.id)) {
+            seen.add(t.id);
+            tracks.push(t);
+          }
+        }
+        if (tracks.length >= 20) break;
+      }
+      shuffle(tracks);
     }
     // TODO: Add Spotify searchTracks similarly
 
-    // Fall back to demo tracks if no music source or search returned nothing
     if (tracks.length === 0) {
-      console.log('No tracks found from music source, using demo tracks. musicSource:', musicSource, 'appleMusicReady:', !!appleMusic.music);
+      console.log('No playable tracks found, using demo tracks. musicSource:', musicSource, 'appleMusicReady:', !!appleMusic.music);
       tracks = DEMO_TRACKS;
     }
 

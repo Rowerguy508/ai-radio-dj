@@ -148,10 +148,16 @@ export function Player() {
     if (!audio) return;
     const onEnded = () => handleTrackEnd();
     const onCanPlay = () => { if (isPlaying && !djSpeaking && djIntroPlayed) audio.play().catch(() => {}); };
+    const onError = () => {
+      console.warn('Audio load failed, skipping to next track');
+      previousTrackRef.current = currentTrack;
+      nextTrack();
+    };
     audio.addEventListener('ended', onEnded);
     audio.addEventListener('canplay', onCanPlay);
-    return () => { audio.removeEventListener('ended', onEnded); audio.removeEventListener('canplay', onCanPlay); };
-  }, [handleTrackEnd, isPlaying, djSpeaking, djIntroPlayed]);
+    audio.addEventListener('error', onError);
+    return () => { audio.removeEventListener('ended', onEnded); audio.removeEventListener('canplay', onCanPlay); audio.removeEventListener('error', onError); };
+  }, [handleTrackEnd, isPlaying, djSpeaking, djIntroPlayed, currentTrack, nextTrack]);
 
   // Volume sync
   useEffect(() => {
