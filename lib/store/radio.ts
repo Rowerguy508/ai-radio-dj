@@ -108,8 +108,11 @@ export const useRadioStore = create<RadioState>()(
 
       nextTrack: () => {
         const { queue } = get();
-        if (queue.length > 0) {
-          const [next, ...rest] = queue;
+        // Skip tracks without a playable URL
+        const playable = queue.findIndex(t => t.previewUrl);
+        if (playable >= 0) {
+          const next = queue[playable];
+          const rest = queue.slice(playable + 1);
           set({ currentTrack: next, queue: rest });
         } else {
           set({ isPlaying: false });

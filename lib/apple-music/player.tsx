@@ -147,8 +147,9 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
         limit,
       });
       const songs = result?.data?.results?.songs?.data || [];
-      log('Found', songs.length, 'songs');
-      return songs.map((t: any) => ({
+      const withPreviews = songs.filter((t: any) => t.attributes?.previews?.[0]?.url);
+      log('Found', songs.length, 'songs,', withPreviews.length, 'with previews, term:', query);
+      return withPreviews.map((t: any) => ({
         id: t.id,
         title: t.attributes?.name || 'Unknown',
         artistName: t.attributes?.artistName || 'Unknown',
