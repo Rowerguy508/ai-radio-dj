@@ -57,27 +57,9 @@ function HomeContent() {
     return arr;
   };
 
-  // Unlock Safari audio policy during a user gesture
-  const unlockAudio = () => {
-    const AC = window.AudioContext || (window as any).webkitAudioContext;
-    if (AC) {
-      const ctx = new AC();
-      if (ctx.state === 'suspended') ctx.resume();
-      const buf = ctx.createBuffer(1, 1, 22050);
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(ctx.destination);
-      src.start(0);
-    }
-    // Also prime any existing <audio> elements on the page
-    document.querySelectorAll('audio').forEach(a => {
-      a.muted = true;
-      a.play().then(() => { a.pause(); a.muted = false; a.currentTime = 0; }).catch(() => { a.muted = false; });
-    });
-  };
-
   const playStation = async (station: Station) => {
-    unlockAudio();
+    // Unlock Safari audio from this user gesture (calls into Player's unlock)
+    (window as any).__raydo_unlockAudio?.();
     setLoadingStation(station.id);
     setCurrentStation(station);
     setDjIntroPlayed(false);
@@ -475,7 +457,7 @@ function AppleMusicConnect() {
       </div>
       <MoodPicker mood={mood} setMood={setMood} />
       <button
-        onClick={() => createRadioStation(mood)}
+        onClick={() => { (window as any).__raydo_unlockAudio?.(); createRadioStation(mood); }}
         disabled={isLoading}
         className="w-full py-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-white text-sm font-medium disabled:opacity-50 transition-all border border-white/[0.04]"
       >
@@ -509,7 +491,7 @@ function SpotifyConnect() {
       </div>
       <MoodPicker mood={mood} setMood={setMood} />
       <button
-        onClick={() => createRadioStation(mood)}
+        onClick={() => { (window as any).__raydo_unlockAudio?.(); createRadioStation(mood); }}
         disabled={isLoading}
         className="w-full py-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-white text-sm font-medium disabled:opacity-50 transition-all border border-white/[0.04]"
       >
