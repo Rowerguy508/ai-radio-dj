@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Settings2, Radio, Mic, MicOff, Plus, Trash2, Pencil, Music, Headphones, Disc3 } from 'lucide-react';
 import { Player } from './components/Player';
 import { Settings } from './components/Settings';
@@ -21,7 +21,7 @@ function HomeContent() {
   const {
     toggleSettings, isPlaying, currentTrack, currentStation, commentaryEnabled, toggleCommentary,
     setCurrentStation, setCurrentTrack, setIsPlaying, setQueue, stations, addStation,
-    openStationEditor, removeStation, setDjIntroPlayed, queue,
+    openStationEditor, removeStation, setDjIntroPlayed, djIntroPlayed, queue,
   } = useRadioStore();
 
   const appleMusic = useAppleMusic();
@@ -30,6 +30,7 @@ function HomeContent() {
   const [musicSource, setMusicSource] = useState<MusicSource>('none');
   const [ready, setReady] = useState(false);
   const [loadingStation, setLoadingStation] = useState<string | null>(null);
+  const pendingMusicKitTracks = useRef<Track[] | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem('raydo-music-source') as MusicSource;
@@ -57,10 +58,20 @@ function HomeContent() {
     return arr;
   };
 
+  // Bless the commentary <audio> element during user gesture so Safari allows playback
+  const blessCommentaryAudio = () => {
+    const els = document.querySelectorAll('audio');
+    els.forEach(a => {
+      a.play().then(() => { a.pause(); a.currentTime = 0; }).catch(() => {});
+    });
+  };
+
   const playStation = async (station: Station) => {
+    blessCommentaryAudio();
     setLoadingStation(station.id);
     setCurrentStation(station);
     setDjIntroPlayed(false);
+    pendingMusicKitTracks.current = null;
 
     const styleTerms: Record<string, string> = { chill: 'chill relaxing', hype: 'upbeat energy', balanced: 'popular hits' };
     const raw = station.searchQuery || styleTerms[station.style] || 'music';
@@ -82,15 +93,24 @@ function HomeContent() {
       }
       shuffle(tracks);
 
-      // Use MusicKit native player for full songs + auto-advance
       if (tracks.length > 0 && appleMusic.music.isAuthorized) {
-        try {
-          await appleMusic.playWithMusicKit(tracks);
-          setLoadingStation(null);
-          return;
-        } catch (e) {
-          console.warn('MusicKit playback failed, falling back to previews:', e);
+        // Set first track for UI + commentary, but DON'T start MusicKit yet
+        // MusicKit will start after the DJ intro plays (see effect below)
+        setCurrentTrack(tracks[0]);
+        pendingMusicKitTracks.current = tracks;
+
+        if (!commentaryEnabled) {
+          // No intro — start MusicKit immediately
+          try {
+            await appleMusic.playWithMusicKit(tracks);
+          } catch (e) {
+            console.warn('MusicKit playback failed:', e);
+          }
+          pendingMusicKitTracks.current = null;
         }
+
+        setLoadingStation(null);
+        return;
       }
     }
 
@@ -105,6 +125,19 @@ function HomeContent() {
     setIsPlaying(true);
     setLoadingStation(null);
   };
+
+  // Start MusicKit AFTER the DJ intro finishes
+  useEffect(() => {
+    if (!djIntroPlayed) return;
+    const tracks = pendingMusicKitTracks.current;
+    if (!tracks || tracks.length === 0) return;
+    pendingMusicKitTracks.current = null;
+
+    console.log('[Radio] DJ intro done, starting MusicKit with', tracks.length, 'tracks');
+    appleMusic.playWithMusicKit(tracks).catch(e => {
+      console.error('[Radio] MusicKit start after intro failed:', e);
+    });
+  }, [djIntroPlayed]);
 
   if (!ready) return <div className="min-h-screen bg-black" />;
 

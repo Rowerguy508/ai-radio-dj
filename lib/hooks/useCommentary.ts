@@ -13,16 +13,14 @@ function getTimeOfDay(): string {
   return 'night';
 }
 
-/**
- * Generates AI DJ audio. Supports:
- * - DJ intro (before any music plays)
- * - Track transitions (between songs, every 2-3 tracks)
- */
+function log(...args: any[]) {
+  console.log('[DJ]', ...args);
+}
+
 export function useCommentary() {
   const isGenerating = useRef(false);
   const trackCountRef = useRef(0);
 
-  // Generate and return audio URL for the DJ to speak
   const generateDJAudio = useCallback(async (
     type: 'intro' | 'transition',
     currentTrack?: Track | null,
@@ -30,10 +28,17 @@ export function useCommentary() {
     nextTrack?: Track | null,
   ): Promise<string | null> => {
     const store = useRadioStore.getState();
-    if (!store.commentaryEnabled || !store.currentStation) return null;
-    if (isGenerating.current) return null;
+    if (!store.commentaryEnabled || !store.currentStation) {
+      log('Skipping:', !store.commentaryEnabled ? 'commentary disabled' : 'no station');
+      return null;
+    }
+    if (isGenerating.current) {
+      log('Skipping: already generating');
+      return null;
+    }
 
     isGenerating.current = true;
+    log('Generating', type, 'commentary...');
 
     try {
       const context: CommentaryContext = {
@@ -45,19 +50,28 @@ export function useCommentary() {
         type,
       };
 
-      // Step 1: Generate script via MiniMax text
+      // Step 1: Generate script
+      log('Step 1: Fetching commentary text...');
       const commentaryRes = await fetch('/api/commentary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ context }),
       });
 
-      if (!commentaryRes.ok) return null;
+      if (!commentaryRes.ok) {
+        log('Commentary API failed:', commentaryRes.status);
+        return null;
+      }
       const { ssml, text } = await commentaryRes.json();
       const spokenText = ssml || text;
-      if (!spokenText) return null;
+      if (!spokenText) {
+        log('No text returned from commentary API');
+        return null;
+      }
+      log('Got commentary text:', spokenText.slice(0, 80) + '...');
 
-      // Step 2: Generate audio via MiniMax TTS
+      // Step 2: Generate audio
+      log('Step 2: Fetching TTS audio...');
       const voiceRes = await fetch('/api/voice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -70,12 +84,18 @@ export function useCommentary() {
 
       if (voiceRes.ok) {
         const { audio } = await voiceRes.json();
-        if (audio) return audio;
+        if (audio) {
+          log('Got TTS audio, length:', audio.length);
+          return audio;
+        }
       }
+      log('TTS failed (status:', voiceRes.status, '), trying browser speech...');
 
       // Fallback: browser TTS
       if (typeof window !== 'undefined' && window.speechSynthesis) {
-        const utterance = new SpeechSynthesisUtterance(text || spokenText);
+        const plainText = text || spokenText.replace(/<[^>]+>/g, '');
+        log('Using browser speechSynthesis, text:', plainText.slice(0, 60));
+        const utterance = new SpeechSynthesisUtterance(plainText);
         utterance.rate = 0.95;
         const voices = window.speechSynthesis.getVoices();
         const preferred = voices.find(v => v.lang.startsWith('en')) || voices[0];
@@ -84,21 +104,20 @@ export function useCommentary() {
         return 'browser-tts';
       }
 
+      log('No TTS available');
       return null;
     } catch (e) {
-      console.error('DJ audio generation failed:', e);
+      log('Generation failed:', e);
       return null;
     } finally {
       isGenerating.current = false;
     }
   }, []);
 
-  // Generate DJ intro (plays before first track)
   const generateIntro = useCallback(async (firstTrack: Track | null): Promise<string | null> => {
     return generateDJAudio('intro', null, null, firstTrack);
   }, [generateDJAudio]);
 
-  // Generate transition (plays between tracks, every ~3 tracks)
   const generateTransition = useCallback(async (
     currentTrack: Track,
     previousTrack: Track | null,
@@ -108,9 +127,11 @@ export function useCommentary() {
     if (!store.commentaryEnabled) return null;
 
     trackCountRef.current++;
-    // Play transition every 2-3 tracks (randomized for natural feel)
-    const interval = 2 + Math.floor(Math.random() * 2); // 2 or 3
-    if (trackCountRef.current % interval !== 0) return null;
+    const interval = 2 + Math.floor(Math.random() * 2);
+    if (trackCountRef.current % interval !== 0) {
+      log('Skipping transition (track', trackCountRef.current, ', interval', interval, ')');
+      return null;
+    }
 
     return generateDJAudio('transition', currentTrack, previousTrack, nextTrack);
   }, [generateDJAudio]);
