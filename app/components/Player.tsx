@@ -69,8 +69,11 @@ export function Player() {
       if (audioRef.current && currentTrack?.previewUrl) {
         setAudioSrc(currentTrack.previewUrl);
         setTimeout(() => {
-          audioRef.current?.load();
-          audioRef.current?.play().catch(() => {});
+          if (!audioRef.current) return;
+          audioRef.current.load();
+          audioRef.current.play().catch(e => {
+            console.warn('Auto-play blocked after intro, waiting for user click:', e.name);
+          });
         }, 200);
       }
     };
@@ -87,7 +90,9 @@ export function Player() {
       setTimeout(() => {
         if (audioRef.current && isPlaying) {
           audioRef.current.load();
-          audioRef.current.play().catch(() => {});
+          audioRef.current.play().catch(e => {
+            console.warn('Track auto-play blocked:', e.name);
+          });
         }
       }, 100);
     } else if (!currentTrack) {
@@ -103,7 +108,7 @@ export function Player() {
       audio.volume = isMuted ? 0 : volume;
       const onEnd = () => { audio.removeEventListener('ended', onEnd); resolve(); };
       audio.addEventListener('ended', onEnd);
-      audio.play().catch(() => resolve());
+      audio.play().catch(e => { console.warn('Commentary play blocked:', e.name); resolve(); });
     });
   }, [isMuted, volume]);
 
@@ -141,7 +146,11 @@ export function Player() {
     const audio = audioRef.current;
     if (!audio) return;
     const onEnded = () => handleTrackEnd();
-    const onCanPlay = () => { if (isPlaying && !djSpeaking && djIntroPlayed) audio.play().catch(() => {}); };
+    const onCanPlay = () => {
+      if (isPlaying && !djSpeaking && djIntroPlayed) {
+        audio.play().catch(e => console.warn('canplay auto-play blocked:', e.name));
+      }
+    };
     const onError = () => {
       console.warn('Audio load failed, skipping to next track');
       previousTrackRef.current = currentTrack;
@@ -171,13 +180,35 @@ export function Player() {
   }, []);
 
   const handlePlayPause = async () => {
-    if (!audioRef.current) { setIsPlaying(!isPlaying); return; }
+    const audio = audioRef.current;
+    if (!audio) { setIsPlaying(!isPlaying); return; }
+
+    if (isPlaying) {
+      audio.pause();
+      setIsPlaying(false);
+      return;
+    }
+
+    // Ensure src is loaded
+    if (currentTrack?.previewUrl && audio.src !== currentTrack.previewUrl) {
+      audio.src = currentTrack.previewUrl;
+      setAudioSrc(currentTrack.previewUrl);
+      audio.load();
+    }
+
     try {
-      if (isPlaying) { audioRef.current.pause(); } else { await audioRef.current.play(); }
-      setIsPlaying(!isPlaying);
-    } catch {
-      audioRef.current.load();
-      setTimeout(async () => { try { await audioRef.current?.play(); setIsPlaying(true); } catch {} }, 100);
+      await audio.play();
+      setIsPlaying(true);
+    } catch (e) {
+      console.warn('Play failed, retrying:', (e as Error).name);
+      audio.load();
+      try {
+        await new Promise(r => setTimeout(r, 150));
+        await audio.play();
+        setIsPlaying(true);
+      } catch {
+        console.error('Play failed after retry');
+      }
     }
   };
 

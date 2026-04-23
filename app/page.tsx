@@ -57,7 +57,27 @@ function HomeContent() {
     return arr;
   };
 
+  // Unlock Safari audio policy during a user gesture
+  const unlockAudio = () => {
+    const AC = window.AudioContext || (window as any).webkitAudioContext;
+    if (AC) {
+      const ctx = new AC();
+      if (ctx.state === 'suspended') ctx.resume();
+      const buf = ctx.createBuffer(1, 1, 22050);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+    }
+    // Also prime any existing <audio> elements on the page
+    document.querySelectorAll('audio').forEach(a => {
+      a.muted = true;
+      a.play().then(() => { a.pause(); a.muted = false; a.currentTime = 0; }).catch(() => { a.muted = false; });
+    });
+  };
+
   const playStation = async (station: Station) => {
+    unlockAudio();
     setLoadingStation(station.id);
     setCurrentStation(station);
     setDjIntroPlayed(false);
