@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateCommentary } from '@/lib/llm/commentary';
+import { generateCommentary, type CommentaryContext } from '@/lib/llm/commentary';
 
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
     const body = await request.json();
-    const { context } = body;
+    const { context } = body as { context?: Partial<CommentaryContext> };
 
     if (!context?.station) {
       return NextResponse.json({ error: 'Missing station context', requestId }, { status: 400 });

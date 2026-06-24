@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authorizeRequest } from '@/lib/auth/api';
+
+const ALLOWED_SOURCES = new Set(['telegram', 'telegram-callback', 'manual', 'calendar']);
 
 // GET - Fetch pending messages
 export async function GET(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
+
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get('userId');
     const limitRaw = parseInt(searchParams.get('limit') || '10', 10);
@@ -14,6 +20,10 @@ export async function GET(request: NextRequest) {
         { error: 'User ID required', requestId },
         { status: 400 }
       );
+    }
+
+    if (auth.userId && auth.userId !== userId) {
+      return NextResponse.json({ error: 'Forbidden user scope', requestId }, { status: 403 });
     }
 
     // Return empty if Supabase not configured
@@ -53,10 +63,56 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
-    const body = await request.json();
-    const { userId, source, content, priority = 0 } = body;
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
 
-    if (!userId || !content) {
+    const body = await request.json();
+    const { userId, source, content, priority = 0 } = body as {
+      userId?: string;
+      source?: string;
+      content?: string;
+      priority?: number;
+    };
+
+    if (!userId || typeof userId !== 'string') {
+      return NextResponse.json(
+        { error: 'User ID is required', requestId },
+        { status: 400 }
+      );
+    }
+
+    if (auth.userId && auth.userId !== userId) {
+      return NextResponse.json({ error: 'Forbidden user scope', requestId }, { status: 403 });
+    }
+
+    if (!content || typeof content !== 'string') {
+      return NextResponse.json(
+        { error: 'Content is required', requestId },
+        { status: 400 }
+      );
+    }
+
+    const trimmedContent = content.trim();
+    if (trimmedContent.length === 0 || trimmedContent.length > 1000) {
+      return NextResponse.json(
+        { error: 'Content must be between 1 and 1000 characters', requestId },
+        { status: 400 }
+      );
+    }
+
+    const normalizedSource = source || 'telegram';
+    if (!ALLOWED_SOURCES.has(normalizedSource)) {
+      return NextResponse.json(
+        { error: 'Invalid message source', requestId },
+        { status: 400 }
+      );
+    }
+
+    const normalizedPriority = Number.isFinite(priority)
+      ? Math.min(Math.max(Number(priority), -10), 10)
+      : 0;
+
+    if (!Number.isFinite(normalizedPriority)) {
       return NextResponse.json(
         { error: 'User ID and content required', requestId },
         { status: 400 }
@@ -79,9 +135,9 @@ export async function POST(request: NextRequest) {
       .from('message_queue')
       .insert({
         user_id: userId,
-        source: source || 'telegram',
-        content,
-        priority,
+        source: normalizedSource,
+        content: trimmedContent,
+        priority: normalizedPriority,
       })
       .select()
       .single();
@@ -102,8 +158,15 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
+
     const body = await request.json();
-    const { messageId, action, value = true } = body;
+    const { messageId, action, value = true } = body as {
+      messageId?: string;
+      action?: 'read' | 'dismiss';
+      value?: boolean;
+    };
 
     if (!messageId || !action) {
       return NextResponse.json(
@@ -128,12 +191,16 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ success: true, local: true, requestId });
     }
 
-    const { data: message, error } = await (supabase as any)
+    let updateQuery = (supabase as any)
       .from('message_queue')
       .update(updateData)
-      .eq('id', messageId)
-      .select()
-      .single();
+      .eq('id', messageId);
+
+    if (auth.userId) {
+      updateQuery = updateQuery.eq('user_id', auth.userId);
+    }
+
+    const { data: message, error } = await updateQuery.select().single();
 
     if (error) throw error;
 

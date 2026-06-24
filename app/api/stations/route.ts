@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authorizeRequest } from '@/lib/auth/api';
+
+const ALLOWED_STYLES = new Set(['chill', 'balanced', 'hype']);
 
 // GET - Fetch user's stations
 export async function GET(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
+
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get('userId');
 
@@ -48,10 +54,29 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID();
   try {
-    const body = await request.json();
+    const auth = await authorizeRequest(request, requestId);
+    if (auth.errorResponse) return auth.errorResponse;
+
+    const body = await request.json() as Record<string, unknown>;
+
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const style = typeof body.style === 'string' ? body.style : 'balanced';
+    const energyLevel = typeof body.energyLevel === 'number' ? body.energyLevel : 0.5;
+
+    if (!name || name.length > 100) {
+      return NextResponse.json({ error: 'Station name must be 1-100 characters', requestId }, { status: 400 });
+    }
+
+    if (!ALLOWED_STYLES.has(style)) {
+      return NextResponse.json({ error: 'Station style is invalid', requestId }, { status: 400 });
+    }
+
+    if (!Number.isFinite(energyLevel) || energyLevel < 0 || energyLevel > 1) {
+      return NextResponse.json({ error: 'Energy level must be between 0 and 1', requestId }, { status: 400 });
+    }
     
     // Return success without Supabase (local-first mode)
-    console.log('Station created (local mode):', body.name);
+    console.log('Station created (local mode):', name);
     return NextResponse.json({ 
       station: { ...body, id: body.id || `station-${Date.now()}` },
       local: true,
