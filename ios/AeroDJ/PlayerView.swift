@@ -56,7 +56,11 @@ struct PlayerView: View {
                     Image(systemName: "forward.fill").font(.title2)
                 }
                 Button {
-                    music.isPlaying ? music.pause() : Task { try? await music.resume() }
+                    if music.isPlaying {
+                        music.pause()
+                    } else {
+                        Task { try? await music.resume() }
+                    }
                 } label: {
                     Image(systemName: music.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 48))
