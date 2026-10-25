@@ -24,6 +24,9 @@ public struct SharedReviewEntry: Identifiable, Equatable, Sendable {
     public var decision: SharedReviewDecision = .pending
     /// User-edited text that replaces the shared content for narration.
     public var redactedText: String?
+    /// "Read it anyway" for an item the sanitizer flags. Only meaningful while
+    /// approved; cleared when the decision or the text changes.
+    public var isReconfirmed = false
 
     public var id: UUID { item.id }
     public var displayText: String { redactedText ?? item.content }
@@ -32,6 +35,7 @@ public struct SharedReviewEntry: Identifiable, Equatable, Sendable {
 public enum SharedReviewError: Error, Equatable, Sendable {
     case unknownItem
     case emptyRedaction
+    case notApproved
 }
 
 /// Review, redact and delete user-shared items, and expose them as
@@ -69,6 +73,7 @@ public actor SharedInboxReview: ContextSource {
                 entry.decision = record.decision
                 entry.label = record.label
                 if record.isRedacted { entry.redactedText = item.content }
+                entry.isReconfirmed = record.isReconfirmed && record.decision == .approved
             }
             return entry
         }
@@ -81,7 +86,24 @@ public actor SharedInboxReview: ContextSource {
     }
 
     public func setDecision(_ decision: SharedReviewDecision, for id: UUID) throws {
-        try update(id) { $0.decision = decision }
+        try update(id) {
+            if $0.decision != decision { $0.isReconfirmed = false }
+            $0.decision = decision
+        }
+    }
+
+    /// Records that the user re-confirmed an approved item the injection
+    /// sanitizer held back. Persisted; the briefing passes these ids as
+    /// `reconfirmed`. Any later decision change or redaction revokes it.
+    public func reconfirm(_ id: UUID) throws {
+        guard let entry = entries.first(where: { $0.id == id }) else { throw SharedReviewError.unknownItem }
+        guard entry.decision == .approved else { throw SharedReviewError.notApproved }
+        try update(id) { $0.isReconfirmed = true }
+    }
+
+    /// Approved, re-confirmed item ids (same ids as `fetchItems()`).
+    public var reconfirmedItemIDs: Set<UUID> {
+        Set(entries.filter { $0.decision == .approved && $0.isReconfirmed }.map(\.id))
     }
 
     /// Replaces the narrated text and rewrites the envelope on disk, so the
@@ -153,7 +175,8 @@ public actor SharedInboxReview: ContextSource {
     private func persist() throws {
         guard let store else { return }
         try store.save(Dictionary(uniqueKeysWithValues: entries.map {
-            ($0.id, SharedReviewRecord(decision: $0.decision, label: $0.label, isRedacted: $0.redactedText != nil))
+            ($0.id, SharedReviewRecord(decision: $0.decision, label: $0.label, isRedacted: $0.redactedText != nil,
+                                       isReconfirmed: $0.isReconfirmed))
         }))
     }
 }
