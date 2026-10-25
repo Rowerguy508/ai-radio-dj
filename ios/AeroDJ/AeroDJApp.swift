@@ -9,9 +9,10 @@ struct AeroDJApp: App {
     init() {
         let dependencies = AppDependencies.make()
         self.dependencies = dependencies
-        // Runtime evidence of the dependency set this launch actually uses.
+        // Runtime evidence of the dependency set this launch actually uses. `notice`, not
+        // `info`: info-level messages are not persisted, so `log show` could not read them.
         Logger(subsystem: "com.aerodj.app", category: "runtime")
-            .info("runtime mode: \(dependencies.mode.rawValue, privacy: .public), context sources: \(dependencies.contextSources.count)")
+            .notice("runtime mode: \(dependencies.mode.rawValue, privacy: .public), context sources: \(dependencies.contextSources.count)")
     }
 
     var body: some Scene {

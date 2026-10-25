@@ -29,7 +29,13 @@ runtime_mode() {
 expect() {
   local label="$1" want="$2" got="$3"
   echo "$label: got '${got:-<no runtime log line>}', want '$want'"
-  [ "$got" = "$want" ] || { echo "FAILED: $label"; exit 1; }
+  if [ "$got" != "$want" ]; then
+    echo "FAILED: $label"
+    echo "--- app-process log lines from the last 5 minutes (diagnostic):"
+    xcrun simctl spawn "$UDID" log show --style compact --last 5m \
+      --predicate 'process == "AeroDJ"' | tail -40 || true
+    exit 1
+  fi
 }
 
 expect "Debug, no argument" "runtime mode: live" "$(runtime_mode "$DEBUG_APP")"
