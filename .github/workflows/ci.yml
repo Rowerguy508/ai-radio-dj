@@ -13,6 +13,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Reject generated artifacts and credentials
+        run: |
+          if git ls-files | grep -E '(^|/)(\.build|DerivedData|xcuserdata|\.swiftpm|[^/]+\.xcodeproj)/|\.(o|ipa|p8|p12|pem|key|mobileprovision)$|(^|/)\.env(\.local|\.[a-z]+\.local)?$'; then
+            echo "::error::Generated build outputs or credential files are tracked (listed above)"
+            exit 1
+          fi
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:

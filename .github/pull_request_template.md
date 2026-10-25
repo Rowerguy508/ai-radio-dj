@@ -21,8 +21,14 @@ Commands executed + pass/fail:
 - Manual iPhone/CarPlay/AirPods checks (if applicable):
 - CI run URLs:
 
-## Rollback / deployment
-Feature flags, safe rollback and migrations:
+## Privacy / data
+Data read, stored or transmitted; permissions requested; retention and deletion. Write "None" only if no user data is touched:
+
+## Cost
+Provider calls, characters/minutes/tokens per use, budget enforcement. Numbers, not a checkbox. "None" if no paid provider is touched:
+
+## Rollback / deployment (required)
+Feature flags, safe rollback steps and migrations. PRs with this section empty are rejected:
 
 ## Reviewer handoff
 Known limitations, risks, touched components, open questions:

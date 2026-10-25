@@ -14,5 +14,5 @@ These instructions apply to all automated and human contributors in this reposit
 9. Review feedback: respond in GitHub with a commit SHA, reproduced result or technical rationale for each thread; don't resolve reviewer threads on the reviewer's behalf.
 10. No work counts as done until issue acceptance criteria, CI, independent review, and linked PR are complete. Update GitHub issue and PR, not an external status document.
 
-## First priority
-PR #27 has blocking findings in its review discussion. Fix missing Xcode project/build CI and tracked .build artifacts. Security issue #28 must be resolved before ingestion of personal data.
+## Priority rule
+Before starting new work, check open `[SECURITY/P0]` issues. No work that ingests personal data (Calendar, shared Mail/Messages, Obsidian) or sends it to the backend may merge while a P0 security issue affecting that path is open.
