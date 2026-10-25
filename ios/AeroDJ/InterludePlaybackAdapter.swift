@@ -29,9 +29,9 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     var isSpeaking: Bool { finish != nil }
 
-    /// A line with no prepared clip. The break is skipped and the UI is told.
+    /// A line with no prepared clip. Routine, so the break is skipped quietly; the
+    /// DJ status goes idle without an error. Only real failures are reported.
     func skipUnprepared() {
-        music.reportSpeechError("A DJ line was not prepared and was skipped.")
         music.skipInterlude()
     }
 
