@@ -20,11 +20,15 @@ struct StationListView: View {
             }
             .navigationTitle("AeroDJ")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showSharedInbox = true
-                    } label: {
-                        Label("Shared Items", systemImage: "square.and.arrow.up")
+                // The real App Group inbox is never opened in the test station: its
+                // data must not appear next to fixtures.
+                if dependencies.mode == .live {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showSharedInbox = true
+                        } label: {
+                            Label("Shared Items", systemImage: "square.and.arrow.up")
+                        }
                     }
                 }
             }
@@ -32,7 +36,7 @@ struct StationListView: View {
                 PlayerView(station: station)
             }
             .sheet(isPresented: $showSharedInbox) {
-                if let review = SharedInboxReview.appGroupInbox() {
+                if dependencies.mode == .live, let review = SharedInboxReview.appGroupInbox() {
                     SharedInboxReviewView(review: review)
                 }
             }

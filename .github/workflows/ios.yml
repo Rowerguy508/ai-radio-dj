@@ -112,18 +112,21 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
         working-directory: ios
-      - name: Build for a physical device without signing
-        # Proves the arm64 device slice compiles. Signing needs the owner's team
-        # (ios/Config/Signing.local.xcconfig), so CI signs nothing.
+      - name: Build Debug and Release for a physical device without signing
+        # Proves both arm64 device slices compile. Release proves the test station is
+        # compiled out. Signing needs the owner's team (ios/Config/Signing.local.xcconfig),
+        # so CI signs nothing.
         run: |
-          xcodebuild build \
-            -project ios/AeroDJ.xcodeproj \
-            -scheme AeroDJ \
-            -configuration Debug \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$DERIVED_DATA" \
-            CODE_SIGNING_ALLOWED=NO
+          for CONFIG in Debug Release; do
+            xcodebuild build \
+              -project ios/AeroDJ.xcodeproj \
+              -scheme AeroDJ \
+              -configuration "$CONFIG" \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath "$DERIVED_DATA" \
+              CODE_SIGNING_ALLOWED=NO
+          done
 
   runtime-mode:
     name: Runtime mode on simulator (Debug vs Release)
