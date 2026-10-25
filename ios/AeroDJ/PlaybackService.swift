@@ -61,6 +61,7 @@ final class MockPlaybackService: PlaybackService, ObservableObject {
     init(tracks: [TrackInfo] = MockPlaybackService.defaultTracks) {
         self.tracks = tracks
         snapshot.upNext = Array(tracks.dropFirst())
+        applyLaunchDemoState()
     }
 
     static let defaultTracks: [TrackInfo] = [
@@ -114,5 +115,26 @@ final class MockPlaybackService: PlaybackService, ObservableObject {
 
     func removeFromQueue(_ track: TrackInfo) {
         snapshot.upNext.removeAll { $0.id == track.id }
+    }
+
+    /// Screenshot harness: `AERODJ_DEMO` pre-populates a state so CI captures
+    /// realistic shots. Values: `playing` (now-playing + speaking), `error`.
+    private func applyLaunchDemoState() {
+        let demo = ProcessInfo.processInfo.environment["AERODJ_DEMO"]
+        switch demo {
+        case "playing":
+            snapshot.nowPlaying = tracks[0]
+            snapshot.transport = .playing
+            snapshot.upNext = Array(tracks.dropFirst())
+            speaking = true
+            snapshot.dj = .speaking(line: "Good morning. Here's what's ahead.")
+        case "error":
+            snapshot.error = PlaybackError(
+                kind: .playbackFailed,
+                message: "Could not start this station. Check your connection.",
+                isRecoverable: true)
+        default:
+            break // empty state
+        }
     }
 }

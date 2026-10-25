@@ -75,18 +75,70 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" \
             | grep -qx 'com.apple.share-services'
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" | grep -qx 'com.aerodj.app.share'
-      - name: Pick an available iPhone simulator
+      - name: Run unit tests on simulator
         run: |
           UDID=$(xcrun simctl list devices available -j \
             | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
                       | select(.name | startswith("iPhone"))] | last | .udid // empty')
           test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
-      - name: Run unit tests on simulator
-        run: |
           xcodebuild test \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJ \
             -destination "id=$SIM_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
+      - name: Upload built app
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeroDJ-sim
+          path: ${{ env.DERIVED_DATA }}/Build/Products/Debug-iphonesimulator/AeroDJ.app
+          if-no-files-found: error
+
+  screenshots:
+    name: Duo layout screenshots
+    needs: simulator-build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Download built app
+        uses: actions/download-artifact@v4
+        with:
+          name: aeroDJ-sim
+          path: build/AeroDJ.app
+      - name: Boot closed (iPhone) and open (iPad) simulators
+        run: |
+          IPHONE=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                      | select(.name | startswith("iPhone"))] | last | .udid // empty')
+          IPAD=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                      | select(.name | startswith("iPad"))] | last | .udid // empty')
+          test -n "$IPHONE" || { echo "No iPhone simulator"; exit 1; }
+          test -n "$IPAD" || { echo "No iPad simulator"; exit 1; }
+          xcrun simctl boot "$IPHONE" || true
+          xcrun simctl boot "$IPAD" || true
+          echo "IPHONE=$IPHONE" >> "$GITHUB_ENV"
+          echo "IPAD=$IPAD" >> "$GITHUB_ENV"
+      - name: Capture closed (compact player)
+        run: |
+          xcrun simctl install "$IPHONE" build/AeroDJ.app
+          SIMCTL_CHILD_AERODJ_LAUNCH=player SIMCTL_CHILD_AERODJ_DEMO=playing \
+            xcrun simctl launch --terminate-running-process "$IPHONE" com.aerodj.app
+          sleep 4
+          xcrun simctl io "$IPHONE" screenshot /tmp/closed-player.png
+      - name: Capture open (unfolded Studio)
+        run: |
+          xcrun simctl install "$IPAD" build/AeroDJ.app
+          SIMCTL_CHILD_AERODJ_LAUNCH=player SIMCTL_CHILD_AERODJ_DEMO=playing \
+            xcrun simctl launch "$IPAD" com.aerodj.app
+          sleep 4
+          xcrun simctl io "$IPAD" screenshot /tmp/unfolded-studio.png
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeroDJ-layout-screenshots
+          path: /tmp/*.png
+          if-no-files-found: error
