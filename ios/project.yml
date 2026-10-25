@@ -30,6 +30,9 @@ targets:
         INFOPLIST_KEY_NSAppleMusicUsageDescription: AeroDJ uses Apple Music to play your station.
         INFOPLIST_KEY_UIBackgroundModes: audio
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         CODE_SIGN_ENTITLEMENTS: AeroDJ/AeroDJ.entitlements
   AeroDJShare:
     type: app-extension
