@@ -110,37 +110,39 @@ jobs:
         with:
           name: aeroDJ-sim
           path: build/AeroDJ.app
-      - name: Boot closed (iPhone) and open (iPad) simulators
+      - name: Boot an iPhone simulator
         run: |
           IPHONE=$(xcrun simctl list devices available -j \
             | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
                       | select(.name | startswith("iPhone"))] | last | .udid // empty')
-          IPAD=$(xcrun simctl list devices available -j \
-            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
-                      | select(.name | startswith("iPad"))] | last | .udid // empty')
           test -n "$IPHONE" || { echo "No iPhone simulator"; exit 1; }
-          test -n "$IPAD" || { echo "No iPad simulator"; exit 1; }
           xcrun simctl boot "$IPHONE" || true
-          xcrun simctl boot "$IPAD" || true
           echo "IPHONE=$IPHONE" >> "$GITHUB_ENV"
-          echo "IPAD=$IPAD" >> "$GITHUB_ENV"
-      - name: Capture closed (compact player)
+      - name: Capture closed (compact with playing state)
         run: |
           xcrun simctl install "$IPHONE" build/AeroDJ.app
           SIMCTL_CHILD_AERODJ_LAUNCH=player SIMCTL_CHILD_AERODJ_DEMO=playing \
             xcrun simctl launch --terminate-running-process "$IPHONE" com.aerodj.app
           sleep 4
-          xcrun simctl io "$IPHONE" screenshot /tmp/closed-player.png
-      - name: Capture open (unfolded Studio, landscape)
+          xcrun simctl io "$IPHONE" screenshot /tmp/aerodj-closed-compact.png
+      - name: Capture closed (empty state)
         run: |
-          xcrun simctl install "$IPAD" build/AeroDJ.app
-          # Rotate to landscape so the two-zone workspace layout engages.
-          xcrun simctl io "$IPAD" rotate left || xcrun simctl io "$IPAD" rotate right || true
-          sleep 1
+          xcrun simctl terminate "$IPHONE" com.aerodj.app || true
+          SIMCTL_CHILD_AERODJ_LAUNCH=player \
+            xcrun simctl launch --terminate-running-process "$IPHONE" com.aerodj.app
+          sleep 3
+          xcrun simctl io "$IPHONE" screenshot /tmp/aerodj-closed-empty.png
+      - name: Capture open (unfolded Studio, wide iPhone)
+        run: |
+          # Duo open = a wide iPhone canvas; rotate the same iPhone to landscape
+          # so the two-zone studio layout engages.
+          xcrun simctl terminate "$IPHONE" com.aerodj.app || true
+          xcrun simctl io "$IPHONE" rotate left || xcrun simctl io "$IPHONE" rotate right || true
+          sleep 2
           SIMCTL_CHILD_AERODJ_LAUNCH=player SIMCTL_CHILD_AERODJ_DEMO=playing \
-            xcrun simctl launch --terminate-running-process "$IPAD" com.aerodj.app
+            xcrun simctl launch --terminate-running-process "$IPHONE" com.aerodj.app
           sleep 4
-          xcrun simctl io "$IPAD" screenshot /tmp/unfolded-studio.png
+          xcrun simctl io "$IPHONE" screenshot /tmp/aerodj-open-studio.png
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
         with:
