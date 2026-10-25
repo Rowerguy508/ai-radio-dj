@@ -15,6 +15,10 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
     private let speech = AVSpeechSynthesizer()
     private var finish: CheckedContinuation<Void, Never>?
     private var timeout: Task<Void, Never>?
+    private var outcome: SpeechOutcome = .cancelled
+
+    /// How a spoken break ended. Only `.finished` means the whole line was heard.
+    private enum SpeechOutcome { case finished, cancelled }
 
     init(music: MusicKitService) {
         self.music = music
@@ -32,6 +36,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
         }
         music.pause()
         music.beginInterlude() // transition -> voice
+        outcome = .cancelled
+        music.djStarted(text)
 
         let utterance = AVSpeechUtterance(string: text)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
@@ -42,12 +48,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
             let seconds = Double(text.split(separator: " ").count) / 2.0 + 5
             timeout = Task { @MainActor [weak self] in
                 do { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } catch { return }
-                self?.finishSpeech()
+                self?.finishSpeech(.cancelled)
             }
             speech.speak(utterance)
         }
 
         music.endInterlude() // voice -> music
+        if outcome == .finished { music.djFinished() } else { music.djCancelled() }
         do {
             try await music.resume()
         } catch {
@@ -59,20 +66,21 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
         speech.stopSpeaking(at: .immediate)
     }
 
-    private func finishSpeech() {
+    private func finishSpeech(_ result: SpeechOutcome) {
         timeout?.cancel()
         timeout = nil
         guard let continuation = finish else { return }
         finish = nil
+        outcome = result
         continuation.resume()
     }
 
     // AVSpeechSynthesizer calls these on an arbitrary queue; hop back to the main actor.
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.finishSpeech() }
+        Task { @MainActor [weak self] in self?.finishSpeech(.finished) }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.finishSpeech() }
+        Task { @MainActor [weak self] in self?.finishSpeech(.cancelled) }
     }
 }

@@ -24,6 +24,9 @@ final class MusicKitService: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var queue: [Track] = []
     @Published private(set) var lastError: String?
+    /// The UI's single source of truth, built by `PlaybackEngine` from the events below.
+    @Published private(set) var snapshot = PlaybackSnapshot()
+    private var engine = PlaybackEngine()
 
     private let player = ApplicationMusicPlayer.shared
     private var stateMachine = AudioStateMachine()
@@ -67,6 +70,7 @@ final class MusicKitService: ObservableObject {
     func play(_ tracks: [Track]) async throws {
         guard authState == .authorized else {
             lastError = MusicKitError.notAuthorized.errorDescription ?? "Apple Music authorization required."
+            send(.errorRaised(PlaybackError(kind: .notAuthorized, message: lastError ?? "", isRecoverable: false)))
             throw MusicKitError.notAuthorized
         }
         guard !tracks.isEmpty else { return }
@@ -74,14 +78,17 @@ final class MusicKitService: ObservableObject {
         currentTrack = tracks.first
         boundaryDetector.userRequestedChange()
         queueIndex = 0
+        send(.queueStarted(tracks: tracks.map(\.info), startIndex: 0))
         player.queue = ApplicationMusicPlayer.Queue(for: tracks.compactMap { $0.song })
         stateMachine.apply(.startMusic)
         do {
             try await player.play()
             isPlaying = true
             lastError = nil
+            send(.errorCleared)
         } catch {
             lastError = "Playback failed: \(error.localizedDescription)"
+            send(.errorRaised(PlaybackError(kind: .playbackFailed, message: lastError ?? "", isRecoverable: true)))
             throw error
         }
     }
@@ -89,6 +96,7 @@ final class MusicKitService: ObservableObject {
     func pause() {
         player.pause()
         isPlaying = false
+        send(.userPaused)
         stateMachine.apply(.pause)
     }
 
@@ -96,12 +104,14 @@ final class MusicKitService: ObservableObject {
         try await player.play()
         isPlaying = true
         stateMachine.apply(.resume)
+        send(.userResumed)
     }
 
     /// A user skip is not a natural boundary: no DJ break is triggered by it.
     func skip() async throws {
         boundaryDetector.userRequestedChange()
         try await player.skipToNextEntry()
+        send(.userSkipped(nextIndex: queueIndex + 1))
         advanceDisplayedTrack()
     }
 
@@ -118,6 +128,16 @@ final class MusicKitService: ObservableObject {
     /// Surfaces a non-fatal error in the player UI without interrupting playback.
     func reportError(_ message: String) {
         lastError = message
+        send(.errorRaised(PlaybackError(kind: .resumeFailed, message: message, isRecoverable: true)))
+    }
+
+    /// DJ break lifecycle, reported by the interlude adapter.
+    func djStarted(_ line: String) { send(.djStarted(line: line)) }
+    func djFinished() { send(.djFinished) }
+    func djCancelled() { send(.djCancelled) }
+
+    private func send(_ event: PlaybackEvent) {
+        snapshot = engine.apply(event)
     }
 
     /// Called when a boundary has no DJ line: transition -> music, so playback never sticks.
@@ -157,6 +177,7 @@ final class MusicKitService: ObservableObject {
         switch boundary {
         case .naturalEnd:
             let finishedIndex = queueIndex
+            send(.naturalBoundary(nextIndex: finishedIndex + 1))
             queueIndex += 1
             currentTrack = queue.indices.contains(queueIndex) ? queue[queueIndex] : nil
             stateMachine.apply(.trackEnded)
@@ -164,6 +185,7 @@ final class MusicKitService: ObservableObject {
         case .queueFinished:
             currentTrack = nil
             stateMachine.apply(.stop)
+            send(.queueFinished)
             onBoundary?(boundary, queueIndex)
         }
     }
@@ -258,5 +280,12 @@ struct Track: Identifiable, Hashable {
         self.artistName = song.artistName
         self.artworkURL = song.artwork?.url(width: 300, height: 300)
         self.song = song
+    }
+}
+
+extension Track {
+    /// The UI-facing view of a track. The UI never sees `Song`.
+    var info: TrackInfo {
+        TrackInfo(id: id, title: title, artistName: artistName, artworkURL: artworkURL)
     }
 }
