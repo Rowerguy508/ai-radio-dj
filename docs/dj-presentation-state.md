@@ -2,6 +2,8 @@
 
 This file defines what the UI may truthfully show about the DJ. It is not a UI design.
 
+**Contract status: stable for beta.** Cases are only added, never renamed or removed, without a note on the UI PR. Station settings (what the user edits, pending vs active, when edits apply) are defined in [`station-configuration.md`](station-configuration.md) (#57) and are not repeated here.
+
 Source: `AeroDJCore/DJ/DJPresentationState.swift`. Observe `DJPresentationStore.state` (`@Observable`, main actor) or `updates()` (an `AsyncStream`). The store changes **only** on real events:
 - consent review: `consentReviewPending`
 - `DJBreakPreparer`: preparing, ready, skipped
@@ -35,16 +37,28 @@ A failure reason clears on the next successful `ready` or `finished`. `sessionSt
    - `.ready(b)`: the player plays `b.clips` (`Data`, measured `audio.seconds`) and reports started, then finished or failed.
    - `.skipped(reason)`: the next song starts immediately.
    - A user skip or queue change passes `natural: false`, so the DJ never talks over or after a cut song.
+   - The boundary call is Claude's `songEnded` / #57's `StationBoundaryEvent.songBoundary(afterTrack:)`: only when the song really ended, never mid-song.
 3. Failure recovery:
    - A render that times out, fails, or hits the cost cap becomes a skip.
    - A clip that fails at playback reports `playbackFailed` and music resumes.
-   - **No retry or live re-synthesis that delays the next song.**
+   - **No retry or live re-synthesis that delays the next song.** A missing, late or undecodable prepared clip means the break is skipped at once and the next song starts.
+4. Invalidation:
+   - `cancelAll()`: station change, queue replaced, stop, or a #57 change with `invalidatesPreparedBreaks == true`. In-flight renders are cancelled (cost reservations released, nothing cached), prepared audio is discarded, and each dropped break emits `skipped(.cancelled)`. A late finish is ignored.
+   - `purge(sourceItemIDs:)`: a personal item was deleted or its consent revoked. Breaks built from it emit `skipped(.sourceRevoked)` and never play; call `AudioCache.purge(sourceItemIDs:)` alongside to delete its cached audio.
+   - Neither ever stops or restarts the song that is playing.
 
-## Defaults (configurable; pending owner sign-off)
+### Skip reasons → UI
+| `DJBreakSkipReason` | UI effect |
+|---|---|
+| `costCap` | `unavailable(budgetReached)` |
+| `renderFailed`, `overDuration`, `timedOut`, `overBreakBudget` | `unavailable(voiceFailed)` (low-key, clears on next success) |
+| `notReadyAtBoundary`, `notPlanned`, `notNaturalBoundary`, `cancelled`, `sourceRevoked` | Nothing: back to `idle`; music simply continues. Never an error. |
+
+## Beta defaults (final, owner-approved)
 | Setting | Default | Where |
 |---|---|---|
 | Voice | On-device only (`AVSpeechSynthesizer`); no paid provider enabled | `VoiceRenderer.onDeviceDefault()` |
 | Talk cadence | ~30% of eligible song boundaries; at least 2 whole songs between breaks | `DJCadence(talkFraction: 0.3, minSongsBetweenBreaks: 2)` |
 | Break caps | 12 s for a transition, 45 s for a break with the briefing | `DJCadence.maxTransitionSeconds` / `maxBriefingBreakSeconds` |
-| Audio cache | On-device, protected files, 7 days | `FileAudioCache(maxAge:)` |
+| Audio cache | On-device, protected files, at most 7 days (longer values are clamped); purged by source on delete/revoke | `FileAudioCache(maxAge:)`, `AudioCacheRetention.maximum` |
 | Paid voice daily cap | $0 (paid routes off) | `VoiceBudget(dailyCapMicrodollars:)` |
