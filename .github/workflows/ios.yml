@@ -45,5 +45,5 @@ jobs:
           xcodebuild test \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJ \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO
