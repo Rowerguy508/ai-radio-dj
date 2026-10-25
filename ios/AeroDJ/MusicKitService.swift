@@ -1,14 +1,17 @@
 import Foundation
-import MusicKit
-import Combine
+@preconcurrency import MusicKit
 import AVFoundation
+import AeroDJCore
 
 /// Native MusicKit adapter. No API secrets in the client — MusicKit framework
 /// handles auth. Playback stays managed by MusicKit; no protected-stream mixing.
-/// Genuinely playable: observes the player's real state and drives the audio
-/// state machine from actual playback events.
+/// Genuinely playable: authorization, catalog search, queue playback, skip,
+/// pause/resume, interruption handling, and natural track-end observation.
 @MainActor
 final class MusicKitService: ObservableObject {
+    /// One app-scoped instance; avoid multiple players fighting over state.
+    static let shared = MusicKitService()
+
     enum AuthState: Equatable {
         case unknown
         case authorized
@@ -20,11 +23,13 @@ final class MusicKitService: ObservableObject {
     @Published private(set) var currentTrack: Track?
     @Published private(set) var isPlaying = false
     @Published private(set) var queue: [Track] = []
+    @Published private(set) var lastError: String?
 
     private let player = ApplicationMusicPlayer.shared
     private var stateMachine = AudioStateMachine()
-    private var stateObserver: AnyCancellable?
     private var audioSessionConfigured = false
+    private var advanceDetector = TrackAdvanceDetector()
+    private var pollTimer: Timer?
 
     var audioState: AudioState { stateMachine.state }
 
@@ -35,7 +40,7 @@ final class MusicKitService: ObservableObject {
         case .authorized:
             authState = .authorized
             configureAudioSession()
-            observePlayerState()
+            startObserving()
             await refreshSubscription()
         case .denied, .restricted:
             authState = .denied
@@ -56,29 +61,51 @@ final class MusicKitService: ObservableObject {
 
     /// Start playing a queue of tracks.
     func play(_ tracks: [Track]) async throws {
-        guard authState == .authorized else { throw MusicKitError.notAuthorized }
+        guard authState == .authorized else {
+            lastError = MusicKitError.notAuthorized.errorDescription ?? "Apple Music authorization required."
+            throw MusicKitError.notAuthorized
+        }
+        guard !tracks.isEmpty else { return }
         queue = tracks
+        currentTrack = tracks.first
         player.queue = ApplicationMusicPlayer.Queue(for: tracks.compactMap { $0.song })
         stateMachine.apply(.startMusic)
-        try await player.play()
-        isPlaying = true
+        resetAdvanceDetection()
+        do {
+            try await player.play()
+            isPlaying = true
+            lastError = nil
+        } catch {
+            lastError = "Playback failed: \(error.localizedDescription)"
+            throw error
+        }
     }
 
     func pause() {
         player.pause()
         isPlaying = false
         stateMachine.apply(.pause)
+        resetAdvanceDetection()
     }
 
     func resume() async throws {
         try await player.play()
         isPlaying = true
         stateMachine.apply(.resume)
+        resetAdvanceDetection()
     }
 
     func skip() async throws {
         try await player.skipToNextEntry()
+        // Advance the displayed track to the next in the queue.
+        if let idx = queue.firstIndex(where: { $0.id == currentTrack?.id }) {
+            let next = queue.index(after: idx)
+            if next < queue.count {
+                currentTrack = queue[next]
+            }
+        }
         stateMachine.apply(.trackEnded)
+        resetAdvanceDetection()
     }
 
     /// Called when a spoken interlude is ready: transition -> voice.
@@ -91,16 +118,56 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.interludeEnded)
     }
 
+    // MARK: - Track-advance observation
+
+    /// Poll the player once a second and feed the advance detector so a
+    /// *natural* song ending (MusicKit auto-advance) fires `.trackEnded`
+    /// and moves music -> transition for the next interlude.
+    private func startObserving() {
+        guard pollTimer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.pollPlaybackPosition()
+            }
+        }
+        // Fire on the run loop common modes so it works during scrolling/drag.
+        RunLoop.main.add(timer, forMode: .common)
+        pollTimer = timer
+    }
+
+    private func pollPlaybackPosition() {
+        let state = player.state
+        // MusicKit sets .interrupted when the current entry finishes naturally.
+        let reachedEnd = (state.playbackStatus == .interrupted)
+        let sample = PlaybackSample(
+            isPlaying: (state.playbackStatus == .playing),
+            reachedEnd: reachedEnd,
+            itemChanged: false // item identity isn't exposed on this SDK; we reset on explicit actions
+        )
+        if advanceDetector.consume(sample) {
+            stateMachine.apply(.trackEnded)
+        }
+    }
+
+    /// Reset the advance detector after an explicit user action so a natural
+    /// end isn't confused with a manual skip/pause.
+    private func resetAdvanceDetection() {
+        advanceDetector = TrackAdvanceDetector()
+    }
+
     // MARK: - Interruptions & route changes
 
     /// Handle a phone call / system interruption. No stuck-paused state:
-    /// pause on begin, resume on end.
-    func handleInterruption(_ reason: AVAudioSession.InterruptionType) {
+    /// pause on begin; resume on end only if the system says to.
+    func handleInterruption(_ reason: AVAudioSession.InterruptionType,
+                            options: AVAudioSession.InterruptionOptions = []) {
         switch reason {
         case .began:
             pause()
         case .ended:
-            Task { try? await resume() }
+            if options.contains(.shouldResume) {
+                Task { try? await resume() }
+            }
         @unknown default:
             break
         }
@@ -110,24 +177,6 @@ final class MusicKitService: ObservableObject {
     func handleRouteChange(_ wasDeviceRemoved: Bool) {
         if wasDeviceRemoved {
             pause()
-        }
-    }
-
-    // MARK: - Playback observation
-
-    /// Observe the player's real state: now-playing track + playback status.
-    private func observePlayerState() {
-        stateObserver = player.objectWillChange.sink { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.currentTrack = self.player.currentEntry?.item.flatMap { item in
-                    switch item {
-                    case .song(let song): return Track(song: song)
-                    default: return nil
-                    }
-                }
-                self.isPlaying = (self.player.playbackStatus == .playing)
-            }
         }
     }
 
@@ -160,7 +209,9 @@ final class MusicKitService: ObservableObject {
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-            self?.handleInterruption(type)
+            let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
+            self?.handleInterruption(type, options: options)
         }
 
         NotificationCenter.default.addObserver(

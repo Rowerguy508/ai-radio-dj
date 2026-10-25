@@ -4,13 +4,17 @@ import SwiftUI
 /// reflects state and forwards user actions. No protected-stream mixing.
 struct PlayerView: View {
     let station: Station
-    @StateObject private var music = MusicKitService()
+    @StateObject private var music = MusicKitService.shared
     @State private var searchQuery = ""
     @State private var results: [Track] = []
 
     var body: some View {
         VStack(spacing: 20) {
             Text(station.name).font(.title2)
+
+            if let err = music.lastError {
+                Text(err).font(.footnote).foregroundStyle(.red)
+            }
 
             switch music.authState {
             case .unknown:
@@ -52,7 +56,11 @@ struct PlayerView: View {
                     Image(systemName: "forward.fill").font(.title2)
                 }
                 Button {
-                    music.isPlaying ? music.pause() : Task { try? await music.resume() }
+                    if music.isPlaying {
+                        music.pause()
+                    } else {
+                        Task { try? await music.resume() }
+                    }
                 } label: {
                     Image(systemName: music.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 48))
