@@ -21,10 +21,12 @@ struct StudioView: View {
             ScrollView {
                 // Two-zone workspace when there's real width; stacked otherwise.
                 // Content-responsive (actual available width), not hardcoded dims.
-                if geo.size.width >= 680 {
-                    twoZoneLayout
-                } else {
-                    stackedLayout
+                Group {
+                    if geo.size.width >= 680 {
+                        twoZoneLayout
+                    } else {
+                        stackedLayout
+                    }
                 }
                 .padding(20)
             }
