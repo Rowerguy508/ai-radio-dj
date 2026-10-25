@@ -28,7 +28,7 @@ final class MusicKitService: ObservableObject {
 
     private let player = ApplicationMusicPlayer.shared
     private var stateMachine = AudioStateMachine()
-    private var stateObserver: AnyCancellable?
+    private var playerObservers: Set<AnyCancellable> = []
     private var audioSessionConfigured = false
 
     var audioState: AudioState { stateMachine.state }
@@ -135,23 +135,28 @@ final class MusicKitService: ObservableObject {
     // MARK: - Playback observation
 
     /// Observe the player's real state: now-playing track + playback status.
+    /// `ApplicationMusicPlayer` itself is not observable; its `state` and
+    /// `queue` are.
     private func observePlayerState() {
-        stateObserver = player.objectWillChange.sink { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.currentTrack = self.player.currentEntry?.item.flatMap { item in
-                    switch item {
-                    case .song(let song): return Track(song: song)
-                    default: return nil
-                    }
-                }
-                self.isPlaying = (self.player.playbackStatus == .playing)
-                // Sync state machine: a real track-end (queue exhausted → stopped)
-                // moves music → transition, ready for the next interlude.
-                if self.player.playbackStatus == .stopped, self.stateMachine.state == .music {
-                    self.stateMachine.apply(.trackEnded)
-                }
-            }
+        player.state.objectWillChange
+            .sink { [weak self] _ in Task { @MainActor in self?.syncFromPlayer() } }
+            .store(in: &playerObservers)
+        player.queue.objectWillChange
+            .sink { [weak self] _ in Task { @MainActor in self?.syncFromPlayer() } }
+            .store(in: &playerObservers)
+    }
+
+    private func syncFromPlayer() {
+        if case .song(let song)? = player.queue.currentEntry?.item {
+            currentTrack = Track(song: song)
+        } else {
+            currentTrack = nil
+        }
+        isPlaying = player.state.playbackStatus == .playing
+        // Sync state machine: a real track-end (queue exhausted → stopped)
+        // moves music → transition, ready for the next interlude.
+        if player.state.playbackStatus == .stopped, stateMachine.state == .music {
+            stateMachine.apply(.trackEnded)
         }
     }
 
@@ -186,7 +191,7 @@ final class MusicKitService: ObservableObject {
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
             let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
-            self?.handleInterruption(type, options: options)
+            MainActor.assumeIsolated { self?.handleInterruption(type, options: options) }
         }
 
         NotificationCenter.default.addObserver(
@@ -194,7 +199,8 @@ final class MusicKitService: ObservableObject {
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
                   let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
-            self?.handleRouteChange(reason == .oldDeviceUnavailable)
+            let removed = reason == .oldDeviceUnavailable
+            MainActor.assumeIsolated { self?.handleRouteChange(removed) }
         }
     }
 }
