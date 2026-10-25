@@ -6,6 +6,7 @@ public enum SharedInboxPurgeReason: Error, Equatable, Sendable {
     case malformed      // not valid JSON for `SharedInboxItem`, or wrong file name
     case invalid        // decoded, but violates the envelope's own limits
     case tooLarge
+    case forwardDated   // createdAt is in the future (wrong device clock); would dodge retention
 }
 
 public struct SharedInboxLoadResult: Equatable, Sendable {
@@ -23,6 +24,8 @@ public struct SharedInboxReader: Sendable {
     public let directory: URL
     /// Generous bound on the JSON envelope; content itself is capped separately.
     public static let maxFileBytes = SharedInboxItem.maxContentBytes * 2 + 4096
+    /// Tolerated clock skew between extension and host.
+    public static let maxClockSkew: TimeInterval = 5 * 60
 
     public init(directory: URL) {
         self.directory = directory
@@ -39,6 +42,9 @@ public struct SharedInboxReader: Sendable {
         for name in try fm.contentsOfDirectory(atPath: directory.path).sorted() {
             if name.hasPrefix(".") { continue } // e.g. atomic-write temp files
             let file = directory.appendingPathComponent(name, isDirectory: false)
+            // Never purge (recursively delete) anything that isn't a regular file.
+            let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values?.isRegularFile == true, values?.isSymbolicLink != true else { continue }
             let result = Self.validate(name: name, file: file, now: now)
             switch result {
             case .success(let item):
@@ -59,6 +65,14 @@ public struct SharedInboxReader: Sendable {
         try FileManager.default.removeItem(at: file)
     }
 
+    /// Atomically rewrites an existing envelope (e.g. after redaction) with the
+    /// same file protection the Share Extension uses.
+    public func rewrite(_ item: SharedInboxItem) throws {
+        let file = directory.appendingPathComponent("\(item.id.uuidString).json", isDirectory: false)
+        guard FileManager.default.fileExists(atPath: file.path) else { throw SharedReviewError.unknownItem }
+        try ProtectedFile.write(JSONEncoder().encode(item), to: file)
+    }
+
     static func validate(name: String, file: URL, now: Date) -> Result<SharedInboxItem, SharedInboxPurgeReason> {
         guard name.hasSuffix(".json"), let fileID = UUID(uuidString: String(name.dropLast(5))) else {
             return .failure(.malformed)
@@ -75,7 +89,20 @@ public struct SharedInboxReader: Sendable {
               item.expiresAt > item.createdAt,
               item.expiresAt.timeIntervalSince(item.createdAt) <= SharedInboxItem.defaultRetention
         else { return .failure(.invalid) }
+        if item.createdAt > now.addingTimeInterval(maxClockSkew) { return .failure(.forwardDated) }
         if item.isExpired(at: now) { return .failure(.expired) }
         return .success(item)
+    }
+}
+
+/// Atomic writes with iOS Data Protection (`completeUntilFirstUserAuthentication`,
+/// matching the Share Extension). Other platforms: atomic only.
+enum ProtectedFile {
+    static func write(_ data: Data, to url: URL) throws {
+        #if os(iOS) || os(watchOS) || os(tvOS) || os(visionOS)
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        #else
+        try data.write(to: url, options: [.atomic])
+        #endif
     }
 }

@@ -36,20 +36,21 @@ Defined in `ios/AeroDJCore/Sources/AeroDJCore/ContextItem.swift`:
 | `id` | UUID | Stable identity |
 | `source` | `ContextSourceKind` | `calendar` \| `emailShared` \| `messagesShared` \| `obsidian` \| `userShared` |
 | `createdAt` | Date | When captured |
-| `eventAt` | Date? | When the event occurs (calendar) |
+| `eventAt` | Date? | When the event occurs or is due. Calendar: start of a timed event; `nil` for all-day. Obsidian: only frontmatter `due`/`scheduled` (never `date`/`created`, which record when a note was written) |
 | `title` | String | Short label |
 | `summary` | String | 1–2 sentence fact summary (never raw inbox text) |
 | `sensitivity` | `Sensitivity` | `low` \| `medium` \| `high` \| `blocked` |
 | `consent` | `ConsentState` | `notRequested` \| `granted` \| `denied` \| `revoked` |
 | `expiresAt` | Date? | Hard expiry; item not narratable after |
-| `provenance` | String | Link back to the source (e.g. `calendar://id`) |
+| `provenance` | String | Opaque back-reference, never opened or narrated: `calendar-event:<id>@<occurrence>`, `obsidian-file:<relative path>` (not `obsidian://`, which would launch the app), `shared-inbox:<uuid>` |
 
 ### Shared inbox — `SharedInboxItem`
 
 The Share Extension writes one JSON envelope per share to `group.com.aerodj/Inbox/` (`ios/AeroDJCore/Sources/AeroDJCore/SharedInboxItem.swift`): `id`, `source` (`userShared`), `kind` (`text` | `url`), `content`, `isTruncated`, `createdAt`, `expiresAt`.
 - Content is trimmed and capped at 16 KB UTF-8, never split mid-character; longer shares are truncated and flagged.
 - Files are written with `completeFileProtectionUntilFirstUserAuthentication`.
-- Default retention is 7 days. The host app must delete expired envelopes and items the user rejects in review (#19). Until it does, retention is declared but not enforced.
+- Default retention is 7 days, enforced by the host on every load (#19): expired, invalid and forward-dated envelopes are purged. Excluded items are not narratable and expire with retention; **delete** removes the file immediately. A redaction **replaces** the envelope's content on disk (the original is not kept).
+- Review decisions (include/exclude, label, redacted flag) persist in `group.com.aerodj/Review/state.json`, written atomically with `completeFileProtectionUntilFirstUserAuthentication` (same as the extension), and pruned to items still in the inbox.
 
 **Invariants:**
 - `isNarratable(at: now) == true` only when `consent == .granted` **and** `sensitivity != .blocked` **and** `expiresAt` is nil or later than `now` (an item expiring exactly at `now` is expired). Enforced in `ContextItem`, not by callers.

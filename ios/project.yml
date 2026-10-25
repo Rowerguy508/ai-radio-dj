@@ -29,6 +29,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSAppleMusicUsageDescription: AeroDJ uses Apple Music to play your station.
         INFOPLIST_KEY_UIBackgroundModes: audio
+        INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: AeroDJ reads today's events, read-only, to mention them in your briefing.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         CODE_SIGN_ENTITLEMENTS: AeroDJ/AeroDJ.entitlements
   AeroDJShare:

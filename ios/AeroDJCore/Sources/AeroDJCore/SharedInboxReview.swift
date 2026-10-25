@@ -43,20 +43,36 @@ public actor SharedInboxReview: ContextSource {
     public static let maxTitleCharacters = 60
 
     private let reader: SharedInboxReader
+    private let store: SharedReviewStore?
     private let now: @Sendable () -> Date
     public private(set) var entries: [SharedReviewEntry] = []
 
-    public init(reader: SharedInboxReader, now: @escaping @Sendable () -> Date = { Date() }) {
+    /// `store` persists decisions across relaunch; `nil` keeps them in memory only.
+    public init(reader: SharedInboxReader, store: SharedReviewStore? = nil,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.reader = reader
+        self.store = store
         self.now = now
     }
 
-    /// Reloads from disk, keeping review state for items that still exist.
+    /// Reloads from disk, restoring persisted review state for items that
+    /// still exist and pruning state for items that are gone.
     @discardableResult
     public func refresh() throws -> SharedInboxLoadResult {
         let result = try reader.load(now: now())
+        let saved = store?.load() ?? [:]
         let previous = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
-        entries = result.items.map { previous[$0.id] ?? SharedReviewEntry(item: $0) }
+        entries = result.items.map { item in
+            if let entry = previous[item.id] { return entry }
+            var entry = SharedReviewEntry(item: item)
+            if let record = saved[item.id] {
+                entry.decision = record.decision
+                entry.label = record.label
+                if record.isRedacted { entry.redactedText = item.content }
+            }
+            return entry
+        }
+        if store != nil, Set(saved.keys) != Set(entries.map(\.id)) || saved.count != entries.count { try persist() }
         return result
     }
 
@@ -68,13 +84,18 @@ public actor SharedInboxReview: ContextSource {
         try update(id) { $0.decision = decision }
     }
 
-    /// Replaces the narrated text (bounded like the original). The original
-    /// stays on disk until deletion or expiry; only the redacted text is mapped.
+    /// Replaces the narrated text and rewrites the envelope on disk, so the
+    /// unredacted original is gone (not kept until expiry).
     public func redact(_ id: UUID, to text: String) throws {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw SharedReviewError.emptyRedaction }
-        let bounded = SharedInboxItem.truncated(trimmed, maxBytes: SharedInboxItem.maxContentBytes)
-        try update(id) { $0.redactedText = bounded }
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { throw SharedReviewError.unknownItem }
+        guard let replaced = entries[index].item.replacingContent(text) else { throw SharedReviewError.emptyRedaction }
+        try reader.rewrite(replaced)
+        var entry = SharedReviewEntry(item: replaced)
+        entry.decision = entries[index].decision
+        entry.label = entries[index].label
+        entry.redactedText = replaced.content
+        entries[index] = entry
+        try persist()
     }
 
     /// Deletes the item from disk and from review immediately.
@@ -82,6 +103,7 @@ public actor SharedInboxReview: ContextSource {
         guard entries.contains(where: { $0.id == id }) else { throw SharedReviewError.unknownItem }
         try reader.delete(id: id)
         entries.removeAll { $0.id == id }
+        try persist()
     }
 
     public func fetchItems() async throws -> [ContextItem] {
@@ -100,7 +122,8 @@ public actor SharedInboxReview: ContextSource {
                 ? String(firstLine.prefix(maxTitleCharacters)) + "…" : firstLine
         }
         let words = text.split(whereSeparator: \.isWhitespace)
-        let summary = words.count <= maxSummaryWords
+        // A raw URL would be read character by character; speak the title instead.
+        let summary = entry.redactedText == nil && entry.item.kind == .url ? title : words.count <= maxSummaryWords
             ? words.joined(separator: " ")
             : words.prefix(maxSummaryWords).joined(separator: " ") + "…"
         let consent: ConsentState = switch entry.decision {
@@ -124,5 +147,13 @@ public actor SharedInboxReview: ContextSource {
     private func update(_ id: UUID, _ change: (inout SharedReviewEntry) -> Void) throws {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { throw SharedReviewError.unknownItem }
         change(&entries[index])
+        try persist()
+    }
+
+    private func persist() throws {
+        guard let store else { return }
+        try store.save(Dictionary(uniqueKeysWithValues: entries.map {
+            ($0.id, SharedReviewRecord(decision: $0.decision, label: $0.label, isRedacted: $0.redactedText != nil))
+        }))
     }
 }
