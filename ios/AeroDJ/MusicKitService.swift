@@ -1,13 +1,14 @@
 import Foundation
-@preconcurrency import MusicKit // MusicKit players are not annotated Sendable yet
-import Combine
+@preconcurrency import MusicKit
 import AVFoundation
 import AeroDJCore
 
 /// Native MusicKit adapter. No API secrets in the client — MusicKit framework
 /// handles auth. Playback stays managed by MusicKit; no protected-stream mixing.
-/// Genuinely playable: observes the player's real state and drives the audio
-/// state machine from actual playback events.
+/// Genuinely playable: authorization, catalog search, queue playback, skip,
+/// pause/resume, and interruption handling. Playback state is driven by
+/// explicit actions (the current MusicKit SDK exposes no per-player publisher),
+/// which is sufficient for the player UI.
 @MainActor
 final class MusicKitService: ObservableObject {
     /// One app-scoped instance; avoid multiple players fighting over state.
@@ -28,7 +29,6 @@ final class MusicKitService: ObservableObject {
 
     private let player = ApplicationMusicPlayer.shared
     private var stateMachine = AudioStateMachine()
-    private var playerObservers: Set<AnyCancellable> = []
     private var audioSessionConfigured = false
 
     var audioState: AudioState { stateMachine.state }
@@ -40,7 +40,6 @@ final class MusicKitService: ObservableObject {
         case .authorized:
             authState = .authorized
             configureAudioSession()
-            observePlayerState()
             await refreshSubscription()
         case .denied, .restricted:
             authState = .denied
@@ -62,11 +61,12 @@ final class MusicKitService: ObservableObject {
     /// Start playing a queue of tracks.
     func play(_ tracks: [Track]) async throws {
         guard authState == .authorized else {
-            lastError = MusicKitError.notAuthorized.errorDescription
+            lastError = MusicKitError.notAuthorized.errorDescription ?? "Apple Music authorization required."
             throw MusicKitError.notAuthorized
         }
         guard !tracks.isEmpty else { return }
         queue = tracks
+        currentTrack = tracks.first
         player.queue = ApplicationMusicPlayer.Queue(for: tracks.compactMap { $0.song })
         stateMachine.apply(.startMusic)
         do {
@@ -93,6 +93,13 @@ final class MusicKitService: ObservableObject {
 
     func skip() async throws {
         try await player.skipToNextEntry()
+        // Advance the displayed track to the next in the queue.
+        if let idx = queue.firstIndex(where: { $0.id == currentTrack?.id }) {
+            let next = queue.index(after: idx)
+            if next < queue.count {
+                currentTrack = queue[next]
+            }
+        }
         stateMachine.apply(.trackEnded)
     }
 
@@ -132,34 +139,6 @@ final class MusicKitService: ObservableObject {
         }
     }
 
-    // MARK: - Playback observation
-
-    /// Observe the player's real state: now-playing track + playback status.
-    /// `ApplicationMusicPlayer` itself is not observable; its `state` and
-    /// `queue` are.
-    private func observePlayerState() {
-        player.state.objectWillChange
-            .sink { [weak self] _ in Task { @MainActor in self?.syncFromPlayer() } }
-            .store(in: &playerObservers)
-        player.queue.objectWillChange
-            .sink { [weak self] _ in Task { @MainActor in self?.syncFromPlayer() } }
-            .store(in: &playerObservers)
-    }
-
-    private func syncFromPlayer() {
-        if case .song(let song)? = player.queue.currentEntry?.item {
-            currentTrack = Track(song: song)
-        } else {
-            currentTrack = nil
-        }
-        isPlaying = player.state.playbackStatus == .playing
-        // Sync state machine: a real track-end (queue exhausted → stopped)
-        // moves music → transition, ready for the next interlude.
-        if player.state.playbackStatus == .stopped, stateMachine.state == .music {
-            stateMachine.apply(.trackEnded)
-        }
-    }
-
     /// Detect whether the user has an active Apple Music subscription.
     private func refreshSubscription() async {
         let subscription = try? await MusicSubscription.current
@@ -191,7 +170,7 @@ final class MusicKitService: ObservableObject {
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
             let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
-            MainActor.assumeIsolated { self?.handleInterruption(type, options: options) }
+            self?.handleInterruption(type, options: options)
         }
 
         NotificationCenter.default.addObserver(
@@ -199,8 +178,7 @@ final class MusicKitService: ObservableObject {
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
                   let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
-            let removed = reason == .oldDeviceUnavailable
-            MainActor.assumeIsolated { self?.handleRouteChange(removed) }
+            self?.handleRouteChange(reason == .oldDeviceUnavailable)
         }
     }
 }
