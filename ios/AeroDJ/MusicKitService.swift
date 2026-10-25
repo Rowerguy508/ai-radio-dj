@@ -2,6 +2,7 @@ import Foundation
 import MusicKit
 import Combine
 import AVFoundation
+import AeroDJCore
 
 /// Native MusicKit adapter. No API secrets in the client — MusicKit framework
 /// handles auth. Playback stays managed by MusicKit; no protected-stream mixing.
@@ -9,6 +10,9 @@ import AVFoundation
 /// state machine from actual playback events.
 @MainActor
 final class MusicKitService: ObservableObject {
+    /// One app-scoped instance; avoid multiple players fighting over state.
+    static let shared = MusicKitService()
+
     enum AuthState: Equatable {
         case unknown
         case authorized
@@ -20,6 +24,7 @@ final class MusicKitService: ObservableObject {
     @Published private(set) var currentTrack: Track?
     @Published private(set) var isPlaying = false
     @Published private(set) var queue: [Track] = []
+    @Published private(set) var lastError: String?
 
     private let player = ApplicationMusicPlayer.shared
     private var stateMachine = AudioStateMachine()
@@ -56,12 +61,22 @@ final class MusicKitService: ObservableObject {
 
     /// Start playing a queue of tracks.
     func play(_ tracks: [Track]) async throws {
-        guard authState == .authorized else { throw MusicKitError.notAuthorized }
+        guard authState == .authorized else {
+            lastError = MusicKitError.notAuthorized.errorDescription
+            throw MusicKitError.notAuthorized
+        }
+        guard !tracks.isEmpty else { return }
         queue = tracks
         player.queue = ApplicationMusicPlayer.Queue(for: tracks.compactMap { $0.song })
         stateMachine.apply(.startMusic)
-        try await player.play()
-        isPlaying = true
+        do {
+            try await player.play()
+            isPlaying = true
+            lastError = nil
+        } catch {
+            lastError = "Playback failed: \(error.localizedDescription)"
+            throw error
+        }
     }
 
     func pause() {
@@ -94,13 +109,17 @@ final class MusicKitService: ObservableObject {
     // MARK: - Interruptions & route changes
 
     /// Handle a phone call / system interruption. No stuck-paused state:
-    /// pause on begin, resume on end.
-    func handleInterruption(_ reason: AVAudioSession.InterruptionType) {
+    /// pause on begin; resume on end only if the system says to, respecting
+    /// the interruption options.
+    func handleInterruption(_ reason: AVAudioSession.InterruptionType,
+                            options: AVAudioSession.InterruptionOptions = []) {
         switch reason {
         case .began:
             pause()
         case .ended:
-            Task { try? await resume() }
+            if options.contains(.shouldResume) {
+                Task { try? await resume() }
+            }
         @unknown default:
             break
         }
@@ -127,6 +146,11 @@ final class MusicKitService: ObservableObject {
                     }
                 }
                 self.isPlaying = (self.player.playbackStatus == .playing)
+                // Sync state machine: a real track-end (queue exhausted → stopped)
+                // moves music → transition, ready for the next interlude.
+                if self.player.playbackStatus == .stopped, self.stateMachine.state == .music {
+                    self.stateMachine.apply(.trackEnded)
+                }
             }
         }
     }
@@ -160,7 +184,9 @@ final class MusicKitService: ObservableObject {
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-            self?.handleInterruption(type)
+            let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
+            self?.handleInterruption(type, options: options)
         }
 
         NotificationCenter.default.addObserver(

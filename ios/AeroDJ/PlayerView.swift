@@ -4,13 +4,17 @@ import SwiftUI
 /// reflects state and forwards user actions. No protected-stream mixing.
 struct PlayerView: View {
     let station: Station
-    @StateObject private var music = MusicKitService()
+    @StateObject private var music = MusicKitService.shared
     @State private var searchQuery = ""
     @State private var results: [Track] = []
 
     var body: some View {
         VStack(spacing: 20) {
             Text(station.name).font(.title2)
+
+            if let err = music.lastError {
+                Text(err).font(.footnote).foregroundStyle(.red)
+            }
 
             switch music.authState {
             case .unknown:
