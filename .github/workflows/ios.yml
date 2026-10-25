@@ -131,11 +131,14 @@ jobs:
             xcrun simctl launch --terminate-running-process "$IPHONE" com.aerodj.app
           sleep 4
           xcrun simctl io "$IPHONE" screenshot /tmp/closed-player.png
-      - name: Capture open (unfolded Studio)
+      - name: Capture open (unfolded Studio, landscape)
         run: |
           xcrun simctl install "$IPAD" build/AeroDJ.app
+          # Rotate to landscape so the two-zone workspace layout engages.
+          xcrun simctl io "$IPAD" rotate left || xcrun simctl io "$IPAD" rotate right || true
+          sleep 1
           SIMCTL_CHILD_AERODJ_LAUNCH=player SIMCTL_CHILD_AERODJ_DEMO=playing \
-            xcrun simctl launch "$IPAD" com.aerodj.app
+            xcrun simctl launch --terminate-running-process "$IPAD" com.aerodj.app
           sleep 4
           xcrun simctl io "$IPAD" screenshot /tmp/unfolded-studio.png
       - name: Upload screenshots
