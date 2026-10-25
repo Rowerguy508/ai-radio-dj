@@ -11,6 +11,7 @@ struct PlayableTrack: Identifiable, Hashable {
 
 /// Playback contract the UI depends on. Real MusicKitService conforms later;
 /// the UI is built against this so integration is a drop-in, not a redesign.
+@MainActor
 protocol PlaybackService: ObservableObject {
     var currentTrack: PlayableTrack? { get }
     var isPlaying: Bool { get }
