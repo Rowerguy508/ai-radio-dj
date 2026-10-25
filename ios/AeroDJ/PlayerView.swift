@@ -1,4 +1,5 @@
 import SwiftUI
+import AeroDJCore
 
 /// Player shell. MusicKit playback is managed by the framework; this view
 /// reflects state and forwards user actions. No protected-stream mixing.
