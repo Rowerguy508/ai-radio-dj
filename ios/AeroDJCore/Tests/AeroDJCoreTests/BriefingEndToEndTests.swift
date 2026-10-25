@@ -227,7 +227,7 @@ final class BriefingEndToEndTests: XCTestCase {
             XCTAssertEqual(report.timeline.last?.cues.last?.kind, .closer)
         }
         // #34 as it stands, through the adapter: losses are explicit, never silent.
-        let current = await BroadcastSchedulerAdapter(PrefixBroadcastScheduler34()).schedule(handoff, trackCount: 2)
+        let current = await BroadcastSchedulerAdapter { try await PrefixBroadcastScheduler34().schedule(plan: $0, trackCount: $1) }.schedule(handoff, trackCount: 2)
         XCTAssertEqual(current.entries.count, handoff.cues.count)
         XCTAssertEqual(current.unscheduledContent.map(\.outcome), Array(repeating: .deferred(.noTrackBoundary), count: 3))
         let spoken = current.timeline.flatMap(\.cues).map(\.text).joined(separator: " ")

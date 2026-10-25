@@ -31,6 +31,39 @@ public struct NarrationCue: Identifiable, Codable, Equatable, Sendable {
     public let source: ContextSourceKind?
     public let provenance: String?
 
+    // Filled in by the voice renderer (nil until rendered).
+    /// Measured length of the rendered clip; replaces `estimatedSeconds`.
+    public var renderedSeconds: Double?
+    /// Voice and provider that produced the clip (e.g. "avspeech", "cartesia").
+    public var voiceID: String?
+    public var providerID: String?
+    /// Cache key of the rendered clip (hash of text + voice + provider + format).
+    public var audioCacheKey: String?
+
+    public init(id: UUID, order: Int, group: Int, kind: BriefingScriptSegment.Kind, text: String,
+                estimatedSeconds: Int, maxSeconds: Int, sourceItemID: UUID?, source: ContextSourceKind?,
+                provenance: String?, renderedSeconds: Double? = nil, voiceID: String? = nil,
+                providerID: String? = nil, audioCacheKey: String? = nil) {
+        self.id = id
+        self.order = order
+        self.group = group
+        self.kind = kind
+        self.text = text
+        self.estimatedSeconds = estimatedSeconds
+        self.maxSeconds = maxSeconds
+        self.sourceItemID = sourceItemID
+        self.source = source
+        self.provenance = provenance
+        self.renderedSeconds = renderedSeconds
+        self.voiceID = voiceID
+        self.providerID = providerID
+        self.audioCacheKey = audioCacheKey
+    }
+
+    /// Seconds the scheduler should plan with: measured when rendered, else estimated.
+    public var plannedSeconds: Double { renderedSeconds ?? Double(estimatedSeconds) }
+    public var isRendered: Bool { renderedSeconds != nil }
+
     /// Approved personal content (not opener/closer framing).
     public var isContent: Bool { sourceItemID != nil }
 
@@ -74,6 +107,8 @@ public enum NarrationDropReason: String, Codable, Sendable {
     case alteredByScheduler
     /// Rendered audio exceeded `maxSeconds`.
     case overDuration
+    /// Every voice route failed or was over its cost cap; nothing to play.
+    case renderFailed
     /// Placing it would exceed `maxSpokenSeconds`.
     case overBudget
 }
@@ -133,7 +168,7 @@ public enum NarrationContract {
         if !report.unexpectedSegmentIDs.isEmpty { problems.append("scheduler returned unknown segment ids") }
         var lastPlacement: NarrationPlacement?
         var groupPlacement: [Int: NarrationPlacement] = [:]
-        var spoken = 0
+        var spoken = 0.0
         for entry in report.entries {
             guard case .scheduled(let placement) = entry.outcome else { continue }
             if case .afterTrack(let index) = placement, !(0..<trackCount).contains(index) {
@@ -146,13 +181,16 @@ public enum NarrationContract {
                 problems.append("group \(entry.cue.group) split across boundaries")
             }
             groupPlacement[entry.cue.group] = placement
-            spoken += entry.cue.estimatedSeconds
+            spoken += entry.cue.plannedSeconds
+            if entry.cue.renderedSeconds.map({ $0 > Double(entry.cue.maxSeconds) }) == true {
+                problems.append("cue \(entry.cue.order) rendered longer than maxSeconds")
+            }
             if entry.cue.kind == .opener, placement != .beforeFirstTrack { problems.append("opener must play before the first track") }
             if entry.cue.kind == .closer, trackCount > 0, placement != .afterTrack(trackCount - 1) {
                 problems.append("closer must play after the last track")
             }
         }
-        if spoken > handoff.maxSpokenSeconds { problems.append("scheduled speech exceeds maxSpokenSeconds") }
+        if spoken > Double(handoff.maxSpokenSeconds) { problems.append("scheduled speech exceeds maxSpokenSeconds") }
         return problems
     }
 }
@@ -179,21 +217,24 @@ extension BriefingScript {
     }
 }
 
-/// Wraps any existing `BroadcastScheduler` (e.g. #34's `DefaultBroadcastScheduler`)
-/// so its silent `prefix` drops become explicit outcomes. `InterludeSlot` has no
-/// before-first-track slot, so an opener it places shows up as a contract
-/// violation until #34 adopts `NarrationScheduling`.
+/// Wraps a slot-based scheduler (#34) so its unplaced segments become explicit
+/// outcomes. It takes a placement closure rather than `BroadcastScheduler`
+/// itself, so it compiles against both #27's `[InterludeSlot]` return type and
+/// #34's `BroadcastSchedule` (pass `{ try await s.schedule(plan: $0, trackCount: $1).slots }`).
+/// `InterludeSlot` has no before-first-track slot, so an opener it places is a
+/// contract violation until the scheduler adopts `NarrationScheduling`.
 public struct BroadcastSchedulerAdapter: NarrationScheduling {
-    public let scheduler: any BroadcastScheduler
+    public typealias Placement = @Sendable (BriefingPlan, Int) async throws -> [InterludeSlot]
+    private let place: Placement
 
-    public init(_ scheduler: any BroadcastScheduler) {
-        self.scheduler = scheduler
+    public init(place: @escaping Placement) {
+        self.place = place
     }
 
     public func schedule(_ handoff: NarrationHandoff, trackCount: Int) async -> NarrationScheduleReport {
         let slots: [InterludeSlot]
         do {
-            slots = try await scheduler.schedule(plan: handoff.plan, trackCount: trackCount)
+            slots = try await place(handoff.plan, trackCount)
         } catch {
             return NarrationScheduleReport(entries: handoff.cues.map {
                 NarrationScheduleEntry(cue: $0, outcome: $0.isContent ? .deferred(.schedulerFailed) : .dropped(.notPlacedByScheduler))
@@ -202,15 +243,17 @@ public struct BroadcastSchedulerAdapter: NarrationScheduling {
         let known = Dictionary(uniqueKeysWithValues: handoff.cues.map { ($0.id, $0) })
         var placed: [UUID: NarrationOutcome] = [:]
         var unexpected: [UUID] = []
-        var spoken = 0
+        var spoken = 0.0
         for slot in slots {
             guard let cue = known[slot.segment.id], placed[cue.id] == nil else { unexpected.append(slot.segment.id); continue }
             if slot.segment.text != cue.text {
                 placed[cue.id] = .dropped(.alteredByScheduler)
-            } else if spoken + cue.estimatedSeconds > handoff.maxSpokenSeconds {
+            } else if cue.renderedSeconds.map({ $0 > Double(cue.maxSeconds) }) == true {
+                placed[cue.id] = .dropped(.overDuration)
+            } else if spoken + cue.plannedSeconds > Double(handoff.maxSpokenSeconds) {
                 placed[cue.id] = .dropped(.overBudget)
             } else {
-                spoken += cue.estimatedSeconds
+                spoken += cue.plannedSeconds
                 placed[cue.id] = .scheduled(.afterTrack(slot.afterTrackIndex))
             }
         }
