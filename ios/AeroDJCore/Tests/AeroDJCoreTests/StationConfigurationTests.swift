@@ -181,6 +181,34 @@ final class StationConfigurationStateTests: XCTestCase {
         XCTAssertNil(s.apply(.songBoundary(afterTrack: 4)), "nothing left to apply")
     }
 
+    /// Safe-boundary guarantee: during a song, no edit or non-boundary event changes what
+    /// drives song selection, so nothing can retune or restart the song that is playing.
+    func testMidSongEditsNeverChangeActiveTuningUntilSongBoundary() {
+        var s = StationConfigurationState(active: .sampleMorningMix)
+        let playing = s.active
+        var changes: [StationConfigurationChange] = []
+        for i in 0..<20 {
+            s.edit { $0.energy = Double(i) / 20; $0.discovery = 1 - Double(i) / 20
+                     $0.genres = ["g\(i)"]; $0.moods = ["m\(i)"]; $0.personality = i.isMultiple(of: 2) ? .upbeat : .laidBack }
+            if let c = s.apply(.djBreakWillPrepare(afterTrack: 0)) { changes.append(c) }
+            if let c = s.apply(.briefingWillPlan) { changes.append(c) }
+            XCTAssertEqual(s.active.energy, playing.energy)
+            XCTAssertEqual(s.active.discovery, playing.discovery)
+            XCTAssertEqual(s.active.genres, playing.genres)
+            XCTAssertEqual(s.active.moods, playing.moods)
+        }
+        let tuning: Set<StationSetting> = [.energy, .discovery, .genres, .moods]
+        XCTAssertTrue(changes.allSatisfy { $0.applied.isDisjoint(with: tuning) }, "mid-song events never apply tuning")
+        let boundary = s.apply(.songBoundary(afterTrack: 0))
+        XCTAssertTrue(tuning.isSubset(of: boundary?.applied ?? []))
+        XCTAssertEqual(boundary?.boundary, .songBoundary(afterTrack: 0))
+    }
+
+    func testBetaCommentaryDefaultIsThirtyPercent() {
+        XCTAssertEqual(StationConfiguration.default.cadence().talkFraction, 0.3)
+        XCTAssertEqual(StationConfiguration.default.cadence().talkFraction, DJCadence().talkFraction)
+    }
+
     func testPersonalityAppliesAtNextBreakPreparation() {
         var s = StationConfigurationState()
         s.edit { $0.personality = .upbeat; $0.energy = 0.8 }
