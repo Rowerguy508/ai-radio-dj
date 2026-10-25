@@ -1,0 +1,39 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**']
+  pull_request:
+    paths: ['ios/**']
+
+jobs:
+  core-tests:
+    name: AeroDJCore tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build core
+        run: swift build
+        working-directory: ios/AeroDJCore
+      - name: Run core tests
+        run: swift test
+        working-directory: ios/AeroDJCore
+
+  simulator-build:
+    name: iOS simulator build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: List schemes
+        run: xcodebuild -list -project ios/AeroDJ.xcodeproj
+      - name: Build for simulator
+        run: |
+          xcodebuild build \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO

@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/claudio/projects/ai-radio-dj/ios/AeroDJCore/.build/arm64-apple-macosx/debug/AeroDJCoreTests.build/primary.swiftdeps"
+  },
+  "/Users/claudio/projects/ai-radio-dj/ios/AeroDJCore/Tests/AeroDJCoreTests/BriefingPlannerTests.swift": {
+    "dependencies": "/Users/claudio/projects/ai-radio-dj/ios/AeroDJCore/.build/arm64-apple-macosx/debug/AeroDJCoreTests.build/BriefingPlannerTests.d",
+    "object": "/Users/claudio/projects/ai-radio-dj/ios/AeroDJCore/.build/arm64-apple-macosx/debug/AeroDJCoreTests.build/BriefingPlannerTests.swift.o",
+    "swiftmodule": "/Users/claudio/projects/ai-radio-dj/ios/AeroDJCore/.build/arm64-apple-macosx/debug/AeroDJCoreTests.build/BriefingPlannerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/claudio/projects/ai-radio-dj/ios/AeroDJCore/.build/arm64-apple-macosx/debug/AeroDJCoreTests.build/BriefingPlannerTests.swiftdeps",
+    "diagnostics": "/Users/claudio/projects/ai-radio-dj/ios/AeroDJCore/.build/arm64-apple-macosx/debug/AeroDJCoreTests.build/BriefingPlannerTests.dia"
+  }
+}
