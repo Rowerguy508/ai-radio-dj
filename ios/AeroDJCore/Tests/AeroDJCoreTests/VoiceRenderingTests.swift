@@ -126,6 +126,92 @@ final class VoiceRenderingTests: XCTestCase {
         XCTAssertNil(overSize, "a single oversize call is refused up front")
     }
 
+    func testReservationLifecycleAndZeroCapRejectsPaid() async throws {
+        let budget = VoiceBudget(dailyCapMicrodollars: 1_000, calendar: utc, now: { t0 })
+        let first = await budget.reserve(userID: "ana", microdollars: 600)
+        let a = try XCTUnwrap(first)
+        let held = await budget.reserve(userID: "ana", microdollars: 600)
+        XCTAssertNil(held, "a held reservation counts against the cap")
+        await budget.release(a)
+        let second = await budget.reserve(userID: "ana", microdollars: 600)
+        let b = try XCTUnwrap(second, "release frees the hold")
+        await budget.commit(b, microdollars: 250)
+        let spent = await budget.committed(userID: "ana")
+        XCTAssertEqual(spent, 250, "commit records actual cost, not the worst case")
+        let rest = await budget.reserve(userID: "ana", microdollars: 750)
+        XCTAssertNotNil(rest)
+
+        // Final beta default: $0 paid spend. A paid route is refused before any request is made.
+        let cloud = FakeVoice(id: "cloud")
+        let zero = VoiceRenderer(routes: [paid(cloud)], budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
+        let result = await zero.render(cue("Coming up at 9 AM: Standup."), userID: "ana", stationID: "s")
+        guard case .failure(let failure) = result else { return XCTFail("paid route must not render at $0") }
+        XCTAssertEqual(failure.attempts.map(\.result), [.overCostCap])
+        let calls = await cloud.log.texts
+        XCTAssertTrue(calls.isEmpty, "no paid request is ever sent")
+    }
+
+    func testCancellationReleasesReservationReturnsAtOnceAndCachesNothing() async throws {
+        let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000, calendar: utc, now: { t0 })
+        let cache = InMemoryAudioCache()
+        let slow = FakeVoice(id: "slow", delay: .seconds(3), ignoresCancellation: true)
+        let renderer = VoiceRenderer(routes: [paid(slow, timeout: .seconds(10)), free(FakeVoice(id: "device"))],
+                                     budget: budget, cache: cache)
+        let task = Task { await renderer.render(cue("Coming up at 9 AM: Standup."), userID: "ana", stationID: "s") }
+        try await Task.sleep(for: .milliseconds(100))
+        let started = ContinuousClock.now
+        task.cancel()
+        let result = await task.value
+        XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(500), "returns at once even if the provider ignores cancellation")
+        guard case .failure(let failure) = result else { return XCTFail("cancelled render must not return audio") }
+        XCTAssertEqual(failure.attempts.map(\.result), [.cancelled], "no fallback route is tried after cancellation")
+        let spent = await budget.committed(userID: "ana")
+        XCTAssertEqual(spent, 0)
+        let full = await budget.reserve(userID: "ana", microdollars: 1_000_000)
+        XCTAssertNotNil(full, "the cancelled call's reservation was released")
+        try await Task.sleep(for: .seconds(3))   // the provider finishes late
+        let cached = await cache.count
+        XCTAssertEqual(cached, 0, "late audio is never cached")
+    }
+
+    func testDeletingOrRevokingASourcePurgesDerivedAudio() async throws {
+        let ana = UUID(), ben = UUID()
+        let clock = MutableClock(t0)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cache-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let caches: [any AudioCache] = [InMemoryAudioCache(now: { clock.now }), FileAudioCache(directory: dir, now: { clock.now })]
+        for cache in caches {
+            clock.now = t0
+            let renderer = VoiceRenderer(routes: [free(FakeVoice(id: "device"))], budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache)
+            var anaCue = cue("To follow up: Ana's lease."); anaCue = NarrationCue(id: anaCue.id, order: 1, group: 1, kind: .followUp,
+                text: anaCue.text, estimatedSeconds: 4, maxSeconds: 30, sourceItemID: ana, source: .userShared, provenance: "share:ana")
+            var benCue = cue("To follow up: Ben's invoice."); benCue = NarrationCue(id: benCue.id, order: 2, group: 2, kind: .followUp,
+                text: benCue.text, estimatedSeconds: 4, maxSeconds: 30, sourceItemID: ben, source: .userShared, provenance: "share:ben")
+            let a = try await renderer.render(anaCue, userID: "u", stationID: "s").get()
+            let b = try await renderer.render(benCue, userID: "u", stationID: "s").get()
+            XCTAssertEqual(a.audio.sourceItemIDs, [ana])
+            await cache.purge(sourceItemIDs: [ana])
+            let gone = await cache.audio(for: a.cacheKey), kept = await cache.audio(for: b.cacheKey)
+            XCTAssertNil(gone, "audio derived from a deleted or revoked source is purged")
+            XCTAssertNotNil(kept)
+
+            clock.now = t0.addingTimeInterval(7 * 24 * 3600 + 1)
+            let expired = await cache.audio(for: b.cacheKey)
+            XCTAssertNil(expired, "never served after 7 days")
+        }
+        XCTAssertEqual(FileAudioCache(directory: dir, maxAge: 30 * 24 * 3600).maxAge, 7 * 24 * 3600, "retention is capped at 7 days")
+        let memAge = InMemoryAudioCache(maxAge: 30 * 24 * 3600).maxAge
+        XCTAssertEqual(memAge, 7 * 24 * 3600)
+
+        // purgeExpired removes files without needing a read.
+        clock.now = t0
+        let file = FileAudioCache(directory: dir, now: { clock.now })
+        await file.store(CachedAudio(data: Data([1]), seconds: 1, providerID: "device", voiceID: "v", createdAt: t0), for: "k")
+        clock.now = t0.addingTimeInterval(8 * 24 * 3600)
+        await file.purgeExpired()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("k.json").path))
+    }
+
     func testTimeoutFallsBackEvenIfProviderIgnoresCancellationAndChargesReservation() async throws {
         let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000, calendar: utc, now: { t0 })
         let slow = FakeVoice(id: "slow", delay: .seconds(3), ignoresCancellation: true)

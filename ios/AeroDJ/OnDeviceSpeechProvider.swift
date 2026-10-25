@@ -107,16 +107,18 @@ private final class SpeechRenderJob: @unchecked Sendable {
 }
 
 extension VoiceRenderer {
-    /// Production default: on-device voice only, so no paid provider and no
-    /// network. Cloud routes (`ProxyVoiceProvider`) are added only once a
-    /// backend proxy is deployed and the owner approves the operating cost.
+    /// Final beta default (owner-approved): on-device voice only, $0 paid spend,
+    /// no network, narration cache retained at most 7 days. Cloud routes
+    /// (`ProxyVoiceProvider`) need a deployed proxy and a new owner approval.
     static func onDeviceDefault() -> VoiceRenderer {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let voice = VoiceProfile(id: AVSpeechSynthesisVoice(language: "en-US")?.identifier ?? "", name: "Host")
+        let cache = FileAudioCache(directory: support.appendingPathComponent("Voice/Cache"))
+        Task { await cache.purgeExpired() }
         return VoiceRenderer(
             routes: [VoiceRoute(providerID: OnDeviceSpeechProvider.providerID, provider: OnDeviceSpeechProvider(),
                                 voice: voice, timeout: .seconds(20), acceptsSSML: true)],
             budget: VoiceBudget(dailyCapMicrodollars: 0, file: support.appendingPathComponent("Voice/budget.json")),
-            cache: FileAudioCache(directory: support.appendingPathComponent("Voice/Cache")))
+            cache: cache)
     }
 }

@@ -268,4 +268,70 @@ final class DJNarrationTests: XCTestCase {
         let cap = await capped.takeBreak(afterTrack: k)
         XCTAssertEqual(cap, .skipped(.costCap))
     }
+
+    func testCancelAllReleasesReservationsAndStaleAudioNeverPlays() async throws {
+        var w = DJScriptWriter(cadence: .init(talkFraction: 1), seed: 1)
+        let plan = w.plan(tracks: djTracks(8), briefing: nil, hour: 9)
+        let (first, second) = (plan.breaks[0], plan.breaks[1])
+        let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000)
+        let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "cloud", provider: DJFakeVoice(id: "cloud", delay: .milliseconds(300)),
+                                                         voice: djVoice, microdollarsPerThousandCharacters: 30_000)],
+                                     budget: budget, cache: InMemoryAudioCache())
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s")
+        let log = DJEventLog()
+        await preparer.observe { log.add($0) }
+        let fast = DJBreakPreparer(renderer: djRenderer(), userID: "u", stationID: "s")
+        await fast.observe { log.add($0) }
+
+        await fast.prepare(second, deadline: .seconds(2))           // ready before the station change
+        await preparer.prepare(first, deadline: .seconds(2))        // still rendering (paid, reserved)
+        try await Task.sleep(for: .milliseconds(100))
+        await fast.cancelAll()
+        await preparer.cancelAll()                                   // e.g. station switched at a boundary
+        try await Task.sleep(for: .milliseconds(500))                // the paid render would have finished by now
+
+        var model = DJPresentationModel()
+        for event in log.all { model.apply(event.presentationEvent) }
+        XCTAssertEqual(model.state, .idle, "no 'DJ up next' for breaks that will not play")
+        XCTAssertFalse(log.all.contains { if case .prepared(first.afterTrack, _, _) = $0 { true } else { false } }, "late finish is ignored")
+        XCTAssertTrue(log.all.contains(.skipped(afterTrack: first.afterTrack, .cancelled)))
+        XCTAssertTrue(log.all.contains(.skipped(afterTrack: second.afterTrack, .cancelled)))
+        let stale = await preparer.takeBreak(afterTrack: first.afterTrack)
+        let staleReady = await fast.takeBreak(afterTrack: second.afterTrack)
+        XCTAssertEqual(stale, .skipped(.notPlanned), "no stale audio at the next boundary")
+        XCTAssertEqual(staleReady, .skipped(.notPlanned))
+        let spent = await budget.committed(userID: "u")
+        XCTAssertEqual(spent, 0, "a cancelled render is not charged")
+        let full = await budget.reserve(userID: "u", microdollars: 1_000_000)
+        XCTAssertNotNil(full, "and its reservation was released")
+    }
+
+    func testRevokingASourceDropsBreaksBuiltFromIt() async throws {
+        let revoked = UUID()
+        let cues = [NarrationCue(id: UUID(), order: 1, group: 0, kind: .upcomingEvent, text: "Lease signing at 3.", estimatedSeconds: 3,
+                                 maxSeconds: 10, sourceItemID: revoked, source: .userShared, provenance: "share")]
+        let handoff = NarrationHandoff(cues: cues, maxSpokenSeconds: 30, experienceSeconds: 300)
+        var w = DJScriptWriter(cadence: .init(talkFraction: 1), seed: 1)
+        let plan = w.plan(tracks: djTracks(6), briefing: handoff, hour: 9)
+        let withSource = try XCTUnwrap(plan.breaks.first { $0.cues.contains { $0.sourceItemID == revoked } })
+        let other = try XCTUnwrap(plan.breaks.first { b in !b.cues.contains { $0.sourceItemID == revoked } })
+        let cache = InMemoryAudioCache()
+        let preparer = DJBreakPreparer(renderer: VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
+                                                               budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache),
+                                       userID: "u", stationID: "s")
+        let log = DJEventLog()
+        await preparer.observe { log.add($0) }
+        await preparer.prepare(withSource, deadline: .seconds(2))
+        await preparer.prepare(other, deadline: .seconds(2))
+        try await Task.sleep(for: .milliseconds(200))
+
+        await preparer.purge(sourceItemIDs: [revoked])
+        await cache.purge(sourceItemIDs: [revoked])
+        XCTAssertEqual(log.all.last, .skipped(afterTrack: withSource.afterTrack, .sourceRevoked))
+        let dropped = await preparer.takeBreak(afterTrack: withSource.afterTrack)
+        XCTAssertEqual(dropped, .skipped(.sourceRevoked), "prepared audio from a revoked source is never played")
+        guard case .ready = await preparer.takeBreak(afterTrack: other.afterTrack) else { return XCTFail("unrelated break still plays") }
+        let leftover = await cache.count
+        XCTAssertEqual(leftover, withSource.cues.count + other.cues.count - 1, "only the clip spoken from the revoked item is purged")
+    }
 }

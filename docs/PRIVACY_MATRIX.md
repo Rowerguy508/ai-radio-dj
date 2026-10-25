@@ -67,10 +67,11 @@ The Share Extension writes one JSON envelope per share to `group.com.aerodj/Inbo
 2. **No inbox scraping** — Share Extension + user-imported content only; `ContextItem` is provenance-tracked.
 3. **No protected-stream mixing** — MusicKit owns playback; no DRM capture/mix.
 4. **Provider protocol** — `VoiceProvider` pluggable; secrets server-side only.
-5. **Cost safeguards** — `UsageMeter` records per-user usage; hard per-user budget enforcement is **not yet implemented** (#22). No speculative prefetch; cache only reusable generic audio.
-6. **No fabricated APIs/entitlements** — Dessa stub disabled until a real, documented endpoint exists.
+5. **Cost safeguards** — `VoiceBudget` enforces a hard per-user daily cap with reserve → commit/release (a cancelled call releases its hold; a timed-out paid call is charged). Final beta default: **$0 paid spend, on-device voice only** (`VoiceRenderer.onDeviceDefault()`); a paid route at a $0 cap is refused before any request.
+6. **Narration audio cache** — final beta default: retained **at most 7 days** (`AudioCacheRetention.maximum`; longer settings are clamped), expired clips are never served and are purged at launch. Each clip records the personal `sourceItemIDs` it was spoken from; deleting or revoking a source must call `AudioCache.purge(sourceItemIDs:)`, which removes that audio (and the narration text it encodes).
+7. **No fabricated APIs/entitlements** — Dessa stub disabled until a real, documented endpoint exists.
 
-**Consequences:** Privacy is enforced at the data model (`ContextItem`) and permission layer, not bolted on. Cost bounding is designed but not yet enforced (#22, #32). External providers (Gmail/IMAP, messaging, direct Obsidian bridge, full-duplex Dessa) are feature-flagged until official APIs exist.
+**Consequences:** Privacy is enforced at the data model (`ContextItem`) and permission layer, not bolted on. Cost bounding is enforced by `VoiceBudget` (#53). External providers (Gmail/IMAP, messaging, direct Obsidian bridge, full-duplex Dessa) are feature-flagged until official APIs exist.
 
 ## 5. Completion check
 

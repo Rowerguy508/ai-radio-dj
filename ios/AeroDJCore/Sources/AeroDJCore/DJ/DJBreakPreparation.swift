@@ -22,6 +22,10 @@ public enum DJBreakSkipReason: String, Codable, Equatable, Sendable {
     case notPlanned
     /// The song did not end naturally (user skip, queue change): never talk over or after a cut song.
     case notNaturalBoundary
+    /// Preparation was cancelled because the boundary will not come (station change, queue replaced, stop).
+    case cancelled
+    /// A personal item the break was built from was deleted or its consent revoked.
+    case sourceRevoked
 }
 
 /// Audio ready to play at a boundary, in order, with measured durations.
@@ -49,6 +53,7 @@ public actor DJBreakPreparer {
     private let maxBreakSeconds: @Sendable (DJBreak) -> Double
     private var tasks: [Int: Task<Void, Never>] = [:]
     private var results: [Int: DJBreakOutcome] = [:]
+    private var planned: [Int: DJBreak] = [:]
     private var observers: [@Sendable (DJBreakEvent) -> Void] = []
 
     public enum DJBreakEvent: Equatable, Sendable {
@@ -75,6 +80,7 @@ public actor DJBreakPreparer {
     public func prepare(_ djBreak: DJBreak, deadline: Duration) {
         let k = djBreak.afterTrack
         guard tasks[k] == nil, results[k] == nil else { return }
+        planned[k] = djBreak
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
         let renderer = renderer, userID = userID, stationID = stationID, cap = maxBreakSeconds(djBreak)
         tasks[k] = Task {
@@ -93,7 +99,7 @@ public actor DJBreakPreparer {
     /// Called at the boundary. Never waits: returns what is ready or an explicit skip.
     /// `natural` is false when the song was cut (skip, queue change); the break is then dropped.
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
-        defer { tasks[k] = nil }
+        defer { tasks[k] = nil; planned[k] = nil }
         guard natural else {
             tasks[k]?.cancel()
             let wasPlanned = tasks[k] != nil || results.removeValue(forKey: k) != nil
@@ -109,15 +115,32 @@ public actor DJBreakPreparer {
         return .skipped(.notReadyAtBoundary)
     }
 
-    /// Cancels preparation for boundaries that will not happen (skip, queue replaced, stop).
+    /// Cancels preparation for boundaries that will not happen (station change, queue replaced, stop).
+    /// In-flight renders are cancelled (their cost reservations are released), prepared audio is
+    /// discarded, and each dropped break is reported as `.skipped(.cancelled)` so no UI keeps
+    /// showing a break that will not play. A late render finish is ignored.
     public func cancelAll() {
+        let dropped = Set(tasks.keys).union(results.compactMap { if case .ready = $0.value { $0.key } else { nil } })
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
         results.removeAll()
+        planned.removeAll()
+        for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
+    }
+
+    /// Drops any pending or prepared break built from these personal items (deleted or consent
+    /// revoked), so their audio is never played. Pair with `AudioCache.purge(sourceItemIDs:)`.
+    public func purge(sourceItemIDs: Set<UUID>) {
+        for (k, djBreak) in planned where djBreak.cues.contains(where: { $0.sourceItemID.map(sourceItemIDs.contains) ?? false }) {
+            tasks.removeValue(forKey: k)?.cancel()
+            planned[k] = nil
+            results[k] = .skipped(.sourceRevoked)
+            emit(.skipped(afterTrack: k, .sourceRevoked))
+        }
     }
 
     private func finish(_ k: Int, _ outcome: DJBreakOutcome) {
-        guard results[k] == nil, tasks[k] != nil else { return }  // already taken or cancelled
+        guard results[k] == nil, tasks[k] != nil else { return }  // already taken, cancelled or purged
         results[k] = outcome
         switch outcome {
         case .ready(let b): emit(.prepared(afterTrack: k, includesBriefing: b.includesBriefing, seconds: b.measuredSeconds))
