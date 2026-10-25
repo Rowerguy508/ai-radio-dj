@@ -28,8 +28,11 @@ final class MusicKitService: ObservableObject {
     @Published private(set) var lastError: String?
 
     private let player = ApplicationMusicPlayer.shared
-    private var stateMachine = AudioStateMachine()
+    private let stateMachine = AudioStateMachine()
     private var audioSessionConfigured = false
+    private var advanceDetector = TrackAdvanceDetector()
+    private var pollTimer: Timer?
+    private var lastSeenID: String?
 
     var audioState: AudioState { stateMachine.state }
 
@@ -40,6 +43,7 @@ final class MusicKitService: ObservableObject {
         case .authorized:
             authState = .authorized
             configureAudioSession()
+            startObserving()
             await refreshSubscription()
         case .denied, .restricted:
             authState = .denied
@@ -111,6 +115,46 @@ final class MusicKitService: ObservableObject {
     /// Called when the spoken interlude ends: voice -> music.
     func endInterlude() {
         stateMachine.apply(.interludeEnded)
+    }
+
+    // MARK: - Track-adavance observation
+
+    /// Poll the player once a second and feed the advance detector so a
+    /// *natural* song ending (MusicKit auto-advance) fires `.trackEnded`
+    /// and moves music -> transition for the next interlude.
+    private func startObserving() {
+        guard pollTimer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.pollPlaybackPosition()
+            }
+        }
+        // Fire on the run loop common modes so it works during scrolling/drag.
+        RunLoop.main.add(timer, forMode: .common)
+        pollTimer = timer
+    }
+
+    private func pollPlaybackPosition() {
+        let state = player.state
+        let itemID = state.currentEntry?.item.id.rawValue
+        // MusicKit sets .interrupted / stops when the current entry finishes.
+        let reachedEnd = (state.playbackStatus == .interrupted)
+
+        // Feed the detector; on a natural end, advance + move to transition.
+        let sample = PlaybackSample(
+            isPlaying: (state.playbackStatus == .playing),
+            reachedEnd: reachedEnd,
+            itemChanged: (itemID != lastSeenID)
+        )
+        lastSeenID = itemID
+        if advanceDetector.consume(sample) {
+            if let current = itemID,
+               let idx = queue.firstIndex(where: { $0.id == current }),
+               queue.index(after: idx) < queue.count {
+                currentTrack = queue[queue.index(after: idx)]
+            }
+            stateMachine.apply(.trackEnded)
+        }
     }
 
     // MARK: - Interruptions & route changes
