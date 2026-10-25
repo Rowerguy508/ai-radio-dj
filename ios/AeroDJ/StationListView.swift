@@ -1,10 +1,12 @@
 import SwiftUI
 
 /// Station selection screen. Adaptive container sizing (no hardcoded device dims).
-/// Handles loading / empty states and links to the player + settings.
+/// Handles loading / empty states, links to the player + settings, and uses a
+/// zoom navigation transition so browsing -> Now Playing feels continuous.
 struct StationListView: View {
     @State private var stations: [Station] = Station.mockStations
     @State private var isLoading = false
+    @Namespace private var namespace
 
     var body: some View {
         NavigationStack {
@@ -38,6 +40,7 @@ struct StationListView: View {
             }
             .navigationDestination(for: Station.self) { station in
                 PlayerView(station: station)
+                    .navigationTransition(.zoom(sourceID: station.id, in: namespace))
             }
         }
         .task { await loadStations() }
