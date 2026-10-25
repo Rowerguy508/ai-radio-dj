@@ -1,0 +1,237 @@
+import Foundation
+
+// Natural DJ talk between songs. Lines are built only from:
+//   - real track metadata passed in from MusicKit (`DJTrack`), and
+//   - approved, sanitized briefing cues from `MorningBriefingEngine`.
+// Templates add no facts of their own (no genres, years, chart claims, or weather).
+
+/// Track metadata exactly as MusicKit reported it. Empty fields are never spoken.
+public struct DJTrack: Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let artist: String
+
+    public init(id: String, title: String, artist: String) {
+        self.id = id
+        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.artist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+public enum DayPart: String, Sendable, CaseIterable {
+    case earlyMorning, morning, afternoon, evening, lateNight
+
+    public init(hour: Int) {
+        switch hour {
+        case 4..<7: self = .earlyMorning
+        case 7..<12: self = .morning
+        case 12..<17: self = .afternoon
+        case 17..<22: self = .evening
+        default: self = .lateNight
+        }
+    }
+}
+
+/// How often the DJ talks. Music takes priority: most boundaries are music-only.
+public struct DJCadence: Equatable, Sendable {
+    /// Chance of a music-only break at an eligible boundary (0...1).
+    public var talkFraction: Double
+    /// Whole songs that must play between two breaks (at least 1: never back-to-back).
+    public var minSongsBetweenBreaks: Int
+    /// Cap for a break with no briefing content.
+    public var maxTransitionSeconds: Int
+    /// Cap for a break that carries briefing cues; content that does not fit waits for a later break.
+    public var maxBriefingBreakSeconds: Int
+
+    public init(talkFraction: Double = 0.3, minSongsBetweenBreaks: Int = 2,
+                maxTransitionSeconds: Int = 12, maxBriefingBreakSeconds: Int = 45) {
+        self.talkFraction = min(max(talkFraction, 0), 1)
+        self.minSongsBetweenBreaks = max(1, minSongsBetweenBreaks)
+        self.maxTransitionSeconds = maxTransitionSeconds
+        self.maxBriefingBreakSeconds = maxBriefingBreakSeconds
+    }
+}
+
+/// Deterministic PRNG (SplitMix64) so tests can seed a session.
+public struct SeededGenerator: RandomNumberGenerator, Sendable {
+    private var state: UInt64
+    public init(seed: UInt64) { state = seed }
+    public mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
+/// A template pool that does not repeat a line until every usable line has been used,
+/// and never repeats the previous line across a reset.
+public struct TemplatePool: Sendable {
+    public let templates: [String]
+    private var used: Set<Int> = []
+    private var last: Int?
+
+    public init(_ templates: [String]) { self.templates = templates }
+
+    /// Picks a template whose placeholders can all be filled from `values`; nil if none can.
+    public mutating func next(filling values: [String: String], using rng: inout SeededGenerator) -> String? {
+        let usable = templates.indices.filter { Self.fill(templates[$0], values) != nil }
+        guard !usable.isEmpty else { return nil }
+        var fresh = usable.filter { !used.contains($0) }
+        if fresh.isEmpty {
+            used.subtract(usable)
+            fresh = usable.count > 1 ? usable.filter { $0 != last } : usable
+        }
+        let pick = fresh[Int(rng.next() % UInt64(fresh.count))]
+        used.insert(pick)
+        last = pick
+        return Self.fill(templates[pick], values)
+    }
+
+    /// Replaces `{key}` placeholders; nil if any is missing or empty.
+    static func fill(_ template: String, _ values: [String: String]) -> String? {
+        var out = ""
+        var rest = Substring(template)
+        while let open = rest.firstIndex(of: "{") {
+            guard let close = rest[open...].firstIndex(of: "}") else { return nil }
+            out += rest[..<open]
+            guard let value = values[String(rest[rest.index(after: open)..<close])], !value.isEmpty else { return nil }
+            out += value
+            rest = rest[rest.index(after: close)...]
+        }
+        return out + rest
+    }
+}
+
+/// One planned break at a natural song boundary.
+public struct DJBreak: Equatable, Sendable {
+    /// Plays after this track (0-based) and before the next. Never mid-song.
+    public let afterTrack: Int
+    /// Spoken in order: optional back-announce/greeting, briefing cues, then the intro of the next song.
+    public let cues: [NarrationCue]
+    public var briefingCueIDs: [UUID] { cues.filter(\.isContent).map(\.id) }
+    public var hasBriefing: Bool { cues.contains { $0.isContent } }
+    public var estimatedSeconds: Double { cues.reduce(0) { $0 + $1.plannedSeconds } }
+}
+
+public struct DJSessionPlan: Equatable, Sendable {
+    public let breaks: [DJBreak]
+    /// One outcome for every briefing cue: placed in a break, or explicitly deferred/dropped.
+    public let briefingReport: NarrationScheduleReport
+}
+
+/// Plans a session: where the DJ talks and what it says. State (template pools,
+/// RNG) lives for the whole listening session so phrasing does not repeat.
+public struct DJScriptWriter: Sendable {
+    public var cadence: DJCadence
+    private var rng: SeededGenerator
+    private var backAnnounce = TemplatePool([
+        "That was {title} by {artist}.",
+        "{artist} there, with {title}.",
+        "You just heard {title} from {artist}.",
+        "{title}, from {artist}.",
+    ])
+    private var intro = TemplatePool([
+        "Up next, {nextTitle} by {nextArtist}.",
+        "Here's {nextArtist} with {nextTitle}.",
+        "Coming up: {nextArtist}, {nextTitle}.",
+        "Next, {nextTitle}.",
+        "Here's {nextTitle}.",
+    ])
+    private var briefingLead = TemplatePool([
+        "Quick look at your day.",
+        "A couple of things for today.",
+        "Here's what's on your plate.",
+    ])
+    private var greetings: [DayPart: TemplatePool] = [
+        .earlyMorning: TemplatePool(["Early start today.", "Good morning, early riser."]),
+        .morning: TemplatePool(["Good morning.", "Morning."]),
+        .afternoon: TemplatePool(["Good afternoon.", "Afternoon."]),
+        .evening: TemplatePool(["Good evening.", "Evening."]),
+        .lateNight: TemplatePool(["Late one tonight.", "Still up? Good."]),
+    ]
+    private var hasGreeted = false
+
+    public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max)) {
+        self.cadence = cadence
+        self.rng = SeededGenerator(seed: seed)
+    }
+
+    /// - Parameters:
+    ///   - tracks: the queue in play order, from MusicKit.
+    ///   - briefing: approved narration from `BriefingScript.handoff`; may be empty.
+    ///   - hour: local hour, for time-of-day phrasing.
+    public mutating func plan(tracks: [DJTrack], briefing: NarrationHandoff?, hour: Int) -> DJSessionPlan {
+        let dayPart = DayPart(hour: hour)
+        // Briefing content in priority order; opener/closer framing is replaced by DJ phrasing.
+        var pending = (briefing?.cues ?? []).filter(\.isContent).sorted { $0.order < $1.order }
+        var outcomes: [UUID: NarrationOutcome] = [:]
+        for cue in briefing?.cues ?? [] where !cue.isContent { outcomes[cue.id] = .dropped(.notPlacedByScheduler) }
+
+        var breaks: [DJBreak] = []
+        var lastBreak: Int?
+        var order = 0
+        for boundary in 0..<max(0, tracks.count - 1) {
+            if let lastBreak, boundary - lastBreak <= cadence.minSongsBetweenBreaks { continue }
+            let wantsBriefing = !pending.isEmpty
+            let roll = Double(rng.next() % 10_000) / 10_000
+            guard wantsBriefing || roll < cadence.talkFraction else { continue }
+
+            let prev = tracks[boundary], next = tracks[boundary + 1]
+            let values = ["title": prev.title, "artist": prev.artist, "nextTitle": next.title, "nextArtist": next.artist]
+            var lines: [String] = []
+            if !hasGreeted, let greeting = greetings[dayPart]?.next(filling: [:], using: &rng) {
+                lines.append(greeting)
+                hasGreeted = true
+            } else if let line = backAnnounce.next(filling: values, using: &rng) {
+                lines.append(line)
+            }
+            let introLine = intro.next(filling: values, using: &rng)
+
+            var cues = lines.map { transitionCue($0, order: &order) }
+            if wantsBriefing {
+                let limit = Double(cadence.maxBriefingBreakSeconds)
+                var spent = cues.reduce(0) { $0 + $1.plannedSeconds } + estimate(introLine)
+                if let lead = briefingLead.next(filling: [:], using: &rng) {
+                    let leadCue = transitionCue(lead, order: &order)
+                    spent += leadCue.plannedSeconds
+                    var taken: [NarrationCue] = []
+                    while let cue = pending.first, spent + cue.plannedSeconds <= limit {
+                        taken.append(cue); spent += cue.plannedSeconds; pending.removeFirst()
+                    }
+                    if taken.isEmpty, let cue = pending.first, cue.plannedSeconds + leadCue.plannedSeconds > limit {
+                        outcomes[cue.id] = .dropped(.overBudget)   // can never fit any break
+                        pending.removeFirst()
+                    }
+                    if !taken.isEmpty {
+                        cues.append(leadCue)
+                        cues += taken
+                        for cue in taken { outcomes[cue.id] = .scheduled(.afterTrack(boundary)) }
+                    }
+                }
+            }
+            if let introLine { cues.append(transitionCue(introLine, order: &order)) }
+            guard !cues.isEmpty else { continue }
+            let isBriefing = cues.contains { $0.isContent }
+            if !isBriefing, cues.reduce(0, { $0 + $1.plannedSeconds }) > Double(cadence.maxTransitionSeconds) { continue }
+            breaks.append(DJBreak(afterTrack: boundary, cues: cues))
+            lastBreak = boundary
+        }
+        for cue in pending { outcomes[cue.id] = .deferred(.noTrackBoundary) }
+        let entries = (briefing?.cues ?? []).map { NarrationScheduleEntry(cue: $0, outcome: outcomes[$0.id] ?? .deferred(.noTrackBoundary)) }
+        return DJSessionPlan(breaks: breaks, briefingReport: NarrationScheduleReport(entries: entries))
+    }
+
+    private func estimate(_ text: String?) -> Double {
+        text.map { Double(DefaultBriefingPlanner.estimatedSpokenSeconds(for: $0)) } ?? 0
+    }
+
+    private func transitionCue(_ text: String, order: inout Int) -> NarrationCue {
+        defer { order += 1 }
+        let seconds = DefaultBriefingPlanner.estimatedSpokenSeconds(for: text)
+        return NarrationCue(id: UUID(), order: order, group: -1, kind: .transition, text: text,
+                            estimatedSeconds: seconds, maxSeconds: max(8, seconds * 2), sourceItemID: nil,
+                            source: nil, provenance: nil)
+    }
+}

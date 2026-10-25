@@ -234,3 +234,110 @@ final class BriefingEndToEndTests: XCTestCase {
         XCTAssertFalse(spoken.contains("Therapy") || spoken.contains("Ignore") || spoken.contains("Unreviewed"))
     }
 }
+
+// Full DJ path: consent-approved fixtures -> engine -> script -> DJ session plan ->
+// fake voice render (fallback, timeout, cost cap) -> prepared audio at boundaries ->
+// briefing report -> presentation state.
+final class DJSessionEndToEndTests: XCTestCase {
+    func testApprovedBriefingBecomesPreparedDJBreaksWithHonestPresentation() async throws {
+        let calendar = CalendarContextSource(
+            reader: CalendarFixture(events: [
+                event("Design review", at(26, 9, 30), at(26, 10, 30)),
+                event("Therapy with Dr. Lee", at(26, 12), at(26, 13), calendar: "personal"),
+            ]),
+            policy: .init(includedCalendarIDs: ["work", "personal"], privateCalendarIDs: ["personal"],
+                          privateHandling: .exclude, consent: .granted),
+            calendar: newYork, now: { fixedNow })
+        let notes = ApprovedNotes(
+            notes: ObsidianContextSource(reader: NotesFixture(files: [
+                "rent.md": "---\ndue: 2026-10-26\n---\n# Pay rent\nTransfer from checking.",
+                "draft.md": "# Not approved\nSecret plans.",
+            ]), calendar: newYork, now: { fixedNow }),
+            approved: ["obsidian-file:rent.md"])
+        let engine = MorningBriefingEngine(calendar: newYork, now: { fixedNow })
+        let script = await engine.briefing(from: [calendar, notes])
+        let handoff = script.handoff(maxSpokenSeconds: engine.configuration.maxSpokenSeconds)
+        XCTAssertEqual(handoff.cues.filter(\.isContent).count, 2)
+
+        // Real MusicKit metadata for the queue; seeded session.
+        let tracks = [DJTrack(id: "1", title: "Harvest Moon", artist: "Neil Young"),
+                      DJTrack(id: "2", title: "Dreams", artist: "Fleetwood Mac"),
+                      DJTrack(id: "3", title: "Holocene", artist: "Bon Iver"),
+                      DJTrack(id: "4", title: "Pink + White", artist: "Frank Ocean"),
+                      DJTrack(id: "5", title: "Vienna", artist: "Billy Joel")]
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 2), seed: 11)
+        let plan = writer.plan(tracks: tracks, briefing: handoff, hour: newYork.component(.hour, from: fixedNow))
+        XCTAssertEqual(plan.breaks.map(\.afterTrack), [0, 3])
+        let first = plan.breaks[0], second = plan.breaks[1]
+        XCTAssertEqual(Set(first.briefingCueIDs), Set(handoff.cues.filter(\.isContent).map(\.id)), "briefing woven into the first break")
+        let spoken = plan.breaks.flatMap(\.cues).map(\.text).joined(separator: " ")
+        XCTAssertFalse(spoken.contains("Therapy") || spoken.contains("Secret"), "only approved context")
+        XCTAssertTrue(spoken.contains("Dreams") || spoken.contains("Harvest Moon"))
+
+        // Presentation model fed only by real events.
+        let model = PresentationBox()
+        model.apply(.consentReviewPending(count: 1))
+        model.apply(.consentReviewPending(count: 0))
+
+        // Break 1: the paid voice times out, so the on-device voice renders it.
+        let fallback = DJBreakPreparer(
+            renderer: djRenderer(paid: DJFakeVoice(id: "cloud", delay: .seconds(5)), paidTimeout: .milliseconds(50)),
+            userID: "u1", stationID: "morning")
+        await fallback.observe { model.apply($0.presentationEvent(hasBriefing: true)) }
+        await fallback.prepare(first, deadline: .seconds(3))
+        try await waitUntil { model.state == .upcomingBriefing(afterTrack: 0) }
+        let ready = await fallback.takeBreak(afterTrack: 0)
+        guard case .ready(let prepared) = ready else { return XCTFail("expected prepared audio, got \(ready)") }
+        XCTAssertEqual(prepared.cues.map(\.id), first.cues.map(\.id))
+        XCTAssertTrue(prepared.cues.allSatisfy { $0.providerID == "device" && $0.renderedSeconds != nil && $0.audioCacheKey != nil })
+        XCTAssertEqual(prepared.measuredSeconds, prepared.cues.compactMap(\.renderedSeconds).reduce(0, +), accuracy: 0.001)
+        XCTAssertLessThanOrEqual(prepared.measuredSeconds, Double(writer.cadence.maxBriefingBreakSeconds))
+
+        // Speaking only while the audio actually plays.
+        let notYet = model.state
+        XCTAssertNotEqual(notYet, .speaking(afterTrack: 0))
+        model.apply(.speechAudioStarted(afterTrack: 0))
+        let speaking = model.state
+        XCTAssertEqual(speaking, .speaking(afterTrack: 0))
+        model.apply(.speechAudioEnded(afterTrack: 0))
+
+        // Break 2: paid-only route and the user's cap is spent -> skipped, music continues.
+        let capped = DJBreakPreparer(renderer: djRenderer(paid: DJFakeVoice(id: "cloud"), free: nil, capMicrodollars: 0),
+                                     userID: "u1", stationID: "morning")
+        await capped.observe { model.apply($0.presentationEvent(hasBriefing: false)) }
+        await capped.prepare(second, deadline: .seconds(3))
+        try await waitUntil { model.history.last == .idle && model.history.contains(.preparing(afterTrack: 3)) }
+        let skipped = await capped.takeBreak(afterTrack: 3)
+        XCTAssertEqual(skipped, .skipped(.costCap))
+
+        let report = plan.report(afterBreaks: [0: ready, 3: skipped])
+        XCTAssertEqual(report.entries.count, handoff.cues.count, "one outcome per cue")
+        XCTAssertTrue(report.entries.filter { $0.cue.isContent }.allSatisfy { $0.outcome == .scheduled(.afterTrack(0)) })
+        let history = model.history
+        XCTAssertEqual(history, [.consentReviewRequired(pendingCount: 1), .idle, .preparing(afterTrack: 0),
+                                 .upcomingBriefing(afterTrack: 0), .speaking(afterTrack: 0), .idle,
+                                 .preparing(afterTrack: 3), .idle])
+    }
+
+    private func waitUntil(_ condition: @Sendable () async -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while await !condition() {
+            guard ContinuousClock.now < deadline else { return XCTFail("condition not met in time") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
+/// Synchronous, ordered delivery (the app would hop to the main actor in the same order).
+private final class PresentationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var model = DJPresentationModel()
+    private var states: [DJPresentationState] = []
+    var state: DJPresentationState { lock.lock(); defer { lock.unlock() }; return model.state }
+    var history: [DJPresentationState] { lock.lock(); defer { lock.unlock() }; return states }
+    func apply(_ e: DJPresentationEvent) {
+        lock.lock(); defer { lock.unlock() }
+        let s = model.apply(e)
+        if states.last != s { states.append(s) }
+    }
+}
