@@ -106,18 +106,26 @@ private final class SpeechRenderJob: @unchecked Sendable {
     }
 }
 
+extension VoiceRoute {
+    /// The one on-device voice route (AVSpeechSynthesizer). Shared by the live app
+    /// and the test station so voice settings have a single source.
+    static func onDevice() -> VoiceRoute {
+        let voice = VoiceProfile(id: AVSpeechSynthesisVoice(language: "en-US")?.identifier ?? "", name: "Host")
+        return VoiceRoute(providerID: OnDeviceSpeechProvider.providerID, provider: OnDeviceSpeechProvider(),
+                          voice: voice, timeout: .seconds(20), acceptsSSML: true)
+    }
+}
+
 extension VoiceRenderer {
     /// Final beta default (owner-approved): on-device voice only, $0 paid spend,
     /// no network, narration cache retained at most 7 days. Cloud routes
     /// (`ProxyVoiceProvider`) need a deployed proxy and a new owner approval.
     static func onDeviceDefault() -> VoiceRenderer {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let voice = VoiceProfile(id: AVSpeechSynthesisVoice(language: "en-US")?.identifier ?? "", name: "Host")
         let cache = FileAudioCache(directory: support.appendingPathComponent("Voice/Cache"))
         Task { await cache.purgeExpired() }
         return VoiceRenderer(
-            routes: [VoiceRoute(providerID: OnDeviceSpeechProvider.providerID, provider: OnDeviceSpeechProvider(),
-                                voice: voice, timeout: .seconds(20), acceptsSSML: true)],
+            routes: [VoiceRoute.onDevice()],
             budget: VoiceBudget(dailyCapMicrodollars: 0, file: support.appendingPathComponent("Voice/budget.json")),
             cache: cache)
     }

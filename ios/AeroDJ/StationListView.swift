@@ -3,6 +3,8 @@ import SwiftUI
 
 /// Station selection screen. Adaptive container sizing (no hardcoded device dims).
 struct StationListView: View {
+    /// Composed once at launch by `AppDependencies`; views receive it, never build it.
+    let dependencies: AppDependencies
     @State private var stations: [Station] = Station.mockStations
     @State private var showSharedInbox = false
 
@@ -51,5 +53,5 @@ struct Station: Identifiable, Hashable {
 }
 
 #Preview {
-    StationListView()
+    StationListView(dependencies: AppDependencies.make())
 }

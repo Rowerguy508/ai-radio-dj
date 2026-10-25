@@ -124,3 +124,50 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
+
+  runtime-mode:
+    name: Runtime mode on simulator (Debug vs Release)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-latest
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      DERIVED_DATA: ios/build/DerivedData-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Build Debug and Release for the simulator
+        run: |
+          for CONFIG in Debug Release; do
+            xcodebuild build \
+              -project ios/AeroDJ.xcodeproj \
+              -scheme AeroDJ \
+              -configuration "$CONFIG" \
+              -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath "$DERIVED_DATA" \
+              CODE_SIGNING_ALLOWED=NO
+          done
+      - name: Boot an iPhone simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                      | select(.name | startswith("iPhone"))] | last | .udid // empty')
+          test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+      - name: Verify the launch argument changes runtime dependencies
+        run: |
+          ios/scripts/verify-runtime-mode.sh \
+            "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
+            "$DERIVED_DATA/Build/Products/Release-iphonesimulator/AeroDJ.app" \
+            "$SIM_UDID"
