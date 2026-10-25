@@ -64,3 +64,37 @@ xcodebuild build -project ios/AeroDJ.xcodeproj -scheme AeroDJ \
   hardware. The acceptance steps are in `docs/playback-boundary-handoff.md`.
 - Paid voice providers stay disabled ($0 budget). Narration uses on-device
   speech only.
+
+## Test station (Debug builds only)
+
+The test station replaces real data with synthetic fixtures, so a device run
+does not read the owner's calendar or shares, and does not spend money.
+
+1. In Xcode, set the `AeroDJ` scheme's **Run** build configuration to **Debug**.
+2. Edit the scheme → Run → Arguments → add `-AeroDJTestStation YES`.
+3. Run on the iPhone. The Console log shows `runtime mode: testStation`.
+
+Without the argument, or in a Release build, the same app logs `runtime mode: live`
+and uses the real calendar and an empty station configuration.
+
+What the test station guarantees: synthetic `[TEST]` context only; on-device
+voice only, with a $0 budget that refuses any paid reservation; fixture station
+configuration with fixture consent only.
+
+## Known limitations
+
+- **Physical-device validation has not happened.** Nothing in this guide proves
+  audible behavior, interruptions, or Duo fold/unfold on hardware.
+- **Composition-root wiring is partial.** `AppDependencies` builds the context
+  sources, voice and station configuration. No screen consumes them yet, so the
+  briefing and DJ narration do not run in the app.
+- **Obsidian is not wired** in live mode: no app-side reader exists.
+- **Station configuration is not persisted for live mode** beyond a JSON file;
+  integration consent is `notRequested` for every integration until a consent
+  flow exists.
+- **Playback at the song boundary** is not validated on device. See
+  `docs/playback-boundary-handoff.md`.
+- **Apple Music on device** requires the owner's subscription and the MusicKit
+  setting on the App ID (see the signing steps above).
+- **Signing** needs the owner's Team ID in `ios/Config/Signing.local.xcconfig`.
+  CI signs nothing.
