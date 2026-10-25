@@ -30,13 +30,16 @@ public struct TrackAdvanceDetector: Sendable {
             pendingEnd = false
             return false
         }
-        // Was playing (or mid-transition), now reached end: that's a real end.
-        if sample.reachedEnd && (lastWasPlaying || pendingEnd) {
+        // Was playing, now reached end: that's a natural end — fire exactly once.
+        if sample.reachedEnd && !pendingEnd {
             pendingEnd = true
             lastWasPlaying = false
             return true
         }
         lastWasPlaying = sample.isPlaying
+        if !sample.reachedEnd {
+            pendingEnd = false
+        }
         return false
     }
 }
