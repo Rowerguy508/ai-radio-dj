@@ -1,9 +1,12 @@
 import Foundation
 import MusicKit
 import Combine
+import AVFoundation
 
 /// Native MusicKit adapter. No API secrets in the client — MusicKit framework
 /// handles auth. Playback stays managed by MusicKit; no protected-stream mixing.
+/// Genuinely playable: observes the player's real state and drives the audio
+/// state machine from actual playback events.
 @MainActor
 final class MusicKitService: ObservableObject {
     enum AuthState: Equatable {
@@ -18,8 +21,10 @@ final class MusicKitService: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var queue: [Track] = []
 
-    private var player = ApplicationMusicPlayer.shared
+    private let player = ApplicationMusicPlayer.shared
     private var stateMachine = AudioStateMachine()
+    private var stateObserver: AnyCancellable?
+    private var audioSessionConfigured = false
 
     var audioState: AudioState { stateMachine.state }
 
@@ -29,6 +34,9 @@ final class MusicKitService: ObservableObject {
         switch status {
         case .authorized:
             authState = .authorized
+            configureAudioSession()
+            observePlayerState()
+            await refreshSubscription()
         case .denied, .restricted:
             authState = .denied
         case .notDetermined:
@@ -78,9 +86,90 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.interludeReady)
     }
 
-    /// Called when the interlude ends: voice -> music.
+    /// Called when the spoken interlude ends: voice -> music.
     func endInterlude() {
         stateMachine.apply(.interludeEnded)
+    }
+
+    // MARK: - Interruptions & route changes
+
+    /// Handle a phone call / system interruption. No stuck-paused state:
+    /// pause on begin, resume on end.
+    func handleInterruption(_ reason: AVAudioSession.InterruptionType) {
+        switch reason {
+        case .began:
+            pause()
+        case .ended:
+            Task { try? await resume() }
+        @unknown default:
+            break
+        }
+    }
+
+    /// Handle headphones unplugging: pause so music doesn't blast the speaker.
+    func handleRouteChange(_ wasDeviceRemoved: Bool) {
+        if wasDeviceRemoved {
+            pause()
+        }
+    }
+
+    // MARK: - Playback observation
+
+    /// Observe the player's real state: now-playing track + playback status.
+    private func observePlayerState() {
+        stateObserver = player.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.currentTrack = self.player.currentEntry?.item.flatMap { item in
+                    switch item {
+                    case .song(let song): return Track(song: song)
+                    default: return nil
+                    }
+                }
+                self.isPlaying = (self.player.playbackStatus == .playing)
+            }
+        }
+    }
+
+    /// Detect whether the user has an active Apple Music subscription.
+    private func refreshSubscription() async {
+        let subscription = try? await MusicSubscription.current
+        if let canPlayCatalog = subscription?.canPlayCatalogContent, !canPlayCatalog {
+            authState = .notSubscribed
+        }
+    }
+
+    // MARK: - Audio session
+
+    /// Configure playback category + background audio so music keeps playing
+    /// when the app is backgrounded or the screen locks. Also registers
+    /// interruption + route-change handlers.
+    private func configureAudioSession() {
+        guard !audioSessionConfigured else { return }
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true)
+            audioSessionConfigured = true
+        } catch {
+            // Non-fatal: playback still works in foreground.
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            self?.handleInterruption(type)
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+            self?.handleRouteChange(reason == .oldDeviceUnavailable)
+        }
     }
 }
 
