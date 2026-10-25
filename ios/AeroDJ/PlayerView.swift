@@ -1,116 +1,157 @@
 import SwiftUI
-import AeroDJCore
 
-/// Player shell. MusicKit playback is managed by the framework; this view
-/// reflects state and forwards user actions. No protected-stream mixing.
+/// Player screen. Built against `PlaybackService` (mock now, MusicKit later).
+/// Handles loading / empty / error states, album artwork, and accessibility.
 struct PlayerView: View {
     let station: Station
-    @StateObject private var music = MusicKitService.shared
-    @StateObject private var interlude: InterludePlaybackAdapter
-    /// Device-test scaffold: one fixed line after the first song. The composite (#49)
-    /// replaces this with the approved briefing script.
-    private let breakPlan = DJBreakPlan(linesAfterTrack: [0: "That was song one. Here comes song two."])
-    @State private var searchQuery = ""
-    @State private var results: [Track] = []
+    @StateObject private var service: MockPlaybackService
 
-    init(station: Station) {
+    init(station: Station, service: MockPlaybackService = MockPlaybackService()) {
         self.station = station
-        let music = MusicKitService.shared
-        _interlude = StateObject(wrappedValue: InterludePlaybackAdapter(music: music))
+        _service = StateObject(wrappedValue: service)
     }
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text(station.name).font(.title2)
+        VStack(spacing: 24) {
+            Text(station.name)
+                .font(.title2)
+                .accessibilityAddTraits(.isHeader)
 
-            if let err = music.lastError {
-                Text(err).font(.footnote).foregroundStyle(.red)
-            }
-
-            switch music.authState {
-            case .unknown:
-                ProgressView("Checking Apple Music…")
-            case .denied:
-                Text("Apple Music access denied. Enable it in Settings.")
-                    .foregroundStyle(.red)
-            case .notSubscribed:
-                Text("An Apple Music subscription is required.")
-                    .foregroundStyle(.orange)
-            case .authorized:
-                nowPlayingSection
-                searchSection
+            if let error = service.errorMessage {
+                errorView(error)
+            } else if service.isLoading {
+                loadingView
+            } else if let track = service.currentTrack {
+                nowPlayingView(track)
+            } else {
+                emptyView
             }
         }
         .padding()
-        .task {
-            music.onBoundary = { @MainActor [interlude, breakPlan, music] boundary, finishedIndex in
-                guard case .naturalEnd = boundary else { return }
-                // Every natural end must resolve the transition: a line, or none.
-                guard breakPlan.line(afterTrack: finishedIndex) != nil, !interlude.isSpeaking else {
-                    music.skipInterlude()
-                    return
-                }
-                // Prepared clips are not wired yet, so no break plays live speech here.
-                interlude.skipUnprepared()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+
+    // MARK: - States
+
+    private var loadingView: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Loading…")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Loading station")
+    }
+
+    private var emptyView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "music.note")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text("Nothing playing")
+                .font(.headline)
+            Text("Pick a track to start the station.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func errorView(_ message: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 40))
+                .foregroundStyle(.orange)
+            Text("Playback unavailable")
+                .font(.headline)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Playback error: \(message)")
+    }
+
+    // MARK: - Now playing
+
+    private func nowPlayingView(_ track: PlayableTrack) -> some View {
+        VStack(spacing: 20) {
+            artwork(track)
+            VStack(spacing: 4) {
+                Text(track.title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                Text(track.artist)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
-            music.onBreakMustStop = { [interlude] in interlude.stop() }
-            await music.authorize()
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(track.title) by \(track.artist)")
+
+            controls
         }
     }
 
-    private var nowPlayingSection: some View {
-        VStack(spacing: 12) {
-            if let track = music.currentTrack {
-                AsyncImage(url: track.artworkURL) { image in
-                    image.resizable().scaledToFit()
-                } placeholder: {
-                    Color.gray.opacity(0.2)
+    private func artwork(_ track: PlayableTrack) -> some View {
+        Group {
+            if let url = track.artworkURL {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFit()
+                    case .failure:
+                        placeholderArtwork
+                    case .empty:
+                        ProgressView()
+                    @unknown default:
+                        placeholderArtwork
+                    }
                 }
-                .frame(width: 120, height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                Text(track.title).font(.headline)
-                Text(track.artistName).font(.subheadline).foregroundStyle(.secondary)
             } else {
-                Text("Nothing playing").foregroundStyle(.secondary)
+                placeholderArtwork
             }
+        }
+        .frame(width: 200, height: 200)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .shadow(radius: 8)
+        .accessibilityHidden(true)
+    }
 
-            HStack(spacing: 24) {
-                Button { Task { try? await music.skip() } } label: {
-                    Image(systemName: "forward.fill").font(.title2)
-                }
-                Button {
-                    if music.isPlaying {
-                        music.pause()
-                    } else {
-                        Task { try? await music.resume() }
-                    }
-                } label: {
-                    Image(systemName: music.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 48))
-                }
-            }
+    private var placeholderArtwork: some View {
+        ZStack {
+            LinearGradient(
+                colors: [.indigo, .purple],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            Image(systemName: "music.note")
+                .font(.system(size: 56))
+                .foregroundStyle(.white)
         }
     }
 
-    private var searchSection: some View {
-        VStack(spacing: 8) {
-            TextField("Search Apple Music", text: $searchQuery)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { Task { results = (try? await music.search(searchQuery)) ?? [] } }
-
-            List(results) { track in
-                Button {
-                    Task { try? await music.play([track]) }
-                } label: {
-                    HStack {
-                        Text(track.title)
-                        Spacer()
-                        Text(track.artistName).foregroundStyle(.secondary)
-                    }
-                }
+    private var controls: some View {
+        HStack(spacing: 40) {
+            Button {
+                Task { await service.skip() }
+            } label: {
+                Image(systemName: "forward.fill")
+                    .font(.title2)
             }
-            .frame(height: 200)
+            .accessibilityLabel("Next track")
+
+            Button {
+                Task { await service.togglePlayPause() }
+            } label: {
+                Image(systemName: service.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 64))
+            }
+            .accessibilityLabel(service.isPlaying ? "Pause" : "Play")
+            .buttonStyle(.plain)
         }
     }
 }
