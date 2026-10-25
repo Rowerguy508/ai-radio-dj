@@ -5,8 +5,18 @@ import SwiftUI
 struct PlayerView: View {
     let station: Station
     @StateObject private var music = MusicKitService.shared
+    @StateObject private var interlude: InterludePlaybackAdapter
+    /// Device-test scaffold: one fixed line after the first song. The composite (#49)
+    /// replaces this with the approved briefing script.
+    private let breakPlan = DJBreakPlan(linesAfterTrack: [0: "That was song one. Here comes song two."])
     @State private var searchQuery = ""
     @State private var results: [Track] = []
+
+    init(station: Station) {
+        self.station = station
+        let music = MusicKitService.shared
+        _interlude = StateObject(wrappedValue: InterludePlaybackAdapter(music: music))
+    }
 
     var body: some View {
         VStack(spacing: 20) {
@@ -31,7 +41,18 @@ struct PlayerView: View {
             }
         }
         .padding()
-        .task { await music.authorize() }
+        .task {
+            music.onBoundary = { @MainActor [interlude, breakPlan, music] boundary, finishedIndex in
+                guard case .naturalEnd = boundary else { return }
+                // Every natural end must resolve the transition: a line, or none.
+                guard let line = breakPlan.line(afterTrack: finishedIndex), !interlude.isSpeaking else {
+                    music.skipInterlude()
+                    return
+                }
+                Task { @MainActor in await interlude.play(line) }
+            }
+            await music.authorize()
+        }
     }
 
     private var nowPlayingSection: some View {

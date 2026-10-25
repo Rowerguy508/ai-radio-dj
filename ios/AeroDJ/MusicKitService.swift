@@ -30,8 +30,9 @@ final class MusicKitService: ObservableObject {
     private var audioSessionConfigured = false
     private var boundaryDetector = PlaybackBoundaryDetector()
     private var queueIndex = 0
-    /// Called once per natural boundary between queue items. The app plays the DJ break here.
-    var onBoundary: ((PlaybackBoundary, Int) -> Void)?
+    /// Called once per boundary. For a natural end, the index is the song that just finished.
+    /// The handler must resolve the transition: play a DJ line, or call `skipInterlude()`.
+    var onBoundary: (@MainActor (PlaybackBoundary, Int) -> Void)?
     private var pollTimer: Timer?
 
     var audioState: AudioState { stateMachine.state }
@@ -155,14 +156,16 @@ final class MusicKitService: ObservableObject {
         isPlaying = observation.isPlaying
         switch boundary {
         case .naturalEnd:
+            let finishedIndex = queueIndex
             queueIndex += 1
             currentTrack = queue.indices.contains(queueIndex) ? queue[queueIndex] : nil
             stateMachine.apply(.trackEnded)
+            onBoundary?(boundary, finishedIndex)
         case .queueFinished:
             currentTrack = nil
             stateMachine.apply(.stop)
+            onBoundary?(boundary, queueIndex)
         }
-        onBoundary?(boundary, queueIndex)
     }
 
     // MARK: - Interruptions & route changes
