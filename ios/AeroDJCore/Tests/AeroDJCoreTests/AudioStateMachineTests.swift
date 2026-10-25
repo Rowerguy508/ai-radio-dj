@@ -39,4 +39,12 @@ final class AudioStateMachineTests: XCTestCase {
         sm.apply(.resume)
         XCTAssertEqual(sm.state, .music)
     }
+
+    func testNoInterludeReturnsTransitionToMusic() {
+        var m = AudioStateMachine(state: .music)
+        m.apply(.trackEnded)
+        XCTAssertEqual(m.state, .transition)
+        m.apply(.noInterlude)
+        XCTAssertEqual(m.state, .music, "a boundary without a DJ line must not leave playback stuck")
+    }
 }
