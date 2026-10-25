@@ -23,6 +23,8 @@ public struct MorningBriefingConfiguration: Equatable, Sendable {
 /// Why an item did not make it into the briefing.
 public enum BriefingExclusion: String, Error, Codable, Sendable {
     case notNarratable, duplicate, emptyContent, pastEvent, outsideHorizon, overBudget, segmentCap
+    /// Instruction-like text (#44): held back until the user re-confirms it.
+    case flaggedForReview
 }
 
 /// One spoken segment. Text is templated from the item's own fields only;
@@ -140,14 +142,21 @@ public struct MorningBriefingEngine: BriefingPlanner {
         return (items, unavailable)
     }
 
+    /// Every item passes through `PromptInjectionSanitizer` first: text is
+    /// cleaned for speech (no URLs/markup/invisible characters), and
+    /// instruction-like items are held back unless their id is in
+    /// `reconfirmed` (the user confirmed them again on the review screen).
     public func script(from items: [ContextItem], unavailableSources: [ContextSourceKind] = [],
-                       maxSpokenSeconds: Int? = nil) -> BriefingScript {
+                       maxSpokenSeconds: Int? = nil, reconfirmed: Set<UUID> = []) -> BriefingScript {
         let current = now()
+        let sanitizer = PromptInjectionSanitizer()
         var excluded: [UUID: BriefingExclusion] = [:]
         var seen: Set<String> = []
         var candidates: [BriefingScriptSegment] = []
-        for item in items {
-            guard item.isNarratable(at: current) else { excluded[item.id] = .notNarratable; continue }
+        for original in items {
+            guard original.isNarratable(at: current) else { excluded[original.id] = .notNarratable; continue }
+            let item = sanitizer.sanitized(original, reconfirmed: reconfirmed)
+            guard item.isNarratable(at: current) else { excluded[item.id] = .flaggedForReview; continue }
             guard seen.insert(item.provenance).inserted else { excluded[item.id] = .duplicate; continue }
             switch segment(for: item, now: current) {
             case .success(let segment): candidates.append(segment)
