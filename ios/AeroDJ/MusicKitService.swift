@@ -136,6 +136,12 @@ final class MusicKitService: ObservableObject {
     func djFinished() { send(.djFinished) }
     func djCancelled() { send(.djCancelled) }
 
+    /// A failed DJ line. The show continues; the UI shows a recoverable error.
+    func reportSpeechError(_ message: String) {
+        lastError = message
+        send(.djFailed(message: message))
+    }
+
     private func send(_ event: PlaybackEvent) {
         snapshot = engine.apply(event)
     }

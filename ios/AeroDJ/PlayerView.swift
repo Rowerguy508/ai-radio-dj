@@ -50,7 +50,7 @@ struct PlayerView: View {
                     music.skipInterlude()
                     return
                 }
-                Task { @MainActor in await interlude.play(line) }
+                Task { @MainActor in await interlude.play(line: line) }
             }
             await music.authorize()
         }
