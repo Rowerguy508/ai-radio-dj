@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Player shell. MusicKit playback is managed by the framework; this view
 /// reflects state and forwards user actions. No protected-stream mixing.
+/// NOTE: the play/pause toggle is a UI mock — real MusicKit playback requires
+/// a device with an Apple Music subscription (see MusicKitService).
 struct PlayerView: View {
     let station: Station
     @StateObject private var music = MusicKitService()

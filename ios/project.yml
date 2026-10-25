@@ -1,0 +1,49 @@
+name: AeroDJ
+options:
+  bundleIdPrefix: com.aerodj
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+packages:
+  AeroDJCore:
+    path: AeroDJCore
+targets:
+  AeroDJ:
+    type: application
+    platform: iOS
+    sources: [AeroDJ]
+    dependencies:
+      - package: AeroDJCore
+    settings:
+      base:
+        INFOPLIST_KEY_NSAppleMusicUsageDescription: AeroDJ uses Apple Music to play your station.
+        INFOPLIST_KEY_NSDocumentsFolderUsageDescription: AeroDJ imports Obsidian notes you select.
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app
+  AeroDJShare:
+    type: app-extension
+    platform: iOS
+    sources: [AeroDJShare]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.share
+  AeroDJCore:
+    type: framework
+    platform: iOS
+    sources: [AeroDJCore/Sources/AeroDJCore]
+  AeroDJCoreTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [AeroDJCore/Tests/AeroDJCoreTests]
+    dependencies:
+      - target: AeroDJCore
+schemes:
+  AeroDJ:
+    build:
+      targets:
+        AeroDJ: all
+    test:
+      targets:
+        - AeroDJCoreTests
