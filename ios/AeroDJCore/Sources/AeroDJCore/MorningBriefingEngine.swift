@@ -142,6 +142,16 @@ public struct MorningBriefingEngine: BriefingPlanner {
         return (items, unavailable)
     }
 
+    /// Collects, applies persisted "read anyway" reconfirmations from sources
+    /// that keep them (the share inbox), and scripts in one step.
+    public func briefing(from sources: [any ContextSource], maxSpokenSeconds: Int? = nil) async -> BriefingScript {
+        let collected = await collect(from: sources)
+        var reconfirmed: Set<UUID> = []
+        for case let source as any ReconfirmationProviding in sources { reconfirmed.formUnion(await source.reconfirmedItemIDs) }
+        return script(from: collected.items, unavailableSources: collected.unavailable,
+                      maxSpokenSeconds: maxSpokenSeconds, reconfirmed: reconfirmed)
+    }
+
     /// Every item passes through `PromptInjectionSanitizer` first: text is
     /// cleaned for speech (no URLs/markup/invisible characters), and
     /// instruction-like items are held back unless their id is in
@@ -293,3 +303,10 @@ public struct MorningBriefingEngine: BriefingPlanner {
         return ".!?…".contains(last) ? text : text + "."
     }
 }
+
+/// A source whose review screen can re-confirm items the sanitizer flags.
+public protocol ReconfirmationProviding: Sendable {
+    var reconfirmedItemIDs: Set<UUID> { get async }
+}
+
+extension SharedInboxReview: ReconfirmationProviding {}
