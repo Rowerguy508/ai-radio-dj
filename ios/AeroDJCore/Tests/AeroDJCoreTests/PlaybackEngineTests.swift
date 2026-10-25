@@ -149,4 +149,19 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(e.snapshot.nowPlaying, track(9))
         XCTAssertEqual(e.snapshot.upNext, [])
     }
+
+    /// An unreadable or unprepared line skips the break; the next song must still
+    /// start and play, with no DJ state left behind.
+    func testSkippedBreakDoesNotStopTheNextSong() {
+        var e = started()
+        e.apply(.naturalBoundary(nextIndex: 1))
+        e.apply(.djFailed(message: "A DJ line was not prepared and was skipped."))
+        XCTAssertEqual(e.snapshot.dj, .idle)
+        XCTAssertEqual(e.snapshot.transport, .playing)
+
+        e.apply(.naturalBoundary(nextIndex: 2))
+        XCTAssertEqual(e.snapshot.nowPlaying, track(3))
+        XCTAssertEqual(e.snapshot.transport, .playing)
+        XCTAssertEqual(e.snapshot.dj, .idle)
+    }
 }
