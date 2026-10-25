@@ -37,7 +37,7 @@ A failure reason clears on the next successful `ready` or `finished`. `sessionSt
    - `.ready(b)`: the player plays `b.clips` (`Data`, measured `audio.seconds`) and reports started, then finished or failed.
    - `.skipped(reason)`: the next song starts immediately.
    - A user skip or queue change passes `natural: false`, so the DJ never talks over or after a cut song.
-   - The boundary call is Claude's `songEnded` / #57's `StationBoundaryEvent.songBoundary(afterTrack:)`: only when the song really ended, never mid-song.
+   - Call it on Claude's `PlaybackEvent.naturalBoundary(nextIndex:)` (#51, `docs/playback-boundary-handoff.md`, which is also #57's `StationBoundaryEvent.songBoundary(afterTrack:)`): only when the song really ended, never mid-song.
 3. Failure recovery:
    - A render that times out, fails, or hits the cost cap becomes a skip.
    - A clip that fails at playback reports `playbackFailed` and music resumes.
