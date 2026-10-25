@@ -237,6 +237,107 @@ final class SharedInboxReviewTests: XCTestCase {
     }
 }
 
+final class SharedReviewPersistenceTests: XCTestCase {
+    private func review(_ inbox: TempInbox, store: URL, now: Date = t0) -> SharedInboxReview {
+        SharedInboxReview(reader: SharedInboxReader(directory: inbox.url), store: SharedReviewStore(file: store), now: { now })
+    }
+
+    private func stateFile(_ inbox: TempInbox) -> URL {
+        inbox.url.deletingLastPathComponent().appendingPathComponent("review-\(UUID().uuidString)/state.json")
+    }
+
+    // Regression (integrated review #45): approval was lost on relaunch -> empty briefing.
+    func testDecisionsSurviveRelaunch() async throws {
+        let inbox = try TempInbox()
+        let a = try inbox.add("Dentist moved to Thursday.")
+        let b = try inbox.add("Spam", at: t0.addingTimeInterval(1))
+        let state = stateFile(inbox)
+        defer { try? FileManager.default.removeItem(at: state.deletingLastPathComponent()) }
+        let first = review(inbox, store: state, now: t0.addingTimeInterval(2))
+        try await first.refresh()
+        try await first.setDecision(.approved, for: a.id)
+        try await first.setLabel(.message, for: a.id)
+        try await first.setDecision(.excluded, for: b.id)
+
+        let relaunched = review(inbox, store: state, now: t0.addingTimeInterval(3))
+        try await relaunched.refresh()
+        let items = try await relaunched.fetchItems()
+        XCTAssertEqual(items.map(\.consent), [.granted, .denied])
+        XCTAssertEqual(items.first?.source, .messagesShared)
+    }
+
+    func testRedactionRemovesOriginalFromDiskAndPersists() async throws {
+        let inbox = try TempInbox()
+        let shared = try inbox.add("Call Dr. Smith at 555-0100 about results")
+        let state = stateFile(inbox)
+        defer { try? FileManager.default.removeItem(at: state.deletingLastPathComponent()) }
+        let first = review(inbox, store: state)
+        try await first.refresh()
+        try await first.redact(shared.id, to: "Call the doctor about results")
+        try await first.setDecision(.approved, for: shared.id)
+        let raw = try String(contentsOf: inbox.url.appendingPathComponent("\(shared.id.uuidString).json"), encoding: .utf8)
+        XCTAssertFalse(raw.contains("555-0100"))
+        XCTAssertFalse(raw.contains("Smith"))
+
+        let relaunched = review(inbox, store: state)
+        try await relaunched.refresh()
+        let entries = await relaunched.entries
+        let entry = try XCTUnwrap(entries.first)
+        XCTAssertEqual(entry.redactedText, "Call the doctor about results")
+        XCTAssertEqual(entry.decision, .approved)
+        XCTAssertEqual(entry.item.expiresAt, shared.expiresAt)
+    }
+
+    func testDeleteAndExternalRemovalPruneState() async throws {
+        let inbox = try TempInbox()
+        let a = try inbox.add("A")
+        let state = stateFile(inbox)
+        defer { try? FileManager.default.removeItem(at: state.deletingLastPathComponent()) }
+        let r = review(inbox, store: state)
+        try await r.refresh()
+        try await r.setDecision(.approved, for: a.id)
+        XCTAssertEqual(SharedReviewStore(file: state).load().count, 1)
+        try await r.delete(a.id)
+        XCTAssertTrue(SharedReviewStore(file: state).load().isEmpty)
+    }
+
+    func testCorruptStateFailsClosedToPending() async throws {
+        let inbox = try TempInbox()
+        try inbox.add("A")
+        let state = stateFile(inbox)
+        defer { try? FileManager.default.removeItem(at: state.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: state.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{not json".utf8).write(to: state)
+        let r = review(inbox, store: state)
+        try await r.refresh()
+        let items = try await r.fetchItems()
+        XCTAssertEqual(items.map(\.consent), [.notRequested])
+    }
+
+    func testForwardDatedEnvelopeIsPurgedAndDirectoriesAreNotDeleted() throws {
+        let inbox = try TempInbox()
+        try inbox.add("From the future", at: t0.addingTimeInterval(3600))
+        try inbox.add("Skewed but ok", at: t0.addingTimeInterval(60))
+        let dir = inbox.url.appendingPathComponent("\(UUID().uuidString).json", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let result = try SharedInboxReader(directory: inbox.url).load(now: t0)
+        XCTAssertEqual(result.items.map(\.content), ["Skewed but ok"])
+        XCTAssertEqual(Array(result.purged.values), [.forwardDated])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path), "non-regular entries are skipped, not purged")
+    }
+
+    func testURLShareIsNotSpokenAsURL() async throws {
+        let inbox = try TempInbox()
+        try inbox.add("https://bank.example.com/statement?acct=123", kind: .url)
+        let r = SharedInboxReview(reader: SharedInboxReader(directory: inbox.url), now: { t0 })
+        try await r.refresh()
+        let fetched = try await r.fetchItems()
+        let item = try XCTUnwrap(fetched.first)
+        XCTAssertEqual(item.summary, "Link from bank.example.com")
+        XCTAssertFalse(item.summary.contains("://"))
+    }
+}
+
 /// Mutable test clock.
 private final class Clock: @unchecked Sendable {
     private let lock = NSLock()

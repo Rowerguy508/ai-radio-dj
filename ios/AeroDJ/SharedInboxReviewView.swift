@@ -90,9 +90,20 @@ struct SharedInboxReviewView: View {
             do {
                 try await action()
             } catch {
-                errorMessage = String(describing: error)
+                errorMessage = Self.message(for: error)
             }
             entries = await review.entries
+        }
+    }
+}
+
+extension SharedInboxReviewView {
+    /// Plain-language alert text; never internal type names.
+    static func message(for error: Error) -> String {
+        switch error as? SharedReviewError {
+        case .emptyRedaction: return "The edited text can't be empty."
+        case .unknownItem: return "That item is no longer in your inbox."
+        case nil: return "Something went wrong. Please try again."
         }
     }
 }
@@ -104,7 +115,8 @@ extension SharedInboxReview {
             forSecurityApplicationGroupIdentifier: "group.com.aerodj"
         ) else { return nil }
         let inbox = container.appendingPathComponent("Inbox", isDirectory: true)
-        return SharedInboxReview(reader: SharedInboxReader(directory: inbox))
+        let state = container.appendingPathComponent("Review/state.json", isDirectory: false)
+        return SharedInboxReview(reader: SharedInboxReader(directory: inbox), store: SharedReviewStore(file: state))
     }
 }
 
