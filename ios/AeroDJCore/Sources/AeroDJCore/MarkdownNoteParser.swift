@@ -28,6 +28,8 @@ public struct MarkdownNote: Equatable, Sendable {
     public let links: [Link]
     /// Sanitized prose paragraphs (excludes headings and tasks).
     public let paragraphs: [String]
+    /// Inline `#tags` from the body, lowercased, without `#` (e.g. `private`, `project/aerodj`).
+    public let inlineTags: [String]
 
     public var openTasks: [Task] { tasks.filter { !$0.isDone } }
 
@@ -60,6 +62,7 @@ public struct MarkdownNoteParser: Sendable {
         var tasks: [MarkdownNote.Task] = []
         var links: [MarkdownNote.Link] = []
         var paragraphs: [String] = []
+        var inlineTags: [String] = []
         var current: [String] = []
         var fence: String?
 
@@ -83,6 +86,7 @@ public struct MarkdownNoteParser: Sendable {
             if line.isEmpty { flush(); continue }
 
             links.append(contentsOf: Self.links(in: line))
+            inlineTags.append(contentsOf: Self.inlineTags(in: line))
 
             if let heading = Self.heading(line) {
                 flush()
@@ -97,7 +101,8 @@ public struct MarkdownNoteParser: Sendable {
         flush()
 
         return MarkdownNote(frontmatter: frontmatter, headings: headings, tasks: tasks,
-                            links: links, paragraphs: paragraphs.filter { !$0.isEmpty })
+                            links: links, paragraphs: paragraphs.filter { !$0.isEmpty },
+                            inlineTags: inlineTags)
     }
 
     // MARK: - Frontmatter
@@ -200,8 +205,14 @@ public struct MarkdownNoteParser: Sendable {
         return found
     }
 
+    static func inlineTags(in line: String) -> [String] {
+        line.matches(of: #/(?:^|\s)#([A-Za-z][\w/\-]*)/#).map { $0.1.lowercased() }
+    }
+
     /// Converts inline Markdown to plain speakable text: embeds and images are
-    /// dropped, links become their label, HTML tags/control characters removed.
+    /// dropped, links become their label, bare URLs and inline `#tags` are
+    /// removed, emphasis markers (single and double) are stripped, and HTML
+    /// tags/control characters removed, so a TTS voice never reads markup.
     static func sanitizeInline(_ text: String) -> String {
         var s = text
         s.replace(#/!\[\[[^\]]*\]\]/#, with: "")
@@ -210,9 +221,14 @@ public struct MarkdownNoteParser: Sendable {
         s.replace(#/\[\[([^\]#]+)(#[^\]]*)?\]\]/#) { String($0.1) }
         s.replace(#/\[([^\]]*)\]\([^)]*\)/#) { String($0.1) }
         s.replace(#/<[^>]*>/#, with: "")
+        s.replace(#/(?i)\b(?:https?|ftp):\/\/\S+/#, with: "")
+        s.replace(#/(?i)\bwww\.\S+/#, with: "")
+        s.replace(#/(^|\s)#[A-Za-z][\w/\-]*/#) { String($0.1) }
         for marker in ["**", "__", "==", "~~", "`"] {
             s = s.replacingOccurrences(of: marker, with: "")
         }
+        // Single `*x*` / `_x_` emphasis at word boundaries; snake_case is kept.
+        s.replace(#/(^|[\s(\["'])[*_]([^*_\s](?:[^*_]*[^*_\s])?)[*_](?=$|[\s.,;:!?)\]"'])/#) { "\($0.1)\($0.2)" }
         s.unicodeScalars.removeAll { CharacterSet.controlCharacters.contains($0) }
         return collapse(s)
     }

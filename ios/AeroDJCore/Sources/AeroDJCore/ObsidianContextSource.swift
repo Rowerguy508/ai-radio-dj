@@ -10,7 +10,12 @@ public enum MarkdownReadError: Error, Equatable, Sendable {
 
 /// Boundary to the user-selected folder/files. The app implements this with
 /// security-scoped bookmarks from the document picker; tests use fixtures.
-/// Implementations must only expose what the user picked.
+/// Implementations must only expose what the user picked:
+/// - resolve each candidate with `resolvingSymlinksInPath()` (or skip
+///   `.isSymbolicLinkKey` entries) and verify the resolved URL is still inside
+///   the security-scoped root before reading;
+/// - report anything outside the root as `.accessDenied`.
+/// `ObsidianImportPolicy` validates path strings only and cannot see symlinks.
 public protocol MarkdownDocumentReader: Sendable {
     /// Paths relative to the selection root.
     func selectedPaths() async throws -> [String]
@@ -98,7 +103,8 @@ public struct ObsidianContextSource: ContextSource {
         let optOut = note.frontmatterValue("aerodj")?.lowercased()
         let isPrivate = note.frontmatterValue("private")?.lowercased() == "true"
         let tags = (note.frontmatter["tags"] ?? []).map { $0.lowercased().trimmingCharacters(in: ["#"]) }
-        if optOut == "false" || optOut == "exclude" || isPrivate || tags.contains("private") {
+        if optOut == "false" || optOut == "exclude" || isPrivate || tags.contains("private")
+            || note.inlineTags.contains("private") {
             return .failure(.optedOut)
         }
 
@@ -113,16 +119,20 @@ public struct ObsidianContextSource: ContextSource {
         }
 
         let fileName = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        // A date-like file name ("2024-01-03") isn't a meaningful spoken subject:
+        // leave the title empty so the briefing falls back to the summary.
         let rawTitle = note.frontmatterValue("title").map(MarkdownNoteParser.sanitizeInline)
             ?? note.headings.first(where: { $0.level == 1 })?.text
-            ?? fileName
+            ?? (Self.isDateLike(fileName) ? "" : fileName)
         let provenance = "obsidian-file:" + (path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path)
 
         return .success(ContextItem(
             id: Self.stableID(for: provenance),
             source: .obsidian,
             createdAt: timestamp,
-            eventAt: ["due", "scheduled", "date"].lazy.compactMap { note.frontmatterValue($0) }
+            // `date`/`created` record when a note was written, not when anything
+            // happens, so only `due`/`scheduled` become `eventAt`.
+            eventAt: ["due", "scheduled"].lazy.compactMap { note.frontmatterValue($0) }
                 .compactMap(parseDay).first,
             title: Self.bounded(characters: rawTitle, Self.maxTitleCharacters),
             summary: Self.bounded(words: summary, Self.maxSummaryWords),
@@ -141,6 +151,11 @@ public struct ObsidianContextSource: ContextSource {
         let components = DateComponents(year: parts[0], month: parts[1], day: parts[2])
         guard components.isValidDate(in: calendar) else { return nil }
         return calendar.date(from: components)
+    }
+
+    /// File names made only of digits and date punctuation (daily notes).
+    static func isDateLike(_ name: String) -> Bool {
+        !name.isEmpty && name.allSatisfy { $0.isNumber || "-_. ".contains($0) } && name.contains(where: \.isNumber)
     }
 
     static func sensitivity(_ value: String?) -> Sensitivity {

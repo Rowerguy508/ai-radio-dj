@@ -227,4 +227,24 @@ final class ObsidianContextSourceTests: XCTestCase {
             XCTFail("expected cancellation")
         } catch is CancellationError {}
     }
+
+    // Regression (integrated review #45): a 2024 journal note was announced as "Overdue: 2024-01-03".
+    func testDateFrontmatterIsNotADueDateAndDateFileNameIsNotATitle() async throws {
+        let reader = FixtureReader([
+            "journal/2024-01-03.md": "---\ndate: 2024-01-03\ncreated: 2024-01-03\n---\nCalled the bank about the mortgage.",
+            "plan.md": "---\ndate: 2024-01-03\nscheduled: 2026-10-26\n---\nPlan.",
+        ])
+        let byPath = Dictionary(uniqueKeysWithValues: try await source(reader).importNotes().items.map { ($0.provenance, $0) })
+        let journal = try XCTUnwrap(byPath["obsidian-file:journal/2024-01-03.md"])
+        XCTAssertNil(journal.eventAt, "`date:` records when the note was written")
+        XCTAssertEqual(journal.title, "", "date-named file falls back to the summary")
+        XCTAssertEqual(journal.summary, "Called the bank about the mortgage.")
+        XCTAssertEqual(byPath["obsidian-file:plan.md"]?.eventAt, utc.date(from: DateComponents(year: 2026, month: 10, day: 26)))
+    }
+
+    func testInlinePrivateTagOptsOut() async throws {
+        let result = try await source(FixtureReader(["a.md": "Therapy notes #private", "b.md": "Fine."])).importNotes()
+        XCTAssertEqual(result.items.map(\.provenance), ["obsidian-file:b.md"])
+        XCTAssertEqual(result.skipped["a.md"], .optedOut)
+    }
 }

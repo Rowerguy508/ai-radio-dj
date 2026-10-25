@@ -33,7 +33,8 @@ final class MarkdownNoteParserTests: XCTestCase {
     func testHeadingsAndTagsAreDistinguished() {
         let note = parser.parse("# Title\n## Sub **bold**\n####### seven\n#tag not heading")
         XCTAssertEqual(note.headings, [.init(level: 1, text: "Title"), .init(level: 2, text: "Sub bold")])
-        XCTAssertEqual(note.paragraphs, ["####### seven #tag not heading"])
+        XCTAssertEqual(note.paragraphs, ["####### seven not heading"])
+        XCTAssertEqual(note.inlineTags, ["tag"])
     }
 
     func testTasksOpenAndDoneIncludingIndented() {
@@ -92,5 +93,16 @@ final class MarkdownNoteParserTests: XCTestCase {
         let keys = (0..<100).map { "k\($0): v" }.joined(separator: "\n")
         let note = parser.parse("---\n\(keys)\n---\n")
         XCTAssertEqual(note.frontmatter.count, MarkdownNoteParser.maxFrontmatterKeys)
+    }
+
+    func testSpeakableTextDropsEmphasisBareURLsAndInlineTags() {
+        let note = parser.parse("""
+        An *italic* and _underlined_ word, keep snake_case and 2*3*4.
+        See https://example.com/a/very/long/path or www.example.org now.
+        Tagged #project/aerodj and #private here.
+        """)
+        XCTAssertEqual(note.paragraphs, [
+            "An italic and underlined word, keep snake_case and 2*3*4. See or now. Tagged and here."])
+        XCTAssertEqual(note.inlineTags, ["project/aerodj", "private"])
     }
 }

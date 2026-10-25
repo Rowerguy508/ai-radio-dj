@@ -36,13 +36,13 @@ Defined in `ios/AeroDJCore/Sources/AeroDJCore/ContextItem.swift`:
 | `id` | UUID | Stable identity |
 | `source` | `ContextSourceKind` | `calendar` \| `emailShared` \| `messagesShared` \| `obsidian` \| `userShared` |
 | `createdAt` | Date | When captured |
-| `eventAt` | Date? | When the event occurs (calendar) |
+| `eventAt` | Date? | When the event occurs or is due. Calendar: start of a timed event; `nil` for all-day. Obsidian: only frontmatter `due`/`scheduled` (never `date`/`created`, which record when a note was written) |
 | `title` | String | Short label |
 | `summary` | String | 1–2 sentence fact summary (never raw inbox text) |
 | `sensitivity` | `Sensitivity` | `low` \| `medium` \| `high` \| `blocked` |
 | `consent` | `ConsentState` | `notRequested` \| `granted` \| `denied` \| `revoked` |
 | `expiresAt` | Date? | Hard expiry; item not narratable after |
-| `provenance` | String | Link back to the source (e.g. `calendar://id`) |
+| `provenance` | String | Opaque back-reference, never opened or narrated: `calendar-event:<id>@<occurrence>`, `obsidian-file:<relative path>` (not `obsidian://`, which would launch the app), `shared-inbox:<uuid>` |
 
 ### Shared inbox — `SharedInboxItem`
 
