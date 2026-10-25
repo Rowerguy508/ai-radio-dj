@@ -1,9 +1,10 @@
 import SwiftUI
+import AeroDJCore
 
 /// Duo Studio Mode — the unfolded radio control room. Persistent Now Playing
 /// on top, then an editable Up Next queue, a station tuner, and a Connections
 /// panel. Music never restarts on layout change (the service is app-scoped).
-/// Respects safe areas; no hardcoded dimensions.
+/// Uses Claude's shared playback state (`PlaybackSnapshot`). No hardcoded dims.
 struct StudioView: View {
     let station: Station
     @ObservedObject private var service: MockPlaybackService
@@ -38,13 +39,13 @@ struct StudioView: View {
                     Text(track.title)
                         .font(.system(.title2, design: .rounded, weight: .bold))
                         .lineLimit(2)
-                    Text(track.artist)
+                    Text(track.artistName)
                         .font(.title3)
                         .foregroundStyle(.secondary)
                     djBadge
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(track.title) by \(track.artist)")
+                .accessibilityLabel("\(track.title) by \(track.artistName)")
                 Spacer()
                 controls
             } else {
@@ -95,7 +96,7 @@ struct StudioView: View {
                                 .foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(track.title).font(.subheadline)
-                                Text(track.artist).font(.caption).foregroundStyle(.secondary)
+                                Text(track.artistName).font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -153,22 +154,20 @@ struct StudioView: View {
 
     private var djBadge: some View {
         Group {
-            if let label = service.snapshot.dj.label {
+            if case .speaking(let line) = service.snapshot.dj {
                 HStack(spacing: 6) {
-                    if service.snapshot.dj == .speaking {
-                        Circle().fill(.red).frame(width: 8, height: 8).accessibilityHidden(true)
-                    }
-                    Text(label).font(.caption.weight(.semibold)).tracking(0.5)
+                    Circle().fill(.red).frame(width: 8, height: 8).accessibilityHidden(true)
+                    Text("On air").font(.caption.weight(.semibold)).tracking(0.5)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(.ultraThinMaterial, in: Capsule())
-                .accessibilityLabel(label)
+                .accessibilityLabel("On air: \(line)")
             }
         }
     }
 
-    private func artwork(_ track: PlayableTrack) -> some View {
+    private func artwork(_ track: TrackInfo) -> some View {
         Group {
             if let url = track.artworkURL {
                 AsyncImage(url: url) { phase in

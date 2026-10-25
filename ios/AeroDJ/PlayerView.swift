@@ -1,10 +1,11 @@
 import SwiftUI
+import AeroDJCore
 
 /// Player screen. Two connected layouts driven by `horizontalSizeClass`:
 /// - compact (Duo closed): immersive artwork, prominent controls, truthful DJ badge.
 /// - regular (Duo unfolded): Studio Mode — persistent Now Playing, editable
 ///   queue, station tuner, Connections panel (see StudioView).
-/// Built against `PlaybackService` (mock now, Claude's PlaybackEngine later).
+/// Uses Claude's shared playback state (`PlaybackSnapshot`) from AeroDJCore.
 /// Artwork scales with available space; no hardcoded dimensions.
 struct PlayerView: View {
     let station: Station
@@ -35,9 +36,7 @@ struct PlayerView: View {
         GeometryReader { geo in
             ScrollView {
                 VStack(spacing: 24) {
-                    if service.snapshot.isLoading {
-                        loadingView
-                    } else if let error = service.snapshot.error {
+                    if let error = service.snapshot.error {
                         errorView(error)
                     } else if let track = service.snapshot.nowPlaying {
                         compactNowPlaying(track, availableHeight: geo.size.height)
@@ -52,7 +51,7 @@ struct PlayerView: View {
         }
     }
 
-    private func compactNowPlaying(_ track: PlayableTrack, availableHeight: CGFloat) -> some View {
+    private func compactNowPlaying(_ track: TrackInfo, availableHeight: CGFloat) -> some View {
         VStack(spacing: 24) {
             djBadge
             // Artwork scales with available space, capped by width.
@@ -62,12 +61,12 @@ struct PlayerView: View {
                     .font(.system(.title, design: .rounded, weight: .bold))
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
-                Text(track.artist)
+                Text(track.artistName)
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(track.title) by \(track.artist)")
+            .accessibilityLabel("\(track.title) by \(track.artistName)")
 
             controls
                 .padding(.top, 4)
@@ -77,31 +76,29 @@ struct PlayerView: View {
 
     // MARK: - Shared pieces
 
-    /// Truthful DJ status: shown only when the DJ is actually doing something.
-    /// `speaking` is set only from real speech-audio callbacks (Fry's model).
+    /// Truthful DJ status: shown only when the DJ is actually speaking.
+    /// `speaking` is set only from real speech-audio callbacks (Claude's model).
     private var djBadge: some View {
         Group {
-            if let label = service.snapshot.dj.label {
+            if case .speaking(let line) = service.snapshot.dj {
                 HStack(spacing: 6) {
-                    if service.snapshot.dj == .speaking {
-                        Circle()
-                            .fill(.red)
-                            .frame(width: 8, height: 8)
-                            .accessibilityHidden(true)
-                    }
-                    Text(label)
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 8, height: 8)
+                        .accessibilityHidden(true)
+                    Text("On air")
                         .font(.caption.weight(.semibold))
                         .tracking(0.5)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(.ultraThinMaterial, in: Capsule())
-                .accessibilityLabel(label)
+                .accessibilityLabel("On air: \(line)")
             }
         }
     }
 
-    private func artwork(_ track: PlayableTrack, size: CGFloat) -> some View {
+    private func artwork(_ track: TrackInfo, size: CGFloat) -> some View {
         Group {
             if let url = track.artworkURL {
                 AsyncImage(url: url) { phase in
@@ -173,15 +170,6 @@ struct PlayerView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var loadingView: some View {
-        VStack(spacing: 16) {
-            ProgressView().controlSize(.large)
-            Text("Loading…").font(.subheadline).foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Loading station")
-    }
-
     private func errorView(_ error: PlaybackError) -> some View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle")
@@ -204,11 +192,6 @@ struct PlayerView: View {
 #Preview("Unfolded") {
     PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil, djName: "Maya"))
         .environment(\.horizontalSizeClass, .regular)
-}
-
-#Preview("Loading") {
-    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil, djName: "Maya"))
-        .environment(\.horizontalSizeClass, .compact)
 }
 
 #Preview("Empty") {
