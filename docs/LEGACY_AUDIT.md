@@ -84,7 +84,7 @@ All tables have RLS **enabled** with `auth.uid() = user_id` policies:
 | `message_queue` | ✅ | view own, manage own | ✅ Correct |
 | `calendar_events` | ✅ | view own, manage own | ✅ Correct |
 
-**Finding:** RLS is correctly scoped to `auth.uid()`. No cross-user leakage. **One caution:** `createAdminClient()` uses `SUPABASE_SERVICE_ROLE_KEY` which **bypasses RLS** — it's used in `messages`/`stations` routes with a `userId` query param. **Risk:** if `userId` is attacker-controlled, the service-role client could return another user's data. **Remediation:** validate `userId` against the authenticated session (or drop service-role for these reads and use the anon/RLS path). → **Remediation issue #27.**
+**Finding:** RLS is correctly scoped to `auth.uid()`. No cross-user leakage. **One caution:** `createAdminClient()` uses `SUPABASE_SERVICE_ROLE_KEY` which **bypasses RLS** — it's used in `messages`/`stations` routes with a `userId` query param. **Risk:** if `userId` is attacker-controlled, the service-role client could return another user's data. **Remediation:** validate `userId` against the authenticated session (or drop service-role for these reads and use the anon/RLS path). → **Remediation issue #28.**
 
 ## 6. Reuse vs retirement summary
 
@@ -111,13 +111,13 @@ All tables have RLS **enabled** with `auth.uid() = user_id` policies:
 
 ## 8. Remediation issues
 
-- **#30** — Validate authenticated identity server-side before service-role Supabase reads (messages/stations routes). P0.
-- **#31** — Replace long-TTL `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN` with short-TTL/secure-issuer token (or remove from client).
+- **#28** — Validate authenticated identity server-side before service-role Supabase reads (messages/stations routes). P0.
+- **#36** — Replace long-TTL `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN` with short-TTL/secure-issuer token (or remove from client). P0.
 
 ## 9. Completion check
 
 - [x] Concrete endpoints inventoried
 - [x] All secrets classified (2 HIGH, 2 MEDIUM, rest OK)
-- [x] Risks have remediation issues (#30, #31)
+- [x] Risks have remediation issues (#28, #36)
 - [x] npm build/typecheck baseline recorded (both PASS)
 - [x] No breaking changes; web app + migrations preserved
