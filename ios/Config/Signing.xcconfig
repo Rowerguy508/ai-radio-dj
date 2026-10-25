@@ -1,0 +1,13 @@
+// Shared signing settings for device builds. Safe to commit: no secrets here.
+//
+// The owner's Apple Developer Team ID goes in Signing.local.xcconfig, which is
+// git-ignored, so the team ID never has to be edited in this file or in CI:
+//
+//   DEVELOPMENT_TEAM = ABCDE12345
+//
+// Without it, the simulator build still works (CODE_SIGNING_ALLOWED=NO), but a
+// physical device needs a team that can provision com.aerodj.app and its
+// share extension (see docs/device-install.md).
+
+CODE_SIGN_STYLE = Automatic
+#include? "Signing.local.xcconfig"

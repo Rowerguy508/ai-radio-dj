@@ -1,6 +1,9 @@
 # Generate with: cd ios && xcodegen generate   (XcodeGen 2.46.0, pinned in CI)
 # AeroDJ.xcodeproj is a generated artifact; edit this file instead.
 name: AeroDJ
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
 options:
   bundleIdPrefix: com.aerodj
   deploymentTarget:

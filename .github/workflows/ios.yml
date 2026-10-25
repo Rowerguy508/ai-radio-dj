@@ -90,3 +90,35 @@ jobs:
             -destination "id=$SIM_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
+
+  device-build:
+    name: iOS device build (unsigned)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-latest
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      DERIVED_DATA: ios/build/DerivedData-device
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Build for a physical device without signing
+        # Proves the arm64 device slice compiles. Signing needs the owner's team
+        # (ios/Config/Signing.local.xcconfig), so CI signs nothing.
+        run: |
+          xcodebuild build \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO
