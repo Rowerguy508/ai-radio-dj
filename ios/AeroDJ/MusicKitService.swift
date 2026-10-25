@@ -6,9 +6,7 @@ import AeroDJCore
 /// Native MusicKit adapter. No API secrets in the client — MusicKit framework
 /// handles auth. Playback stays managed by MusicKit; no protected-stream mixing.
 /// Genuinely playable: authorization, catalog search, queue playback, skip,
-/// pause/resume, and interruption handling. Playback state is driven by
-/// explicit actions (the current MusicKit SDK exposes no per-player publisher),
-/// which is sufficient for the player UI.
+/// pause/resume, interruption handling, and natural track-end observation.
 @MainActor
 final class MusicKitService: ObservableObject {
     /// One app-scoped instance; avoid multiple players fighting over state.
@@ -28,11 +26,10 @@ final class MusicKitService: ObservableObject {
     @Published private(set) var lastError: String?
 
     private let player = ApplicationMusicPlayer.shared
-    private let stateMachine = AudioStateMachine()
+    private var stateMachine = AudioStateMachine()
     private var audioSessionConfigured = false
     private var advanceDetector = TrackAdvanceDetector()
     private var pollTimer: Timer?
-    private var lastSeenID: String?
 
     var audioState: AudioState { stateMachine.state }
 
@@ -73,6 +70,7 @@ final class MusicKitService: ObservableObject {
         currentTrack = tracks.first
         player.queue = ApplicationMusicPlayer.Queue(for: tracks.compactMap { $0.song })
         stateMachine.apply(.startMusic)
+        resetAdvanceDetection()
         do {
             try await player.play()
             isPlaying = true
@@ -87,12 +85,14 @@ final class MusicKitService: ObservableObject {
         player.pause()
         isPlaying = false
         stateMachine.apply(.pause)
+        resetAdvanceDetection()
     }
 
     func resume() async throws {
         try await player.play()
         isPlaying = true
         stateMachine.apply(.resume)
+        resetAdvanceDetection()
     }
 
     func skip() async throws {
@@ -105,6 +105,7 @@ final class MusicKitService: ObservableObject {
             }
         }
         stateMachine.apply(.trackEnded)
+        resetAdvanceDetection()
     }
 
     /// Called when a spoken interlude is ready: transition -> voice.
@@ -117,7 +118,7 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.interludeEnded)
     }
 
-    // MARK: - Track-adavance observation
+    // MARK: - Track-advance observation
 
     /// Poll the player once a second and feed the advance detector so a
     /// *natural* song ending (MusicKit auto-advance) fires `.trackEnded`
@@ -136,32 +137,28 @@ final class MusicKitService: ObservableObject {
 
     private func pollPlaybackPosition() {
         let state = player.state
-        let itemID = state.currentEntry?.item.id.rawValue
-        // MusicKit sets .interrupted / stops when the current entry finishes.
+        // MusicKit sets .interrupted when the current entry finishes naturally.
         let reachedEnd = (state.playbackStatus == .interrupted)
-
-        // Feed the detector; on a natural end, advance + move to transition.
         let sample = PlaybackSample(
             isPlaying: (state.playbackStatus == .playing),
             reachedEnd: reachedEnd,
-            itemChanged: (itemID != lastSeenID)
+            itemChanged: false // item identity isn't exposed on this SDK; we reset on explicit actions
         )
-        lastSeenID = itemID
         if advanceDetector.consume(sample) {
-            if let current = itemID,
-               let idx = queue.firstIndex(where: { $0.id == current }),
-               queue.index(after: idx) < queue.count {
-                currentTrack = queue[queue.index(after: idx)]
-            }
             stateMachine.apply(.trackEnded)
         }
+    }
+
+    /// Reset the advance detector after an explicit user action so a natural
+    /// end isn't confused with a manual skip/pause.
+    private func resetAdvanceDetection() {
+        advanceDetector = TrackAdvanceDetector()
     }
 
     // MARK: - Interruptions & route changes
 
     /// Handle a phone call / system interruption. No stuck-paused state:
-    /// pause on begin; resume on end only if the system says to, respecting
-    /// the interruption options.
+    /// pause on begin; resume on end only if the system says to.
     func handleInterruption(_ reason: AVAudioSession.InterruptionType,
                             options: AVAudioSession.InterruptionOptions = []) {
         switch reason {
