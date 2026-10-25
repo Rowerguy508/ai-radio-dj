@@ -2,23 +2,28 @@ import Foundation
 import AVFoundation
 import AeroDJCore
 
-/// Plays one spoken DJ break between two songs, using the device's offline voice.
+/// Plays one DJ break between two songs.
 ///
-/// The caller moves the state machine to `transition` at a natural boundary.
-/// `play` then runs `transition -> voice -> music`. Music is paused for the
-/// line and resumed afterwards, whether the voice finishes, is cancelled, or
-/// the timeout fires. Playback never stays paused because a callback was missed.
-/// No protected stream is captured or mixed: MusicKit and the voice never run together.
+/// Two sources, one lifecycle:
+/// - `play(clip:line:)`: a clip rendered before the show. Exact length, cost known.
+///   This is the normal path.
+/// - `play(line:)`: the live voice, used only when no clip exists or the clip
+///   cannot be decoded. Never silence.
+///
+/// Both run `transition -> voice -> music`. Music is paused for the line and
+/// resumed afterwards, whether the line finishes, is cancelled, fails, or times
+/// out. Playback never stays paused because a callback was missed.
 @MainActor
-final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     private let music: MusicKitService
     private let speech = AVSpeechSynthesizer()
+    private var clipPlayer: AVAudioPlayer?
     private var finish: CheckedContinuation<Void, Never>?
     private var timeout: Task<Void, Never>?
-    private var outcome: SpeechOutcome = .cancelled
+    private var outcome: Outcome = .cancelled
 
-    /// How a spoken break ended. Only `.finished` means the whole line was heard.
-    private enum SpeechOutcome { case finished, cancelled }
+    /// How a break ended. Only `.finished` means the whole line was heard.
+    private enum Outcome { case finished, cancelled }
 
     init(music: MusicKitService) {
         self.music = music
@@ -28,29 +33,60 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
 
     var isSpeaking: Bool { finish != nil }
 
-    /// Speaks one break. Call only after a natural boundary, in the `transition` state.
-    func play(_ text: String) async {
-        guard !isSpeaking, !text.isEmpty else {
+    /// Plays a pre-rendered clip. Falls back to the live voice if the clip won't decode.
+    func play(clip: Data, line: String) async {
+        guard !isSpeaking, !line.isEmpty else {
             music.skipInterlude()
             return
         }
+        guard let player = try? AVAudioPlayer(data: clip), player.duration > 0 else {
+            music.reportSpeechError("DJ clip could not be decoded; speaking live.")
+            await play(line: line)
+            return
+        }
+        player.delegate = self
+        clipPlayer = player
+        await runBreak(line: line, timeout: player.duration + 2) {
+            player.play()
+        }
+        clipPlayer = nil
+    }
+
+    /// Speaks a line live. Used only when no rendered clip is available.
+    func play(line: String) async {
+        guard !isSpeaking, !line.isEmpty else {
+            music.skipInterlude()
+            return
+        }
+        let utterance = AVSpeechUtterance(string: line)
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        let seconds = Double(line.split(separator: " ").count) / 2.0 + 5
+        await runBreak(line: line, timeout: seconds) {
+            speech.speak(utterance)
+        }
+    }
+
+    func stop() {
+        speech.stopSpeaking(at: .immediate)
+        clipPlayer?.stop()
+        finishBreak(.cancelled)
+    }
+
+    /// The one break lifecycle. `start` begins audio; completion comes from the
+    /// delegate, or from the timeout if no callback arrives.
+    private func runBreak(line: String, timeout seconds: Double, start: () -> Void) async {
         music.pause()
         music.beginInterlude() // transition -> voice
         outcome = .cancelled
-        music.djStarted(text)
-
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        music.djStarted(line)
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             finish = continuation
-            // Upper bound on the line so a missed delegate callback cannot hold playback.
-            let seconds = Double(text.split(separator: " ").count) / 2.0 + 5
             timeout = Task { @MainActor [weak self] in
                 do { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } catch { return }
-                self?.finishSpeech(.cancelled)
+                self?.finishBreak(.cancelled)
             }
-            speech.speak(utterance)
+            start()
         }
 
         music.endInterlude() // voice -> music
@@ -62,11 +98,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
         }
     }
 
-    func stop() {
-        speech.stopSpeaking(at: .immediate)
-    }
-
-    private func finishSpeech(_ result: SpeechOutcome) {
+    private func finishBreak(_ result: Outcome) {
         timeout?.cancel()
         timeout = nil
         guard let continuation = finish else { return }
@@ -75,12 +107,23 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
         continuation.resume()
     }
 
-    // AVSpeechSynthesizer calls these on an arbitrary queue; hop back to the main actor.
+    // MARK: AVSpeechSynthesizerDelegate. Callbacks arrive on an arbitrary queue; hop to the main actor.
+
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.finishSpeech(.finished) }
+        Task { @MainActor [weak self] in self?.finishBreak(.finished) }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.finishSpeech(.cancelled) }
+        Task { @MainActor [weak self] in self?.finishBreak(.cancelled) }
+    }
+
+    // MARK: AVAudioPlayerDelegate
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in self?.finishBreak(flag ? .finished : .cancelled) }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor [weak self] in self?.finishBreak(.cancelled) }
     }
 }

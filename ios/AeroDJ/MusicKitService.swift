@@ -125,6 +125,12 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.interludeEnded)
     }
 
+    /// The UI's dismiss action for a recoverable error. Playback is not affected.
+    func dismissError() {
+        lastError = nil
+        send(.errorCleared)
+    }
+
     /// Surfaces a non-fatal error in the player UI without interrupting playback.
     func reportError(_ message: String) {
         lastError = message
@@ -135,6 +141,12 @@ final class MusicKitService: ObservableObject {
     func djStarted(_ line: String) { send(.djStarted(line: line)) }
     func djFinished() { send(.djFinished) }
     func djCancelled() { send(.djCancelled) }
+
+    /// A failed DJ line. The show continues; the UI shows a recoverable error.
+    func reportSpeechError(_ message: String) {
+        lastError = message
+        send(.djFailed(message: message))
+    }
 
     private func send(_ event: PlaybackEvent) {
         snapshot = engine.apply(event)
