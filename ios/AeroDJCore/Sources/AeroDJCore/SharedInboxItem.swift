@@ -16,8 +16,8 @@ public struct SharedInboxItem: Identifiable, Codable, Equatable, Sendable {
     public let id: UUID
     public let source: ContextSourceKind
     public let kind: Kind
-    public let content: String
-    public let isTruncated: Bool
+    public private(set) var content: String
+    public private(set) var isTruncated: Bool
     public let createdAt: Date
     public let expiresAt: Date
 
@@ -39,6 +39,17 @@ public struct SharedInboxItem: Identifiable, Codable, Equatable, Sendable {
         self.isTruncated = bounded.utf8.count < trimmed.utf8.count
         self.createdAt = now
         self.expiresAt = now.addingTimeInterval(retention)
+    }
+
+    /// Same envelope with new content (used by redaction, which replaces the
+    /// original on disk). `nil` when `content` is empty after trimming.
+    public func replacingContent(_ content: String) -> SharedInboxItem? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        var copy = self
+        copy.content = Self.truncated(trimmed, maxBytes: Self.maxContentBytes)
+        copy.isTruncated = copy.content.utf8.count < trimmed.utf8.count
+        return copy
     }
 
     public func isExpired(at now: Date) -> Bool {
