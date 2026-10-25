@@ -125,6 +125,12 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.interludeEnded)
     }
 
+    /// The UI's dismiss action for a recoverable error. Playback is not affected.
+    func dismissError() {
+        lastError = nil
+        send(.errorCleared)
+    }
+
     /// Surfaces a non-fatal error in the player UI without interrupting playback.
     func reportError(_ message: String) {
         lastError = message
