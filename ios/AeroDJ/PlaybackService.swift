@@ -4,8 +4,9 @@ import AeroDJCore
 
 /// Playback contract the UI depends on. Uses Claude's shared playback state
 /// (`PlaybackSnapshot`, `TrackInfo`, `TransportState`, `DJActivity`,
-/// `PlaybackError`) from AeroDJCore — no competing models. The real engine
-/// (Claude's PlaybackEngine) conforms later; the mock is a labeled stand-in.
+/// `PlaybackError`) and queue contract (`UpNextEdit`/`UpNextEditor`) from
+/// AeroDJCore — no competing models. The real engine (Claude's PlaybackEngine)
+/// conforms later; the mock is a labeled stand-in.
 @MainActor
 protocol PlaybackService: ObservableObject {
     var snapshot: PlaybackSnapshot { get }
@@ -16,23 +17,27 @@ protocol PlaybackService: ObservableObject {
     func togglePlayPause() async
     func skip() async
     func tune(to station: StationConfig) async
-    func moveInQueue(fromOffsets: IndexSet, toOffset: Int)
-    func removeFromQueue(_ track: TrackInfo)
+
+    /// Apply a single up-next edit via Claude's UpNextEditor.
+    @discardableResult
+    func applyQueueEdit(_ edit: UpNextEdit) -> Result<[TrackInfo], UpNextEditError>
 }
 
 /// A station the user can tune to. UI-facing subset of Fry's station-config
-/// contract (genres/moods/energy/DJ personality). Labeled mock until Fry's
-/// model lands.
+/// contract (genres/moods/energy/DJ personality). LABELED MOCK — pending Fry's
+/// station-config model.
 struct StationConfig: Identifiable, Hashable {
     let id: UUID
     let name: String
     let djName: String
     let description: String
+    let artName: String // SF Symbol name; real artwork lands with real config
     let mood: String
     let energy: Int // 0-10
 }
 
 /// A consent-controlled integration shown in the Connections panel.
+/// LABELED MOCK — pending Fry's connection-state contract.
 struct Connection: Identifiable, Hashable {
     let id: String
     let name: String
@@ -68,15 +73,19 @@ final class MockPlaybackService: PlaybackService, ObservableObject {
         TrackInfo(id: "1", title: "Morning Light", artistName: "The Calm Collective"),
         TrackInfo(id: "2", title: "Slow Burn", artistName: "Neon Harbor"),
         TrackInfo(id: "3", title: "Golden Hour", artistName: "Paper Satellites"),
+        TrackInfo(id: "4", title: "Silver Lining", artistName: "Heron & Finch"),
     ]
 
     static let defaultStations: [StationConfig] = [
         StationConfig(id: UUID(), name: "Morning Calm", djName: "Maya",
-                      description: "Warm, unhurried host", mood: "Calm", energy: 3),
+                      description: "Warm, unhurried host", artName: "sun.max.fill",
+                      mood: "Calm", energy: 3),
         StationConfig(id: UUID(), name: "Late Night", djName: "Rico",
-                      description: "Smooth vinyl-bar vibes", mood: "Mellow", energy: 4),
+                      description: "Smooth vinyl-bar vibes", artName: "moon.stars.fill",
+                      mood: "Mellow", energy: 4),
         StationConfig(id: UUID(), name: "Focus Flow", djName: "Nia",
-                      description: "Deep work, no chatter", mood: "Focused", energy: 5),
+                      description: "Deep work, no chatter", artName: "sparkles",
+                      mood: "Focused", energy: 5),
     ]
 
     func play(_ track: TrackInfo) async {
@@ -109,12 +118,13 @@ final class MockPlaybackService: PlaybackService, ObservableObject {
         try? await Task.sleep(nanoseconds: 400_000_000)
     }
 
-    func moveInQueue(fromOffsets: IndexSet, toOffset: Int) {
-        snapshot.upNext.move(fromOffsets: fromOffsets, toOffset: toOffset)
-    }
-
-    func removeFromQueue(_ track: TrackInfo) {
-        snapshot.upNext.removeAll { $0.id == track.id }
+    @discardableResult
+    func applyQueueEdit(_ edit: UpNextEdit) -> Result<[TrackInfo], UpNextEditError> {
+        let result = UpNextEditor.apply(edit, to: snapshot.upNext, nowPlaying: snapshot.nowPlaying)
+        if case .success(let list) = result {
+            snapshot.upNext = list
+        }
+        return result
     }
 
     /// Screenshot harness: `AERODJ_DEMO` pre-populates a state so CI captures

@@ -1,10 +1,11 @@
 import SwiftUI
 import AeroDJCore
 
-/// Duo Studio Mode — the unfolded radio control room. Persistent Now Playing
-/// on top, then an editable Up Next queue, a station tuner, and a Connections
-/// panel. Music never restarts on layout change (the service is app-scoped).
-/// Uses Claude's shared playback state (`PlaybackSnapshot`). No hardcoded dims.
+/// Duo Studio Mode — the unfolded radio control room. A true two-zone
+/// workspace: Now Playing + controls on one side, queue/tuner/connections on
+/// the other. Uses `ViewThatFits` so it lays out side-by-side when the space
+/// allows and stacks on narrow canvases. Queue edits go through Claude's
+/// `UpNextEdit`. Music never restarts on layout change (app-scoped service).
 struct StudioView: View {
     let station: Station
     @ObservedObject private var service: MockPlaybackService
@@ -17,25 +18,60 @@ struct StudioView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                nowPlayingSection
-                tunerSection
-                queueSection
-                connectionsSection
+            // Two-zone workspace on wide canvases; stacked single column otherwise.
+            ViewThatFits(in: .horizontal) {
+                twoZoneLayout
+                stackedLayout
             }
-            .padding(24)
+            .padding(20)
         }
         .background(Color(.systemBackground))
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    // MARK: - Persistent Now Playing
+    // MARK: - Layouts
+
+    /// Side-by-side: Now Playing left, control panels right.
+    private var twoZoneLayout: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
+                  alignment: .top, spacing: 24) {
+            nowPlayingSection
+                .gridCellColumns(2)
+            stationTunerSection
+            rightPanels
+        }
+    }
+
+    /// Narrow fallback: everything stacked with clear grouping.
+    private var stackedLayout: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            nowPlayingSection
+            stationTunerSection
+            queueSection
+            connectionsSection
+        }
+    }
+
+    @ViewBuilder
+    private var rightPanels: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            queueSection
+            connectionsSection
+        }
+    }
+
+    // MARK: - Now Playing
 
     private var nowPlayingSection: some View {
-        HStack(alignment: .center, spacing: 20) {
+        HStack(alignment: .center, spacing: 16) {
             if let track = service.snapshot.nowPlaying {
                 artwork(track)
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(station.name)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .tracking(1)
                     Text(track.title)
                         .font(.system(.title2, design: .rounded, weight: .bold))
                         .lineLimit(2)
@@ -45,8 +81,8 @@ struct StudioView: View {
                     djBadge
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(track.title) by \(track.artistName)")
-                Spacer()
+                .accessibilityLabel("\(station.name), \(track.title) by \(track.artistName)")
+                Spacer(minLength: 0)
                 controls
             } else {
                 Text("Nothing playing")
@@ -59,27 +95,7 @@ struct StudioView: View {
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20))
     }
 
-    // MARK: - Station tuner
-
-    private var tunerSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionHeader("Tuner", icon: "dial.medium")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(service.stations) { station in
-                        Button {
-                            Task { await service.tune(to: station) }
-                        } label: {
-                            TunerCard(station: station)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Editable Up Next queue
+    // MARK: - Queue
 
     private var queueSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -89,37 +105,68 @@ struct StudioView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
-                List {
-                    ForEach(service.snapshot.upNext) { track in
-                        HStack(spacing: 10) {
-                            Image(systemName: "music.note")
+                ForEach(Array(service.snapshot.upNext.enumerated()), id: \.element.id) { index, track in
+                    HStack(spacing: 10) {
+                        Text("\(index + 1)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20, alignment: .trailing)
+                        Image(systemName: "music.note")
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(track.title).font(.subheadline)
+                            Text(track.artistName).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        // Removal routes through Claude's UpNextEdit.
+                        Button {
+                            _ = service.applyQueueEdit(.remove(id: track.id))
+                        } label: {
+                            Image(systemName: "xmark.circle")
                                 .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(track.title).font(.subheadline)
-                                Text(track.artistName).font(.caption).foregroundStyle(.secondary)
-                            }
                         }
+                        .accessibilityLabel("Remove \(track.title) from queue")
+                        .buttonStyle(.plain)
+                        Image(systemName: "line.3.horizontal")
+                            .foregroundStyle(.tertiary)
                     }
-                    .onMove { service.moveInQueue(fromOffsets: $0, toOffset: $1) }
-                    .onDelete { offsets in
-                        for i in offsets {
-                            let track = service.snapshot.upNext[i]
-                            service.removeFromQueue(track)
-                        }
-                    }
+                    .padding(8)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                 }
-                .listStyle(.plain)
-                .frame(minHeight: 120)
-                .scrollDisabled(true)
             }
         }
     }
 
-    // MARK: - Connections
+    // MARK: - Station tuner (label mock pending Fry's contract)
+
+    private var stationTunerSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            LabeledContent {
+                Text("Mock")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            } label: {
+                sectionHeader("Tuner", icon: "dial.medium")
+            }
+            HStack(spacing: 10) {
+                ForEach(service.stations) { station in
+                    TunerCard(station: station)
+                }
+            }
+        }
+    }
+
+    // MARK: - Connections (honest states pending Fry's contract)
 
     private var connectionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionHeader("Connections", icon: "link")
+            LabeledContent {
+                Text("Mock")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            } label: {
+                sectionHeader("Connections", icon: "link")
+            }
             ForEach(service.connections) { connection in
                 HStack(spacing: 12) {
                     Image(systemName: connection.icon)
@@ -133,7 +180,7 @@ struct StudioView: View {
                             .font(.caption)
                             .foregroundStyle(.green)
                     } else {
-                        Text("Off")
+                        Text("Not connected")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -182,21 +229,31 @@ struct StudioView: View {
                 placeholderArtwork
             }
         }
-        .frame(width: 120, height: 120)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .frame(width: 140, height: 140)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
         .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
         .accessibilityHidden(true)
     }
 
     private var placeholderArtwork: some View {
         ZStack {
-            LinearGradient(colors: [.indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)
-            Image(systemName: "music.note").font(.system(size: 40)).foregroundStyle(.white)
+            LinearGradient(colors: [.indigo, .purple, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Image(systemName: "music.note").font(.system(size: 44)).foregroundStyle(.white)
         }
     }
 
     private var controls: some View {
-        HStack(spacing: 32) {
+        HStack(spacing: 20) {
+            Button {
+                Task { await service.togglePlayPause() }
+            } label: {
+                Image(systemName: service.snapshot.transport == .playing ? "pause.fill" : "play.fill")
+                    .font(.title2)
+            }
+            .accessibilityLabel(service.snapshot.transport == .playing ? "Pause" : "Play")
+            .sensoryFeedback(.impact(weight: .medium), trigger: service.snapshot.transport)
+            .buttonStyle(.plain)
+
             Button {
                 Task { await service.skip() }
             } label: {
@@ -204,33 +261,27 @@ struct StudioView: View {
             }
             .accessibilityLabel("Next track")
             .sensoryFeedback(.impact(weight: .light), trigger: service.snapshot.nowPlaying?.id)
-
-            Button {
-                Task { await service.togglePlayPause() }
-            } label: {
-                Image(systemName: service.snapshot.transport == .playing ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 56))
-            }
-            .accessibilityLabel(service.snapshot.transport == .playing ? "Pause" : "Play")
             .buttonStyle(.plain)
-            .sensoryFeedback(.impact(weight: .medium), trigger: service.snapshot.transport)
         }
     }
 }
 
-/// A tuner card — station identity + mood/energy, tactile.
+/// A tuner card — station identity + mood/energy, tactile. LABELED MOCK.
 struct TunerCard: View {
     let station: StationConfig
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: station.artName)
+                .font(.title2)
+                .foregroundStyle(.tint)
             Text(station.name)
                 .font(.headline)
                 .lineLimit(1)
             Text(station.mood)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            HStack(spacing: 2) {
+            HStack(spacing: 3) {
                 ForEach(0..<10, id: \.self) { i in
                     Circle()
                         .fill(i < station.energy ? Color.accentColor : Color(.systemGray4))
@@ -240,15 +291,23 @@ struct TunerCard: View {
             .accessibilityHidden(true)
         }
         .padding(12)
-        .frame(width: 140, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(station.name), \(station.mood), energy \(station.energy) of 10")
     }
 }
 
-#Preview("Studio") {
+#Preview("Studio — narrow") {
     NavigationStack {
         StudioView(station: Station(id: UUID(), name: "Morning Calm", description: nil, djName: "Maya"))
+            .frame(width: 340)
+    }
+}
+
+#Preview("Studio — wide") {
+    NavigationStack {
+        StudioView(station: Station(id: UUID(), name: "Morning Calm", description: nil, djName: "Maya"))
+            .frame(width: 900)
     }
 }
