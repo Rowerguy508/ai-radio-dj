@@ -57,6 +57,7 @@ public struct BriefingScriptSegment: Identifiable, Codable, Equatable, Sendable 
 /// Speech and music in air order.
 public enum RundownEntry: Codable, Equatable, Sendable {
     case speech(segmentID: UUID, seconds: Int)
+    /// `seconds` is an estimated minimum, never a cut point (see `rundown`).
     case music(slot: Int, seconds: Int)
 }
 
@@ -71,6 +72,13 @@ public struct BriefingScript: Equatable, Sendable {
 
     /// Opener, first item, then a music slot between each later item; the
     /// closer follows the last item. Music fills the rest of the experience.
+    ///
+    /// **Estimates, not playback control.** Speech seconds are word-count
+    /// estimates and each `.music` value is a *minimum* target. The scheduler
+    /// plays whole tracks and inserts speech only at track boundaries, so the
+    /// show runs approximately `experienceSeconds` and may run longer; it must
+    /// never trim or skip protected music to hit these numbers, and any UI
+    /// must label durations as estimated.
     public var rundown: [RundownEntry] {
         var blocks: [[BriefingScriptSegment]] = []
         for segment in segments {
@@ -191,18 +199,24 @@ public struct MorningBriefingEngine: BriefingPlanner {
         let today = calendar.startOfDay(for: now)
         let kind: BriefingScriptSegment.Kind
         var phrase: String?
-        if item.source == .calendar, let at = item.eventAt {
-            if at == today {
-                phrase = "today"  // all-day events start at midnight
-            } else if at < now {
-                return .failure(.pastEvent)
-            } else if at.timeIntervalSince(now) > configuration.eventHorizon {
-                return .failure(.outsideHorizon)
+        if item.source == .calendar {
+            // Contract with the calendar source (#18): all-day items have no
+            // `eventAt`; a timed event that has started is still on while
+            // `expiresAt` (its end) is in the future. Midnight is just a time.
+            if let at = item.eventAt {
+                if at < now {
+                    guard let end = item.expiresAt, end > now else { return .failure(.pastEvent) }
+                    phrase = "now"
+                } else if at.timeIntervalSince(now) > configuration.eventHorizon {
+                    return .failure(.outsideHorizon)
+                } else {
+                    phrase = (calendar.isDate(at, inSameDayAs: now) ? "at " : "tomorrow at ") + clockTime(at)
+                }
             } else {
-                phrase = (calendar.isDate(at, inSameDayAs: now) ? "at " : "tomorrow at ") + clockTime(at)
+                phrase = "today"
             }
             kind = .upcomingEvent
-        } else if item.source != .calendar, let at = item.eventAt,
+        } else if let at = item.eventAt,
                   let dayAfter = calendar.date(byAdding: .day, value: 2, to: today), at < dayAfter {
             phrase = at < today ? "overdue" : calendar.isDate(at, inSameDayAs: now) ? "due today" : "due tomorrow"
             kind = .dueTask
@@ -213,7 +227,7 @@ public struct MorningBriefingEngine: BriefingPlanner {
         let subject = title.isEmpty ? detail : title
         let lead: String
         switch kind {
-        case .upcomingEvent: lead = "Coming up \(phrase!): \(subject)"
+        case .upcomingEvent: lead = phrase == "now" ? "Happening now: \(subject)" : "Coming up \(phrase!): \(subject)"
         case .dueTask: lead = "\(phrase!.prefix(1).uppercased())\(phrase!.dropFirst()): \(subject)"
         case .followUp: lead = "To follow up: \(subject)"
         default: lead = "A note: \(subject)"

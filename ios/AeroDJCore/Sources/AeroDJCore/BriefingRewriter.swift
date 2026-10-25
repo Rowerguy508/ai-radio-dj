@@ -16,8 +16,13 @@ public protocol BriefingRewriter: Sendable {
 }
 
 /// Applies a rewriter but keeps the templated text whenever the rewrite fails,
-/// is empty, grows too much, introduces numbers absent from the original, or
-/// would push the briefing over its spoken budget. Provenance never changes.
+/// is empty, grows too much, introduces numbers absent from the original,
+/// drops or alters a fact (title, detail, time phrase and attribution must
+/// appear verbatim), adds any word outside a small neutral vocabulary (so
+/// "confirmed" can't become "canceled"), or would push the briefing over its
+/// spoken budget. Provenance never changes. Conservative by design: v1 falls
+/// back to the deterministic template. No LLM rewriter is enabled; any future
+/// one must also restyle template words only (slots), never untrusted fields.
 public struct BriefingRewriteGuard: Sendable {
     public let maxWordGrowth: Double
     public let maxSpokenSeconds: Int
@@ -54,7 +59,25 @@ public struct BriefingRewriteGuard: Sendable {
         let words = Double(trimmed.split(whereSeparator: \.isWhitespace).count)
         let originalWords = Double(original.text.split(whereSeparator: \.isWhitespace).count)
         guard words <= (originalWords * maxWordGrowth).rounded(.up) else { return false }
-        return Self.numbers(in: trimmed).isSubset(of: Self.numbers(in: original.text))
+        guard Self.numbers(in: trimmed).isSubset(of: Self.numbers(in: original.text)) else { return false }
+        var facts = [original.title, original.detail, original.timePhrase].compactMap { $0 }.filter { !$0.isEmpty }
+        if let source = original.source { facts.append("From \(MorningBriefingEngine.attribution(source))") }
+        for fact in facts where trimmed.range(of: fact, options: .caseInsensitive) == nil { return false }
+        let added = Self.words(in: trimmed).subtracting(Self.words(in: original.text))
+        return added.isSubset(of: Self.neutralWords)
+    }
+
+    /// Words a restyle may add: connective, tone-only, no facts or negations.
+    static let neutralWords: Set<String> = [
+        "a", "an", "the", "and", "so", "then", "also", "just", "now", "next", "here", "there", "it's", "it",
+        "is", "you", "your", "you've", "you're", "got", "have", "on", "for", "to", "of", "at", "in", "with",
+        "hey", "hi", "hello", "okay", "alright", "well", "easy", "does", "quick", "heads", "up", "reminder",
+        "friendly", "folks", "everyone", "friend", "lovely", "bright", "early", "listening", "this", "that's",
+        "let's", "start", "kick", "off", "first", "lastly", "finally", "plus", "after", "music", "back",
+    ]
+
+    static func words(in text: String) -> Set<String> {
+        Set(text.lowercased().split(whereSeparator: { !($0.isLetter || $0 == "'") }).map(String.init))
     }
 
     static func numbers(in text: String) -> Set<String> {
