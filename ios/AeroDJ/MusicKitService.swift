@@ -1,5 +1,5 @@
 import Foundation
-import MusicKit
+@preconcurrency import MusicKit // MusicKit players are not annotated Sendable yet
 import Combine
 import AVFoundation
 import AeroDJCore
