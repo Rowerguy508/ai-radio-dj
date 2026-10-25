@@ -3,6 +3,7 @@ import SwiftUI
 /// Station selection screen. Adaptive container sizing (no hardcoded device dims).
 struct StationListView: View {
     @State private var stations: [Station] = Station.mockStations
+    @State private var showSharedInbox = false
 
     var body: some View {
         NavigationStack {
@@ -15,8 +16,22 @@ struct StationListView: View {
                 }
             }
             .navigationTitle("AeroDJ")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showSharedInbox = true
+                    } label: {
+                        Label("Shared Items", systemImage: "square.and.arrow.up")
+                    }
+                }
+            }
             .navigationDestination(for: Station.self) { station in
                 PlayerView(station: station)
+            }
+            .sheet(isPresented: $showSharedInbox) {
+                if let review = SharedInboxReview.appGroupInbox() {
+                    SharedInboxReviewView(review: review)
+                }
             }
         }
     }
