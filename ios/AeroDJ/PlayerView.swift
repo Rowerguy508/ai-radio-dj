@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Player screen. Two connected layouts driven by `horizontalSizeClass`:
 /// - compact (Duo closed): immersive artwork, prominent controls, truthful DJ badge.
-/// - regular (Duo unfolded): studio layout — artwork + controls + queue + DJ + briefing.
+/// - regular (Duo unfolded): Studio Mode — persistent Now Playing, editable
+///   queue, station tuner, Connections panel (see StudioView).
 /// Built against `PlaybackService` (mock now, Claude's PlaybackEngine later).
 /// Artwork scales with available space; no hardcoded dimensions.
 struct PlayerView: View {
@@ -19,7 +20,7 @@ struct PlayerView: View {
     var body: some View {
         Group {
             if sizeClass == .regular {
-                studioLayout
+                StudioView(station: station, service: service)
             } else {
                 compactLayout
             }
@@ -72,78 +73,6 @@ struct PlayerView: View {
                 .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
-    }
-
-    // MARK: - Unfolded (Duo studio)
-
-    private var studioLayout: some View {
-        GeometryReader { geo in
-            ScrollView {
-                HStack(alignment: .top, spacing: 32) {
-                    // Left: artwork + controls.
-                    VStack(spacing: 24) {
-                        if service.snapshot.isLoading {
-                            loadingView
-                        } else if let error = service.snapshot.error {
-                            errorView(error)
-                        } else if let track = service.snapshot.nowPlaying {
-                            artwork(track, size: min(geo.size.width * 0.4, 420))
-                            VStack(spacing: 6) {
-                                Text(track.title)
-                                    .font(.system(.title, design: .rounded, weight: .bold))
-                                Text(track.artist)
-                                    .font(.title3)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .accessibilityElement(children: .combine)
-                            controls
-                        } else {
-                            emptyView
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-
-                    // Right: queue + DJ + briefing — the extra space does real work.
-                    VStack(alignment: .leading, spacing: 24) {
-                        djBadge
-                        djCard
-                        if !service.snapshot.upNext.isEmpty {
-                            queueCard
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(32)
-            }
-        }
-    }
-
-    private var djCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("DJ", systemImage: "person.crop.circle.fill")
-                .font(.headline)
-            Text(station.djName)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var queueCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Up Next", systemImage: "list.number")
-                .font(.headline)
-            ForEach(service.snapshot.upNext) { track in
-                HStack(spacing: 8) {
-                    Image(systemName: "music.note")
-                        .foregroundStyle(.secondary)
-                    Text(track.title).font(.subheadline)
-                    Spacer()
-                    Text(track.artist).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Shared pieces
@@ -268,26 +197,26 @@ struct PlayerView: View {
 }
 
 #Preview("Compact") {
-    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil))
+    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil, djName: "Maya"))
         .environment(\.horizontalSizeClass, .compact)
 }
 
 #Preview("Unfolded") {
-    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil))
+    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil, djName: "Maya"))
         .environment(\.horizontalSizeClass, .regular)
 }
 
 #Preview("Loading") {
-    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil))
+    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil, djName: "Maya"))
         .environment(\.horizontalSizeClass, .compact)
 }
 
 #Preview("Empty") {
-    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil))
+    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil, djName: "Maya"))
         .environment(\.horizontalSizeClass, .compact)
 }
 
 #Preview("Error") {
-    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil))
+    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil, djName: "Maya"))
         .environment(\.horizontalSizeClass, .compact)
 }
