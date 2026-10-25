@@ -39,9 +39,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
             music.skipInterlude()
             return
         }
+        // A clip that won't decode skips the break. Live speech is not measured, so it
+        // would delay the next song; the show goes on and the UI is told.
         guard let player = try? AVAudioPlayer(data: clip), player.duration > 0 else {
-            music.reportSpeechError("DJ clip could not be decoded; speaking live.")
-            await play(line: line)
+            music.reportSpeechError("A DJ line could not be played and was skipped.")
+            music.skipInterlude()
             return
         }
         player.delegate = self
@@ -63,6 +65,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
         let seconds = Double(line.split(separator: " ").count) / 2.0 + 5
         await runBreak(line: line, timeout: seconds) {
             speech.speak(utterance)
+            return true
         }
     }
 
@@ -74,11 +77,10 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
 
     /// The one break lifecycle. `start` begins audio; completion comes from the
     /// delegate, or from the timeout if no callback arrives.
-    private func runBreak(line: String, timeout seconds: Double, start: () -> Void) async {
-        music.pause()
+    private func runBreak(line: String, timeout seconds: Double, start: () -> Bool) async {
+        music.pausePlayerForBreak()
         music.beginInterlude() // transition -> voice
         outcome = .cancelled
-        music.djStarted(line)
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             finish = continuation
@@ -86,16 +88,18 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
                 do { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } catch { return }
                 self?.finishBreak(.cancelled)
             }
-            start()
+            // The line is reported as started only once audio is really playing.
+            if start() {
+                music.djStarted(line)
+            } else {
+                finishBreak(.cancelled)
+            }
         }
 
         music.endInterlude() // voice -> music
         if outcome == .finished { music.djFinished() } else { music.djCancelled() }
-        do {
-            try await music.resume()
-        } catch {
-            music.reportError("Could not resume music after the DJ break: \(error.localizedDescription)")
-        }
+        // Music returns only if the user still wants it and the system is not holding it.
+        await music.resumeIfAllowed()
     }
 
     private func finishBreak(_ result: Outcome) {

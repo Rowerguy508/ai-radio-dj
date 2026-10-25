@@ -32,6 +32,9 @@ final class MusicKitService: ObservableObject {
     private var stateMachine = AudioStateMachine()
     private var audioSessionConfigured = false
     private var boundaryDetector = PlaybackBoundaryDetector()
+    private var intent = PlaybackIntent()
+    /// Stops any DJ line that is speaking. Set by the app to the break adapter.
+    var onBreakMustStop: (@MainActor () -> Void)?
     private var queueIndex = 0
     /// Called once per boundary. For a natural end, the index is the song that just finished.
     /// The handler must resolve the transition: play a DJ line, or call `skipInterlude()`.
@@ -68,6 +71,7 @@ final class MusicKitService: ObservableObject {
 
     /// Start playing a queue of tracks.
     func play(_ tracks: [Track], station: StationRef? = nil) async throws {
+        intent.userPlay()
         guard authState == .authorized else {
             lastError = MusicKitError.notAuthorized.errorDescription ?? "Apple Music authorization required."
             send(.errorRaised(PlaybackError(kind: .notAuthorized, message: lastError ?? "", isRecoverable: false)))
@@ -93,18 +97,42 @@ final class MusicKitService: ObservableObject {
         }
     }
 
+    /// The user pressed pause. A DJ line that is speaking stops too.
     func pause() {
+        intent.userPause()
         player.pause()
         isPlaying = false
         send(.userPaused)
         stateMachine.apply(.pause)
+        onBreakMustStop?()
     }
 
+    /// The user pressed play.
     func resume() async throws {
+        intent.userPlay()
         try await player.play()
         isPlaying = true
         stateMachine.apply(.resume)
         send(.userResumed)
+    }
+
+    /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
+    func pausePlayerForBreak() {
+        player.pause()
+        isPlaying = false
+    }
+
+    /// Starts music again after a DJ break or an interruption, only if the user still
+    /// wants playback and the system is not holding it paused.
+    func resumeIfAllowed() async {
+        guard intent.mayAutoResume else { return }
+        do {
+            try await player.play()
+            isPlaying = true
+            send(.userResumed)
+        } catch {
+            reportError("Could not resume music: \(error.localizedDescription)")
+        }
     }
 
     /// A user skip is not a natural boundary: no DJ break is triggered by it.
@@ -210,21 +238,33 @@ final class MusicKitService: ObservableObject {
                             options: AVAudioSession.InterruptionOptions = []) {
         switch reason {
         case .began:
-            pause()
+            intent.systemInterruptionBegan()
+            pausePlayerForBreak()
+            send(.userPaused)
+            onBreakMustStop?()
         case .ended:
-            if options.contains(.shouldResume) {
-                Task { try? await resume() }
+            intent.systemInterruptionEnded(shouldResume: options.contains(.shouldResume))
+            // While a DJ line is speaking, the break resumes music when it ends.
+            if !isBreakActive {
+                Task { await resumeIfAllowed() }
             }
         @unknown default:
             break
         }
     }
 
-    /// Handle headphones unplugging: pause so music doesn't blast the speaker.
+    /// Handle headphones unplugging: hold playback until the user presses play.
     func handleRouteChange(_ wasDeviceRemoved: Bool) {
         if wasDeviceRemoved {
-            pause()
+            intent.routeRemoved()
+            pausePlayerForBreak()
+            send(.userPaused)
+            onBreakMustStop?()
         }
+    }
+
+    private var isBreakActive: Bool {
+        stateMachine.state == .transition || stateMachine.state == .voice
     }
 
     /// Detect whether the user has an active Apple Music subscription.

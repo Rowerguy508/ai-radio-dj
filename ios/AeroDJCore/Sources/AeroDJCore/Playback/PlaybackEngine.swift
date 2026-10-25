@@ -19,6 +19,8 @@ public enum PlaybackEvent: Equatable, Sendable {
     case djCancelled
     /// The speech engine failed. The show goes on; the UI is told.
     case djFailed(message: String)
+    /// The user edited the songs after the one playing. The playing song is never affected.
+    case upNextEdited(UpNextEdit)
     case errorRaised(PlaybackError)
     case errorCleared
 }
@@ -79,6 +81,17 @@ public struct PlaybackEngine: Sendable {
             snapshot.dj = .idle
             snapshot.error = PlaybackError(kind: .speechFailed, message: message, isRecoverable: true)
 
+        case let .upNextEdited(edit):
+            // Only the tracks after the current one change. An invalid edit is reported, not applied.
+            let remaining = tracks.indices.contains(index) ? Array(tracks[(index + 1)...]) : []
+            switch UpNextEditor.apply(edit, to: remaining, nowPlaying: snapshot.nowPlaying) {
+            case let .success(newUpNext):
+                tracks = (tracks.indices.contains(index) ? Array(tracks[...index]) : []) + newUpNext
+                snapshot.upNext = newUpNext
+            case let .failure(reason):
+                snapshot.error = PlaybackError(kind: .playbackFailed, message: Self.message(for: reason), isRecoverable: true)
+            }
+
         case let .errorRaised(error):
             snapshot.error = error
 
@@ -86,6 +99,14 @@ public struct PlaybackEngine: Sendable {
             snapshot.error = nil
         }
         return snapshot
+    }
+
+    private static func message(for reason: UpNextEditError) -> String {
+        switch reason {
+        case .outOfRange: "That song is no longer in the queue."
+        case .alreadyQueued: "That song is already queued."
+        case .isPlayingNow: "That song is playing now."
+        }
     }
 
     private mutating func publishPosition(transport: TransportState) {
