@@ -1,12 +1,15 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import AeroDJCore
 
 /// Share Extension: imports plain text, URLs, and email/message excerpts the
 /// user explicitly shares. Never implies whole-inbox access. Writes to the
-/// App Group inbox with bounded retention.
+/// App Group inbox with bounded retention. Validates length/format.
 @objc(AeroDJShareViewController)
 class AeroDJShareViewController: UIViewController {
+    private let validator = SharedItemValidator()
+
     override func viewDidLoad() {
         super.viewDidLoad()
         guard let item = extensionContext?.inputItems.first as? NSExtensionItem,
@@ -34,7 +37,11 @@ class AeroDJShareViewController: UIViewController {
     }
 
     private func store(text: String, source: String) {
-        // App Group inbox; bounded retention enforced by the host app.
+        // Validate length/format; drop invalid silently (no error UI in share sheet).
+        guard let item = try? validator.validate(text, source: source) else {
+            finish()
+            return
+        }
         let groupID = "group.com.aerodj"
         guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) else {
             finish()
@@ -42,8 +49,8 @@ class AeroDJShareViewController: UIViewController {
         }
         let inbox = container.appendingPathComponent("Inbox", isDirectory: true)
         try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
-        let file = inbox.appendingPathComponent("\(UUID().uuidString).txt")
-        try? text.data(using: .utf8)?.write(to: file)
+        let file = inbox.appendingPathComponent("\(item.id.uuidString).txt")
+        try? item.text.data(using: .utf8)?.write(to: file)
         finish()
     }
 
