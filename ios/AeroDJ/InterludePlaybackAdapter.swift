@@ -4,19 +4,16 @@ import AeroDJCore
 
 /// Plays one DJ break between two songs.
 ///
-/// Two sources, one lifecycle:
-/// - `play(clip:line:)`: a clip rendered before the show. Exact length, cost known.
-///   This is the normal path.
-/// - `play(line:)`: the live voice, used only when no clip exists or the clip
-///   cannot be decoded. Never silence.
+/// Only prepared clips are played. A line with no clip, or a clip that will not
+/// decode, skips the break and tells the UI; live speech is never used at a song
+/// boundary, because its length is unknown and it would delay the next song.
 ///
-/// Both run `transition -> voice -> music`. Music is paused for the line and
+/// The break runs `transition -> voice -> music`. Music is paused for the line and
 /// resumed afterwards, whether the line finishes, is cancelled, fails, or times
 /// out. Playback never stays paused because a callback was missed.
 @MainActor
-final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
+final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private let music: MusicKitService
-    private let speech = AVSpeechSynthesizer()
     private var clipPlayer: AVAudioPlayer?
     private var finish: CheckedContinuation<Void, Never>?
     private var timeout: Task<Void, Never>?
@@ -28,19 +25,22 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
     init(music: MusicKitService) {
         self.music = music
         super.init()
-        speech.delegate = self
     }
 
     var isSpeaking: Bool { finish != nil }
 
-    /// Plays a pre-rendered clip. Falls back to the live voice if the clip won't decode.
+    /// A line with no prepared clip. The break is skipped and the UI is told.
+    func skipUnprepared() {
+        music.reportSpeechError("A DJ line was not prepared and was skipped.")
+        music.skipInterlude()
+    }
+
+    /// Plays a pre-rendered clip. A clip that won't decode skips the break.
     func play(clip: Data, line: String) async {
         guard !isSpeaking, !line.isEmpty else {
             music.skipInterlude()
             return
         }
-        // A clip that won't decode skips the break. Live speech is not measured, so it
-        // would delay the next song; the show goes on and the UI is told.
         guard let player = try? AVAudioPlayer(data: clip), player.duration > 0 else {
             music.reportSpeechError("A DJ line could not be played and was skipped.")
             music.skipInterlude()
@@ -54,23 +54,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
         clipPlayer = nil
     }
 
-    /// Speaks a line live. Used only when no rendered clip is available.
-    func play(line: String) async {
-        guard !isSpeaking, !line.isEmpty else {
-            music.skipInterlude()
-            return
-        }
-        let utterance = AVSpeechUtterance(string: line)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-        let seconds = Double(line.split(separator: " ").count) / 2.0 + 5
-        await runBreak(line: line, timeout: seconds) {
-            speech.speak(utterance)
-            return true
-        }
-    }
-
     func stop() {
-        speech.stopSpeaking(at: .immediate)
         clipPlayer?.stop()
         finishBreak(.cancelled)
     }
@@ -109,16 +93,6 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVSpeechSynthe
         finish = nil
         outcome = result
         continuation.resume()
-    }
-
-    // MARK: AVSpeechSynthesizerDelegate. Callbacks arrive on an arbitrary queue; hop to the main actor.
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.finishBreak(.finished) }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.finishBreak(.cancelled) }
     }
 
     // MARK: AVAudioPlayerDelegate

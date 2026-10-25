@@ -46,11 +46,12 @@ struct PlayerView: View {
             music.onBoundary = { @MainActor [interlude, breakPlan, music] boundary, finishedIndex in
                 guard case .naturalEnd = boundary else { return }
                 // Every natural end must resolve the transition: a line, or none.
-                guard let line = breakPlan.line(afterTrack: finishedIndex), !interlude.isSpeaking else {
+                guard breakPlan.line(afterTrack: finishedIndex) != nil, !interlude.isSpeaking else {
                     music.skipInterlude()
                     return
                 }
-                Task { @MainActor in await interlude.play(line: line) }
+                // Prepared clips are not wired yet, so no break plays live speech here.
+                interlude.skipUnprepared()
             }
             music.onBreakMustStop = { [interlude] in interlude.stop() }
             await music.authorize()
