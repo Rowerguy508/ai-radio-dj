@@ -20,6 +20,8 @@ public enum DJBreakSkipReason: String, Codable, Equatable, Sendable {
     case overBreakBudget
     /// Nothing was prepared for this boundary.
     case notPlanned
+    /// The song did not end naturally (user skip, queue change): never talk over or after a cut song.
+    case notNaturalBoundary
 }
 
 /// Audio ready to play at a boundary, in order, with measured durations.
@@ -28,6 +30,9 @@ public struct PreparedDJBreak: Equatable, Sendable {
     /// Cues with `renderedSeconds`, `voiceID`, `providerID` and `audioCacheKey` filled in.
     public let cues: [NarrationCue]
     public let clips: [RenderedClip]
+    /// Where every spoken cue's words came from (same keys as `cues`).
+    public let attributions: [UUID: SpokenAttribution]
+    public var includesBriefing: Bool { cues.contains { $0.isContent } }
     public var measuredSeconds: Double { clips.reduce(0) { $0 + $1.audio.seconds } }
 }
 
@@ -47,8 +52,8 @@ public actor DJBreakPreparer {
     private var observers: [@Sendable (DJBreakEvent) -> Void] = []
 
     public enum DJBreakEvent: Equatable, Sendable {
-        case preparing(afterTrack: Int)
-        case prepared(afterTrack: Int)
+        case preparing(afterTrack: Int, includesBriefing: Bool)
+        case prepared(afterTrack: Int, includesBriefing: Bool, seconds: Double)
         case skipped(afterTrack: Int, DJBreakSkipReason)
     }
 
@@ -61,11 +66,16 @@ public actor DJBreakPreparer {
 
     public func observe(_ observer: @escaping @Sendable (DJBreakEvent) -> Void) { observers.append(observer) }
 
-    /// Starts rendering now. `deadline` should end before the boundary (e.g. remaining song time minus a margin).
+    /// Render deadline for a song with `remaining` time left: `remaining - margin`, or nil if too late to prepare.
+    public static func deadline(remainingInSong remaining: Duration, margin: Duration = .seconds(3)) -> Duration? {
+        remaining > margin ? remaining - margin : nil
+    }
+
+    /// Starts rendering now. `deadline` must end before the boundary (see `deadline(remainingInSong:)`).
     public func prepare(_ djBreak: DJBreak, deadline: Duration) {
         let k = djBreak.afterTrack
         guard tasks[k] == nil, results[k] == nil else { return }
-        emit(.preparing(afterTrack: k))
+        emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
         let renderer = renderer, userID = userID, stationID = stationID, cap = maxBreakSeconds(djBreak)
         tasks[k] = Task {
             let outcome: DJBreakOutcome
@@ -81,8 +91,16 @@ public actor DJBreakPreparer {
     }
 
     /// Called at the boundary. Never waits: returns what is ready or an explicit skip.
-    public func takeBreak(afterTrack k: Int) -> DJBreakOutcome {
+    /// `natural` is false when the song was cut (skip, queue change); the break is then dropped.
+    public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
         defer { tasks[k] = nil }
+        guard natural else {
+            tasks[k]?.cancel()
+            let wasPlanned = tasks[k] != nil || results.removeValue(forKey: k) != nil
+            results[k] = .skipped(.notNaturalBoundary)
+            if wasPlanned { emit(.skipped(afterTrack: k, .notNaturalBoundary)) }
+            return .skipped(.notNaturalBoundary)
+        }
         if let result = results.removeValue(forKey: k) { return result }
         guard let task = tasks[k] else { return .skipped(.notPlanned) }
         task.cancel()
@@ -102,7 +120,7 @@ public actor DJBreakPreparer {
         guard results[k] == nil, tasks[k] != nil else { return }  // already taken or cancelled
         results[k] = outcome
         switch outcome {
-        case .ready: emit(.prepared(afterTrack: k))
+        case .ready(let b): emit(.prepared(afterTrack: k, includesBriefing: b.includesBriefing, seconds: b.measuredSeconds))
         case .skipped(let reason): emit(.skipped(afterTrack: k, reason))
         }
     }
@@ -128,7 +146,8 @@ public actor DJBreakPreparer {
             }
         }
         let seconds = clips.reduce(0) { $0 + $1.audio.seconds }
-        return seconds > cap ? .skipped(.overBreakBudget) : .ready(PreparedDJBreak(afterTrack: djBreak.afterTrack, cues: cues, clips: clips))
+        return seconds > cap ? .skipped(.overBreakBudget) : .ready(PreparedDJBreak(afterTrack: djBreak.afterTrack, cues: cues, clips: clips,
+                                                                                       attributions: djBreak.attributions))
     }
 
     static func skipReason(_ failure: VoiceRenderer.Failure) -> DJBreakSkipReason {

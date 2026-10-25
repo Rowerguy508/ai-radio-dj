@@ -111,6 +111,8 @@ public enum NarrationDropReason: String, Codable, Sendable {
     case renderFailed
     /// Placing it would exceed `maxSpokenSeconds`.
     case overBudget
+    /// Personal content without a source/provenance to attribute it to; never spoken.
+    case unattributed
 }
 
 public enum NarrationOutcome: Codable, Equatable, Sendable {

@@ -104,12 +104,24 @@ public struct TemplatePool: Sendable {
     }
 }
 
+/// Where a spoken line's words came from. Every spoken cue has one.
+public enum SpokenAttribution: Equatable, Sendable {
+    /// Built only from MusicKit title/artist of these track ids.
+    case trackMetadata(trackIDs: [String])
+    /// An approved, sanitized briefing item (its text also names the source aloud).
+    case personalContext(itemID: UUID, source: ContextSourceKind, provenance: String)
+    /// Fixed presenter phrasing with no facts (greeting, lead-in).
+    case presenter
+}
+
 /// One planned break at a natural song boundary.
 public struct DJBreak: Equatable, Sendable {
     /// Plays after this track (0-based) and before the next. Never mid-song.
     public let afterTrack: Int
     /// Spoken in order: optional back-announce/greeting, briefing cues, then the intro of the next song.
     public let cues: [NarrationCue]
+    /// Attribution for every cue id in `cues`.
+    public let attributions: [UUID: SpokenAttribution]
     public var briefingCueIDs: [UUID] { cues.filter(\.isContent).map(\.id) }
     public var hasBriefing: Bool { cues.contains { $0.isContent } }
     public var estimatedSeconds: Double { cues.reduce(0) { $0 + $1.plannedSeconds } }
@@ -165,8 +177,13 @@ public struct DJScriptWriter: Sendable {
     public mutating func plan(tracks: [DJTrack], briefing: NarrationHandoff?, hour: Int) -> DJSessionPlan {
         let dayPart = DayPart(hour: hour)
         // Briefing content in priority order; opener/closer framing is replaced by DJ phrasing.
-        var pending = (briefing?.cues ?? []).filter(\.isContent).sorted { $0.order < $1.order }
         var outcomes: [UUID: NarrationOutcome] = [:]
+        // Personal content is spoken only with a source and provenance to attribute it to.
+        var pending: [NarrationCue] = []
+        for cue in (briefing?.cues ?? []).filter(\.isContent).sorted(by: { $0.order < $1.order }) {
+            if cue.source != nil, let provenance = cue.provenance, !provenance.isEmpty { pending.append(cue) }
+            else { outcomes[cue.id] = .dropped(.unattributed) }
+        }
         for cue in briefing?.cues ?? [] where !cue.isContent { outcomes[cue.id] = .dropped(.notPlacedByScheduler) }
 
         var breaks: [DJBreak] = []
@@ -179,22 +196,27 @@ public struct DJScriptWriter: Sendable {
             guard wantsBriefing || roll < cadence.talkFraction else { continue }
 
             let prev = tracks[boundary], next = tracks[boundary + 1]
-            let values = ["title": prev.title, "artist": prev.artist, "nextTitle": next.title, "nextArtist": next.artist]
-            var lines: [String] = []
-            if !hasGreeted, let greeting = greetings[dayPart]?.next(filling: [:], using: &rng) {
-                lines.append(greeting)
-                hasGreeted = true
-            } else if let line = backAnnounce.next(filling: values, using: &rng) {
-                lines.append(line)
+            // Each pool sees only one track's fields, so attribution is exact by construction.
+            var attributions: [UUID: SpokenAttribution] = [:]
+            var cues: [NarrationCue] = []
+            func add(_ text: String, _ attribution: SpokenAttribution) -> NarrationCue {
+                let cue = transitionCue(text, order: &order)
+                attributions[cue.id] = attribution
+                return cue
             }
-            let introLine = intro.next(filling: values, using: &rng)
+            if !hasGreeted, let greeting = greetings[dayPart]?.next(filling: [:], using: &rng) {
+                cues.append(add(greeting, .presenter))
+                hasGreeted = true
+            } else if let line = backAnnounce.next(filling: ["title": prev.title, "artist": prev.artist], using: &rng) {
+                cues.append(add(line, .trackMetadata(trackIDs: [prev.id])))
+            }
+            let introLine = intro.next(filling: ["nextTitle": next.title, "nextArtist": next.artist], using: &rng)
 
-            var cues = lines.map { transitionCue($0, order: &order) }
             if wantsBriefing {
                 let limit = Double(cadence.maxBriefingBreakSeconds)
                 var spent = cues.reduce(0) { $0 + $1.plannedSeconds } + estimate(introLine)
                 if let lead = briefingLead.next(filling: [:], using: &rng) {
-                    let leadCue = transitionCue(lead, order: &order)
+                    let leadCue = add(lead, .presenter)
                     spent += leadCue.plannedSeconds
                     var taken: [NarrationCue] = []
                     while let cue = pending.first, spent + cue.plannedSeconds <= limit {
@@ -207,15 +229,20 @@ public struct DJScriptWriter: Sendable {
                     if !taken.isEmpty {
                         cues.append(leadCue)
                         cues += taken
-                        for cue in taken { outcomes[cue.id] = .scheduled(.afterTrack(boundary)) }
+                        for cue in taken {
+                            outcomes[cue.id] = .scheduled(.afterTrack(boundary))
+                            attributions[cue.id] = .personalContext(itemID: cue.sourceItemID!, source: cue.source!, provenance: cue.provenance!)
+                        }
+                    } else {
+                        attributions[leadCue.id] = nil
                     }
                 }
             }
-            if let introLine { cues.append(transitionCue(introLine, order: &order)) }
+            if let introLine { cues.append(add(introLine, .trackMetadata(trackIDs: [next.id]))) }
             guard !cues.isEmpty else { continue }
             let isBriefing = cues.contains { $0.isContent }
             if !isBriefing, cues.reduce(0, { $0 + $1.plannedSeconds }) > Double(cadence.maxTransitionSeconds) { continue }
-            breaks.append(DJBreak(afterTrack: boundary, cues: cues))
+            breaks.append(DJBreak(afterTrack: boundary, cues: cues, attributions: attributions))
             lastBreak = boundary
         }
         for cue in pending { outcomes[cue.id] = .deferred(.noTrackBoundary) }

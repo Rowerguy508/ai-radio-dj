@@ -118,17 +118,123 @@ final class DJNarrationTests: XCTestCase {
         XCTAssertTrue(outcomes.contains(.scheduled(.afterTrack(3))))
     }
 
-    func testPresentationStateFollowsRealEventsOnly() {
+    func testPresentationHappyPathSpeaksOnlyAfterPlayerConfirms() {
         var m = DJPresentationModel()
-        XCTAssertEqual(m.apply(.breakPreparing(afterTrack: 2)), .preparing(afterTrack: 2))
-        XCTAssertEqual(m.apply(.breakPrepared(afterTrack: 2, hasBriefing: true)), .upcomingBriefing(afterTrack: 2))
-        XCTAssertEqual(m.apply(.consentReviewPending(count: 1)), .consentReviewRequired(pendingCount: 1))
-        XCTAssertEqual(m.apply(.consentReviewPending(count: 0)), .upcomingBriefing(afterTrack: 2))
-        XCTAssertEqual(m.apply(.speechAudioStarted(afterTrack: 2)), .speaking(afterTrack: 2))
-        XCTAssertEqual(m.apply(.speechAudioEnded(afterTrack: 5)), .speaking(afterTrack: 2), "a stale end does not stop speaking")
-        XCTAssertEqual(m.apply(.speechAudioEnded(afterTrack: 2)), .idle)
-        m.apply(.breakPreparing(afterTrack: 4))
-        XCTAssertEqual(m.apply(.breakSkipped(afterTrack: 4)), .idle, "a skipped break never shows as speaking")
+        XCTAssertEqual(m.state, .idle)
+        XCTAssertEqual(m.apply(.breakPreparing(afterTrack: 2, includesBriefing: true)), .preparing(afterTrack: 2, includesBriefing: true))
+        XCTAssertEqual(m.apply(.breakReady(afterTrack: 2, includesBriefing: true, seconds: 9)), .ready(afterTrack: 2, includesBriefing: true, seconds: 9))
+        XCTAssertFalse(m.state.isLive, "ready is not live: nothing is audible")
+        XCTAssertEqual(m.apply(.playbackStarted(afterTrack: 2)), .speaking(afterTrack: 2, includesBriefing: true))
+        XCTAssertTrue(m.state.isLive)
+        XCTAssertEqual(m.apply(.playbackFinished(afterTrack: 5)), .speaking(afterTrack: 2, includesBriefing: true), "a stale finish is ignored")
+        XCTAssertEqual(m.apply(.playbackFinished(afterTrack: 2)), .idle)
+    }
+
+    func testPresentationFailurePaths() {
+        var m = DJPresentationModel()
+        m.apply(.breakPreparing(afterTrack: 1, includesBriefing: false))
+        XCTAssertEqual(m.apply(.breakSkipped(afterTrack: 1, .costCap)), .unavailable(.budgetReached))
+        m.apply(.breakPreparing(afterTrack: 3, includesBriefing: false))
+        XCTAssertEqual(m.state, .preparing(afterTrack: 3, includesBriefing: false), "a new attempt shows preparing")
+        XCTAssertEqual(m.apply(.breakReady(afterTrack: 3, includesBriefing: false, seconds: 4)), .ready(afterTrack: 3, includesBriefing: false, seconds: 4))
+        XCTAssertEqual(m.apply(.playbackStarted(afterTrack: 3)), .speaking(afterTrack: 3, includesBriefing: false))
+        XCTAssertEqual(m.apply(.playbackFailed(afterTrack: 3)), .unavailable(.voiceFailed), "playback failure ends speaking at once")
+        for reason in [DJBreakSkipReason.renderFailed, .overDuration, .timedOut, .overBreakBudget] {
+            var f = DJPresentationModel()
+            f.apply(.breakPreparing(afterTrack: 0, includesBriefing: true))
+            XCTAssertEqual(f.apply(.breakSkipped(afterTrack: 0, reason)), .unavailable(.voiceFailed), "\(reason)")
+        }
+        for reason in [DJBreakSkipReason.notReadyAtBoundary, .notPlanned, .notNaturalBoundary] {
+            var f = DJPresentationModel()
+            f.apply(.breakPreparing(afterTrack: 0, includesBriefing: true))
+            XCTAssertEqual(f.apply(.breakSkipped(afterTrack: 0, reason)), .idle, "\(reason): music just continues")
+        }
+        var f = DJPresentationModel()
+        f.apply(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 3))
+        XCTAssertEqual(f.apply(.playbackFailed(afterTrack: 0)), .unavailable(.voiceFailed), "clip failed to start or decode")
+        XCTAssertEqual(f.apply(.breakReady(afterTrack: 2, includesBriefing: false, seconds: 3)), .ready(afterTrack: 2, includesBriefing: false, seconds: 3))
+        XCTAssertEqual(f.apply(.playbackFinished(afterTrack: 2)), .idle, "a finish with no start clears the pending break")
+    }
+
+    func testPresentationConsentAndStop() {
+        var m = DJPresentationModel()
+        XCTAssertEqual(m.apply(.consentReviewPending(count: 2)), .unavailable(.consentReviewRequired(pendingCount: 2)))
+        m.apply(.breakPreparing(afterTrack: 0, includesBriefing: false))
+        m.apply(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 3))
+        XCTAssertEqual(m.apply(.playbackStarted(afterTrack: 0)), .speaking(afterTrack: 0, includesBriefing: false), "real audio wins")
+        XCTAssertEqual(m.apply(.playbackFinished(afterTrack: 0)), .unavailable(.consentReviewRequired(pendingCount: 2)))
+        XCTAssertEqual(m.apply(.consentReviewPending(count: 0)), .idle)
+        m.apply(.breakPreparing(afterTrack: 4, includesBriefing: true))
+        m.apply(.playbackStarted(afterTrack: 4))
+        XCTAssertEqual(m.apply(.sessionStopped), .idle, "stop ends speaking and pending breaks")
+    }
+
+    @MainActor
+    func testStoreIsObservableAndStreamsChangesOnly() async {
+        let store = DJPresentationStore()
+        let stream = store.updates()
+        store.send(.breakPreparing(afterTrack: 0, includesBriefing: false))
+        store.send(.breakPreparing(afterTrack: 0, includesBriefing: false))   // no change, no emission
+        store.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 2))
+        store.send(.playbackStarted(afterTrack: 0))
+        store.send(.playbackFinished(afterTrack: 0))
+        var seen: [DJPresentationState] = []
+        for await state in stream { seen.append(state); if seen.count == 5 { break } }
+        XCTAssertEqual(seen, [.idle, .preparing(afterTrack: 0, includesBriefing: false),
+                              .ready(afterTrack: 0, includesBriefing: false, seconds: 2),
+                              .speaking(afterTrack: 0, includesBriefing: false), .idle])
+        XCTAssertEqual(store.state, .idle)
+    }
+
+    func testEverySpokenCueIsAttributedAndUnattributedContentIsNeverSpoken() {
+        let good = NarrationCue(id: UUID(), order: 1, group: 0, kind: .upcomingEvent, text: "Coming up: Standup. From your calendar.",
+                                estimatedSeconds: 4, maxSeconds: 20, sourceItemID: UUID(), source: .calendar, provenance: "calendar:1")
+        let bare = NarrationCue(id: UUID(), order: 2, group: 0, kind: .note, text: "Something with no provenance.",
+                                estimatedSeconds: 4, maxSeconds: 20, sourceItemID: UUID(), source: .obsidian, provenance: nil)
+        let handoff = NarrationHandoff(cues: [good, bare], maxSpokenSeconds: 60, experienceSeconds: 300)
+        for seed in UInt64(1)...20 {
+            var w = DJScriptWriter(cadence: .init(talkFraction: 0.5, minSongsBetweenBreaks: 1), seed: seed)
+            let plan = w.plan(tracks: djTracks(12), briefing: handoff, hour: 8)
+            XCTAssertEqual(plan.briefingReport.outcome(for: bare.id), .dropped(.unattributed))
+            for djBreak in plan.breaks {
+                XCTAssertEqual(Set(djBreak.attributions.keys), Set(djBreak.cues.map(\.id)), "every spoken cue is attributed")
+                for cue in djBreak.cues {
+                    XCTAssertNotEqual(cue.id, bare.id)
+                    switch djBreak.attributions[cue.id]! {
+                    case .personalContext(let item, let source, let provenance):
+                        XCTAssertEqual(item, good.sourceItemID); XCTAssertEqual(source, .calendar); XCTAssertEqual(provenance, "calendar:1")
+                        XCTAssertTrue(cue.text.contains("From your calendar."), "attribution is also spoken")
+                    case .trackMetadata(let ids):
+                        XCTAssertTrue(ids.allSatisfy { [djTracks(12)[djBreak.afterTrack].id, djTracks(12)[djBreak.afterTrack + 1].id].contains($0) })
+                    case .presenter:
+                        XCTAssertFalse(cue.text.contains("Song") || cue.text.contains("Artist"), "presenter lines carry no facts")
+                    }
+                }
+            }
+        }
+    }
+
+    func testBreaksOnlyBetweenCompleteSongs() async throws {
+        for seed in UInt64(1)...20 {
+            var w = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed)
+            let breaks = w.plan(tracks: djTracks(4), briefing: nil, hour: 9).breaks
+            XCTAssertTrue(breaks.allSatisfy { (0..<3).contains($0.afterTrack) }, "never before the first or after the last song")
+        }
+        XCTAssertNil(DJBreakPreparer.deadline(remainingInSong: .seconds(2)), "too late to prepare: no break")
+        XCTAssertEqual(DJBreakPreparer.deadline(remainingInSong: .seconds(30)), .seconds(27))
+
+        var w = DJScriptWriter(cadence: .init(talkFraction: 1), seed: 1)
+        let djBreak = try XCTUnwrap(w.plan(tracks: djTracks(3), briefing: nil, hour: 9).breaks.first)
+        let preparer = DJBreakPreparer(renderer: djRenderer(), userID: "u", stationID: "s")
+        let log = DJEventLog()
+        await preparer.observe { log.add($0) }
+        await preparer.prepare(djBreak, deadline: .seconds(2))
+        try await Task.sleep(for: .milliseconds(200))
+        let cut = await preparer.takeBreak(afterTrack: djBreak.afterTrack, natural: false)
+        XCTAssertEqual(cut, .skipped(.notNaturalBoundary), "a skipped song never gets a break, even if audio is ready")
+        let again = await preparer.takeBreak(afterTrack: djBreak.afterTrack)
+        XCTAssertEqual(again, .skipped(.notNaturalBoundary), "and it cannot be replayed later")
+        XCTAssertEqual(log.all.last, .skipped(afterTrack: djBreak.afterTrack, .notNaturalBoundary))
     }
 
     func testBoundaryNeverWaitsForSlowRender() async throws {

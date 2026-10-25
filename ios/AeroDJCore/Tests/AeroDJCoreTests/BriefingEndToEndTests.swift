@@ -283,9 +283,9 @@ final class DJSessionEndToEndTests: XCTestCase {
         let fallback = DJBreakPreparer(
             renderer: djRenderer(paid: DJFakeVoice(id: "cloud", delay: .seconds(5)), paidTimeout: .milliseconds(50)),
             userID: "u1", stationID: "morning")
-        await fallback.observe { model.apply($0.presentationEvent(hasBriefing: true)) }
+        await fallback.observe { model.apply($0.presentationEvent) }
         await fallback.prepare(first, deadline: .seconds(3))
-        try await waitUntil { model.state == .upcomingBriefing(afterTrack: 0) }
+        try await waitUntil { if case .ready(0, true, _) = model.state { true } else { false } }
         let ready = await fallback.takeBreak(afterTrack: 0)
         guard case .ready(let prepared) = ready else { return XCTFail("expected prepared audio, got \(ready)") }
         XCTAssertEqual(prepared.cues.map(\.id), first.cues.map(\.id))
@@ -294,19 +294,17 @@ final class DJSessionEndToEndTests: XCTestCase {
         XCTAssertLessThanOrEqual(prepared.measuredSeconds, Double(writer.cadence.maxBriefingBreakSeconds))
 
         // Speaking only while the audio actually plays.
-        let notYet = model.state
-        XCTAssertNotEqual(notYet, .speaking(afterTrack: 0))
-        model.apply(.speechAudioStarted(afterTrack: 0))
-        let speaking = model.state
-        XCTAssertEqual(speaking, .speaking(afterTrack: 0))
-        model.apply(.speechAudioEnded(afterTrack: 0))
+        XCTAssertFalse(model.state.isLive, "ready, not live, until the player confirms audio")
+        model.apply(.playbackStarted(afterTrack: 0))
+        XCTAssertEqual(model.state, .speaking(afterTrack: 0, includesBriefing: true))
+        model.apply(.playbackFinished(afterTrack: 0))
 
         // Break 2: paid-only route and the user's cap is spent -> skipped, music continues.
         let capped = DJBreakPreparer(renderer: djRenderer(paid: DJFakeVoice(id: "cloud"), free: nil, capMicrodollars: 0),
                                      userID: "u1", stationID: "morning")
-        await capped.observe { model.apply($0.presentationEvent(hasBriefing: false)) }
+        await capped.observe { model.apply($0.presentationEvent) }
         await capped.prepare(second, deadline: .seconds(3))
-        try await waitUntil { model.history.last == .idle && model.history.contains(.preparing(afterTrack: 3)) }
+        try await waitUntil { model.history.last == .unavailable(.budgetReached) }
         let skipped = await capped.takeBreak(afterTrack: 3)
         XCTAssertEqual(skipped, .skipped(.costCap))
 
@@ -314,9 +312,14 @@ final class DJSessionEndToEndTests: XCTestCase {
         XCTAssertEqual(report.entries.count, handoff.cues.count, "one outcome per cue")
         XCTAssertTrue(report.entries.filter { $0.cue.isContent }.allSatisfy { $0.outcome == .scheduled(.afterTrack(0)) })
         let history = model.history
-        XCTAssertEqual(history, [.consentReviewRequired(pendingCount: 1), .idle, .preparing(afterTrack: 0),
-                                 .upcomingBriefing(afterTrack: 0), .speaking(afterTrack: 0), .idle,
-                                 .preparing(afterTrack: 3), .idle])
+        XCTAssertEqual(history.count, 8)
+        XCTAssertEqual(Array(history.prefix(3)), [.unavailable(.consentReviewRequired(pendingCount: 1)), .idle,
+                                                  .preparing(afterTrack: 0, includesBriefing: true)])
+        guard case .ready(0, true, let seconds) = history[3] else { return XCTFail("\(history)") }
+        XCTAssertEqual(seconds, prepared.measuredSeconds, accuracy: 0.001)
+        XCTAssertEqual(Array(history.suffix(4)), [.speaking(afterTrack: 0, includesBriefing: true), .idle,
+                                                  .preparing(afterTrack: 3, includesBriefing: false), .unavailable(.budgetReached)])
+        XCTAssertEqual(Set(prepared.attributions.keys), Set(prepared.cues.map(\.id)), "every spoken cue carries attribution")
     }
 
     private func waitUntil(_ condition: @Sendable () async -> Bool) async throws {
