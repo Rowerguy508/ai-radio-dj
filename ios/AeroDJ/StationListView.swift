@@ -1,3 +1,4 @@
+import AeroDJCore
 import SwiftUI
 
 /// Station selection screen. Adaptive container sizing (no hardcoded device dims).
