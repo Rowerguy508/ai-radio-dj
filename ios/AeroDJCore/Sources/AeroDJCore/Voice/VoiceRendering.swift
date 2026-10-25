@@ -9,6 +9,8 @@ public enum VoiceAttemptResult: Equatable, Sendable {
     case failed(String)
     case invalidAudio
     case overDuration(Double)
+    /// The caller cancelled; any reservation was released.
+    case cancelled
 }
 
 public struct VoiceAttempt: Equatable, Sendable {
@@ -144,18 +146,74 @@ public struct CachedAudio: Codable, Equatable, Sendable {
     public let seconds: Double
     public let providerID: String
     public let voiceID: String
+    /// Personal items this audio was derived from; used to purge it when a source is deleted or revoked.
+    public var sourceItemIDs: [UUID]
+    public var createdAt: Date
+
+    public init(data: Data, seconds: Double, providerID: String, voiceID: String,
+                sourceItemIDs: [UUID] = [], createdAt: Date = Date()) {
+        self.data = data
+        self.seconds = seconds
+        self.providerID = providerID
+        self.voiceID = voiceID
+        self.sourceItemIDs = sourceItemIDs
+        self.createdAt = createdAt
+    }
+
+    /// Same audio and provenance; `createdAt` is cache bookkeeping and is not compared.
+    public static func == (l: CachedAudio, r: CachedAudio) -> Bool {
+        l.data == r.data && l.seconds == r.seconds && l.providerID == r.providerID
+            && l.voiceID == r.voiceID && l.sourceItemIDs == r.sourceItemIDs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        data = try c.decode(Data.self, forKey: .data)
+        seconds = try c.decode(Double.self, forKey: .seconds)
+        providerID = try c.decode(String.self, forKey: .providerID)
+        voiceID = try c.decode(String.self, forKey: .voiceID)
+        sourceItemIDs = try c.decodeIfPresent([UUID].self, forKey: .sourceItemIDs) ?? []
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast  // unknown age: treat as expired
+    }
+}
+
+/// Retention for cached narration audio. Final beta default: 7 days, and never longer.
+public enum AudioCacheRetention {
+    public static let maximum: TimeInterval = 7 * 24 * 3600
+    static func clamp(_ age: TimeInterval) -> TimeInterval { min(max(0, age), maximum) }
 }
 
 public protocol AudioCache: Sendable {
     func audio(for key: String) async -> CachedAudio?
     func store(_ audio: CachedAudio, for key: String) async
+    /// Removes every clip derived from any of these personal items (source deleted or consent revoked).
+    func purge(sourceItemIDs: Set<UUID>) async
+    /// Removes clips older than the retention limit.
+    func purgeExpired() async
 }
 
 public actor InMemoryAudioCache: AudioCache {
     private var clips: [String: CachedAudio] = [:]
-    public init() {}
-    public func audio(for key: String) -> CachedAudio? { clips[key] }
-    public func store(_ audio: CachedAudio, for key: String) { clips[key] = audio }
+    public nonisolated let maxAge: TimeInterval
+    private let now: @Sendable () -> Date
+    public init(maxAge: TimeInterval = AudioCacheRetention.maximum, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.maxAge = AudioCacheRetention.clamp(maxAge)
+        self.now = now
+    }
+    public func audio(for key: String) -> CachedAudio? {
+        guard let clip = clips[key] else { return nil }
+        guard now().timeIntervalSince(clip.createdAt) <= maxAge else { clips[key] = nil; return nil }
+        return clip
+    }
+    /// Stamps `createdAt` with the cache's clock, so retention is measured from when it was stored.
+    public func store(_ audio: CachedAudio, for key: String) {
+        var stamped = audio; stamped.createdAt = now(); clips[key] = stamped
+    }
+    public func purge(sourceItemIDs: Set<UUID>) {
+        clips = clips.filter { sourceItemIDs.isDisjoint(with: $0.value.sourceItemIDs) }
+    }
+    public func purgeExpired() { clips = clips.filter { now().timeIntervalSince($0.value.createdAt) <= maxAge } }
+    public var count: Int { clips.count }
 }
 
 /// On-device cache, one protected file per key. Personal narration stays on
@@ -165,25 +223,55 @@ public struct FileAudioCache: AudioCache {
     public let directory: URL
     public let maxAge: TimeInterval
 
-    public init(directory: URL, maxAge: TimeInterval = 7 * 24 * 3600) {
+    private let now: @Sendable () -> Date
+
+    /// `maxAge` is clamped to `AudioCacheRetention.maximum` (7 days).
+    public init(directory: URL, maxAge: TimeInterval = AudioCacheRetention.maximum,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.directory = directory
-        self.maxAge = maxAge
+        self.maxAge = AudioCacheRetention.clamp(maxAge)
+        self.now = now
     }
 
     private func url(_ key: String) -> URL { directory.appendingPathComponent("\(key).json") }
 
+    private func read(_ file: URL) -> CachedAudio? {
+        (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(CachedAudio.self, from: $0) }
+    }
+
     public func audio(for key: String) async -> CachedAudio? {
         let file = url(key)
-        if let modified = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date,
-           Date().timeIntervalSince(modified) > maxAge {
+        guard let clip = read(file) else { return nil }
+        guard now().timeIntervalSince(clip.createdAt) <= maxAge else {
             try? FileManager.default.removeItem(at: file)
             return nil
         }
-        return (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(CachedAudio.self, from: $0) }
+        return clip
+    }
+
+    private func entries() -> [URL] {
+        ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "json" }
+    }
+
+    public func purge(sourceItemIDs: Set<UUID>) async {
+        for file in entries() {
+            // Unreadable entries cannot be attributed, so they are removed too.
+            if let clip = read(file), sourceItemIDs.isDisjoint(with: clip.sourceItemIDs) { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    public func purgeExpired() async {
+        for file in entries() {
+            if let clip = read(file), now().timeIntervalSince(clip.createdAt) <= maxAge { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     public func store(_ audio: CachedAudio, for key: String) async {
-        guard let data = try? JSONEncoder().encode(audio) else { return }
+        var stamped = audio; stamped.createdAt = now()
+        guard let data = try? JSONEncoder().encode(stamped) else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? ProtectedFile.write(data, to: url(key))
     }
@@ -267,6 +355,7 @@ public struct VoiceRenderer: Sendable {
     public func render(_ cue: NarrationCue, userID: String, stationID: String) async -> Result<RenderedClip, Failure> {
         var attempts: [VoiceAttempt] = []
         for route in routes {
+            if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
             let text = route.acceptsSSML ? SpeechDelivery.ssml(cue.text) : SpeechDelivery.speakable(cue.text)
             let key = Self.cacheKey(text: text, route: route)
             if let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
@@ -296,10 +385,20 @@ public struct VoiceRenderer: Sendable {
                     continue
                 }
                 let audio = CachedAudio(data: artifact.data, seconds: artifact.durationSeconds,
-                                        providerID: route.providerID, voiceID: route.voice.id)
+                                        providerID: route.providerID, voiceID: route.voice.id,
+                                        sourceItemIDs: cue.sourceItemID.map { [$0] } ?? [])
+                if Task.isCancelled {  // the caller gave up: no stale audio is cached or returned
+                    attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
+                    return .failure(Failure(reason: .renderFailed, attempts: attempts))
+                }
                 await cache.store(audio, for: key)
                 attempts.append(VoiceAttempt(providerID: route.providerID, result: .rendered))
                 return .success(RenderedClip(cueID: cue.id, audio: audio, cacheKey: key, attempts: attempts))
+            } catch is CancellationError {
+                // Cancelled by the caller (skip, stop, consent revoked): release the hold and stop trying routes.
+                if let r = reservation { await budget.release(r) }
+                attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
+                return .failure(Failure(reason: .renderFailed, attempts: attempts))
             } catch VoiceRenderError.timedOut {
                 // The provider may still bill a request we stopped waiting for.
                 if let r = reservation { await budget.commit(r, microdollars: r.microdollars) }
@@ -317,16 +416,20 @@ public struct VoiceRenderer: Sendable {
     /// (a task group would wait for it).
     static func withTimeout<T: Sendable>(_ timeout: Duration, _ work: @escaping @Sendable () async throws -> T) async throws -> T {
         let once = ResumeOnce<T>()
-        return try await withCheckedThrowingContinuation { continuation in
-            once.set(continuation)
-            let worker = Task {
-                do { once.resume(.success(try await work())) } catch { once.resume(.failure(error)) }
-            }
-            let timer = Task {
-                try? await Task.sleep(for: timeout)
-                if !Task.isCancelled { worker.cancel(); once.resume(.failure(VoiceRenderError.timedOut)) }
-            }
-            once.onResume { timer.cancel() }
+        let worker = Task {
+            do { once.resume(.success(try await work())) } catch { once.resume(.failure(error)) }
+        }
+        let timer = Task {
+            try? await Task.sleep(for: timeout)
+            if !Task.isCancelled { worker.cancel(); once.resume(.failure(VoiceRenderError.timedOut)) }
+        }
+        once.onResume { timer.cancel() }
+        // Caller cancellation returns at once, even if the provider ignores cancellation.
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { once.set($0) }
+        } onCancel: {
+            worker.cancel()
+            once.resume(.failure(CancellationError()))
         }
     }
 }
