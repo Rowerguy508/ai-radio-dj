@@ -6,12 +6,15 @@ public struct BriefingSegment: Identifiable, Codable, Equatable, Sendable {
     public let text: String
     public let sourceItemID: UUID?
     public let estimatedSpokenSeconds: Int
+    public let sourceAttribution: String?
 
-    public init(id: UUID = UUID(), text: String, sourceItemID: UUID? = nil, estimatedSpokenSeconds: Int) {
+    public init(id: UUID = UUID(), text: String, sourceItemID: UUID? = nil,
+                estimatedSpokenSeconds: Int, sourceAttribution: String? = nil) {
         self.id = id
         self.text = text
         self.sourceItemID = sourceItemID
         self.estimatedSpokenSeconds = estimatedSpokenSeconds
+        self.sourceAttribution = sourceAttribution
     }
 }
 
