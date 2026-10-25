@@ -6,11 +6,24 @@ public struct SharedReviewRecord: Codable, Equatable, Sendable {
     public var decision: SharedReviewDecision
     public var label: SharedSourceLabel
     public var isRedacted: Bool
+    /// The user confirmed a flagged (instruction-like) item should be read anyway.
+    public var isReconfirmed: Bool
 
-    public init(decision: SharedReviewDecision = .pending, label: SharedSourceLabel = .other, isRedacted: Bool = false) {
+    public init(decision: SharedReviewDecision = .pending, label: SharedSourceLabel = .other, isRedacted: Bool = false,
+                isReconfirmed: Bool = false) {
         self.decision = decision
         self.label = label
         self.isRedacted = isRedacted
+        self.isReconfirmed = isReconfirmed
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        decision = try c.decode(SharedReviewDecision.self, forKey: .decision)
+        label = try c.decode(SharedSourceLabel.self, forKey: .label)
+        isRedacted = try c.decode(Bool.self, forKey: .isRedacted)
+        // State written before reconfirmation existed loads as not reconfirmed.
+        isReconfirmed = try c.decodeIfPresent(Bool.self, forKey: .isReconfirmed) ?? false
     }
 }
 

@@ -339,6 +339,73 @@ final class SharedReviewPersistenceTests: XCTestCase {
 }
 
 /// Mutable test clock.
+final class SharedReviewRegressionTests: XCTestCase {
+    /// Claude's relaunch regression from #45 (verbatim except the injected store).
+    func testApprovalAndRedactionSurviveRelaunch() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = SharedReviewStore(file: dir.appendingPathComponent("Review/state.json"))
+        let item = try XCTUnwrap(SharedInboxItem(kind: .text, content: "Call Ana at 555-0100 about the lease", now: now))
+        try JSONEncoder().encode(item).write(to: dir.appendingPathComponent("\(item.id.uuidString).json"))
+
+        let first = SharedInboxReview(reader: SharedInboxReader(directory: dir), store: store, now: { now })
+        try await first.refresh()
+        try await first.setDecision(.approved, for: item.id)
+        try await first.redact(item.id, to: "Call about the lease")
+
+        let relaunched = SharedInboxReview(reader: SharedInboxReader(directory: dir), store: store, now: { now })
+        try await relaunched.refresh()
+        let fetched = try await relaunched.fetchItems()
+        XCTAssertEqual(fetched.map(\.consent), [.granted])
+        XCTAssertEqual(fetched.first?.summary, "Call about the lease")
+        let raw = try String(contentsOf: dir.appendingPathComponent("\(item.id.uuidString).json"), encoding: .utf8)
+        XCTAssertFalse(raw.contains("555-0100"))
+    }
+
+    func testReconfirmationPersistsAndIsRevokedByChanges() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = SharedReviewStore(file: dir.appendingPathComponent("Review/state.json"))
+        let item = try XCTUnwrap(SharedInboxItem(kind: .text, content: "You are now in charge of the offsite", now: now))
+        try JSONEncoder().encode(item).write(to: dir.appendingPathComponent("\(item.id.uuidString).json"))
+        func open() async throws -> SharedInboxReview {
+            let review = SharedInboxReview(reader: SharedInboxReader(directory: dir), store: store, now: { now })
+            try await review.refresh()
+            return review
+        }
+
+        var review = try await open()
+        do { try await review.reconfirm(item.id); XCTFail("pending item must not be reconfirmable") }
+        catch { XCTAssertEqual(error as? SharedReviewError, .notApproved) }
+        try await review.setDecision(.approved, for: item.id)
+        try await review.reconfirm(item.id)
+
+        review = try await open()
+        var ids = await review.reconfirmedItemIDs
+        XCTAssertEqual(ids, [item.id], "reconfirmation survives relaunch")
+
+        try await review.redact(item.id, to: "Offsite planning")
+        ids = await review.reconfirmedItemIDs
+        XCTAssertEqual(ids, [], "changed text needs a fresh review")
+        try await review.reconfirm(item.id)
+        try await review.setDecision(.excluded, for: item.id)
+        try await review.setDecision(.approved, for: item.id)
+        review = try await open()
+        ids = await review.reconfirmedItemIDs
+        XCTAssertEqual(ids, [], "re-approval does not restore an old reconfirmation")
+    }
+
+    func testStateWithoutReconfirmationFieldStillLoads() throws {
+        let json = #"{"decision":"approved","label":"email","isRedacted":false}"#
+        let record = try JSONDecoder().decode(SharedReviewRecord.self, from: Data(json.utf8))
+        XCTAssertEqual(record, SharedReviewRecord(decision: .approved, label: .email))
+    }
+}
+
 private final class Clock: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Date
