@@ -67,7 +67,7 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Start playing a queue of tracks.
-    func play(_ tracks: [Track]) async throws {
+    func play(_ tracks: [Track], station: StationRef? = nil) async throws {
         guard authState == .authorized else {
             lastError = MusicKitError.notAuthorized.errorDescription ?? "Apple Music authorization required."
             send(.errorRaised(PlaybackError(kind: .notAuthorized, message: lastError ?? "", isRecoverable: false)))
@@ -78,7 +78,7 @@ final class MusicKitService: ObservableObject {
         currentTrack = tracks.first
         boundaryDetector.userRequestedChange()
         queueIndex = 0
-        send(.queueStarted(tracks: tracks.map(\.info), startIndex: 0))
+        send(.queueStarted(tracks: tracks.map(\.info), startIndex: 0, station: station))
         player.queue = ApplicationMusicPlayer.Queue(for: tracks.compactMap { $0.song })
         stateMachine.apply(.startMusic)
         do {
