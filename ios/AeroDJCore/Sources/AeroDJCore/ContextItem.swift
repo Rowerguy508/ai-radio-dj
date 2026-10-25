@@ -38,9 +38,12 @@ public struct ContextItem: Identifiable, Codable, Equatable, Sendable {
         self.provenance = provenance
     }
 
-    /// Whether this item may be narrated right now.
-    public var isNarratable: Bool {
-        consent == .granted && sensitivity != .blocked
+    /// Whether this item may be narrated at `now`: consent granted, not blocked,
+    /// and not expired. An item expiring exactly at `now` is already expired.
+    public func isNarratable(at now: Date) -> Bool {
+        guard consent == .granted, sensitivity != .blocked else { return false }
+        if let expiresAt, expiresAt <= now { return false }
+        return true
     }
 }
 

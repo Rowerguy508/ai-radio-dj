@@ -1,42 +1,92 @@
 name: iOS
 
+# No top-level path filter: these checks must always report so they can be
+# required. The `changes` job skips the macOS jobs when nothing iOS changed,
+# and a skipped job reports success.
 on:
   push:
     branches: [main]
-    paths: ['ios/**']
   pull_request:
-    paths: ['ios/**']
+
+permissions:
+  contents: read
+  pull-requests: read # paths-filter lists PR files via the API
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ios: ${{ steps.filter.outputs.ios }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ios:
+              - 'ios/**'
+              - '.github/workflows/ios.yml'
+
   core-tests:
     name: AeroDJCore tests
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build core
-        run: swift build
-        working-directory: ios/AeroDJCore
       - name: Run core tests
         run: swift test
         working-directory: ios/AeroDJCore
 
   simulator-build:
     name: iOS simulator build
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     runs-on: macos-latest
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      DERIVED_DATA: ios/build/DerivedData
     steps:
       - uses: actions/checkout@v4
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Generate Xcode project
         run: xcodegen generate
         working-directory: ios
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app
-      - name: Build app + share extension for simulator
+      - name: Build app and embedded share extension
         run: |
           xcodebuild build \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJ \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Verify share extension is embedded
+        run: |
+          APPEX="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app/PlugIns/AeroDJShare.appex"
+          test -d "$APPEX" || { echo "AeroDJShare.appex not embedded in AeroDJ.app"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" \
+            | grep -qx 'com.apple.share-services'
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" | grep -qx 'com.aerodj.app.share'
+      - name: Pick an available iPhone simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                      | select(.name | startswith("iPhone"))] | last | .udid // empty')
+          test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+      - name: Run unit tests on simulator
+        run: |
+          xcodebuild test \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -destination "id=$SIM_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO

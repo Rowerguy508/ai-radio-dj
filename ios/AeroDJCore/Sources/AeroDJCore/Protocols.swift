@@ -64,7 +64,7 @@ public protocol ContextSource: Sendable {
     func fetchItems() async throws -> [ContextItem]
 }
 
-/// Tracks per-user TTS/briefing spend for cost safeguards.
+/// Records per-user TTS/briefing usage. Callers enforce budgets; this protocol does not.
 public protocol UsageMeter: Sendable {
     func record(_ usage: UsageRecord) async throws
     func currentUsage(for userID: String) async throws -> UsageSummary
@@ -91,11 +91,12 @@ public struct UsageSummary: Codable, Equatable, Sendable {
     public let userID: String
     public let generatedSeconds: Double
     public let estimatedBillableUnits: Int
-    public let callsToday: Int
-    public init(userID: String, generatedSeconds: Double, estimatedBillableUnits: Int, callsToday: Int) {
+    /// Number of recorded calls in the meter's window.
+    public let callCount: Int
+    public init(userID: String, generatedSeconds: Double, estimatedBillableUnits: Int, callCount: Int) {
         self.userID = userID
         self.generatedSeconds = generatedSeconds
         self.estimatedBillableUnits = estimatedBillableUnits
-        self.callsToday = callsToday
+        self.callCount = callCount
     }
 }

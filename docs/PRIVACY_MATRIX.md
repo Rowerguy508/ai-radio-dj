@@ -6,14 +6,14 @@
 
 ## 1. Permission matrix
 
-| Capability | Apple API | Permission | When requested | Denied behavior |
+| Capability | Apple API | Info.plist / entitlement | When requested | Denied behavior |
 |---|---|---|---|---|
-| Calendar read | EventKit (`EKEventStore`) | `NSCalendarsFullAccessUsageDescription` | On first "add calendar" | Show empty calendar source; no fallback to inbox |
-| Apple Music | MusicKit | `NSAppleMusicUsageDescription` | On first playback | Explicit degraded state; no silent fallback |
-| Files / Obsidian | Document picker + security-scoped bookmarks | `NSDocumentsFolderUsageDescription` | On import | No access after bookmark revoked |
-| Share Extension | `NSExtension` | App Group container | On first share | Inbox empty; bounded retention |
-| Microphone | `AVAudioSession` | `NSMicrophoneUsageDescription` | **Optional, later** (live interruption) | Feature hidden |
-| Notifications | `UNUserNotificationCenter` | `NSUserNotificationUsageDescription` | **Optional** | Feature hidden |
+| Calendar read | EventKit (`EKEventStore.requestFullAccessToEvents`) | `NSCalendarsFullAccessUsageDescription` (iOS 17+; write-only access cannot read events) | On first "add calendar" | Distinct states for `.denied`, `.restricted` and `.writeOnly`; show empty calendar source; no fallback to inbox |
+| Apple Music | MusicKit (`MusicAuthorization.request()`) | `NSAppleMusicUsageDescription` | On first playback | Explicit degraded state; no silent fallback |
+| Files / Obsidian | `UIDocumentPickerViewController` / `.fileImporter` + security-scoped bookmarks | **None** — access is granted by the user's selection | On import | Pair `startAccessingSecurityScopedResource()` / `stop…`; on `bookmarkDataIsStale` or a moved/deleted file, drop access and ask the user to re-select |
+| Share Extension | `NSExtension` (`com.apple.share-services`) | `NSExtensionActivationRule` limited to text + 1 web URL; `com.apple.security.application-groups` entitlement on app **and** extension | When the user shares | Nothing stored; extension cancels with an error |
+| Microphone | `AVAudioApplication.requestRecordPermission` | `NSMicrophoneUsageDescription` | **Optional, later** (live interruption) | Feature hidden |
+| Notifications | `UNUserNotificationCenter.requestAuthorization` | **None** (runtime prompt, no purpose string) | **Optional** | Feature hidden |
 
 **Rules:**
 - Request each permission **lazily**, at the moment the feature needs it — never all at once on launch.
@@ -44,8 +44,16 @@ Defined in `ios/AeroDJCore/Sources/AeroDJCore/ContextItem.swift`:
 | `expiresAt` | Date? | Hard expiry; item not narratable after |
 | `provenance` | String | Link back to the source (e.g. `calendar://id`) |
 
+### Shared inbox — `SharedInboxItem`
+
+The Share Extension writes one JSON envelope per share to `group.com.aerodj/Inbox/` (`ios/AeroDJCore/Sources/AeroDJCore/SharedInboxItem.swift`): `id`, `source` (`userShared`), `kind` (`text` | `url`), `content`, `isTruncated`, `createdAt`, `expiresAt`.
+- Content is trimmed and capped at 16 KB UTF-8, never split mid-character; longer shares are truncated and flagged.
+- Files are written with `completeFileProtectionUntilFirstUserAuthentication`.
+- Default retention is 7 days. The host app must delete expired envelopes and items the user rejects in review (#19). Until it does, retention is declared but not enforced.
+
 **Invariants:**
-- `isNarratable == true` only when `consent == .granted` **and** `sensitivity != .blocked` **and** not expired.
+- `isNarratable(at: now) == true` only when `consent == .granted` **and** `sensitivity != .blocked` **and** `expiresAt` is nil or later than `now` (an item expiring exactly at `now` is expired). Enforced in `ContextItem`, not by callers.
+- Open decision (lead): whether `sensitivity == .high` needs per-item review beyond `consent == .granted`. Current behavior: `.granted` alone makes a `.high` item narratable.
 - No broad automatic sync. No raw private message content in `summary`.
 - User can include/exclude individual items; deletion removes data; revocation stops access.
 
@@ -58,14 +66,14 @@ Defined in `ios/AeroDJCore/Sources/AeroDJCore/ContextItem.swift`:
 2. **No inbox scraping** — Share Extension + user-imported content only; `ContextItem` is provenance-tracked.
 3. **No protected-stream mixing** — MusicKit owns playback; no DRM capture/mix.
 4. **Provider protocol** — `VoiceProvider` pluggable; secrets server-side only.
-5. **Cost safeguards** — `UsageMeter` caps per-user spend; no speculative prefetch; cache only reusable generic audio.
+5. **Cost safeguards** — `UsageMeter` records per-user usage; hard per-user budget enforcement is **not yet implemented** (#22). No speculative prefetch; cache only reusable generic audio.
 6. **No fabricated APIs/entitlements** — Dessa stub disabled until a real, documented endpoint exists.
 
-**Consequences:** Privacy is enforced at the data model (`ContextItem`) and permission layer, not bolted on. Cost is bounded by design. External providers (Gmail/IMAP, messaging, direct Obsidian bridge, full-duplex Dessa) are feature-flagged until official APIs exist.
+**Consequences:** Privacy is enforced at the data model (`ContextItem`) and permission layer, not bolted on. Cost bounding is designed but not yet enforced (#22, #32). External providers (Gmail/IMAP, messaging, direct Obsidian bridge, full-duplex Dessa) are feature-flagged until official APIs exist.
 
 ## 5. Completion check
 
-- [x] Permission matrix defined (EventKit, MusicKit, Files, Share Extension, mic, notifications)
+- [x] Permission matrix defined (EventKit, MusicKit, Files, Share Extension, mic, notifications) with iOS-valid keys
 - [x] Explicit limitations documented (no inbox scraping, no stream mixing, Dessa stub)
 - [x] `ContextItem` provenance contract implemented in `AeroDJCore`
 - [x] ADR decisions recorded

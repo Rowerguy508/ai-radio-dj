@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Player shell. MusicKit playback is managed by the framework; this view
-/// only reflects state and forwards user actions. No protected-stream mixing.
+/// Player shell — UI MOCK ONLY. The play/pause toggle flips a local Bool and
+/// plays nothing; MusicKit playback arrives with #15. When implemented, MusicKit
+/// manages playback; this view only reflects state. No protected-stream mixing.
 struct PlayerView: View {
     let station: Station
     @State private var isPlaying = false

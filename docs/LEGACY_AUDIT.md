@@ -48,7 +48,7 @@
 
 | Env var | Exposure | Risk |
 |---|---|---|
-| `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN` | **Client** (NEXT_PUBLIC) | 🔴 **HIGH** — MusicKit developer JWT shipped to browser. If long-TTL, a leaked token is reusable. **Remediation:** short TTL + secure issuer; never in native app (use MusicKit framework auth). |
+| `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN` | **Client** (NEXT_PUBLIC) | 🟡 MEDIUM — public by design: MusicKit JS requires the developer token in the browser, so it cannot be removed from the web client. Risk is a long-lived, origin-unrestricted token reused against our quota. **Remediation (#36):** mint server-side with short `exp` + `origin` claim, then rotate. The native app ships no developer token (MusicKit framework auth). |
 | `NEXT_PUBLIC_SPOTIFY_CLIENT_ID` | Client | 🟡 MEDIUM — public by design (OAuth client ID), low risk |
 | `SPOTIFY_CLIENT_SECRET` | Server | 🟢 OK — server-only |
 | `MINIMAX_API_KEY` | Server | 🟢 OK — server-only |
@@ -58,17 +58,17 @@
 | `SUPABASE_SERVICE_ROLE_KEY` | Server | 🔴 **HIGH** — full admin. Must never reach client. Confirmed server-only in `createAdminClient()`. |
 | `TELEGRAM_WEBHOOK_SECRET` | Server | 🟢 OK — server-only |
 
-**Key finding:** `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN` is the main public-token risk. The roadmap's "developer tokens deserve short TTL/secure issuer" applies directly. In the native app, **no developer token is shipped** — MusicKit framework handles auth.
+**Key finding:** the service-role key is server-only, but the routes that use it have no authentication (§5), so its isolation provides no protection in practice. The MusicKit developer token is public by design; the roadmap's "short TTL/secure issuer" guidance applies (#36). In the native app, **no developer token is shipped** — MusicKit framework handles auth.
 
 ## 4. Private data logging
 
-- `app/api/commentary/route.ts` logs `{ requestId, error }` — **no user content logged**. ✅
-- `lib/llm/commentary.ts` sends station/track context to MiniMax — **server-side, not logged**. ✅
-- `app/api/voice/route.ts` sends `text` to MiniMax T2A — server-side. ✅
-- `app/api/messages/route.ts` reads `message_queue` — content stays in DB, not logged. ✅
-- **No `console.log` of message bodies or user PII found.** ✅
+- `app/api/webhooks/telegram/route.ts:63` logs `content: textContent` — the **raw Telegram message body**. ❌ Remove (#31).
+- `app/api/voice/route.ts:59` logs the upstream MiniMax error body (`errText`); `:68` logs a 500-char slice of the upstream response. ❌ Log status and request ID only (#32).
+- `app/api/stations/route.ts:54` logs the user-supplied station name (`body.name`). ⚠️ Remove.
+- `app/api/commentary/route.ts` logs `{ requestId, error }` only. ✅
+- `lib/llm/commentary.ts` and `app/api/voice/route.ts` send station/track context and narration text to MiniMax server-side; neither is logged on success. ✅
 
-**Finding:** current logging is request-ID + error only. Good baseline. Native app must maintain this (never log `ContextItem` content).
+**Finding:** logging is mostly request-ID + error, but three call sites log user or upstream content. The native app must never log `ContextItem` content.
 
 ## 5. Supabase RLS audit
 
@@ -84,7 +84,26 @@ All tables have RLS **enabled** with `auth.uid() = user_id` policies:
 | `message_queue` | ✅ | view own, manage own | ✅ Correct |
 | `calendar_events` | ✅ | view own, manage own | ✅ Correct |
 
-**Finding:** RLS is correctly scoped to `auth.uid()`. No cross-user leakage. **One caution:** `createAdminClient()` uses `SUPABASE_SERVICE_ROLE_KEY` which **bypasses RLS** — it's used in `messages`/`stations` routes with a `userId` query param. **Risk:** if `userId` is attacker-controlled, the service-role client could return another user's data. **Remediation:** validate `userId` against the authenticated session (or drop service-role for these reads and use the anon/RLS path). → **Remediation issue #28.**
+**Finding: the policies are correct, but no request ever runs under them. Cross-user access is possible.**
+
+- Every Supabase route uses `createAdminClient()` (service role), which **bypasses RLS**.
+- The web app has **no authentication**: no `auth.getUser`/`getSession`, no `Authorization` handling, and `createBrowserClient()` is never called. There is no session to validate `userId` against.
+- Identity therefore comes from the request:
+
+| Route | Op | Identity source | Exposure |
+|---|---|---|---|
+| `/api/messages` | GET | `?userId` | read any user's queue |
+| `/api/messages` | POST | body `userId` | insert into any user's queue (content is later narrated) |
+| `/api/messages` | PATCH | none (`messageId` only) | update any message |
+| `/api/stations` | GET | `?userId` | read any user's stations |
+| `/api/voices` | GET / POST | `userId` | read or create voices for any user |
+| `/api/voices` | DELETE | none (`id` only) | delete any voice |
+
+No client code calls `/api/messages`, `/api/stations` or `/api/voices`. **Remediation (#28):** remove or disable these handlers now; reintroduce user-scoped routes only with verified Supabase JWTs and a per-request anon-key client so RLS is the enforcement point.
+
+Related unauthenticated routes outside RLS scope: `POST /api/telegram/set-webhook` can repoint the production bot (#31); `POST /api/voice` and `/api/commentary` allow unbounded paid inference (#32).
+
+Exploitability in production depends on Supabase being configured on the deployment; this audit is static analysis only and did not exercise any deployment.
 
 ## 6. Reuse vs retirement summary
 
@@ -111,13 +130,15 @@ All tables have RLS **enabled** with `auth.uid() = user_id` policies:
 
 ## 8. Remediation issues
 
-- **#28** — Validate authenticated identity server-side before service-role Supabase reads (messages/stations routes). P0.
-- **#36** — Replace long-TTL `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN` with short-TTL/secure-issuer token (or remove from client). P0.
+- **#28** (P0) — Cross-user reads/writes/deletes via unauthenticated service-role routes (§5).
+- **#31** (P0) — Unauthenticated `set-webhook` can repoint the production Telegram bot; receivers fail open; message bodies logged.
+- **#32** (P1) — Unauthenticated paid TTS/LLM routes with unbounded input.
+- **#36** — Short-lived, origin-restricted MusicKit JS developer token.
 
 ## 9. Completion check
 
 - [x] Concrete endpoints inventoried
-- [x] All secrets classified (2 HIGH, 2 MEDIUM, rest OK)
-- [x] Risks have remediation issues (#28, #36)
+- [x] All secrets classified (1 HIGH, 3 MEDIUM, rest OK)
+- [x] Risks have remediation issues (#28, #31, #32, #36)
 - [x] npm build/typecheck baseline recorded (both PASS)
 - [x] No breaking changes; web app + migrations preserved

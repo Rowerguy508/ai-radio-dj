@@ -3,7 +3,8 @@
 .swiftpm/
 DerivedData/
 
-# Xcode
+# Xcode (project is generated from project.yml by XcodeGen)
+AeroDJ.xcodeproj/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 xcuserdata/
