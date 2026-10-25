@@ -25,15 +25,25 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app
-      - name: List schemes
-        run: xcodebuild -list -project ios/AeroDJ.xcodeproj
-      - name: Build for simulator
+      - name: Build app + share extension for simulator
         run: |
           xcodebuild build \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJ \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Run unit tests
+        run: |
+          xcodebuild test \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
             CODE_SIGNING_ALLOWED=NO

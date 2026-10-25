@@ -1,0 +1,30 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+DerivedData/
+
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
+# Swift
+*.o
+*.swiftmodule
+*.swiftdoc
+*.dSYM
+*.dSYM.zip
+
+# Xcode build products
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Secrets
+.env
+.env.local
+*.p12
+*.mobileprovision

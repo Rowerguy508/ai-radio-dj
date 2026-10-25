@@ -111,13 +111,13 @@ All tables have RLS **enabled** with `auth.uid() = user_id` policies:
 
 ## 8. Remediation issues
 
-- **#27** — Validate `userId` against authenticated session before service-role Supabase reads (messages/stations routes).
-- **#28** — Replace long-TTL `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN` with short-TTL/secure-issuer token (or remove from client).
+- **#30** — Validate authenticated identity server-side before service-role Supabase reads (messages/stations routes). P0.
+- **#31** — Replace long-TTL `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN` with short-TTL/secure-issuer token (or remove from client).
 
 ## 9. Completion check
 
 - [x] Concrete endpoints inventoried
 - [x] All secrets classified (2 HIGH, 2 MEDIUM, rest OK)
-- [x] Risks have remediation issues (#27, #28)
+- [x] Risks have remediation issues (#30, #31)
 - [x] npm build/typecheck baseline recorded (both PASS)
 - [x] No breaking changes; web app + migrations preserved
