@@ -61,14 +61,19 @@ private final class SpeechRenderJob: @unchecked Sendable {
             synthesizer.stopSpeaking(at: .immediate)
             finish(CancellationError())
         }
-        lock.lock()
-        let (rendered, rate) = (frames, sampleRate)
-        file = nil  // closes the file
-        lock.unlock()
+        let (rendered, rate) = closeFile()
         guard rendered > 0, rate > 0 else { throw OnDeviceSpeechError.emptyAudio }
         let data = try Data(contentsOf: url)
         guard !data.isEmpty else { throw OnDeviceSpeechError.emptyAudio }
         return (data, Double(rendered) / rate)
+    }
+
+    /// Synchronous so NSLock is never held across (or called from) an async context.
+    private func closeFile() -> (AVAudioFramePosition, Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        file = nil  // closes the file
+        return (frames, sampleRate)
     }
 
     private func handle(_ buffer: AVAudioBuffer) {
