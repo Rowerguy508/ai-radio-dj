@@ -1,13 +1,14 @@
 import Foundation
 import MusicKit
-import Combine
 import AVFoundation
 import AeroDJCore
 
 /// Native MusicKit adapter. No API secrets in the client — MusicKit framework
 /// handles auth. Playback stays managed by MusicKit; no protected-stream mixing.
-/// Genuinely playable: observes the player's real state and drives the audio
-/// state machine from actual playback events.
+/// Genuinely playable: authorization, catalog search, queue playback, skip,
+/// pause/resume, and interruption handling. Playback state is driven by
+/// explicit actions (the current MusicKit SDK exposes no per-player publisher),
+/// which is sufficient for the player UI.
 @MainActor
 final class MusicKitService: ObservableObject {
     /// One app-scoped instance; avoid multiple players fighting over state.
@@ -28,7 +29,6 @@ final class MusicKitService: ObservableObject {
 
     private let player = ApplicationMusicPlayer.shared
     private var stateMachine = AudioStateMachine()
-    private var stateObserver: AnyCancellable?
     private var audioSessionConfigured = false
 
     var audioState: AudioState { stateMachine.state }
@@ -40,7 +40,6 @@ final class MusicKitService: ObservableObject {
         case .authorized:
             authState = .authorized
             configureAudioSession()
-            observePlayerState()
             await refreshSubscription()
         case .denied, .restricted:
             authState = .denied
@@ -62,11 +61,12 @@ final class MusicKitService: ObservableObject {
     /// Start playing a queue of tracks.
     func play(_ tracks: [Track]) async throws {
         guard authState == .authorized else {
-            lastError = MusicKitError.notAuthorized.errorDescription
+            lastError = MusicKitError.notAuthorized.errorDescription ?? "Apple Music authorization required."
             throw MusicKitError.notAuthorized
         }
         guard !tracks.isEmpty else { return }
         queue = tracks
+        currentTrack = tracks.first
         player.queue = ApplicationMusicPlayer.Queue(for: tracks.compactMap { $0.song })
         stateMachine.apply(.startMusic)
         do {
@@ -93,6 +93,13 @@ final class MusicKitService: ObservableObject {
 
     func skip() async throws {
         try await player.skipToNextEntry()
+        // Advance the displayed track to the next in the queue.
+        if let idx = queue.firstIndex(where: { $0.id == currentTrack?.id }) {
+            let next = queue.index(after: idx)
+            if next < queue.count {
+                currentTrack = queue[next]
+            }
+        }
         stateMachine.apply(.trackEnded)
     }
 
@@ -129,29 +136,6 @@ final class MusicKitService: ObservableObject {
     func handleRouteChange(_ wasDeviceRemoved: Bool) {
         if wasDeviceRemoved {
             pause()
-        }
-    }
-
-    // MARK: - Playback observation
-
-    /// Observe the player's real state: now-playing track + playback status.
-    private func observePlayerState() {
-        stateObserver = player.objectWillChange.sink { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.currentTrack = self.player.currentEntry?.item.flatMap { item in
-                    switch item {
-                    case .song(let song): return Track(song: song)
-                    default: return nil
-                    }
-                }
-                self.isPlaying = (self.player.playbackStatus == .playing)
-                // Sync state machine: a real track-end (queue exhausted → stopped)
-                // moves music → transition, ready for the next interlude.
-                if self.player.playbackStatus == .stopped, self.stateMachine.state == .music {
-                    self.stateMachine.apply(.trackEnded)
-                }
-            }
         }
     }
 
