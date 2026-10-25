@@ -15,7 +15,6 @@ final class InterludePlaybackAdapter: ObservableObject {
 
     init(music: MusicKitService) {
         self.music = music
-        super.init()
     }
 
     /// Play a DJ interlude: pause music, speak, wait the estimated duration,
