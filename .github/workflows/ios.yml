@@ -75,13 +75,15 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" \
             | grep -qx 'com.apple.share-services'
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" | grep -qx 'com.aerodj.app.share'
-      - name: Run unit tests on simulator
+      - name: Pick an available iPhone simulator
         run: |
           UDID=$(xcrun simctl list devices available -j \
             | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
                       | select(.name | startswith("iPhone"))] | last | .udid // empty')
           test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+      - name: Run unit tests on simulator
+        run: |
           xcodebuild test \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJ \
