@@ -33,8 +33,8 @@ struct StudioView: View {
 
     /// Side-by-side: Now Playing left, control panels right.
     private var twoZoneLayout: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
-                  alignment: .top, spacing: 24) {
+        LazyVGrid(columns: [GridItem(.flexible(), alignment: .top), GridItem(.flexible(), alignment: .top)],
+                  spacing: 24) {
             nowPlayingSection
                 .gridCellColumns(2)
             stationTunerSection
