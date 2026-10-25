@@ -103,6 +103,7 @@ extension SharedInboxReviewView {
         switch error as? SharedReviewError {
         case .emptyRedaction: return "The edited text can't be empty."
         case .unknownItem: return "That item is no longer in your inbox."
+        case .notApproved: return "Include the item in your briefing first."
         case nil: return "Something went wrong. Please try again."
         }
     }
