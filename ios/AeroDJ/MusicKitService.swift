@@ -28,7 +28,10 @@ final class MusicKitService: ObservableObject {
     private let player = ApplicationMusicPlayer.shared
     private var stateMachine = AudioStateMachine()
     private var audioSessionConfigured = false
-    private var advanceDetector = TrackAdvanceDetector()
+    private var boundaryDetector = PlaybackBoundaryDetector()
+    private var queueIndex = 0
+    /// Called once per natural boundary between queue items. The app plays the DJ break here.
+    var onBoundary: ((PlaybackBoundary, Int) -> Void)?
     private var pollTimer: Timer?
 
     var audioState: AudioState { stateMachine.state }
@@ -68,9 +71,10 @@ final class MusicKitService: ObservableObject {
         guard !tracks.isEmpty else { return }
         queue = tracks
         currentTrack = tracks.first
+        boundaryDetector.userRequestedChange()
+        queueIndex = 0
         player.queue = ApplicationMusicPlayer.Queue(for: tracks.compactMap { $0.song })
         stateMachine.apply(.startMusic)
-        resetAdvanceDetection()
         do {
             try await player.play()
             isPlaying = true
@@ -85,27 +89,19 @@ final class MusicKitService: ObservableObject {
         player.pause()
         isPlaying = false
         stateMachine.apply(.pause)
-        resetAdvanceDetection()
     }
 
     func resume() async throws {
         try await player.play()
         isPlaying = true
         stateMachine.apply(.resume)
-        resetAdvanceDetection()
     }
 
+    /// A user skip is not a natural boundary: no DJ break is triggered by it.
     func skip() async throws {
+        boundaryDetector.userRequestedChange()
         try await player.skipToNextEntry()
-        // Advance the displayed track to the next in the queue.
-        if let idx = queue.firstIndex(where: { $0.id == currentTrack?.id }) {
-            let next = queue.index(after: idx)
-            if next < queue.count {
-                currentTrack = queue[next]
-            }
-        }
-        stateMachine.apply(.trackEnded)
-        resetAdvanceDetection()
+        advanceDisplayedTrack()
     }
 
     /// Called when a spoken interlude is ready: transition -> voice.
@@ -118,11 +114,26 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.interludeEnded)
     }
 
-    // MARK: - Track-advance observation
+    /// Surfaces a non-fatal error in the player UI without interrupting playback.
+    func reportError(_ message: String) {
+        lastError = message
+    }
 
-    /// Poll the player once a second and feed the advance detector so a
-    /// *natural* song ending (MusicKit auto-advance) fires `.trackEnded`
-    /// and moves music -> transition for the next interlude.
+    /// Called when a boundary has no DJ line: transition -> music, so playback never sticks.
+    func skipInterlude() {
+        stateMachine.apply(.noInterlude)
+    }
+
+    private func advanceDisplayedTrack() {
+        queueIndex += 1
+        currentTrack = queue.indices.contains(queueIndex) ? queue[queueIndex] : nil
+    }
+
+    // MARK: - Track-boundary observation
+
+    /// Poll the player once a second. The boundary detector turns queue-entry
+    /// changes into natural boundaries, each reported once. Pauses, calls and
+    /// resumes never change the entry, so they cannot trigger a DJ break.
     private func startObserving() {
         guard pollTimer == nil else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -136,23 +147,22 @@ final class MusicKitService: ObservableObject {
     }
 
     private func pollPlaybackPosition() {
-        let state = player.state
-        // MusicKit sets .interrupted when the current entry finishes naturally.
-        let reachedEnd = (state.playbackStatus == .interrupted)
-        let sample = PlaybackSample(
-            isPlaying: (state.playbackStatus == .playing),
-            reachedEnd: reachedEnd,
-            itemChanged: false // item identity isn't exposed on this SDK; we reset on explicit actions
+        let observation = PlaybackObservation(
+            entryID: player.queue.currentEntry?.id,
+            isPlaying: player.state.playbackStatus == .playing
         )
-        if advanceDetector.consume(sample) {
+        guard let boundary = boundaryDetector.consume(observation) else { return }
+        isPlaying = observation.isPlaying
+        switch boundary {
+        case .naturalEnd:
+            queueIndex += 1
+            currentTrack = queue.indices.contains(queueIndex) ? queue[queueIndex] : nil
             stateMachine.apply(.trackEnded)
+        case .queueFinished:
+            currentTrack = nil
+            stateMachine.apply(.stop)
         }
-    }
-
-    /// Reset the advance detector after an explicit user action so a natural
-    /// end isn't confused with a manual skip/pause.
-    private func resetAdvanceDetection() {
-        advanceDetector = TrackAdvanceDetector()
+        onBoundary?(boundary, queueIndex)
     }
 
     // MARK: - Interruptions & route changes

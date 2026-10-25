@@ -14,6 +14,8 @@ public enum AudioEvent: String, Codable, Equatable, Sendable {
     case trackEnded
     case interludeReady
     case interludeEnded
+    /// No DJ line is ready for this boundary: transition goes straight back to music.
+    case noInterlude
     case pause
     case resume
     case stop
@@ -37,6 +39,8 @@ public struct AudioStateMachine: Sendable {
         case (.transition, .interludeReady):
             state = .voice
         case (.voice, .interludeEnded):
+            state = .music
+        case (.transition, .noInterlude):
             state = .music
         case (_, .pause):
             // Pause is valid from any active state; keep the current state so
