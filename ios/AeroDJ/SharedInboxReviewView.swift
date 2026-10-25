@@ -73,6 +73,16 @@ struct SharedInboxReviewView: View {
                 get: { entry.decision == .approved },
                 set: { on in perform { [review] in try await review.setDecision(on ? .approved : .excluded, for: id) } }
             ))
+            if entry.decision == .approved, PromptInjectionSanitizer().isSuspicious(entry.displayText) {
+                if entry.isReconfirmed {
+                    Label("You confirmed this will be read aloud.", systemImage: "checkmark.shield")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    Text("This looks like an instruction, so it's held back from your briefing.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("Read it anyway") { perform { [review] in try await review.reconfirm(id) } }
+                }
+            }
         }
         .accessibilityElement(children: .contain)
         .swipeActions {
