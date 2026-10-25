@@ -3,8 +3,8 @@ import AeroDJCore
 
 /// Duo Studio Mode — the unfolded radio control room. A true two-zone
 /// workspace: Now Playing + controls on one side, queue/tuner/connections on
-/// the other. Uses `ViewThatFits` so it lays out side-by-side when the space
-/// allows and stacks on narrow canvases. Queue edits go through Claude's
+/// the other. Uses a width threshold (`GeometryReader`) so it lays out
+/// side-by-side when the space allows and stacks on narrow canvases. Queue edits go through Claude's
 /// `UpNextEdit`. Music never restarts on layout change (app-scoped service).
 struct StudioView: View {
     let station: Station
