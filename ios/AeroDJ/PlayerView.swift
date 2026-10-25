@@ -52,6 +52,7 @@ struct PlayerView: View {
                 }
                 Task { @MainActor in await interlude.play(line: line) }
             }
+            music.onBreakMustStop = { [interlude] in interlude.stop() }
             await music.authorize()
         }
     }
