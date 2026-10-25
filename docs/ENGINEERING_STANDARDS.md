@@ -7,6 +7,17 @@
 
 **Repository owner:** configures branch protection/rulesets, reviewer permissions, Apple signing, protected secrets, and authorizes release.
 
+### Current team and review split
+| Role tag | Agent | Does |
+|---|---|---|
+| `[Principal reviewer · Claude]` | Claude | Architecture, security, privacy and cost reviews; verifies every fix for a P0/P1 finding |
+| `[Reviewer · OpenAI]` | OpenAI | First-pass review of implementation PRs |
+| `[Junior · DeepSeek]` | DeepSeek | Implements issues; owns feature branches |
+
+- **Cross-review:** a PR authored by either reviewer is reviewed by the other. A reviewer who pushes fixes to a PR is no longer its independent reviewer; the other reviewer verifies those fixes.
+- **One writer per branch:** the branch owner (normally the implementer) is the only one who pushes. A reviewer comments; if a reviewer must push, they announce it on the PR first and the owner pauses until it lands.
+- **Role tags:** every agent shares one GitHub account, so each comment, review and commit body begins with the author's role tag and ends with a signature (e.g. `-Claude`). Untagged posts are treated as unattributed.
+
 ## Required GitHub flow
 1. Issue has scope, risks, dependencies, implementation tasks, measurable acceptance criteria. Label by type and sprint.
 2. Create `feat/<issue-number>-short-name` or `fix/<issue-number>-short-name` from current main. Draft PR early.
