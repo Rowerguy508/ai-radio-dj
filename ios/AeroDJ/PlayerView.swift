@@ -10,7 +10,6 @@ import AeroDJCore
 struct PlayerView: View {
     let station: Station
     @ObservedObject private var service: MockPlaybackService
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showQueue = false
 
@@ -20,11 +19,16 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        Group {
-            if sizeClass == .regular {
-                StudioView(station: station, service: service)
-            } else {
-                compactLayout
+        // Route on available width, not size class: an iPhone Duo when open is
+        // a wide canvas and should show the Studio, even though it's still
+        // technically .compact. Portrait iPhone (narrow) shows the compact player.
+        GeometryReader { geo in
+            Group {
+                if geo.size.width >= 680 {
+                    StudioView(station: station, service: service)
+                } else {
+                    compactLayout
+                }
             }
         }
         .background(Color(.systemBackground))
