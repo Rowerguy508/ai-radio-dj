@@ -8,7 +8,7 @@ public protocol BriefingPlanner: Sendable {
 
 /// Schedules spoken interludes between music tracks.
 public protocol BroadcastScheduler: Sendable {
-    func schedule(plan: BriefingPlan, trackCount: Int) async throws -> [InterludeSlot]
+    func schedule(plan: BriefingPlan, trackCount: Int) async throws -> BroadcastSchedule
 }
 
 public struct InterludeSlot: Codable, Equatable, Sendable {
@@ -18,6 +18,30 @@ public struct InterludeSlot: Codable, Equatable, Sendable {
         self.segment = segment
         self.afterTrackIndex = afterTrackIndex
     }
+}
+
+/// Why a DJ segment was not scheduled. Explicit so callers can log/respond
+/// instead of segments silently vanishing.
+public enum SegmentDropReason: Codable, Equatable, Sendable {
+    case noTracks
+    case noSegments
+    case onlyOneTrackBoundary // no boundary to speak after
+    case notEnoughTracks    // segments exceed available track boundaries
+}
+
+/// Explicit scheduling outcome: what got scheduled and what didn't, and why.
+public struct BroadcastSchedule: Codable, Equatable, Sendable {
+    public let slots: [InterludeSlot]
+    public let dropped: [Int: SegmentDropReason]  // segment index -> reason
+    public let trackCount: Int
+
+    public init(slots: [InterludeSlot], dropped: [Int: SegmentDropReason], trackCount: Int) {
+        self.slots = slots
+        self.dropped = dropped
+        self.trackCount = trackCount
+    }
+
+    public var allScheduled: Bool { dropped.isEmpty }
 }
 
 /// Pluggable text-to-speech. Secrets live server-side only.
