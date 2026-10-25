@@ -24,11 +24,21 @@ final class MusicKitService: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var queue: [Track] = []
     @Published private(set) var lastError: String?
+    /// The UI's single source of truth, built by `PlaybackEngine` from the events below.
+    @Published private(set) var snapshot = PlaybackSnapshot()
+    private var engine = PlaybackEngine()
 
     private let player = ApplicationMusicPlayer.shared
     private var stateMachine = AudioStateMachine()
     private var audioSessionConfigured = false
-    private var advanceDetector = TrackAdvanceDetector()
+    private var boundaryDetector = PlaybackBoundaryDetector()
+    private var intent = PlaybackIntent()
+    /// Stops any DJ line that is speaking. Set by the app to the break adapter.
+    var onBreakMustStop: (@MainActor () -> Void)?
+    private var queueIndex = 0
+    /// Called once per boundary. For a natural end, the index is the song that just finished.
+    /// The handler must resolve the transition: play a DJ line, or call `skipInterlude()`.
+    var onBoundary: (@MainActor (PlaybackBoundary, Int) -> Void)?
     private var pollTimer: Timer?
 
     var audioState: AudioState { stateMachine.state }
@@ -60,52 +70,77 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Start playing a queue of tracks.
-    func play(_ tracks: [Track]) async throws {
+    func play(_ tracks: [Track], station: StationRef? = nil) async throws {
+        intent.userPlay()
         guard authState == .authorized else {
             lastError = MusicKitError.notAuthorized.errorDescription ?? "Apple Music authorization required."
+            send(.errorRaised(PlaybackError(kind: .notAuthorized, message: lastError ?? "", isRecoverable: false)))
             throw MusicKitError.notAuthorized
         }
         guard !tracks.isEmpty else { return }
         queue = tracks
         currentTrack = tracks.first
+        boundaryDetector.userRequestedChange()
+        queueIndex = 0
+        send(.queueStarted(tracks: tracks.map(\.info), startIndex: 0, station: station))
         player.queue = ApplicationMusicPlayer.Queue(for: tracks.compactMap { $0.song })
         stateMachine.apply(.startMusic)
-        resetAdvanceDetection()
         do {
             try await player.play()
             isPlaying = true
             lastError = nil
+            send(.errorCleared)
         } catch {
             lastError = "Playback failed: \(error.localizedDescription)"
+            send(.errorRaised(PlaybackError(kind: .playbackFailed, message: lastError ?? "", isRecoverable: true)))
             throw error
         }
     }
 
+    /// The user pressed pause. A DJ line that is speaking stops too.
     func pause() {
+        intent.userPause()
         player.pause()
         isPlaying = false
+        send(.userPaused)
         stateMachine.apply(.pause)
-        resetAdvanceDetection()
+        onBreakMustStop?()
     }
 
+    /// The user pressed play.
     func resume() async throws {
+        intent.userPlay()
         try await player.play()
         isPlaying = true
         stateMachine.apply(.resume)
-        resetAdvanceDetection()
+        send(.userResumed)
     }
 
-    func skip() async throws {
-        try await player.skipToNextEntry()
-        // Advance the displayed track to the next in the queue.
-        if let idx = queue.firstIndex(where: { $0.id == currentTrack?.id }) {
-            let next = queue.index(after: idx)
-            if next < queue.count {
-                currentTrack = queue[next]
-            }
+    /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
+    func pausePlayerForBreak() {
+        player.pause()
+        isPlaying = false
+    }
+
+    /// Starts music again after a DJ break or an interruption, only if the user still
+    /// wants playback and the system is not holding it paused.
+    func resumeIfAllowed() async {
+        guard intent.mayAutoResume else { return }
+        do {
+            try await player.play()
+            isPlaying = true
+            send(.userResumed)
+        } catch {
+            reportError("Could not resume music: \(error.localizedDescription)")
         }
-        stateMachine.apply(.trackEnded)
-        resetAdvanceDetection()
+    }
+
+    /// A user skip is not a natural boundary: no DJ break is triggered by it.
+    func skip() async throws {
+        boundaryDetector.userRequestedChange()
+        try await player.skipToNextEntry()
+        send(.userSkipped(nextIndex: queueIndex + 1))
+        advanceDisplayedTrack()
     }
 
     /// Called when a spoken interlude is ready: transition -> voice.
@@ -118,11 +153,48 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.interludeEnded)
     }
 
-    // MARK: - Track-advance observation
+    /// The UI's dismiss action for a recoverable error. Playback is not affected.
+    func dismissError() {
+        lastError = nil
+        send(.errorCleared)
+    }
 
-    /// Poll the player once a second and feed the advance detector so a
-    /// *natural* song ending (MusicKit auto-advance) fires `.trackEnded`
-    /// and moves music -> transition for the next interlude.
+    /// Surfaces a non-fatal error in the player UI without interrupting playback.
+    func reportError(_ message: String) {
+        lastError = message
+        send(.errorRaised(PlaybackError(kind: .resumeFailed, message: message, isRecoverable: true)))
+    }
+
+    /// DJ break lifecycle, reported by the interlude adapter.
+    func djStarted(_ line: String) { send(.djStarted(line: line)) }
+    func djFinished() { send(.djFinished) }
+    func djCancelled() { send(.djCancelled) }
+
+    /// A failed DJ line. The show continues; the UI shows a recoverable error.
+    func reportSpeechError(_ message: String) {
+        lastError = message
+        send(.djFailed(message: message))
+    }
+
+    private func send(_ event: PlaybackEvent) {
+        snapshot = engine.apply(event)
+    }
+
+    /// Called when a boundary has no DJ line: transition -> music, so playback never sticks.
+    func skipInterlude() {
+        stateMachine.apply(.noInterlude)
+    }
+
+    private func advanceDisplayedTrack() {
+        queueIndex += 1
+        currentTrack = queue.indices.contains(queueIndex) ? queue[queueIndex] : nil
+    }
+
+    // MARK: - Track-boundary observation
+
+    /// Poll the player once a second. The boundary detector turns queue-entry
+    /// changes into natural boundaries, each reported once. Pauses, calls and
+    /// resumes never change the entry, so they cannot trigger a DJ break.
     private func startObserving() {
         guard pollTimer == nil else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -136,23 +208,26 @@ final class MusicKitService: ObservableObject {
     }
 
     private func pollPlaybackPosition() {
-        let state = player.state
-        // MusicKit sets .interrupted when the current entry finishes naturally.
-        let reachedEnd = (state.playbackStatus == .interrupted)
-        let sample = PlaybackSample(
-            isPlaying: (state.playbackStatus == .playing),
-            reachedEnd: reachedEnd,
-            itemChanged: false // item identity isn't exposed on this SDK; we reset on explicit actions
+        let observation = PlaybackObservation(
+            entryID: player.queue.currentEntry?.id,
+            isPlaying: player.state.playbackStatus == .playing
         )
-        if advanceDetector.consume(sample) {
+        guard let boundary = boundaryDetector.consume(observation) else { return }
+        isPlaying = observation.isPlaying
+        switch boundary {
+        case .naturalEnd:
+            let finishedIndex = queueIndex
+            send(.naturalBoundary(nextIndex: finishedIndex + 1))
+            queueIndex += 1
+            currentTrack = queue.indices.contains(queueIndex) ? queue[queueIndex] : nil
             stateMachine.apply(.trackEnded)
+            onBoundary?(boundary, finishedIndex)
+        case .queueFinished:
+            currentTrack = nil
+            stateMachine.apply(.stop)
+            send(.queueFinished)
+            onBoundary?(boundary, queueIndex)
         }
-    }
-
-    /// Reset the advance detector after an explicit user action so a natural
-    /// end isn't confused with a manual skip/pause.
-    private func resetAdvanceDetection() {
-        advanceDetector = TrackAdvanceDetector()
     }
 
     // MARK: - Interruptions & route changes
@@ -163,21 +238,33 @@ final class MusicKitService: ObservableObject {
                             options: AVAudioSession.InterruptionOptions = []) {
         switch reason {
         case .began:
-            pause()
+            intent.systemInterruptionBegan()
+            pausePlayerForBreak()
+            send(.userPaused)
+            onBreakMustStop?()
         case .ended:
-            if options.contains(.shouldResume) {
-                Task { try? await resume() }
+            intent.systemInterruptionEnded(shouldResume: options.contains(.shouldResume))
+            // While a DJ line is speaking, the break resumes music when it ends.
+            if !isBreakActive {
+                Task { await resumeIfAllowed() }
             }
         @unknown default:
             break
         }
     }
 
-    /// Handle headphones unplugging: pause so music doesn't blast the speaker.
+    /// Handle headphones unplugging: hold playback until the user presses play.
     func handleRouteChange(_ wasDeviceRemoved: Bool) {
         if wasDeviceRemoved {
-            pause()
+            intent.routeRemoved()
+            pausePlayerForBreak()
+            send(.userPaused)
+            onBreakMustStop?()
         }
+    }
+
+    private var isBreakActive: Bool {
+        stateMachine.state == .transition || stateMachine.state == .voice
     }
 
     /// Detect whether the user has an active Apple Music subscription.
@@ -245,5 +332,12 @@ struct Track: Identifiable, Hashable {
         self.artistName = song.artistName
         self.artworkURL = song.artwork?.url(width: 300, height: 300)
         self.song = song
+    }
+}
+
+extension Track {
+    /// The UI-facing view of a track. The UI never sees `Song`.
+    var info: TrackInfo {
+        TrackInfo(id: id, title: title, artistName: artistName, artworkURL: artworkURL)
     }
 }

@@ -2,49 +2,106 @@ import Foundation
 import AVFoundation
 import AeroDJCore
 
-/// Owns the music -> spoken-DJ -> music transition.
+/// Plays one DJ break between two songs.
 ///
-/// On a scheduled interlude it pauses MusicKit, plays the spoken segment via
-/// AVSpeechSynthesizer (never the protected stream), then resumes. The audio
-/// state machine reflects each phase. No capture/mixing of the protected
-/// stream — playback is either MusicKit OR the local synthesizer, never both.
+/// Only prepared clips are played. A line with no clip, or a clip that will not
+/// decode, skips the break and tells the UI; live speech is never used at a song
+/// boundary, because its length is unknown and it would delay the next song.
+///
+/// The break runs `transition -> voice -> music`. Music is paused for the line and
+/// resumed afterwards, whether the line finishes, is cancelled, fails, or times
+/// out. Playback never stays paused because a callback was missed.
 @MainActor
-final class InterludePlaybackAdapter: ObservableObject {
+final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private let music: MusicKitService
-    private let speech = AVSpeechSynthesizer()
+    private var clipPlayer: AVAudioPlayer?
+    private var finish: CheckedContinuation<Void, Never>?
+    private var timeout: Task<Void, Never>?
+    private var outcome: Outcome = .cancelled
+
+    /// How a break ended. Only `.finished` means the whole line was heard.
+    private enum Outcome { case finished, cancelled }
 
     init(music: MusicKitService) {
         self.music = music
+        super.init()
     }
 
-    /// Play a DJ interlude: pause music, speak, wait the estimated duration,
-    /// then resume music. Returns the segment's metadata.
-    func playInterlude(_ segment: BriefingSegment) async -> SpokenResult? {
-        guard !segment.text.isEmpty else { return nil }
+    var isSpeaking: Bool { finish != nil }
 
-        music.pause()
-        music.beginInterlude() // transition -> voice
+    /// A line with no prepared clip. Routine, so the break is skipped quietly; the
+    /// DJ status goes idle without an error. Only real failures are reported.
+    func skipUnprepared() {
+        music.skipInterlude()
+    }
 
-        // Speak locally (free, offline); MusicKit is paused so nothing mixes.
-        let utterance = AVSpeechUtterance(string: segment.text)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-        let duration = Double(segment.text.split(separator: " ").count) / 2.0
-        speech.speak(utterance)
-
-        // Wait ~the spoken length so we don't cut off the line, then resume.
-        try? await Task.sleep(nanoseconds: UInt64(max(duration, 1.0) * 1_000_000_000))
-
-        music.endInterlude() // voice -> music
-        try? await music.resume()
-        return SpokenResult(text: segment.text, durationSeconds: max(duration, 1.0))
+    /// Plays a pre-rendered clip. A clip that won't decode skips the break.
+    func play(clip: Data, line: String) async {
+        guard !isSpeaking, !line.isEmpty else {
+            music.skipInterlude()
+            return
+        }
+        guard let player = try? AVAudioPlayer(data: clip), player.duration > 0 else {
+            music.reportSpeechError("A DJ line could not be played and was skipped.")
+            music.skipInterlude()
+            return
+        }
+        player.delegate = self
+        clipPlayer = player
+        await runBreak(line: line, timeout: player.duration + 2) {
+            player.play()
+        }
+        clipPlayer = nil
     }
 
     func stop() {
-        speech.stopSpeaking(at: .immediate)
+        clipPlayer?.stop()
+        finishBreak(.cancelled)
     }
 
-    struct SpokenResult {
-        let text: String
-        let durationSeconds: Double
+    /// The one break lifecycle. `start` begins audio; completion comes from the
+    /// delegate, or from the timeout if no callback arrives.
+    private func runBreak(line: String, timeout seconds: Double, start: () -> Bool) async {
+        music.pausePlayerForBreak()
+        music.beginInterlude() // transition -> voice
+        outcome = .cancelled
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            finish = continuation
+            timeout = Task { @MainActor [weak self] in
+                do { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } catch { return }
+                self?.finishBreak(.cancelled)
+            }
+            // The line is reported as started only once audio is really playing.
+            if start() {
+                music.djStarted(line)
+            } else {
+                finishBreak(.cancelled)
+            }
+        }
+
+        music.endInterlude() // voice -> music
+        if outcome == .finished { music.djFinished() } else { music.djCancelled() }
+        // Music returns only if the user still wants it and the system is not holding it.
+        await music.resumeIfAllowed()
+    }
+
+    private func finishBreak(_ result: Outcome) {
+        timeout?.cancel()
+        timeout = nil
+        guard let continuation = finish else { return }
+        finish = nil
+        outcome = result
+        continuation.resume()
+    }
+
+    // MARK: AVAudioPlayerDelegate
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in self?.finishBreak(flag ? .finished : .cancelled) }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor [weak self] in self?.finishBreak(.cancelled) }
     }
 }
