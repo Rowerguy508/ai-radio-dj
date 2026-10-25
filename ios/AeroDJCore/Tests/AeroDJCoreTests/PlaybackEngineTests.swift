@@ -6,10 +6,11 @@ final class PlaybackEngineTests: XCTestCase {
         TrackInfo(id: "t\(n)", title: "Song \(n)", artistName: "Artist \(n)")
     }
     private var queue: [TrackInfo] { (1...3).map(track) }
+    private let station = StationRef(id: "morning-calm", name: "Morning Calm")
 
     private func started() -> PlaybackEngine {
         var e = PlaybackEngine()
-        e.apply(.queueStarted(tracks: queue, startIndex: 0))
+        e.apply(.queueStarted(tracks: queue, startIndex: 0, station: station))
         return e
     }
 
@@ -97,14 +98,14 @@ final class PlaybackEngineTests: XCTestCase {
 
     func testStartIndexIsClamped() {
         var e = PlaybackEngine()
-        e.apply(.queueStarted(tracks: queue, startIndex: 99))
+        e.apply(.queueStarted(tracks: queue, startIndex: 99, station: nil))
         XCTAssertEqual(e.snapshot.nowPlaying, track(3))
         XCTAssertEqual(e.snapshot.upNext, [])
     }
 
     func testEmptyQueueIsStopped() {
         var e = PlaybackEngine()
-        e.apply(.queueStarted(tracks: [], startIndex: 0))
+        e.apply(.queueStarted(tracks: [], startIndex: 0, station: nil))
         XCTAssertEqual(e.snapshot.transport, .stopped)
         XCTAssertNil(e.snapshot.nowPlaying)
     }
@@ -118,12 +119,34 @@ final class PlaybackEngineTests: XCTestCase {
 
     func testSameEventsGiveSameSnapshots() {
         let events: [PlaybackEvent] = [
-            .queueStarted(tracks: queue, startIndex: 0), .naturalBoundary(nextIndex: 1),
+            .queueStarted(tracks: queue, startIndex: 0, station: nil), .naturalBoundary(nextIndex: 1),
             .djStarted(line: "x"), .djCancelled, .userPaused, .userResumed, .userSkipped(nextIndex: 2),
         ]
         var a = PlaybackEngine(), b = PlaybackEngine()
         for event in events {
             XCTAssertEqual(a.apply(event), b.apply(event))
         }
+    }
+
+    func testStationSurvivesBreaksAndSkipsButClearsOnQueueEnd() {
+        var e = started()
+        XCTAssertEqual(e.snapshot.station, station)
+        e.apply(.naturalBoundary(nextIndex: 1))
+        e.apply(.djStarted(line: "x"))
+        e.apply(.djFinished)
+        e.apply(.userSkipped(nextIndex: 2))
+        XCTAssertEqual(e.snapshot.station, station, "a break or skip never changes the station")
+        e.apply(.queueFinished)
+        XCTAssertEqual(e.snapshot.station, station, "the station stays selected after the queue ends")
+        XCTAssertEqual(e.snapshot.transport, .stopped)
+    }
+
+    func testStartingAnotherStationReplacesTheQueueNotTheSession() {
+        var e = started()
+        let other = StationRef(id: "late-night", name: "Late Night")
+        e.apply(.queueStarted(tracks: [track(9)], startIndex: 0, station: other))
+        XCTAssertEqual(e.snapshot.station, other)
+        XCTAssertEqual(e.snapshot.nowPlaying, track(9))
+        XCTAssertEqual(e.snapshot.upNext, [])
     }
 }

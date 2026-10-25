@@ -16,6 +16,18 @@ public struct TrackInfo: Equatable, Sendable, Identifiable {
     }
 }
 
+/// The station the current session was started from. One app-wide session plays
+/// at a time: opening another station shows its context but never starts a second player.
+public struct StationRef: Equatable, Sendable {
+    public let id: String
+    public let name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
 /// What the user asked for. `.playing` means the show is on, even during a DJ break.
 public enum TransportState: String, Equatable, Sendable {
     case stopped
@@ -53,6 +65,7 @@ public struct PlaybackError: Equatable, Sendable {
 
 /// Everything the UI needs, in one value. Equal snapshots mean nothing visible changed.
 public struct PlaybackSnapshot: Equatable, Sendable {
+    public var station: StationRef?
     public var nowPlaying: TrackInfo?
     public var upNext: [TrackInfo]
     public var transport: TransportState
@@ -60,12 +73,14 @@ public struct PlaybackSnapshot: Equatable, Sendable {
     public var error: PlaybackError?
 
     public init(
+        station: StationRef? = nil,
         nowPlaying: TrackInfo? = nil,
         upNext: [TrackInfo] = [],
         transport: TransportState = .stopped,
         dj: DJActivity = .idle,
         error: PlaybackError? = nil
     ) {
+        self.station = station
         self.nowPlaying = nowPlaying
         self.upNext = upNext
         self.transport = transport

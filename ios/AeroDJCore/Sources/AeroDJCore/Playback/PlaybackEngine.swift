@@ -4,7 +4,7 @@ import Foundation
 /// nothing else changes the snapshot.
 public enum PlaybackEvent: Equatable, Sendable {
     /// The user started a queue. `tracks` is the full queue, `startIndex` the first song.
-    case queueStarted(tracks: [TrackInfo], startIndex: Int)
+    case queueStarted(tracks: [TrackInfo], startIndex: Int, station: StationRef?)
     /// The current song ended on its own and the queue moved to `nextIndex`.
     case naturalBoundary(nextIndex: Int)
     /// The last song ended on its own and nothing is queued.
@@ -35,15 +35,16 @@ public struct PlaybackEngine: Sendable {
     @discardableResult
     public mutating func apply(_ event: PlaybackEvent) -> PlaybackSnapshot {
         switch event {
-        case let .queueStarted(tracks, startIndex):
+        case let .queueStarted(tracks, startIndex, station):
             guard !tracks.isEmpty else {
                 self.tracks = []
                 index = 0
-                snapshot = PlaybackSnapshot(error: snapshot.error)
+                snapshot = PlaybackSnapshot(station: station, error: snapshot.error)
                 return snapshot
             }
             self.tracks = tracks
             index = min(max(startIndex, 0), tracks.count - 1)
+            snapshot.station = station
             publishPosition(transport: .playing)
 
         case let .naturalBoundary(nextIndex), let .userSkipped(nextIndex):
