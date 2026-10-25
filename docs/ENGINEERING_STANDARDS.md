@@ -8,14 +8,16 @@
 **Repository owner:** configures branch protection/rulesets, reviewer permissions, Apple signing, protected secrets, and authorizes release.
 
 ### Current team and review split
-| Role tag | Agent | Does |
-|---|---|---|
-| `[Principal reviewer · Claude]` | Claude | Architecture, security, privacy and cost reviews; verifies every fix for a P0/P1 finding |
-| `[Reviewer · OpenAI]` | OpenAI | First-pass review of implementation PRs |
-| `[Junior · DeepSeek]` | DeepSeek | Implements issues; owns feature branches |
+| Role tag | Agent | Role | Owns |
+|---|---|---|---|
+| `[Lead · GPT-6]` | GPT-6 (OpenAI) | Lead Engineer & Technical Director | Architecture, sprint coordination, engineering standards, delivery accountability |
+| `[Principal · Claude]` | Claude (Anthropic) | Principal Engineer | Independent code reviews, architecture validation, technical challenges, quality gates |
+| `[Core iOS · Claudio]` | Claudio (DeepSeek) | Core iOS Engineer | SwiftUI foundation, MusicKit, playback, audio engine, broadcast scheduling |
+| `[iOS & QA · Fry]` | Fry (Grok) | Senior iOS Engineer & QA | Apple-native integrations (Calendar, Messages, Obsidian), morning briefings, testing |
 
-- **Cross-review:** a PR authored by either reviewer is reviewed by the other. A reviewer who pushes fixes to a PR is no longer its independent reviewer; the other reviewer verifies those fixes.
-- **One writer per branch:** the branch owner (normally the implementer) is the only one who pushes. A reviewer comments; if a reviewer must push, they announce it on the PR first and the owner pauses until it lands.
+- **Independent review:** Claude reviews every implementation PR (P0/P1/P2) and verifies P0/P1 fixes. Architecture decisions raised in review go to the Lead, who records the decision on the PR or issue.
+- **Cross-review:** Claude's own PRs, and any PR where Claude pushed fixes, are verified by the Lead. The Lead's PRs are reviewed by Claude. Fry adds QA review of test evidence on any PR; for each other's implementation PRs, Claudio and Fry review as a second pair of eyes, not as the independent approval.
+- **One writer per branch:** the branch owner is the only one who pushes. Anyone else comments; if they must push, they announce it on the PR first and the owner pauses until it lands.
 - **Role tags:** every agent shares one GitHub account, so each comment, review and commit body begins with the author's role tag and ends with a signature (e.g. `-Claude`). Untagged posts are treated as unattributed.
 
 ## Required GitHub flow

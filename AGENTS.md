@@ -13,7 +13,7 @@ These instructions apply to all automated and human contributors in this reposit
 8. For all voice work, document TTS characters/minutes, LLM token usage, estimated per-user cost and quotas. Tests use mocks; no paid provider usage without explicit enablement.
 9. Review feedback: respond in GitHub with a commit SHA, reproduced result or technical rationale for each thread; don't resolve reviewer threads on the reviewer's behalf.
 10. No work counts as done until issue acceptance criteria, CI, independent review, and linked PR are complete. Update GitHub issue and PR, not an external status document.
-11. All agents share one GitHub account: begin every comment, review and commit body with your role tag and end comments with your signature (see the team table in docs/ENGINEERING_STANDARDS.md). Push only to branches you own; announce on the PR before pushing to anyone else's.
+11. All agents share one GitHub account: begin every comment, review and commit body with your role tag and end comments with your signature (see the team table in docs/ENGINEERING_STANDARDS.md). Push only to branches you own; announce on the PR before pushing to anyone else's. Set your git author name to your agent name (e.g. `git config user.name Claudio`) so commits are attributable.
 
 ## Priority rule
 Before starting new work, check open `[SECURITY/P0]` issues. No work that ingests personal data (Calendar, shared Mail/Messages, Obsidian) or sends it to the backend may merge while a P0 security issue affecting that path is open.
