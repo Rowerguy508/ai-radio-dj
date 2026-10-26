@@ -40,6 +40,11 @@ private final class SpeakingBreak {
     var reason: InterludeStopReason? { state.reason }
 }
 
+@MainActor
+private final class StopReasons {
+    var reasons: [InterludeStopReason] = []
+}
+
 final class InterludeStopTests: XCTestCase {
     func testStopDuringPlayRetiresTheBreak() async {
         let speaker = await MainActor.run { SpeakingBreak() }
@@ -92,6 +97,27 @@ final class InterludeStopTests: XCTestCase {
         XCTAssertFalse(playing)
         XCTAssertNil(reason)
         XCTAssertEqual(delivered, 0)
+    }
+
+    /// A purge can run while PlayerView is gone. The stop hook has to be installed
+    /// before a clip is allowed to start, and stay installed for as long as it can play.
+    func testStopHookIsNonNilWheneverAudioCanPlay() async {
+        await MainActor.run {
+            let gate = SpeechStopGate()
+            XCTAssertFalse(gate.canPlay)
+            XCTAssertNil(gate.onBreakMustStop, "nothing can speak yet, so a missing hook drops no audio")
+
+            let box = StopReasons()
+            gate.arm { box.reasons.append($0) }
+
+            XCTAssertTrue(gate.canPlay)
+            XCTAssertNotNil(
+                gate.onBreakMustStop,
+                "the stop hook is non-nil whenever a clip can be playing"
+            )
+            gate.onBreakMustStop?(.sourceRevoked)
+            XCTAssertEqual(box.reasons, [.sourceRevoked])
+        }
     }
 
     func testLateDelegateAfterStopIsIgnored() async {

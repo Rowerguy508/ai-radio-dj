@@ -21,6 +21,25 @@ public enum InterludeStopReason: Equatable, Sendable {
     }
 }
 
+/// Installs the speech-stop hook before a clip is allowed to play.
+///
+/// `canPlay` is true only while `onBreakMustStop` is non-nil. A purge can run
+/// when the player screen is not mounted, so the hook is armed where the DJ
+/// session and the interlude player are created, not when a view appears.
+@MainActor
+public final class SpeechStopGate {
+    public private(set) var onBreakMustStop: (@MainActor (InterludeStopReason) -> Void)?
+
+    public init() {}
+
+    /// A clip may start only after `arm`. That is the same moment the stop hook is stored.
+    public var canPlay: Bool { onBreakMustStop != nil }
+
+    public func arm(_ stop: @escaping @MainActor (InterludeStopReason) -> Void) {
+        onBreakMustStop = stop
+    }
+}
+
 /// Which player, if any, may still deliver a finish callback.
 ///
 /// Stopping retires the current player immediately. A delegate callback that arrives

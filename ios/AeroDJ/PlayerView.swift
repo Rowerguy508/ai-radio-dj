@@ -6,24 +6,24 @@ import AeroDJCore
 ///
 /// The UI is `PlayingScreen` (Listen on the closed Duo, the two-zone Studio when open). It
 /// binds to the app-scoped session's `snapshot`, `studio` (tuner, Connections, DJ state)
-/// and real actions. The `.task` audio wiring is owned by Claude (#58) and is kept verbatim.
+/// and real actions. The session speech-stop hook is armed in `AppDependencies`, not here.
 struct PlayerView: View {
     let station: Station
     @StateObject private var music: MusicKitService
-    @StateObject private var interlude: InterludePlaybackAdapter
+    @ObservedObject private var interlude: InterludePlaybackAdapter
     let djSession: DJBreakSession
     let studio: StudioPresentationModel
     let isTestStation: Bool
 
-    /// `music` is the app-scoped session from `AppDependencies`. Never a new player.
-    init(station: Station, music: MusicKitService, djSession: DJBreakSession,
-         studio: StudioPresentationModel, isTestStation: Bool) {
+    /// `music` and `interlude` are the app-scoped players from `AppDependencies`. Never new ones.
+    init(station: Station, music: MusicKitService, interlude: InterludePlaybackAdapter,
+         djSession: DJBreakSession, studio: StudioPresentationModel, isTestStation: Bool) {
         self.station = station
         self.djSession = djSession
         self.studio = studio
         self.isTestStation = isTestStation
         _music = StateObject(wrappedValue: music)
-        _interlude = StateObject(wrappedValue: InterludePlaybackAdapter(music: music))
+        self.interlude = interlude
     }
 
     var body: some View {
@@ -75,10 +75,6 @@ struct PlayerView: View {
                     interlude.stop()
                 }
             }
-            // Player side of the session hook. Fry #73 owns the property and the purge call.
-            djSession.onBreakMustStop = { [interlude] reason in
-                interlude.stopCurrentInterlude(reason: reason)
-            }
             // A skip cuts the skipped song's break, so a prepared break for it is never played.
             music.onSongSkipped = { [djSession] index in
                 Task { await djSession.songCut(afterTrack: index) }
@@ -113,7 +109,8 @@ struct PlayerView: View {
     let dependencies = AppDependencies.make()
     NavigationStack {
         PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil),
-                   music: dependencies.playback, djSession: dependencies.djSession,
-                   studio: dependencies.studio, isTestStation: dependencies.mode == .testStation)
+                   music: dependencies.playback, interlude: dependencies.interlude,
+                   djSession: dependencies.djSession, studio: dependencies.studio,
+                   isTestStation: dependencies.mode == .testStation)
     }
 }
