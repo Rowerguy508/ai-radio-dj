@@ -85,7 +85,7 @@ final class EditorialNarrationTests: XCTestCase {
         ]
         let script = engine().script(from: hidden + [visible])
         let voiced = script.segments.filter { $0.sourceItemID != nil }
-        XCTAssertEqual(voiced.map { $0.text }, ["Coming up at 9:30 AM: Design review. From your calendar."])
+        XCTAssertEqual(voiced.map { $0.text }, ["You've got Design review at 9:30 AM. From your calendar."])
         XCTAssertEqual(voiced.first?.provenance, "cal:design")
         for title in ["Pending item", "Denied item", "Revoked item", "Blocked item", "Expired item"] {
             XCTAssertFalse(script.segments.contains { $0.text.contains(title) })
@@ -97,7 +97,7 @@ final class EditorialNarrationTests: XCTestCase {
         let plan = writer.plan(tracks: djTracks(6), briefing: script.handoff(maxSpokenSeconds: 150), hour: 7)
         let spokenCues = plan.breaks.flatMap { $0.cues }
         let design = spokenCues.first { $0.text.contains("Design review") }
-        XCTAssertEqual(design?.text, "Coming up at 9:30 AM: Design review. From your calendar.")
+        XCTAssertEqual(design?.text, "You've got Design review at 9:30 AM. From your calendar.")
         XCTAssertEqual(design?.provenance, "cal:design")
         XCTAssertEqual(design?.source, .calendar)
         XCTAssertEqual(design?.sourceItemID, visible.id)
@@ -374,16 +374,17 @@ final class EditorialNarrationTests: XCTestCase {
             ["Dreams by Fleetwood Mac.", "Next, Pink + White."],
         ])
         XCTAssertEqual(showPlan.breaks.map { $0.cues.map(\.text) }, [
-            ["Morning.", "Here's what's on your plate.",
-             "Coming up at 9:30 AM: Design review. Bring the notes. From your calendar.",
-             "A note: Grocery list. Milk and bread. From your notes.", "Here's Myth."],
+            ["Morning.", "While we're between songs.",
+             "You've got Design review at 9:30 AM. Bring the notes. From your calendar.",
+             "You've also got Grocery list. Milk and bread. From your notes.", "Here's Myth."],
             ["Midnight City by M83.", "Up next, Vienna by Billy Joel."],
             ["That was Dreams by Fleetwood Mac.", "Coming up: Frank Ocean, Pink + White."],
         ])
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[0].cues.map(\.text)), 2)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[1].cues.map(\.text)), 5)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[2].cues.map(\.text)), 4)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 14)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 15)
+        XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 45)
 
         var station = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "AeroDJ")
         let stationBreak = try XCTUnwrap(station.plan(tracks: tracks, briefing: nil, hour: 21).breaks.first { $0.afterTrack == 2 })
@@ -399,6 +400,159 @@ final class EditorialNarrationTests: XCTestCase {
         let eveningBreak = try XCTUnwrap(evening.plan(tracks: tracks, briefing: nil, hour: 21).breaks.first { $0.afterTrack == 2 })
         XCTAssertEqual(eveningBreak.cues.map(\.text), ["Winding the day down.", "Up next, Vienna by Billy Joel."])
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: eveningBreak.cues.map(\.text)), 5)
+    }
+
+    /// Delivered talk share over 4,000 boundaries. Tolerance is ±0.02 (two percentage points)
+    /// around `DJCadence.expectedTalkShare` (0.30). Spacing is the index gap the writer enforces:
+    /// `afterTrack` values differ by more than `minSongsBetweenBreaks` (2).
+    func testLongRunTalkShareSpacingAndDurationCaps() {
+        let cadence = DJCadence()
+        let boundaries = 4_000
+        let tracks = djTracks(boundaries + 1)
+        let seeds: [UInt64] = [1, 7, 11, 42, 99, 2026]
+        for seed in seeds {
+            var writer = DJScriptWriter(cadence: cadence, seed: seed)
+            let plan = writer.plan(tracks: tracks, briefing: nil, hour: 10)
+            let share = Double(plan.breaks.count) / Double(boundaries)
+            XCTAssertEqual(share, cadence.expectedTalkShare, accuracy: 0.02, "seed \(seed) delivered \(share)")
+            let at = plan.breaks.map(\.afterTrack)
+            XCTAssertTrue(zip(at, at.dropFirst()).allSatisfy { $1 - $0 > cadence.minSongsBetweenBreaks },
+                          "seed \(seed) broke the two-song gap: \(at)")
+            for djBreak in plan.breaks {
+                XCTAssertFalse(djBreak.hasBriefing)
+                XCTAssertLessThanOrEqual(djBreak.estimatedSeconds, Double(cadence.maxTransitionSeconds))
+                XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: djBreak.cues.map(\.text)), cadence.maxTransitionSeconds)
+            }
+        }
+
+        let cues = (1...8).map {
+            contentCue($0, .note, "You've also got Item \($0). From your notes.", source: .obsidian, provenance: "n:\($0)", seconds: 18)
+        }
+        let handoff = NarrationHandoff(cues: cues, maxSpokenSeconds: 400, experienceSeconds: 300)
+        for seed in seeds {
+            var writer = DJScriptWriter(cadence: cadence, seed: seed)
+            let plan = writer.plan(tracks: djTracks(40), briefing: handoff, hour: 8)
+            let at = plan.breaks.map(\.afterTrack)
+            XCTAssertTrue(zip(at, at.dropFirst()).allSatisfy { $1 - $0 > cadence.minSongsBetweenBreaks }, "seed \(seed)")
+            XCTAssertTrue(plan.breaks.contains { $0.hasBriefing }, "seed \(seed) never placed the briefing")
+            for djBreak in plan.breaks {
+                let cap = djBreak.hasBriefing ? cadence.maxBriefingBreakSeconds : cadence.maxTransitionSeconds
+                XCTAssertLessThanOrEqual(djBreak.estimatedSeconds, Double(cap), "seed \(seed) after \(djBreak.afterTrack)")
+            }
+        }
+    }
+
+    func testBoundaryAirsOnlyAudioThatWasPreparedAhead() async throws {
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1), seed: 1)
+        let djBreak = try XCTUnwrap(writer.plan(tracks: djTracks(3), briefing: nil, hour: 9).breaks.first)
+
+        let idleCalls = CallCount()
+        let idle = DJBreakPreparer(renderer: onDevice(SpyVoice(providerID: "device", calls: idleCalls)), userID: "u", stationID: "s")
+        let missed = await idle.takeBreak(afterTrack: djBreak.afterTrack)
+        XCTAssertEqual(missed, .skipped(.notPlanned))
+        XCTAssertEqual(idleCalls.value, 0, "a boundary with nothing prepared does not speak")
+
+        let slowCalls = CallCount()
+        let slowVoice = HoldingVoice(calls: slowCalls)
+        let slow = DJBreakPreparer(renderer: onDevice(slowVoice), userID: "u", stationID: "s")
+        await slow.prepare(djBreak, deadline: .seconds(30))
+        try await Task.sleep(for: .milliseconds(30))
+        let started = slowCalls.value
+        let clock = ContinuousClock.now
+        let late = await slow.takeBreak(afterTrack: djBreak.afterTrack)
+        XCTAssertEqual(late, .skipped(.notReadyAtBoundary))
+        XCTAssertLessThan(ContinuousClock.now - clock, .milliseconds(200), "the boundary does not wait for speech")
+        XCTAssertEqual(slowCalls.value, started, "takeBreak does not start or repeat synthesis")
+        let afterLate = await slow.takeBreak(afterTrack: djBreak.afterTrack)
+        if case .ready = afterLate { XCTFail("audio that finishes late must not air") }
+        XCTAssertEqual(slowCalls.value, started)
+
+        let readyCalls = CallCount()
+        let ready = DJBreakPreparer(renderer: onDevice(SpyVoice(providerID: "device", calls: readyCalls)), userID: "u", stationID: "s")
+        let settled = expectation(description: "prepared")
+        await ready.observe { event in
+            if case .prepared = event { settled.fulfill() }
+        }
+        await ready.prepare(djBreak, deadline: .seconds(2))
+        await fulfillment(of: [settled], timeout: 3)
+        let preparedCalls = readyCalls.value
+        XCTAssertGreaterThan(preparedCalls, 0)
+        let aired = await ready.takeBreak(afterTrack: djBreak.afterTrack)
+        guard case .ready(let prepared) = aired else { return XCTFail("prepared audio should air: \(aired)") }
+        XCTAssertEqual(prepared.clips.count, djBreak.cues.count)
+        XCTAssertTrue(prepared.clips.allSatisfy { !$0.audio.data.isEmpty })
+        XCTAssertEqual(readyCalls.value, preparedCalls, "airing does not resynthesize")
+        let replay = await ready.takeBreak(afterTrack: djBreak.afterTrack)
+        XCTAssertEqual(replay, .skipped(.notPlanned))
+        XCTAssertEqual(readyCalls.value, preparedCalls, "a second boundary does not synthesize a new read")
+    }
+
+    func testOrdinaryBreaksDoNotInventFactsOrLeakPersonalContext() {
+        let personal = [
+            briefingItem("Design review", summary: "Bring the notes", eventAt: at(9, 30), provenance: "cal:design"),
+            briefingItem("Grocery list", source: .obsidian, summary: "Milk and bread", provenance: "note:groceries"),
+            briefingItem("Send invoice", source: .obsidian, eventAt: at(17), provenance: "note:invoice"),
+            briefingItem("Reply to Sam", source: .emailShared, provenance: "mail:sam"),
+        ]
+        let script = engine().script(from: personal)
+        let secrets = ["Design review", "Grocery list", "Send invoice", "Reply to Sam", "Bring the notes", "Milk and bread"]
+        let invented = ["On Air", "on air", "album", "chart", "Billboard", "Grammy", "number one"]
+        let named = [
+            DJTrack(id: "1", title: "Holocene", artist: "Bon Iver"),
+            DJTrack(id: "2", title: "Myth", artist: "Beach House"),
+            DJTrack(id: "3", title: "Midnight City", artist: "M83"),
+            DJTrack(id: "4", title: "Vienna", artist: "Billy Joel"),
+            DJTrack(id: "5", title: "Dreams", artist: "Fleetwood Mac"),
+            DJTrack(id: "6", title: "Pink + White", artist: "Frank Ocean"),
+        ]
+        let queue = named + djTracks(18)
+        for seed in UInt64(1)...12 {
+            var plain = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            let music = plain.plan(tracks: queue, briefing: nil, hour: 9).breaks.flatMap { $0.cues.map(\.text) }.joined(separator: " ")
+            assertNoFabrication(music, secrets: secrets, invented: invented, seed: seed)
+
+            var mixed = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            let show = mixed.plan(tracks: queue, briefing: script.handoff(maxSpokenSeconds: 150), hour: 8)
+            for djBreak in show.breaks where !djBreak.hasBriefing {
+                let line = djBreak.cues.map(\.text).joined(separator: " ")
+                for secret in secrets {
+                    XCTAssertFalse(line.localizedCaseInsensitiveContains(secret), "ordinary break leaked \(secret): \(line)")
+                }
+                XCTAssertFalse(line.localizedCaseInsensitiveContains("your calendar"), line)
+                XCTAssertFalse(line.localizedCaseInsensitiveContains("your notes"), line)
+                XCTAssertFalse(line.localizedCaseInsensitiveContains("email you shared"), line)
+            }
+            let all = show.breaks.flatMap { $0.cues.map(\.text) }.joined(separator: " ")
+            for word in invented {
+                XCTAssertFalse(all.localizedCaseInsensitiveContains(word), all)
+            }
+            XCTAssertNil(all.range(of: #"\b(19|20)\d{2}\b"#, options: .regularExpression), all)
+            XCTAssertNil(all.range(of: #"\blive\b"#, options: [.regularExpression, .caseInsensitive]), all)
+        }
+
+        var aired = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 11, stationName: "AeroDJ")
+        let briefingText = aired.plan(tracks: named, briefing: script.handoff(maxSpokenSeconds: 150), hour: 8)
+            .breaks.filter(\.hasBriefing).flatMap { $0.cues.map(\.text) }.joined(separator: " ")
+        XCTAssertTrue(briefingText.contains("Design review"))
+        XCTAssertTrue(briefingText.contains("Grocery list"))
+        XCTAssertFalse(briefingText.localizedCaseInsensitiveContains("On Air"))
+    }
+
+    private func assertNoFabrication(_ spoken: String, secrets: [String], invented: [String], seed: UInt64) {
+        for secret in secrets {
+            XCTAssertFalse(spoken.localizedCaseInsensitiveContains(secret), "seed \(seed) leaked \(secret)")
+        }
+        for word in invented {
+            XCTAssertFalse(spoken.localizedCaseInsensitiveContains(word), "seed \(seed): \(spoken)")
+        }
+        XCTAssertNil(spoken.range(of: #"\b(19|20)\d{2}\b"#, options: .regularExpression), spoken)
+        XCTAssertNil(spoken.range(of: #"\blive\b"#, options: [.regularExpression, .caseInsensitive]), spoken)
+    }
+
+    private func onDevice(_ provider: any VoiceProvider) -> VoiceRenderer {
+        VoiceRenderer(routes: [BetaVoicePolicy.onDeviceRoute(provider: provider, voice: djVoice)],
+                      budget: VoiceBudget(dailyCapMicrodollars: 0),
+                      cache: InMemoryAudioCache())
     }
 
     private func isArtistFocus(_ line: String) -> Bool {
@@ -424,6 +578,15 @@ private final class CallCount: @unchecked Sendable {
     private var stored = 0
     var value: Int { lock.lock(); defer { lock.unlock() }; return stored }
     func increment() { lock.lock(); stored += 1; lock.unlock() }
+}
+
+private struct HoldingVoice: VoiceProvider {
+    let calls: CallCount
+    func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+        calls.increment()
+        try await Task.sleep(for: .seconds(30))
+        return VoiceArtifact(data: Data(text.utf8), durationSeconds: 1, billableUnits: text.count, provider: "device", cacheKey: nil)
+    }
 }
 
 private struct SpyVoice: VoiceProvider {

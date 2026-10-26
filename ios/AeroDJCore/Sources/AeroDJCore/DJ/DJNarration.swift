@@ -169,9 +169,9 @@ public struct DJScriptWriter: Sendable {
     private var stationIDs = TemplatePool(EditorialPhrasing.stationID)
     private var atmosphere: [DayPart: TemplatePool] = EditorialPhrasing.atmosphere.mapValues { TemplatePool($0) }
     private var briefingLead = TemplatePool([
-        "Quick look at your day.",
-        "A couple of things for today.",
-        "Here's what's on your plate.",
+        "Let me catch you up.",
+        "A couple of things before the next song.",
+        "While we're between songs.",
     ])
     private var greetings: [DayPart: TemplatePool] = [
         .earlyMorning: TemplatePool(["Early start today.", "Good morning, early riser."]),
