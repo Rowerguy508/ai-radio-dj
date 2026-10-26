@@ -19,6 +19,7 @@ final class ConsentPurgeOnAirTests: XCTestCase {
         let connections: ConnectionsModel
         let clip: ActiveBreakController
         let tags: () -> [Int?]
+        let reasons: () -> [InterludeStopReason]
         let item: UUID
         let source: ConnectionItem
         /// Approved in Connections, but no break uses it.
@@ -41,10 +42,11 @@ final class ConsentPurgeOnAirTests: XCTestCase {
         let dj = DJPresentationStore()
         let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 14 })
         let clip = ActiveBreakController()
-        final class Tags { var all: [Int?] = [] }
+        final class Tags { var all: [Int?] = []; var reasons: [InterludeStopReason] = [] }
         let tags = Tags()
         session.onBreakMustStop = { reason, tag in
             tags.all.append(tag)
+            tags.reasons.append(reason)
             clip.stopActiveBreak(reason: reason, mayAutoResume: true)
         }
         let purger = NarrationPurger(cache: cache, preparer: preparer, session: session, revocations: revocations,
@@ -58,7 +60,7 @@ final class ConsentPurgeOnAirTests: XCTestCase {
                                            providers: [InMemoryConnectionItemProvider(integration: .obsidian, items: [source, other])],
                                            purger: purger)
         await connections.refresh()
-        return Rig(session: session, dj: dj, connections: connections, clip: clip, tags: { tags.all }, item: item, source: source, other: other.id)
+        return Rig(session: session, dj: dj, connections: connections, clip: clip, tags: { tags.all }, reasons: { tags.reasons }, item: item, source: source, other: other.id)
     }
 
     private func briefing(_ item: UUID) -> NarrationHandoff {
@@ -68,12 +70,21 @@ final class ConsentPurgeOnAirTests: XCTestCase {
                          maxSpokenSeconds: 60, experienceSeconds: 600)
     }
 
+    /// Bounded wait (as the other suites' `until`): fails with `message` instead of hanging.
+    private func until(_ condition: @MainActor () -> Bool, _ message: String) async {
+        for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(condition(), message)
+    }
+
+    private func breakZeroIsReady(_ r: Rig) -> Bool {
+        if case .ready(0, true, _) = r.dj.state { true } else { false }
+    }
+
     /// Queue started with the item's note in break 0; song 0 playing; break 0 rendered (`.ready`).
     private func ready(_ r: Rig) async {
-        var states = r.dj.updates().makeAsyncIterator()
         await r.session.queueStarted(djTracks(12), briefing: briefing(r.item), sources: [r.source])
         await r.session.songStarted(index: 0, remaining: .seconds(180))
-        while let s = await states.next() { if case .ready(_, true, _) = s { break } }
+        await until({ breakZeroIsReady(r) }, "break 0 with the briefing is prepared")
     }
 
     /// Every later boundary: nothing handed out speaks about `item`.
@@ -176,22 +187,48 @@ final class ConsentPurgeOnAirTests: XCTestCase {
         let other = ConnectionItem(id: r.other, integration: .obsidian, title: "[TEST] other note", state: .approved,
                                    sensitivity: .low)
         await r.session.queueStarted(djTracks(12), briefing: briefing(r.other), sources: [other])
+        XCTAssertEqual(r.tags(), [nil], "the new queue stops queue 1's handed-out break once")
+        XCTAssertNotEqual(r.reasons().first, .sourceRevoked, "a queue change is not logged as a revoke")
         r.session.purge(sourceItemIDs: [r.item])            // before queue 2's hand-out
-        XCTAssertEqual(r.tags(), [], "queue 1's break ended with its queue")
+        XCTAssertEqual(r.tags(), [nil], "the purge adds no stop: queue 1's break ended with its queue")
         await r.session.songStarted(index: 0, remaining: .seconds(180))
-        // Subscribe after songStarted: the store replays its current state, and before this
-        // that is still queue 1's `.ready`.
-        var states = r.dj.updates().makeAsyncIterator()
-        while let s = await states.next() { if case .ready(_, true, _) = s { break } }
+        // songStarted moves the store off queue 1's stale `.ready` before this wait.
+        await until({ breakZeroIsReady(r) }, "queue 2's break 0 is prepared")
         let second = await r.session.naturalBoundary(afterTrack: 0)
         XCTAssertTrue(try XCTUnwrap(second, "queue 2's break for the same k").cues.contains { $0.sourceItemID == r.other })
         r.clip.play()
         r.session.playbackStarted(afterTrack: 0)
 
         r.session.purge(sourceItemIDs: [r.item])            // after queue 2's hand-out
-        XCTAssertEqual(r.tags(), [], "onBreakMustStop never fires for queue 2's break")
+        XCTAssertEqual(r.tags(), [nil], "onBreakMustStop never fires for queue 2's break (only the queue-change stop)")
         XCTAssertEqual(r.clip.playerStops, 0)
         guard case .speaking = r.dj.state else { return XCTFail("queue 2's break keeps playing") }
+    }
+
+    /// Sentinel (#91, be81931): a new queue never talks over its new song. The speaking line is
+    /// stopped by the time `queueStarted` returns, exactly once; revoking its source later adds no
+    /// second stop, and the new queue never narrates it.
+    func testANewQueueStopsTheSpeakingLineOnceAndARevokeAddsNoSecondStop() async throws {
+        let r = await rig()
+        await ready(r)
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertTrue(try XCTUnwrap(handed).cues.contains { $0.sourceItemID == r.item })
+        r.clip.play()
+        r.session.playbackStarted(afterTrack: 0)
+        guard case .speaking = r.dj.state else { return XCTFail("precondition: the line is on air") }
+
+        await r.session.queueStarted(djTracks(12))
+        XCTAssertEqual(r.tags(), [nil], "stopped once, untagged, by the time queueStarted returns")
+        XCTAssertNotEqual(r.reasons().first, .sourceRevoked, "a queue change is not logged as a revoke")
+        XCTAssertEqual(r.clip.playerStops, 1, "the line is not talking over the new queue")
+
+        let result = await r.connections.perform(.revoke, on: r.item)
+        XCTAssertNoThrow(try result.get())
+        XCTAssertEqual(r.tags(), [nil], "no second stop")
+        XCTAssertEqual(r.clip.playerStops, 1)
+        r.session.playbackFinished(afterTrack: 0)          // the adapter reports the stopped end
+        await assertNoLaterCue(r, from: 1)
+        XCTAssertEqual(r.tags(), [nil], "nothing else stops")
     }
 }
 
@@ -217,7 +254,7 @@ final class DJSessionWiringTests: XCTestCase {
     /// AppDependencies is in the app target (not built on Linux): read its source and check that
     /// `live()` and `testStation()` each arm the stop hook (`makeInterlude`), set the purger and
     /// assert the wiring before returning.
-    func testBothAppCompositionsSetThePurgerAndTheStopHook() throws {
+    func testBothAppCompositionsSetThePurgerAndTheStopHook() async throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("AeroDJ/AppDependencies.swift")

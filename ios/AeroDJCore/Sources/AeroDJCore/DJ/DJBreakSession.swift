@@ -103,12 +103,16 @@ public final class DJBreakSession {
     /// missing from `sources` or not narratable now is left out (fails closed).
     public func queueStarted(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
                              sources: [ConnectionItem] = []) async {
+        // A new queue never talks over its first song: the old queue's handed-out or speaking
+        // line stops now, personal or not. Untagged, as in `purge`. Not `.sourceRevoked` (it
+        // isn't one); there is no queue-change case, so the nearest non-revoke reason is used.
+        if let live = onAir { requestStop(afterTrack: live.afterTrack, .interruption) }
         await preparer.cancelAll()
         if briefing != nil { await station.handle(.briefingWillPlan) }
         self.tracks = tracks
-        // A stop held for the old queue's break has nothing left to stop (starting a new queue
-        // stops the interlude); it must not cancel a break of this queue later. Likewise the old
-        // queue's on-air break: a purge of its sources must not stop this queue's break.
+        // A stop held for the old queue's break (no hook yet) has nothing left to stop; it must
+        // not cancel a break of this queue later. Likewise the old queue's on-air break: a purge
+        // of its sources must not stop this queue's break.
         pendingStop = nil
         onAir = nil
         self.sources = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
