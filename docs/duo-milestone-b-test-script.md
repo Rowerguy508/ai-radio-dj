@@ -26,7 +26,7 @@ Fingerprint while other audio is playing (Music, a podcast):
 Do these before the numbered steps. If one is missing, stop and record which one. Do not invent a pass.
 
 1. **Mac and device.** Xcode with XcodeGen 2.46.0 (the version CI pins). The iPhone Duo, unlocked, Developer Mode on (Settings → Privacy & Security → Developer Mode), trusted by this Mac. Deployment target in `ios/project.yml` is iOS 17.0.
-2. **Signing.** Team ID only in `ios/Config/Signing.local.xcconfig` (`DEVELOPMENT_TEAM = …`). That file is git-ignored. No certificate, profile, or password goes into git, chat, or the log export. App IDs `com.aerodj.app` and `com.aerodj.app.share`. App Group `group.com.aerodj`. MusicKit enabled on `com.aerodj.app` in the developer portal. Details are in `docs/device-install.md`.
+2. **Signing.** Development team `S85APB73YV` (Individual). App IDs `com.aerodj.app` (MusicKit and App Groups) and `com.aerodj.app.share` (App Groups). App Group `group.com.aerodj`. These bundle IDs are `PRODUCT_BUNDLE_IDENTIFIER` in `ios/project.yml`. Both entitlements files on `integration/device-duo` (`939c34e`) contain only `com.apple.security.application-groups` / `group.com.aerodj`. `ios/project.yml` sets `INFOPLIST_KEY_NSAppleMusicUsageDescription` on the app target and does not set a MusicKit entitlement key. The old App ID `Com.technostrada.aerodj` is unused. Do not select it. Xcode automatic signing creates the development profile when you install. `CODE_SIGN_STYLE` is Automatic (`ios/Config/Signing.xcconfig`). The team can also sit in git-ignored `ios/Config/Signing.local.xcconfig` as `DEVELOPMENT_TEAM = S85APB73YV`. No certificate or profile goes into git, chat, or the log export. Do not create one by hand.
 3. **Build configuration.** Scheme `AeroDJ`. Run configuration **Debug**. Launch argument `-AeroDJTestStation YES` (Product → Scheme → Edit Scheme → Run → Arguments). Release builds cannot enter the test station.
 4. **Apple Music.** The Apple ID on the Duo has an active Apple Music subscription that can play the catalog. Deny the system prompt on purpose only if you are checking the banner, then grant it before step 1. The banner strings are fixed: "Allow Apple Music to play your station." and "An Apple Music subscription is required."
 5. **Consent.** With the test-station argument, fixture consent is granted for fixture sources only. Live mode (no argument) starts every integration at `notRequested` and will read the real calendar. Use the test station for this script. Paid voice stays off (`VoiceBudget` daily cap is $0).
@@ -54,7 +54,16 @@ xcodegen generate
 open AeroDJ.xcodeproj
 ```
 
-In Xcode: scheme **AeroDJ**, destination your iPhone, Run configuration **Debug**, argument `-AeroDJTestStation YES`, then Run.
+In Xcode: scheme **AeroDJ**, destination your iPhone, Run configuration **Debug**, argument `-AeroDJTestStation YES`.
+
+Select team `S85APB73YV` for both targets that install on the Duo:
+
+1. Target **AeroDJ**. Signing & Capabilities → Team → `S85APB73YV` (Individual). Bundle identifier stays `com.aerodj.app`.
+2. Target **AeroDJShare**. The same team. Bundle identifier stays `com.aerodj.app.share`.
+
+Do not select `Com.technostrada.aerodj`. That App ID is unused.
+
+**Pre-flight.** On AeroDJ → Signing & Capabilities, MusicKit and App Groups `group.com.aerodj` are present and have no errors. On AeroDJShare, App Groups `group.com.aerodj` is present and has no errors. If MusicKit is absent on AeroDJ, stop and record that. The entitlements file on `939c34e` does not contain a MusicKit key, so a missing row is the tree you generated, not a reason to switch App IDs. Automatic signing creates the development profile at install. Then Run.
 
 The unsigned device build CI uses is not an install:
 
