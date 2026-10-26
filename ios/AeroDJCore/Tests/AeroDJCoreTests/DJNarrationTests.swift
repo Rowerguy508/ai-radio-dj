@@ -114,7 +114,8 @@ final class DJNarrationTests: XCTestCase {
         XCTAssertEqual(plan.briefingReport.entries.count, cues.count)
         let outcomes = plan.briefingReport.entries.map(\.outcome)
         XCTAssertEqual(outcomes.first, .dropped(.notPlacedByScheduler))
-        XCTAssertTrue(outcomes.contains(.deferred(.noTrackBoundary)), "music wins; the rest waits for later breaks")
+        XCTAssertTrue(outcomes.contains(.dropped(.notCarriedForward)), "time-sensitive items that miss this show are not rolled forward")
+        XCTAssertFalse(outcomes.contains(.deferred(.noTrackBoundary)))
         XCTAssertTrue(outcomes.contains(.scheduled(.afterTrack(3))))
     }
 

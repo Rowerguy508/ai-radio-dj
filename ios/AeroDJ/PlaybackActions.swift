@@ -48,7 +48,12 @@ struct MusicSearch {
 
     /// Same path as #58's search (ebc3042): the DJ session learns the new queue (the tapped
     /// song and the ones after it), then the player loads it one song at a time.
-    static func live(_ music: MusicKitService, station: StationRef, djSession: DJBreakSession) -> MusicSearch {
+    ///
+    /// `briefing` is read when play starts. There is no default: omitting it does not
+    /// compile, so an unapproved handoff cannot slip back in. `PlayerView` passes
+    /// `LiveQueueBriefing.provider`, which speaks an approved morning row and nothing else.
+    static func live(_ music: MusicKitService, station: StationRef, djSession: DJBreakSession,
+                     briefing: @escaping @MainActor () -> ApprovedShowHandoff) -> MusicSearch {
         let cache = SearchResultCache()
         return MusicSearch(
             search: { query in
@@ -59,7 +64,9 @@ struct MusicSearch {
             play: { results, startIndex in
                 guard results.indices.contains(startIndex) else { return }
                 let tracks = results[startIndex...].compactMap { cache.track(for: $0.id) }
-                await djSession.queueStarted(tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) })
+                await djSession.queueStarted(
+                    tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) },
+                    briefing: briefing().forQueue())
                 try await music.play(tracks, station: station)
             })
     }

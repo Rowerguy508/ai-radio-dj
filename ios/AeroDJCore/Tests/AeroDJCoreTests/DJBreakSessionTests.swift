@@ -188,4 +188,179 @@ final class DJBreakSessionTests: XCTestCase {
         let cached = await r.cache.remaining()
         XCTAssertFalse(cached.contains { $0.sourceItemIDs.contains(item) }, "cached narration purged")
     }
+
+    /// Approved morning briefing passed through `ApprovedShowHandoff.forQueue()` airs once,
+    /// at the first eligible boundary. Revoked and unapproved input airs no personal text.
+    /// A later show is given only `carryForward.eligibleNextShow`.
+    func testApprovedBriefingAirsOnceAndRevokedBriefingNeverAirs() async throws {
+        let reviewID = UUID()
+        let review = NarrationCue(id: UUID(), order: 1, group: 0, kind: .upcomingEvent,
+                                  text: "You've got Design review at 9 AM. From your calendar.",
+                                  estimatedSeconds: 6, maxSeconds: 20, sourceItemID: reviewID,
+                                  source: .calendar, provenance: "cal:design")
+        let noteID = UUID()
+        let note = NarrationCue(id: UUID(), order: 2, group: 1, kind: .note,
+                                text: "You've also got Grocery list. From your notes.",
+                                estimatedSeconds: 5, maxSeconds: 20, sourceItemID: noteID,
+                                source: .obsidian, provenance: "note:groceries")
+        let morning = NarrationHandoff(cues: [review, note], maxSpokenSeconds: 60, experienceSeconds: 300)
+        let rows = [
+            ConnectionItem(id: reviewID, integration: .calendar, title: "Design review", state: .approved),
+            ConnectionItem(id: noteID, integration: .obsidian, title: "Grocery list", state: .approved),
+        ]
+        let carry = EditorialCarryForward(report: NarrationScheduleReport(entries: [
+            NarrationScheduleEntry(cue: review, outcome: .dropped(.notCarriedForward)),
+            NarrationScheduleEntry(cue: note, outcome: .deferred(.noTrackBoundary)),
+        ]))
+
+        let approved = ApprovedShowHandoff(isMorningShow: true, approved: morning, revokedOrUnapproved: false,
+                                           carryForward: carry, connectionItems: rows)
+        XCTAssertEqual(approved.forQueue(), morning)
+
+        let revoked = ApprovedShowHandoff(isMorningShow: true, approved: morning, revokedOrUnapproved: true,
+                                          carryForward: carry, connectionItems: rows)
+        XCTAssertNil(revoked.forQueue())
+        let unapproved = ApprovedShowHandoff(isMorningShow: true, approved: nil, revokedOrUnapproved: false)
+        XCTAssertNil(unapproved.forQueue())
+        XCTAssertNil(ApprovedShowHandoff.unapproved.forQueue())
+
+        let later = ApprovedShowHandoff(isMorningShow: false, approved: morning, revokedOrUnapproved: false,
+                                        carryForward: carry, connectionItems: rows)
+        let laterHandoff = try XCTUnwrap(later.forQueue())
+        XCTAssertEqual(laterHandoff.cues.map(\.id), [note.id])
+        XCTAssertFalse(laterHandoff.cues.contains { $0.id == review.id })
+
+        let show = await rig()
+        await show.session.queueStarted(djTracks(8), briefing: approved.forQueue())
+        XCTAssertEqual(show.session.plannedBoundaries.first, 0, "first eligible boundary")
+        let firstIDs = try await airedContentIDs(show, after: 0)
+        XCTAssertEqual(firstIDs.filter { $0 == review.id }.count, 1)
+        XCTAssertEqual(firstIDs.filter { $0 == note.id }.count, 1)
+        var laterIDs: [UUID] = []
+        for boundary in show.session.plannedBoundaries where boundary != 0 {
+            laterIDs += try await airedContentIDs(show, after: boundary)
+        }
+        XCTAssertFalse(laterIDs.contains(review.id))
+        XCTAssertFalse(laterIDs.contains(note.id))
+
+        for blocked in [revoked.forQueue(), unapproved.forQueue()] {
+            let quiet = await rig()
+            await quiet.session.queueStarted(djTracks(8), briefing: blocked)
+            await quiet.session.songStarted(index: 0, remaining: .seconds(180))
+            await until { quiet.dj.studioState != .idle }
+            let handed = await quiet.session.naturalBoundary(afterTrack: 0)
+            let spoken = handed?.cues.map(\.text).joined(separator: " ") ?? ""
+            XCTAssertFalse(spoken.contains("Design review"), spoken)
+            XCTAssertFalse(spoken.contains("Grocery list"), spoken)
+            XCTAssertNotEqual(handed?.includesBriefing, true)
+        }
+
+        let nextShow = await rig()
+        await nextShow.session.queueStarted(djTracks(8), briefing: later.forQueue())
+        let nextIDs = try await airedContentIDs(nextShow, after: 0)
+        XCTAssertEqual(nextIDs, [note.id])
+        XCTAssertFalse(nextIDs.contains(review.id))
+    }
+
+    /// Connections still lists every row. Only `ConnectionItemState.approved`
+    /// (`mayBeNarrated`) may be spoken. Each enum case is seeded directly.
+    /// `ConsentState.notRequested` is not a case: `resolve` maps it to `.pendingApproval`.
+    func testOnlyApprovedConsentStateIsNarrated() async throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertEqual(
+            ConnectionItemState.resolve(consent: .notRequested, expiresAt: nil, now: now, flagged: false, reconfirmed: false),
+            .pendingApproval,
+            "there is no ConnectionItemState for not-requested consent")
+        let approvedID = UUID()
+        let pendingID = UUID()
+        let flaggedID = UUID()
+        let expiredID = UUID()
+        let revokedID = UUID()
+        let unavailableID = UUID()
+        let rows = [
+            ConnectionItem(id: pendingID, integration: .calendar, title: "Pending sync", state: .pendingApproval),
+            ConnectionItem(id: flaggedID, integration: .obsidian, title: "Flagged memo", state: .flaggedForReview),
+            ConnectionItem(id: approvedID, integration: .calendar, title: "Design review", state: .approved),
+            ConnectionItem(id: expiredID, integration: .shareInbox, title: "Expired reminder", state: .expired),
+            ConnectionItem(id: revokedID, integration: .obsidian, title: "Revoked note", state: .revoked),
+            ConnectionItem(id: unavailableID, integration: .calendar, title: "Unavailable calendar",
+                           state: .unavailable(.calendarAccess(.denied))),
+        ]
+        XCTAssertEqual(Set(rows.map { Self.connectionStateCase($0.state) }), Set(Self.everyConnectionStateCase),
+                       "the seeded rows cover every ConnectionItemState case")
+        for row in rows {
+            XCTAssertEqual(row.state.mayBeNarrated, Self.narrationClass(of: row.state) == .spoken)
+        }
+        XCTAssertEqual(rows.filter { $0.state.mayBeNarrated }.map(\.id), [approvedID])
+        XCTAssertEqual(rows.map(\.title),
+                       ["Pending sync", "Flagged memo", "Design review", "Expired reminder", "Revoked note", "Unavailable calendar"],
+                       "every item state still appears in Connections")
+
+        func cue(_ id: UUID, _ order: Int, _ title: String, _ source: ContextSourceKind) -> NarrationCue {
+            NarrationCue(id: UUID(), order: order, group: order, kind: .note,
+                         text: "Item \(title) stays in the script.",
+                         estimatedSeconds: 4, maxSeconds: 16, sourceItemID: id, source: source, provenance: "row:\(order)")
+        }
+        let handoff = NarrationHandoff(cues: [
+            cue(pendingID, 1, "Pending sync", .calendar),
+            cue(flaggedID, 2, "Flagged memo", .obsidian),
+            cue(approvedID, 3, "Design review", .calendar),
+            cue(expiredID, 4, "Expired reminder", .userShared),
+            cue(revokedID, 5, "Revoked note", .obsidian),
+            cue(unavailableID, 6, "Unavailable calendar", .calendar),
+        ], maxSpokenSeconds: 60, experienceSeconds: 300)
+        let show = ApprovedShowHandoff(isMorningShow: true, approved: handoff, revokedOrUnapproved: false, connectionItems: rows)
+        let queued = try XCTUnwrap(show.forQueue())
+        XCTAssertEqual(queued.cues.compactMap(\.sourceItemID), [approvedID])
+
+        let session = await rig()
+        await session.session.queueStarted(djTracks(8), briefing: queued)
+        await session.session.songStarted(index: 0, remaining: .seconds(180))
+        await until { if case .ready = session.dj.studioState { true } else { false } }
+        let handedBreak = await session.session.naturalBoundary(afterTrack: 0)
+        let handed = try XCTUnwrap(handedBreak)
+        let spoken = handed.cues.map(\.text).joined(separator: " ")
+        XCTAssertEqual(handed.cues.filter(\.isContent).compactMap(\.sourceItemID), [approvedID])
+        XCTAssertTrue(spoken.contains("Design review"), spoken)
+        for hidden in ["Pending sync", "Flagged memo", "Expired reminder", "Revoked note", "Unavailable calendar"] {
+            XCTAssertFalse(spoken.contains(hidden), spoken)
+        }
+    }
+
+    /// A new `ConnectionItemState` case fails this switch until it is named here and seeded above.
+    private static let everyConnectionStateCase = [
+        "pendingApproval", "flaggedForReview", "approved", "expired", "revoked", "unavailable",
+    ]
+
+    private static func connectionStateCase(_ state: ConnectionItemState) -> String {
+        switch state {
+        case .pendingApproval: "pendingApproval"
+        case .flaggedForReview: "flaggedForReview"
+        case .approved: "approved"
+        case .expired: "expired"
+        case .revoked: "revoked"
+        case .unavailable: "unavailable"
+        }
+    }
+
+    private enum NarrationClass { case spoken, withheld }
+
+    /// Same exhaustiveness rule: a new case does not compile until it is spoken or withheld.
+    private static func narrationClass(of state: ConnectionItemState) -> NarrationClass {
+        switch state {
+        case .approved: .spoken
+        case .pendingApproval, .flaggedForReview, .expired, .revoked, .unavailable: .withheld
+        }
+    }
+
+    private func airedContentIDs(_ rig: Rig, after boundary: Int) async throws -> [UUID] {
+        await rig.session.songStarted(index: boundary, remaining: .seconds(180))
+        await until { if case .ready = rig.dj.studioState { true } else { false } }
+        let handedBreak = await rig.session.naturalBoundary(afterTrack: boundary)
+        let handed = try XCTUnwrap(handedBreak)
+        XCTAssertFalse(handed.clips.isEmpty, "the boundary airs prepared audio")
+        rig.session.playbackStarted(afterTrack: boundary)
+        rig.session.playbackFinished(afterTrack: boundary)
+        return handed.cues.filter(\.isContent).map(\.id)
+    }
 }
