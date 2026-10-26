@@ -182,6 +182,50 @@ final class AudioReliabilityTests: XCTestCase {
         XCTAssertFalse(reversed.mayAutoResume)
     }
 
+    func testPlayReturnRechecksAHoldThatLandedDuringPlay() {
+        var policy = AudioSessionPolicy()
+        policy.userPlay()
+        _ = policy.handle(.interruptionBegan, breakIsActive: false)
+        XCTAssertEqual(
+            PlaybackStartGuard.afterPlay(mayAutoResume: policy.mayAutoResume, userWantsPlayback: policy.userWantsPlayback),
+            .pauseBecauseHeld,
+            "an interruption that lands during play() must not be left playing"
+        )
+    }
+
+    func testPlayReturnRechecksAUserPauseThatLandedDuringPlay() {
+        var policy = AudioSessionPolicy()
+        policy.userPlay()
+        _ = policy.userPause()
+        XCTAssertEqual(
+            PlaybackStartGuard.afterPlay(mayAutoResume: policy.mayAutoResume, userWantsPlayback: policy.userWantsPlayback),
+            .pauseBecauseHeld,
+            "a user pause that lands during play() must not be left playing"
+        )
+    }
+
+    func testReleasingTheMonitorFinishesTheStream() async {
+        let stream: AsyncStream<Int> = {
+            let monitor = FinishingStream<Int>()
+            return monitor.stream
+        }()
+        let finished = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                var iterator = stream.makeAsyncIterator()
+                _ = await iterator.next()
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        XCTAssertTrue(finished, "releasing the monitor must finish its AsyncStream")
+    }
+
     func testObserverRegistrationIsOnceEvenIfActivationFailed() {
         var gate = SessionRegistrationGate()
         XCTAssertTrue(gate.registerIfNeeded(), "first attempt registers even when setActive throws")
