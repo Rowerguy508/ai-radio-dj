@@ -146,7 +146,7 @@ struct ControlCard<Content: View>: View {
             }
         }
         .padding(14)
-        .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .studioCard(emphasized: row.isPending)
     }
 }
 
@@ -161,8 +161,9 @@ struct StatusBadge: View {
             .labelStyle(.titleAndIcon)
             .foregroundStyle(color)
             .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(color.opacity(0.14)))
+            .padding(.vertical, 4)
+            .background(Capsule().fill(color.opacity(0.16)))
+            .overlay(Capsule().strokeBorder(color.opacity(0.55), lineWidth: 0.5))
             .lineLimit(1)
             .accessibilityLabel(indicator.accessibilityLabel)
             .accessibilityIdentifier("tune.indicator")
@@ -373,7 +374,7 @@ struct RecipesSection: View {
             }
         }
         .padding(14)
-        .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .studioCard()
         .alert("Rename recipe", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newName)
             Button("Save") {

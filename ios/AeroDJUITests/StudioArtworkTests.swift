@@ -14,9 +14,10 @@ final class StudioArtworkTests: XCTestCase {
 
     @MainActor
     private func launch(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
-                        dark: Bool = false) -> XCUIApplication {
+                        dark: Bool = false, albumArt: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
+        if albumArt { app.launchArguments += ["-AeroDJAlbumArtFixture", "YES"] }
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
         if let scenario { app.launchArguments += ["-AeroDJStudioCaptureScenario", scenario] }
         if largeText {
@@ -141,5 +142,21 @@ final class StudioArtworkTests: XCTestCase {
                       "An untouched song-picking setting stays saved: \(labels)")
         XCTAssertTrue(shows(app, "Applies after this song"))
         save(app, isOpenLayout ? "open-tune-adjusted" : "closed-tune-adjusted")
+    }
+
+    /// Bundled fixture art, so the photo frame is distinct from the station ident.
+    /// The personality line uses the honest preset copy and must not say On Air.
+    @MainActor
+    func testAlbumArtAndPersonalityStayTruthful() throws {
+        let app = launch(albumArt: true)
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
+        XCTAssertTrue(shows(app, "Morning Light"))
+        XCTAssertTrue(shows(app, "Morning Calm"))
+        XCTAssertTrue(shows(app, "Warm"))
+        XCTAssertTrue(shows(app, "Same voice"))
+        XCTAssertFalse(shows(app, "On Air"))
+        XCTAssertTrue(app.buttons["transport.playPause"].isHittable)
+        save(app, isOpenLayout ? "open-album-art" : "closed-album-art")
     }
 }

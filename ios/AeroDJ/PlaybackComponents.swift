@@ -84,32 +84,44 @@ struct StationBackdrop: View {
     let artworkURL: URL?
     let style: StationArtStyle
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         let dark = scheme == .dark
+        // When a picture is on screen, it leads. The station wash stays quieter underneath.
+        let wash = artworkURL == nil ? 1.0 : 0.45
         ZStack {
             Color(.systemBackground)
             if !reduceTransparency {
-                LinearGradient(colors: [style.color(0).opacity(dark ? 0.55 : 0.40),
-                                        style.color(1).opacity(dark ? 0.28 : 0.14),
+                LinearGradient(colors: [style.color(0).opacity((dark ? 0.55 : 0.40) * wash),
+                                        style.color(1).opacity((dark ? 0.28 : 0.14) * wash),
                                         Color(.systemBackground).opacity(0)],
                                startPoint: .top, endPoint: .bottom)
-                RadialGradient(colors: [style.color(2).opacity(dark ? 0.20 : 0.16), .clear],
+                RadialGradient(colors: [style.color(2).opacity((dark ? 0.20 : 0.16) * wash), .clear],
                                center: .bottomTrailing, startRadius: 0, endRadius: 700)
                 if let artworkURL {
-                    AsyncImage(url: artworkURL) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().scaledToFill().blur(radius: 70).opacity(dark ? 0.30 : 0.35)
-                        }
-                    }
+                    blurredArtwork(artworkURL, opacity: dark ? 0.42 : 0.48)
                 }
             } else {
                 style.color(0).opacity(dark ? 0.25 : 0.12)
             }
         }
-        .animation(.easeInOut(duration: 0.8), value: style)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.8), value: style)
         .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private func blurredArtwork(_ url: URL, opacity: Double) -> some View {
+        if url.isFileURL, let uiImage = UIImage(contentsOfFile: url.path) {
+            Image(uiImage: uiImage).resizable().scaledToFill().blur(radius: 70).opacity(opacity)
+        } else {
+            AsyncImage(url: url) { phase in
+                if case .success(let image) = phase {
+                    image.resizable().scaledToFill().blur(radius: 70).opacity(opacity)
+                }
+            }
+        }
     }
 }
 
@@ -125,7 +137,9 @@ struct ArtworkView: View {
 
     var body: some View {
         Group {
-            if let url = track.artworkURL {
+            if let url = track.artworkURL, url.isFileURL, let uiImage = UIImage(contentsOfFile: url.path) {
+                Image(uiImage: uiImage).resizable().scaledToFill()
+            } else if let url = track.artworkURL {
                 AsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
                         image.resizable().scaledToFill()
@@ -288,6 +302,13 @@ struct TransportRow: View {
     let accent: Color
     var onTune: (() -> Void)?
     @State private var taps = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Icons scale with Dynamic Type, then stop so three targets still fit one hand.
+    @ScaledMetric(relativeTo: .title2) private var playIcon: CGFloat = 28
+    @ScaledMetric(relativeTo: .body) private var sideIcon: CGFloat = 20
+
+    private var playSide: CGFloat { min(84, max(64, playIcon + 40)) }
+    private var sideSide: CGFloat { min(64, max(44, sideIcon + 32)) }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -299,8 +320,9 @@ struct TransportRow: View {
                     } label: {
                         Label("Tune station", systemImage: "slider.horizontal.3")
                             .labelStyle(.iconOnly)
-                            .font(.system(size: 20, weight: .semibold))
-                            .frame(width: 52, height: 52)
+                            .font(.system(size: min(sideIcon, CGFloat(28)), weight: .semibold))
+                            .frame(width: sideSide, height: sideSide)
+                            .background(Circle().fill(Color(.quaternarySystemFill)))
                             .contentShape(Circle())
                     }
                     .foregroundStyle(.secondary)
@@ -313,16 +335,14 @@ struct TransportRow: View {
                 taps += 1
                 if transport == .playing { actions.pause() } else { Task { await actions.resume() } }
             } label: {
-                Label(transport == .playing ? "Pause" : "Play",
-                      systemImage: transport == .playing ? "pause.fill" : "play.fill")
+                playLabel
                     .labelStyle(.iconOnly)
-                    .font(.system(size: 28, weight: .bold))
+                    .font(.system(size: min(playIcon, CGFloat(34)), weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 68, height: 68)
+                    .frame(width: playSide, height: playSide)
                     .background(Circle().fill(accent.gradient))
                     .shadow(color: accent.opacity(0.35), radius: 10, y: 4)
                     .contentShape(Circle())
-                    .contentTransition(.symbolEffect(.replace))
             }
             .accessibilityIdentifier("transport.playPause")
 
@@ -333,8 +353,9 @@ struct TransportRow: View {
                 } label: {
                     Label("Skip", systemImage: "forward.fill")
                         .labelStyle(.iconOnly)
-                        .font(.system(size: 24, weight: .semibold))
-                        .frame(width: 52, height: 52)
+                        .font(.system(size: min(sideIcon + CGFloat(2), CGFloat(28)), weight: .semibold))
+                        .frame(width: sideSide, height: sideSide)
+                        .background(Circle().fill(Color(.quaternarySystemFill)))
                         .contentShape(Circle())
                 }
                 .foregroundStyle(.primary)
@@ -343,6 +364,17 @@ struct TransportRow: View {
         }
         .buttonStyle(.plain)
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
+    }
+
+    @ViewBuilder
+    private var playLabel: some View {
+        let label = Label(transport == .playing ? "Pause" : "Play",
+                          systemImage: transport == .playing ? "pause.fill" : "play.fill")
+        if reduceMotion {
+            label
+        } else {
+            label.contentTransition(.symbolEffect(.replace))
+        }
     }
 
     private func side<V: View>(@ViewBuilder _ content: () -> V) -> some View {

@@ -74,7 +74,9 @@ struct PlayingScreen: View {
         switch mode {
         case .compact:
             CompactPlayer(station: currentStation, content: content, snapshot: snapshot,
-                          actions: actions, dj: dj, accent: accent, soundTags: soundTags, search: search,
+                          actions: actions, dj: dj, accent: accent, soundTags: soundTags,
+                          personalityTitle: personalityTitle, personalityDetail: personalityDetail,
+                          search: search,
                           searchQuery: $searchQuery,
                           onOpenWorkspace: { segment = .queue; showWorkspace = true },
                           onTune: { segment = .tune; showWorkspace = true },
@@ -107,6 +109,10 @@ struct PlayingScreen: View {
 
     private var accent: Color { StationArtStyle.station(currentStation).color(1) }
 
+    /// The personality that is playing now, not a pending edit.
+    private var personalityTitle: String { studio.station.active.personality.title }
+    private var personalityDetail: String { studio.station.active.personality.honestDescription }
+
     /// Saved genres and moods: identity only. Song picking doesn't use them yet.
     private var soundTags: [String] {
         let active = studio.station.active
@@ -123,6 +129,7 @@ struct PlayingScreen: View {
     private func zoneA(artworkSide: CGFloat) -> NowPlayingPanel {
         NowPlayingPanel(station: currentStation, content: content, snapshot: snapshot,
                         actions: actions, dj: dj, accent: accent, soundTags: soundTags,
+                        personalityTitle: personalityTitle, personalityDetail: personalityDetail,
                         artworkSide: artworkSide, showsUpNext: segment != .queue,
                         onQueue: { segment = .queue }, onTune: { segment = .tune },
                         onReview: { segment = .connections })

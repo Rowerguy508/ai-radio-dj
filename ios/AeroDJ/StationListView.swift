@@ -11,7 +11,12 @@ struct StationListView: View {
     var body: some View {
         #if DEBUG
         if StudioCapture.isRequested(mode: dependencies.mode) {
-            StudioCaptureView(dependencies: dependencies)
+            // Album-art fixture is a separate capture. Fry's scenarios stay on StudioCaptureView.
+            if AlbumArtCapture.isRequested() {
+                AlbumArtCaptureView(dependencies: dependencies)
+            } else {
+                StudioCaptureView(dependencies: dependencies)
+            }
         } else {
             stationList
         }

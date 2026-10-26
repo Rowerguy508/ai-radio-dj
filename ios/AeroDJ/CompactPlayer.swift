@@ -16,6 +16,9 @@ struct CompactPlayer: View {
     /// The station's saved sound (genres and moods), shown as identity, not as a promise
     /// about song picking.
     let soundTags: [String]
+    /// Preset actually in effect, plus `honestDescription`. Nil hides the line.
+    var personalityTitle: String? = nil
+    var personalityDetail: String? = nil
     let search: MusicSearch?
     @Binding var searchQuery: String
     let onOpenWorkspace: () -> Void
@@ -29,6 +32,11 @@ struct CompactPlayer: View {
                     switch content {
                     case .track(let track):
                         Spacer(minLength: 8)
+                        if let name = station?.name {
+                            StationIdentityLine(stationName: name, personalityTitle: personalityTitle,
+                                                personalityDetail: personalityDetail)
+                                .padding(.bottom, 14)
+                        }
                         ArtworkView(track: track, size: artworkSize(in: geo.size))
                         Spacer(minLength: 20)
                         TrackBlock(track: track, dj: dj, onReview: onReview, alignment: .leading)
@@ -115,11 +123,11 @@ struct TrackBlock: View {
         VStack(alignment: alignment, spacing: 6) {
             VStack(alignment: alignment, spacing: 4) {
                 Text(track.title)
-                    .font(.title2.weight(.bold))
+                    .font(.system(.title2, design: .serif, weight: .semibold))
                     .lineLimit(2)
                     .truncationMode(.tail)
                 Text(track.artistName)
-                    .font(.body)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)

@@ -170,7 +170,7 @@ private struct SourceCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .studioCard()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("connections.source.\(row.integration.rawValue)")
     }

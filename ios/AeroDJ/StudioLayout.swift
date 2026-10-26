@@ -65,6 +65,8 @@ struct NowPlayingPanel: View {
     let dj: DJStatusPresentation
     let accent: Color
     let soundTags: [String]
+    var personalityTitle: String? = nil
+    var personalityDetail: String? = nil
     let artworkSide: CGFloat
     /// Off while Zone B already shows the queue, so Up Next isn't listed twice.
     var showsUpNext = true
@@ -78,6 +80,11 @@ struct NowPlayingPanel: View {
             case .track(let track):
                 // Art and title sit in the optical middle of the free height, not stuck to the top.
                 Spacer(minLength: 8)
+                if let name = station?.name {
+                    StationIdentityLine(stationName: name, personalityTitle: personalityTitle,
+                                        personalityDetail: personalityDetail)
+                        .padding(.bottom, 12)
+                }
                 ArtworkView(track: track, size: artworkSide)
                     .frame(maxWidth: .infinity)
                 TrackBlock(track: track, dj: dj, onReview: onReview)
@@ -238,7 +245,14 @@ struct QueueList: View {
             }
         }
         .buttonStyle(.borderless)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background {
+            if isNowPlaying {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(.tertiarySystemFill))
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(isNowPlaying ? "Now playing: \(track.title), \(track.artistName)" : "\(track.title), \(track.artistName)")
     }
