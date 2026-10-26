@@ -5,7 +5,7 @@ import AeroDJCore
 /// reflects state and forwards user actions. No protected-stream mixing.
 struct PlayerView: View {
     let station: Station
-    @StateObject private var music = MusicKitService.shared
+    @StateObject private var music: MusicKitService
     @StateObject private var interlude: InterludePlaybackAdapter
     /// Device-test scaffold: one fixed line after the first song. The composite (#49)
     /// replaces this with the approved briefing script.
@@ -13,9 +13,10 @@ struct PlayerView: View {
     @State private var searchQuery = ""
     @State private var results: [Track] = []
 
-    init(station: Station) {
+    /// `music` is the app-scoped session from `AppDependencies`. Never a new player.
+    init(station: Station, music: MusicKitService) {
         self.station = station
-        let music = MusicKitService.shared
+        _music = StateObject(wrappedValue: music)
         _interlude = StateObject(wrappedValue: InterludePlaybackAdapter(music: music))
     }
 
@@ -116,5 +117,6 @@ struct PlayerView: View {
 }
 
 #Preview {
-    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil))
+    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil),
+               music: MusicKitService.shared)
 }
