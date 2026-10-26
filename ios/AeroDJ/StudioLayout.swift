@@ -66,6 +66,8 @@ struct NowPlayingPanel: View {
     let accent: Color
     let soundTags: [String]
     let artworkSide: CGFloat
+    /// Off while Zone B already shows the queue, so Up Next isn't listed twice.
+    var showsUpNext = true
     let onQueue: () -> Void
     let onTune: () -> Void
     let onReview: () -> Void
@@ -74,9 +76,10 @@ struct NowPlayingPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             switch content {
             case .track(let track):
+                // Art and title sit in the optical middle of the free height, not stuck to the top.
+                Spacer(minLength: 8)
                 ArtworkView(track: track, size: artworkSide)
                     .frame(maxWidth: .infinity)
-                    .padding(.top, 8)
                 TrackBlock(track: track, dj: dj, onReview: onReview)
                     .padding(.top, 22)
                 if !soundTags.isEmpty {
@@ -89,8 +92,10 @@ struct NowPlayingPanel: View {
             Spacer(minLength: 16)
             if content.showsTransport {
                 VStack(spacing: 8) {
-                    QueueAffordance(upNext: snapshot.upNext, action: onQueue)
-                    Divider().opacity(0.5)
+                    if showsUpNext {
+                        QueueAffordance(upNext: snapshot.upNext, action: onQueue)
+                        Divider().opacity(0.5)
+                    }
                     TransportRow(transport: snapshot.transport, actions: actions, accent: accent, onTune: onTune)
                 }
                 .padding(.horizontal, 16)

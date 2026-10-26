@@ -123,7 +123,7 @@ struct PlayingScreen: View {
     private func zoneA(artworkSide: CGFloat) -> NowPlayingPanel {
         NowPlayingPanel(station: currentStation, content: content, snapshot: snapshot,
                         actions: actions, dj: dj, accent: accent, soundTags: soundTags,
-                        artworkSide: artworkSide,
+                        artworkSide: artworkSide, showsUpNext: segment != .queue,
                         onQueue: { segment = .queue }, onTune: { segment = .tune },
                         onReview: { segment = .connections })
     }
