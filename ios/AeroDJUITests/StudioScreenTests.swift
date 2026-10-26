@@ -130,7 +130,7 @@ final class StudioScreenTests: XCTestCase {
         let cases: [(scenario: String, expect: String, transport: Bool)] = [
             ("empty", "Nothing playing", false),
             ("loading", "Connecting to Apple Music", false),
-            ("error", "could not play", true),
+            ("error", "DJ voice unavailable", true),  // speechFailed: caption, music continues
             ("denied", "Apple Music access is off", false),
         ]
         for c in cases {

@@ -87,10 +87,16 @@ struct StudioCaptureView: View {
         }
         .preferredColorScheme(UserDefaults.standard.bool(forKey: StudioCapture.darkKey) ? .dark : nil)
         .task {
-            // The launch path does not start Studio yet; load it here so the tuner and
-            // Connections show the test station's real state instead of "Loading".
+            // The app root's task starts Studio (b39d15f). Wait for that load to finish rather
+            // than loading again: a second load would overwrite the scenario's edits below.
             let studio = dependencies.studio
-            if studio.station.loadState == .notLoaded { await studio.start() }
+            for _ in 0..<200 {
+                switch studio.station.loadState {
+                case .ready, .failed: break
+                default: try? await Task.sleep(for: .milliseconds(50)); continue
+                }
+                break
+            }
             let defaults = UserDefaults.standard
             scenario = defaults.string(forKey: StudioCapture.scenarioKey).flatMap(StudioCaptureScenario.init) ?? .playing
             switch scenario {
