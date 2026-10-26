@@ -204,21 +204,28 @@ final class DJBreakSessionTests: XCTestCase {
                                 estimatedSeconds: 5, maxSeconds: 20, sourceItemID: noteID,
                                 source: .obsidian, provenance: "note:groceries")
         let morning = NarrationHandoff(cues: [review, note], maxSpokenSeconds: 60, experienceSeconds: 300)
+        let rows = [
+            ConnectionItem(id: reviewID, integration: .calendar, title: "Design review", state: .approved),
+            ConnectionItem(id: noteID, integration: .obsidian, title: "Grocery list", state: .approved),
+        ]
         let carry = EditorialCarryForward(report: NarrationScheduleReport(entries: [
             NarrationScheduleEntry(cue: review, outcome: .dropped(.notCarriedForward)),
             NarrationScheduleEntry(cue: note, outcome: .deferred(.noTrackBoundary)),
         ]))
 
-        let approved = ApprovedShowHandoff(isMorningShow: true, approved: morning, revokedOrUnapproved: false, carryForward: carry)
+        let approved = ApprovedShowHandoff(isMorningShow: true, approved: morning, revokedOrUnapproved: false,
+                                           carryForward: carry, connectionItems: rows)
         XCTAssertEqual(approved.forQueue(), morning)
 
-        let revoked = ApprovedShowHandoff(isMorningShow: true, approved: morning, revokedOrUnapproved: true, carryForward: carry)
+        let revoked = ApprovedShowHandoff(isMorningShow: true, approved: morning, revokedOrUnapproved: true,
+                                          carryForward: carry, connectionItems: rows)
         XCTAssertNil(revoked.forQueue())
         let unapproved = ApprovedShowHandoff(isMorningShow: true, approved: nil, revokedOrUnapproved: false)
         XCTAssertNil(unapproved.forQueue())
         XCTAssertNil(ApprovedShowHandoff.unapproved.forQueue())
 
-        let later = ApprovedShowHandoff(isMorningShow: false, approved: morning, revokedOrUnapproved: false, carryForward: carry)
+        let later = ApprovedShowHandoff(isMorningShow: false, approved: morning, revokedOrUnapproved: false,
+                                        carryForward: carry, connectionItems: rows)
         let laterHandoff = try XCTUnwrap(later.forQueue())
         XCTAssertEqual(laterHandoff.cues.map(\.id), [note.id])
         XCTAssertFalse(laterHandoff.cues.contains { $0.id == review.id })
@@ -253,6 +260,55 @@ final class DJBreakSessionTests: XCTestCase {
         let nextIDs = try await airedContentIDs(nextShow, after: 0)
         XCTAssertEqual(nextIDs, [note.id])
         XCTAssertFalse(nextIDs.contains(review.id))
+    }
+
+    /// Connections still lists every row. Only `ConnectionItemState.approved`
+    /// (`mayBeNarrated`) may be spoken.
+    func testOnlyApprovedConsentStateIsNarrated() async throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let approvedID = UUID()
+        let pendingID = UUID()
+        let flaggedID = UUID()
+        let notRequestedID = UUID()
+        let notRequested = ConnectionItemState.resolve(consent: .notRequested, expiresAt: nil, now: now,
+                                                       flagged: false, reconfirmed: false)
+        let rows = [
+            ConnectionItem(id: approvedID, integration: .calendar, title: "Design review", state: .approved),
+            ConnectionItem(id: pendingID, integration: .calendar, title: "Pending sync", state: .pendingApproval),
+            ConnectionItem(id: flaggedID, integration: .obsidian, title: "Flagged memo", state: .flaggedForReview),
+            ConnectionItem(id: notRequestedID, integration: .shareInbox, title: "Unasked task", state: notRequested),
+        ]
+        XCTAssertEqual(rows.filter { $0.state.mayBeNarrated }.map(\.id), [approvedID])
+        XCTAssertEqual(rows.map(\.title), ["Design review", "Pending sync", "Flagged memo", "Unasked task"],
+                       "every consent state still appears in Connections")
+
+        func cue(_ id: UUID, _ order: Int, _ title: String, _ source: ContextSourceKind) -> NarrationCue {
+            NarrationCue(id: UUID(), order: order, group: order, kind: .note,
+                         text: "Item \(title) stays in the script.",
+                         estimatedSeconds: 4, maxSeconds: 16, sourceItemID: id, source: source, provenance: "row:\(order)")
+        }
+        let handoff = NarrationHandoff(cues: [
+            cue(approvedID, 1, "Design review", .calendar),
+            cue(pendingID, 2, "Pending sync", .calendar),
+            cue(flaggedID, 3, "Flagged memo", .obsidian),
+            cue(notRequestedID, 4, "Unasked task", .userShared),
+        ], maxSpokenSeconds: 60, experienceSeconds: 300)
+        let show = ApprovedShowHandoff(isMorningShow: true, approved: handoff, revokedOrUnapproved: false, connectionItems: rows)
+        let queued = try XCTUnwrap(show.forQueue())
+        XCTAssertEqual(queued.cues.compactMap(\.sourceItemID), [approvedID])
+
+        let session = await rig()
+        await session.session.queueStarted(djTracks(8), briefing: queued)
+        await session.session.songStarted(index: 0, remaining: .seconds(180))
+        await until { if case .ready = session.dj.studioState { true } else { false } }
+        let handedBreak = await session.session.naturalBoundary(afterTrack: 0)
+        let handed = try XCTUnwrap(handedBreak)
+        let spoken = handed.cues.map(\.text).joined(separator: " ")
+        XCTAssertEqual(handed.cues.filter(\.isContent).compactMap(\.sourceItemID), [approvedID])
+        XCTAssertTrue(spoken.contains("Design review"), spoken)
+        for hidden in ["Pending sync", "Flagged memo", "Unasked task"] {
+            XCTAssertFalse(spoken.contains(hidden), spoken)
+        }
     }
 
     private func airedContentIDs(_ rig: Rig, after boundary: Int) async throws -> [UUID] {

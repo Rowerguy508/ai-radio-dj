@@ -144,13 +144,17 @@ public struct ApprovedShowHandoff: Equatable, Sendable {
     public var revokedOrUnapproved: Bool
     /// Previous show's carry-forward. Used only when `isMorningShow` is false.
     public var carryForward: EditorialCarryForward?
+    /// Rows still shown in Connections. A cue is spoken only when the row with the
+    /// same id has `state.mayBeNarrated` (that state is `.approved`).
+    public var connectionItems: [ConnectionItem]
 
     public init(isMorningShow: Bool, approved: NarrationHandoff?, revokedOrUnapproved: Bool,
-                carryForward: EditorialCarryForward? = nil) {
+                carryForward: EditorialCarryForward? = nil, connectionItems: [ConnectionItem] = []) {
         self.isMorningShow = isMorningShow
         self.approved = approved
         self.revokedOrUnapproved = revokedOrUnapproved
         self.carryForward = carryForward
+        self.connectionItems = connectionItems
     }
 
     /// No briefing. `queueStarted` receives nil.
@@ -159,14 +163,34 @@ public struct ApprovedShowHandoff: Equatable, Sendable {
     }
 
     /// The handoff argument for `queueStarted`, or nil when nothing may air.
+    /// Content cues stay only when their Connections row passes `mayBeNarrated`.
     public func forQueue() -> NarrationHandoff? {
         guard !revokedOrUnapproved else { return nil }
-        if isMorningShow { return approved }
-        let cues = carryForward?.eligibleNextShow ?? []
-        guard !cues.isEmpty else { return nil }
-        return NarrationHandoff(cues: cues,
-                                maxSpokenSeconds: approved?.maxSpokenSeconds ?? 150,
-                                experienceSeconds: approved?.experienceSeconds ?? 300)
+        let candidate: NarrationHandoff?
+        if isMorningShow {
+            candidate = approved
+        } else {
+            let cues = carryForward?.eligibleNextShow ?? []
+            guard !cues.isEmpty else { return nil }
+            candidate = NarrationHandoff(cues: cues,
+                                        maxSpokenSeconds: approved?.maxSpokenSeconds ?? 150,
+                                        experienceSeconds: approved?.experienceSeconds ?? 300)
+        }
+        guard let candidate else { return nil }
+        return Self.narratable(candidate, items: connectionItems)
+    }
+
+    /// Drops every content cue whose Connections row is not `.approved`.
+    /// Pending, flagged, and not-requested rows stay in `connectionItems`.
+    static func narratable(_ handoff: NarrationHandoff, items: [ConnectionItem]) -> NarrationHandoff? {
+        let allowed = Set(items.filter { $0.state.mayBeNarrated }.map(\.id))
+        let cues = handoff.cues.filter { cue in
+            guard let id = cue.sourceItemID else { return true }
+            return allowed.contains(id)
+        }
+        guard cues.contains(where: \.isContent) else { return nil }
+        return NarrationHandoff(cues: cues, maxSpokenSeconds: handoff.maxSpokenSeconds,
+                                experienceSeconds: handoff.experienceSeconds)
     }
 }
 
