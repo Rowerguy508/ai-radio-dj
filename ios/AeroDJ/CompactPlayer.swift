@@ -234,6 +234,7 @@ struct TrackBlock: View {
     }
 }
 
+#if DEBUG
 #Preview("Compact playing") {
     CompactPlayer(station: PlaybackFixtures.station,
                   content: .track(PlaybackFixtures.songs[0]),
@@ -250,3 +251,4 @@ struct TrackBlock: View {
                   soundTags: [], search: nil, searchQuery: .constant(""),
                   onOpenWorkspace: {}, onTune: {}, onReview: {})
 }
+#endif
