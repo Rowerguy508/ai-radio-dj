@@ -78,9 +78,9 @@ struct PlayerView: View {
                     interlude.stop()
                 }
             }
-            // Purge calls this. It is the same stop the speaking player has to hear.
+            // Purge calls this. The closure is the only production caller of the stop.
             djSession.onBreakMustStop = { [interlude] reason in
-                interlude.stopActiveBreak(reason: reason)
+                interlude.stopCurrentInterlude(reason: reason)
             }
             // A skip cuts the skipped song's break, so a prepared break for it is never played.
             music.onSongSkipped = { [djSession] index in

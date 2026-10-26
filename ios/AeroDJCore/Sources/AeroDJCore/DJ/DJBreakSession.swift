@@ -126,7 +126,7 @@ public final class DJBreakSession {
         dj.send(.sessionStopped)
     }
 
-    /// The player sets this to `InterludePlaybackAdapter.stopActiveBreak(reason:)`.
+    /// The player sets this to `InterludePlaybackAdapter.stopCurrentInterlude(reason:)`.
     /// `purge` calls it so a clip that is already playing stops in this turn.
     public var onBreakMustStop: (@MainActor (InterludeStopReason) -> Void)?
 

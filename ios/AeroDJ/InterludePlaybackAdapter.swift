@@ -106,8 +106,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// and only when `NarrationResumePolicy` still permits it. A finished queue entry is not
     /// replayed: `resumeIfAllowed` refuses it, and `PlayerView` loads the next track.
     ///
-    /// `DJBreakSession.purge` reaches this through `onBreakMustStop`. Sentinel calls purge;
-    /// this method is the player entry point.
+    /// Revoke stop used by `stopCurrentInterlude(reason: .sourceRevoked)`.
     func stopActiveBreak(reason: InterludeStopReason) {
         let effect = ActiveBreakStop.apply(
             isPlaying: stopState.isPlaying,
@@ -136,6 +135,12 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// interlude adapter.
     nonisolated func stopCurrentInterlude(reason: InterludeStopReason) {
         MainActorImmediate.run {
+            // Consent revoke records a revoke and resumes once. Other reasons keep the
+            // existing halt, which ends the break as cancelled.
+            if reason == .sourceRevoked {
+                self.stopActiveBreak(reason: reason)
+                return
+            }
             guard self.stopState.stop(reason: reason) else { return }
             self.log.notice("\(PlaybackLog.interludeStop(reason: reason), privacy: .public)")
             self.haltAudio()
