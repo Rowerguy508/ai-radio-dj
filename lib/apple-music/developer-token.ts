@@ -12,10 +12,11 @@ function base64url(value: Buffer | string): string {
 }
 
 function ttlSeconds(requested: number | undefined): number {
-  if (requested === undefined || !Number.isFinite(requested) || requested <= 0) {
-    return DEVELOPER_TOKEN_MAX_TTL_SECONDS;
+  if (requested === undefined) return DEVELOPER_TOKEN_MAX_TTL_SECONDS;
+  if (!Number.isFinite(requested) || requested <= 0 || requested > DEVELOPER_TOKEN_MAX_TTL_SECONDS) {
+    throw new Error('ttl refused');
   }
-  return Math.min(Math.floor(requested), DEVELOPER_TOKEN_MAX_TTL_SECONDS);
+  return Math.floor(requested);
 }
 
 /** Mint a short-lived MusicKit developer token. The private key stays on the server. */
@@ -23,9 +24,12 @@ export function mintDeveloperToken(options: {
   teamId: string;
   keyId: string;
   privateKeyPem: string;
+  origins: readonly string[];
   now?: number;
   ttlSeconds?: number;
 }): string {
+  const origins = options.origins.map((origin) => origin.trim()).filter(Boolean);
+  if (origins.length === 0) throw new Error('origin required');
   const issuedAt = options.now ?? Math.floor(Date.now() / 1000);
   const expiresAt = issuedAt + ttlSeconds(options.ttlSeconds);
   const header = base64url(JSON.stringify({ alg: 'ES256', kid: options.keyId }));
@@ -33,6 +37,7 @@ export function mintDeveloperToken(options: {
     iss: options.teamId,
     iat: issuedAt,
     exp: expiresAt,
+    origin: origins,
   }));
   const signingInput = `${header}.${payload}`;
   const key = createPrivateKey(normalizePrivateKey(options.privateKeyPem));

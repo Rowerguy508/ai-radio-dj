@@ -1,5 +1,11 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { mintDeveloperToken } from '@/lib/apple-music/developer-token';
+import {
+  clientAddress,
+  originAllowed,
+  parseOriginAllowlist,
+  permitTokenRequest,
+} from '@/lib/apple-music/token-access';
 
 function configuredValue(name: string): string | null {
   const value = process.env[name];
@@ -7,9 +13,9 @@ function configuredValue(name: string): string | null {
   return value;
 }
 
-// Caller-supplied lifetimes are ignored. Missing or unusable key material is a 404
-// with no detail, so the browser can skip MusicKit instead of embedding a token.
-export function GET() {
+// The Origin header is not a boundary against non-browser callers: they can set it.
+// MusicKit JS enforces the token's `origin` claim, and the lifetime stays capped.
+function issue(request: NextRequest) {
   const teamId = configuredValue('APPLE_MUSIC_TEAM_ID');
   const keyId = configuredValue('APPLE_MUSIC_KEY_ID');
   const privateKey = configuredValue('APPLE_MUSIC_PRIVATE_KEY');
@@ -17,10 +23,33 @@ export function GET() {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
+  if (!permitTokenRequest(clientAddress(request))) {
+    return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+  }
+
+  const allowlist = parseOriginAllowlist(process.env.APPLE_MUSIC_ALLOWED_ORIGINS);
+  const origin = request.headers.get('origin');
+  if (!originAllowed(origin, allowlist)) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
   try {
-    const token = mintDeveloperToken({ teamId, keyId, privateKeyPem: privateKey });
+    const token = mintDeveloperToken({
+      teamId,
+      keyId,
+      privateKeyPem: privateKey,
+      origins: allowlist,
+    });
     return NextResponse.json({ token });
   } catch {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
+}
+
+export function GET(request: NextRequest) {
+  return issue(request);
+}
+
+export function POST(request: NextRequest) {
+  return issue(request);
 }

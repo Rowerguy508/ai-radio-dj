@@ -71,6 +71,7 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 APPLE_MUSIC_TEAM_ID=your-team-id
 APPLE_MUSIC_KEY_ID=your-key-id
 APPLE_MUSIC_PRIVATE_KEY=your-p8-pem
+APPLE_MUSIC_ALLOWED_ORIGINS=https://your-domain.example
 
 # ElevenLabs
 ELEVENLABS_API_KEY=your-api-key
