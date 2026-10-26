@@ -42,11 +42,13 @@ struct AppDependencies {
         // Live connection sources: the App Group inbox when it exists. Calendar and Notes
         // readers are not built yet, so they report "not determined" and cannot be authorized.
         let inbox = SharedInboxReview.appGroupInbox().map { [SharedInboxConnectionProvider(review: $0)] } ?? []
+        // One preparer per launch: revoking a source purges prepared breaks as well as cached audio.
+        let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence())
         let connections = ConnectionsModel(
             station: station,
             sourceReader: StaticConnectionSourceReader(),
             providers: inbox,
-            purger: NarrationPurger(cache: voice.cache, preparer: nil))
+            purger: NarrationPurger(cache: voice.cache, preparer: preparer))
         let recipes = StationRecipeLibrary(store: FileStationRecipeStore(fileURL: supportURL("StationRecipes/recipes.json")))
         return AppDependencies(
             mode: .live,
@@ -71,11 +73,13 @@ struct AppDependencies {
         let voice = TestStation.makeRenderer(routes: [VoiceRoute.onDevice()],
                                              cache: InMemoryAudioCache(maxAge: TestStation.cacheRetention))
         let dj = DJPresentationStore()
+        let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,
+                                       cadence: TestStation.cadence)
         let connections = ConnectionsModel(
             station: station,
             sourceReader: StaticConnectionSourceReader(),
             providers: [InMemoryConnectionItemProvider(integration: .shareInbox, items: [])],
-            purger: NarrationPurger(cache: voice.cache, preparer: nil))
+            purger: NarrationPurger(cache: voice.cache, preparer: preparer))
         let recipes = StationRecipeLibrary(store: InMemoryStationRecipeStore())
         return AppDependencies(
             mode: .testStation,
