@@ -72,9 +72,12 @@ public struct PlaybackBoundaryDetector: Sendable {
         wasPlaying = false
     }
 
-    /// Named holds are not applied yet. The untyped `pausedByApp()` still suppresses a stop.
+    /// A user pause, a system interruption, and a route loss are the same non-finish.
     public mutating func pausedByApp(_ cause: HoldCause) {
-        _ = cause
+        switch cause {
+        case .userPause, .systemInterruption, .routeLoss:
+            pausedByApp()
+        }
     }
 
     public mutating func consume(_ observation: PlaybackObservation) -> PlaybackBoundary? {

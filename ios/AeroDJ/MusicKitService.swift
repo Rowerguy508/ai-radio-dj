@@ -114,7 +114,7 @@ final class MusicKitService: ObservableObject {
     /// The user pressed pause. A DJ line that is speaking stops too.
     func pause() {
         _ = sessionPolicy.userPause()
-        boundaries.pausedByApp()
+        boundaries.pausedByApp(.userPause)
         player.pause()
         isPlaying = false
         send(.userPaused)
@@ -322,6 +322,14 @@ final class MusicKitService: ObservableObject {
 
     /// Phone call or route change. The policy decides; this only performs the directive.
     private func applySession(_ notice: AudioSessionNotice) {
+        switch notice {
+        case .interruptionBegan:
+            boundaries.pausedByApp(.systemInterruption)
+        case .routeChanged(.oldDeviceUnavailable):
+            boundaries.pausedByApp(.routeLoss)
+        case .interruptionEnded, .routeChanged(.other):
+            break
+        }
         switch sessionPolicy.handle(notice, breakIsActive: isBreakActive) {
         case .suspendPlayback:
             pausePlayerForBreak()
