@@ -5,53 +5,54 @@ import SwiftUI
 /// Playing + transport; Zone B = segmented Queue / Tune / Connections workspace.
 /// Both zones share the leaf views from PlaybackComponents.swift. Switching a
 /// segment never resets playback or scrolls Zone A.
+///
+/// Binds to Fry's `StudioPresentationModel` (station tuner + Connections +
+/// DJ store), per ui-contract.md §11. It never owns those models.
 struct StudioLayout: View {
     let station: StationRef?
     let snapshot: PlaybackSnapshot
     let actions: PlaybackActions
-    let dj: DJPresentationState
-    let stationModel: StationConfigurationModel
-    let onOpenQueue: () -> Void
+    let studio: StudioPresentationModel
     @State private var segment: WorkspaceSegment = .queue
-    @State private var browsing = false
 
     var body: some View {
         GeometryReader { geo in
-            HStack(alignment: .top, spacing: gutter) {
-                // Zone A: persistent Now Playing + transport.
+            HStack(alignment: .top, spacing: StudioMetrics.gutter) {
+                // Zone A: persistent Now Playing + transport. Enforce its minimum
+                // width so project-critical text/controls never collapse.
                 NowPlayingPanel(station: station, snapshot: snapshot,
-                                actions: actions, dj: dj, height: geo.size.height)
-                    .frame(minWidth: 0, maxWidth: .infinity)
-                    .padding(.leading, edgeInset)
+                                actions: actions, dj: studio.dj.state,
+                                height: geo.size.height)
+                    .frame(minWidth: StudioMetrics.zoneAMinWidth,
+                           maxWidth: .infinity)
+                    .padding(.leading, StudioMetrics.edgeInset)
 
-                // Zone B: persistent workspace.
-                WorkspaceView(stationModel: stationModel, snapshot: snapshot,
-                              actions: actions, dj: dj,
-                              segment: $segment, onOpenQueue: onOpenQueue,
-                              browsing: $browsing)
-                    .frame(minWidth: zoneBMinWidth, maxWidth: .infinity)
-                    .padding(.trailing, edgeInset)
+                // Zone B: persistent workspace. Enforce its minimum width.
+                WorkspaceView(studio: studio, snapshot: snapshot,
+                              actions: actions, segment: $segment)
+                    .frame(minWidth: StudioMetrics.zoneBMinWidth,
+                           maxWidth: .infinity)
+                    .padding(.trailing, StudioMetrics.edgeInset)
             }
             .padding(.vertical, 16)
         }
         .background(Color(.systemBackground))
     }
-
-    // MARK: Constants (ui-contract.md §5)
-
-    private let gutter: CGFloat = 24
-    private let edgeInset: CGFloat = 16
-    private let zoneBMinWidth: CGFloat = 340
 }
 
 /// Additive layout constants shared with the width switch in PlayingScreen.
+/// Source of truth for the breakpoint AND the zones' actual minimum widths, so
+/// the container switch and the HStack geometry can never disagree.
 enum StudioMetrics {
     static let gutter: CGFloat = 24
     static let edgeInset: CGFloat = 16
     static let zoneAMinWidth: CGFloat = 320
     static let zoneBMinWidth: CGFloat = 340
-    /// 320 + 24 + 340 = 684. The only layout decision.
-    static var studioMinWidth: CGFloat { zoneAMinWidth + gutter + zoneBMinWidth }
+    /// Includes both horizontal edge insets (16 + 16), so at this width the
+    /// zones still get exactly their minimums: 320 + 24 + 340 + 32 = 716.
+    static var studioMinWidth: CGFloat {
+        zoneAMinWidth + gutter + zoneBMinWidth + (edgeInset * 2)
+    }
 }
 
 /// Zone A: persistent Now Playing + always-visible transport.
@@ -96,13 +97,10 @@ struct NowPlayingPanel: View {
 
 /// Zone B: the three-segment workspace.
 struct WorkspaceView: View {
-    let stationModel: StationConfigurationModel
+    let studio: StudioPresentationModel
     let snapshot: PlaybackSnapshot
     let actions: PlaybackActions
-    let dj: DJPresentationState
     @Binding var segment: WorkspaceSegment
-    let onOpenQueue: () -> Void
-    @Binding var browsing: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -119,9 +117,9 @@ struct WorkspaceView: View {
                     QueueList(snapshot: snapshot, editingAllowed: actions.editUpNext != nil,
                               applyEdit: actions.editUpNext)
                 case .tune:
-                    TuneForm(model: stationModel)
+                    TuneForm(model: studio.station)
                 case .connections:
-                    ConnectionsList(model: stationModel)
+                    ConnectionsList(model: studio.connections)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -249,22 +247,19 @@ struct LabeledRow: View {
 }
 
 struct StudioLayoutPreviewLoader: View {
-    @State private var model: StationConfigurationModel?
+    @State private var studio: StudioPresentationModel?
 
     var body: some View {
         Group {
-            if let model {
-                StudioLayout(
-                    station: PlaybackFixtures.station,
-                    snapshot: PlaybackFixtures.playing,
-                    actions: .preview,
-                    dj: .idle,
-                    stationModel: model,
-                    onOpenQueue: {})
+            if let studio {
+                StudioLayout(station: PlaybackFixtures.station,
+                             snapshot: PlaybackFixtures.playing,
+                             actions: .preview,
+                             studio: studio)
             } else {
                 ProgressView()
             }
         }
-        .task { model = await StationConfigurationModel.preview() }
+        .task { studio = await StudioPresentationModel.preview() }
     }
 }

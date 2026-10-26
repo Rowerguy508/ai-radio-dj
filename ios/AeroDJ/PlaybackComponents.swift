@@ -189,10 +189,12 @@ struct PlaybackErrorBanner: View {
         if let error {
             switch error.kind {
             case .notAuthorized:
+                // Explanation state until root wiring injects the authorize action;
+                // never a dead button. §9: "Allow Apple Music to play your station."
                 errorCard(
                     title: "Allow Apple Music to play your station.",
-                    detail: nil,
-                    primary: AnyView(Button("Allow") { /* routes to system prompt (engine-owned) */ }.buttonStyle(.borderedProminent)),
+                    detail: "Authorization is handled in the Apple Music settings when you start a station.",
+                    primary: nil,
                     dismiss: nil
                 )
             case .subscriptionRequired:

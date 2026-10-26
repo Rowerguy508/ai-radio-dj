@@ -1,119 +1,98 @@
 import AeroDJCore
 import SwiftUI
 
-/// Connections workspace (ui-contract.md §2.4, §9). One row per integration with
-/// its truthful `integrationStatus(_:)`. "Connected" appears only when
-/// `mayShowConnected`. Requesting never grants access: it routes to the consent
-/// flow. Nothing here invents a connected state.
+/// Connections workspace (ui-contract.md §2.4, §9). Binds to Fry's `ConnectionsModel`
+/// (`StudioPresentationModel.connections`): one row per `ConnectionSourceRow` with
+/// truthful description, scope and the exact per-state actions the contract offers
+/// (allow access, choose again, open Settings, stop using). "Connected" appears only
+/// when `ConnectionSourceRow.mayShowConnected`. Nothing here invents connected state,
+/// and nothing claims to manage what it can't toggle off.
 struct ConnectionsList: View {
-    let model: StationConfigurationModel
+    let model: ConnectionsModel
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(StationIntegration.allCases, id: \.self) { integration in
-                    row(for: integration)
-                    if integration != StationIntegration.allCases.last {
+                ForEach(model.sources) { row in
+                    rowView(row)
+                    if row.id != model.sources.last?.id {
                         Divider()
                     }
                 }
             }
             .padding(.bottom, 16)
         }
+        .onAppear { Task { await model.refresh() } }
     }
 
     @ViewBuilder
-    private func row(for integration: StationIntegration) -> some View {
-        let status = model.integrationStatus(integration)
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: icon(for: integration))
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .frame(width: 32)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name(for: integration))
-                    .font(.subheadline)
-                    .lineLimit(1)
-                Text(copy(for: status))
-                    .font(.caption)
+    private func rowView(_ row: ConnectionSourceRow) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: icon(for: row.integration))
+                    .font(.title3)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .frame(width: 32)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    statusLine(row)
+                }
+
+                Spacer()
+
+                if row.mayShowConnected {
+                    connectedBadge
+                }
             }
 
-            Spacer()
+            Text(row.scope)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-            statusBadge(for: status)
+            if !row.actions.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(row.actions, id: \.self) { action in
+                        Button {
+                            Task { await model.perform(action, onSource: row.integration) }
+                        } label: {
+                            Text(action.title)
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.leading, 44)
+            }
         }
         .padding(.vertical, 12)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            // Requesting routes to consent; it never grants here.
-            Task { await model.setIntegration(integration, requested: true) }
-        }
     }
 
     @ViewBuilder
-    private func statusBadge(for status: StationIntegrationStatus) -> some View {
-        switch status {
-        case .on:
-            // Only .on may show as connected (mayShowConnected).
-            Text("Connected")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.green)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Capsule().fill(.green.opacity(0.12)))
-                .lineLimit(1)
-        case .off:
-            Text("Off")
+    private func statusLine(_ row: ConnectionSourceRow) -> some View {
+        if !row.mayShowConnected {
+            Text(row.description)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-        case .checking:
-            Text("Checking…")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        case .consentReviewRequired:
-            Text("Consent needed")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        case .blocked:
-            Text("Blocked")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private func copy(for status: StationIntegrationStatus) -> String {
-        switch status {
-        case .off:
-            "Not requested. Tap to connect — you'll review consent first."
-        case .checking:
-            "Checking permission…"
-        case .on:
-            "In use. Items are filtered before narration. Tap to manage."
-        case .consentReviewRequired:
-            "Needs your review before anything is read."
-        case .blocked(let consent):
-            switch consent {
-            case .denied: "Calendar access is off. Open Settings to allow it."
-            case .revoked: "Revoked. Tap to request again."
-            case .notRequested: "Needs your review before anything is read."
-            case .granted: "In use."
-            }
-        }
-    }
-
-    private func name(for integration: StationIntegration) -> String {
-        switch integration {
-        case .calendar: "Calendar"
-        case .shareInbox: "Shared Items"
-        case .obsidian: "Notes"
-        }
+    private var connectedBadge: some View {
+        Text("Connected")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.green)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(.green.opacity(0.12)))
+            .lineLimit(1)
     }
 
     private func icon(for integration: StationIntegration) -> String {
@@ -130,16 +109,16 @@ struct ConnectionsList: View {
 }
 
 struct ConnectionsListPreviewLoader: View {
-    @State private var model: StationConfigurationModel?
+    @State private var studio: StudioPresentationModel?
 
     var body: some View {
         Group {
-            if let model {
-                ConnectionsList(model: model)
+            if let studio {
+                ConnectionsList(model: studio.connections)
             } else {
                 ProgressView()
             }
         }
-        .task { model = await StationConfigurationModel.preview() }
+        .task { studio = await StudioPresentationModel.preview() }
     }
 }
