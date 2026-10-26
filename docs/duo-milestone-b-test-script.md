@@ -248,13 +248,40 @@ A tick here is the player's one-second poll. The bar is: speech is silent before
 interlude stop reason=sourceRevoked
 ```
 
-**What the source does today.** `stopCurrentInterlude(reason: .sourceRevoked)` stops `AVAudioPlayer` before it returns, on the main thread in that turn (`MainActorImmediate`). Nothing calls it. `PlayerView` wires `onBreakMustStop` to `interlude.stop()` for pause, calls, and route removal only. `NarrationPurger.purge` drops future plans, prepared breaks, and cached audio. `takeBreak` has already cleared the playing break out of the preparer, so a purge cannot see it. `DJBreakSession.purge` replans later breaks and does not stop the player. Routine transitions are built with `sourceItemID: nil`, and `MusicSearch.live` calls `queueStarted` without a `briefing`. Until that handoff exists, the on-screen headline is "DJ" and this step **cannot be scored**: there is no personal source in the clip to revoke.
+Silence on that recording does not prove the rendered-voice files are gone. Record the cache file count three times: before the revoke (baseline), right after the revoke while the app is still running, and again after a relaunch. The two counts Sentinel asked for are the last two. The baseline is what makes a drop visible. A baseline of 0 means nothing was cached, and the file half of this step cannot be scored.
+
+**Where the cache actually is.** `VoiceRendering.swift` has two caches and no logger.
+
+- Live mode, the launch line `runtime mode: live`. `VoiceRenderer.onDeviceDefault()` (`OnDeviceSpeechProvider.swift`) builds a `FileAudioCache` at Application Support `Voice/Cache`. Each clip is one file, `<cache key>.json`. The key is `VoiceRenderer.cacheKey` (a SHA-256). `FileAudioCache.entries()` counts files with extension `json`. `purge(sourceItemIDs:)` deletes a file whose `sourceItemIDs` intersect the revoked set, and also deletes a file it cannot decode. Files for a source you did not revoke stay. The next launch calls `purgeExpired()`, which removes clips older than 7 days. It does not write deleted files back.
+- Test station, the launch line `runtime mode: testStation`. `AppDependencies.testStation()` passes an `InMemoryAudioCache`. There is no directory. Downloading the container cannot show a count, and a relaunch drops process memory, which is not a purge. If the log says `testStation`, write "no files: in-memory cache" and leave the file-count half unscored. The rest of this script can stay on the test station. This file count is the live-mode check.
+
+**How to count, on a live-mode install.** Unlock the Duo first. The files are written with complete-until-first-unlock protection, so a download from a locked phone can hide them. Xcode → Window → Devices and Simulators → your Duo → Installed Apps → AeroDJ → the gear menu → Download Container. Show Package Contents on the `.xcappdata`. Count the files in:
+
+```text
+AppData/Library/Application Support/Voice/Cache/*.json
+```
+
+That is `applicationSupportDirectory` plus `Voice/Cache`, which is the URL `onDeviceDefault()` passes to `FileAudioCache`. Count only. Do not open a JSON: the body is a `CachedAudio` (audio bytes, voice id, source-item UUIDs). Do not paste filenames into the notes or a PR. They are hashes of the spoken text. Write three integers in the step 9 notes: baseline, right after revoke, after relaunch.
+
+Download the container right after the revoke, before you force-quit, so you see the purge that ran in the still-living process. Then force-quit, relaunch, wait until Console shows `runtime mode: live`, and download again.
+
+**Expected file result.** The count right after the revoke is lower than the baseline by the clips that cited the revoked source. The count after relaunch equals that post-revoke count. Those files are still absent. The count is 0 only when every cached clip cited the revoked source.
+
+**What the source does today.** `stopCurrentInterlude(reason: .sourceRevoked)` stops `AVAudioPlayer` before it returns, on the main thread in that turn (`MainActorImmediate`). Nothing calls it. `PlayerView` wires `onBreakMustStop` to `interlude.stop()` for pause, calls, and route removal only. `NarrationPurger.purge` drops future plans, prepared breaks, and cached audio. `takeBreak` has already cleared the playing break out of the preparer, so a purge cannot see it. `DJBreakSession.purge` replans later breaks and does not stop the player. Routine transitions are built with `sourceItemID: nil`, and `MusicSearch.live` calls `queueStarted` without a `briefing`. Until that handoff exists, the on-screen headline is "DJ" and this step **cannot be scored**: there is no personal source in the clip to revoke, and the live cache directory stays empty.
 
 **If the log cannot prove it.** If you revoke and the `sourceRevoked` line is absent, the stop method was not called. That is the current wiring, so a continue-to-the-end-of-the-clip result on `3a66085` matches the source and fails the product bar. Missing line from the purge path, with a count and no item ids:
 
 ```text
 narration purge count=<Int> speaking=<true or false> stopRequested=<true or false>
 ```
+
+No log line reports how many rendered-voice files remain. `VoiceRendering.swift` does not use `Logger`. `InMemoryAudioCache.count` exists and is not logged. This gap belongs to Fry, who owns that file. Proposed line, a public integer and nothing else:
+
+```text
+narration cache count=<Int>
+```
+
+Until that line exists, the container count above is the evidence. Do not treat a missing log as a count of zero.
 
 ## Logging gaps (proposed lines only)
 
@@ -271,6 +298,7 @@ These strings are **not** in the tree. They are proposals. Each one is a static 
 | Stop reason other than consent | `interlude stop reason=sourceRevoked` exists on `3a66085` and is the only stop line. | `interlude stop reason=interruption` and `interlude stop reason=routeRemoved` |
 | Deferred song | #67 logs `song started` when play really begins. Nothing logs the hold. #64 does not log the deferred start at all. | `song deferred index=<K>` when the song is armed and not played |
 | Purge vs player | The consent stop log exists only inside a method the purge path does not call. | `narration purge count=<Int> speaking=<bool> stopRequested=<bool>` |
+| Rendered-voice file count (Fry) | `VoiceRendering.swift` has no `Logger`. Hearing speech stop does not show that `Voice/Cache/*.json` was deleted. `InMemoryAudioCache.count` is not logged. The test station has no files at all. | `narration cache count=<Int>` after a purge and again after launch `purgeExpired` |
 | Position | A natural end cannot be tied to the last sample. | `playback position index=<Int> seconds=<Int>` at a low rate |
 
 Do not add the unimplemented `handoff.*` signpost names beside these. One set of lines is enough.
@@ -299,6 +327,7 @@ CI here is Linux Swift tests plus the macOS GitHub Actions jobs. Those tests do 
 | Consent stop of a speaking player | `InterludeStopTests.testStopDuringPlayRetiresTheBreak`, `testStopFromANonMainContextStopsBeforeReturning`, `testStopWhenIdleIsANoOp`, `testLateDelegateAfterStopIsIgnored` | These drive a test double. They do not revoke a Connection. Step 9 is still a Duo step, and the app does not call the method |
 | Prepared audio dropped on revoke | `DJNarrationTests` asserts `.sourceRevoked` for a break that has not started | Does not stop a clip that has already started |
 | In-flight render dropped on purge | `InFlightRenderRevocationTests` on PR #65 | Synthesis, not the speaker |
+| Revoke deletes cached voice files | `VoiceRenderingTests.testDeletingOrRevokingASourcePurgesDerivedAudio` purges an `InMemoryAudioCache` and a temp `FileAudioCache`. It does not read the app container | Step 9 file counts. Live mode only: `Library/Application Support/Voice/Cache/*.json`, before, right after revoke, and after relaunch |
 
 ## Results
 
@@ -325,6 +354,6 @@ Copy this table into your notes. Leave it blank in git. One link per step can be
 | 6. Call during a break | | | |
 | 7. AirPods disconnect mid-song | | | |
 | 8. AirPods disconnect during a break | | | |
-| 9. Revoke consent during a break | | | |
+| 9. Revoke consent during a break | | Cache counts (baseline / after revoke / after relaunch), or "no files: in-memory cache" | |
 
 -Atlas
