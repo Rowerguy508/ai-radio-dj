@@ -121,11 +121,24 @@ final class StudioBreakPreparedTests: XCTestCase {
     private func isReady(_ s: DJPresentationState) -> Bool { if case .ready = s { true } else { false } }
     private func isPreparing(_ s: DJPresentationState) -> Bool { if case .preparing = s { true } else { false } }
 
+    /// What the player reports at a song start (PlayerView `onSongStarted`): the Studio's
+    /// playback position, then the DJ session.
+    private func play(_ r: Rig, _ index: Int) async {
+        r.studio.songStarted(index: index)
+        await r.session.songStarted(index: index, remaining: .seconds(180))
+    }
+
+    /// What the player reports when song `k` ends on its own (PlayerView `onBoundary`).
+    private func boundary(_ r: Rig, _ k: Int) async -> PreparedDJBreak? {
+        r.studio.songBoundaryReached(afterTrack: k)
+        return await r.session.naturalBoundary(afterTrack: k)
+    }
+
     /// Queue started with the item's note in break 0, song 0 playing, break 0 rendered and waiting.
     private func readyRig(voice: BPVoice = .init(), expiresIn: TimeInterval? = nil) async -> Rig {
         let r = await rig(voice: voice, expiresIn: expiresIn)
         await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
-        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await play(r, 0)
         await until(r.dj, isReady)
         XCTAssertTrue(r.studio.isBreakPrepared, "rendered and waiting for the boundary")
         return r
@@ -151,7 +164,7 @@ final class StudioBreakPreparedTests: XCTestCase {
 
         await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
         XCTAssertFalse(r.studio.isBreakPrepared, "idle: false")
-        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await play(r, 0)
         await until(r.dj, isPreparing)
         XCTAssertFalse(r.studio.isBreakPrepared, "preparing: false")
 
@@ -159,7 +172,7 @@ final class StudioBreakPreparedTests: XCTestCase {
         await until(r.dj, isReady)
         XCTAssertTrue(r.studio.isBreakPrepared, "ready: true")
 
-        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        let handed = await boundary(r, 0)
         XCTAssertNotNil(handed)
         r.session.playbackStarted(afterTrack: 0)
         XCTAssertFalse(r.studio.isBreakPrepared, "speaking: false")
@@ -171,7 +184,7 @@ final class StudioBreakPreparedTests: XCTestCase {
 
     func testFailedPlaybackIsFalse() async {
         let r = await readyRig()
-        _ = await r.session.naturalBoundary(afterTrack: 0)
+        _ = await boundary(r, 0)
         r.session.playbackFailed(afterTrack: 0)
         XCTAssertFalse(r.studio.isBreakPrepared, "failed: false")
         r.recorder.cancel()
@@ -180,7 +193,7 @@ final class StudioBreakPreparedTests: XCTestCase {
     func testRenderFailureNeverBecomesTrue() async {
         let r = await rig(voice: BPVoice(fails: true))
         await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
-        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await play(r, 0)
         await until(r.dj) { if case .unavailable(.voiceFailed) = $0 { true } else { false } }
         XCTAssertFalse(r.studio.isBreakPrepared, "render failure: false")
         XCTAssertFalse(r.seen().contains(true), "never true")
@@ -191,14 +204,14 @@ final class StudioBreakPreparedTests: XCTestCase {
         let gate = Gate()
         let r = await rig(voice: BPVoice(gate: gate))
         await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
-        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await play(r, 0)
         await gate.arrived()
-        let outcome = await r.session.naturalBoundary(afterTrack: 0)   // missed its deadline: dropped
+        let outcome = await boundary(r, 0)   // missed its deadline: dropped
         XCTAssertNil(outcome, "music never waits")
         XCTAssertFalse(r.studio.isBreakPrepared, "dropped: false")
         await gate.open()
-        await r.session.songStarted(index: 1, remaining: .seconds(180))
-        _ = await r.session.naturalBoundary(afterTrack: 1)
+        await play(r, 1)
+        _ = await boundary(r, 1)
         XCTAssertFalse(r.seen().contains(true), "a late render never raises it")
         r.recorder.cancel()
     }
@@ -217,10 +230,10 @@ final class StudioBreakPreparedTests: XCTestCase {
     func testSkipDropsIt() async {
         let r = await readyRig()
         await r.session.songCut(afterTrack: 0)
-        await r.session.songStarted(index: 1, remaining: .seconds(180))
+        await play(r, 1)
         await until(r.dj) { !self.isReady($0) }
         XCTAssertFalse(r.studio.isBreakPrepared, "skip: false")
-        let none = await r.session.naturalBoundary(afterTrack: 1)
+        let none = await boundary(r, 1)
         XCTAssertNil(none)
         XCTAssertFalse(r.studio.isBreakPrepared)
         r.recorder.cancel()
@@ -239,7 +252,7 @@ final class StudioBreakPreparedTests: XCTestCase {
         let r = await readyRig()
         await r.purger.purge(sourceItemIDs: [r.item])
         XCTAssertFalse(r.studio.isBreakPrepared, "purge: false at once")
-        let outcome = await r.session.naturalBoundary(afterTrack: 0)
+        let outcome = await boundary(r, 0)
         XCTAssertNil(outcome)
         r.recorder.cancel()
     }
@@ -249,7 +262,7 @@ final class StudioBreakPreparedTests: XCTestCase {
         let result = await r.connections.perform(.revoke, on: r.item)
         XCTAssertNoThrow(try result.get())
         XCTAssertFalse(r.studio.isBreakPrepared, "revoked while ready: false")
-        let outcome = await r.session.naturalBoundary(afterTrack: 0)
+        let outcome = await boundary(r, 0)
         XCTAssertNil(outcome)
         XCTAssertFalse(r.studio.isBreakPrepared)
         r.recorder.cancel()
@@ -260,7 +273,7 @@ final class StudioBreakPreparedTests: XCTestCase {
         r.clock.advance(601)
         await r.connections.refresh()   // expired items are purged here (boundary-time recheck: #73)
         XCTAssertFalse(r.studio.isBreakPrepared, "expired: false")
-        let outcome = await r.session.naturalBoundary(afterTrack: 0)
+        let outcome = await boundary(r, 0)
         XCTAssertNil(outcome)
         r.recorder.cancel()
     }
@@ -269,19 +282,95 @@ final class StudioBreakPreparedTests: XCTestCase {
         let gate = Gate()
         let r = await rig(voice: BPVoice(gate: gate))
         await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
-        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await play(r, 0)
         await gate.arrived()                                        // rendering now
         _ = await r.connections.perform(.revoke, on: r.item)
         XCTAssertFalse(r.studio.isBreakPrepared)
         await gate.open()                                           // the render finishes after the revoke
-        let outcome = await r.session.naturalBoundary(afterTrack: 0)
+        let outcome = await boundary(r, 0)
         XCTAssertNil(outcome, "revoked break never plays")
         for k in 1..<3 {   // the next planned break (3) has no personal item and may be prepared
-            await r.session.songStarted(index: k, remaining: .seconds(180))
-            _ = await r.session.naturalBoundary(afterTrack: k)
+            await play(r, k)
+            _ = await boundary(r, k)
             XCTAssertFalse(r.studio.isBreakPrepared)
         }
         XCTAssertFalse(r.seen().contains(true), "never ready/true for the revoked break")
         r.recorder.cancel()
+    }
+
+    // MARK: Stale ready (handed out but never played)
+
+    /// Sentinel #87: a break handed out at its boundary that never plays (empty line, adapter
+    /// guard, undecodable clip) sends no `.failed`, so the DJ status stays `.ready`.
+    func testHandedOutBreakThatNeverPlaysIsFalseOnceItsBoundaryPassed() async {
+        let r = await readyRig()
+        let handed = await boundary(r, 0)
+        XCTAssertNotNil(handed, "handed to the player")
+        // No playbackStarted/Failed: the DJ status is stuck on ready.
+        guard case .ready(afterTrack: 0, _, _) = r.dj.state else { return XCTFail("precondition: still ready") }
+        XCTAssertFalse(r.studio.isBreakPrepared, "boundary passed: no longer coming")
+        r.studio.songStarted(index: 1)
+        XCTAssertFalse(r.studio.isBreakPrepared, "next song playing: still false")
+        r.recorder.cancel()
+    }
+
+    func testStaleReadyIsFalseOnceALaterSongPlaysEvenWithoutABoundaryReport() async {
+        let r = await readyRig()
+        _ = await r.session.naturalBoundary(afterTrack: 0)   // handed out; boundary not reported
+        r.studio.songStarted(index: 1)
+        guard case .ready(afterTrack: 0, _, _) = r.dj.state else { return XCTFail("precondition: still ready") }
+        XCTAssertFalse(r.studio.isBreakPrepared, "a later song is playing")
+        r.recorder.cancel()
+    }
+
+    func testReadyBreakBeforeItsBoundaryStaysTrue() async {
+        let r = await readyRig()
+        r.studio.songBoundaryReached(afterTrack: -1)        // an earlier boundary changes nothing
+        XCTAssertTrue(r.studio.isBreakPrepared)
+        r.studio.songStarted(index: 0)                       // same song re-reported
+        XCTAssertTrue(r.studio.isBreakPrepared, "still before its boundary")
+        r.recorder.cancel()
+    }
+
+    func testFailsClosedWithoutAPlaybackPosition() async {
+        let r = await rig()
+        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))   // position never reported
+        await until(r.dj, isReady)
+        XCTAssertFalse(r.studio.isBreakPrepared, "can't correlate: false")
+        r.studio.songStarted(index: 0)
+        XCTAssertTrue(r.studio.isBreakPrepared, "correlated: true")
+        r.recorder.cancel()
+    }
+
+    func testNewQueueResetsAPassedBoundary() async {
+        let r = await readyRig()
+        _ = await boundary(r, 0)
+        XCTAssertFalse(r.studio.isBreakPrepared)
+        await r.session.queueStarted(djTracks(8))           // new queue: a routine break after song 0
+        await play(r, 0)
+        await until(r.dj) { if case .ready(afterTrack: 0, includesBriefing: false, _) = $0 { true } else { false } }
+        XCTAssertTrue(r.studio.isBreakPrepared, "the new queue's break 0 is coming")
+        r.recorder.cancel()
+    }
+
+    /// The stuck state is remembered by value; a new break that happens to be equal (same
+    /// boundary, briefing flag and length) is coming again once it went through preparing.
+    func testAnEqualNewReadyBreakAfterAStaleOneIsTrueAgain() async {
+        let studio = await StudioPresentationModel.preview()
+        let ready = DJPresentationEvent.breakReady(afterTrack: 0, includesBriefing: true, seconds: 4)
+        studio.dj.send(.breakPreparing(afterTrack: 0, includesBriefing: true))
+        studio.dj.send(ready)
+        studio.songStarted(index: 0)
+        XCTAssertTrue(studio.isBreakPrepared)
+        studio.songBoundaryReached(afterTrack: 0)            // handed out, never plays
+        XCTAssertFalse(studio.isBreakPrepared)
+        studio.songStarted(index: 0)                         // new queue, song 0
+        XCTAssertFalse(studio.isBreakPrepared, "the stuck break is still the same value")
+        studio.dj.send(.breakSkipped(afterTrack: 0, .cancelled))
+        studio.dj.send(.breakPreparing(afterTrack: 0, includesBriefing: true))
+        studio.dj.send(ready)
+        for _ in 0..<1000 where !studio.isBreakPrepared { await Task.yield() }
+        XCTAssertTrue(studio.isBreakPrepared, "a new break, equal by value, is coming")
     }
 }
