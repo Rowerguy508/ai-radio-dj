@@ -1,12 +1,15 @@
 #if DEBUG
 import AeroDJCore
 import SwiftUI
+import UIKit
 
 /// Debug-only capture of Now Playing when a song actually has artwork.
 ///
 /// Separate from `StudioCapture` so Fry's scenario list stays untouched. Launch with
 /// `-AeroDJTestStation YES -AeroDJStudioCapture YES -AeroDJAlbumArtFixture YES`.
-/// The picture is a bundled fixture, not a network fetch and not the station ident.
+/// The picture lives in the Debug-only `DebugAssets` catalog. Release builds exclude
+/// that catalog. `ArtworkView` only paints a file URL, so the image is written to a
+/// temporary file before the snapshot is shown.
 enum AlbumArtCapture {
     static let defaultsKey = "AeroDJAlbumArtFixture"
 
@@ -15,7 +18,16 @@ enum AlbumArtCapture {
     }
 
     static var fixtureURL: URL? {
-        Bundle.main.url(forResource: "FixtureAlbum", withExtension: "png")
+        guard let image = UIImage(named: "FixtureAlbum", in: .main, compatibleWith: nil),
+              let data = image.pngData() else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AeroDJ-FixtureAlbum.png")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
     }
 
     static var snapshot: PlaybackSnapshot {

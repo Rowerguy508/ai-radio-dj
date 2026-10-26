@@ -22,7 +22,11 @@ targets:
   AeroDJ:
     type: application
     platform: iOS
-    sources: [AeroDJ]
+    sources:
+      - path: AeroDJ
+      # Debug capture art. Release drops the catalog via EXCLUDED_SOURCE_FILE_NAMES
+      # so the shipping app has no fixture assets.
+      - path: DebugOnly
     dependencies:
       - package: AeroDJCore
       - target: AeroDJShare # embedded into AeroDJ.app/PlugIns
@@ -35,6 +39,9 @@ targets:
         INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: AeroDJ reads today's events, read-only, to mention them in your briefing.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         CODE_SIGN_ENTITLEMENTS: AeroDJ/AeroDJ.entitlements
+      configs:
+        Release:
+          EXCLUDED_SOURCE_FILE_NAMES: "DebugAssets.xcassets */DebugAssets.xcassets FixtureAlbum.png */FixtureAlbum.png"
   AeroDJShare:
     type: app-extension
     platform: iOS

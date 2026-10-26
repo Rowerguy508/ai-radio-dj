@@ -36,6 +36,7 @@ struct StationIdentPlate: View {
         }
         .frame(width: size, height: size)
         .clipped()
+        .accessibilityElement(children: .ignore)
         .accessibilityHidden(true)
     }
 

@@ -37,13 +37,15 @@ struct StationIdentityLine: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText)
+        .accessibilityAddTraits(.isStaticText)
     }
 
     private var name: some View {
         Text(stationName)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.primary)
-            .lineLimit(1)
+            .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+            .fixedSize(horizontal: false, vertical: typeSize.isAccessibilitySize)
             .truncationMode(.tail)
     }
 
@@ -53,7 +55,8 @@ struct StationIdentityLine: View {
             Text(personalityTitle)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+                .fixedSize(horizontal: false, vertical: typeSize.isAccessibilitySize)
                 .truncationMode(.tail)
         }
     }
