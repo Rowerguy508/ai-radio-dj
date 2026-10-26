@@ -253,7 +253,8 @@ Silence on that recording does not prove the rendered-voice files are gone. A co
 **Where the cache actually is.** `VoiceRendering.swift` has two caches and no logger.
 
 - Live mode, the launch line `runtime mode: live`. `VoiceRenderer.onDeviceDefault()` (`OnDeviceSpeechProvider.swift`) builds a `FileAudioCache` at Application Support `Voice/Cache`. The only extension that cache writes is `.json`. On `939c34e`, `url(_:)` is `directory.appendingPathComponent("\(key).json")` (line 236). `store` JSON-encodes the `CachedAudio` and `ProtectedFile.write`s those bytes to that URL (lines 272–276). On #63 `129d0c6` the same two statements are lines 243 and 279–283. `ProtectedFile.write` (`SharedInboxReader.swift` lines 101–103) writes that URL with `.atomic`. It does not add a second file. The key is `VoiceRenderer.cacheKey` (a SHA-256). The rendered samples are the `data` field inside that JSON (`CachedAudio`, lines 144–151 on `939c34e`), together with duration, provider id, voice id, source-item UUIDs, and `createdAt`. There is no `.caf`, `.m4a`, `.wav`, or `.aac` beside it.
-- The `.caf` in on-device speech is not in `Voice/Cache`. `OnDeviceSpeechProvider.swift` line 44 writes `temporaryDirectory`/`aerodj-tts-<UUID>.caf`. Line 48 removes it with `defer` only when `run()` returns, and those bytes become `CachedAudio.data`. A kill during synthesis does not run that `defer`. Nothing else deletes the file. `onDeviceDefault()` calls `cache.purgeExpired()` (line 126), which touches `Voice/Cache` only. `Voice/budget.json` sits next to the cache directory (line 129), not inside it. Do not count it.
+- The `.caf` in on-device speech is not in `Voice/Cache`. On `939c34e`, `OnDeviceSpeechProvider.swift` line 44 writes `temporaryDirectory`/`aerodj-tts-<UUID>.caf`. Line 48 removes it with `defer` only when `run()` returns, and those bytes become `CachedAudio.data`. A kill during synthesis does not run that `defer`. `onDeviceDefault()` calls `cache.purgeExpired()` (line 126), which touches `Voice/Cache` only. `Voice/budget.json` sits next to the cache directory (line 129), not inside it. Do not count it.
+- Fry's speech-provider PR #77 (`6ca1b3c0495fb40f248f4dde5b7d7d6b4d93f789`) moves that scratch file. `SpeechTempFiles` (`SpeechTempFiles.swift` lines 13–14 and 21) writes `aerodj-tts-<UUID>.caf` under `temporaryDirectory`/`aerodj-speech/`. `withFile` deletes that file on success, error, and cancellation (lines 32–35). `OnDeviceSpeechProvider.init` runs `SpeechTempFiles.shared.sweep()` once (lines 15–18), and `sweep()` removes every entry in the folder (lines 26–28). `AppDependencies.make()` builds that provider (`AppDependencies.swift` lines 59 and 95) before the `runtime mode` log, so a relaunch that has logged `runtime mode: live` has already swept.
 - `purge(sourceItemIDs:)` deletes a `.json` whose `sourceItemIDs` intersect the revoked set, and also deletes a `.json` it cannot decode. It never looks at another extension, so an orphaned audio file would survive. Files for a source you did not revoke stay. The next launch calls `purgeExpired()`, which removes `.json` clips older than 7 days. It does not write deleted files back, and it does not remove a non-JSON file.
 - Test station, the launch line `runtime mode: testStation`. `AppDependencies.testStation()` passes an `InMemoryAudioCache`. There is no directory. Downloading the container cannot show a count, and a relaunch drops process memory, which is not a purge. If the log says `testStation`, write "no files: in-memory cache" and leave the file-count half unscored. The rest of this script can stay on the test station. This file count is the live-mode check.
 
@@ -275,17 +276,25 @@ If any other extension is present, add it on the same line (`caf=1`). Write `jso
 
 Download the container right after the revoke, before you force-quit, so you see the purge that ran in the still-living process. Then force-quit, relaunch, wait until Console shows `runtime mode: live`, and download again.
 
-On that relaunch download only, also count regular files matching `tmp/aerodj-tts-*.caf`. In the package that directory is:
+On that relaunch download only, count every regular file in Fry's speech folder:
+
+```text
+AppData/tmp/aerodj-speech/
+```
+
+That is `temporaryDirectory`/`aerodj-speech/`, the directory `SpeechTempFiles` uses on #77. The required count is 0. A missing folder is 0. Count regular files only. Do not open one: it is spoken audio. Do not paste a filename into the notes or a PR. Write `speech dir=<Int>`.
+
+For a build older than #77, that folder is not in the tree. Count the loose files instead, directly in `tmp` and not inside `aerodj-speech/`:
 
 ```text
 AppData/tmp/aerodj-tts-*.caf
 ```
 
-That is the app's `temporaryDirectory`, the URL line 44 writes. The required count is 0. Count the matches. Do not open a `.caf`: it is spoken audio. Do not paste the UUID into the notes or a PR. Write one integer, `tmp caf=<Int>`.
+Write `tmp caf=<Int>`. The required count is still 0. Do not open those files either.
 
 **Expected file result.** The `json` count right after the revoke is lower than the baseline by the clips that cited the revoked source. Every other extension is 0 at all three samples, because `FileAudioCache` writes `.json` only. A regular file with any other extension after the revoke fails this step even when the `json` count dropped. The breakdown after relaunch equals the post-revoke breakdown. `json` is 0 only when every cached clip cited the revoked source.
 
-**Temp synthesis file (pending, depends on Fry).** `tmp/aerodj-tts-*.caf` must be 0 after relaunch. Today that file is deleted only on the normal path, the `defer` at `OnDeviceSpeechProvider.swift` line 48. A kill mid-synthesis leaves the spoken audio in `tmp`. No launch path removes leftovers. This check stays **pending** until Fry's speech-provider PR adds a launch-time cleanup of leftover `aerodj-tts-*.caf` files and that SHA is the one you installed. Record the count, and write "pending: no launch cleanup" in the step 9 notes. Do not score this check pass or fail before that dependency lands. The `Voice/Cache` counts above are separate and are not pending on this cleanup.
+**Temp synthesis files (pending until #77 is installed).** After relaunch, `speech dir` must be 0 on a build that contains `6ca1b3c0495fb40f248f4dde5b7d7d6b4d93f789`. On an older build, record `tmp caf` instead. This check stays **pending** until the installed SHA includes that commit. Record the count that applies, and write "pending: speech temp PR not installed" in the step 9 notes. Do not score this check pass or fail before that SHA is the one you installed. The `Voice/Cache` counts above are separate and are not pending on #77.
 
 **What the source does today.** `stopCurrentInterlude(reason: .sourceRevoked)` stops `AVAudioPlayer` before it returns, on the main thread in that turn (`MainActorImmediate`). Nothing calls it. `PlayerView` wires `onBreakMustStop` to `interlude.stop()` for pause, calls, and route removal only. `NarrationPurger.purge` drops future plans, prepared breaks, and cached audio. `takeBreak` has already cleared the playing break out of the preparer, so a purge cannot see it. `DJBreakSession.purge` replans later breaks and does not stop the player. Routine transitions are built with `sourceItemID: nil`, and `MusicSearch.live` calls `queueStarted` without a `briefing`. Until that handoff exists, the on-screen headline is "DJ" and this step **cannot be scored**: there is no personal source in the clip to revoke, and the live cache directory stays empty.
 
@@ -321,7 +330,7 @@ These strings are **not** in the tree. They are proposals. Each one is a static 
 | Deferred song | #67 logs `song started` when play really begins. Nothing logs the hold. #64 does not log the deferred start at all. | `song deferred index=<K>` when the song is armed and not played |
 | Purge vs player | The consent stop log exists only inside a method the purge path does not call. | `narration purge count=<Int> speaking=<bool> stopRequested=<bool>` |
 | Rendered-voice file count (Fry) | `VoiceRendering.swift` has no `Logger`. Hearing speech stop does not show that every regular file in `Voice/Cache` was deleted. `entries()` only sees `.json`, so a JSON count can pass while another extension remains. `InMemoryAudioCache.count` is not logged. The test station has no files at all. | `narration cache count=\(count, privacy: .public)` after a purge and again after launch `purgeExpired`. `count` is one `Int` of every regular file in the directory. No file name, title, or id |
-| Leftover `aerodj-tts-*.caf` (Fry) | Removal is the `defer` at `OnDeviceSpeechProvider.swift:48` when `run()` returns. A kill mid-synthesis leaves spoken audio in `temporaryDirectory`. Launch calls `purgeExpired` on `Voice/Cache` only (line 126). | Not a log line. Depends on Fry's speech-provider PR: delete leftover `aerodj-tts-*.caf` at launch. Step 9 records `tmp caf=<Int>` after relaunch and stays pending until that PR is installed. Required count is 0 |
+| Leftover speech temp files (Fry, #77) | On `939c34e`, removal is the `defer` at `OnDeviceSpeechProvider.swift:48` when `run()` returns. A kill mid-synthesis leaves `tmp/aerodj-tts-*.caf`. #77 `6ca1b3c` writes under `tmp/aerodj-speech/`, deletes the file on success, error, and cancel, and sweeps the folder when the provider is created. | Not a log line. Step 9, after relaunch: every regular file in `AppData/tmp/aerodj-speech/` must be 0. Older builds count `AppData/tmp/aerodj-tts-*.caf` instead. Pending until the installed SHA includes `6ca1b3c` |
 | Position | A natural end cannot be tied to the last sample. | `playback position index=<Int> seconds=<Int>` at a low rate |
 
 Do not add the unimplemented `handoff.*` signpost names beside these. One set of lines is enough.
@@ -351,7 +360,7 @@ CI here is Linux Swift tests plus the macOS GitHub Actions jobs. Those tests do 
 | Prepared audio dropped on revoke | `DJNarrationTests` asserts `.sourceRevoked` for a break that has not started | Does not stop a clip that has already started |
 | In-flight render dropped on purge | `InFlightRenderRevocationTests` on PR #65 | Synthesis, not the speaker |
 | Revoke deletes cached voice files | `VoiceRenderingTests.testDeletingOrRevokingASourcePurgesDerivedAudio` purges an `InMemoryAudioCache` and a temp `FileAudioCache`. It does not read the app container. `FileAudioCache` writes `.json` only (`VoiceRendering.swift:236` on `939c34e`) and `entries()` ignores every other extension | Step 9 file counts. Live mode only: every regular file in `Library/Application Support/Voice/Cache`, by extension, before, right after revoke, and after relaunch |
-| Leftover synthesis audio after a kill | No test. `OnDeviceSpeechProvider.swift:48` deletes `aerodj-tts-*.caf` only when `run()` returns | Step 9, relaunch container: `tmp/aerodj-tts-*.caf` must be 0. Pending until Fry adds launch-time cleanup |
+| Leftover synthesis audio after a kill | On #77 `6ca1b3c`: `SpeechTempFilesTests.testLeftoverFromACrashIsRemovedAtStartup`, `testSuccessPathLeavesNoFile`, `testErrorPathLeavesNoFile`, `testCancelPathLeavesNoFile`. `939c34e` has none of these. There, `OnDeviceSpeechProvider.swift:48` deletes `aerodj-tts-*.caf` only when `run()` returns | Step 9, relaunch container: every regular file in `tmp/aerodj-speech/` must be 0. Older builds: `tmp/aerodj-tts-*.caf`. Pending until the installed SHA includes `6ca1b3c` |
 
 ## Results
 
@@ -378,6 +387,6 @@ Copy this table into your notes. Leave it blank in git. One link per step can be
 | 6. Call during a break | | | |
 | 7. AirPods disconnect mid-song | | | |
 | 8. AirPods disconnect during a break | | | |
-| 9. Revoke consent during a break | | Extension counts (baseline / after revoke / after relaunch), or "no files: in-memory cache". `tmp caf=<Int>` after relaunch, pending until Fry's launch cleanup | |
+| 9. Revoke consent during a break | | Extension counts (baseline / after revoke / after relaunch), or "no files: in-memory cache". After relaunch: `speech dir=<Int>` (`tmp/aerodj-speech/`), or `tmp caf=<Int>` on a build older than #77. Pending until the installed SHA includes `6ca1b3c` | |
 
 -Atlas
