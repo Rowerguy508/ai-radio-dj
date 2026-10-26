@@ -31,7 +31,9 @@ struct TuneForm: View {
                 if case .failed(.newerVersion) = model.loadState {
                     settingsUnavailable("Update AeroDJ to change these settings.",
                                         state: .readOnlyNewerVersion)
-                } else if case .failed, .notLoaded = model.loadState {
+                } else if case .failed = model.loadState {
+                    settingsUnavailable("Loading your station settings.", state: .notLoaded)
+                } else if case .notLoaded = model.loadState {
                     settingsUnavailable("Loading your station settings.", state: .notLoaded)
                 } else {
                     controlSection
