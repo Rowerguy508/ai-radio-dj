@@ -77,10 +77,23 @@ public enum DJPresentationState: Equatable, Sendable {
 }
 ```
 
+**Binding (updated for the single Studio model, #56):** the UI binds to
+`StudioPresentationModel` (section 2.5). Its `djState` is `DJStudioState`, a pure
+projection of `DJPresentationState` with the copy and the `isOnAir` rule. Use
+`DJStudioState.title` and `detail` for copy, and `onAirLabel` for the LIVE badge.
+
 **Decision (from the owner's signed defaults, #45):** the UI reads DJ status from
 `DJPresentationStore`. `PlaybackSnapshot.dj` is the engine's own record and is not
 rendered as a second status. Music status (track, transport, queue) comes from
 the snapshot. Rules are in `docs/dj-presentation-state.md`.
+
+### 2.5 Single Studio model (`StudioPresentationModel`, Fry, #56)
+
+Created once in `AppDependencies`. Its properties are `station`, `recipes`,
+`connections`, `dj` and `djState`. Station values come from `station.displayed`,
+and the Tune rows come from `station.tunerRows`. Source:
+`docs/studio-presentation-contract.md`. This model supersedes the Tune and
+Connections binding rules in 2.4.
 
 ### 2.4 Station configuration (`StationConfigurationModel`, Fry, #57)
 
