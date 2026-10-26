@@ -5,7 +5,11 @@ import SwiftUI
 struct StationListView: View {
     /// Composed once at launch by `AppDependencies`; views receive it, never build it.
     let dependencies: AppDependencies
+#if DEBUG
     @State private var stations: [Station] = Station.mockStations
+#else
+    @State private var stations: [Station] = []
+#endif
     @State private var showSharedInbox = false
 
     var body: some View {
@@ -70,10 +74,12 @@ struct Station: Identifiable, Hashable {
     let name: String
     let description: String?
 
+#if DEBUG
     static let mockStations: [Station] = [
         Station(id: UUID(), name: "Morning Calm", description: "Warm, unhurried host"),
         Station(id: UUID(), name: "Late Night", description: "Smooth vinyl-bar vibes"),
     ]
+#endif
 }
 
 #Preview {
