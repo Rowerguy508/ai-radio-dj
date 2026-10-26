@@ -132,9 +132,20 @@ scan_into() {
 
 scan_into "$debug_hits" "$DEBUG_APP" Debug
 debug_rel=$(executable_rel "$DEBUG_APP")
+# Xcode's Debug build (ENABLE_DEBUG_DYLIB) leaves a stub executable and puts the
+# app code in <Executable>.debug.dylib. The scanner records that dylib as an
+# asset, so the tokens are not on a `symbol <Executable>` line. They are not
+# stripped: strings still finds them in the dylib. Accept either image.
+control_visible() {
+  local token=$1
+  grep -q -x -F -- "symbol ${debug_rel} ${token}" "$debug_hits" && return 0
+  grep -q -x -F -- "symbol ${debug_rel}.debug.dylib ${token}" "$debug_hits" && return 0
+  grep -q -x -F -- "asset ${debug_rel}.debug.dylib ${token}" "$debug_hits" && return 0
+  return 1
+}
 missing=
 for required in PlayingScreenPreviewLoader mockStations; do
-  if ! grep -q -x -F -- "symbol ${debug_rel} ${required}" "$debug_hits"; then
+  if ! control_visible "$required"; then
     missing="$missing $required"
   fi
 done
