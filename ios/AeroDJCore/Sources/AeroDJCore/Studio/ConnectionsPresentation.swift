@@ -519,11 +519,13 @@ public final class ConnectionsModel {
     // MARK: Intents
 
     /// Re-reads consent, source state and items, and purges narration that may no longer be used
-    /// *before* the new state is exposed. An item is purged when, after the re-read, it is not
-    /// alive: gone (permission removed in Settings, calendar deselected, file missing, provider
-    /// read failed: fail closed), expired, revoked, unavailable, or its integration's consent is
-    /// now denied or revoked. Re-authorized items become purgeable again (`purged` forgets them),
-    /// so a second revocation purges too.
+    /// *before* the new state is exposed. Only narratable items keep their narration
+    /// (`isNarratable`): everything else known before or after the re-read is purged. That covers
+    /// items that are gone (permission removed in Settings, calendar deselected, file missing,
+    /// provider read failed: fail closed), expired, revoked or unavailable; items demoted to
+    /// pending approval or flagged for review under the same ID; and items whose integration
+    /// consent is no longer granted. Narratable items leave `purged`, so a later demotion or
+    /// withdrawal purges again: re-authorization leaves no stale purge state.
     public func refresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
@@ -537,25 +539,22 @@ public final class ConnectionsModel {
             guard let provider = providers[integration] else { continue }
             if let list = try? await provider.items(now: current) { next += list }
         }
-        let alive = Set(next.filter { isAlive($0) }.map(\.id))
+        let narratable = Set(next.filter { isNarratable($0) }.map(\.id))
         let known = Set(previous.map(\.id)).union(next.map(\.id))
-        await purge(known.subtracting(alive).subtracting(purged))
-        purged.subtract(alive)
+        await purge(known.subtracting(narratable).subtracting(purged))
+        purged.subtract(narratable)
         calendar = nextCalendar
         obsidian = nextObsidian
         items = next
     }
 
-    /// May still feed narration: a live state, and its integration's consent not withdrawn.
-    private func isAlive(_ item: ConnectionItem) -> Bool {
-        switch station.consent[item.integration] {
-        case .denied?, .revoked?: return false
-        default: break
-        }
-        switch item.state {
-        case .approved, .pendingApproval, .flaggedForReview: return true
-        case .expired, .revoked, .unavailable: return false
-        }
+    /// May feed narration: approved by the listener *and* its integration's consent granted.
+    /// Deliberately stricter than what the list shows: pending and flagged items stay visible
+    /// so they can be reviewed, but nothing derived from them may be spoken.
+    func isNarratable(_ item: ConnectionItem) -> Bool {
+        guard station.consent[item.integration] == .granted else { return false }
+        if case .approved = item.state { return true }
+        return false
     }
 
     /// Performs an item action. Revoke and delete purge cached narration and prepared breaks
