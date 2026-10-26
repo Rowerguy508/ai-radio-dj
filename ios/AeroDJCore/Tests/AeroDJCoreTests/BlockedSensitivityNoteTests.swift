@@ -78,13 +78,51 @@ final class BlockedSensitivityNoteTests: XCTestCase {
         files.set("n", blockedNote)
         await model.refresh()
         XCTAssertEqual(model.items(for: .obsidian).first?.state, .unavailable(.markedPrivate))
-        try await provider.perform(.approve, on: id)   // straight to the store, past the UI guard
+        // Straight to the provider, past the UI guard: refused, and nothing is recorded.
+        for action in [ConnectionAction.approve, .readAnyway] {
+            do { try await provider.perform(action, on: id); XCTFail("\(action) must refuse a blocked note") }
+            catch { XCTAssertEqual(error as? ConnectionActionError, .notAllowed) }
+        }
+        let consent = await sources.noteConsent(id)
+        XCTAssertNotEqual(consent, .granted, "no approval is recorded for a blocked note")
         await model.refresh()
         let row = try XCTUnwrap(model.items(for: .obsidian).first)
         XCTAssertEqual(row.state, .unavailable(.markedPrivate), "stored approval does not override the mark")
         XCTAssertFalse(row.mayBeNarrated(at: now))
         let narratable = try await ApprovedNotesContextSource(sources: sources).fetchItems()
         XCTAssertTrue(narratable.isEmpty, "a blocked note never reaches a briefing")
+    }
+
+    /// (4) Sentinel B1: blocking clears the stored approval, so removing the marker later leaves
+    /// the note pending: it needs a fresh approval, and nothing reaches a briefing until then.
+    func testUnmarkingABlockedNoteRequiresFreshApproval() async throws {
+        let (files, sources, model, provider) = try await rig(plainNote)
+        let id = try XCTUnwrap(model.items(for: .obsidian).first?.id)
+        _ = try await model.perform(.approve, on: id).get()
+        var consent = await sources.noteConsent(id)
+        XCTAssertEqual(consent, .granted)
+
+        files.set("n", blockedNote)
+        await model.refresh()
+        consent = await sources.noteConsent(id)
+        XCTAssertNotEqual(consent, .granted, "refresh() cleared the stored approval of the blocked note")
+        do { try await provider.perform(.approve, on: id); XCTFail("approve must refuse a blocked note") }
+        catch { XCTAssertEqual(error as? ConnectionActionError, .notAllowed) }
+
+        files.set("n", plainNote)
+        await model.refresh()
+        let row = try XCTUnwrap(model.items(for: .obsidian).first)
+        XCTAssertEqual(row.id, id, "same note, same id")
+        XCTAssertEqual(row.state, .pendingApproval, "unmarked: waiting for a fresh approval, not approved")
+        consent = await sources.noteConsent(id)
+        XCTAssertNotEqual(consent, .granted)
+        var narratable = try await ApprovedNotesContextSource(sources: sources).fetchItems()
+        XCTAssertTrue(narratable.isEmpty, "nothing reaches a briefing until it is approved again")
+
+        _ = try await model.perform(.approve, on: id).get()
+        XCTAssertEqual(model.items(for: .obsidian).first?.state, .approved, "a fresh approval works")
+        narratable = try await ApprovedNotesContextSource(sources: sources).fetchItems()
+        XCTAssertEqual(narratable.map(\.id), [id])
     }
 
     /// (3) Narration cached while the note was approved is purged once it is marked blocked.

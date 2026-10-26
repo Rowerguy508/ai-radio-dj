@@ -191,6 +191,14 @@ public actor LiveConnectionSources: ConnectionSourceReading, IntegrationConsentR
         try await save(c)
     }
 
+    /// Forgets a stored approval without recording a revoke, so the note goes back to waiting
+    /// for a fresh OK. Used when a note is marked `aerodj-sensitivity: blocked`.
+    func clearNoteApproval(_ id: UUID) async throws {
+        var c = await choices()
+        guard c.approvedNoteItems.remove(id) != nil else { return }
+        try await save(c)
+    }
+
     func noteConsent(_ id: UUID) async -> ConsentState {
         let c = await choices()
         if c.approvedNoteItems.contains(id) { return .granted }
@@ -328,6 +336,9 @@ public struct PickedNotesConnectionProvider: ConnectionItemProvider {
         let result = try await ObsidianContextSource(reader: PickedNotesReader(sources: sources)).importNotes()
         var out: [ConnectionItem] = []
         for item in result.items {
+            // Marked private: any earlier approval is forgotten, so removing the mark later
+            // leaves the note pending (fresh approval needed) instead of reviving the old one.
+            if item.sensitivity == .blocked { try await sources.clearNoteApproval(item.id) }
             let consent = await sources.noteConsent(item.id)
             out.append(ConnectionItem(id: item.id, integration: .obsidian,
                                       title: item.title.isEmpty ? String(item.summary.prefix(40)) : item.title,
@@ -344,7 +355,12 @@ public struct PickedNotesConnectionProvider: ConnectionItemProvider {
 
     public func perform(_ action: ConnectionAction, on id: UUID) async throws {
         switch action {
-        case .approve, .readAnyway: try await sources.setNoteItem(id, approved: true)
+        case .approve, .readAnyway:
+            // Re-read the note: a blocked note can never be approved, and nothing is recorded.
+            let notes = try await ObsidianContextSource(reader: PickedNotesReader(sources: sources)).importNotes().items
+            guard let note = notes.first(where: { $0.id == id }) else { throw ConnectionActionError.unknownItem }
+            guard note.sensitivity != .blocked else { throw ConnectionActionError.notAllowed }
+            try await sources.setNoteItem(id, approved: true)
         case .revoke: try await sources.setNoteItem(id, approved: false)
         default: throw ConnectionActionError.notAllowed
         }
