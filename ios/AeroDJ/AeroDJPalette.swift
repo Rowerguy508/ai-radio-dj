@@ -1,29 +1,32 @@
 import SwiftUI
 import UIKit
 
-/// Appearance-aware colours for text and controls. Each asset has Any, Dark, and
-/// High Contrast variants. Generated station art is not an asset: its backing is
-/// darkened until light type clears WCAG AA, because that art does not follow
-/// the system appearance.
+/// Appearance-aware colours for text and controls. Each one has Any, Dark, and
+/// High Contrast variants, resolved from the trait collection. They live here
+/// rather than in an asset catalog so the app does not gain an AppIcon requirement.
+///
+/// Generated station art is not one of these colours: its backing is darkened
+/// until light type clears WCAG AA, because that art does not follow the system
+/// appearance.
 enum AeroDJPalette {
     /// Body and caption text. 4.5:1 on system backgrounds and on the station wash.
-    static let secondaryText = Color("SecondaryText")
+    static var secondaryText: Color { color(light: 0x4A4A50, dark: 0xD1D1D6, lightHC: 0x3C3C43, darkHC: 0xEBEBF5) }
     /// Connected / active. 4.5:1 on the card and on its own 12% wash.
-    static let statusPositive = Color("StatusPositive")
+    static var statusPositive: Color { color(light: 0x085C32, dark: 0x5FE08A, lightHC: 0x064E2A, darkHC: 0xA7F3D0) }
     /// Pending. 4.5:1 on the card and on its own 12% wash.
-    static let statusPending = Color("StatusPending")
+    static var statusPending: Color { color(light: 0x8A4B00, dark: 0xFFB340, lightHC: 0x6B3A00, darkHC: 0xFFE0B0) }
     /// Problem text. 4.5:1 on the card and on its own 12% wash.
-    static let statusProblem = Color("StatusProblem")
+    static var statusProblem: Color { color(light: 0xB42318, dark: 0xFF6961, lightHC: 0x8C1C14, darkHC: 0xFFC7C3) }
     /// Links and "applies next" captions that used to be `.tint`.
-    static let accentText = Color("AccentText")
+    static var accentText: Color { color(light: 0x0844A8, dark: 0x8ECAFF, lightHC: 0x003E99, darkHC: 0xE7F1FF) }
     /// On Air capsule. White type clears 4.5:1 on this fill in both appearances.
-    static let onAirFill = Color("OnAirFill")
+    static var onAirFill: Color { color(light: 0x9B1B1B, dark: 0x9B1B1B, lightHC: 0x6E1010, darkHC: 0x6E1010) }
     /// Selected tag chip. White type clears 4.5:1 on this fill in both appearances.
-    static let chipSelectedFill = Color("ChipSelectedFill")
+    static var chipSelectedFill: Color { color(light: 0x0A4FBF, dark: 0x0A4FBF, lightHC: 0x003E99, darkHC: 0x003E99) }
     /// Light type drawn on station art and on the fills above. Same value in Any and Dark.
-    static let onMediaLight = Color("OnMediaLight")
+    static var onMediaLight: Color { color(light: 0xFFFFFF, dark: 0xFFFFFF, lightHC: 0xFFFFFF, darkHC: 0xFFFFFF) }
     /// Dark type drawn on a light station colour. High Contrast is black.
-    static let onMediaInk = Color("OnMediaInk")
+    static var onMediaInk: Color { color(light: 0x1C1C1E, dark: 0x1C1C1E, lightHC: 0x000000, darkHC: 0x000000) }
 
     /// WCAG AA for text under 18 pt, and for 14 pt that is not bold.
     static let textMinimum: CGFloat = 4.5
@@ -58,6 +61,28 @@ enum AeroDJPalette {
     }
 
     private static let inkUIColor = UIColor(red: 28 / 255, green: 28 / 255, blue: 30 / 255, alpha: 1)
+
+    private static func color(light: UInt32, dark: UInt32, lightHC: UInt32, darkHC: UInt32) -> Color {
+        Color(uiColor: UIColor { traits in
+            let night = traits.userInterfaceStyle == .dark
+            let high = traits.accessibilityContrast == .high
+            switch (night, high) {
+            case (false, false): return ui(light)
+            case (true, false): return ui(dark)
+            case (false, true): return ui(lightHC)
+            case (true, true): return ui(darkHC)
+            }
+        })
+    }
+
+    private static func ui(_ hex: UInt32) -> UIColor {
+        UIColor(
+            red: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
+        )
+    }
 
     private static func resolved(_ color: Color, scheme: ColorScheme) -> UIColor {
         let style: UIUserInterfaceStyle = scheme == .dark ? .dark : .light
