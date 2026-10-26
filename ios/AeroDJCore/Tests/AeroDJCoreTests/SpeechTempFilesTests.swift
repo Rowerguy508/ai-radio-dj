@@ -115,4 +115,24 @@ final class SpeechTempFilesTests: XCTestCase {
         XCTAssertEqual(SpeechTempFiles().legacyDirectory.standardizedFileURL,
                        FileManager.default.temporaryDirectory.standardizedFileURL)
     }
+
+    func testLegacySweepDeletesOnlyPrefixedCafFilesAndLeavesDecoys() throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: legacyRoot, withIntermediateDirectories: true)
+        let legacy = ["aerodj-tts-\(UUID().uuidString).caf", "aerodj-tts-old.caf"].map { legacyRoot.appendingPathComponent($0) }
+        let decoyFiles = ["other.caf", "aerodj-tts.txt", "aerodj-tts-x.caf.bak", "AeroDJ-TTS-upper.caf", "xaerodj-tts-1.caf"]
+            .map { legacyRoot.appendingPathComponent($0) }
+        let subfolder = legacyRoot.appendingPathComponent("aerodj-tts-folder.caf", isDirectory: true)  // folder named like a legacy file
+        let plainFolder = legacyRoot.appendingPathComponent("cache", isDirectory: true)
+        let nested = [subfolder, plainFolder].map { $0.appendingPathComponent("aerodj-tts-nested.caf") }  // never recurse
+        for dir in [subfolder, plainFolder] { try fm.createDirectory(at: dir, withIntermediateDirectories: true) }
+        for url in legacy + decoyFiles + nested { try Data("x".utf8).write(to: url) }
+
+        XCTAssertEqual(temp.sweep(), legacy.count, "only the legacy files are counted")
+
+        for url in legacy { XCTAssertFalse(fm.fileExists(atPath: url.path), "\(url.lastPathComponent) removed") }
+        for url in decoyFiles + [subfolder, plainFolder] + nested {
+            XCTAssertTrue(fm.fileExists(atPath: url.path), "\(url.lastPathComponent) untouched")
+        }
+    }
 }

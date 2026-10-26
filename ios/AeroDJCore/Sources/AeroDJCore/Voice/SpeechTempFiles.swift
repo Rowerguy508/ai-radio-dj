@@ -40,8 +40,9 @@ public struct SpeechTempFiles: Sendable {
     @discardableResult
     public func sweep() -> Int {
         let fm = FileManager.default
-        let legacy = ((try? fm.contentsOfDirectory(at: legacyDirectory, includingPropertiesForKeys: nil)) ?? [])
+        let legacy = ((try? fm.contentsOfDirectory(at: legacyDirectory, includingPropertiesForKeys: [.isRegularFileKey])) ?? [])
             .filter { $0.lastPathComponent.hasPrefix(Self.prefix) && $0.pathExtension == "caf" }
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }  // files only, never folders
         let entries = ((try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []) + legacy
         return entries.reduce(0) { count, url in (try? FileManager.default.removeItem(at: url)) != nil ? count + 1 : count }
     }
