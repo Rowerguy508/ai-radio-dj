@@ -2,6 +2,7 @@ import Foundation
 @preconcurrency import MusicKit
 import AVFoundation
 import AeroDJCore
+import OSLog
 
 /// Native MusicKit adapter. No API secrets in the client — MusicKit framework
 /// handles auth. Playback stays managed by MusicKit; no protected-stream mixing.
@@ -44,6 +45,8 @@ final class MusicKitService: ObservableObject {
     /// The handler must resolve the transition: play a DJ line, or call `skipInterlude()`.
     var onBoundary: (@MainActor (PlaybackBoundary, Int) -> Void)?
     private var pollTimer: Timer?
+    /// Playback timing for device validation. Indices and durations only: no titles or identifiers.
+    private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
     /// Session notification tokens, owned here and removed in `deinit`. Written once on the
     /// main actor in `registerSessionObservers`; read only from `deinit`.
     private nonisolated(unsafe) var sessionObservers: [NSObjectProtocol] = []
@@ -177,6 +180,7 @@ final class MusicKitService: ObservableObject {
         try await player.play()
         isPlaying = true
         pendingStartIndex = nil
+        log.notice("song started index=\(index, privacy: .public) durationSeconds=\(song.duration ?? -1, privacy: .public)")
         onSongStarted?(index, song.duration)
     }
 
@@ -260,6 +264,7 @@ final class MusicKitService: ObservableObject {
         switch boundary {
         case .naturalEnd:
             let finishedIndex = queueIndex
+            log.notice("boundary naturalEnd finished=\(finishedIndex, privacy: .public)")
             send(.naturalBoundary(nextIndex: finishedIndex + 1))
             queueIndex += 1
             currentTrack = queue.indices.contains(queueIndex) ? queue[queueIndex] : nil
@@ -271,6 +276,7 @@ final class MusicKitService: ObservableObject {
                 // One song is loaded at a time, so this end is the end of song `queueIndex`.
                 // The break runs now; the next song is loaded after it (startNextTrack).
                 let finished = queueIndex
+                log.notice("boundary queueEnd finished=\(finished, privacy: .public)")
                 send(.naturalBoundary(nextIndex: next))
                 stateMachine.apply(.trackEnded)
                 onBoundary?(.naturalEnd(finishedEntryID: lastEntryID), finished)
