@@ -8,15 +8,24 @@ import Foundation
 public struct PlaybackIntent: Equatable, Sendable {
     /// The user last pressed play (or started a station) and has not pressed pause.
     public private(set) var userWantsPlayback = false
+    /// A phone call or other system interruption is holding playback. Cleared only when that
+    /// interruption ends with permission to resume, never by a route change.
+    private var interruptionHeld = false
+    /// The output route was removed (headphones unplugged). Cleared only by an explicit user play.
+    private var routeHeld = false
+
     /// The system paused playback (call, route removal) and has not given it back.
-    public private(set) var pausedBySystem = false
+    public var pausedBySystem: Bool {
+        interruptionHeld || routeHeld
+    }
 
     public init() {}
 
-    /// An explicit user play overrides a system hold, such as a removed route.
+    /// An explicit user play overrides every system hold, including a removed route.
     public mutating func userPlay() {
         userWantsPlayback = true
-        pausedBySystem = false
+        interruptionHeld = false
+        routeHeld = false
     }
 
     public mutating func userPause() {
@@ -24,16 +33,18 @@ public struct PlaybackIntent: Equatable, Sendable {
     }
 
     public mutating func systemInterruptionBegan() {
-        pausedBySystem = true
+        interruptionHeld = true
     }
 
     /// `shouldResume` is the system's own permission; without it, playback stays paused.
+    /// It releases only the interruption hold, so a route removed during the call still holds.
     public mutating func systemInterruptionEnded(shouldResume: Bool) {
-        pausedBySystem = !shouldResume
+        interruptionHeld = !shouldResume
     }
 
+    /// Headphones or the output route went away. Holds until the user presses play.
     public mutating func routeRemoved() {
-        pausedBySystem = true
+        routeHeld = true
     }
 
     /// Whether music may start again on its own, after a DJ break or an interruption.
