@@ -3,120 +3,62 @@ import AeroDJCore
 
 /// Player shell. MusicKit playback is managed by the framework; this view
 /// reflects state and forwards user actions. No protected-stream mixing.
+///
+/// The UI is `PlayingScreen` (compact on the closed Duo, two-zone Studio when open). It
+/// binds to the app-scoped session's `snapshot`, `studio` (tuner, Connections, DJ state)
+/// and real actions. Audio wiring stays in `.task` below and belongs to the player owner.
 struct PlayerView: View {
     let station: Station
+    let dependencies: AppDependencies
     @StateObject private var music: MusicKitService
     @StateObject private var interlude: InterludePlaybackAdapter
-    /// Device-test scaffold: one fixed line after the first song. The composite (#49)
-    /// replaces this with the approved briefing script.
-    private let breakPlan = DJBreakPlan(linesAfterTrack: [0: "That was song one. Here comes song two."])
-    @State private var searchQuery = ""
-    @State private var results: [Track] = []
 
     /// `music` is the app-scoped session from `AppDependencies`. Never a new player.
-    init(station: Station, music: MusicKitService) {
+    init(station: Station, dependencies: AppDependencies) {
         self.station = station
-        _music = StateObject(wrappedValue: music)
-        _interlude = StateObject(wrappedValue: InterludePlaybackAdapter(music: music))
+        self.dependencies = dependencies
+        _music = StateObject(wrappedValue: dependencies.playback)
+        _interlude = StateObject(wrappedValue: InterludePlaybackAdapter(music: dependencies.playback))
     }
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text(station.name).font(.title2)
-
-            if let err = music.lastError {
-                Text(err).font(.footnote).foregroundStyle(.red)
-            }
-
-            switch music.authState {
-            case .unknown:
-                ProgressView("Checking Apple Music…")
-            case .denied:
-                Text("Apple Music access denied. Enable it in Settings.")
-                    .foregroundStyle(.red)
-            case .notSubscribed:
-                Text("An Apple Music subscription is required.")
-                    .foregroundStyle(.orange)
-            case .authorized:
-                nowPlayingSection
-                searchSection
-            }
-        }
-        .padding()
+        PlayingScreen(station: stationRef,
+                      access: access,
+                      snapshot: music.snapshot,
+                      actions: .live(music),
+                      search: .live(music, station: stationRef),
+                      studio: dependencies.studio,
+                      isTestStation: dependencies.mode == .testStation)
+        .navigationTitle(station.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .task {
-            music.onBoundary = { @MainActor [interlude, breakPlan, music] boundary, finishedIndex in
+            music.onBoundary = { @MainActor [music] boundary, _ in
                 guard case .naturalEnd = boundary else { return }
-                // Every natural end must resolve the transition: a line, or none.
-                guard breakPlan.line(afterTrack: finishedIndex) != nil, !interlude.isSpeaking else {
-                    music.skipInterlude()
-                    return
-                }
-                // Prepared clips are not wired yet, so no break plays live speech here.
-                interlude.skipUnprepared()
+                // No prepared break is wired to the player yet (DJBreakSession lands with
+                // #58), so every natural end resolves the transition with no speech.
+                music.skipInterlude()
             }
             music.onBreakMustStop = { [interlude] in interlude.stop() }
             await music.authorize()
         }
     }
 
-    private var nowPlayingSection: some View {
-        VStack(spacing: 12) {
-            if let track = music.currentTrack {
-                AsyncImage(url: track.artworkURL) { image in
-                    image.resizable().scaledToFit()
-                } placeholder: {
-                    Color.gray.opacity(0.2)
-                }
-                .frame(width: 120, height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+    private var stationRef: StationRef { StationRef(id: station.id.uuidString, name: station.name) }
 
-                Text(track.title).font(.headline)
-                Text(track.artistName).font(.subheadline).foregroundStyle(.secondary)
-            } else {
-                Text("Nothing playing").foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 24) {
-                Button { Task { try? await music.skip() } } label: {
-                    Image(systemName: "forward.fill").font(.title2)
-                }
-                Button {
-                    if music.isPlaying {
-                        music.pause()
-                    } else {
-                        Task { try? await music.resume() }
-                    }
-                } label: {
-                    Image(systemName: music.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 48))
-                }
-            }
-        }
-    }
-
-    private var searchSection: some View {
-        VStack(spacing: 8) {
-            TextField("Search Apple Music", text: $searchQuery)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { Task { results = (try? await music.search(searchQuery)) ?? [] } }
-
-            List(results) { track in
-                Button {
-                    Task { try? await music.play([track]) }
-                } label: {
-                    HStack {
-                        Text(track.title)
-                        Spacer()
-                        Text(track.artistName).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .frame(height: 200)
+    private var access: PlaybackAccess {
+        switch music.authState {
+        case .unknown: .checking
+        case .authorized: .authorized
+        case .denied: .denied
+        case .notSubscribed: .subscriptionRequired
         }
     }
 }
 
 #Preview {
-    PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil),
-               music: MusicKitService.shared)
+    NavigationStack {
+        PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil),
+                   dependencies: AppDependencies.make())
+    }
 }

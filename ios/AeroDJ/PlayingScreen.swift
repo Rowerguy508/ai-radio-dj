@@ -35,6 +35,11 @@ struct PlayingScreen: View {
                     .ignoresSafeArea()
                 layout(mode: mode, width: width, height: geo.size.height)
             }
+            #if DEBUG
+            .onAppear {
+                if let initial = StudioCaptureSegment.initial { segment = initial; StudioCaptureSegment.initial = nil }
+            }
+            #endif
             .onChange(of: mode) { _, newMode in
                 // The compact sheet's content moves into Zone B on the same segment.
                 if newMode != .compact { showWorkspace = false }
@@ -66,16 +71,19 @@ struct PlayingScreen: View {
                           searchQuery: $searchQuery,
                           onOpenWorkspace: { segment = .queue; showWorkspace = true },
                           onReview: { segment = .connections; showWorkspace = true })
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
         case .studio:
             if let widths = StudioZoneWidths.allocate(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,
                              zoneA: zoneA(artworkSide: CGFloat(widths.artworkSide(containerHeight: Double(height)))),
                              workspace: workspace)
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("layout.studio")
             }
         case .studioStacked:
             StudioStackedLayout(zoneA: zoneA(artworkSide: 160), workspace: workspace)
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.studioStacked")
         }
     }
@@ -85,7 +93,7 @@ struct PlayingScreen: View {
     /// DJ activity comes only from the Studio model (`studio.djState`), which the player
     /// feeds from real audio callbacks. `PlaybackSnapshot.dj` is not used, and no caption
     /// is shown: the contract exposes no clip text.
-    private var dj: DJStatusPresentation { DJStatusPresentation(state: studio.djState, playerReportedLine: nil) }
+    private var dj: DJStatusPresentation { DJStatusPresentation(state: studio.djState) }
 
     private func zoneA(artworkSide: CGFloat) -> NowPlayingPanel {
         NowPlayingPanel(station: snapshot.station ?? station, content: content, snapshot: snapshot,

@@ -19,12 +19,14 @@ struct StudioLayout: View {
             zoneA
                 .frame(width: CGFloat(widths.zoneA))
                 .frame(maxHeight: .infinity, alignment: .top)
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneA")
             workspace
                 .padding(14)
                 .frame(width: CGFloat(widths.zoneB))
                 .frame(maxHeight: .infinity, alignment: .top)
                 .studioSurface(cornerRadius: 28)
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneB")
         }
         .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))

@@ -47,6 +47,7 @@ struct TuneForm: View {
             .padding(.vertical, 4)
             .padding(.bottom, 16)
         }
+        .accessibilityIdentifier("tune.form")
     }
 
     private func row(_ setting: StationSetting) -> StationTunerRow { model.tunerRow(for: setting) }

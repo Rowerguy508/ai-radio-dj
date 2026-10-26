@@ -9,6 +9,18 @@ struct StationListView: View {
     @State private var showSharedInbox = false
 
     var body: some View {
+        #if DEBUG
+        if StudioCapture.isRequested(mode: dependencies.mode) {
+            StudioCaptureView(dependencies: dependencies)
+        } else {
+            stationList
+        }
+        #else
+        stationList
+        #endif
+    }
+
+    private var stationList: some View {
         NavigationStack {
             List(stations) { station in
                 NavigationLink(value: station) {
@@ -33,7 +45,7 @@ struct StationListView: View {
                 }
             }
             .navigationDestination(for: Station.self) { station in
-                PlayerView(station: station, music: dependencies.playback)
+                PlayerView(station: station, dependencies: dependencies)
             }
             .sheet(isPresented: $showSharedInbox) {
                 if dependencies.mode == .live, let review = SharedInboxReview.appGroupInbox() {

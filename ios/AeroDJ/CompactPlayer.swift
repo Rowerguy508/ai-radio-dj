@@ -123,7 +123,7 @@ struct TrackBlock: View {
     CompactPlayer(station: PlaybackFixtures.station,
                   content: .track(PlaybackFixtures.songs[0]),
                   snapshot: PlaybackFixtures.playing, actions: .preview,
-                  dj: .init(state: .idle, playerReportedLine: nil), isTestStation: true,
+                  dj: .init(state: .idle), isTestStation: true,
                   search: nil, searchQuery: .constant(""), onOpenWorkspace: {}, onReview: {})
 }
 
@@ -131,6 +131,6 @@ struct TrackBlock: View {
     CompactPlayer(station: PlaybackFixtures.station,
                   content: .track(PlaybackFixtures.songs[1]),
                   snapshot: PlaybackFixtures.djSpeaking, actions: .preview,
-                  dj: .init(state: .speaking(includesBriefing: false), playerReportedLine: nil),
+                  dj: .init(state: .speaking(includesBriefing: false)),
                   isTestStation: true, search: nil, searchQuery: .constant(""), onOpenWorkspace: {}, onReview: {})
 }

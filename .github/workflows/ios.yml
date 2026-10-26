@@ -174,3 +174,77 @@ jobs:
             "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
             "$DERIVED_DATA/Build/Products/Release-iphonesimulator/AeroDJ.app" \
             "$SIM_UDID"
+
+  studio-screenshots:
+    name: Studio UI tests and screenshots (closed + open)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-latest
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      DERIVED_DATA: ios/build/DerivedData-ui
+      SHOTS: ${{ github.workspace }}/studio-screenshots
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Toolchain
+        run: xcodebuild -version
+      - name: Pick iPhone (closed) and iPad (open) simulators
+        run: |
+          pick() {
+            xcrun simctl list devices available -j \
+              | jq -r --arg p "$1" '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                        | select(.name | startswith($p))] | last | .udid // empty'
+          }
+          PHONE=$(pick iPhone); PAD=$(pick iPad)
+          test -n "$PHONE" && test -n "$PAD" || { echo "Need an iPhone and an iPad simulator"; exit 1; }
+          echo "PHONE_UDID=$PHONE" >> "$GITHUB_ENV"
+          echo "PAD_UDID=$PAD" >> "$GITHUB_ENV"
+          xcrun simctl list devices available | grep -E "$PHONE|$PAD"
+      - name: Build for testing
+        run: |
+          xcodebuild build-for-testing \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: UI tests on iPhone (closed, compact player)
+        run: |
+          mkdir -p "$SHOTS"
+          TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath "$RUNNER_TEMP/phone.xcresult" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: UI tests on iPad (open, two-zone Studio)
+        run: |
+          TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PAD_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath "$RUNNER_TEMP/pad.xcresult" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Require screenshots
+        run: |
+          ls -la "$SHOTS"
+          ls "$SHOTS" | grep -q '^closed-compact_' || { echo "missing closed screenshot"; exit 1; }
+          ls "$SHOTS" | grep -q '^open-studio-queue_' || { echo "missing open screenshot"; exit 1; }
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-screenshots
+          path: studio-screenshots/*.png
+          if-no-files-found: warn

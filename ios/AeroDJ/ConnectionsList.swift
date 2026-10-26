@@ -35,6 +35,7 @@ struct ConnectionsList: View {
             .padding(.vertical, 4)
             .padding(.bottom, 16)
         }
+        .accessibilityIdentifier("connections.list")
         .task { await model.refresh() }
         .refreshable { await model.refresh() }
         .onChange(of: scenePhase) { _, phase in
@@ -131,6 +132,7 @@ private struct SourceCard: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("connections.source.\(row.integration.rawValue)")
     }
 

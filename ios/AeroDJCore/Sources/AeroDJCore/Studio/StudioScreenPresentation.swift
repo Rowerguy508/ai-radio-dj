@@ -181,32 +181,27 @@ public struct PlaybackErrorPresentation: Equatable, Sendable {
 
 // MARK: - DJ status
 
-/// What the DJ line may show. Built from `StudioPresentationModel.djState` only, plus the
-/// line text the player reported when its audio actually started (`PlaybackSnapshot.dj`).
+/// What the DJ line may show. Built from `StudioPresentationModel.djState` only. It never
+/// reads `PlaybackSnapshot.dj` (a second DJ state that carries line text).
 ///
 /// - "On Air" appears only in `.speaking`, which comes only from the player's confirmed
 ///   `playbackStarted`. No other state is labeled On Air or LIVE.
-/// - The caption is shown only while On Air *and* the player reported the text of the clip
-///   that is playing. Otherwise no caption, waveform or level meter is shown.
+/// - No caption, transcript, waveform or level meter: the contract exposes no clip text.
 public struct DJStatusPresentation: Equatable, Sendable {
     public let state: DJStudioState
     /// "On Air" or `nil`.
     public let onAirBadge: String?
     /// One short status line, or `nil` when there is nothing true to say (idle).
     public let headline: String?
-    /// Exact text of the clip that is playing, as the player reported it. On Air only.
-    public let caption: String?
     /// Shared items waiting for review; the line becomes a button to the review list.
     public let reviewCount: Int?
     /// Whether anything may animate. True only while On Air.
     public var animatesActivity: Bool { state.isOnAir }
     public let accessibilityLabel: String
 
-    public init(state: DJStudioState, playerReportedLine: String?) {
+    public init(state: DJStudioState) {
         self.state = state
         self.onAirBadge = state.onAirLabel
-        let line = playerReportedLine?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.caption = state.isOnAir && !(line ?? "").isEmpty ? line : nil
         switch state {
         case .idle:
             headline = nil
@@ -230,11 +225,7 @@ public struct DJStatusPresentation: Equatable, Sendable {
             headline = "DJ voice limit reached"
             reviewCount = nil
         }
-        if let caption {
-            accessibilityLabel = "On Air. \(caption)"
-        } else {
-            accessibilityLabel = state == .idle ? "" : state.detail
-        }
+        accessibilityLabel = state == .idle ? "" : state.detail
     }
 }
 

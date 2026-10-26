@@ -50,6 +50,18 @@ targets:
         INFOPLIST_FILE: AeroDJShare/Info.plist
         CODE_SIGN_ENTITLEMENTS: AeroDJShare/AeroDJShare.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
+  AeroDJUITests:
+    # Debug-only UI integration tests and screenshots of the playing screen (capture mode).
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [AeroDJUITests]
+    dependencies:
+      - target: AeroDJ
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: AeroDJ
 schemes:
   AeroDJ:
     build:
@@ -58,3 +70,13 @@ schemes:
     test:
       targets:
         - package: AeroDJCore/AeroDJCoreTests
+  AeroDJStudioUI:
+    # Separate scheme so the unit-test scheme stays fast; CI runs this on iPhone and iPad.
+    build:
+      targets:
+        AeroDJ: all
+        AeroDJUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - AeroDJUITests

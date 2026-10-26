@@ -119,8 +119,8 @@ struct ArtworkView: View {
 // MARK: - DJ status
 
 /// The DJ line. Renders `DJStatusPresentation` only: "On Air" only while the player has
-/// confirmed DJ audio, a caption only when the player reported that clip's text, and
-/// nothing at all when the DJ is idle.
+/// confirmed DJ audio (`studio.djState`), no caption or transcript, and nothing at all
+/// when the DJ is idle.
 struct DJStatusLine: View {
     let presentation: DJStatusPresentation
     var onReview: (() -> Void)?
@@ -137,24 +137,16 @@ struct DJStatusLine: View {
             .buttonStyle(.bordered)
             .accessibilityHint("Opens Connections to review shared items. Music continues.")
         } else if let headline = presentation.headline {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    if let badge = presentation.onAirBadge {
-                        OnAirBadge(text: badge, pulses: presentation.animatesActivity && !reduceMotion)
-                    } else {
-                        Image(systemName: icon).foregroundStyle(.secondary).accessibilityHidden(true)
-                    }
-                    Text(headline)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(presentation.onAirBadge == nil ? .secondary : .primary)
-                        .lineLimit(1)
+            HStack(spacing: 8) {
+                if let badge = presentation.onAirBadge {
+                    OnAirBadge(text: badge, pulses: presentation.animatesActivity && !reduceMotion)
+                } else {
+                    Image(systemName: icon).foregroundStyle(.secondary).accessibilityHidden(true)
                 }
-                if let caption = presentation.caption {
-                    Text(caption)
-                        .font(.callout)
-                        .lineLimit(3)
-                        .truncationMode(.tail)
-                }
+                Text(headline)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(presentation.onAirBadge == nil ? .secondary : .primary)
+                    .lineLimit(1)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(presentation.accessibilityLabel)
@@ -432,11 +424,11 @@ struct StartListeningView: View {
 
 #Preview("DJ states") {
     VStack(alignment: .leading, spacing: 20) {
-        DJStatusLine(presentation: .init(state: .preparing(includesBriefing: false), playerReportedLine: nil))
-        DJStatusLine(presentation: .init(state: .ready(includesBriefing: true, seconds: 40), playerReportedLine: nil))
-        DJStatusLine(presentation: .init(state: .speaking(includesBriefing: false), playerReportedLine: nil))
-        DJStatusLine(presentation: .init(state: .failed(.voiceFailed), playerReportedLine: nil))
-        DJStatusLine(presentation: .init(state: .failed(.consentReviewRequired(pendingCount: 2)), playerReportedLine: nil))
+        DJStatusLine(presentation: .init(state: .preparing(includesBriefing: false)))
+        DJStatusLine(presentation: .init(state: .ready(includesBriefing: true, seconds: 40)))
+        DJStatusLine(presentation: .init(state: .speaking(includesBriefing: false)))
+        DJStatusLine(presentation: .init(state: .failed(.voiceFailed)))
+        DJStatusLine(presentation: .init(state: .failed(.consentReviewRequired(pendingCount: 2))))
     }
     .padding()
 }

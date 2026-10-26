@@ -91,14 +91,12 @@ final class StudioScreenPresentationTests: XCTestCase {
             .failed(.voiceFailed), .failed(.budgetReached), .failed(.consentReviewRequired(pendingCount: 2)),
         ]
         for s in all {
-            let p = DJStatusPresentation(state: s, playerReportedLine: "That was Morning Light.")
+            let p = DJStatusPresentation(state: s)
             if case .speaking = s {
                 XCTAssertEqual(p.onAirBadge, "On Air")
-                XCTAssertEqual(p.caption, "That was Morning Light.")
                 XCTAssertTrue(p.animatesActivity)
             } else {
                 XCTAssertNil(p.onAirBadge, "\(s)")
-                XCTAssertNil(p.caption, "a reported line must not show outside speaking: \(s)")
                 XCTAssertFalse(p.animatesActivity, "\(s)")
                 XCTAssertFalse(p.accessibilityLabel.contains("On Air"), "\(s)")
             }
@@ -106,26 +104,25 @@ final class StudioScreenPresentationTests: XCTestCase {
     }
 
     func testIdleSaysNothingAndReviewIsActionable() {
-        let idle = DJStatusPresentation(state: .idle, playerReportedLine: nil)
+        let idle = DJStatusPresentation(state: .idle)
         XCTAssertNil(idle.headline)
-        XCTAssertNil(idle.caption)
-        let review = DJStatusPresentation(state: .failed(.consentReviewRequired(pendingCount: 3)), playerReportedLine: nil)
+        XCTAssertEqual(idle.accessibilityLabel, "")
+        let review = DJStatusPresentation(state: .failed(.consentReviewRequired(pendingCount: 3)))
         XCTAssertEqual(review.reviewCount, 3)
         XCTAssertEqual(review.headline, "3 to review")
-        let speakingNoLine = DJStatusPresentation(state: .speaking(includesBriefing: false), playerReportedLine: "  ")
+        let speakingNoLine = DJStatusPresentation(state: .speaking(includesBriefing: false))
         XCTAssertEqual(speakingNoLine.onAirBadge, "On Air")
-        XCTAssertNil(speakingNoLine.caption, "no invented caption without the clip text")
     }
 
     @MainActor
     func testDJStatusFollowsTheRealReducer() {
         let store = DJPresentationStore()
         store.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 9))
-        XCTAssertNil(DJStatusPresentation(state: store.studioState, playerReportedLine: "x").onAirBadge)
+        XCTAssertNil(DJStatusPresentation(state: store.studioState).onAirBadge)
         store.send(.playbackStarted(afterTrack: 0))
-        XCTAssertEqual(DJStatusPresentation(state: store.studioState, playerReportedLine: "x").onAirBadge, "On Air")
+        XCTAssertEqual(DJStatusPresentation(state: store.studioState).onAirBadge, "On Air")
         store.send(.playbackFailed(afterTrack: 0))
-        XCTAssertNil(DJStatusPresentation(state: store.studioState, playerReportedLine: "x").onAirBadge)
+        XCTAssertNil(DJStatusPresentation(state: store.studioState).onAirBadge)
     }
 
     // MARK: Connections: every offered action has a real route
