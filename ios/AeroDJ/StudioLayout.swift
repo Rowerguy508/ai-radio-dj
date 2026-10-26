@@ -86,7 +86,9 @@ struct NowPlayingPanel: View {
                     StationSoundRow(tags: soundTags, action: onTune).padding(.top, 10)
                 }
             default:
-                NowPlayingPlaceholder(content: content).padding(.vertical, 40)
+                Spacer(minLength: 8)
+                NowPlayingPlaceholder(content: content)
+                    .frame(maxWidth: .infinity)
             }
             PlaybackErrorBanner(error: snapshot.error, actions: actions).padding(.top, 12)
             Spacer(minLength: 16)

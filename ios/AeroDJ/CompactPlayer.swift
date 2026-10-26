@@ -38,10 +38,14 @@ struct CompactPlayer: View {
                         }
                         Spacer(minLength: 12)
                     case .nothingPlaying:
-                        NowPlayingPlaceholder(content: content).padding(.top, 24)
-                        if let search { StartListeningView(search: search, query: $searchQuery).padding(.top, 16) }
+                        Spacer(minLength: 12)
+                        NowPlayingPlaceholder(content: content)
+                        if let search { StartListeningView(search: search, query: $searchQuery).padding(.top, 20) }
+                        Spacer(minLength: 12)
                     default:
-                        NowPlayingPlaceholder(content: content).padding(.top, 48)
+                        Spacer(minLength: 16)
+                        NowPlayingPlaceholder(content: content)
+                        Spacer(minLength: 16)
                     }
                     PlaybackErrorBanner(error: snapshot.error, actions: actions)
                         .padding(.top, 8)

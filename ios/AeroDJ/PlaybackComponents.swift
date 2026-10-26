@@ -116,8 +116,8 @@ struct StationBackdrop: View {
 // MARK: - Artwork
 
 /// Square artwork at a size the container decides. Without album art (or while it loads,
-/// or if it fails) the song gets generated station art: a gradient in the station's colours,
-/// radio rings and the song's monogram. Deterministic and offline (`StationArtStyle`).
+/// or if it fails) the song gets the station ident (`StationIdentPlate`): the station's
+/// colours and the song's monogram. Deterministic and offline (`StationArtStyle`).
 struct ArtworkView: View {
     let track: TrackInfo
     let size: CGFloat
@@ -153,50 +153,14 @@ struct ArtworkView: View {
     }
 }
 
-/// Generated cover: gradient, an accent glow, concentric "on air" rings and a monogram.
-/// Never a network request or an image asset.
+/// Generated cover when a song has no album art. Drawing lives in `StationIdentPlate`.
 struct StationArtwork: View {
     let style: StationArtStyle
     let size: CGFloat
     var caption: String?
 
     var body: some View {
-        ZStack {
-            LinearGradient(colors: [style.color(0), style.color(1)],
-                           startPoint: style.startPoint, endPoint: style.endPoint)
-            RadialGradient(colors: [style.color(2).opacity(0.55), .clear],
-                           center: .bottomTrailing, startRadius: 0, endRadius: size * 0.95)
-            ForEach(1...max(1, style.rings), id: \.self) { ring in
-                Circle()
-                    .strokeBorder(.white.opacity(0.08 + 0.05 * Double(style.rings - ring + 1)),
-                                  lineWidth: max(0.75, size * 0.008))
-                    .frame(width: size * (0.38 + 0.26 * Double(ring)), height: size * (0.38 + 0.26 * Double(ring)))
-            }
-            Text(style.monogram)
-                .font(.system(size: size * 0.30, weight: .heavy, design: .rounded))
-                .foregroundStyle(.white.opacity(0.95))
-                .minimumScaleFactor(0.4)
-                .lineLimit(1)
-                .padding(size * 0.12)
-                .shadow(color: .black.opacity(0.22), radius: size * 0.03, y: size * 0.012)
-            if let caption {
-                VStack {
-                    Spacer()
-                    HStack(spacing: 6) {
-                        Image(systemName: "dot.radiowaves.left.and.right")
-                        Text(caption.uppercased()).lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .font(.system(size: max(10, size * 0.042), weight: .bold, design: .rounded))
-                    .tracking(1.2)
-                    .foregroundStyle(.white.opacity(0.85))
-                }
-                .padding(size * 0.07)
-            }
-        }
-        .frame(width: size, height: size)
-        .clipped()
-        .accessibilityHidden(true)
+        StationIdentPlate(style: style, size: size, caption: caption)
     }
 }
 
@@ -450,9 +414,19 @@ struct PlaybackErrorBanner: View {
         if let p = PlaybackErrorPresentation(error) {
             switch p.style {
             case .caption:
+                // Still a caption: secondary, no buttons, not an error color. The fill only
+                // keeps the line readable on the station wash. Music continues.
                 Label(p.title, systemImage: "speaker.slash")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(.quaternarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("playback.speechCaption")
             case .banner:
                 VStack(alignment: .leading, spacing: 10) {
                     Label(p.title, systemImage: "exclamationmark.triangle")
@@ -496,30 +470,9 @@ struct PlaybackErrorBanner: View {
 /// Shown instead of a track when there is nothing the transport could control.
 struct NowPlayingPlaceholder: View {
     let content: NowPlayingContent
-    @Environment(\.openURL) private var openURL
 
     var body: some View {
-        VStack(spacing: 10) {
-            if content == .connecting {
-                ProgressView().accessibilityHidden(true)
-            }
-            Text(content.title)
-                .font(.title3.weight(.semibold))
-                .multilineTextAlignment(.center)
-            if let detail = content.detail {
-                Text(detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if content == .accessDenied, let url = URL(string: UIApplication.openSettingsURLString) {
-                Button("Open Settings") { openURL(url) }
-                    .buttonStyle(.borderedProminent)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
+        EmptyStationStage(content: content)
     }
 }
 
