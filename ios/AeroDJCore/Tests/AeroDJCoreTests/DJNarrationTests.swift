@@ -114,7 +114,8 @@ final class DJNarrationTests: XCTestCase {
         XCTAssertEqual(plan.briefingReport.entries.count, cues.count)
         let outcomes = plan.briefingReport.entries.map(\.outcome)
         XCTAssertEqual(outcomes.first, .dropped(.notPlacedByScheduler))
-        XCTAssertTrue(outcomes.contains(.deferred(.noTrackBoundary)), "music wins; the rest waits for later breaks")
+        XCTAssertTrue(outcomes.contains(.dropped(.notCarriedForward)), "time-sensitive items that miss this show are not rolled forward")
+        XCTAssertFalse(outcomes.contains(.deferred(.noTrackBoundary)))
         XCTAssertTrue(outcomes.contains(.scheduled(.afterTrack(3))))
     }
 
@@ -187,7 +188,7 @@ final class DJNarrationTests: XCTestCase {
     }
 
     func testEverySpokenCueIsAttributedAndUnattributedContentIsNeverSpoken() {
-        let good = NarrationCue(id: UUID(), order: 1, group: 0, kind: .upcomingEvent, text: "Coming up: Standup. From your calendar.",
+        let good = NarrationCue(id: UUID(), order: 1, group: 0, kind: .upcomingEvent, text: "Coming up: Standup.",
                                 estimatedSeconds: 4, maxSeconds: 20, sourceItemID: UUID(), source: .calendar, provenance: "calendar:1")
         let bare = NarrationCue(id: UUID(), order: 2, group: 0, kind: .note, text: "Something with no provenance.",
                                 estimatedSeconds: 4, maxSeconds: 20, sourceItemID: UUID(), source: .obsidian, provenance: nil)
@@ -203,7 +204,7 @@ final class DJNarrationTests: XCTestCase {
                     switch djBreak.attributions[cue.id]! {
                     case .personalContext(let item, let source, let provenance):
                         XCTAssertEqual(item, good.sourceItemID); XCTAssertEqual(source, .calendar); XCTAssertEqual(provenance, "calendar:1")
-                        XCTAssertTrue(cue.text.contains("From your calendar."), "attribution is also spoken")
+                        XCTAssertFalse(cue.text.localizedCaseInsensitiveContains("from your"), "source stays in the attribution")
                     case .trackMetadata(let ids):
                         XCTAssertTrue(ids.allSatisfy { [djTracks(12)[djBreak.afterTrack].id, djTracks(12)[djBreak.afterTrack + 1].id].contains($0) })
                     case .presenter:
