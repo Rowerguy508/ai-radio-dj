@@ -30,7 +30,7 @@ struct CompactPlayer: View {
             }
 
             // Fixed VStack if it fits, ScrollView only when it doesn't.
-            if fits(content: geo.height) {
+            if fits(content: geo.size.height) {
                 content
                     .frame(maxHeight: .infinity, alignment: .top)
             } else {

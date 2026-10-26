@@ -63,7 +63,7 @@ struct NowPlayingPanel: View {
     let height: CGFloat
 
     var body: some View {
-        let artwork = min(height < 480 ? 120 : 300, 300)
+        let artwork: CGFloat = min(height < 480 ? 120 : 300, 300)
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 16) {
                 StationHeader(station: station, dj: dj)
