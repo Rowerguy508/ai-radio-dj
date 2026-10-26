@@ -58,10 +58,18 @@ struct PlayerView: View {
                         music.skipInterlude()
                         return
                     }
-                    await interlude.play(clips: prepared.clips.map(\.audio.data), line: line)
+                    await interlude.play(clips: prepared.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
                 }
             }
             music.onBreakMustStop = { [interlude] in interlude.stop() }
+            // Only real audio events reach the DJ session; nothing is synthesized from the plan.
+            interlude.onPlayback = { [djSession] event in
+                switch event {
+                case .started(let k): djSession.playbackStarted(afterTrack: k)
+                case .finished(let k): djSession.playbackFinished(afterTrack: k)
+                case .failed(let k): djSession.playbackFailed(afterTrack: k)
+                }
+            }
             await music.authorize()
         }
     }
