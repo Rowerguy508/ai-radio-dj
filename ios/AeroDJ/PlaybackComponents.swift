@@ -140,7 +140,7 @@ struct ArtworkView: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
         .shadow(color: .black.opacity(size > 160 ? 0.22 : 0.12), radius: size > 160 ? 28 : 6, y: size > 160 ? 14 : 3)
         .accessibilityHidden(true)
     }
@@ -161,20 +161,22 @@ struct StationArtwork: View {
     var caption: String?
 
     var body: some View {
+        let base = AeroDJPalette.backing(forLightText: style.color(0))
+        let deep = AeroDJPalette.backing(forLightText: style.color(1))
         ZStack {
-            LinearGradient(colors: [style.color(0), style.color(1)],
+            LinearGradient(colors: [base, deep],
                            startPoint: style.startPoint, endPoint: style.endPoint)
             RadialGradient(colors: [style.color(2).opacity(0.55), .clear],
                            center: .bottomTrailing, startRadius: 0, endRadius: size * 0.95)
             ForEach(1...max(1, style.rings), id: \.self) { ring in
                 Circle()
-                    .strokeBorder(.white.opacity(0.08 + 0.05 * Double(style.rings - ring + 1)),
+                    .strokeBorder(AeroDJPalette.onMediaLight.opacity(0.08 + 0.05 * Double(style.rings - ring + 1)),
                                   lineWidth: max(0.75, size * 0.008))
                     .frame(width: size * (0.38 + 0.26 * Double(ring)), height: size * (0.38 + 0.26 * Double(ring)))
             }
             Text(style.monogram)
                 .font(.system(size: size * 0.30, weight: .heavy, design: .rounded))
-                .foregroundStyle(.white.opacity(0.95))
+                .foregroundStyle(AeroDJPalette.onMediaLight)
                 .minimumScaleFactor(0.4)
                 .lineLimit(1)
                 .padding(size * 0.12)
@@ -189,7 +191,7 @@ struct StationArtwork: View {
                     }
                     .font(.system(size: max(10, size * 0.042), weight: .bold, design: .rounded))
                     .tracking(1.2)
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(AeroDJPalette.onMediaLight)
                 }
                 .padding(size * 0.07)
             }
@@ -220,8 +222,8 @@ struct StationTitle: View {
                     .font(.caption2.weight(.bold))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Capsule().strokeBorder(.secondary))
-                    .foregroundStyle(.secondary)
+                    .background(Capsule().strokeBorder(AeroDJPalette.secondaryText))
+                    .foregroundStyle(AeroDJPalette.secondaryText)
             }
         }
         .accessibilityElement(children: .combine)
@@ -268,11 +270,11 @@ struct DJStatusLine: View {
                 if let badge = presentation.onAirBadge {
                     OnAirBadge(text: badge, pulses: presentation.animatesActivity && !reduceMotion)
                 } else {
-                    Image(systemName: icon).foregroundStyle(.secondary).accessibilityHidden(true)
+                    Image(systemName: icon).foregroundStyle(AeroDJPalette.secondaryText).accessibilityHidden(true)
                 }
                 Text(headline)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(presentation.onAirBadge == nil ? .secondary : .primary)
+                    .foregroundStyle(presentation.onAirBadge == nil ? AeroDJPalette.secondaryText : .primary)
                     .lineLimit(1)
             }
             .accessibilityElement(children: .ignore)
@@ -299,13 +301,13 @@ struct OnAirBadge: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Circle().fill(.white).frame(width: 6, height: 6).opacity(dim ? 0.35 : 1)
+            Circle().fill(AeroDJPalette.onMediaLight).frame(width: 6, height: 6).opacity(dim ? 0.35 : 1)
             Text(text.uppercased()).font(.caption.weight(.heavy))
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(AeroDJPalette.onMediaLight)
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(Capsule().fill(Color.red))
+        .background(Capsule().fill(AeroDJPalette.onAirFill))
         .onAppear {
             guard pulses else { return }
             withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { dim = true }
@@ -324,8 +326,11 @@ struct TransportRow: View {
     let accent: Color
     var onTune: (() -> Void)?
     @State private var taps = 0
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        let lightIcon = AeroDJPalette.prefersLightText(on: accent, minimum: AeroDJPalette.textMinimum, scheme: scheme)
+        let fill = lightIcon ? AeroDJPalette.backing(forLightText: accent) : accent
         HStack(spacing: 0) {
             side {
                 if let onTune {
@@ -353,10 +358,10 @@ struct TransportRow: View {
                       systemImage: transport == .playing ? "pause.fill" : "play.fill")
                     .labelStyle(.iconOnly)
                     .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(lightIcon ? AeroDJPalette.onMediaLight : AeroDJPalette.onMediaInk)
                     .frame(width: 68, height: 68)
-                    .background(Circle().fill(accent.gradient))
-                    .shadow(color: accent.opacity(0.35), radius: 10, y: 4)
+                    .background(Circle().fill(fill.gradient))
+                    .shadow(color: fill.opacity(0.35), radius: 10, y: 4)
                     .contentShape(Circle())
                     .contentTransition(.symbolEffect(.replace))
             }
@@ -410,7 +415,7 @@ struct QueueAffordance: View {
                     Text("UP NEXT")
                         .font(.caption2.weight(.bold))
                         .tracking(0.8)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(AeroDJPalette.secondaryText)
                     Text(upNext.first.map { "\($0.title) · \($0.artistName)" } ?? "Nothing queued")
                         .font(.subheadline.weight(.medium))
                         // Large text wraps instead of hiding the song name.
@@ -421,7 +426,7 @@ struct QueueAffordance: View {
                 if upNext.count > 1 {
                     Text("+\(upNext.count - 1)")
                         .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(AeroDJPalette.secondaryText)
                 }
                 Image(systemName: "chevron.up").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                     .accessibilityHidden(true)
@@ -452,7 +457,7 @@ struct PlaybackErrorBanner: View {
             case .caption:
                 Label(p.title, systemImage: "speaker.slash")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AeroDJPalette.secondaryText)
             case .banner:
                 VStack(alignment: .leading, spacing: 10) {
                     Label(p.title, systemImage: "exclamationmark.triangle")
@@ -509,7 +514,7 @@ struct NowPlayingPlaceholder: View {
             if let detail = content.detail {
                 Text(detail)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AeroDJPalette.secondaryText)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -551,14 +556,14 @@ struct StartListeningView: View {
             switch phase {
             case .idle: EmptyView()
             case .searching: ProgressView("Searching Apple Music")
-            case .failed(let message): Text(message).font(.caption).foregroundStyle(.secondary)
-            case .empty: Text("No songs found.").font(.caption).foregroundStyle(.secondary)
+            case .failed(let message): Text(message).font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
+            case .empty: Text("No songs found.").font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
             }
 
             if !results.isEmpty {
                 Text("Playing a song replaces the queue with it and the songs after it.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AeroDJPalette.secondaryText)
                 ForEach(Array(results.enumerated()), id: \.element.id) { index, track in
                     Button {
                         Task {
@@ -571,7 +576,7 @@ struct StartListeningView: View {
                             ArtworkView(track: track, size: 44)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(track.title).font(.subheadline).lineLimit(1)
-                                Text(track.artistName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text(track.artistName).font(.caption).foregroundStyle(AeroDJPalette.secondaryText).lineLimit(1)
                             }
                             Spacer(minLength: 0)
                             Image(systemName: "play.circle").foregroundStyle(.secondary).accessibilityHidden(true)

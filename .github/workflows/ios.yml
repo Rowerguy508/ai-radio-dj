@@ -197,14 +197,22 @@ jobs:
         working-directory: ios
       - name: Toolchain
         run: xcodebuild -version
-      - name: Pick iPhone (closed) and iPad (open) simulators
+      - name: Pick iPhone 16e (closed) and iPad Air 11-inch (open stand-in)
+        # The iPad is a width stand-in for the open Duo, not a folded iPhone.
         run: |
           pick() {
-            xcrun simctl list devices available -j \
-              | jq -r --arg p "$1" '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
-                        | select(.name | startswith($p))] | last | .udid // empty'
+            local pattern="$1" fallback="$2" udid
+            udid=$(xcrun simctl list devices available -j \
+              | jq -r --arg p "$pattern" '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                        | select(.name | test($p))] | last | .udid // empty')
+            if [ -z "$udid" ]; then
+              udid=$(xcrun simctl list devices available -j \
+                | jq -r --arg p "$fallback" '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                          | select(.name | startswith($p))] | last | .udid // empty')
+            fi
+            printf '%s' "$udid"
           }
-          PHONE=$(pick iPhone); PAD=$(pick iPad)
+          PHONE=$(pick "iPhone 16e" "iPhone"); PAD=$(pick "iPad Air 11" "iPad")
           test -n "$PHONE" && test -n "$PAD" || { echo "Need an iPhone and an iPad simulator"; exit 1; }
           echo "PHONE_UDID=$PHONE" >> "$GITHUB_ENV"
           echo "PAD_UDID=$PAD" >> "$GITHUB_ENV"
@@ -260,7 +268,15 @@ jobs:
           ls "$SHOTS" | grep -q '^open-studio-queue_' || { echo "missing open screenshot"; exit 1; }
           for shot in closed-dark closed-state-empty closed-state-loading closed-state-error closed-state-denied \
                       closed-connections-revoked closed-tune-config-change closed-large-text \
-                      open-studio-tune-dark open-large-text open-connections-revoked open-tune-config-change; do
+                      open-studio-tune-dark open-large-text open-connections-revoked open-tune-config-change \
+                      closed-queue-sheet-dark open-studio-queue-dark \
+                      closed-connections-dark open-studio-connections-dark \
+                      closed-station-list-dark open-station-list-dark \
+                      closed-state-empty-dark closed-state-loading-dark closed-state-error-dark \
+                      closed-state-denied-dark closed-state-playbackFailed-dark \
+                      open-state-empty-dark open-state-loading-dark open-state-error-dark \
+                      open-state-denied-dark open-state-playbackFailed-dark \
+                      closed-ax5-dark open-ax5-dark; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }

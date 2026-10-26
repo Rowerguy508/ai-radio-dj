@@ -26,7 +26,7 @@ struct StationListView: View {
                 NavigationLink(value: station) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(station.name).font(.headline)
-                        Text(station.description ?? "").font(.subheadline).foregroundStyle(.secondary)
+                        Text(station.description ?? "").font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
                     }
                 }
             }
