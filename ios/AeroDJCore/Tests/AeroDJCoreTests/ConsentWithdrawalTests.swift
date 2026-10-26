@@ -37,6 +37,7 @@ private actor KeyedCache: AudioCache {
     func store(_ audio: CachedAudio, for key: String) async { keys.append(key); await inner.store(audio, for: key) }
     func purge(sourceItemIDs: Set<UUID>) async { await inner.purge(sourceItemIDs: sourceItemIDs) }
     func purgeExpired() async { await inner.purgeExpired() }
+    func purgeAllPersonal() async { await inner.purgeAllPersonal() }
     func remaining() async -> [CachedAudio] {
         var out: [CachedAudio] = []
         for key in keys { if let a = await inner.audio(for: key) { out.append(a) } }

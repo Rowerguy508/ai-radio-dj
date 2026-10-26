@@ -16,6 +16,19 @@ import Foundation
 /// - late, failed, over-cap or revoked breaks are skipped: music never waits,
 /// - tuner changes apply at the next boundary to *future* breaks; the playing song and the
 ///   break already preparing for it are untouched unless the change requires dropping them.
+/// Why the player is asked to stop the DJ line that is playing.
+public enum InterludeStopReason: Equatable, Sendable {
+    /// A source the line speaks about was revoked, deleted or demoted.
+    case sourceRevoked
+}
+
+/// Stops the DJ line that is playing now. Matches `InterludePlaybackAdapter.stopCurrentInterlude(reason:)`
+/// (Atlas, PR #67); the adapter conforms with an empty extension once that lands.
+@MainActor
+public protocol InterludeStopping: AnyObject {
+    func stopCurrentInterlude(reason: InterludeStopReason)
+}
+
 @MainActor
 public final class DJBreakSession {
     private let preparer: DJBreakPreparer
@@ -34,6 +47,11 @@ public final class DJBreakSession {
     private var playing: Int?
     private var changeTask: Task<Void, Never>?
     private var observing = false
+    /// The break handed to the player at the last natural boundary, until its audio ends.
+    private var onAir: (afterTrack: Int, sources: Set<UUID>)?
+    /// The player's speech output. Set by the app to the interlude adapter
+    /// (`stopCurrentInterlude(reason:)`, PR #67); revoking a source stops a break on air with it.
+    public weak var interlude: (any InterludeStopping)?
 
     public init(preparer: DJBreakPreparer, station: StationConfigurationModel, dj: DJPresentationStore,
                 base: DJCadence = .init(), seed: UInt64 = .random(in: .min ... .max),
@@ -97,6 +115,7 @@ public final class DJBreakSession {
         replanIfCadenceChanged(after: k)
         guard case .ready(let prepared) = await preparer.takeBreak(afterTrack: k) else { return nil }
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
+        onAir = (k, Set(prepared.cues.compactMap(\.sourceItemID)))
         return prepared
     }
 
@@ -107,14 +126,17 @@ public final class DJBreakSession {
 
     /// Player audio callbacks. `playbackStarted` only once DJ audio is actually audible.
     public func playbackStarted(afterTrack k: Int) { dj.send(.playbackStarted(afterTrack: k)) }
-    public func playbackFinished(afterTrack k: Int) { dj.send(.playbackFinished(afterTrack: k)) }
-    public func playbackFailed(afterTrack k: Int) { dj.send(.playbackFailed(afterTrack: k)) }
+    public func playbackFinished(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFinished(afterTrack: k)) }
+    public func playbackFailed(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFailed(afterTrack: k)) }
+
+    private func endOnAir(_ k: Int) { if onAir?.afterTrack == k { onAir = nil } }
 
     /// Playback stopped or the session ended: nothing prepared may play later.
     public func stop() async {
         await preparer.cancelAll()
         breaks = [:]
         playing = nil
+        onAir = nil
         dj.send(.sessionStopped)
     }
 
@@ -123,6 +145,11 @@ public final class DJBreakSession {
     /// `NarrationPurger` before the preparer and cache are purged.
     public func purge(sourceItemIDs ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
+        // A break already playing that speaks about these items stops now, in this call.
+        if let live = onAir, !live.sources.isDisjoint(with: ids) {
+            onAir = nil
+            interlude?.stopCurrentInterlude(reason: .sourceRevoked)
+        }
         func mentions(_ cue: NarrationCue) -> Bool { cue.sourceItemID.map(ids.contains) ?? false }
         if let b = briefing {
             briefing = NarrationHandoff(cues: b.cues.filter { !mentions($0) },
@@ -130,6 +157,18 @@ public final class DJBreakSession {
         }
         guard let first = breaks.filter({ $0.value.cues.contains(where: mentions) }).keys.min() else { return }
         replan(from: first, keepingThrough: first - 1)
+    }
+
+    /// Every personal item: stops a personal break on air, drops personal briefing cues and
+    /// re-plans breaks that mention any. Returns the item ids it knew of, for the preparer.
+    public func purgeAllPersonal() -> Set<UUID> {
+        var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
+        for b in breaks.values { ids.formUnion(b.cues.compactMap(\.sourceItemID)) }
+        if let live = onAir, !live.sources.isEmpty {
+            ids.formUnion(live.sources)
+        }
+        purge(sourceItemIDs: ids)
+        return ids
     }
 
     public func detach() { changeTask?.cancel(); changeTask = nil }

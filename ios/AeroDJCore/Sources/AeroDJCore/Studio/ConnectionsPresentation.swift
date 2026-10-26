@@ -357,22 +357,69 @@ public struct NarrationPurger: NarrationPurging {
     public let preparer: DJBreakPreparer?
     public let session: DJBreakSession?
     public let revocations: NarrationRevocations
+    /// Every completed purge is published here (for example, to stop on-air speech elsewhere).
+    public let feed: NarrationPurgeFeed
 
     public init(cache: any AudioCache, preparer: DJBreakPreparer?, session: DJBreakSession? = nil,
-                revocations: NarrationRevocations = .shared) {
+                revocations: NarrationRevocations = .shared, feed: NarrationPurgeFeed = .shared) {
         self.cache = cache
         self.preparer = preparer
         self.session = session
         self.revocations = revocations
+        self.feed = feed
     }
 
     public func purge(sourceItemIDs: Set<UUID>) async {
         guard !sourceItemIDs.isEmpty else { return }
         // First: an in-flight render for these items must not cache its result (VoiceRenderer).
         revocations.revoke(sourceItemIDs)
+        // The session first: it stops a break that is on air for these items right away.
         if let session { await session.purge(sourceItemIDs: sourceItemIDs) }
         await preparer?.purge(sourceItemIDs: sourceItemIDs)
         await cache.purge(sourceItemIDs: sourceItemIDs)
+        revocations.purgeCompleted(sourceItemIDs)
+        feed.publish(.items(sourceItemIDs))
+    }
+
+    /// Removes all personal narration without knowing item ids: renders in flight, planned and
+    /// on-air breaks that mention any personal item, and every personal clip in the cache.
+    /// Works in live mode, where consent is not persisted across launches.
+    public func purgeAllPersonalNarration() async {
+        revocations.revokeAll()
+        let known = await session?.purgeAllPersonal() ?? []
+        if !known.isEmpty { await preparer?.purge(sourceItemIDs: known) }
+        await cache.purgeAllPersonal()
+        revocations.purgeAllCompleted()
+        feed.publish(.all)
+    }
+}
+
+/// What a completed purge removed.
+public enum NarrationPurge: Equatable, Sendable {
+    case items(Set<UUID>)
+    /// Every personal item (`purgeAllPersonalNarration`).
+    case all
+}
+
+/// Broadcasts completed purges. Each `updates()` stream gets every purge published after it
+/// was created. Process-wide by default, like `NarrationRevocations`.
+public final class NarrationPurgeFeed: @unchecked Sendable {
+    public static let shared = NarrationPurgeFeed()
+    private let lock = NSLock()
+    private var continuations: [UUID: AsyncStream<NarrationPurge>.Continuation] = [:]
+
+    public init() {}
+
+    public func updates() -> AsyncStream<NarrationPurge> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<NarrationPurge>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        continuation.onTermination = { [weak self] _ in self?.lock.withLock { self?.continuations[id] = nil } }
+        lock.withLock { continuations[id] = continuation }
+        return stream
+    }
+
+    public func publish(_ purge: NarrationPurge) {
+        for continuation in lock.withLock({ Array(continuations.values) }) { continuation.yield(purge) }
     }
 }
 
