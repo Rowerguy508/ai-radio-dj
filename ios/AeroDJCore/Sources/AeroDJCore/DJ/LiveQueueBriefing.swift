@@ -114,11 +114,13 @@ public enum LiveQueueBriefing {
     }
 
     /// Consent comes from the Connections row. Only `.approved` is granted.
-    private static func consent(for state: ConnectionItemState) -> ConsentState {
+    /// Every other case is non-granted. A new `ConnectionItemState` fails this switch until it is mapped.
+    static func consent(for state: ConnectionItemState) -> ConsentState {
         switch state {
         case .approved: .granted
-        case .pendingApproval, .flaggedForReview: .notRequested
-        case .expired: .granted
+        case .pendingApproval: .notRequested
+        case .flaggedForReview: .notRequested
+        case .expired: .revoked
         case .revoked: .revoked
         case .unavailable: .denied
         }

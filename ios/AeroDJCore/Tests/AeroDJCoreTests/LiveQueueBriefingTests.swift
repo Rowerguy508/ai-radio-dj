@@ -106,6 +106,41 @@ final class LiveQueueBriefingTests: XCTestCase {
         XCTAssertNil(content.first { $0.sourceItemID == id })
     }
 
+    /// Every `ConnectionItemState` is seeded. Only `.approved` is `.granted`.
+    func testOnlyApprovedConnectionStateMapsToGrantedConsent() async throws {
+        let states: [ConnectionItemState] = [
+            .pendingApproval,
+            .flaggedForReview,
+            .approved,
+            .expired,
+            .revoked,
+            .unavailable(.calendarAccess(.denied)),
+        ]
+        XCTAssertEqual(Set(states.map(Self.connectionStateCase)), Set(Self.everyConnectionStateCase))
+        let granted = states.filter { LiveQueueBriefing.consent(for: $0) == .granted }
+        XCTAssertEqual(granted, [.approved])
+        XCTAssertEqual(LiveQueueBriefing.consent(for: .expired), .revoked)
+        for state in states where state != .approved {
+            XCTAssertNotEqual(LiveQueueBriefing.consent(for: state), .granted, "\(state)")
+        }
+    }
+
+    /// A new `ConnectionItemState` fails this switch until the seeded list names it.
+    private static let everyConnectionStateCase = [
+        "pendingApproval", "flaggedForReview", "approved", "expired", "revoked", "unavailable",
+    ]
+
+    private static func connectionStateCase(_ state: ConnectionItemState) -> String {
+        switch state {
+        case .pendingApproval: "pendingApproval"
+        case .flaggedForReview: "flaggedForReview"
+        case .approved: "approved"
+        case .expired: "expired"
+        case .revoked: "revoked"
+        case .unavailable: "unavailable"
+        }
+    }
+
     /// No sensitivity on the input. The adapter must not assume `.low`.
     func testApprovedRowWithUnknownSensitivityProducesNoContentCue() async throws {
         let id = UUID()
