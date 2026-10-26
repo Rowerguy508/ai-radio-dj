@@ -64,9 +64,12 @@ struct MusicSearch {
             play: { results, startIndex in
                 guard results.indices.contains(startIndex) else { return }
                 let tracks = results[startIndex...].compactMap { cache.track(for: $0.id) }
+                // The briefing's source rows go with it: the session re-checks each personal cue
+                // against them (consent, sensitivity, expiry) and drops any it can't match.
+                let handoff = briefing()
                 await djSession.queueStarted(
                     tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) },
-                    briefing: briefing().forQueue())
+                    briefing: handoff.forQueue(), sources: handoff.connectionItems)
                 try await music.play(tracks, station: station)
             })
     }

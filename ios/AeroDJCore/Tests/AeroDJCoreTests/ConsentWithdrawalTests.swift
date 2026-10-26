@@ -37,6 +37,7 @@ private actor KeyedCache: AudioCache {
     func store(_ audio: CachedAudio, for key: String) async { keys.append(key); await inner.store(audio, for: key) }
     func purge(sourceItemIDs: Set<UUID>) async { await inner.purge(sourceItemIDs: sourceItemIDs) }
     func purgeExpired() async { await inner.purgeExpired() }
+    func purgeAllPersonal() async { await inner.purgeAllPersonal() }
     func remaining() async -> [CachedAudio] {
         var out: [CachedAudio] = []
         for key in keys { if let a = await inner.audio(for: key) { out.append(a) } }
@@ -92,8 +93,8 @@ final class ConsentWithdrawalTests: XCTestCase {
 
     /// Prepares a break that uses `id`, and waits until it is ready.
     private func prepare(_ session: DJBreakSession, dj: DJPresentationStore, using id: UUID) async {
-        await session.queueStarted(djTracks(12), briefing: NarrationHandoff(cues: [cue(for: id)], maxSpokenSeconds: 60,
-                                                                           experienceSeconds: 600))
+        let briefing = NarrationHandoff(cues: [cue(for: id)], maxSpokenSeconds: 60, experienceSeconds: 600)
+        await session.queueStarted(djTracks(12), briefing: briefing, sources: approvedSources(briefing))
         await session.songStarted(index: 0, remaining: .seconds(180))
         await until({ if case .ready(true, _) = dj.studioState { true } else { false } }, "break with the event is prepared")
     }

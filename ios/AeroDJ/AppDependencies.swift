@@ -65,11 +65,15 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence())
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared)
+        let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
+        // The same purger handles sources that expire mid-show (checked at each song boundary).
+        djSession.purger = purger
+        precondition(djSession.isWiredForPurge, "purger and stop hook are set before playback")
         let connections = ConnectionsModel(
             station: station,
             sourceReader: composition.sourceReader,
             providers: composition.providers,
-            purger: NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession))
+            purger: purger)
         let recipes = StationRecipeLibrary(store: FileStationRecipeStore(fileURL: supportURL("StationRecipes/recipes.json")))
         return AppDependencies(
             mode: .live,
@@ -104,11 +108,15 @@ struct AppDependencies {
                                        cadence: TestStation.cadence)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared)
+        let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
+        // The same purger handles sources that expire mid-show (checked at each song boundary).
+        djSession.purger = purger
+        precondition(djSession.isWiredForPurge, "purger and stop hook are set before playback")
         let connections = ConnectionsModel(
             station: station,
             sourceReader: composition.sourceReader,
             providers: composition.providers,
-            purger: NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession))
+            purger: purger)
         let recipes = StationRecipeLibrary(store: InMemoryStationRecipeStore())
         return AppDependencies(
             mode: .testStation,
