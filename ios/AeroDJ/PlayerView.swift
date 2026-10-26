@@ -78,10 +78,13 @@ struct PlayerView: View {
                             }
                             await interlude.play(clips: clips, line: line, afterTrack: finishedIndex)
                         case .continueMusic:
+                            // Close the early hand-out. A later stop must see idle, not a break
+                            // that will never play.
                             interlude.abandonHandOut()
                             reportUnplayed(.emptyLine)
                         }
                     } else {
+                        // No prepared break. Same close-out: the hand-out is over.
                         interlude.abandonHandOut()
                         music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
                         music.skipInterlude()

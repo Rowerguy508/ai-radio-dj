@@ -77,8 +77,18 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             abandonUnplayedBreak(.notPlayable, afterTrack: afterTrack, skip: .notPlanned)
             return
         }
-        // Route removal or an interruption already holds playback. Do not start a clip
-        // and do not resume onto the speaker, even if the stop missed the hand-out.
+        // The refusal is the stop held from the synchronous boundary hand-out.
+        // An interruption that begins and ends during `naturalBoundary` clears the
+        // live pause flag and still cancels here. Resume follows that held stop's policy.
+        // A nil tag, or a tag for this afterTrack, cancels this break. A different tag
+        // is ignored and not stored.
+        let opened = pendingPlay.begin(afterTrack: afterTrack, mayAutoResume: music.mayAutoResume)
+        guard opened.startAudio else {
+            await cancelledPendingPlay(resumeMusic: opened.resumeMusic)
+            return
+        }
+        // Extra guard only: the system is still holding playback and no stop was held.
+        // Do not start a clip and do not resume onto the speaker.
         let admission = BreakPlayAdmissionPolicy.decide(
             pausedBySystem: music.pausedBySystem,
             mayAutoResume: music.mayAutoResume,
@@ -86,17 +96,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             afterTrack: afterTrack
         )
         guard admission.startAudio else {
-            pendingPlay.abandonHandOut()
+            _ = pendingPlay.stop(reason: .interruption, afterTrack: nil, mayAutoResume: false)
+            _ = pendingPlay.admit(mayAutoResume: false)
             if let unplayed = admission.unplayed {
                 applyUnplayed(unplayed, afterTrack: afterTrack, skip: .notPlanned)
             }
-            return
-        }
-        // A nil tag, or a tag for this afterTrack, that landed after hand-out and before
-        // begin cancels this break. A tag for a different afterTrack is ignored and not stored.
-        let opened = pendingPlay.begin(afterTrack: afterTrack, mayAutoResume: music.mayAutoResume)
-        guard opened.startAudio else {
-            await cancelledPendingPlay(resumeMusic: opened.resumeMusic)
             return
         }
         // Decode while the play is pending. A revoke blocked on the main actor runs at the

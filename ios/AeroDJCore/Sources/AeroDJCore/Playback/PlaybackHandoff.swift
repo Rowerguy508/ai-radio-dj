@@ -168,11 +168,12 @@ public enum HandedOutBreakReport {
     }
 }
 
-/// Whether `play` may start a clip. A system hold refuses through the unplayed report.
+/// Extra guard for `play`, used only when no stop is held.
 ///
-/// `pausedBySystem` is the route-removal or interruption hold on `PlaybackIntent`.
-/// `mayAutoResume` and `phase` are the player's existing flags. A refusal never
-/// asks music to resume, including when `mayAutoResume` is still true.
+/// The refusal itself is the stop `PendingPlayStop` held from the boundary hand-out.
+/// This flag catches a missed stop while route removal or an interruption is still
+/// holding playback. `mayAutoResume` and `phase` are the player's existing flags.
+/// A refusal never asks music to resume, including when `mayAutoResume` is still true.
 public struct BreakPlayAdmission: Equatable, Sendable {
     public var startAudio: Bool
     public var unplayed: HandedOutBreakEffect?

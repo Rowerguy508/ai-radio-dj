@@ -185,6 +185,30 @@ public struct PendingPlayStop: Equatable, Sendable {
     }
 }
 
+/// How a stop held across `naturalBoundary` is reported when `begin` cancels the break.
+///
+/// The adapter emits `.revoked`. The session records `playbackFinished`, so DJ state
+/// leaves `.ready` without a voice failure. `resumeMusic` is the same `.revoked` policy
+/// `PendingPlayStop.begin` uses.
+public struct HeldBoundaryStopCancellation: Equatable, Sendable {
+    public var event: DJPresentationEvent
+    public var resumeMusic: Bool
+
+    public init(event: DJPresentationEvent, resumeMusic: Bool) {
+        self.event = event
+        self.resumeMusic = resumeMusic
+    }
+}
+
+public enum HeldBoundaryStopReport {
+    public static func cancellation(afterTrack: Int, mayAutoResume: Bool) -> HeldBoundaryStopCancellation {
+        HeldBoundaryStopCancellation(
+            event: .playbackFinished(afterTrack: afterTrack),
+            resumeMusic: NarrationResumePolicy.decide(.revoked, mayAutoResume: mayAutoResume, phase: .music).resumeMusic
+        )
+    }
+}
+
 /// Which player, if any, may still deliver a finish callback.
 ///
 /// Stopping retires the current player immediately. A delegate callback that arrives
