@@ -53,6 +53,11 @@ Install the final `integration/device-duo` tip after the owner merges tonight's 
 
 **Tonight's briefing rule (Echo).** On the post-#86 build, starting a station plays music with **no briefing speech**: every Connections row fails closed until #73 and Echo's wiring follow-up land. **Any briefing speech on this build is a failure, not a pass.** Record it with the time, the headline shown, and the log lines around it.
 
+**Between-song DJ talk (Echo, verified on `0e37e30` and a local merge with #67 `f175300`).** Ordinary DJ commentary is still on tonight, and that is expected. At the default setting it talks at about 30% of natural song ends, at least two songs apart, and never after a skip. It uses only the song title, the artist, "AeroDJ" and fixed lines.
+- PASS: a short song or station line, such as "Good evening. Here's <artist> with <title>." or "That was <title> by <artist>. This is AeroDJ."
+- FAIL: speech that mentions calendar, notes or share items; any "You're all clear" or "You've got…" briefing; any speech over a playing song.
+- With DJ talk set to Off, any speech at all is a FAIL.
+
 Checklist section 3 may still name `939c34e`. Use this section when the two disagree. Signing still comes from checklist section 5.
 
 ```sh
