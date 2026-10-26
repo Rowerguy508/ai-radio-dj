@@ -47,7 +47,8 @@ final class SpeechRenderCompletionTests: XCTestCase {
             let renderer = onDeviceOnly(ScriptedOnDeviceVoice(completion: completion, signals: order), timeout: .seconds(20))
             let clip = try await renderer.render(cue(), userID: "u", stationID: "s").get()
             XCTAssertEqual(clip.attempts.map(\.result), [.rendered])
-            XCTAssertEqual(completion.winner, order[0], "the first signal wins")
+            // The empty buffer is authoritative: if didFinish comes first it only starts the grace period.
+            XCTAssertEqual(completion.winner, .finalBuffer, "completes on the empty buffer in either order")
             XCTAssertEqual(completion.resumeCount, 1, "resumed once for \(order)")
             XCTAssertFalse(completion.signal(.didFinish), "later signals are ignored")
             XCTAssertFalse(completion.signal(.failed, error: URLError(.unknown)))
@@ -91,5 +92,54 @@ final class SpeechRenderCompletionTests: XCTestCase {
         }
         XCTAssertFalse(startedSynthesizer)
         XCTAssertEqual(completion.resumeCount, 1)
+    }
+
+    // Atlas #77 (medium): didFinish may beat the last data buffer. A grace period keeps trailing buffers.
+    func testBuffersAfterDidFinishWithinGraceAreKept() async throws {
+        let clock = ManualGraceClock()
+        let completion = SpeechRenderCompletion(didFinishGrace: .milliseconds(250), schedule: clock.schedule)
+        var framesKept = 0
+        let started = expectation(description: "started")
+        let render = Task { try await completion.wait(start: { started.fulfill() }) }
+        await fulfillment(of: [started], timeout: 1)
+        framesKept += completion.isFinished ? 0 : 512           // buffer 1
+        XCTAssertTrue(completion.signal(.didFinish))            // arrives early
+        XCTAssertFalse(completion.isFinished, "still accepting buffers during the grace period")
+        XCTAssertEqual(clock.pending, [.milliseconds(250)])
+        framesKept += completion.isFinished ? 0 : 256           // trailing buffer after didFinish
+        clock.fireAll()                                          // grace elapses with no empty buffer
+        try await render.value
+        XCTAssertEqual(framesKept, 768, "trailing buffer within the grace period is kept")
+        XCTAssertEqual(completion.winner, .didFinish)
+        XCTAssertEqual(completion.resumeCount, 1)
+        XCTAssertTrue(completion.isFinished)
+    }
+
+    func testEmptyBufferDuringGraceCompletesImmediately() async throws {
+        let clock = ManualGraceClock()
+        let completion = SpeechRenderCompletion(didFinishGrace: .milliseconds(250), schedule: clock.schedule)
+        let render = Task { try await completion.wait(start: {
+            completion.signal(.didFinish)
+            completion.signal(.finalBuffer)                     // before the grace timer fires
+        }) }
+        try await render.value
+        XCTAssertEqual(completion.winner, .finalBuffer)
+        clock.fireAll()                                          // late grace timer is a no-op
+        XCTAssertEqual(completion.winner, .finalBuffer)
+        XCTAssertEqual(completion.resumeCount, 1)
+    }
+}
+
+/// Injectable grace clock: records requested delays and fires them on demand (no real sleeps).
+final class ManualGraceClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var timers: [(Duration, @Sendable () -> Void)] = []
+    var pending: [Duration] { lock.withLock { timers.map(\.0) } }
+    var schedule: SpeechRenderCompletion.GraceScheduler {
+        { [self] delay, fire in lock.withLock { timers.append((delay, fire)) } }
+    }
+    func fireAll() {
+        let due = lock.withLock { defer { timers.removeAll() }; return timers }
+        for (_, fire) in due { fire() }
     }
 }

@@ -1,6 +1,7 @@
 import AVFoundation
 import AeroDJCore
 import Foundation
+import os
 
 /// Free, offline Apple TTS: the last route in the voice fallback chain.
 ///
@@ -52,8 +53,16 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
         synthesizer.delegate = self
     }
 
+    private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
+
     func run() async throws -> (Data, Double) {
-        defer { _ = closeFile() }  // every path: no write can (re)create the file after deletion
+        defer {
+            // every path: no write can (re)create the file after deletion
+            let (frames, _) = closeFile()
+            // Sanitized: an enum and an integer only, never text or voice. `cancelled` = deadline or caller cancel.
+            let signal = completion.winner?.rawValue ?? "none"
+            Self.log.info("speech render complete signal=\(signal, privacy: .public) frames=\(Int(frames), privacy: .public)")
+        }
         try await completion.wait(start: { [self] in
             synthesizer.write(utterance) { [self] buffer in handle(buffer) }
         }, onCancel: { [self] in

@@ -4,12 +4,15 @@ import XCTest
 final class SpeechTempFilesTests: XCTestCase {
     private var temp: SpeechTempFiles!
 
+    private var legacyRoot: URL!
+
     override func setUp() {
-        temp = SpeechTempFiles(directory: FileManager.default.temporaryDirectory
-            .appendingPathComponent("aerodj-speech-test-\(UUID().uuidString)", isDirectory: true))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("aerodj-speech-test-\(UUID().uuidString)", isDirectory: true)
+        legacyRoot = root   // stands in for tmp/ itself
+        temp = SpeechTempFiles(directory: root.appendingPathComponent("aerodj-speech", isDirectory: true), legacyDirectory: root)
     }
 
-    override func tearDown() { try? FileManager.default.removeItem(at: temp.directory) }
+    override func tearDown() { try? FileManager.default.removeItem(at: legacyRoot) }
 
     private var leftovers: [String] {
         (try? FileManager.default.contentsOfDirectory(atPath: temp.directory.path)) ?? []
@@ -98,5 +101,18 @@ final class SpeechTempFilesTests: XCTestCase {
         XCTAssertEqual(failure.attempts.map(\.result), [.timedOut])
         await fulfillment(of: [cleanedUp], timeout: 2)
         XCTAssertEqual(leftovers, [])
+    }
+
+    // Atlas #77 (low): builds up to 5dbf6d9 wrote tmp/aerodj-tts-*.caf directly in tmp.
+    func testLaunchSweepRemovesLegacyRootTempFilesOnly() throws {
+        try FileManager.default.createDirectory(at: legacyRoot, withIntermediateDirectories: true)
+        let legacy = legacyRoot.appendingPathComponent("aerodj-tts-\(UUID().uuidString).caf")
+        let unrelated = ["other.caf", "aerodj-tts-notes.txt", "my-aerodj-tts-x.caf"].map { legacyRoot.appendingPathComponent($0) }
+        for url in [legacy] + unrelated { try Data("x".utf8).write(to: url) }
+        temp.sweep()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path), "legacy speech temp file removed")
+        for url in unrelated { XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) untouched") }
+        XCTAssertEqual(SpeechTempFiles().legacyDirectory.standardizedFileURL,
+                       FileManager.default.temporaryDirectory.standardizedFileURL)
     }
 }
