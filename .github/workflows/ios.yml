@@ -197,22 +197,14 @@ jobs:
         working-directory: ios
       - name: Toolchain
         run: xcodebuild -version
-      - name: Pick iPhone 16e (closed) and iPad Air 11-inch (open stand-in)
-        # The iPad is a width stand-in for the open Duo, not a folded iPhone.
+      - name: Pick iPhone (closed) and iPad (open) simulators
         run: |
           pick() {
-            local pattern="$1" fallback="$2" udid
-            udid=$(xcrun simctl list devices available -j \
-              | jq -r --arg p "$pattern" '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
-                        | select(.name | test($p))] | last | .udid // empty')
-            if [ -z "$udid" ]; then
-              udid=$(xcrun simctl list devices available -j \
-                | jq -r --arg p "$fallback" '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
-                          | select(.name | startswith($p))] | last | .udid // empty')
-            fi
-            printf '%s' "$udid"
+            xcrun simctl list devices available -j \
+              | jq -r --arg p "$1" '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                        | select(.name | startswith($p))] | last | .udid // empty'
           }
-          PHONE=$(pick "iPhone 16e" "iPhone"); PAD=$(pick "iPad Air 11" "iPad")
+          PHONE=$(pick iPhone); PAD=$(pick iPad)
           test -n "$PHONE" && test -n "$PAD" || { echo "Need an iPhone and an iPad simulator"; exit 1; }
           echo "PHONE_UDID=$PHONE" >> "$GITHUB_ENV"
           echo "PAD_UDID=$PAD" >> "$GITHUB_ENV"
