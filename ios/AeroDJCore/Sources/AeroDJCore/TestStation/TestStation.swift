@@ -159,7 +159,6 @@ struct FixtureConnectionProvider: ConnectionItemProvider {
     func items(now: Date) async throws -> [ConnectionItem] { await fixtures.connectionItems(integration, now: now) }
     func perform(_ action: ConnectionAction, on id: UUID) async throws { await fixtures.perform(action, on: id) }
 }
-#endif
 
 extension ConnectionsComposition {
     /// Test station only: synthetic fixtures for every Connections source and the briefing.
@@ -168,3 +167,4 @@ extension ConnectionsComposition {
                                providers: fixtures.providers(), contextSources: fixtures.contextSources(), notes: nil)
     }
 }
+#endif
