@@ -40,16 +40,16 @@ public enum MusicAfterBreak: Equatable, Sendable {
 }
 
 public enum NarrationResumePolicy {
-    /// A non-empty queue is resumed whenever auto-resume is allowed.
-    /// `entryAlreadyFinished` is accepted so callers can name a natural end; it is not applied yet.
+    /// A finished entry is never resumed. When playback is still allowed, the next track starts.
+    /// A break that did not finish the entry resumes that entry only when auto-resume is allowed.
     public static func musicAfterBreak(
         entryAlreadyFinished: Bool,
         mayAutoResume: Bool,
         queueHasEntry: Bool
     ) -> MusicAfterBreak {
-        _ = entryAlreadyFinished
-        guard mayAutoResume, queueHasEntry else { return .hold }
-        return .resumeCurrentEntry
+        guard mayAutoResume else { return .hold }
+        if entryAlreadyFinished { return .startNextTrack }
+        return queueHasEntry ? .resumeCurrentEntry : .hold
     }
 
     public static func decide(_ end: NarrationEnd, mayAutoResume: Bool, phase: AudioState) -> NarrationResumeDecision {

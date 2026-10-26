@@ -158,8 +158,14 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         case .cancelled, .failed:
             onPlayback?(.failed(afterTrack: breakTrack))
         }
-        // Music returns only when the same policy still permits it.
-        if decision.resumeMusic {
+        // This break follows a natural end. The finished entry stays stopped; PlayerView
+        // loads the next song after play returns.
+        let action = NarrationResumePolicy.musicAfterBreak(
+            entryAlreadyFinished: true,
+            mayAutoResume: music.mayAutoResume,
+            queueHasEntry: true
+        )
+        if action == .resumeCurrentEntry {
             await music.resumeIfAllowed()
         }
     }

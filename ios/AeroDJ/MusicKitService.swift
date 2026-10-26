@@ -42,6 +42,8 @@ final class MusicKitService: ObservableObject {
     /// Called with the index of the song the user skipped, so its prepared break is discarded.
     var onSongSkipped: (@MainActor (Int) -> Void)?
     private var queueIndex = 0
+    /// Queue entry that already reached a natural end. `resumeIfAllowed` must not play it again.
+    private var finishedEntryID: String?
     /// Called when a song really starts, with its catalog duration if MusicKit reports one.
     var onSongStarted: (@MainActor (Int, TimeInterval?) -> Void)?
     /// Called once per boundary. For a natural end, the index is the song that just finished.
@@ -141,7 +143,13 @@ final class MusicKitService: ObservableObject {
     /// Starts music again after a DJ break or an interruption, only if the user still
     /// wants playback and the system is not holding it paused.
     func resumeIfAllowed() async {
-        guard sessionPolicy.mayAutoResume, player.queue.currentEntry != nil else { return }
+        let currentID = player.queue.currentEntry?.id
+        let action = NarrationResumePolicy.musicAfterBreak(
+            entryAlreadyFinished: currentID != nil && currentID == finishedEntryID,
+            mayAutoResume: sessionPolicy.mayAutoResume,
+            queueHasEntry: currentID != nil
+        )
+        guard action == .resumeCurrentEntry else { return }
         do {
             activateAudioSessionForPlayback()
             try await player.play()
@@ -180,6 +188,7 @@ final class MusicKitService: ObservableObject {
         queueIndex = index
         currentTrack = queue[index]
         player.queue = ApplicationMusicPlayer.Queue(for: [song])
+        finishedEntryID = nil
         guard autoplay, sessionPolicy.mayAutoResume else {
             isPlaying = false
             deferredStart.arm(index)
@@ -262,6 +271,18 @@ final class MusicKitService: ObservableObject {
         pollTimer = timer
     }
 
+    private func noteFinishedEntry(_ step: BoundaryStep) {
+        let boundary: PlaybackBoundary
+        switch step {
+        case let .advancedEntry(_, value), let .plannedHandoff(_, _, value), let .stopped(_, value):
+            boundary = value
+        }
+        switch boundary {
+        case let .naturalEnd(id), let .queueFinished(id):
+            finishedEntryID = id
+        }
+    }
+
     private func pollPlaybackPosition() {
         // Position and duration let the detector see a finish even if the queue keeps its last entry.
         let currentDuration = queue.indices.contains(queueIndex) ? queue[queueIndex].song?.duration : nil
@@ -273,6 +294,7 @@ final class MusicKitService: ObservableObject {
         )
         guard let step = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count) else { return }
         isPlaying = observation.isPlaying
+        noteFinishedEntry(step)
         switch step {
         case let .advancedEntry(finishedIndex, boundary):
             log.notice("boundary naturalEnd finished=\(finishedIndex, privacy: .public)")

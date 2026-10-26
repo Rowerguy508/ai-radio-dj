@@ -107,6 +107,12 @@ final class AudioReliabilityTests: XCTestCase {
             .startNextTrack,
             "after an interlude that follows a natural end, the next track starts and the finished entry is never resumed"
         )
+        let stillPlaying = NarrationResumePolicy.musicAfterBreak(
+            entryAlreadyFinished: false,
+            mayAutoResume: true,
+            queueHasEntry: true
+        )
+        XCTAssertEqual(stillPlaying, .resumeCurrentEntry, "a break that did not finish the entry may resume it")
     }
 
     func testPlaybackResumesOnlyWhenPermitted() {
