@@ -223,7 +223,8 @@ final class LiveConnectionsTests: XCTestCase {
             files: { calls.names.append("files"); return nil },
             store: { calls.names.append("store"); return InMemoryConnectionChoicesStore() },
             shareInbox: { calls.names.append("shareInbox"); return [] })
-        let fixtures = ConnectionsComposition.make(mode: .testStation, live: live, fixtures: TestStationFixtures(now: now))
+        let fixtures = ConnectionsComposition.make(mode: .testStation, live: live,
+                                                              testStation: .testStationFixtures(TestStationFixtures(now: now)))
         XCTAssertEqual(calls.names, [], "no EventKit, bookmark, choices file or inbox in the test station")
         XCTAssertNil(fixtures.notes)
         XCTAssertTrue(fixtures.sourceReader is StaticConnectionSourceReader)
@@ -233,16 +234,18 @@ final class LiveConnectionsTests: XCTestCase {
         XCTAssertFalse(provenance.isEmpty)
         XCTAssertTrue(provenance.allSatisfy { $0.hasPrefix(TestStation.provenancePrefix) }, "fixtures only")
 
-        _ = ConnectionsComposition.make(mode: .live, live: live, fixtures: TestStationFixtures(now: now))
+        _ = ConnectionsComposition.make(mode: .live, live: live)
         XCTAssertEqual(calls.names, ["calendar", "files", "shareInbox", "store"])
     }
     #endif
 
     func testLiveCompositionOnlyAddsAvailableSources() {
         let now = self.now
-        let live = ConnectionsComposition.live(
-            .init(calendar: { FakeCalendar(access: .notDetermined, now: now) }, files: { nil },
-                  store: { InMemoryConnectionChoicesStore() }, shareInbox: { [] }))
+        let live = ConnectionsComposition.make(
+            mode: .live,
+            live: .init(calendar: { FakeCalendar(access: .notDetermined, now: now) }, files: { nil },
+                        store: { InMemoryConnectionChoicesStore() }, shareInbox: { [] }),
+        )
         XCTAssertNil(live.notes, "no file reader, no picker")
         XCTAssertEqual(live.providers.map(\.integration), [.calendar])
         XCTAssertEqual(live.contextSources.map(\.source), [.calendar])

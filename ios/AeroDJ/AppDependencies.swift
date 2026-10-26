@@ -47,11 +47,13 @@ struct AppDependencies {
         // Live connection sources (Fry, #61): EventKit for calendars the listener chooses, a
         // security-scoped reader for .md files they pick, the App Group inbox when it exists.
         // Consent is derived from those sources, never assumed.
-        let composition = ConnectionsComposition.live(
-            .init(calendar: { EventKitCalendarReader() },
+        let composition = ConnectionsComposition.make(
+            mode: .live,
+            live: .init(calendar: { EventKitCalendarReader() },
                         files: { SecurityScopedNoteReader() },
                         store: { FileConnectionChoicesStore(fileURL: supportURL("Connections/choices.json")) },
-                        shareInbox: { SharedInboxReview.appGroupInbox().map { [SharedInboxConnectionProvider(review: $0)] } ?? [] }))
+                        shareInbox: { SharedInboxReview.appGroupInbox().map { [SharedInboxConnectionProvider(review: $0)] } ?? [] })
+        )
         let station = StationConfigurationModel(store: FileStationConfigurationStore(fileURL: stationFileURL()),
                                                 consent: composition.consent)
         let voice = VoiceRenderer.onDeviceDefault()
@@ -84,7 +86,8 @@ struct AppDependencies {
     /// inbox and no calendar reader. Playback is Apple Music, the same session as live.
     private static func testStation() -> AppDependencies {
         // `make(.testStation)` never calls a live factory (LiveConnectionsTests).
-        let composition = ConnectionsComposition.make(mode: .testStation, live: .unavailable, fixtures: TestStationFixtures())
+        let composition = ConnectionsComposition.make(mode: .testStation, live: .unavailable,
+                                                      testStation: .testStationFixtures(TestStationFixtures()))
         let station = StationConfigurationModel(
             store: InMemoryStationConfigurationStore(
                 snapshot: StationConfigurationSnapshot(state: StationConfigurationState(active: TestStation.configuration))),

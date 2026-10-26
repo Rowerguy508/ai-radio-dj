@@ -18,6 +18,8 @@ struct AeroDJApp: App {
     var body: some Scene {
         WindowGroup {
             StationListView(dependencies: dependencies)
+                // The root view's task runs once per window, not each time a screen reappears.
+                .task { await dependencies.start() }
         }
     }
 }

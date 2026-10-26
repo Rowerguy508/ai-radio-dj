@@ -385,41 +385,40 @@ public struct ConnectionsComposition: Sendable {
         }
     }
 
-    /// Live: the only composition a Release build can construct.
-    public static func live(_ live: LiveFactories) -> ConnectionsComposition {
-        let calendar = live.calendar()
-        let files = live.files()
-        let inbox = live.shareInbox()
-        let sources = LiveConnectionSources(calendar: calendar, files: files, store: live.store(),
-                                            shareInboxAvailable: !inbox.isEmpty)
-        var providers = inbox
-        var context: [any ContextSource] = []
-        if let calendar {
-            let chosen = ChosenCalendarContextSource(reader: calendar, sources: sources)
-            providers.append(CalendarConnectionProvider(source: chosen))
-            context.append(chosen)
-        }
-        if files != nil {
-            providers.append(PickedNotesConnectionProvider(sources: sources))
-            context.append(ApprovedNotesContextSource(sources: sources))
-        }
-        return ConnectionsComposition(sourceReader: sources, consent: sources, providers: providers,
-                                      contextSources: context, notes: files != nil ? sources : nil)
+    /// Empty Connections: no sources, nothing granted. Used where no fixtures apply.
+    public static var unavailable: ConnectionsComposition {
+        ConnectionsComposition(
+            sourceReader: StaticConnectionSourceReader(),
+            consent: StaticIntegrationConsent(Dictionary(uniqueKeysWithValues: StationIntegration.allCases.map { ($0, ConsentState.notRequested) })),
+            providers: [], contextSources: [], notes: nil)
     }
 
-    #if DEBUG
-    /// Both modes (Debug only: the test station does not exist in Release). In `.testStation`
-    /// no live factory is called.
+    /// `.testStation` returns the caller's fixture composition; the shared code never names the
+    /// fixture type, so Release builds (which do not compile the test station) stay clean.
     public static func make(mode: AppRuntimeMode, live: LiveFactories,
-                            fixtures: @autoclosure () -> TestStationFixtures) -> ConnectionsComposition {
+                            testStation: @autoclosure () -> ConnectionsComposition = .unavailable) -> ConnectionsComposition {
         switch mode {
         case .testStation:
-            let f = fixtures()
-            return ConnectionsComposition(sourceReader: f.sourceReader(), consent: TestStation.fixtureConsent,
-                                          providers: f.providers(), contextSources: f.contextSources(), notes: nil)
+            return testStation()
         case .live:
-            return Self.live(live)
+            let calendar = live.calendar()
+            let files = live.files()
+            let inbox = live.shareInbox()
+            let sources = LiveConnectionSources(calendar: calendar, files: files, store: live.store(),
+                                                shareInboxAvailable: !inbox.isEmpty)
+            var providers = inbox
+            var context: [any ContextSource] = []
+            if let calendar {
+                let chosen = ChosenCalendarContextSource(reader: calendar, sources: sources)
+                providers.append(CalendarConnectionProvider(source: chosen))
+                context.append(chosen)
+            }
+            if files != nil {
+                providers.append(PickedNotesConnectionProvider(sources: sources))
+                context.append(ApprovedNotesContextSource(sources: sources))
+            }
+            return ConnectionsComposition(sourceReader: sources, consent: sources, providers: providers,
+                                          contextSources: context, notes: files != nil ? sources : nil)
         }
     }
-    #endif
 }
