@@ -13,11 +13,11 @@ these steps.
 
 | Item | Value |
 | --- | --- |
-| Install commit | `939c34e8da505ca91d26b30b52f696974b06c1c5` |
+| Install commit | `5dbf6d910195c06f7d4a03993951b25212b335f5` (`5dbf6d9`) |
 | Branch name at audit | `integration/device-duo` (PR #58). If the branch moves, install this SHA. |
-| Also read, not installed | PR #65 head `aaff7e151c7b65738d67a99a6a6d47158e37f908`. Signing, entitlements, and `project.yml` match the install commit. #65 is a throwaway combined check. |
-| iOS workflow on the install commit | Run [40269782784](https://github.com/Rowerguy508/ai-radio-dj/actions/runs/40269782784). Unsigned Debug and Release device builds, the simulator runtime-mode check, and AeroDJCore tests succeeded. Studio UI tests failed. The workflow conclusion is failure. |
-| Xcode logged by that run | 26.6 (`/Applications/Xcode_26.6.app`). The workflow does not pin this. |
+| PR #65 | Merged into `integration/device-duo` on 2026-10-26 14:27 UTC. This merge commit is the install target. Its tree `aaacf0d78b964f86d9b6a4ca998deeb586752118` is identical to #65 head `aaff7e151c7b65738d67a99a6a6d47158e37f908`. |
+| iOS workflow | No GitHub Actions run exists on the install commit. The iOS workflow runs for pull requests. Run [40327400994](https://github.com/Rowerguy508/ai-radio-dj/actions/runs/40327400994) on `aaff7e151c7b65738d67a99a6a6d47158e37f908` (identical tree) succeeded on every job: changes, AeroDJCore tests, iOS simulator build, iOS device build (unsigned), Runtime mode on simulator (Debug vs Release), and Studio UI tests and screenshots. |
+| Xcode logged by run 40269782784 | 26.6 (`/Applications/Xcode_26.6.app`). That run is not a run of this install commit. The workflow does not pin this. |
 | Apple Developer team | `S85APB73YV` (Individual). App IDs `com.aerodj.app` (MusicKit, App Groups) and `com.aerodj.app.share` (App Groups), and app group `group.com.aerodj`, were registered on this team on 2026-10-26. No keys, certificates, or profiles were created in the portal. |
 | Generated Xcode project | Not produced in this audit. The agent host cannot run the macOS XcodeGen binary. Settings below are from `ios/project.yml` and `ios/Config/Signing.xcconfig`. |
 
@@ -25,7 +25,7 @@ these steps.
 
 ## 1. Prerequisites
 
-1. Use a Mac with Xcode **26.6**, the version the iOS workflow logged on the install commit (`xcodebuild -version` in run 40269782784). Before you install, open that run and confirm the logged version is still 26.6. `.github/workflows/ios.yml` on the install commit selects `/Applications/Xcode.app` in the simulator job and does not name a version, so a later run can move.
+1. Use a Mac with Xcode **26.6**, the version `xcodebuild -version` logged in run 40269782784. That run is not a run of this install commit. Before you install, open that run and confirm the logged version is still 26.6. `.github/workflows/ios.yml` on the install commit selects `/Applications/Xcode.app` in the simulator job and does not name a version, so a later run can move.
 2. Install XcodeGen **2.46.0**, the version pinned in that workflow and named in `ios/project.yml`.
 3. Use a USB cable for the first install. Wireless install was not part of this audit. **Unverified on device.**
 4. On the Duo, confirm the system is **iOS 17.0 or later** (Settings > General > About). `ios/project.yml` sets the deployment target to iOS 17.0. The Duo's actual version was not read. **Unverified on device.**
@@ -60,13 +60,13 @@ The embedded share extension is part of the app bundle. Apple's "3 apps per devi
 From a clone that can see the integration branch:
 
 ```sh
-git fetch origin 939c34e8da505ca91d26b30b52f696974b06c1c5
-git worktree add ../aerodj-duo 939c34e8da505ca91d26b30b52f696974b06c1c5
+git fetch origin 5dbf6d910195c06f7d4a03993951b25212b335f5
+git worktree add ../aerodj-duo 5dbf6d910195c06f7d4a03993951b25212b335f5
 cd ../aerodj-duo
 git rev-parse HEAD
 ```
 
-`git rev-parse HEAD` must print `939c34e8da505ca91d26b30b52f696974b06c1c5`. Record that output in the validation notes. Keep this checklist open beside that worktree.
+`git rev-parse HEAD` must print `5dbf6d910195c06f7d4a03993951b25212b335f5`. Record that output in the validation notes. Keep this checklist open beside that worktree.
 
 ## 4. Register the bundle IDs, the App Group, and MusicKit
 
@@ -158,7 +158,7 @@ Use the **AeroDJ** scheme. `ios/project.yml` does not set a Run build configurat
 
 - `AppDependencies.make` reads the flag only inside `#if DEBUG`. Release always composes the live dependencies. `AppRuntimeMode.resolve` returns `.live` when `allowsTestStation` is false.
 - Leave `-AeroDJTestStation` `YES` in the scheme for the gate. The validation proof is that Release ignores it.
-- The simulator job "Runtime mode on simulator (Debug vs Release)" succeeded on run 40269782784 and expects `runtime mode: live` when the Release app is launched with that argument (`ios/scripts/verify-runtime-mode.sh`). That job is a simulator. **Unverified on device.**
+- The simulator job "Runtime mode on simulator (Debug vs Release)" succeeded on run [40327400994](https://github.com/Rowerguy508/ai-radio-dj/actions/runs/40327400994) (pull request head `aaff7e151c7b65738d67a99a6a6d47158e37f908`, the same tree as this install commit) and expects `runtime mode: live` when the Release app is launched with that argument (`ios/scripts/verify-runtime-mode.sh`). That job is a simulator. **Unverified on device.**
 
 The station list in both configurations is still the two hardcoded stations in `Station.mockStations` (see the findings in the pull request). A Release install of this SHA is a signing and runtime-mode check, not a check of a real station catalog.
 
@@ -191,7 +191,7 @@ Microphone and notification prompts are not part of this install path.
 5. The launch line from `AeroDJApp` is a `notice` log: `runtime mode: live`, plus a context-source count. `testStation` in that line means this is not the validation build. Stop and check the scheme configuration.
 6. Open a station. The navigation title area must not show the text `TEST STATION`. That label is shown when `isTestStation` is true (`PlaybackComponents.swift`), which follows `dependencies.mode == .testStation`.
 
-This SHA does not log song titles, artists, or song-start lines. Do not expect those. Later commits on PR #65 add playback logs; they are not in the install commit.
+This install commit includes the playback logs from PR #65, which is merged into `integration/device-duo`. Those lines are an index and a duration for a song start, and an index for a boundary. They do not include song titles or artists. Do not expect those.
 
 ## 10. Troubleshooting signing
 
@@ -210,7 +210,7 @@ This SHA does not log song titles, artists, or song-start lines. Do not expect t
 
 Capture this from the Release Run. Keep certificates, provisioning profiles, and raw logs that contain calendar titles or song titles out of git, chat, and the pull request. **The capture itself is unverified on device;** the list is what to bring back.
 
-1. `git rev-parse HEAD` printing `939c34e8da505ca91d26b30b52f696974b06c1c5`.
+1. `git rev-parse HEAD` printing `5dbf6d910195c06f7d4a03993951b25212b335f5`.
 2. `xcodebuild -version` from the Mac that installed it.
 3. The scheme name AeroDJ, Run configuration Release, and the Duo as the run destination.
 4. `git check-ignore -v ios/Config/Signing.local.xcconfig` and a `git status --short` that does not list that file.
@@ -224,7 +224,5 @@ Fold and unfold behavior of the Duo is not part of this gate. The install commit
 ## 12. What this checklist does not prove
 
 - No signed build was installed on the Duo, or on any other phone, during this audit.
-- The simulator runtime-mode job passed on the install commit. That is not a device result.
-- Unsigned device compilation of Debug and Release passed on that commit. That is not a signature, a provisioning profile, or a launch.
+- No GitHub Actions run exists on the install commit. Run [40327400994](https://github.com/Rowerguy508/ai-radio-dj/actions/runs/40327400994) on `aaff7e151c7b65738d67a99a6a6d47158e37f908` (identical tree) succeeded on every job, including Runtime mode on simulator (Debug vs Release), iOS device build (unsigned), and Studio UI tests and screenshots. The simulator job is not a device result. The unsigned device build is not a signature, a provisioning profile, or a launch.
 - Apple Music playback, DJ speech, interruptions, and calendar narration were not run on hardware.
-- Studio UI tests on the install commit are red. That failure is Fry's Studio copy versus the UI tests, and it is outside this checklist.
