@@ -18,6 +18,7 @@ these steps.
 | Also read, not installed | PR #65 head `5171c372c0271edcee2c0a2dff6295d719ea8c5e`. Signing, entitlements, and `project.yml` match the install commit. #65 is a throwaway combined check. |
 | iOS workflow on the install commit | Run [40269782784](https://github.com/Rowerguy508/ai-radio-dj/actions/runs/40269782784). Unsigned Debug and Release device builds, the simulator runtime-mode check, and AeroDJCore tests succeeded. Studio UI tests failed. The workflow conclusion is failure. |
 | Xcode logged by that run | 26.6 (`/Applications/Xcode_26.6.app`). The workflow does not pin this. |
+| Apple Developer team | `S85APB73YV` (Individual). App IDs `com.aerodj.app` (MusicKit, App Groups) and `com.aerodj.app.share` (App Groups), and app group `group.com.aerodj`, were registered on this team on 2026-10-26. No keys, certificates, or profiles were created in the portal. |
 | Generated Xcode project | Not produced in this audit. The agent host cannot run the macOS XcodeGen binary. Settings below are from `ios/project.yml` and `ios/Config/Signing.xcconfig`. |
 
 `main` does not contain the iOS app. Installing `main` will not put AeroDJ on the phone.
@@ -28,7 +29,7 @@ these steps.
 2. Install XcodeGen **2.46.0**, the version pinned in that workflow and named in `ios/project.yml`.
 3. Use a USB cable for the first install. Wireless install was not part of this audit. **Unverified on device.**
 4. On the Duo, confirm the system is **iOS 17.0 or later** (Settings > General > About). `ios/project.yml` sets the deployment target to iOS 17.0. The Duo's actual version was not read. **Unverified on device.**
-5. Decide paid versus free Apple ID in the next section before you register any identifier. Switching later means registering the App IDs again on the other team.
+5. Use team `S85APB73YV`. The identifiers for this install are already registered there (section 4). Switching to another team means registering the App IDs again on that team.
 
 ## 2. Paid versus free Apple ID
 
@@ -69,6 +70,8 @@ git rev-parse HEAD
 
 ## 4. Register the bundle IDs, the App Group, and MusicKit
 
+These identifiers already exist on team `S85APB73YV` (registered 2026-10-26). Do not register them again. Use the steps below only to confirm them in the portal, or to repeat the setup on a different team.
+
 Configured identifiers, from `ios/project.yml` on the install commit:
 
 | Target | Bundle ID | Entitlements file |
@@ -80,7 +83,7 @@ Configured identifiers, from `ios/project.yml` on the install commit:
 
 Both entitlements files contain only the App Group `group.com.aerodj` (`com.apple.security.application-groups`). There is no second group, and the two files match.
 
-On a paid team, in [Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources) (Account Holder or Admin):
+Done on team `S85APB73YV`. For reference, or for a different paid team, in [Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources) (Account Holder or Admin):
 
 1. Register an App Group with identifier `group.com.aerodj` ([Register an app group](https://developer.apple.com/help/account/identifiers/register-an-app-group/)).
 2. Register an explicit App ID whose bundle ID is `com.aerodj.app`.
@@ -89,7 +92,9 @@ On a paid team, in [Certificates, Identifiers & Profiles](https://developer.appl
 5. Register an explicit App ID `com.aerodj.app.share`. Enable App Groups and assign the same `group.com.aerodj`.
 6. Save. If the portal warns that existing profiles are now invalid, let Xcode create new development profiles on the next build. This repo has no checked-in profile to update.
 
-The Xcode project does not list a MusicKit entitlement. Automatic signing will not turn the App Service on by itself. The portal step is required. **Unverified on device.**
+No provisioning profile was created in the portal. Xcode automatic signing creates the development profile for both App IDs at the first device build.
+
+The Xcode project does not list a MusicKit entitlement. Automatic signing will not turn the App Service on by itself. The portal step is required, and it is done on `com.aerodj.app` for team `S85APB73YV`. Playback with it is **Unverified on device.**
 
 ## 5. Local signing setup
 
@@ -102,11 +107,11 @@ CODE_SIGN_STYLE = Automatic
 
 `DEVELOPMENT_TEAM` is not set in any committed file. The comment in `Signing.xcconfig` shows a placeholder assignment. Leave that line as a comment.
 
-1. In Xcode, Settings > Accounts, sign in with the Apple ID for the team you chose in section 2. Let Xcode create the Apple Development certificate in that Mac's keychain. The private key stays on that Mac.
-2. In the install worktree, create `ios/Config/Signing.local.xcconfig` with one assignment, your real 10-character Team ID:
+1. In Xcode, Settings > Accounts, sign in with the Apple ID that belongs to team `S85APB73YV`. Let Xcode create the Apple Development certificate in that Mac's keychain. The private key stays on that Mac.
+2. In the install worktree, create `ios/Config/Signing.local.xcconfig` with one assignment:
 
 ```
-DEVELOPMENT_TEAM = YOURTEAMID
+DEVELOPMENT_TEAM = S85APB73YV
 ```
 
 3. Confirm Git will not pick the file up. From the worktree root:
@@ -116,7 +121,7 @@ git check-ignore -v ios/Config/Signing.local.xcconfig
 git status --short
 ```
 
-The ignore rule is the repo-root `.gitignore` entry `ios/Config/Signing.local.xcconfig`. `git status` must not list that file. Do not commit a Team ID, a `.p12`, a `.mobileprovision`, a `.p8`, or any certificate. Those types are gitignored. None are in the install commit.
+The ignore rule is the repo-root `.gitignore` entry `ios/Config/Signing.local.xcconfig`. `git status` must not list that file. Keep the Team ID in that local file, not in committed config. Do not commit a `.p12`, a `.mobileprovision`, a `.p8`, or any certificate. Those types are gitignored. None are in the install commit.
 4. Generate the project and open it:
 
 ```sh
@@ -125,7 +130,7 @@ xcodegen generate
 open AeroDJ.xcodeproj
 ```
 
-5. For the AeroDJ and AeroDJShare targets, Signing & Capabilities should show the team from the local file and Automatically manage signing. Leave the bundle IDs and the entitlements files unchanged. Do not add the Team ID to `Signing.xcconfig`, `project.yml`, or the target settings.
+5. For the AeroDJ and AeroDJShare targets, Signing & Capabilities should show team `S85APB73YV` from the local file and Automatically manage signing. On the first device build, Xcode creates the development profiles. Leave the bundle IDs and the entitlements files unchanged. Do not add the Team ID to `Signing.xcconfig`, `project.yml`, or the target settings.
 
 CI on the install commit builds with `CODE_SIGNING_ALLOWED=NO`. That flag is for CI only. A device Run needs the team file and signing allowed.
 
@@ -203,7 +208,7 @@ This SHA does not log song titles, artists, or song-start lines. Do not expect t
 
 ## 11. Evidence to capture for the validation gate
 
-Capture this from the Release Run. Keep certificates, the Team ID, provisioning profiles, and raw logs that contain calendar titles or song titles out of git, chat, and the pull request. **The capture itself is unverified on device;** the list is what to bring back.
+Capture this from the Release Run. Keep certificates, provisioning profiles, and raw logs that contain calendar titles or song titles out of git, chat, and the pull request. **The capture itself is unverified on device;** the list is what to bring back.
 
 1. `git rev-parse HEAD` printing `939c34e8da505ca91d26b30b52f696974b06c1c5`.
 2. `xcodebuild -version` from the Mac that installed it.
@@ -212,7 +217,7 @@ Capture this from the Release Run. Keep certificates, the Team ID, provisioning 
 5. The Console `runtime` line showing `runtime mode: live` while `-AeroDJTestStation YES` is still in the scheme.
 6. A note that the station screen did not show `TEST STATION`.
 7. Which system prompts appeared, and whether the purpose text matched the two strings in section 8.
-8. Any signing error from section 10, including the exact Xcode sentence, with the Team ID removed.
+8. Any signing error from section 10, including the exact Xcode sentence.
 
 Fold and unfold behavior of the Duo is not part of this gate. The install commit's integration notes already call that unverified, and this audit did not test it.
 
