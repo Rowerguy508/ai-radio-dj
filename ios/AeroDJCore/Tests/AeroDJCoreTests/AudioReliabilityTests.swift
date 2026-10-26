@@ -80,6 +80,18 @@ final class AudioReliabilityTests: XCTestCase {
         XCTAssertEqual(machine.apply(event), .music)
     }
 
+    func testFailedBreakIsAFailureNotACancel() {
+        XCTAssertEqual(NarrationResumePolicy.narrationEnd(for: .failed), .failed)
+        let decision = NarrationResumePolicy.decide(
+            NarrationResumePolicy.narrationEnd(for: .failed),
+            mayAutoResume: true,
+            phase: .voice
+        )
+        XCTAssertEqual(decision.playbackEvent, .failed)
+        XCTAssertEqual(NarrationResumePolicy.narrationEnd(for: .cancelled), .cancelled)
+        XCTAssertEqual(NarrationResumePolicy.narrationEnd(for: .finished), .finished)
+    }
+
     func testNarrationFailureWhileSuspendedStaysPaused() {
         var policy = AudioSessionPolicy()
         policy.userPlay()

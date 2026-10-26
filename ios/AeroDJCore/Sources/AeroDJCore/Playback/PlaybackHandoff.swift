@@ -1,6 +1,13 @@
 import Foundation
 
 /// How a DJ break ended. The player applies this immediately; it does not wait out a deadline.
+/// How the clip player ended a break, before it becomes a narration event.
+public enum BreakPlayerOutcome: Equatable, Sendable {
+    case finished
+    case failed
+    case cancelled
+}
+
 public enum NarrationEnd: Equatable, Sendable {
     case finished
     case failed
@@ -50,6 +57,16 @@ public enum NarrationResumePolicy {
         guard mayAutoResume else { return .hold }
         if entryAlreadyFinished { return .startNextTrack }
         return queueHasEntry ? .resumeCurrentEntry : .hold
+    }
+
+    /// A failed clip is still reported as cancelled.
+    public static func narrationEnd(for outcome: BreakPlayerOutcome) -> NarrationEnd {
+        switch outcome {
+        case .finished:
+            .finished
+        case .failed, .cancelled:
+            .cancelled
+        }
     }
 
     public static func decide(_ end: NarrationEnd, mayAutoResume: Bool, phase: AudioState) -> NarrationResumeDecision {
