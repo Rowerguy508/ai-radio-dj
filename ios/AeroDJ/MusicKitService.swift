@@ -39,6 +39,8 @@ final class MusicKitService: ObservableObject {
     private var sessionRegistration = SessionRegistrationGate()
     /// Stops any DJ line that is speaking. Set by the app to the break adapter.
     var onBreakMustStop: (@MainActor () -> Void)?
+    /// Called with the index of the song the user skipped, so its prepared break is discarded.
+    var onSongSkipped: (@MainActor (Int) -> Void)?
     private var queueIndex = 0
     /// Called when a song really starts, with its catalog duration if MusicKit reports one.
     var onSongStarted: (@MainActor (Int, TimeInterval?) -> Void)?
@@ -120,6 +122,7 @@ final class MusicKitService: ObservableObject {
     /// The user pressed play.
     func resume() async throws {
         sessionPolicy.userPlay()
+        activateAudioSessionForPlayback()
         try await player.play()
         isPlaying = true
         stateMachine.apply(.resume)
@@ -138,9 +141,11 @@ final class MusicKitService: ObservableObject {
     func resumeIfAllowed() async {
         guard sessionPolicy.mayAutoResume, player.queue.currentEntry != nil else { return }
         do {
+            activateAudioSessionForPlayback()
             try await player.play()
             isPlaying = true
             send(.userResumed)
+            // A song loaded during the break (paused) starts now; its break is planned here.
             reportDeferredSongStart()
         } catch {
             reportError("Could not resume music: \(error.localizedDescription)")
@@ -151,6 +156,9 @@ final class MusicKitService: ObservableObject {
     func skip() async throws {
         boundaries.userRequestedChange()
         sessionPolicy.userPlay()
+        // The skipped song's break, speaking or prepared, belongs to that song and must not play.
+        onBreakMustStop?()
+        onSongSkipped?(queueIndex)
         let next = queueIndex + 1
         guard queue.indices.contains(next) else {
             player.stop()
@@ -175,6 +183,7 @@ final class MusicKitService: ObservableObject {
             deferredStart.arm(index)
             return
         }
+        activateAudioSessionForPlayback()
         try await player.play()
         isPlaying = true
         deferredStart.clear()
@@ -252,9 +261,13 @@ final class MusicKitService: ObservableObject {
     }
 
     private func pollPlaybackPosition() {
+        // Position and duration let the detector see a finish even if the queue keeps its last entry.
+        let currentDuration = queue.indices.contains(queueIndex) ? queue[queueIndex].song?.duration : nil
         let observation = PlaybackObservation(
             entryID: player.queue.currentEntry?.id,
-            isPlaying: player.state.playbackStatus == .playing
+            isPlaying: player.state.playbackStatus == .playing,
+            position: player.playbackTime,
+            duration: currentDuration
         )
         guard let step = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count) else { return }
         isPlaying = observation.isPlaying
@@ -332,18 +345,27 @@ final class MusicKitService: ObservableObject {
     /// interruption + route-change handlers.
     private func configureAudioSession() {
         if !audioSessionConfigured {
-            let session = AVAudioSession.sharedInstance()
+            // Category only. Setting it does not stop other audio; activation waits for playback.
             do {
-                try session.setCategory(.playback, mode: .default, options: [])
-                try session.setActive(true)
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
                 audioSessionConfigured = true
             } catch {
-                // Non-fatal: playback still works in foreground. A later call retries.
+                // Non-fatal: retried on the next call.
             }
         }
-        // Observers are registered once, whether or not activation succeeded.
+        // Observers are registered once, whether or not the category was set.
         guard sessionRegistration.registerIfNeeded() else { return }
         installSessionMonitor()
+    }
+
+    /// Activates the session right before playback starts, so launching the app does not stop
+    /// the user's other audio. Runs on every play, because the system can deactivate the session.
+    private func activateAudioSessionForPlayback() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            // Non-fatal: the play call below reports any real failure.
+        }
     }
 
     /// Notifications are yielded in arrival order into one stream, and a single main-actor loop

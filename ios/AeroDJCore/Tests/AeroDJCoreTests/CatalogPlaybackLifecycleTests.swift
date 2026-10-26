@@ -135,6 +135,41 @@ final class CatalogPlaybackLifecycleTests: XCTestCase {
         XCTAssertNil(last.interpret(end.observation, queueIndex: 1, queueCount: 2))
     }
 
+    /// A queue that keeps its last entry still ends once, when playback stops within 1.5s of the duration.
+    func testKeptEntryStoppedNearItsDurationIsOneHandoff() {
+        var boundaries = BoundaryInterpreter()
+        XCTAssertNil(
+            boundaries.interpret(
+                PlaybackObservation(entryID: "song-0", isPlaying: true, position: 10, duration: 30),
+                queueIndex: 0,
+                queueCount: 2
+            )
+        )
+        let ended = PlaybackObservation(entryID: "song-0", isPlaying: false, position: 29.2, duration: 30)
+        XCTAssertEqual(
+            boundaries.interpret(ended, queueIndex: 0, queueCount: 2),
+            .plannedHandoff(finishedIndex: 0, nextIndex: 1, boundary: .naturalEnd(finishedEntryID: "song-0"))
+        )
+        XCTAssertNil(boundaries.interpret(ended, queueIndex: 0, queueCount: 2))
+
+        var last = BoundaryInterpreter()
+        XCTAssertNil(
+            last.interpret(
+                PlaybackObservation(entryID: "song-1", isPlaying: true, position: 1, duration: 30),
+                queueIndex: 1,
+                queueCount: 2
+            )
+        )
+        XCTAssertEqual(
+            last.interpret(
+                PlaybackObservation(entryID: "song-1", isPlaying: false, position: 30, duration: 30),
+                queueIndex: 1,
+                queueCount: 2
+            ),
+            .stopped(finishedIndex: 1, boundary: .queueFinished(lastEntryID: "song-1"))
+        )
+    }
+
     func testEntryAdvanceIsOneNaturalEnd() {
         var boundaries = BoundaryInterpreter()
         XCTAssertNil(boundaries.interpret(PlaybackObservation(entryID: "a", isPlaying: true), queueIndex: 0, queueCount: 3))

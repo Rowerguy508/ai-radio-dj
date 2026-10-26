@@ -65,6 +65,10 @@ struct PlayerView: View {
                 Task { await djSession.songStarted(index: index, remaining: .seconds(duration)) }
             }
             music.onBreakMustStop = { [interlude] in interlude.stop() }
+            // A skip cuts the skipped song's break, so a prepared break for it is never played.
+            music.onSongSkipped = { [djSession] index in
+                Task { await djSession.songCut(afterTrack: index) }
+            }
             // Only real audio events reach the DJ session; nothing is synthesized from the plan.
             interlude.onPlayback = { [djSession] event in
                 switch event {

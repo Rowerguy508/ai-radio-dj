@@ -75,4 +75,59 @@ final class PlaybackBoundaryDetectorTests: XCTestCase {
         d.userRequestedChange()
         XCTAssertNil(d.consume(obs(nil, playing: false)))
     }
+
+    private func timed(_ id: String, playing: Bool, at position: Double, of duration: Double = 200) -> PlaybackObservation {
+        PlaybackObservation(entryID: id, isPlaying: playing, position: position, duration: duration)
+    }
+
+    func testSingleEntryQueueKeptAfterItsEndReportsQueueFinished() {
+        // MusicKit kept the last entry instead of clearing it: the end comes from the position.
+        var d = PlaybackBoundaryDetector()
+        XCTAssertNil(d.consume(timed("A", playing: true, at: 10)))
+        XCTAssertNil(d.consume(timed("A", playing: true, at: 150)))
+        XCTAssertEqual(d.consume(timed("A", playing: false, at: 199)), .queueFinished(lastEntryID: "A"))
+    }
+
+    func testEndByPositionIsReportedOnce() {
+        var d = PlaybackBoundaryDetector()
+        _ = d.consume(timed("A", playing: true, at: 199))
+        XCTAssertEqual(d.consume(timed("A", playing: false, at: 199.5)), .queueFinished(lastEntryID: "A"))
+        XCTAssertNil(d.consume(timed("A", playing: false, at: 199.5)))
+        XCTAssertNil(d.consume(timed("A", playing: false, at: 199.5)))
+    }
+
+    func testPauseMidSongIsNotAnEnd() {
+        var d = PlaybackBoundaryDetector()
+        _ = d.consume(timed("A", playing: true, at: 60))
+        XCTAssertNil(d.consume(timed("A", playing: false, at: 60)))
+        XCTAssertNil(d.consume(timed("A", playing: true, at: 61)))
+    }
+
+    func testPositionEndIsNotReportedWhenPausedBeforeIt() {
+        var d = PlaybackBoundaryDetector()
+        _ = d.consume(timed("A", playing: true, at: 190))
+        XCTAssertNil(d.consume(timed("A", playing: false, at: 190)), "a pause 10 s before the end is not a finish")
+    }
+
+    func testPositionEndNeedsADuration() {
+        var d = PlaybackBoundaryDetector()
+        _ = d.consume(PlaybackObservation(entryID: "A", isPlaying: true, position: 199))
+        XCTAssertNil(d.consume(PlaybackObservation(entryID: "A", isPlaying: false, position: 199)))
+    }
+
+    func testNextEntryAfterAPositionEndStartsFresh() {
+        var d = PlaybackBoundaryDetector()
+        _ = d.consume(timed("A", playing: true, at: 199))
+        XCTAssertEqual(d.consume(timed("A", playing: false, at: 199)), .queueFinished(lastEntryID: "A"))
+        // A new queue with the same song later reports its own end.
+        _ = d.consume(timed("B", playing: true, at: 0))
+        XCTAssertEqual(d.consume(timed("B", playing: false, at: 199)), .queueFinished(lastEntryID: "B"))
+    }
+
+    func testUserStopNearTheEndIsNotAFinish() {
+        var d = PlaybackBoundaryDetector()
+        _ = d.consume(timed("A", playing: true, at: 199))
+        d.userRequestedChange()
+        XCTAssertNil(d.consume(timed("A", playing: false, at: 199)))
+    }
 }
