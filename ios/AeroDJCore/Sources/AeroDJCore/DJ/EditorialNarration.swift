@@ -132,6 +132,44 @@ extension DJSessionPlan {
     public var carryForward: EditorialCarryForward { EditorialCarryForward(report: briefingReport) }
 }
 
+/// What `MusicSearch.live` passes to `DJBreakSession.queueStarted`.
+/// A morning show may speak the approved handoff. A later show may speak
+/// `carryForward.eligibleNextShow` and nothing else. Revoked or unapproved
+/// input is nil, so the session plans music-only talk.
+public struct ApprovedShowHandoff: Equatable, Sendable {
+    public var isMorningShow: Bool
+    /// The handoff the listener approved for this morning. Nil if there is none.
+    public var approved: NarrationHandoff?
+    /// Set when the briefing was revoked or never approved.
+    public var revokedOrUnapproved: Bool
+    /// Previous show's carry-forward. Used only when `isMorningShow` is false.
+    public var carryForward: EditorialCarryForward?
+
+    public init(isMorningShow: Bool, approved: NarrationHandoff?, revokedOrUnapproved: Bool,
+                carryForward: EditorialCarryForward? = nil) {
+        self.isMorningShow = isMorningShow
+        self.approved = approved
+        self.revokedOrUnapproved = revokedOrUnapproved
+        self.carryForward = carryForward
+    }
+
+    /// No briefing. `queueStarted` receives nil.
+    public static var unapproved: ApprovedShowHandoff {
+        ApprovedShowHandoff(isMorningShow: false, approved: nil, revokedOrUnapproved: true)
+    }
+
+    /// The handoff argument for `queueStarted`, or nil when nothing may air.
+    public func forQueue() -> NarrationHandoff? {
+        guard !revokedOrUnapproved else { return nil }
+        if isMorningShow { return approved }
+        let cues = carryForward?.eligibleNextShow ?? []
+        guard !cues.isEmpty else { return nil }
+        return NarrationHandoff(cues: cues,
+                                maxSpokenSeconds: approved?.maxSpokenSeconds ?? 150,
+                                experienceSeconds: approved?.experienceSeconds ?? 300)
+    }
+}
+
 extension NarrationScheduleReport {
     /// For a scheduler other than `DJScriptWriter`. Deferred calendar events and
     /// due tasks become `.dropped(.notCarriedForward)`.

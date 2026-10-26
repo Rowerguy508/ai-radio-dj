@@ -41,6 +41,6 @@ Paid providers stay off. `BetaVoicePolicy.paidSpendAllowedMicrodollars` is 0. `d
 
 Fry already clears cached and prepared speech from consent withdrawal via `NarrationPurger` (`cache.purge`, `DJBreakPreparer.purge`, `DJBreakSession.purge`). This branch does not edit that path.
 
-Claude: a break that `takeBreak` already returned is no longer in the preparer. If its cues' `sourceItemID`s were just revoked, stop that speech in the player. Narration cannot stop audio that has left the preparer.
+Atlas: a break that `takeBreak` already returned is no longer in the preparer. If its cues' `sourceItemID`s were just revoked, stop that speech in the player. Narration cannot stop audio that has left the preparer. Cache expiry and purge stay with Fry.
 
-Claude: `PlaybackActions` calls `queueStarted` without a briefing. Pass the approved `NarrationHandoff` when a morning show should talk about the user's sources. On a later show, pass `carryForward.eligibleNextShow` only.
+Atlas: `MusicSearch.live` passes `briefing().forQueue()` into `queueStarted`. `ApprovedShowHandoff` sends the approved handoff on a morning show and only `carryForward.eligibleNextShow` on a later show. Revoked or unapproved input is nil. `PlayerView` still uses the default, which is unapproved, until a caller supplies a show.

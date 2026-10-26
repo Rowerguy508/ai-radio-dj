@@ -188,4 +188,81 @@ final class DJBreakSessionTests: XCTestCase {
         let cached = await r.cache.remaining()
         XCTAssertFalse(cached.contains { $0.sourceItemIDs.contains(item) }, "cached narration purged")
     }
+
+    /// Approved morning briefing passed through `ApprovedShowHandoff.forQueue()` airs once,
+    /// at the first eligible boundary. Revoked and unapproved input airs no personal text.
+    /// A later show is given only `carryForward.eligibleNextShow`.
+    func testApprovedBriefingAirsOnceAndRevokedBriefingNeverAirs() async throws {
+        let reviewID = UUID()
+        let review = NarrationCue(id: UUID(), order: 1, group: 0, kind: .upcomingEvent,
+                                  text: "You've got Design review at 9 AM. From your calendar.",
+                                  estimatedSeconds: 6, maxSeconds: 20, sourceItemID: reviewID,
+                                  source: .calendar, provenance: "cal:design")
+        let noteID = UUID()
+        let note = NarrationCue(id: UUID(), order: 2, group: 1, kind: .note,
+                                text: "You've also got Grocery list. From your notes.",
+                                estimatedSeconds: 5, maxSeconds: 20, sourceItemID: noteID,
+                                source: .obsidian, provenance: "note:groceries")
+        let morning = NarrationHandoff(cues: [review, note], maxSpokenSeconds: 60, experienceSeconds: 300)
+        let carry = EditorialCarryForward(report: NarrationScheduleReport(entries: [
+            NarrationScheduleEntry(cue: review, outcome: .dropped(.notCarriedForward)),
+            NarrationScheduleEntry(cue: note, outcome: .deferred(.noTrackBoundary)),
+        ]))
+
+        let approved = ApprovedShowHandoff(isMorningShow: true, approved: morning, revokedOrUnapproved: false, carryForward: carry)
+        XCTAssertEqual(approved.forQueue(), morning)
+
+        let revoked = ApprovedShowHandoff(isMorningShow: true, approved: morning, revokedOrUnapproved: true, carryForward: carry)
+        XCTAssertNil(revoked.forQueue())
+        let unapproved = ApprovedShowHandoff(isMorningShow: true, approved: nil, revokedOrUnapproved: false)
+        XCTAssertNil(unapproved.forQueue())
+        XCTAssertNil(ApprovedShowHandoff.unapproved.forQueue())
+
+        let later = ApprovedShowHandoff(isMorningShow: false, approved: morning, revokedOrUnapproved: false, carryForward: carry)
+        let laterHandoff = try XCTUnwrap(later.forQueue())
+        XCTAssertEqual(laterHandoff.cues.map(\.id), [note.id])
+        XCTAssertFalse(laterHandoff.cues.contains { $0.id == review.id })
+
+        let show = await rig()
+        await show.session.queueStarted(djTracks(8), briefing: approved.forQueue())
+        XCTAssertEqual(show.session.plannedBoundaries.first, 0, "first eligible boundary")
+        let firstIDs = try await airedContentIDs(show, after: 0)
+        XCTAssertEqual(firstIDs.filter { $0 == review.id }.count, 1)
+        XCTAssertEqual(firstIDs.filter { $0 == note.id }.count, 1)
+        var laterIDs: [UUID] = []
+        for boundary in show.session.plannedBoundaries where boundary != 0 {
+            laterIDs += try await airedContentIDs(show, after: boundary)
+        }
+        XCTAssertFalse(laterIDs.contains(review.id))
+        XCTAssertFalse(laterIDs.contains(note.id))
+
+        for blocked in [revoked.forQueue(), unapproved.forQueue()] {
+            let quiet = await rig()
+            await quiet.session.queueStarted(djTracks(8), briefing: blocked)
+            await quiet.session.songStarted(index: 0, remaining: .seconds(180))
+            await until { quiet.dj.studioState != .idle }
+            let handed = await quiet.session.naturalBoundary(afterTrack: 0)
+            let spoken = handed?.cues.map(\.text).joined(separator: " ") ?? ""
+            XCTAssertFalse(spoken.contains("Design review"), spoken)
+            XCTAssertFalse(spoken.contains("Grocery list"), spoken)
+            XCTAssertNotEqual(handed?.includesBriefing, true)
+        }
+
+        let nextShow = await rig()
+        await nextShow.session.queueStarted(djTracks(8), briefing: later.forQueue())
+        let nextIDs = try await airedContentIDs(nextShow, after: 0)
+        XCTAssertEqual(nextIDs, [note.id])
+        XCTAssertFalse(nextIDs.contains(review.id))
+    }
+
+    private func airedContentIDs(_ rig: Rig, after boundary: Int) async throws -> [UUID] {
+        await rig.session.songStarted(index: boundary, remaining: .seconds(180))
+        await until { if case .ready = rig.dj.studioState { true } else { false } }
+        let handedBreak = await rig.session.naturalBoundary(afterTrack: boundary)
+        let handed = try XCTUnwrap(handedBreak)
+        XCTAssertFalse(handed.clips.isEmpty, "the boundary airs prepared audio")
+        rig.session.playbackStarted(afterTrack: boundary)
+        rig.session.playbackFinished(afterTrack: boundary)
+        return handed.cues.filter(\.isContent).map(\.id)
+    }
 }
