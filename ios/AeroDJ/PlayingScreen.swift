@@ -36,7 +36,12 @@ struct PlayingScreen: View {
             }
             #if DEBUG
             .onAppear {
-                if let initial = StudioCaptureSegment.initial { segment = initial; StudioCaptureSegment.initial = nil }
+                if let initial = StudioCaptureSegment.initial {
+                    segment = initial
+                    StudioCaptureSegment.initial = nil
+                    // Closed: the workspace is a sheet, so open it on that segment.
+                    if mode == .compact { showWorkspace = true }
+                }
             }
             #endif
             .onChange(of: mode) { _, newMode in

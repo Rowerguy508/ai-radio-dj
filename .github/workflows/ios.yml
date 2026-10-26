@@ -227,6 +227,23 @@ jobs:
             -derivedDataPath "$DERIVED_DATA" \
             -resultBundlePath "$RUNNER_TEMP/phone.xcresult" \
             CODE_SIGNING_ALLOWED=NO
+      - name: Record a tapped walkthrough on iPhone (XCUITest + simctl recordVideo)
+        run: |
+          xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$PHONE_UDID" -b
+          xcrun simctl io "$PHONE_UDID" recordVideo --codec h264 --force "$SHOTS/walkthrough-closed.mp4" &
+          REC=$!
+          sleep 2
+          TEST_RUNNER_STUDIO_WALKTHROUGH=1 xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -only-testing:AeroDJUITests/StudioScreenTests/testRecordedWalkthrough \
+            CODE_SIGNING_ALLOWED=NO || STATUS=$?
+          kill -INT "$REC"; wait "$REC" || true
+          ls -la "$SHOTS"/*.mp4
+          exit ${STATUS:-0}
       - name: UI tests on iPad (open, two-zone Studio)
         run: |
           TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
@@ -241,10 +258,18 @@ jobs:
           ls -la "$SHOTS"
           ls "$SHOTS" | grep -q '^closed-compact_' || { echo "missing closed screenshot"; exit 1; }
           ls "$SHOTS" | grep -q '^open-studio-queue_' || { echo "missing open screenshot"; exit 1; }
+          for shot in closed-dark closed-state-empty closed-state-loading closed-state-error closed-state-denied \
+                      closed-connections-revoked closed-tune-config-change closed-large-text \
+                      open-studio-tune-dark open-large-text open-connections-revoked open-tune-config-change; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
+          test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: studio-screenshots
-          path: studio-screenshots/*.png
+          path: |
+            studio-screenshots/*.png
+            studio-screenshots/*.mp4
           if-no-files-found: warn
