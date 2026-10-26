@@ -30,7 +30,28 @@ public struct NarrationResumeDecision: Equatable, Sendable {
     }
 }
 
+/// What plays when a DJ break ends.
+public enum MusicAfterBreak: Equatable, Sendable {
+    /// Play the entry that is already current.
+    case resumeCurrentEntry
+    /// The entry that just finished must not play again. Load the next song.
+    case startNextTrack
+    case hold
+}
+
 public enum NarrationResumePolicy {
+    /// A non-empty queue is resumed whenever auto-resume is allowed.
+    /// `entryAlreadyFinished` is accepted so callers can name a natural end; it is not applied yet.
+    public static func musicAfterBreak(
+        entryAlreadyFinished: Bool,
+        mayAutoResume: Bool,
+        queueHasEntry: Bool
+    ) -> MusicAfterBreak {
+        _ = entryAlreadyFinished
+        guard mayAutoResume, queueHasEntry else { return .hold }
+        return .resumeCurrentEntry
+    }
+
     public static func decide(_ end: NarrationEnd, mayAutoResume: Bool, phase: AudioState) -> NarrationResumeDecision {
         let playbackEvent: NarrationPlaybackEvent
         switch end {

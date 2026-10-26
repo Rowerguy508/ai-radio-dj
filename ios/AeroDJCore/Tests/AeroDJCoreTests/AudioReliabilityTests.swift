@@ -96,6 +96,19 @@ final class AudioReliabilityTests: XCTestCase {
         XCTAssertFalse(policy.mayAutoResume, "returning to music does not clear the call")
     }
 
+    func testNaturalEndInterludeDoesNotResumeTheFinishedEntry() {
+        let action = NarrationResumePolicy.musicAfterBreak(
+            entryAlreadyFinished: true,
+            mayAutoResume: true,
+            queueHasEntry: true
+        )
+        XCTAssertEqual(
+            action,
+            .startNextTrack,
+            "after an interlude that follows a natural end, the next track starts and the finished entry is never resumed"
+        )
+    }
+
     func testPlaybackResumesOnlyWhenPermitted() {
         var playing = AudioSessionPolicy()
         playing.userPlay()
