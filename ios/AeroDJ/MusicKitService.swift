@@ -45,8 +45,10 @@ final class MusicKitService: ObservableObject {
     var onBoundary: (@MainActor (PlaybackBoundary, Int) -> Void)?
     private var pollTimer: Timer?
     /// Session notification tokens, owned here and removed in `deinit`. Written once on the
-    /// main actor in `configureAudioSession`; read only from `deinit`.
+    /// main actor in `registerSessionObservers`; read only from `deinit`.
     private nonisolated(unsafe) var sessionObservers: [NSObjectProtocol] = []
+    /// The main-actor loop that handles session events in order. Cancelled in `deinit`.
+    private nonisolated(unsafe) var sessionEventsTask: Task<Void, Never>?
 
     var audioState: AudioState { stateMachine.state }
 
@@ -332,47 +334,66 @@ final class MusicKitService: ObservableObject {
     /// when the app is backgrounded or the screen locks. Also registers
     /// interruption + route-change handlers.
     private func configureAudioSession() {
-        guard !audioSessionConfigured else { return }
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .default, options: [])
-            try session.setActive(true)
-            audioSessionConfigured = true
-        } catch {
-            // Non-fatal: playback still works in foreground.
+        if !audioSessionConfigured {
+            let session = AVAudioSession.sharedInstance()
+            do {
+                try session.setCategory(.playback, mode: .default, options: [])
+                try session.setActive(true)
+                audioSessionConfigured = true
+            } catch {
+                // Non-fatal: playback still works in foreground. A later call retries.
+            }
         }
+        // Observers are registered once, whether or not activation succeeded.
+        guard sessionEventsTask == nil else { return }
+        registerSessionObservers()
+    }
 
-        // The callbacks read only Sendable values from the notification, then hop onto the
-        // main actor before touching playback state.
+    /// Notifications are yielded in arrival order into one stream, and a single main-actor loop
+    /// handles them, so a rapid began/ended or route-removal sequence runs in the order it happened.
+    private func registerSessionObservers() {
+        let (events, continuation) = AsyncStream.makeStream(of: SessionEvent.self)
         sessionObservers.append(NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
-        ) { [weak self] note in
+        ) { note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+                  let type = AVAudioSession.InterruptionType(rawValue: raw),
+                  type == .began || type == .ended else { return }
             let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
-            Task { @MainActor [weak self] in
-                self?.handleInterruption(type, options: options)
-            }
+            let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
+            continuation.yield(.interruption(began: type == .began, shouldResume: shouldResume))
         })
-
         sessionObservers.append(NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
-        ) { [weak self] note in
+        ) { note in
             guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
                   let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
-            let wasDeviceRemoved = reason == .oldDeviceUnavailable
-            Task { @MainActor [weak self] in
-                self?.handleRouteChange(wasDeviceRemoved)
-            }
+            continuation.yield(.routeChange(wasDeviceRemoved: reason == .oldDeviceUnavailable))
         })
+        sessionEventsTask = Task { @MainActor [weak self] in
+            for await event in events {
+                switch event {
+                case let .interruption(began, shouldResume):
+                    self?.handleInterruption(began ? .began : .ended, options: shouldResume ? .shouldResume : [])
+                case let .routeChange(wasDeviceRemoved):
+                    self?.handleRouteChange(wasDeviceRemoved)
+                }
+            }
+        }
     }
 
     deinit {
         for token in sessionObservers {
             NotificationCenter.default.removeObserver(token)
         }
+        sessionEventsTask?.cancel()
     }
+}
+
+/// A session notification, reduced to Sendable values before it leaves the notification thread.
+private enum SessionEvent: Sendable {
+    case interruption(began: Bool, shouldResume: Bool)
+    case routeChange(wasDeviceRemoved: Bool)
 }
 
 enum MusicKitError: LocalizedError {
