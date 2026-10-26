@@ -7,10 +7,10 @@ pattern='FixtureContextSource|TestStationFixtures|fixture:synthetic/'
 # Library objects for one configuration; works with both SwiftPM build-directory layouts.
 objects() { find .build -name '*.o' -ipath "*/$1*" -path '*AeroDJCore*' ! -path '*Tests*'; }
 
-swift build -c debug >/dev/null
+swift build -c debug
 objects debug | xargs grep -laE "$pattern" >/dev/null || { echo "FAIL: control: pattern not found in Debug objects"; exit 1; }
 
-swift build -c release >/dev/null
+swift build -c release
 if objects release | xargs grep -laE "$pattern"; then
   echo "FAIL: test station found in Release build"; exit 1
 fi
