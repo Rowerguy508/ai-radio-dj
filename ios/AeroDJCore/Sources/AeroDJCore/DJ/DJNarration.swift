@@ -34,7 +34,8 @@ public enum DayPart: String, Sendable, CaseIterable {
 
 /// How often the DJ talks. Music takes priority: most boundaries are music-only.
 public struct DJCadence: Equatable, Sendable {
-    /// Chance of a music-only break at an eligible boundary (0...1).
+    /// Target share of song boundaries that get a music-only break (0...1). The spacing rule
+    /// caps what is achievable at `1 / (minSongsBetweenBreaks + 1)`; see `expectedTalkShare`.
     public var talkFraction: Double
     /// Whole songs that must play between two breaks (at least 1: never back-to-back).
     public var minSongsBetweenBreaks: Int
@@ -49,6 +50,22 @@ public struct DJCadence: Equatable, Sendable {
         self.minSongsBetweenBreaks = max(1, minSongsBetweenBreaks)
         self.maxTransitionSeconds = maxTransitionSeconds
         self.maxBriefingBreakSeconds = maxBriefingBreakSeconds
+    }
+
+    /// Share of boundaries with a break that the planner actually delivers over a long session
+    /// (no briefing): `talkFraction`, limited by the spacing rule.
+    public var expectedTalkShare: Double {
+        min(talkFraction, 1 / Double(minSongsBetweenBreaks + 1))
+    }
+
+    /// Chance to talk at a boundary the spacing rule allows. After a break, `minSongsBetweenBreaks`
+    /// boundaries are forced silent, so rolling `talkFraction` there would under-deliver
+    /// (0.3 with a gap of 2 gives about 19%). Solving `share = 1 / (gap + 1 / p)` for `p` makes the
+    /// delivered share match `talkFraction`.
+    var eligibleBoundaryProbability: Double {
+        guard talkFraction > 0 else { return 0 }
+        let remaining = 1 - Double(minSongsBetweenBreaks) * talkFraction
+        return remaining <= talkFraction ? 1 : min(1, talkFraction / remaining)
     }
 }
 
@@ -193,7 +210,7 @@ public struct DJScriptWriter: Sendable {
             if let lastBreak, boundary - lastBreak <= cadence.minSongsBetweenBreaks { continue }
             let wantsBriefing = !pending.isEmpty
             let roll = Double(rng.next() % 10_000) / 10_000
-            guard wantsBriefing || roll < cadence.talkFraction else { continue }
+            guard wantsBriefing || roll < cadence.eligibleBoundaryProbability else { continue }
 
             let prev = tracks[boundary], next = tracks[boundary + 1]
             // Each pool sees only one track's fields, so attribution is exact by construction.
