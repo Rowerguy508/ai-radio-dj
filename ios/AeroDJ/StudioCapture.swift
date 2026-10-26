@@ -36,6 +36,9 @@ enum StudioCaptureScenario: String {
     /// Music plays, and the player reported that the last DJ break failed to play
     /// (`DJPresentationEvent.playbackFailed`, the same event the audio player sends).
     case playbackFailed
+    /// A rendered break is waiting (`.ready`, no briefing). The playing screen must not
+    /// show the break headline or its VoiceOver detail.
+    case breakReady
     /// Apple Music access denied: the Settings path, no transport.
     case denied
     /// The fixture calendar was turned off via Connections (`perform(.revoke)`): selection
@@ -132,6 +135,8 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
+            case .breakReady:
+                studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .config:
                 await studio.station.setEnergy(0.85)
                 await studio.station.setGenres(["pop", "indie", "synthwave"])

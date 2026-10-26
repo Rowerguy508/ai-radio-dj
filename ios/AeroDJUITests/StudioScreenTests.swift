@@ -272,6 +272,34 @@ final class StudioScreenTests: XCTestCase {
         }
     }
 
+    /// `.ready` must not print the break headline or its VoiceOver detail.
+    /// Either can stay on screen when no break plays.
+    @MainActor
+    func testReadyStateShowsNoBreakText() throws {
+        let app = launch(scenario: "breakReady")
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "ready capture did not show \(layout):\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen while the break line is hidden")
+        assertNoBreakCopy(app)
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-no-break")
+    }
+
+    /// Visible text and accessibility labels share `XCUIElement.label` here.
+    @MainActor
+    private func assertNoBreakCopy(_ app: XCUIApplication) {
+        let exposed = app.descendants(matching: .any).allElementsBoundByIndex.flatMap { element -> [String] in
+            var parts = [element.label]
+            if let value = element.value as? String { parts.append(value) }
+            return parts
+        }
+        for phrase in ["break", "after this song"] {
+            let hits = exposed.filter { $0.range(of: phrase, options: .caseInsensitive) != nil }
+            XCTAssertTrue(hits.isEmpty, ".ready must not expose \(phrase) in visible text or the accessibility label: \(hits)")
+        }
+    }
+
     @MainActor
     func testAX5LightAppearance() throws {
         let app = launch(contentSize: Self.ax5)

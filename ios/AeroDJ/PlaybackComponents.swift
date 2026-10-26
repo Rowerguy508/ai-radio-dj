@@ -268,14 +268,19 @@ extension View {
 
 // MARK: - DJ status
 
-/// The DJ line. Renders `DJStatusPresentation` headlines for preparing, ready, and failed.
-/// Speaking draws no badge and no activity mark. Idle draws nothing.
+/// The DJ line. Renders `DJStatusPresentation` headlines for preparing and failed.
+/// Every `.ready` draws nothing, the same as idle: the core still has a headline
+/// ("DJ break after this song" / "Briefing after this song") and a VoiceOver detail
+/// ("… ready for after this song"), and either can stay up when no break plays.
+/// Speaking draws no badge.
 struct DJStatusLine: View {
     let presentation: DJStatusPresentation
     var onReview: (() -> Void)?
 
     var body: some View {
-        if let count = presentation.reviewCount {
+        if isReady {
+            EmptyView()
+        } else if let count = presentation.reviewCount {
             Button {
                 onReview?()
             } label: {
@@ -299,6 +304,12 @@ struct DJStatusLine: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(presentation.accessibilityLabel)
         }
+    }
+
+    /// `.ready` is omitted entirely, so VoiceOver gets the same silence as idle.
+    private var isReady: Bool {
+        if case .ready = presentation.state { return true }
+        return false
     }
 
     private var icon: String {
