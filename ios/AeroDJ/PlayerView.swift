@@ -31,7 +31,7 @@ struct PlayerView: View {
                       access: access,
                       snapshot: music.snapshot,
                       actions: .live(music),
-                      search: .live(music, station: stationRef),
+                      search: .live(music, station: stationRef, djSession: djSession),
                       studio: studio,
                       isTestStation: isTestStation)
         .navigationTitle(station.name)
@@ -43,18 +43,25 @@ struct PlayerView: View {
                 // A break is only ever played at a natural end. Anything late, missing or failed is
                 // skipped, and the next song is not delayed.
                 Task { @MainActor in
-                    guard !interlude.isSpeaking,
-                          let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex) else {
-                        music.skipInterlude()
-                        return
+                    // The break (or its skip) comes first; the next song is loaded only after it.
+                    var prepared: PreparedDJBreak?
+                    if !interlude.isSpeaking {
+                        prepared = await djSession.naturalBoundary(afterTrack: finishedIndex)
                     }
-                    let line = prepared.cues.map(\.text).joined(separator: " ")
-                    guard !line.isEmpty else {
+                    let line = prepared?.cues.map(\.text).joined(separator: " ") ?? ""
+                    if let prepared, !line.isEmpty {
+                        await interlude.play(clips: prepared.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                    } else {
                         music.skipInterlude()
-                        return
                     }
-                    await interlude.play(clips: prepared.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                    await music.startNextTrack(after: finishedIndex)
                 }
+            }
+            // A song really started: the DJ session plans its break with the catalog duration.
+            // Without a duration nothing is planned, so the DJ stays quiet rather than guessing.
+            music.onSongStarted = { [djSession] index, duration in
+                guard let duration else { return }
+                Task { await djSession.songStarted(index: index, remaining: .seconds(duration)) }
             }
             music.onBreakMustStop = { [interlude] in interlude.stop() }
             // Only real audio events reach the DJ session; nothing is synthesized from the plan.
