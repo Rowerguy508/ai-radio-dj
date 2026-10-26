@@ -286,7 +286,8 @@ public struct ApprovedNotesContextSource: ContextSource {
     public func fetchItems() async throws -> [ContextItem] {
         var out: [ContextItem] = []
         for item in try await ObsidianContextSource(reader: PickedNotesReader(sources: sources)).fetchItems()
-        where await sources.noteConsent(item.id) == .granted {
+        where item.sensitivity != .blocked {   // marked private in Obsidian: never narrated
+            guard await sources.noteConsent(item.id) == .granted else { continue }
             out.append(ContextItem(id: item.id, source: item.source, createdAt: item.createdAt, eventAt: item.eventAt,
                                    title: item.title, summary: item.summary, sensitivity: item.sensitivity,
                                    consent: .granted, expiresAt: item.expiresAt, provenance: item.provenance))
@@ -306,8 +307,8 @@ public struct CalendarConnectionProvider: ConnectionItemProvider {
         try await source.fetchItems().map {
             ConnectionItem(id: $0.id, integration: .calendar, title: $0.title.isEmpty ? "Event" : $0.title,
                            state: ConnectionItemState.resolve(consent: $0.consent, expiresAt: $0.expiresAt, now: now,
-                                                              flagged: false, reconfirmed: false),
-                           expiresAt: $0.expiresAt)
+                                                              flagged: false, reconfirmed: false, sensitivity: $0.sensitivity),
+                           expiresAt: $0.expiresAt, sensitivity: $0.sensitivity)
         }
     }
 
@@ -330,7 +331,9 @@ public struct PickedNotesConnectionProvider: ConnectionItemProvider {
             let consent = await sources.noteConsent(item.id)
             out.append(ConnectionItem(id: item.id, integration: .obsidian,
                                       title: item.title.isEmpty ? String(item.summary.prefix(40)) : item.title,
-                                      state: .resolve(consent: consent, expiresAt: nil, now: now, flagged: false, reconfirmed: false)))
+                                      state: .resolve(consent: consent, expiresAt: nil, now: now, flagged: false,
+                                                      reconfirmed: false, sensitivity: item.sensitivity),
+                                      sensitivity: item.sensitivity))
         }
         for (path, reason) in result.skipped.sorted(by: { $0.key < $1.key }) {
             out.append(ConnectionItem(id: ObsidianContextSource.stableID(for: "skipped:" + path), integration: .obsidian,

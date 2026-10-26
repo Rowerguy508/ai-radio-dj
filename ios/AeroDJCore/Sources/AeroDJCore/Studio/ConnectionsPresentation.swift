@@ -215,9 +215,13 @@ public struct ConnectionSourceRow: Equatable, Sendable, Identifiable {
 public enum ConnectionUnavailableReason: Equatable, Sendable {
     case calendarAccess(CalendarAccess)
     case file(ObsidianSkipReason)
+    /// The source marks it never to be read (`aerodj-sensitivity: blocked` in an Obsidian note).
+    /// Not approvable and never narrated, whatever consent says.
+    case markedPrivate
 
     public var description: String {
         switch self {
+        case .markedPrivate: return "Not used: marked private in Obsidian (aerodj-sensitivity: blocked)."
         case .calendarAccess(let a): return "Unavailable: \(CalendarConnectionState(access: a).description)"
         case .file(let r):
             switch r {
@@ -247,8 +251,11 @@ public enum ConnectionItemState: Equatable, Sendable {
 
     /// One precedence for every source: unavailable > expired > revoked > flagged > pending > approved.
     public static func resolve(consent: ConsentState, expiresAt: Date?, now: Date, flagged: Bool,
-                               reconfirmed: Bool, unavailable: ConnectionUnavailableReason? = nil) -> ConnectionItemState {
+                               reconfirmed: Bool, unavailable: ConnectionUnavailableReason? = nil,
+                               sensitivity: Sensitivity? = nil) -> ConnectionItemState {
         if let unavailable { return .unavailable(unavailable) }
+        // Blocked sensitivity outranks consent: re-approval can never make it narratable.
+        if sensitivity == .blocked { return .unavailable(.markedPrivate) }
         if let expiresAt, expiresAt <= now { return .expired }
         switch consent {
         case .denied, .revoked: return .revoked
@@ -310,13 +317,18 @@ public struct ConnectionItem: Equatable, Sendable, Identifiable {
     public let title: String
     public let state: ConnectionItemState
     public let expiresAt: Date?
+    /// The source's real sensitivity (nil when the source has none, e.g. a skipped file).
+    /// Downstream adapters pass this on instead of inventing a value.
+    public let sensitivity: Sensitivity?
 
-    public init(id: UUID, integration: StationIntegration, title: String, state: ConnectionItemState, expiresAt: Date? = nil) {
+    public init(id: UUID, integration: StationIntegration, title: String, state: ConnectionItemState,
+                expiresAt: Date? = nil, sensitivity: Sensitivity? = nil) {
         self.id = id
         self.integration = integration
         self.title = title
         self.state = state
         self.expiresAt = expiresAt
+        self.sensitivity = sensitivity
     }
 
     public var description: String { state.description }
@@ -328,7 +340,7 @@ public struct ConnectionItem: Equatable, Sendable, Identifiable {
     public func mayBeNarrated(at now: Date) -> Bool {
         state.mayBeNarrated
             && ConnectionItemState.resolve(consent: .granted, expiresAt: expiresAt, now: now,
-                                           flagged: false, reconfirmed: false).mayBeNarrated
+                                           flagged: false, reconfirmed: false, sensitivity: sensitivity).mayBeNarrated
     }
 }
 
@@ -452,7 +464,7 @@ public struct SharedInboxConnectionProvider: ConnectionItemProvider {
                 consent: context.consent, expiresAt: entry.item.expiresAt, now: now,
                 flagged: sanitizer.isSuspicious(entry.displayText), reconfirmed: entry.isReconfirmed)
             return ConnectionItem(id: entry.id, integration: .shareInbox, title: context.title,
-                                  state: state, expiresAt: entry.item.expiresAt)
+                                  state: state, expiresAt: entry.item.expiresAt, sensitivity: context.sensitivity)
         }
     }
 
@@ -487,7 +499,8 @@ public actor InMemoryConnectionItemProvider: ConnectionItemProvider {
         guard let i = stored.firstIndex(where: { $0.id == id }) else { return }
         let item = stored[i]
         func with(_ s: ConnectionItemState) -> ConnectionItem {
-            ConnectionItem(id: item.id, integration: item.integration, title: item.title, state: s, expiresAt: item.expiresAt)
+            ConnectionItem(id: item.id, integration: item.integration, title: item.title, state: s,
+                           expiresAt: item.expiresAt, sensitivity: item.sensitivity)
         }
         switch action {
         case .approve, .readAnyway: stored[i] = with(.approved)
