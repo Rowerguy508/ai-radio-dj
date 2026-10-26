@@ -26,6 +26,14 @@ final class StudioScreenTests: XCTestCase {
         if dark { app.launchArguments += ["-AeroDJStudioCaptureDark", "YES"] }
         XCUIDevice.shared.orientation = .portrait
         app.launch()
+        // The capture view loads the station before rendering. Never screenshot on a timer:
+        // wait for loading to end, and fail by name if the capture could not set up.
+        let loading = app.descendants(matching: .any)["capture.loading"]
+        let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: loading)
+        XCTAssertEqual(XCTWaiter().wait(for: [done], timeout: 20), .completed,
+                       "Studio capture still loading after 20 s (scenario \(scenario ?? "playing"))")
+        let failed = app.descendants(matching: .any)["capture.failed"]
+        if failed.exists { XCTFail(failed.label) }
         return app
     }
 
@@ -135,6 +143,8 @@ final class StudioScreenTests: XCTestCase {
             ("empty", "Nothing playing", false),
             ("loading", "Connecting to Apple Music", false),
             ("error", "DJ voice unavailable", true),  // speechFailed: caption, music continues
+            // The player reported the DJ break failed (DJStudioState.swift:62); music continues.
+            ("playbackFailed", "couldn't play", true),
             ("denied", "Apple Music access is off", false),
         ]
         for c in cases {
