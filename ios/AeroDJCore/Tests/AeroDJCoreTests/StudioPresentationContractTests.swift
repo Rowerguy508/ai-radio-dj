@@ -72,6 +72,7 @@ final class StationTunerPresentationTests: XCTestCase {
             XCTAssertTrue(p.honestDescription.contains("Same voice"), "\(p) must not promise a different voice")
         }
         XCTAssertTrue(CommentaryFrequency.occasional.honestDescription.contains("30%"))
+        XCTAssertTrue(CommentaryFrequency.frequent.honestDescription.contains("33%"), "copy states the delivered share, not the raw setting")
     }
 }
 

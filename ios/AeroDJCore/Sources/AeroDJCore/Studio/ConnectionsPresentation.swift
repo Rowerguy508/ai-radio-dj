@@ -350,18 +350,22 @@ public protocol NarrationPurging: Sendable {
     func purge(sourceItemIDs: Set<UUID>) async
 }
 
-/// Purges prepared DJ breaks first (so they can never play), then cached narration audio.
+/// Removes the items from future break plans, then purges prepared DJ breaks (so they can
+/// never play), then cached narration audio.
 public struct NarrationPurger: NarrationPurging {
     public let cache: any AudioCache
     public let preparer: DJBreakPreparer?
+    public let session: DJBreakSession?
 
-    public init(cache: any AudioCache, preparer: DJBreakPreparer?) {
+    public init(cache: any AudioCache, preparer: DJBreakPreparer?, session: DJBreakSession? = nil) {
         self.cache = cache
         self.preparer = preparer
+        self.session = session
     }
 
     public func purge(sourceItemIDs: Set<UUID>) async {
         guard !sourceItemIDs.isEmpty else { return }
+        if let session { await session.purge(sourceItemIDs: sourceItemIDs) }
         await preparer?.purge(sourceItemIDs: sourceItemIDs)
         await cache.purge(sourceItemIDs: sourceItemIDs)
     }

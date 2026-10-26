@@ -53,7 +53,7 @@ An edit never restarts or changes the song that is playing. See `station-configu
 ### Honest copy
 
 - **Personality:** `DJPersonality.honestDescription`. A preset currently changes **only the maximum length of a plain DJ break**: 12 s, or 6 s for `minimal`. It doesn't change the voice or the words, so the UI must not describe presets as different voices or styles.
-- **Talk:** `CommentaryFrequency.honestDescription`. For example, "The DJ talks after about 30% of songs, never two in a row." The beta default is `occasional` (30%).
+- **Talk:** `CommentaryFrequency.honestDescription`. The percentage is the share actually delivered (`DJCadence.expectedTalkShare`). The spacing rule caps it at 33%, so `frequent` (0.45) shows "about 33%". The beta default is `occasional` (30%).
 
 ### Station recipes
 
@@ -162,13 +162,39 @@ Calendar events have no per-event actions: consent and selection apply to the wh
 
 ## Inputs the app must feed (Claude, #58)
 
-1. **Boundary events:** `station.handle(.songBoundary(afterTrack:))` on each natural song end, plus `.djBreakWillPrepare` / `.briefingWillPlan`. Alternatively, attach a `StationBoundaryEventSource`.
-2. **DJ events:** `DJBreakPreparer.observe { dj.send($0.presentationEvent) }`. From the interlude player, send `dj.send(.playbackStarted/.playbackFinished/.playbackFailed(afterTrack:))` only on real audio callbacks, and `.sessionStopped` on stop or queue replacement.
-3. **Purge:** construct `ConnectionsModel(..., purger: NarrationPurger(cache: renderer.cache, preparer: preparer))`. When `StationConfigurationChange.invalidatesPreparedBreaks` is true, also call `preparer.cancelAll()`.
-4. **Sources:**
-   - `ConnectionSourceReading`: EventKit access, the calendar list and selection, and Obsidian bookmark state.
-   - `ConnectionItemProvider`s: `SharedInboxConnectionProvider(review:)` already exists for shares.
-   - In the test station, use `StaticConnectionSourceReader` and `InMemoryConnectionItemProvider` with fixtures only.
+Live playback talks to **one** object, `DJBreakSession` (`DJ/DJBreakSession.swift`). It owns the planning, preparation, boundary application and DJ status for prepared narration. The app doesn't call `DJBreakPreparer` or `StationConfigurationModel.handle` directly.
+
+**Player calls:**
+
+| When | Call | Result |
+|---|---|---|
+| A queue starts or is replaced | `await session.queueStarted(tracks, briefing:)` | Old breaks are cancelled. The queue is planned with the active cadence (about 30%, never back to back). |
+| A song starts (index, time left) | `await session.songStarted(index:remaining:)` | The break after this song renders now, with a deadline of `remaining - 3 s`. If it's too late, nothing is prepared. |
+| A song ends naturally | `await session.naturalBoundary(afterTrack:)` returns `PreparedDJBreak?` | Pending tuner edits apply here, then the session returns ready audio, or `nil` for music now. It never waits. |
+| A user skip or queue change | `await session.songCut(afterTrack:)` | The break is dropped. The DJ never talks after a cut song. |
+| DJ audio becomes audible / ends / fails | `session.playbackStarted/Finished/Failed(afterTrack:)` | These are the only inputs that turn On Air on or off. |
+| Stop | `await session.stop()` | Everything prepared is dropped. |
+
+**Caps:**
+- A routine break is at most 12 s (6 s for `minimal`). A briefing break is at most 45 s.
+- Measured audio over the cap is skipped (`overBreakBudget`). So are late renders (`timedOut` / `notReadyAtBoundary`) and failed or undecodable audio (the player calls `playbackFailed`).
+- Music never waits for speech.
+
+**Tuner:**
+- Edits apply at `naturalBoundary` (`.songBoundary`), or when a break starts preparing (`.djBreakWillPrepare`, personality).
+- Only breaks after the playing song are re-planned.
+- Turning talk or the briefing off, or withdrawing an integration, drops prepared speech immediately.
+
+**Purge:**
+- Construct `NarrationPurger(cache: renderer.cache, preparer: preparer, session: session)` and pass it to `ConnectionsModel`.
+- Revoke and delete then remove the item from the remaining briefing and planned breaks, from prepared breaks, and from cached audio, before the provider runs.
+
+**Sources:**
+- Shares: `SharedInboxConnectionProvider(review:)`.
+- Calendar and Obsidian: the app implements `ConnectionSourceReading`.
+- In the test station, use `StaticConnectionSourceReader` and `InMemoryConnectionItemProvider` with fixtures only.
+
+**Queue presentation:** stays in Claude's `PlaybackSnapshot` (now playing, up next, transport). It is not duplicated here. The UI shows DJ activity from `studio.djState`, not `PlaybackSnapshot.dj`, which carries line text.
 
 ## Mapping from #52's placeholders (Claudio)
 
