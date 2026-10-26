@@ -14,7 +14,7 @@ Record the exact SHA you install. A branch name is not enough. Three heads exist
 | PR #64 `fix/audio-observer-isolation` | `b69581bb48b06b9b39220a36bd19bd8f04aaa5d1` | Category `playback` on `MusicKitService`. `setActive` runs on the play path. `pausedByApp()` runs before a user pause and before `pausePlayerForBreak()` (calls and AirPods use that pause). A pending song start calls `onSongStarted` and does **not** log `song started`. |
 | PR #67 `atlas/audio-reliability-tests` | `3a6608529807bef2286077aef779b30ba127ba15` | Same tree as `216c53f` (`3a66085` only re-queues CI). Category `playback` on `MusicKitService` and `InterludePlaybackAdapter`. Deferred starts log `song started`. `stopCurrentInterlude(reason:)` exists and logs `interlude stop reason=sourceRevoked`. This SHA does **not** contain `b69581b`. A pause, call, or AirPods removal inside the last 1.5 s of a song is still reported as a natural end. |
 
-There is no single SHA that has both the pause guard (`b69581b`) and the interlude-stop log (`3a66085`). Until those are on one build, install `3a66085` for the log lines below, and treat a break that starts after a pause, call, or unplug in the last 1.5 s as a fail of that step, not as a bad procedure.
+There is no single SHA that has both the pause guard (`b69581b`) and the interlude-stop log (`3a66085`). The phone build is the rule in **Build and install**, not `3a66085`. On an installed SHA that does not contain `b69581b`, a break that starts after a pause, call, or unplug in the last 1.5 s is a fail of that step. `939c34e` does not contain that guard. A green merge of #65 does, because that branch merges `b69581b`.
 
 Fingerprint while other audio is playing (Music, a podcast):
 
@@ -26,7 +26,7 @@ Fingerprint while other audio is playing (Music, a podcast):
 Do these before the numbered steps. If one is missing, stop and record which one. Do not invent a pass.
 
 1. **Mac and device.** Xcode with XcodeGen 2.46.0 (the version CI pins). The iPhone Duo, unlocked, Developer Mode on (Settings → Privacy & Security → Developer Mode), trusted by this Mac. Deployment target in `ios/project.yml` is iOS 17.0.
-2. **Signing.** Development team `S85APB73YV` (Individual). App IDs `com.aerodj.app` (MusicKit and App Groups) and `com.aerodj.app.share` (App Groups). App Group `group.com.aerodj`. These bundle IDs are `PRODUCT_BUNDLE_IDENTIFIER` in `ios/project.yml`. Both entitlements files on `integration/device-duo` (`939c34e`) contain only `com.apple.security.application-groups` / `group.com.aerodj`. `ios/project.yml` sets `INFOPLIST_KEY_NSAppleMusicUsageDescription` on the app target and does not set a MusicKit entitlement key. The old App ID `Com.technostrada.aerodj` is unused. Do not select it. Xcode automatic signing creates the development profile when you install. `CODE_SIGN_STYLE` is Automatic (`ios/Config/Signing.xcconfig`). The team can also sit in git-ignored `ios/Config/Signing.local.xcconfig` as `DEVELOPMENT_TEAM = S85APB73YV`. No certificate or profile goes into git, chat, or the log export. Do not create one by hand.
+2. **Signing.** Follow section 5 of the install checklist, PR #74 at `0c1da5ba1fb43bf874e1aeb2c75f2aaeadcd5f87` (`docs/device-install.md`). That copy is the one to use. The `docs/device-install.md` inside the install commit is older. Do not retype those steps here. The team ID goes only in git-ignored `ios/Config/Signing.local.xcconfig` as `DEVELOPMENT_TEAM = S85APB73YV`. Committed `ios/Config/Signing.xcconfig` sets `CODE_SIGN_STYLE = Automatic` and includes that local file. It does not set `DEVELOPMENT_TEAM`. Do not add the team to `Signing.xcconfig`, `project.yml`, or the target settings. Identifiers and the portal MusicKit App Service are checklist section 4. The old App ID `Com.technostrada.aerodj` is unused. Do not select it.
 3. **Build configuration.** Scheme `AeroDJ`. Run configuration **Debug**. Launch argument `-AeroDJTestStation YES` (Product → Scheme → Edit Scheme → Run → Arguments). Release builds cannot enter the test station.
 4. **Apple Music.** The Apple ID on the Duo has an active Apple Music subscription that can play the catalog. Deny the system prompt on purpose only if you are checking the banner, then grant it before step 1. The banner strings are fixed: "Allow Apple Music to play your station." and "An Apple Music subscription is required."
 5. **Consent.** With the test-station argument, fixture consent is granted for fixture sources only. Live mode (no argument) starts every integration at `notRequested` and will read the real calendar. Use the test station for this script. Paid voice stays off (`VoiceBudget` daily cap is $0).
@@ -44,26 +44,27 @@ Without the argument the same line says `runtime mode: live`. `info` is not used
 
 ## Build and install
 
-From a clean checkout of the SHA you recorded:
+Before the 7pm run, look at PR #65.
+
+- If #65 has merged into `integration/device-duo` and the iOS workflow on that new tip is green, install that tip.
+- Otherwise install `939c34e8da505ca91d26b30b52f696974b06c1c5`.
+
+Checklist section 3 names `939c34e` as its install commit. Use this rule when the two disagree. Signing still comes from checklist section 5.
 
 ```sh
-git fetch origin
+git fetch origin integration/device-duo
+git rev-parse origin/integration/device-duo
 git checkout <SHA>
-cd ios
-xcodegen generate
-open AeroDJ.xcodeproj
+git rev-parse HEAD
 ```
+
+`git rev-parse HEAD` is the SHA you install. Write it in the results sheet on **Git SHA installed**. A branch name is not enough.
+
+Generate and open from that checkout. The team file from checklist section 5 is already in place. `xcodegen` is the last step of that section.
 
 In Xcode: scheme **AeroDJ**, destination your iPhone, Run configuration **Debug**, argument `-AeroDJTestStation YES`.
 
-Select team `S85APB73YV` for both targets that install on the Duo:
-
-1. Target **AeroDJ**. Signing & Capabilities → Team → `S85APB73YV` (Individual). Bundle identifier stays `com.aerodj.app`.
-2. Target **AeroDJShare**. The same team. Bundle identifier stays `com.aerodj.app.share`.
-
-Do not select `Com.technostrada.aerodj`. That App ID is unused.
-
-**Pre-flight.** On AeroDJ → Signing & Capabilities, MusicKit and App Groups `group.com.aerodj` are present and have no errors. On AeroDJShare, App Groups `group.com.aerodj` is present and has no errors. If MusicKit is absent on AeroDJ, stop and record that. The entitlements file on `939c34e` does not contain a MusicKit key, so a missing row is the tree you generated, not a reason to switch App IDs. Automatic signing creates the development profile at install. Then Run.
+**Pre-flight.** On AeroDJ and AeroDJShare, Signing & Capabilities shows team `S85APB73YV` from `Signing.local.xcconfig` and Automatically manage signing. App Groups is `group.com.aerodj` with no errors. Bundle identifiers stay `com.aerodj.app` and `com.aerodj.app.share`. Do not select `Com.technostrada.aerodj`. Do not type the team into the target. MusicKit is the App Service on `com.aerodj.app` from checklist section 4. `AeroDJ.entitlements` has no MusicKit key, so a missing MusicKit row matches the tree. Then Run. Automatic signing creates the development profile on that first device build.
 
 The unsigned device build CI uses is not an install:
 
@@ -398,7 +399,7 @@ Copy this table into your notes. Leave it blank in git. One link per step can be
 | Date | |
 | Tester | |
 | Device / iOS | |
-| Git SHA installed | |
+| Git SHA installed | `git rev-parse HEAD` from Build and install. New `integration/device-duo` tip only if #65 merged green before 7pm; otherwise `939c34e` |
 | Personal briefing expectation | `silence (no personal briefing)` or `briefing speaks approved rows only` |
 | Route for steps 1–6 | speaker or AirPods |
 | Test station log seen | `runtime mode: testStation` yes / no |
