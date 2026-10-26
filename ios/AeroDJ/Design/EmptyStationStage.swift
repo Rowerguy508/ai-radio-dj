@@ -51,9 +51,9 @@ struct EmptyStationStage: View {
     }
 
     /// The station plate shrinks at accessibility sizes so the status text can grow.
-    /// AX5 (accessibility extra extra extra large) shrinks it further.
+    /// AX5 is `DynamicTypeSize.accessibility5`.
     private var plateSide: CGFloat {
-        if typeSize >= .accessibilityExtraExtraExtraLarge { return 96 }
+        if typeSize >= .accessibility5 { return 96 }
         if typeSize.isAccessibilitySize { return 128 }
         return 220
     }
