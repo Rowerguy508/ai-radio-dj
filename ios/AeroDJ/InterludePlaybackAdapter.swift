@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import AeroDJCore
+import OSLog
 
 /// Plays one DJ break between two songs.
 ///
@@ -19,6 +20,10 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     private var finish: CheckedContinuation<Void, Never>?
     private var timeout: Task<Void, Never>?
     private var outcome: Outcome = .cancelled
+    /// Retires the current clip on stop, so a late finish callback cannot end a later break.
+    private var stopState = InterludeStopState()
+    /// Indices and the stop reason only. No line text.
+    private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
 
     /// How a break ended. Only `.finished` means the whole line was heard.
     private enum Outcome { case finished, cancelled }
@@ -75,6 +80,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         let player = queue.removeFirst()
         player.delegate = self
         clipPlayer = player
+        stopState.adopt(player: ObjectIdentifier(player))
         return player.play()
     }
 
@@ -87,8 +93,36 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     func stop() {
+        guard stopState.stop(reason: nil) else { return }
+        haltAudio()
+    }
+
+    /// Stops the speaking break before this returns. Safe from any isolation.
+    ///
+    /// On the main thread the player stops in this turn. Off the main thread the call
+    /// waits until the main queue has stopped it. No task is left running. Idle is a
+    /// no-op: nothing is paused, resumed, or reported. A finish callback from the
+    /// stopped player is ignored, including one that arrives after a later break starts.
+    ///
+    /// Consent and deletion pass `.sourceRevoked`. The instance is the `PlayerView`
+    /// interlude adapter.
+    nonisolated func stopCurrentInterlude(reason: InterludeStopReason) {
+        MainActorImmediate.run {
+            guard self.stopState.stop(reason: reason) else { return }
+            switch reason {
+            case .sourceRevoked:
+                self.log.notice("interlude stop reason=sourceRevoked")
+            }
+            self.haltAudio()
+        }
+    }
+
+    private func haltAudio() {
         queue = []
-        clipPlayer?.stop()
+        let player = clipPlayer
+        clipPlayer = nil
+        player?.delegate = nil
+        player?.stop()
         finishBreak(.cancelled)
     }
 
@@ -101,6 +135,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             finish = continuation
+            stopState.begin()
             timeout = Task { @MainActor [weak self] in
                 do { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } catch { return }
                 self?.finishBreak(.cancelled)
@@ -130,6 +165,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     private func finishBreak(_ result: Outcome) {
+        stopState.end()
         timeout?.cancel()
         timeout = nil
         guard let continuation = finish else { return }
@@ -141,10 +177,18 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     // MARK: AVAudioPlayerDelegate
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor [weak self] in self?.clipFinished(successful: flag) }
+        let id = ObjectIdentifier(player)
+        Task { @MainActor [weak self] in
+            guard let self, self.stopState.acceptsDelegate(player: id) else { return }
+            self.clipFinished(successful: flag)
+        }
     }
 
     nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        Task { @MainActor [weak self] in self?.finishBreak(.cancelled) }
+        let id = ObjectIdentifier(player)
+        Task { @MainActor [weak self] in
+            guard let self, self.stopState.acceptsDelegate(player: id) else { return }
+            self.finishBreak(.cancelled)
+        }
     }
 }
