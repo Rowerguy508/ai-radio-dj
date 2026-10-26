@@ -38,6 +38,10 @@ public struct BoundaryInterpreter: Sendable {
         detector.pausedByApp()
     }
 
+    public mutating func pausedByApp(_ cause: PlaybackBoundaryDetector.HoldCause) {
+        detector.pausedByApp(cause)
+    }
+
     public mutating func interpret(
         _ observation: PlaybackObservation,
         queueIndex: Int,

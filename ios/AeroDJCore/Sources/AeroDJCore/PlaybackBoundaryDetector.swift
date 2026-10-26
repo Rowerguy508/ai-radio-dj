@@ -59,10 +59,22 @@ public struct PlaybackBoundaryDetector: Sendable {
         userChangePending = true
     }
 
+    /// Why playback stopped. A natural end has no cause.
+    public enum HoldCause: Equatable, Sendable {
+        case userPause
+        case systemInterruption
+        case routeLoss
+    }
+
     /// Call when the user, a call or a route change paused playback. A pause is never a finish,
     /// even if it happens in the last seconds of the song.
     public mutating func pausedByApp() {
         wasPlaying = false
+    }
+
+    /// Named holds are not applied yet. The untyped `pausedByApp()` still suppresses a stop.
+    public mutating func pausedByApp(_ cause: HoldCause) {
+        _ = cause
     }
 
     public mutating func consume(_ observation: PlaybackObservation) -> PlaybackBoundary? {
