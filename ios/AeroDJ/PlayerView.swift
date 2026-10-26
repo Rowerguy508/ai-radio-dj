@@ -43,6 +43,19 @@ struct PlayerView: View {
                 // A break is only ever played at a natural end. Anything late, missing or failed is
                 // skipped, and the next song is not delayed.
                 Task { @MainActor in
+                    /// The handed-out break never started. Report `.failed` so DJ state leaves `.ready`,
+                    /// and leave the boundary transition so music can continue.
+                    func reportUnplayed(_ reason: HandedOutBreakSkip) {
+                        let report = HandedOutBreakReport.skipped(
+                            reason, afterTrack: finishedIndex, mayAutoResume: music.mayAutoResume)
+                        if case .playbackFailed(let k) = report.event {
+                            djSession.playbackFailed(afterTrack: k)
+                        }
+                        music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
+                        if report.resume.audioEvent != nil {
+                            music.skipInterlude()
+                        }
+                    }
                     // The break (or its skip) comes first; the next song is loaded only after it.
                     if interlude.isSpeaking {
                         music.skipInterlude()
@@ -50,11 +63,16 @@ struct PlayerView: View {
                         switch BreakHandoffPolicy.decide(prepared: prepared) {
                         case let .play(breakToPlay):
                             let line = breakToPlay.cues.map(\.text).joined(separator: " ")
+                            let clips = breakToPlay.clips.map(\.audio.data)
+                            // Empty line or no clips: the break was handed out and will not play.
+                            guard !line.isEmpty, !clips.isEmpty else {
+                                reportUnplayed(.emptyLine)
+                                break
+                            }
                             interlude.handOut(afterTrack: finishedIndex)
-                            await interlude.play(clips: breakToPlay.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                            await interlude.play(clips: clips, line: line, afterTrack: finishedIndex)
                         case .continueMusic:
-                            music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
-                            music.skipInterlude()
+                            reportUnplayed(.emptyLine)
                         }
                     } else {
                         music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)

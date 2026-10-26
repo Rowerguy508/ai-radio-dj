@@ -66,8 +66,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     func play(clips: [Data], line: String, afterTrack: Int) async {
         breakTrack = afterTrack
         guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
-            music.logBreakSkipped(after: afterTrack, reason: .notPlanned)
-            music.skipInterlude()
+            // Handed out, but this break will not start. `.failed` clears `.ready`.
+            abandonUnplayedBreak(.notPlayable, afterTrack: afterTrack, skip: .notPlanned)
             return
         }
         // A nil tag, or a tag for this afterTrack, that landed after hand-out and before
@@ -88,9 +88,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
         // A clip that won't decode skips the whole break; nothing is spoken partially.
         guard players.count == clips.count, players.allSatisfy({ $0.duration > 0 }) else {
-            music.logBreakSkipped(after: afterTrack, reason: .renderFailed)
+            abandonUnplayedBreak(.decodeFailed, afterTrack: afterTrack, skip: .renderFailed)
             music.reportSpeechError("A DJ line could not be played and was skipped.")
-            music.skipInterlude()
             return
         }
         queue = players
@@ -98,6 +97,19 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         await runBreak(line: line, timeout: total) { self.startNextClip() }
         queue = []
         clipPlayer = nil
+    }
+
+    /// The break was handed out and audio will not start. Reports `.failed` for `afterTrack`
+    /// and returns the boundary transition to music.
+    private func abandonUnplayedBreak(_ reason: HandedOutBreakSkip, afterTrack: Int, skip: DJBreakSkipReason) {
+        let report = HandedOutBreakReport.skipped(reason, afterTrack: afterTrack, mayAutoResume: music.mayAutoResume)
+        if case .playbackFailed(let k) = report.event {
+            onPlayback?(.failed(afterTrack: k))
+        }
+        music.logBreakSkipped(after: afterTrack, reason: skip)
+        if report.resume.audioEvent != nil {
+            music.skipInterlude()
+        }
     }
 
     /// Starts the next queued clip. False if it could not start.

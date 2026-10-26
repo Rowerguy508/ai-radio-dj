@@ -57,6 +57,44 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertTrue(condition(), message)
     }
 
+    func testEmptyLineAfterHandoffLeavesReadyAndResumesMusic() async {
+        await assertUnplayedBreakLeavesReady(.emptyLine, afterTrack: 4)
+    }
+
+    func testAdapterRefusesAnUnplayableBreakAndResumesMusic() async {
+        await assertUnplayedBreakLeavesReady(.notPlayable, afterTrack: 4)
+    }
+
+    func testClipThatFailsToDecodeLeavesReadyAndResumesMusic() async {
+        await assertUnplayedBreakLeavesReady(.decodeFailed, afterTrack: 4)
+    }
+
+    /// A handed-out break that never starts audio reports `.failed` through the session.
+    /// The boundary returns to music. No polling.
+    private func assertUnplayedBreakLeavesReady(_ reason: HandedOutBreakSkip, afterTrack: Int) async {
+        let r = await rig()
+        r.dj.send(.breakReady(afterTrack: afterTrack, includesBriefing: false, seconds: 6))
+        XCTAssertEqual(r.dj.studioState, .ready(includesBriefing: false, seconds: 6))
+
+        let effect = HandedOutBreakReport.skipped(reason, afterTrack: afterTrack, mayAutoResume: true)
+        XCTAssertEqual(effect.event, .playbackFailed(afterTrack: afterTrack))
+        XCTAssertTrue(effect.resume.resumeMusic)
+        XCTAssertEqual(effect.resume.audioEvent, .noInterlude)
+
+        r.session.playbackFailed(afterTrack: afterTrack)
+        if case .ready = r.dj.studioState {
+            XCTFail("\(reason) leaves the handed-out break ready")
+        }
+        XCTAssertEqual(r.dj.studioState, .failed(.voiceFailed))
+
+        var audio = AudioStateMachine(state: .transition)
+        guard let back = effect.resume.audioEvent else {
+            XCTFail("\(reason) returns to music")
+            return
+        }
+        XCTAssertEqual(audio.apply(back), .music)
+    }
+
     func testBreakIsPreparedDuringTheSongAndHandedOverAtTheBoundary() async throws {
         let r = await rig()
         await r.session.queueStarted(djTracks(8))
