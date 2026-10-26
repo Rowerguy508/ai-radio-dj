@@ -44,12 +44,13 @@ Without the argument the same line says `runtime mode: live`. `info` is not used
 
 ## Build and install
 
-Before the 7pm run, look at PR #65.
+Install `5dbf6d910195c06f7d4a03993951b25212b335f5` (`5dbf6d9`), the `integration/device-duo` tip after the owner merged #65.
 
-- If #65 has merged into `integration/device-duo` and the iOS workflow on that new tip is green, install that tip.
-- Otherwise install `939c34e8da505ca91d26b30b52f696974b06c1c5`.
+- It is a merge commit, so the iOS workflow (which runs on pull requests only) never ran on it directly. Its tree, `aaacf0d`, is identical to #65's `aaff7e1`, which passed every job in iOS run 40327400994. Orion accepted that run as the green result for `5dbf6d9`.
+- `5dbf6d9` contains #63 `129d0c6` and #64 `b69581b`, so it has the pause guard. It does not contain #67, so it has no `InterludePlaybackAdapter` and no interlude-stop log line.
+- Fall back to `939c34e8da505ca91d26b30b52f696974b06c1c5` only if `5dbf6d9` will not build or sign.
 
-Checklist section 3 names `939c34e` as its install commit. Use this rule when the two disagree. Signing still comes from checklist section 5.
+Checklist section 3 may still name `939c34e`. Use this section when the two disagree. Signing still comes from checklist section 5.
 
 ```sh
 git fetch origin integration/device-duo
@@ -399,7 +400,7 @@ Copy this table into your notes. Leave it blank in git. One link per step can be
 | Date | |
 | Tester | |
 | Device / iOS | |
-| Git SHA installed | `git rev-parse HEAD` from Build and install. New `integration/device-duo` tip only if #65 merged green before 7pm; otherwise `939c34e` |
+| Git SHA installed | `git rev-parse HEAD` from Build and install. Expected `5dbf6d9`; record `939c34e` only if the fallback was used |
 | Personal briefing expectation | `silence (no personal briefing)` or `briefing speaks approved rows only` |
 | Route for steps 1–6 | speaker or AirPods |
 | Test station log seen | `runtime mode: testStation` yes / no |
