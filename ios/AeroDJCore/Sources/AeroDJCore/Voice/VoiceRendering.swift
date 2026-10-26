@@ -218,6 +218,7 @@ public struct AudioCacheSweeper: Sendable {
         let ticks = Self.ticks(every: interval)
         return Task.detached(priority: .utility) {
             if purgingPersonalFirst { await cache.purgeAllPersonal() }
+            await AudioCacheFileLog.record(cache, after: .launch)
             await AudioCacheSweeper(cache: cache).run(ticks: ticks)
         }
     }
@@ -272,6 +273,21 @@ public actor InMemoryAudioCache: AudioCache {
     public func purgeExpired() { clips = clips.filter { now().timeIntervalSince($0.value.createdAt) <= maxAge } }
     public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
     public var count: Int { clips.count }
+}
+
+extension InMemoryAudioCache: AudioCacheCounting {
+    public func fileCount() -> AudioCacheCount {
+        AudioCacheCount(files: clips.count, personal: clips.values.filter { !$0.sourceItemIDs.isEmpty }.count)
+    }
+}
+
+extension FileAudioCache: AudioCacheCounting {
+    /// Unreadable files count as personal: they cannot be shown to be generic.
+    public func fileCount() async -> AudioCacheCount {
+        let files = entries()
+        return AudioCacheCount(files: files.count,
+                               personal: files.filter { read($0).map { !$0.sourceItemIDs.isEmpty } ?? true }.count)
+    }
 }
 
 /// On-device cache, one protected file per key. Personal narration stays on

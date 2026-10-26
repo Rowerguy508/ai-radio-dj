@@ -378,6 +378,7 @@ public struct NarrationPurger: NarrationPurging {
         await preparer?.purge(sourceItemIDs: sourceItemIDs)
         await cache.purge(sourceItemIDs: sourceItemIDs)
         revocations.purgeCompleted(sourceItemIDs)
+        await AudioCacheFileLog.record(cache, after: .purge)
         feed.publish(.items(sourceItemIDs))
     }
 
@@ -390,6 +391,7 @@ public struct NarrationPurger: NarrationPurging {
         if !known.isEmpty { await preparer?.purge(sourceItemIDs: known) }
         await cache.purgeAllPersonal()
         revocations.purgeAllCompleted()
+        await AudioCacheFileLog.record(cache, after: .purge)
         feed.publish(.all)
     }
 }

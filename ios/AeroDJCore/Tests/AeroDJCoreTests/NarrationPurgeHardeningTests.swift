@@ -285,3 +285,28 @@ final class OnAirRevocationTests: XCTestCase {
         XCTAssertEqual(interlude.stops, [], "nothing is on air to stop")
     }
 }
+
+final class AudioCacheFileLogTests: XCTestCase {
+    /// #76 step 9: the device run proves files are deleted. Stable line, counts only.
+    func testPurgeLogsRemainingFileCountsWithoutAnyPersonalContent() async {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cache-log-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = FileAudioCache(directory: dir)
+        let a = UUID(), b = UUID()
+        await cache.store(CachedAudio(data: Data([1]), seconds: 1, providerID: "device", voiceID: "v", sourceItemIDs: [a]), for: "k1")
+        await cache.store(CachedAudio(data: Data([2]), seconds: 1, providerID: "device", voiceID: "v", sourceItemIDs: [b]), for: "k2")
+        await cache.store(CachedAudio(data: Data([3]), seconds: 1, providerID: "device", voiceID: "v"), for: "k3")
+        let launch = await AudioCacheFileLog.record(cache, after: .launch)
+        XCTAssertEqual(launch, "AeroDJ.cache files=3 personal=2 generic=1 after=launch")
+
+        await NarrationPurger(cache: cache, preparer: nil, revocations: NarrationRevocations(), feed: NarrationPurgeFeed())
+            .purge(sourceItemIDs: [a])
+        let afterPurge = await AudioCacheFileLog.record(cache, after: .purge)
+        XCTAssertEqual(afterPurge, "AeroDJ.cache files=2 personal=1 generic=1 after=purge")
+        for line in [launch, afterPurge].compactMap({ $0 }) {
+            XCTAssertFalse(line.contains(a.uuidString) || line.contains(b.uuidString) || line.contains("k1"), "no ids or keys")
+        }
+        let count = await cache.fileCount()
+        XCTAssertEqual(count, AudioCacheCount(files: 2, personal: 1))
+    }
+}
