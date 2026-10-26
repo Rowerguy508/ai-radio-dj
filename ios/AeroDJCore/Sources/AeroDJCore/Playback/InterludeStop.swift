@@ -40,6 +40,76 @@ public final class SpeechStopGate {
     }
 }
 
+/// Whether a play that has not started a clip player may start one.
+///
+/// The adapter guarantees this for every `stopCurrentInterlude(.sourceRevoked)` that
+/// reaches it, including one that arrives before the clip player is set:
+/// - before `begin`, the stop is kept and the next `begin` cancels that play;
+/// - after `begin` and before `admit` (decode, or stop state begun with no clip player),
+///   `admit` cancels that play.
+/// No clip starts. Music resumes once, from `begin` or `admit`, when auto-resume is allowed.
+/// `stop` itself does not resume, so the play and the stop do not resume twice.
+///
+/// A stop that never reaches the adapter, because the session hook was still nil, is not
+/// visible here. Production arms that hook before a clip can play. The order in which
+/// purge clears the on-air marker belongs to Fry.
+public struct PendingPlayEffect: Equatable, Sendable {
+    public var startAudio: Bool
+    public var resumeMusic: Bool
+
+    public init(startAudio: Bool, resumeMusic: Bool) {
+        self.startAudio = startAudio
+        self.resumeMusic = resumeMusic
+    }
+}
+
+public struct PendingPlayStop: Equatable, Sendable {
+    private enum Phase: Equatable, Sendable {
+        case idle
+        case pending
+    }
+
+    private var phase: Phase = .idle
+    private var revoked = false
+
+    public init() {}
+
+    /// Records a revoke. Resume is decided by the following `begin` or `admit`, once.
+    public mutating func stop(reason: InterludeStopReason, mayAutoResume: Bool) -> PendingPlayEffect {
+        _ = reason
+        _ = mayAutoResume
+        revoked = true
+        return PendingPlayEffect(startAudio: false, resumeMusic: false)
+    }
+
+    /// Opens the pending play, before decode. An earlier revoke cancels it.
+    public mutating func begin(mayAutoResume: Bool) -> PendingPlayEffect {
+        if revoked {
+            revoked = false
+            phase = .idle
+            return PendingPlayEffect(startAudio: false, resumeMusic: mayResume(mayAutoResume))
+        }
+        phase = .pending
+        return PendingPlayEffect(startAudio: true, resumeMusic: false)
+    }
+
+    /// After decode, before a clip player is created. A revoke while pending refuses audio.
+    public mutating func admit(mayAutoResume: Bool) -> PendingPlayEffect {
+        let stillPending = phase == .pending
+        phase = .idle
+        if revoked || !stillPending {
+            let resume = revoked && mayResume(mayAutoResume)
+            revoked = false
+            return PendingPlayEffect(startAudio: false, resumeMusic: resume)
+        }
+        return PendingPlayEffect(startAudio: true, resumeMusic: false)
+    }
+
+    private func mayResume(_ mayAutoResume: Bool) -> Bool {
+        NarrationResumePolicy.decide(.revoked, mayAutoResume: mayAutoResume, phase: .music).resumeMusic
+    }
+}
+
 /// Which player, if any, may still deliver a finish callback.
 ///
 /// Stopping retires the current player immediately. A delegate callback that arrives

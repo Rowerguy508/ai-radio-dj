@@ -120,6 +120,51 @@ final class InterludeStopTests: XCTestCase {
         }
     }
 
+    /// After hand-out, before a clip player exists. `begin` is the pending play
+    /// (`stopState` begun, decode not finished). The revoke cancels it.
+    func testRevokeWhilePlayIsPendingStartsNoAudioAndResumesOnce() {
+        var play = PendingPlayStop()
+        let opened = play.begin(mayAutoResume: true)
+        XCTAssertTrue(opened.startAudio)
+
+        let duringDecode = play.stop(reason: .sourceRevoked, mayAutoResume: true)
+        XCTAssertFalse(duringDecode.startAudio)
+        XCTAssertFalse(duringDecode.resumeMusic, "the in-flight play resumes from admit, once")
+
+        let admitted = play.admit(mayAutoResume: true)
+        XCTAssertFalse(admitted.startAudio, "no clip player starts")
+        XCTAssertTrue(admitted.resumeMusic)
+
+        let repeatStop = play.stop(reason: .sourceRevoked, mayAutoResume: true)
+        XCTAssertFalse(repeatStop.resumeMusic, "a second revoke does not resume again")
+    }
+
+    func testRevokeWhilePendingDoesNotResumeWhenAutoResumeIsOff() {
+        var play = PendingPlayStop()
+        XCTAssertTrue(play.begin(mayAutoResume: false).startAudio)
+        _ = play.stop(reason: .sourceRevoked, mayAutoResume: false)
+        let admitted = play.admit(mayAutoResume: false)
+        XCTAssertFalse(admitted.startAudio)
+        XCTAssertFalse(admitted.resumeMusic)
+    }
+
+    /// A revoke that reaches the adapter before `play` begins is kept and cancels that play.
+    /// A stop that never reaches the adapter (session hook still nil) is not something this
+    /// type can see. Production arms the hook before a clip can play.
+    func testStopBeforeTheClipPlayerIsSetCancelsTheNextPlay() {
+        var play = PendingPlayStop()
+        let early = play.stop(reason: .sourceRevoked, mayAutoResume: true)
+        XCTAssertFalse(early.resumeMusic, "nothing is paused until play begins")
+
+        let opened = play.begin(mayAutoResume: true)
+        XCTAssertFalse(opened.startAudio, "the stop is not lost")
+        XCTAssertTrue(opened.resumeMusic)
+
+        let later = play.begin(mayAutoResume: true)
+        XCTAssertTrue(later.startAudio, "only the play that was waiting is cancelled")
+        XCTAssertFalse(later.resumeMusic)
+    }
+
     func testLateDelegateAfterStopIsIgnored() async {
         let speaker = await MainActor.run { SpeakingBreak() }
         await speaker.play()

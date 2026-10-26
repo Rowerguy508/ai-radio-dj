@@ -22,6 +22,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     private var outcome: BreakPlayerOutcome = .cancelled
     /// Retires the current clip on stop, so a late finish callback cannot end a later break.
     private var stopState = InterludeStopState()
+    /// A revoke that arrives before a clip player exists. See `PendingPlayStop`.
+    private var pendingPlay = PendingPlayStop()
     /// Indices and the stop reason only. No line text.
     private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
 
@@ -61,8 +63,22 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             music.skipInterlude()
             return
         }
-        // A clip that won't decode skips the whole break; nothing is spoken partially.
+        // A revoke that landed after hand-out, before this play began, cancels it.
+        let opened = pendingPlay.begin(mayAutoResume: music.mayAutoResume)
+        guard opened.startAudio else {
+            await cancelledPendingPlay(resumeMusic: opened.resumeMusic)
+            return
+        }
+        // Decode while the play is pending. A revoke blocked on the main actor runs at the
+        // yield, before any clip player is created.
         let players = clips.compactMap { try? AVAudioPlayer(data: $0) }
+        await Task.yield()
+        let admitted = pendingPlay.admit(mayAutoResume: music.mayAutoResume)
+        guard admitted.startAudio else {
+            await cancelledPendingPlay(resumeMusic: admitted.resumeMusic)
+            return
+        }
+        // A clip that won't decode skips the whole break; nothing is spoken partially.
         guard players.count == clips.count, players.allSatisfy({ $0.duration > 0 }) else {
             music.logBreakSkipped(after: afterTrack, reason: .renderFailed)
             music.reportSpeechError("A DJ line could not be played and was skipped.")
@@ -131,19 +147,40 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// no-op: nothing is paused, resumed, or reported. A finish callback from the
     /// stopped player is ignored, including one that arrives after a later break starts.
     ///
-    /// Consent and deletion pass `.sourceRevoked`. The instance is the `PlayerView`
+    /// Consent and deletion pass `.sourceRevoked`. The instance is the app-scoped
     /// interlude adapter.
+    ///
+    /// A `.sourceRevoked` that arrives before the clip player exists is kept by
+    /// `PendingPlayStop`. `play` then starts no audio and resumes music once when that
+    /// is still allowed. A stop that never reaches this method, because the session
+    /// hook was nil, is outside this guarantee.
     nonisolated func stopCurrentInterlude(reason: InterludeStopReason) {
         MainActorImmediate.run {
             // Consent revoke records a revoke and resumes once. Other reasons keep the
             // existing halt, which ends the break as cancelled.
             if reason == .sourceRevoked {
-                self.stopActiveBreak(reason: reason)
+                if self.stopState.isPlaying {
+                    self.stopActiveBreak(reason: reason)
+                } else {
+                    _ = self.pendingPlay.stop(reason: reason, mayAutoResume: self.music.mayAutoResume)
+                }
                 return
             }
             guard self.stopState.stop(reason: reason) else { return }
             self.log.notice("\(PlaybackLog.interludeStop(reason: reason), privacy: .public)")
             self.haltAudio()
+        }
+    }
+
+    /// The play was revoked before a clip player existed. Music was not paused for it.
+    /// Resume once when the entry is still current and auto-resume is allowed. PlayerView
+    /// loads the next track when this returns.
+    private func cancelledPendingPlay(resumeMusic: Bool) async {
+        log.notice("\(PlaybackLog.interludeStop(reason: .sourceRevoked), privacy: .public)")
+        log.notice("\(PlaybackLog.breakEnd(after: breakTrack, result: .revoked), privacy: .public)")
+        onPlayback?(.revoked(afterTrack: breakTrack))
+        if resumeMusic, !music.currentEntryAlreadyFinished {
+            await music.resumeIfAllowed()
         }
     }
 
