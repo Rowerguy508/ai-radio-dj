@@ -45,8 +45,9 @@ struct StationListView: View {
                 }
             }
             .navigationDestination(for: Station.self) { station in
-                PlayerView(station: station, music: dependencies.playback, djSession: dependencies.djSession,
-                           studio: dependencies.studio, isTestStation: dependencies.mode == .testStation)
+                PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
+                           djSession: dependencies.djSession, studio: dependencies.studio,
+                           isTestStation: dependencies.mode == .testStation)
             }
             .sheet(isPresented: $showSharedInbox) {
                 if dependencies.mode == .live, let review = SharedInboxReview.appGroupInbox() {
