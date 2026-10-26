@@ -185,8 +185,8 @@ public struct MorningBriefingEngine: BriefingPlanner {
         }
 
         let degraded = unavailableSources.isEmpty ? "" : " Some sources couldn't be reached, so this may be incomplete."
-        let opener = fixed(Self.openerID, .opener, "\(greeting(at: current)). Here's your briefing.\(degraded)")
-        let closer = fixed(Self.closerID, .closer, "That's your briefing. Back to the music.")
+        let opener = fixed(Self.openerID, .opener, "\(greeting(at: current)). I'll keep this short before the music.\(degraded)")
+        let closer = fixed(Self.closerID, .closer, "That's all from me. Back to the music.")
         var remaining = (maxSpokenSeconds ?? configuration.maxSpokenSeconds)
             - opener.estimatedSpokenSeconds - closer.estimatedSpokenSeconds
         var chosen: [BriefingScriptSegment] = []
@@ -199,7 +199,7 @@ public struct MorningBriefingEngine: BriefingPlanner {
 
         let segments = chosen.isEmpty
             ? [fixed(Self.fallbackID, .fallback,
-                     "\(greeting(at: current)). Nothing needs your attention right now.\(degraded) Enjoy the music.")]
+                     "\(greeting(at: current)). You're all clear. Nothing needs your attention right now.\(degraded) Enjoy the music.")]
             : [opener] + chosen + [closer]
         return BriefingScript(segments: segments, excluded: excluded, unavailableSources: unavailableSources,
                               experienceSeconds: configuration.experienceSeconds)
@@ -246,12 +246,15 @@ public struct MorningBriefingEngine: BriefingPlanner {
         }
 
         let subject = title.isEmpty ? detail : title
+        // Host sentences, not a list. Every slot is a field already on the item:
+        // title (or detail when the title is empty), time phrase, detail, and
+        // "From {source}". Nothing else is added.
         let lead: String
         switch kind {
-        case .upcomingEvent: lead = phrase == "now" ? "Happening now: \(subject)" : "Coming up \(phrase!): \(subject)"
-        case .dueTask: lead = "\(phrase!.prefix(1).uppercased())\(phrase!.dropFirst()): \(subject)"
-        case .followUp: lead = "To follow up: \(subject)"
-        default: lead = "A note: \(subject)"
+        case .upcomingEvent: lead = phrase == "now" ? "You've got \(subject) on now" : "You've got \(subject) \(phrase!)"
+        case .dueTask: lead = "Don't lose track of \(subject). It's \(phrase!)"
+        case .followUp: lead = "When you get a minute, \(subject)"
+        default: lead = "You've also got \(subject)"
         }
         var text = Self.sentence(lead)
         if !title.isEmpty, !detail.isEmpty { text += " " + Self.sentence(detail) }
