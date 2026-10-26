@@ -518,24 +518,44 @@ public final class ConnectionsModel {
 
     // MARK: Intents
 
-    /// Re-reads consent, source state and items. Items that became expired or revoked are purged.
-    /// Consent is re-read first: a permission granted or withdrawn (here or in Settings) changes
-    /// what the station may use, and the rows must never show a stale "Connected".
+    /// Re-reads consent, source state and items, and purges narration that may no longer be used
+    /// *before* the new state is exposed. An item is purged when, after the re-read, it is not
+    /// alive: gone (permission removed in Settings, calendar deselected, file missing, provider
+    /// read failed: fail closed), expired, revoked, unavailable, or its integration's consent is
+    /// now denied or revoked. Re-authorized items become purgeable again (`purged` forgets them),
+    /// so a second revocation purges too.
     public func refresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
+        let previous = items
         await station.refreshConsent()
-        calendar = await sourceReader.calendarState()
-        obsidian = await sourceReader.obsidianSelection()
+        let nextCalendar = await sourceReader.calendarState()
+        let nextObsidian = await sourceReader.obsidianSelection()
         var next: [ConnectionItem] = []
         let current = now()
         for integration in [StationIntegration.calendar, .obsidian, .shareInbox] {
             guard let provider = providers[integration] else { continue }
             if let list = try? await provider.items(now: current) { next += list }
         }
+        let alive = Set(next.filter { isAlive($0) }.map(\.id))
+        let known = Set(previous.map(\.id)).union(next.map(\.id))
+        await purge(known.subtracting(alive).subtracting(purged))
+        purged.subtract(alive)
+        calendar = nextCalendar
+        obsidian = nextObsidian
         items = next
-        let dead = Set(next.filter { $0.state == .expired || $0.state == .revoked }.map(\.id)).subtracting(purged)
-        await purge(dead)
+    }
+
+    /// May still feed narration: a live state, and its integration's consent not withdrawn.
+    private func isAlive(_ item: ConnectionItem) -> Bool {
+        switch station.consent[item.integration] {
+        case .denied?, .revoked?: return false
+        default: break
+        }
+        switch item.state {
+        case .approved, .pendingApproval, .flaggedForReview: return true
+        case .expired, .revoked, .unavailable: return false
+        }
     }
 
     /// Performs an item action. Revoke and delete purge cached narration and prepared breaks
