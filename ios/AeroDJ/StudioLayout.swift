@@ -19,6 +19,7 @@ struct StudioLayout: View {
             zoneA
                 .frame(width: CGFloat(widths.zoneA))
                 .frame(maxHeight: .infinity, alignment: .top)
+                .clipped()
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneA")
             workspace
@@ -30,7 +31,8 @@ struct StudioLayout: View {
                 .accessibilityIdentifier("studio.zoneB")
         }
         .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))
-        .padding(.vertical, 12)
+        .padding(.bottom, 12)
+        .frame(height: containerHeight, alignment: .top)
     }
 }
 
@@ -50,59 +52,34 @@ struct StudioStackedLayout: View {
                     .studioSurface(cornerRadius: 28)
             }
             .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))
-            .padding(.vertical, 12)
+            .padding(.bottom, 12)
         }
     }
 }
 
-/// Zone A: persistent Now Playing. Transport is always visible when there is a track;
-/// below 480 pt of height the artwork drops to 120 pt instead of hiding transport.
+/// Zone A: persistent Now Playing. Artwork meets the gutter; the slab and transport sit under it.
 struct NowPlayingPanel: View {
     let station: StationRef?
     let content: NowPlayingContent
     let snapshot: PlaybackSnapshot
     let actions: PlaybackActions
     let dj: DJStatusPresentation
-    let accent: Color
     let soundTags: [String]
-    let artworkSide: CGFloat
     /// Off while Zone B already shows the queue, so Up Next isn't listed twice.
     var showsUpNext = true
+    var artworkNamespace: Namespace.ID? = nil
+    /// Set on the stacked accessibility layout, which scrolls and offers no height.
+    var lockedHeight: CGFloat? = nil
     let onQueue: () -> Void
     let onTune: () -> Void
     let onReview: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            switch content {
-            case .track(let track):
-                // Art and title sit in the optical middle of the free height, not stuck to the top.
-                Spacer(minLength: 8)
-                ArtworkView(track: track, size: artworkSide)
-                    .frame(maxWidth: .infinity)
-                TrackBlock(track: track, dj: dj, onReview: onReview)
-                    .padding(.top, 22)
-                if !soundTags.isEmpty {
-                    StationSoundRow(tags: soundTags, action: onTune).padding(.top, 10)
-                }
-            default:
-                NowPlayingPlaceholder(content: content).padding(.vertical, 40)
-            }
-            PlaybackErrorBanner(error: snapshot.error, actions: actions).padding(.top, 12)
-            Spacer(minLength: 16)
-            if content.showsTransport {
-                VStack(spacing: 8) {
-                    if showsUpNext {
-                        QueueAffordance(upNext: snapshot.upNext, action: onQueue)
-                        Divider().opacity(0.5)
-                    }
-                    TransportRow(transport: snapshot.transport, actions: actions, accent: accent, onTune: onTune)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .studioSurface(cornerRadius: 30)
-            }
-        }
+        BleedNowPlaying(station: station, content: content, snapshot: snapshot, actions: actions,
+                        dj: dj, soundTags: soundTags, searchQuery: .constant(""),
+                        showsUpNext: showsUpNext, artworkNamespace: artworkNamespace,
+                        lockedHeight: lockedHeight,
+                        onQueue: onQueue, onTune: onTune, onReview: onReview)
     }
 }
 

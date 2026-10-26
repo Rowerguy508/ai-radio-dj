@@ -27,6 +27,10 @@ enum AeroDJPalette {
     static var onMediaLight: Color { color(light: 0xFFFFFF, dark: 0xFFFFFF, lightHC: 0xFFFFFF, darkHC: 0xFFFFFF) }
     /// Dark type drawn on a light station colour. High Contrast is black.
     static var onMediaInk: Color { color(light: 0x1C1C1E, dark: 0x1C1C1E, lightHC: 0x000000, darkHC: 0x000000) }
+    /// Opaque warm black under Now Playing. Dark mode darkens it. Artwork never uses this.
+    static var slab: Color { color(light: 0x1C1714, dark: 0x0C0A09, lightHC: 0x000000, darkHC: 0x000000) }
+    /// Secondary type on `slab`. 4.5:1 in both appearances. Primary type on the slab is `onMediaLight`.
+    static var slabSecondary: Color { color(light: 0xE4D5C5, dark: 0xE4D5C5, lightHC: 0xFFFFFF, darkHC: 0xFFFFFF) }
 
     /// WCAG AA for text under 18 pt, and for 14 pt that is not bold.
     static let textMinimum: CGFloat = 4.5

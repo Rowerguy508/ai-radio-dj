@@ -272,6 +272,37 @@ final class StudioScreenTests: XCTestCase {
         }
     }
 
+    /// `.ready` must not print the break headline or its VoiceOver detail.
+    /// Either can stay on screen when no break plays.
+    @MainActor
+    func testReadyStateShowsNoBreakText() throws {
+        let app = launch(scenario: "breakReady")
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "ready capture did not show \(layout):\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen while the break line is hidden")
+        // `shows` reads XCUIElement.label, which is the visible text and the accessibility label.
+        XCTAssertFalse(shows(app, "break"), ".ready must not expose break text in visible text or the accessibility label")
+        XCTAssertFalse(shows(app, "after this song"), ".ready must not expose after-this-song text in visible text or the accessibility label")
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-no-break")
+    }
+
+    @MainActor
+    func testAX5LightAppearance() throws {
+        let app = launch(contentSize: Self.ax5)
+        let layout = isOpenLayout ? "layout.studioStacked" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "\(layout) expected at AX5:\n\(app.debugDescription)")
+        if isOpenLayout {
+            XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, "no two zones at AX sizes")
+        }
+        XCTAssertTrue(shows(app, "Morning Light"))
+        let play = app.buttons["transport.playPause"]
+        XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX5")
+        save(app, isOpenLayout ? "open-ax5" : "closed-ax5")
+    }
+
     @MainActor
     func testAX5DarkAppearance() throws {
         let app = launch(dark: true, contentSize: Self.ax5)
