@@ -14,6 +14,9 @@ public enum StationSetting: Hashable, Sendable {
         [.genres, .moods, .energy, .discovery, .personality, .commentary, .briefing]
         + StationIntegration.allCases.map(StationSetting.integration)
 
+    /// The Station Tuner controls: everything except connections.
+    public static let tuning: [StationSetting] = [.genres, .moods, .energy, .discovery, .personality, .commentary, .briefing]
+
     func differs(_ a: StationConfiguration, _ b: StationConfiguration) -> Bool {
         switch self {
         case .genres: a.genres != b.genres
