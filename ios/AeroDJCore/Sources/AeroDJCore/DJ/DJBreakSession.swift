@@ -107,8 +107,10 @@ public final class DJBreakSession {
         if briefing != nil { await station.handle(.briefingWillPlan) }
         self.tracks = tracks
         // A stop held for the old queue's break has nothing left to stop (starting a new queue
-        // stops the interlude); it must not cancel a break of this queue later.
+        // stops the interlude); it must not cancel a break of this queue later. Likewise the old
+        // queue's on-air break: a purge of its sources must not stop this queue's break.
         pendingStop = nil
+        onAir = nil
         self.sources = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let at = now()
         self.briefing = station.active.briefing.enabled ? briefing.map { b in

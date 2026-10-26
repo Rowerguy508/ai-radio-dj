@@ -21,6 +21,8 @@ final class ConsentPurgeOnAirTests: XCTestCase {
         let tags: () -> [Int?]
         let item: UUID
         let source: ConnectionItem
+        /// Approved in Connections, but no break uses it.
+        let other: UUID
     }
 
     /// Hook routed to the player as AppDependencies does; the purger is the one Connections uses.
@@ -50,11 +52,13 @@ final class ConsentPurgeOnAirTests: XCTestCase {
         session.purger = purger
         await session.start()
         let source = ConnectionItem(id: item, integration: .obsidian, title: "[TEST] note", state: .approved, sensitivity: .low)
+        let other = ConnectionItem(id: UUID(), integration: .obsidian, title: "[TEST] other note", state: .approved,
+                                   sensitivity: .low)
         let connections = ConnectionsModel(station: station, sourceReader: StaticConnectionSourceReader(),
-                                           providers: [InMemoryConnectionItemProvider(integration: .obsidian, items: [source])],
+                                           providers: [InMemoryConnectionItemProvider(integration: .obsidian, items: [source, other])],
                                            purger: purger)
         await connections.refresh()
-        return Rig(session: session, dj: dj, connections: connections, clip: clip, tags: { tags.all }, item: item, source: source)
+        return Rig(session: session, dj: dj, connections: connections, clip: clip, tags: { tags.all }, item: item, source: source, other: other.id)
     }
 
     private func briefing(_ item: UUID) -> NarrationHandoff {
@@ -120,6 +124,74 @@ final class ConsentPurgeOnAirTests: XCTestCase {
         XCTAssertEqual(r.clip.playerStops, 0)
         XCTAssertEqual(r.tags(), [], "nothing was on air, so no stop")
         await assertNoLaterCue(r, from: 1)
+    }
+
+    /// Sentinel (#91, non-blocking): purging or revoking an item the speaking break does not use
+    /// leaves it alone: no stop, and the line keeps playing.
+    func testRevokingAnUnrelatedItemWhileSpeakingDoesNotStopTheBreak() async throws {
+        let r = await rig()
+        await ready(r)
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertFalse(try XCTUnwrap(handed).cues.contains { $0.sourceItemID == r.other }, "precondition: not used")
+        r.clip.play()
+        r.session.playbackStarted(afterTrack: 0)
+        guard case .speaking = r.dj.state else { return XCTFail("precondition: the line is on air") }
+
+        let result = await r.connections.perform(.revoke, on: r.other)
+        XCTAssertNoThrow(try result.get())
+        r.session.purge(sourceItemIDs: [UUID()])            // and a purge of an id no one uses
+        XCTAssertEqual(r.tags(), [], "onBreakMustStop never fires")
+        XCTAssertEqual(r.clip.playerStops, 0)
+        guard case .speaking = r.dj.state else { return XCTFail("the break keeps playing") }
+        r.session.playbackFinished(afterTrack: 0)
+        XCTAssertEqual(r.tags(), [])
+    }
+
+    /// Same for a break handed out to the player but not yet audible: it still starts.
+    func testRevokingAnUnrelatedItemAfterHandOutDoesNotStopTheBreak() async throws {
+        let r = await rig()
+        await ready(r)
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertTrue(try XCTUnwrap(handed).cues.contains { $0.sourceItemID == r.item })
+
+        let result = await r.connections.perform(.revoke, on: r.other)
+        XCTAssertNoThrow(try result.get())
+        r.session.purge(sourceItemIDs: [UUID()])
+        XCTAssertEqual(r.tags(), [], "onBreakMustStop never fires")
+        r.clip.play()
+        r.session.playbackStarted(afterTrack: 0)
+        guard case .speaking = r.dj.state else { return XCTFail("the handed-out break still plays") }
+        XCTAssertEqual(r.clip.playerStops, 0)
+    }
+
+    /// Atlas (#91 review): queue 1's break for track k is handed out; queue 2 starts and hands
+    /// out its own break for the same k. Purging queue 1's source never reaches queue 2's break,
+    /// whether the purge lands before or after queue 2's hand-out.
+    func testPurgingTheOldQueuesSourceDoesNotStopTheNewQueuesBreak() async throws {
+        let r = await rig()
+        await ready(r)
+        let first = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertTrue(try XCTUnwrap(first).cues.contains { $0.sourceItemID == r.item })
+
+        let other = ConnectionItem(id: r.other, integration: .obsidian, title: "[TEST] other note", state: .approved,
+                                   sensitivity: .low)
+        await r.session.queueStarted(djTracks(12), briefing: briefing(r.other), sources: [other])
+        r.session.purge(sourceItemIDs: [r.item])            // before queue 2's hand-out
+        XCTAssertEqual(r.tags(), [], "queue 1's break ended with its queue")
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        // Subscribe after songStarted: the store replays its current state, and before this
+        // that is still queue 1's `.ready`.
+        var states = r.dj.updates().makeAsyncIterator()
+        while let s = await states.next() { if case .ready(_, true, _) = s { break } }
+        let second = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertTrue(try XCTUnwrap(second, "queue 2's break for the same k").cues.contains { $0.sourceItemID == r.other })
+        r.clip.play()
+        r.session.playbackStarted(afterTrack: 0)
+
+        r.session.purge(sourceItemIDs: [r.item])            // after queue 2's hand-out
+        XCTAssertEqual(r.tags(), [], "onBreakMustStop never fires for queue 2's break")
+        XCTAssertEqual(r.clip.playerStops, 0)
+        guard case .speaking = r.dj.state else { return XCTFail("queue 2's break keeps playing") }
     }
 }
 
