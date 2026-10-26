@@ -97,6 +97,18 @@ The player polls MusicKit once a second (`Timer` interval `1.0`). A boundary log
 
 Score each step against the **expected result**. The "If the log cannot prove it" line is a gap in the current source, not a pass.
 
+**Personal briefing speech.** Two steps below expect a morning briefing of Connections rows: step 2, when the headline is "Briefing", and step 9. Read the installed SHA in the results sheet and use one label for both.
+
+On #75 at `14c907eed0b9d5cfea73c39a9527f36538de5303` (still true at the branch tip `3f1d919`), `PlayerView` passes `LiveQueueBriefing.provider`. `StudioPresentationModel.liveQueueBriefing` passes an empty sensitivity table (`LiveQueueBriefing.swift:28`, `sensitivityByItemID: [:]`). A missing id is `.blocked` (line 109). Every live Connections row fails closed, so the morning briefing says nothing.
+
+Fry's privacy PR is #73, `fix/consent-purge-demotion-race`, head `b83cbd747a1f193c867e77bb6a05445a4a81d1a7`. Commit `fffa6747952d512b107e4654df72fe568cc4a654` fills `ConnectionItem.sensitivity` and adds `ConnectionsModel.sensitivityByItemID`. That commit does not change `LiveQueueBriefing.swift`. This script depends on that PR for the values. Speech of approved rows also needs the installed `LiveQueueBriefing.swift` to pass `connections.sensitivityByItemID` instead of `[:]`.
+
+- The installed SHA does not contain `fffa674`: **expected: silence (no personal briefing)**. A silent briefing is a pass, not a defect.
+- The installed SHA contains `fffa674` and the Studio connection passes that table: **expected: briefing speaks approved rows only**.
+- The installed SHA contains `fffa674` but line 28 is still `[:]`: the live path still says nothing. Silence is a pass. Do not apply the speaks label.
+
+A routine DJ break, headline "DJ", is not this briefing. Steps 6 and 8 can use that break.
+
 ### 1. A full song plays to its natural end
 
 **Action.** Start the four-song queue. Do not pause, skip, lock the screen, or switch apps. Let song 0 play until it ends on its own.
@@ -112,6 +124,8 @@ Score each step against the **expected result**. The "If the log cannot prove it
 **Action.** Before the song ends, watch the DJ status. Wait until a song shows "Preparing a DJ break" or "DJ break after this song" (or the briefing forms of those sentences). Let that song finish without touching transport. If a song ends with the DJ still idle, that boundary was not planned. Let the queue continue until one song shows the ready or preparing sentence, then score this step on that song.
 
 **Expected result.** Speech starts only after that song's last note. No audio from the next song is heard before the speech. While speech is audible the status line shows the badge "On Air" and the headline "DJ", or "Briefing" when the break includes a briefing. VoiceOver says "The DJ is speaking now." or "The DJ is reading your briefing now." Those longer sentences are the accessibility label (`DJStudioState.detail`), not the on-screen headline. On Air is gone when the speech ends. The break is one pass, not two.
+
+The "DJ" headline is a routine break and is unchanged. The "Briefing" headline is personal briefing speech. On a build without `fffa674`: **expected: silence (no personal briefing)**. Depends on Fry's privacy PR #73. A silent briefing is a pass. On a build that includes `fffa674` and whose `LiveQueueBriefing.swift` passes the row sensitivity table: **expected: briefing speaks approved rows only**. Write the installed SHA and the label you used.
 
 **Which existing lines prove the end.** On #64 / #67, a one-song queue ends as:
 
@@ -240,7 +254,11 @@ A tick here is the player's one-second poll. The bar is: speech is silent before
 
 **Action.** This step needs a break that is actually a briefing. The on-screen headline must be "Briefing" with the "On Air" badge (VoiceOver: "The DJ is reading your briefing now."). Unfold the Duo so Connections is on screen, and revoke the source that briefing cites (the Connections revoke control) while speech is audible. Leave the song paused-for-break; do not skip.
 
-**Expected result.** Speech stops in that same moment, before the next poll. On Air clears. The revoked item is not spoken for the rest of the clip. The status does not say the voice failed. Music continues only under the normal break-end rule, and only if you still want playback.
+On a build without `fffa674`: **expected: silence (no personal briefing)**. Depends on Fry's privacy PR #73. Do not revoke, because there is no personal speech to stop. A silent briefing is a pass, not a defect. Write that label and the installed SHA. The revoke action below applies only under the other label.
+
+On a build that includes `fffa674` and whose `LiveQueueBriefing.swift` passes the row sensitivity table: **expected: briefing speaks approved rows only**. Then revoke while that speech is audible.
+
+**Expected result.** Under the speaks label, speech stops in that same moment, before the next poll. On Air clears. The revoked item is not spoken for the rest of the clip. The status does not say the voice failed. Music continues only under the normal break-end rule, and only if you still want playback. Under the silence label, no personal briefing is heard, and that is the pass.
 
 **Evidence.** Recording of the revoke control and of the speech cutting off, with timestamps. On `3a66085`, a real stop through the new method logs exactly:
 
@@ -296,7 +314,7 @@ Write `tmp caf=<Int>`. The required count is still 0. Do not open those files ei
 
 **Temp synthesis files (pending until #77 is installed).** After relaunch, `speech dir` must be 0 on a build that contains `6ca1b3c0495fb40f248f4dde5b7d7d6b4d93f789`. On an older build, record `tmp caf` instead. This check stays **pending** until the installed SHA includes that commit. Record the count that applies, and write "pending: speech temp PR not installed" in the step 9 notes. Do not score this check pass or fail before that SHA is the one you installed. The `Voice/Cache` counts above are separate and are not pending on #77.
 
-**What the source does today.** `stopCurrentInterlude(reason: .sourceRevoked)` stops `AVAudioPlayer` before it returns, on the main thread in that turn (`MainActorImmediate`). Nothing calls it. `PlayerView` wires `onBreakMustStop` to `interlude.stop()` for pause, calls, and route removal only. `NarrationPurger.purge` drops future plans, prepared breaks, and cached audio. `takeBreak` has already cleared the playing break out of the preparer, so a purge cannot see it. `DJBreakSession.purge` replans later breaks and does not stop the player. Routine transitions are built with `sourceItemID: nil`, and `MusicSearch.live` calls `queueStarted` without a `briefing`. Until that handoff exists, the on-screen headline is "DJ" and this step **cannot be scored**: there is no personal source in the clip to revoke, and the live cache directory stays empty.
+**What the source does today.** `stopCurrentInterlude(reason: .sourceRevoked)` stops `AVAudioPlayer` before it returns, on the main thread in that turn (`MainActorImmediate`). Nothing calls it. `PlayerView` wires `onBreakMustStop` to `interlude.stop()` for pause, calls, and route removal only. `NarrationPurger.purge` drops future plans, prepared breaks, and cached audio. `takeBreak` has already cleared the playing break out of the preparer, so a purge cannot see it. `DJBreakSession.purge` replans later breaks and does not stop the player. Routine transitions are built with `sourceItemID: nil`. On builds before #75, `MusicSearch.live` calls `queueStarted` without a `briefing`, the headline stays "DJ", and there is no personal source in the clip. On #75 at `14c907e`, the briefing is passed and then emptied by the sensitivity table, so the morning briefing is silent. That is **expected: silence (no personal briefing)**, a pass, until the installed SHA includes Fry's `fffa674` and line 28 passes the row table. The live cache directory stays empty while the briefing says nothing, so a baseline of 0 still cannot score the file half.
 
 **If the log cannot prove it.** If you revoke and the `sourceRevoked` line is absent, the stop method was not called. That is the current wiring, so a continue-to-the-end-of-the-clip result on `3a66085` matches the source and fails the product bar. Missing line from the purge path, with a count and no item ids:
 
@@ -372,6 +390,7 @@ Copy this table into your notes. Leave it blank in git. One link per step can be
 | Tester | |
 | Device / iOS | |
 | Git SHA installed | |
+| Personal briefing expectation | `silence (no personal briefing)` or `briefing speaks approved rows only` |
 | Route for steps 1–6 | speaker or AirPods |
 | Test station log seen | `runtime mode: testStation` yes / no |
 | Other audio stopped at | authorization / first play |
@@ -380,13 +399,13 @@ Copy this table into your notes. Leave it blank in git. One link per step can be
 | Step | Pass / Fail | Notes | Evidence |
 |---|---|---|---|
 | 1. Full song to its end | | | |
-| 2. Break only after a natural end | | | |
+| 2. Break only after a natural end | | Personal briefing label from the installed SHA. Silence of a briefing is a pass without `fffa674` | |
 | 3. Next song once, finished song not replayed | | | |
 | 4. Pause in the last ~1.5 s | | | |
 | 5. Call mid-song | | | |
 | 6. Call during a break | | | |
 | 7. AirPods disconnect mid-song | | | |
 | 8. AirPods disconnect during a break | | | |
-| 9. Revoke consent during a break | | Extension counts (baseline / after revoke / after relaunch), or "no files: in-memory cache". After relaunch: `speech dir=<Int>` (`tmp/aerodj-speech/`), or `tmp caf=<Int>` on a build older than #77. Pending until the installed SHA includes `6ca1b3c` | |
+| 9. Revoke consent during a break | | Personal briefing label from the installed SHA. Silence is a pass without `fffa674`. Extension counts (baseline / after revoke / after relaunch), or "no files: in-memory cache". After relaunch: `speech dir=<Int>` (`tmp/aerodj-speech/`), or `tmp caf=<Int>` on a build older than #77. Pending until the installed SHA includes `6ca1b3c` | |
 
 -Atlas
