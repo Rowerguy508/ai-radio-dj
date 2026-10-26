@@ -45,7 +45,7 @@ struct PlayerView: View {
                 Task { @MainActor in
                     /// The handed-out break never started. Report `.failed` so DJ state leaves `.ready`,
                     /// and leave the boundary transition so music can continue.
-                    func reportUnplayed(_ reason: HandedOutBreakSkip) {
+                    @MainActor func reportUnplayed(_ reason: HandedOutBreakSkip) {
                         let report = HandedOutBreakReport.skipped(
                             reason, afterTrack: finishedIndex, mayAutoResume: music.mayAutoResume)
                         if case .playbackFailed(let k) = report.event {
