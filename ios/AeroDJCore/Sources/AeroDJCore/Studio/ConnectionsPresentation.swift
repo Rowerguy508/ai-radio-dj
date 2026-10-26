@@ -337,8 +337,10 @@ public struct ConnectionItem: Equatable, Sendable, Identifiable {
     /// Whether the DJ may narrate it at `now`: its last known state is `.approved` and it has
     /// not expired since, by the same rule as `ConnectionItemState.resolve` (`expiresAt <= now`
     /// is expired). Used at song boundaries, where no `refresh()` has re-resolved the state.
+    /// A missing sensitivity counts as blocked (as #75's adapter does): unknown is never narrated.
     public func mayBeNarrated(at now: Date) -> Bool {
-        state.mayBeNarrated
+        guard let sensitivity, sensitivity != .blocked else { return false }
+        return state.mayBeNarrated
             && ConnectionItemState.resolve(consent: .granted, expiresAt: expiresAt, now: now,
                                            flagged: false, reconfirmed: false, sensitivity: sensitivity).mayBeNarrated
     }

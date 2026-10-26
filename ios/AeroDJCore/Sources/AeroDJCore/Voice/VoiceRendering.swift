@@ -213,14 +213,28 @@ public struct AudioCacheSweeper: Sendable {
     /// Production entry point. With `purgingPersonalFirst`, personal clips left by an earlier
     /// launch are removed before the first sweep (live consent is not persisted).
     @discardableResult
-    public func start(every interval: Duration = Self.defaultInterval, purgingPersonalFirst: Bool) -> Task<Void, Never> {
+    public func start(every interval: Duration = Self.defaultInterval, purgingPersonalFirst: Bool,
+                      onLaunchSweep: @escaping @Sendable (String?) -> Void = { _ in }) -> Task<Void, Never> {
         let cache = cache
         let ticks = Self.ticks(every: interval)
         return Task.detached(priority: .utility) {
-            if purgingPersonalFirst { await cache.purgeAllPersonal() }
-            await AudioCacheFileLog.record(cache, after: .launch)
-            await AudioCacheSweeper(cache: cache).run(ticks: ticks)
+            let line = await AudioCacheSweeper(cache: cache).prepareForLaunch(purgingPersonalFirst: purgingPersonalFirst)
+            onLaunchSweep(line)
+            for await _ in ticks {
+                if Task.isCancelled { return }
+                await cache.purgeExpired()
+            }
         }
+    }
+
+    /// The launch step, finished before the first tick: personal clips from an earlier launch
+    /// (when asked), expired clips and unattributable files are deleted, then the count of what
+    /// is left is logged. Returns the log line (nil if the cache can't count).
+    @discardableResult
+    public func prepareForLaunch(purgingPersonalFirst: Bool) async -> String? {
+        if purgingPersonalFirst { await cache.purgeAllPersonal() }
+        await cache.purgeExpired()
+        return await AudioCacheFileLog.record(cache, after: .launch)
     }
 
     /// Sweeps now, then after each tick, until `ticks` finishes or the task is cancelled.
@@ -270,7 +284,13 @@ public actor InMemoryAudioCache: AudioCache {
     public func purge(sourceItemIDs: Set<UUID>) {
         clips = clips.filter { sourceItemIDs.isDisjoint(with: $0.value.sourceItemIDs) }
     }
-    public func purgeExpired() { clips = clips.filter { now().timeIntervalSince($0.value.createdAt) <= maxAge } }
+    /// A clip stamped later than now (stored while the clock ran ahead) is first re-stamped to
+    /// now, so its 7 days run from no later than the first sweep after the clock is corrected.
+    public func purgeExpired() {
+        let t = now()
+        for (key, clip) in clips where clip.createdAt > t { clips[key]?.createdAt = t }
+        clips = clips.filter { t.timeIntervalSince($0.value.createdAt) <= maxAge }
+    }
     public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
     public var count: Int { clips.count }
 }
@@ -316,7 +336,7 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func audio(for key: String) async -> CachedAudio? {
-        guard let clip = read(url(key)) else { return nil }
+        guard let clip = read(url(key)).map({ clampingFutureStamp($0, key: key) }) else { return nil }
         guard now().timeIntervalSince(clip.createdAt) <= maxAge else {
             remove(group: key)
             return nil
@@ -334,9 +354,21 @@ public struct FileAudioCache: AudioCache {
     /// Files grouped by key (file name without extension), with the key's clip if its
     /// metadata is readable. A group with no readable metadata (orphaned audio, corrupt
     /// file) cannot be attributed, so every purge removes it.
-    private func groups() -> [(files: [URL], clip: CachedAudio?)] {
+    private func groups() -> [(key: String, files: [URL], clip: CachedAudio?)] {
         Dictionary(grouping: allFiles(), by: { $0.deletingPathExtension().lastPathComponent })
-            .map { key, files in (files, files.contains { $0.pathExtension == "json" } ? read(url(key)) : nil) }
+            .map { key, files in (key, files, files.contains { $0.pathExtension == "json" } ? read(url(key)) : nil) }
+    }
+
+    /// Clock skew: a clip stamped later than now (stored while the clock ran ahead) is re-stamped
+    /// to now and saved, so its 7 days run from no later than the first sweep or read after the
+    /// clock is corrected, and it cannot outlive the cap by the size of the skew.
+    private func clampingFutureStamp(_ clip: CachedAudio, key: String) -> CachedAudio {
+        let t = now()
+        guard clip.createdAt > t else { return clip }
+        var clamped = clip
+        clamped.createdAt = t
+        if let data = try? JSONEncoder().encode(clamped) { try? ProtectedFile.write(data, to: url(key)) }
+        return clamped
     }
 
     /// Deletes a key's metadata together with its audio, whatever the audio's extension.
@@ -357,7 +389,12 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func purgeExpired() async {
-        removeGroups { clip in clip.map { now().timeIntervalSince($0.createdAt) > maxAge } ?? true }
+        let t = now()
+        for group in groups() {
+            let clip = group.clip.map { clampingFutureStamp($0, key: group.key) }
+            guard clip.map({ t.timeIntervalSince($0.createdAt) > maxAge }) ?? true else { continue }
+            for file in group.files { try? FileManager.default.removeItem(at: file) }
+        }
     }
 
     public func purgeAllPersonal() async {

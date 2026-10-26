@@ -389,6 +389,6 @@ final class DJNarrationTests: XCTestCase {
 /// passes to `DJBreakSession.queueStarted(_:briefing:sources:)` alongside a briefing.
 func approvedSources(_ briefing: NarrationHandoff) -> [ConnectionItem] {
     Set(briefing.cues.compactMap(\.sourceItemID)).map {
-        ConnectionItem(id: $0, integration: .calendar, title: "[TEST] item", state: .approved)
+        ConnectionItem(id: $0, integration: .calendar, title: "[TEST] item", state: .approved, sensitivity: .medium)
     }
 }

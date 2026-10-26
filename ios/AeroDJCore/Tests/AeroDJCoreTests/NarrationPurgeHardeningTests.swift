@@ -46,6 +46,14 @@ private struct HardeningVoice: VoiceProvider {
     }
 }
 
+private final class LockedBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: T
+    init(_ value: T) { stored = value }
+    var value: T { lock.withLock { stored } }
+    func set(_ value: T) { lock.withLock { stored = value } }
+}
+
 private final class TestClock: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Date
@@ -162,6 +170,72 @@ final class CacheRetentionSweepTests: XCTestCase {
         XCTAssertEqual(count, 0)
         tick.finish()
         await run.value
+    }
+
+    /// Sentinel item 3 (clock skew): a clip stored while the clock was 30 days ahead is clamped
+    /// to `now` by the first sweep that sees it, so it cannot outlive 7 days once the clock is
+    /// corrected. File cache (relaunch-safe) and in-memory cache alike.
+    func testClipStampedInTheFutureCannotOutliveSevenDays() async throws {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let clock = TestClock(t0.addingTimeInterval(30 * 24 * 3600))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("skew-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let caches: [any AudioCache] = [FileAudioCache(directory: dir, now: { clock.now }),
+                                        InMemoryAudioCache(now: { clock.now })]
+        for cache in caches {
+            clock.set(t0.addingTimeInterval(30 * 24 * 3600))          // clock running 30 days ahead
+            await cache.store(CachedAudio(data: Data([1]), seconds: 1, providerID: "device", voiceID: "v",
+                                          sourceItemIDs: [UUID()]), for: "skewed")
+            clock.set(t0)                                              // corrected
+            let (ticks, tick) = AsyncStream.makeStream(of: Void.self)
+            let (sweeps, swept) = AsyncStream.makeStream(of: Void.self)
+            var done = sweeps.makeAsyncIterator()
+            let run = Task { await AudioCacheSweeper(cache: cache).run(ticks: ticks, onSweep: { swept.yield() }) }
+            _ = await done.next()
+            let clamped = await cache.audio(for: "skewed")
+            XCTAssertEqual(clamped?.createdAt, t0, "\(type(of: cache)): stamp clamped to no later than now")
+
+            clock.set(t0.addingTimeInterval(7 * 24 * 3600 + 1))
+            tick.yield()
+            _ = await done.next()
+            let left = await cache.audio(for: "skewed")
+            XCTAssertNil(left, "\(type(of: cache)): gone 7 days after the corrected clock first saw it")
+            tick.finish()
+            await run.value
+        }
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        XCTAssertEqual(files, [], "no file left on disk")
+    }
+
+    /// Sentinel item 4 (relaunch with stale files), through the production entry point
+    /// `start(purgingPersonalFirst:)` that `OnDeviceSpeechProvider` calls at launch: personal clips
+    /// (metadata and audio), orphaned audio and expired generic clips left by an earlier run are
+    /// deleted before the first tick, and the launch log line counts what is left.
+    func testLaunchSweepRemovesStalePersonalAndOrphanFilesBeforeTheFirstTick() async throws {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let clock = TestClock(t0)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("launch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let earlier = FileAudioCache(directory: dir, now: { clock.now })     // the previous launch
+        await earlier.store(CachedAudio(data: Data([1]), seconds: 1, providerID: "device", voiceID: "v",
+                                        sourceItemIDs: [UUID()]), for: "k1")
+        try Data([1]).write(to: dir.appendingPathComponent("k1.caf"))
+        try Data([2]).write(to: dir.appendingPathComponent("orphan.caf"))
+        await earlier.store(CachedAudio(data: Data([3]), seconds: 1, providerID: "device", voiceID: "v"), for: "stale")
+        clock.set(t0.addingTimeInterval(8 * 24 * 3600))
+        await earlier.store(CachedAudio(data: Data([4]), seconds: 1, providerID: "device", voiceID: "v"), for: "k2")
+
+        let relaunched = FileAudioCache(directory: dir, now: { clock.now })
+        let launched = expectation(description: "launch sweep")
+        let line = LockedBox<String?>(nil)
+        let task = AudioCacheSweeper(cache: relaunched).start(every: .seconds(3600), purgingPersonalFirst: true,
+                                                              onLaunchSweep: { line.set($0); launched.fulfill() })
+        await fulfillment(of: [launched], timeout: 10)
+        task.cancel()
+        let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
+        XCTAssertEqual(files, ["k2.json"], "only the fresh generic clip survives the relaunch")
+        XCTAssertEqual(line.value, "AeroDJ.cache narration cache count=1 personal=0 after=launch",
+                       "the launch line counts what is left after the sweep")
     }
 
     func testLivePurgeAllRemovesEveryPersonalClipAndBlocksInFlightRenders() async throws {
@@ -365,8 +439,28 @@ final class BoundaryExpiryTests: XCTestCase {
                      estimatedSeconds: 4, maxSeconds: 30, sourceItemID: item, source: .calendar, provenance: "fixture:\(order)")
     }
 
-    private func approved(_ id: UUID, expiresAt: Date?) -> ConnectionItem {
-        ConnectionItem(id: id, integration: .calendar, title: "[TEST] item", state: .approved, expiresAt: expiresAt)
+    private func approved(_ id: UUID, expiresAt: Date?, sensitivity: Sensitivity? = .medium) -> ConnectionItem {
+        ConnectionItem(id: id, integration: .calendar, title: "[TEST] item", state: .approved, expiresAt: expiresAt,
+                       sensitivity: sensitivity)
+    }
+
+    /// Sentinel item 2: the boundary re-check treats a missing sensitivity as blocked (as #75's
+    /// adapter does): an approved row without a value is never narrated.
+    func testApprovedItemWithMissingSensitivityIsNotNarratedAtTheBoundary() async throws {
+        let unknown = approved(UUID(), expiresAt: nil, sensitivity: nil)
+        XCTAssertFalse(unknown.mayBeNarrated(at: t0), "missing sensitivity counts as blocked")
+        XCTAssertFalse(approved(UUID(), expiresAt: nil, sensitivity: .blocked).mayBeNarrated(at: t0))
+        XCTAssertTrue(approved(UUID(), expiresAt: nil, sensitivity: .medium).mayBeNarrated(at: t0))
+
+        let clock = Clock(t0)
+        let known = UUID()
+        let r = await rig(clock, cues: [cue(unknown.id, 1, "Coming up: Standup at ten."), cue(known, 2, "And lunch with Sam.")],
+                          sources: [unknown, approved(known, expiresAt: nil)])
+        defer { try? FileManager.default.removeItem(at: r.dir) }
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        let ids = Set(try XCTUnwrap(handed).cues.compactMap(\.sourceItemID))
+        XCTAssertFalse(ids.contains(unknown.id), "no cue from the row without a sensitivity")
+        XCTAssertTrue(ids.contains(known), "the row with a real value still airs")
     }
 
     /// Queues `cues` from `sources`, renders the first break (cached to disk) at `t0`, then waits
