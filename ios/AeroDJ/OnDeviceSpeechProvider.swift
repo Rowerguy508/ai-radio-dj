@@ -12,11 +12,16 @@ import Foundation
 public struct OnDeviceSpeechProvider: VoiceProvider {
     public static let providerID = "avspeech"
 
-    public init() {}
+    /// Once per launch: remove temp audio a crash or kill left in tmp/aerodj-speech/.
+    private static let launchSweep: Void = { SpeechTempFiles.shared.sweep() }()
+
+    public init() { _ = Self.launchSweep }
 
     public func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
-        let job = SpeechRenderJob(text: text, voiceID: voice.id)
-        let (data, seconds) = try await job.run()
+        // The temp file is deleted on success, error and cancellation.
+        let (data, seconds) = try await SpeechTempFiles.shared.withFile { url in
+            try await SpeechRenderJob(text: text, voiceID: voice.id, url: url).run()
+        }
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: 0,
                              provider: Self.providerID, cacheKey: nil)
     }
@@ -36,18 +41,19 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
     private var file: AVAudioFile?
     private var frames: AVAudioFramePosition = 0
     private var sampleRate: Double = 0
+    private var closed = false  // set before the temp file is deleted; blocks late writes
 
-    init(text: String, voiceID: String) {
+    init(text: String, voiceID: String, url: URL) {
         let ssml = text.hasPrefix("<speak>") ? AVSpeechUtterance(ssmlRepresentation: text) : nil
         utterance = ssml ?? AVSpeechUtterance(string: SpeechDelivery.plainText(fromSSML: text))
         utterance.voice = AVSpeechSynthesisVoice(identifier: voiceID) ?? AVSpeechSynthesisVoice(language: "en-US")
-        url = FileManager.default.temporaryDirectory.appendingPathComponent("aerodj-tts-\(UUID().uuidString).caf")
+        self.url = url
         super.init()
         synthesizer.delegate = self
     }
 
     func run() async throws -> (Data, Double) {
-        defer { try? FileManager.default.removeItem(at: url) }
+        defer { _ = closeFile() }  // every path: no write can (re)create the file after deletion
         try await completion.wait(start: { [self] in
             synthesizer.write(utterance) { [self] buffer in handle(buffer) }
         }, onCancel: { [self] in
@@ -65,6 +71,7 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
         lock.lock()
         defer { lock.unlock() }
         file = nil  // closes the file
+        closed = true
         return (frames, sampleRate)
     }
 
@@ -74,7 +81,7 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
         do {
             lock.lock()
             defer { lock.unlock() }
-            guard !completion.isFinished else { return }
+            guard !completion.isFinished, !closed else { return }
             if file == nil {
                 file = try AVAudioFile(forWriting: url, settings: pcm.format.settings,
                                        commonFormat: pcm.format.commonFormat, interleaved: pcm.format.isInterleaved)
