@@ -36,6 +36,8 @@ final class MusicKitService: ObservableObject {
     private var intent = PlaybackIntent()
     /// Stops any DJ line that is speaking. Set by the app to the break adapter.
     var onBreakMustStop: (@MainActor () -> Void)?
+    /// Called with the index of the song the user skipped, so its prepared break is discarded.
+    var onSongSkipped: (@MainActor (Int) -> Void)?
     private var queueIndex = 0
     /// A song loaded but not started (the user paused during the break before it).
     private var pendingStartIndex: Int?
@@ -153,6 +155,9 @@ final class MusicKitService: ObservableObject {
     func skip() async throws {
         boundaryDetector.userRequestedChange()
         intent.userPlay()
+        // The skipped song's break, speaking or prepared, belongs to that song and must not play.
+        onBreakMustStop?()
+        onSongSkipped?(queueIndex)
         let next = queueIndex + 1
         guard queue.indices.contains(next) else {
             player.stop()
@@ -255,9 +260,13 @@ final class MusicKitService: ObservableObject {
     }
 
     private func pollPlaybackPosition() {
+        // Position and duration let the detector see a finish even if the queue keeps its last entry.
+        let currentDuration = queue.indices.contains(queueIndex) ? queue[queueIndex].song?.duration : nil
         let observation = PlaybackObservation(
             entryID: player.queue.currentEntry?.id,
-            isPlaying: player.state.playbackStatus == .playing
+            isPlaying: player.state.playbackStatus == .playing,
+            position: player.playbackTime,
+            duration: currentDuration
         )
         guard let boundary = boundaryDetector.consume(observation) else { return }
         isPlaying = observation.isPlaying
