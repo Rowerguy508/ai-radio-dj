@@ -106,14 +106,17 @@ public actor TestStationFixtures {
     }
 
     /// Context sources for the briefing: only items still approved in Connections.
-    public nonisolated func contextSources() -> [any ContextSource] {
-        Dictionary(grouping: items, by: \.source).keys.sorted { $0.rawValue < $1.rawValue }.map { FixtureBackedSource(source: $0, fixtures: self) }
+    /// With `reader`, a source the listener stopped using (selection cleared) contributes
+    /// nothing, as a live source with no picked calendars or notes would.
+    public nonisolated func contextSources(reader: StaticConnectionSourceReader? = nil) -> [any ContextSource] {
+        Dictionary(grouping: items, by: \.source).keys.sorted { $0.rawValue < $1.rawValue }
+            .map { FixtureBackedSource(source: $0, fixtures: self, reader: reader) }
     }
 
     /// One provider per integration, backed by the same items.
-    public nonisolated func providers() -> [any ConnectionItemProvider] {
+    public nonisolated func providers(reader: StaticConnectionSourceReader? = nil) -> [any ConnectionItemProvider] {
         Set(items.map { StationIntegration(source: $0.source) }).sorted { $0.rawValue < $1.rawValue }
-            .map { FixtureConnectionProvider(integration: $0, fixtures: self) }
+            .map { FixtureConnectionProvider(integration: $0, fixtures: self, reader: reader) }
     }
 
     /// Calendar and notes report the fixture selection; nothing on the device is read.
@@ -147,24 +150,46 @@ public actor TestStationFixtures {
     }
 }
 
+/// Whether the fixture selection for `integration` is still in use (Stop using clears it).
+private func fixtureSelectionInUse(_ integration: StationIntegration, reader: StaticConnectionSourceReader?) async -> Bool {
+    guard let reader else { return true }
+    switch integration {
+    case .calendar: return await !reader.calendar.selectedCalendarIDs.isEmpty
+    case .obsidian: if case .notSelected = await reader.obsidian { return false } else { return true }
+    case .shareInbox: return true
+    }
+}
+
 struct FixtureBackedSource: ContextSource {
     let source: ContextSourceKind
     let fixtures: TestStationFixtures
-    func fetchItems() async throws -> [ContextItem] { await fixtures.narratable(source) }
+    var reader: StaticConnectionSourceReader? = nil
+    func fetchItems() async throws -> [ContextItem] {
+        guard await fixtureSelectionInUse(StationIntegration(source: source), reader: reader) else { return [] }
+        return await fixtures.narratable(source)
+    }
 }
 
 struct FixtureConnectionProvider: ConnectionItemProvider {
     let integration: StationIntegration
     let fixtures: TestStationFixtures
-    func items(now: Date) async throws -> [ConnectionItem] { await fixtures.connectionItems(integration, now: now) }
+    var reader: StaticConnectionSourceReader? = nil
+    func items(now: Date) async throws -> [ConnectionItem] {
+        guard await fixtureSelectionInUse(integration, reader: reader) else { return [] }
+        return await fixtures.connectionItems(integration, now: now)
+    }
     func perform(_ action: ConnectionAction, on id: UUID) async throws { await fixtures.perform(action, on: id) }
 }
 
 extension ConnectionsComposition {
     /// Test station only: synthetic fixtures for every Connections source and the briefing.
     public static func testStationFixtures(_ fixtures: TestStationFixtures) -> ConnectionsComposition {
-        ConnectionsComposition(sourceReader: fixtures.sourceReader(), consent: TestStation.fixtureConsent,
-                               providers: fixtures.providers(), contextSources: fixtures.contextSources(), notes: nil)
+        // One reader shared with the providers: "Stop using" a source clears its fixture
+        // selection, and its items then disappear and stop narrating, as they do live.
+        let reader = fixtures.sourceReader()
+        return ConnectionsComposition(sourceReader: reader, consent: TestStation.fixtureConsent,
+                                      providers: fixtures.providers(reader: reader),
+                                      contextSources: fixtures.contextSources(reader: reader), notes: nil)
     }
 }
 #endif

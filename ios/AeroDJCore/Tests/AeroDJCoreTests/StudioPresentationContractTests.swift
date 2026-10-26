@@ -279,10 +279,14 @@ final class ConnectionsModelTests: XCTestCase {
                                      providers: [SpyProvider(integration: .shareInbox, log: log, list: [item])],
                                      purger: SpyPurger(log: log), now: { t0 })
         await model.refresh()
+        // Refresh may purge the flagged item (it is visible but never narratable); the rejected
+        // action itself must add no provider call and no purge.
+        let beforeAction = await log.entries
         let result = await model.perform(.approve, on: id)  // flagged needs Review or Read anyway
         XCTAssertEqual(result.failureValue, .notAllowed)
         let entries = await log.entries
-        XCTAssertTrue(entries.isEmpty)
+        XCTAssertEqual(entries, beforeAction)
+        XCTAssertFalse(entries.contains { !$0.hasPrefix("purge:") }, "no provider call")
     }
 
     func testExpiredAndRevokedItemsArePurgedOnRefreshOnce() async {

@@ -126,7 +126,7 @@ extension VoiceRenderer {
         Task { await cache.purgeExpired() }
         return VoiceRenderer(
             routes: [VoiceRoute.onDevice()],
-            budget: VoiceBudget(dailyCapMicrodollars: 0, file: support.appendingPathComponent("Voice/budget.json")),
+            budget: VoiceBudget(dailyCapMicrodollars: VoiceBetaDefaults.paidDailyCapMicrodollars, file: support.appendingPathComponent("Voice/budget.json")),
             cache: cache)
     }
 }
