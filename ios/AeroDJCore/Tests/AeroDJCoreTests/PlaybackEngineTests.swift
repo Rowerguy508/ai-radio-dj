@@ -100,9 +100,12 @@ final class PlaybackEngineTests: XCTestCase {
         e.apply(.naturalBoundary(nextIndex: 1))
         e.apply(.userPaused)
         XCTAssertEqual(e.snapshot.transport, .paused)
+        XCTAssertEqual(e.snapshot.hold, .user)
+        XCTAssertNil(e.snapshot.hold?.caption, "a user pause has no extra caption")
         XCTAssertEqual(e.snapshot.nowPlaying, track(2))
         e.apply(.userResumed)
         XCTAssertEqual(e.snapshot.transport, .playing)
+        XCTAssertNil(e.snapshot.hold)
         XCTAssertEqual(e.snapshot.nowPlaying, track(2))
     }
 

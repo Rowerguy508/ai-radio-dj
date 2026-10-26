@@ -68,13 +68,18 @@ public struct PlaybackEngine: Sendable {
             snapshot.nowPlaying = nil
             snapshot.upNext = []
             snapshot.transport = .stopped
+            snapshot.hold = nil
 
-        case .userPaused, .interruptionPaused, .routePaused:
-            // The new cases pause transport and do not record which hold it was.
-            if snapshot.transport == .playing { snapshot.transport = .paused }
+        case .userPaused:
+            holdTransport(.user)
+        case .interruptionPaused:
+            holdTransport(.interruption)
+        case .routePaused:
+            holdTransport(.routeRemoved)
 
         case .userResumed:
             if snapshot.transport == .paused { snapshot.transport = .playing }
+            if snapshot.transport == .playing { snapshot.hold = nil }
 
         case let .djStarted(line):
             snapshot.dj = line.isEmpty ? .idle : .speaking(line: line)
@@ -118,5 +123,11 @@ public struct PlaybackEngine: Sendable {
         snapshot.nowPlaying = tracks.indices.contains(index) ? tracks[index] : nil
         snapshot.upNext = tracks.indices.contains(index) ? Array(tracks[(index + 1)...]) : []
         snapshot.transport = transport
+        if transport == .playing { snapshot.hold = nil }
+    }
+
+    private mutating func holdTransport(_ hold: PlaybackHold) {
+        if snapshot.transport == .playing { snapshot.transport = .paused }
+        snapshot.hold = hold
     }
 }

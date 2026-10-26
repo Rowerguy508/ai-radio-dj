@@ -333,7 +333,14 @@ final class MusicKitService: ObservableObject {
         switch sessionPolicy.handle(notice, breakIsActive: isBreakActive) {
         case .suspendPlayback:
             pausePlayerForBreak()
-            send(.userPaused)
+            switch notice {
+            case .interruptionBegan:
+                send(.interruptionPaused)
+            case .routeChanged(.oldDeviceUnavailable):
+                send(.routePaused)
+            case .interruptionEnded, .routeChanged(.other):
+                send(.userPaused)
+            }
             onBreakMustStop?()
         case .resumeIfPermitted:
             Task { await resumeIfAllowed() }
