@@ -65,12 +65,17 @@ if contains_fixture_asset "$RELEASE_APP"; then
 fi
 echo "OK: Release app has no FixtureAlbum asset."
 
-if [ -z "$(symbol_hits "$(binary "$DEBUG_APP")" "$LOADER")" ]; then
+if [ -z "$(symbol_hits "$DEBUG_APP" "$LOADER")" ]; then
   echo "FAIL: $LOADER not found in Debug object files or the Debug binary (strings -a / nm -a)."
   echo "The Release symbol check would be vacuous without this control."
+  debug_dir="$(dirname "$DEBUG_APP")"
+  debug_config="$(basename "$debug_dir")"
+  debug_build="$(dirname "$(dirname "$debug_dir")")"
+  echo "Looked under $debug_build/Intermediates.noindex for *$debug_config*/*.o"
+  find "$debug_build/Intermediates.noindex" -path "*${debug_config}*" -name '*.o' 2>/dev/null | wc -l
   exit 1
 fi
-hits="$(symbol_hits "$(binary "$RELEASE_APP")" "$LOADER")"
+hits="$(symbol_hits "$RELEASE_APP" "$LOADER")"
 if [ -n "$hits" ]; then
   echo "FAIL: $LOADER is in the Release binary."
   echo "$hits"
