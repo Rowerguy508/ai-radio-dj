@@ -56,7 +56,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         pendingPlay.handOut(afterTrack: afterTrack)
     }
 
-    /// Plays one prepared clip. A clip that won't decode skips the break.
+    /// Plays one prepared clip. A clip that won't decode fails the break.
     func play(clip: Data, line: String, afterTrack: Int) async {
         await play(clips: [clip], line: line, afterTrack: afterTrack)
     }
@@ -65,7 +65,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// once before the first clip and resumed once after the last one.
     func play(clips: [Data], line: String, afterTrack: Int) async {
         breakTrack = afterTrack
-        guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
+        // No spoken cues: do not play audio that is already rendered and cached.
+        guard BreakHandoffPolicy.shouldPlay(line: line, clipCount: clips.count, alreadySpeaking: isSpeaking) else {
             music.logBreakSkipped(after: afterTrack, reason: .notPlanned)
             music.skipInterlude()
             return
@@ -86,11 +87,21 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             await cancelledPendingPlay(resumeMusic: admitted.resumeMusic)
             return
         }
-        // A clip that won't decode skips the whole break; nothing is spoken partially.
+        // A clip that won't decode fails the whole break. Music is not paused, and it
+        // is asked to continue immediately. Nothing is spoken partially.
         guard players.count == clips.count, players.allSatisfy({ $0.duration > 0 }) else {
-            music.logBreakSkipped(after: afterTrack, reason: .renderFailed)
-            music.reportSpeechError("A DJ line could not be played and was skipped.")
-            music.skipInterlude()
+            let effect = ClipDecodePolicy.effect(for: .undecodable, mayAutoResume: music.mayAutoResume)
+            log.notice("\(PlaybackLog.breakEnd(after: afterTrack, result: effect.outcome), privacy: .public)")
+            let decision = NarrationResumePolicy.decide(
+                NarrationResumePolicy.narrationEnd(for: effect.outcome),
+                mayAutoResume: music.mayAutoResume,
+                phase: music.audioState
+            )
+            music.completeNarration(decision)
+            onPlayback?(.failed(afterTrack: afterTrack))
+            if effect.resumeMusic {
+                await music.resumeIfAllowed()
+            }
             return
         }
         queue = players

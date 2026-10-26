@@ -182,8 +182,14 @@ final class MusicKitService: ObservableObject {
         let next = queueIndex + 1
         guard queue.indices.contains(next) else {
             player.stop()
+            let entryID = player.queue.currentEntry?.id ?? "queue"
+            let boundary = PlaybackBoundary.queueFinished(lastEntryID: entryID)
+            if case .stopSession(let line) = StationEndPolicy.action(for: boundary, finishedTrack: queueIndex) {
+                logPlayback(line)
+            }
             send(.queueFinished)
             stateMachine.apply(.stop)
+            onBoundary?(boundary, queueIndex)
             return
         }
         send(.userSkipped(nextIndex: next))
@@ -323,7 +329,9 @@ final class MusicKitService: ObservableObject {
             stateMachine.apply(.trackEnded)
             onBoundary?(boundary, finishedIndex)
         case let .stopped(finishedIndex, boundary):
-            logPlayback(PlaybackLog.stationFinished(finished: finishedIndex))
+            if case .stopSession(let line) = StationEndPolicy.action(for: boundary, finishedTrack: finishedIndex) {
+                logPlayback(line)
+            }
             currentTrack = nil
             stateMachine.apply(.stop)
             send(.queueFinished)

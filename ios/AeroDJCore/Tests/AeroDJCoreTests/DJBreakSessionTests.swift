@@ -79,6 +79,60 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertNil(nothing, "no break planned: music continues at once")
     }
 
+    func testQueueEndStopsTheSessionAndLogsStationFinished() async {
+        let r = await rig()
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until { if case .ready = r.dj.studioState { true } else { false } }
+
+        let boundary = PlaybackBoundary.queueFinished(lastEntryID: "last")
+        let action = StationEndPolicy.action(for: boundary, finishedTrack: 4)
+        XCTAssertEqual(action, .stopSession(log: "boundary stationFinished finished=4"))
+        XCTAssertEqual(
+            StationEndPolicy.action(for: .naturalEnd(finishedEntryID: "song"), finishedTrack: 1),
+            .playOrSkipBreak
+        )
+        if case .stopSession = action {
+            await r.session.stop()
+        }
+        XCTAssertEqual(r.dj.studioState, .idle, "the station end leaves the DJ idle")
+        XCTAssertEqual(r.session.plannedBoundaries, [], "no break is planned after the station ends")
+    }
+
+    func testSkipCancelsThePreparedBreakOnceAndDropsALateResult() async throws {
+        let r = await rig()
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until { if case .ready = r.dj.studioState { true } else { false } }
+
+        await r.session.songCut(afterTrack: 0)
+        await r.session.songCut(afterTrack: 0)
+
+        await until { r.dj.studioState == .idle }
+        XCTAssertEqual(r.dj.studioState, .idle, "a skip clears Preparing and Ready")
+        let replay = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertNil(replay, "the cancelled break is not played later")
+
+        let preparer = DJBreakPreparer(renderer: djRenderer(free: DJFakeVoice(delay: .milliseconds(250))),
+                                        userID: "u", stationID: "s")
+        let log = DJEventLog()
+        await preparer.observe { log.add($0) }
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1), seed: 1)
+        let djBreak = try XCTUnwrap(writer.plan(tracks: djTracks(3), briefing: nil, hour: 9).breaks.first)
+        await preparer.prepare(djBreak, deadline: .seconds(5))
+        let cut = await preparer.takeBreak(afterTrack: djBreak.afterTrack, natural: false)
+        let again = await preparer.takeBreak(afterTrack: djBreak.afterTrack, natural: false)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(cut, .skipped(.notNaturalBoundary))
+        XCTAssertEqual(again, .skipped(.notNaturalBoundary))
+        let skips = log.all.filter {
+            if case .skipped(let track, .notNaturalBoundary) = $0 { track == djBreak.afterTrack } else { false }
+        }
+        XCTAssertEqual(skips.count, 1, "the break is cancelled exactly once")
+        XCTAssertFalse(log.all.contains { if case .prepared = $0 { true } else { false } },
+                       "a late preparation result for the skipped song is dropped")
+    }
+
     func testLateOrCutBreaksAreSkippedAndNeverWait() async {
         let r = await rig()
         await r.session.queueStarted(djTracks(8))

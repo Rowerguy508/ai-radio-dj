@@ -39,6 +39,13 @@ struct PlayerView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {
             music.onBoundary = { @MainActor [interlude, music, djSession] boundary, finishedIndex in
+                switch StationEndPolicy.action(for: boundary, finishedTrack: finishedIndex) {
+                case .stopSession:
+                    Task { await djSession.stop() }
+                    return
+                case .playOrSkipBreak:
+                    break
+                }
                 guard case .naturalEnd = boundary else { return }
                 // A break is only ever played at a natural end. Anything late, missing or failed is
                 // skipped, and the next song is not delayed.

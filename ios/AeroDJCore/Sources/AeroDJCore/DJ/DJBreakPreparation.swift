@@ -101,10 +101,13 @@ public actor DJBreakPreparer {
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
         defer { tasks[k] = nil; planned[k] = nil }
         guard natural else {
+            if case .skipped(.notNaturalBoundary) = results[k] {
+                return .skipped(.notNaturalBoundary)
+            }
             tasks[k]?.cancel()
-            let wasPlanned = tasks[k] != nil || results.removeValue(forKey: k) != nil
+            let hadWork = tasks[k] != nil || results[k] != nil || planned[k] != nil
             results[k] = .skipped(.notNaturalBoundary)
-            if wasPlanned { emit(.skipped(afterTrack: k, .notNaturalBoundary)) }
+            if hadWork { emit(.skipped(afterTrack: k, .notNaturalBoundary)) }
             return .skipped(.notNaturalBoundary)
         }
         if let result = results.removeValue(forKey: k) { return result }
