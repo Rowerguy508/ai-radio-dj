@@ -12,6 +12,8 @@ public enum NarrationEnd: Equatable, Sendable {
     case finished
     case failed
     case cancelled
+    /// Consent revoke cut a clip that was already playing. Not a natural end.
+    case revoked
     /// Nothing was prepared, or preparation was too late.
     case skipped
 }
@@ -80,6 +82,9 @@ public enum NarrationResumePolicy {
             playbackEvent = .failed
         case .cancelled, .skipped:
             playbackEvent = .cancelled
+        case .revoked:
+            // Still reported as a natural finish. The revoke stop does not apply this yet.
+            playbackEvent = .finished
         }
         return NarrationResumeDecision(
             resumeMusic: mayAutoResume,

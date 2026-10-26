@@ -157,6 +157,28 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertEqual(r.dj.studioState, .idle)
     }
 
+    func testRevokeStopsThePlayingBreakWithinOneTick() async {
+        let r = await rig()
+        let clip = ActiveBreakController()
+        clip.play()
+        let player = clip.currentPlayer
+        r.session.onBreakMustStop = { reason in
+            clip.stopActiveBreak(reason: reason, mayAutoResume: true)
+        }
+
+        r.session.purge(sourceItemIDs: [UUID()])
+
+        XCTAssertEqual(clip.playerStops, 1, "the player stops before purge returns, inside one tick")
+        XCTAssertTrue(clip.delegateCleared)
+        XCTAssertEqual(clip.end, .revoked, "a revoke stop is not a natural end")
+        XCTAssertEqual(clip.naturalEnds, 0)
+        XCTAssertEqual(clip.resumes, 1, "music resumes once when playback is still allowed")
+        if let player { clip.lateDelegate(from: player) }
+        XCTAssertEqual(clip.delivered, 0, "a late callback from the stopped player is ignored")
+        XCTAssertEqual(clip.resumes, 1, "the late callback must not resume music again")
+        XCTAssertEqual(clip.naturalEnds, 0)
+    }
+
     func testRevokingAnItemRemovesItFromPlannedPreparedAndCachedNarration() async throws {
         let item = UUID()
         let cue = NarrationCue(id: UUID(), order: 1, group: 0, kind: .note, text: "From your notes: water the plants.",

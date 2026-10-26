@@ -68,6 +68,73 @@ public struct InterludeStopState: Equatable, Sendable {
     }
 }
 
+/// What a revoke does to a break that is already playing.
+public struct ActiveBreakEffect: Equatable, Sendable {
+    public var stopped: Bool
+    public var end: NarrationEnd
+    public var resumeMusic: Bool
+    /// True when the stop is reported as the clip finishing on its own.
+    public var naturalEnd: Bool
+
+    public init(stopped: Bool, end: NarrationEnd, resumeMusic: Bool, naturalEnd: Bool) {
+        self.stopped = stopped
+        self.end = end
+        self.resumeMusic = resumeMusic
+        self.naturalEnd = naturalEnd
+    }
+}
+
+public enum ActiveBreakStop {
+    /// A playing clip is left running. `mayAutoResume` is not applied.
+    public static func apply(isPlaying: Bool, reason: InterludeStopReason, mayAutoResume: Bool) -> ActiveBreakEffect {
+        _ = (isPlaying, reason, mayAutoResume)
+        return ActiveBreakEffect(stopped: false, end: .finished, resumeMusic: false, naturalEnd: true)
+    }
+}
+
+/// Fake-friendly player. `stopActiveBreak` does not halt it yet.
+@MainActor
+public final class ActiveBreakController {
+    private var stopState = InterludeStopState()
+    private var player: ObjectIdentifier?
+    public private(set) var playerStops = 0
+    public private(set) var delegateCleared = false
+    public private(set) var end: NarrationEnd?
+    public private(set) var resumes = 0
+    public private(set) var naturalEnds = 0
+    public private(set) var delivered = 0
+
+    public init() {}
+
+    public func play() {
+        stopState.begin()
+        player = ObjectIdentifier(NSObject())
+        if let player { stopState.adopt(player: player) }
+    }
+
+    public var currentPlayer: ObjectIdentifier? { player }
+
+    public func stopActiveBreak(reason: InterludeStopReason, mayAutoResume: Bool) {
+        let effect = ActiveBreakStop.apply(isPlaying: stopState.isPlaying, reason: reason, mayAutoResume: mayAutoResume)
+        guard effect.stopped else { return }
+        guard stopState.stop(reason: reason) else { return }
+        player = nil
+        playerStops += 1
+        delegateCleared = true
+        end = effect.end
+        if effect.naturalEnd { naturalEnds += 1 }
+        if effect.resumeMusic { resumes += 1 }
+    }
+
+    public func lateDelegate(from id: ObjectIdentifier) {
+        guard stopState.acceptsDelegate(player: id) else { return }
+        delivered += 1
+        naturalEnds += 1
+        end = .finished
+        resumes += 1
+    }
+}
+
 /// Runs work on the main actor before the caller continues.
 ///
 /// On the main thread the work runs in this turn. Off the main thread the caller
