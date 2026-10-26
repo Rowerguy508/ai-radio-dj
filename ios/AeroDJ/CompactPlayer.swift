@@ -78,6 +78,9 @@ struct BleedNowPlaying: View {
                 .frame(width: width, height: artHeight)
                 .clipped()
                 .modifier(BleedArtFrame(namespace: artworkNamespace))
+                // The ident is a square larger than the column. Hide it after the clip so
+                // Zone A's accessibility frame stays the column, not the unclipped square.
+                .accessibilityHidden(true)
             if overflow {
                 ScrollView(showsIndicators: false) {
                     measuredText
