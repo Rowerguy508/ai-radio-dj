@@ -130,4 +130,17 @@ final class PlaybackBoundaryDetectorTests: XCTestCase {
         d.userRequestedChange()
         XCTAssertNil(d.consume(timed("A", playing: false, at: 199)))
     }
+
+    func testAPauseTheAppMadeInTheLastSecondsIsNotAFinish() {
+        // A user pause, call or route change at 199.5 s must not play the break or advance the queue.
+        var d = PlaybackBoundaryDetector()
+        _ = d.consume(timed("A", playing: true, at: 199))
+        d.pausedByApp()
+        XCTAssertNil(d.consume(timed("A", playing: false, at: 199.5)))
+        XCTAssertNil(d.consume(timed("A", playing: false, at: 199.5)))
+        // After a resume, a real end at the same entry is still reported, once.
+        _ = d.consume(timed("A", playing: true, at: 199.6))
+        XCTAssertEqual(d.consume(timed("A", playing: false, at: 199.9)), .queueFinished(lastEntryID: "A"))
+        XCTAssertNil(d.consume(timed("A", playing: false, at: 199.9)))
+    }
 }

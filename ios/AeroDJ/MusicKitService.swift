@@ -112,6 +112,7 @@ final class MusicKitService: ObservableObject {
     /// The user pressed pause. A DJ line that is speaking stops too.
     func pause() {
         _ = sessionPolicy.userPause()
+        boundaries.pausedByApp()
         player.pause()
         isPlaying = false
         send(.userPaused)
@@ -132,6 +133,7 @@ final class MusicKitService: ObservableObject {
 
     /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
     func pausePlayerForBreak() {
+        boundaries.pausedByApp()
         player.pause()
         isPlaying = false
     }

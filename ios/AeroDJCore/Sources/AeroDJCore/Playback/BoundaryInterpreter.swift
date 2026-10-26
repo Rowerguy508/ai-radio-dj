@@ -32,6 +32,12 @@ public struct BoundaryInterpreter: Sendable {
         detector.userRequestedChange()
     }
 
+    /// A pause the app recorded (user, call, or route). Forwarded to the detector so a stop
+    /// in the last 1.5 s is not a natural end.
+    public mutating func pausedByApp() {
+        detector.pausedByApp()
+    }
+
     public mutating func interpret(
         _ observation: PlaybackObservation,
         queueIndex: Int,

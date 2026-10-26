@@ -59,6 +59,12 @@ public struct PlaybackBoundaryDetector: Sendable {
         userChangePending = true
     }
 
+    /// Call when the user, a call or a route change paused playback. A pause is never a finish,
+    /// even if it happens in the last seconds of the song.
+    public mutating func pausedByApp() {
+        wasPlaying = false
+    }
+
     public mutating func consume(_ observation: PlaybackObservation) -> PlaybackBoundary? {
         defer { wasPlaying = observation.isPlaying }
         guard let current = observation.entryID else {
