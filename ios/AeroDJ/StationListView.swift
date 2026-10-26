@@ -55,6 +55,8 @@ struct StationListView: View {
                 }
             }
         }
+        // Live only: lets Connections offer the .md file picker (nil in the test station).
+        .environment(\.pickedNotes, dependencies.pickedNotes)
     }
 }
 
