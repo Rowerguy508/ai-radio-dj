@@ -4,10 +4,14 @@ import Foundation
 public struct LiveQueueBriefingInput: Sendable, Equatable {
     public var items: [ConnectionItem]
     public var preferences: BriefingPreferences
+    /// Source-item sensitivity keyed by Connections row id. A missing id is blocked.
+    public var sensitivityByItemID: [UUID: Sensitivity]
 
-    public init(items: [ConnectionItem], preferences: BriefingPreferences) {
+    public init(items: [ConnectionItem], preferences: BriefingPreferences,
+                sensitivityByItemID: [UUID: Sensitivity] = [:]) {
         self.items = items
         self.preferences = preferences
+        self.sensitivityByItemID = sensitivityByItemID
     }
 }
 
@@ -19,7 +23,9 @@ public protocol LiveQueueStudio: AnyObject {
 
 extension StudioPresentationModel: LiveQueueStudio {
     public var liveQueueBriefing: LiveQueueBriefingInput {
-        LiveQueueBriefingInput(items: connections.items, preferences: station.active.briefing)
+        // Rows do not carry `aerodj-sensitivity`. An unknown id is blocked below.
+        LiveQueueBriefingInput(items: connections.items, preferences: station.active.briefing,
+                               sensitivityByItemID: [:])
     }
 }
 
@@ -41,7 +47,8 @@ public enum LiveQueueBriefing {
         let clock = now ?? { Date() }
         return {
             let input = studio.liveQueueBriefing
-            return handoff(items: input.items, preferences: input.preferences, now: clock(), calendar: calendar)
+            return handoff(items: input.items, preferences: input.preferences, now: clock(), calendar: calendar,
+                           sensitivityByItemID: input.sensitivityByItemID)
         }
     }
 
@@ -55,7 +62,8 @@ public enum LiveQueueBriefing {
         preferences: BriefingPreferences,
         now: Date,
         calendar: Calendar = .current,
-        prepared: NarrationHandoff? = nil
+        prepared: NarrationHandoff? = nil,
+        sensitivityByItemID: [UUID: Sensitivity] = [:]
     ) -> ApprovedShowHandoff {
         let morning = preferences.enabled && preferences.window.contains(now, calendar: calendar)
         let speakable = approvedRows(items, preferences: preferences)
@@ -68,7 +76,8 @@ public enum LiveQueueBriefing {
                                        carryForward: nil, connectionItems: items)
         }
         let script = prepared ?? narration(from: speakable, now: now, calendar: calendar,
-                                           targetSeconds: preferences.targetSeconds)
+                                           targetSeconds: preferences.targetSeconds,
+                                           sensitivityByItemID: sensitivityByItemID)
         return ApprovedShowHandoff(isMorningShow: true, approved: script, revokedOrUnapproved: false,
                                    connectionItems: items)
     }
@@ -83,10 +92,12 @@ public enum LiveQueueBriefing {
         }
     }
 
-    /// One briefing builder. Rows become engine inputs: title, source, provenance.
-    /// No clock time and no summary, because a Connections row does not have them.
+    /// One briefing builder. Rows become engine inputs: title, source, provenance,
+    /// the row's consent, and the source item's sensitivity. No clock time and no
+    /// summary, because a Connections row does not have them. A sensitivity the
+    /// adapter cannot see is `.blocked`, so the engine drops the row.
     private static func narration(from items: [ConnectionItem], now: Date, calendar: Calendar,
-                                  targetSeconds: Int) -> NarrationHandoff {
+                                  targetSeconds: Int, sensitivityByItemID: [UUID: Sensitivity]) -> NarrationHandoff {
         let spokenCap = min(max(targetSeconds, BriefingPreferences.targetRange.lowerBound), 150)
         let engine = MorningBriefingEngine(
             configuration: MorningBriefingConfiguration(experienceSeconds: 300, maxSpokenSeconds: spokenCap),
@@ -94,10 +105,23 @@ public enum LiveQueueBriefing {
             now: { now })
         let context = items.map { item in
             ContextItem(id: item.id, source: source(for: item.integration), createdAt: now,
-                        title: item.title, summary: "", sensitivity: .low, consent: .granted,
+                        title: item.title, summary: "",
+                        sensitivity: sensitivityByItemID[item.id] ?? .blocked,
+                        consent: consent(for: item.state),
                         expiresAt: item.expiresAt, provenance: "connection:\(item.id.uuidString)")
         }
         return engine.script(from: context).handoff(maxSpokenSeconds: spokenCap)
+    }
+
+    /// Consent comes from the Connections row. Only `.approved` is granted.
+    private static func consent(for state: ConnectionItemState) -> ConsentState {
+        switch state {
+        case .approved: .granted
+        case .pendingApproval, .flaggedForReview: .notRequested
+        case .expired: .granted
+        case .revoked: .revoked
+        case .unavailable: .denied
+        }
     }
 
     private static func section(for integration: StationIntegration) -> BriefingSection {
