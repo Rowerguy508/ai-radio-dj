@@ -49,11 +49,11 @@ struct MusicSearch {
     /// Same path as #58's search (ebc3042): the DJ session learns the new queue (the tapped
     /// song and the ones after it), then the player loads it one song at a time.
     ///
-    /// `briefing` is read when play starts. The default is unapproved, so nothing personal
-    /// airs until a caller passes an `ApprovedShowHandoff`. Morning passes that handoff;
-    /// a later show passes only `carryForward.eligibleNextShow`.
+    /// `briefing` is read when play starts. There is no default: omitting it does not
+    /// compile, so an unapproved handoff cannot slip back in. `PlayerView` passes
+    /// `LiveQueueBriefing.provider`, which speaks an approved morning row and nothing else.
     static func live(_ music: MusicKitService, station: StationRef, djSession: DJBreakSession,
-                     briefing: @escaping () -> ApprovedShowHandoff = { .unapproved }) -> MusicSearch {
+                     briefing: @escaping @MainActor () -> ApprovedShowHandoff) -> MusicSearch {
         let cache = SearchResultCache()
         return MusicSearch(
             search: { query in

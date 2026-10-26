@@ -181,7 +181,9 @@ public struct ApprovedShowHandoff: Equatable, Sendable {
     }
 
     /// Drops every content cue whose Connections row is not `.approved`.
-    /// Pending, flagged, and not-requested rows stay in `connectionItems`.
+    /// Every other `ConnectionItemState` stays in `connectionItems`.
+    /// `ConsentState.notRequested` is not an item state; `resolve` maps it to
+    /// `.pendingApproval`, or `.flaggedForReview` when the row is flagged.
     static func narratable(_ handoff: NarrationHandoff, items: [ConnectionItem]) -> NarrationHandoff? {
         let allowed = Set(items.filter { $0.state.mayBeNarrated }.map(\.id))
         let cues = handoff.cues.filter { cue in

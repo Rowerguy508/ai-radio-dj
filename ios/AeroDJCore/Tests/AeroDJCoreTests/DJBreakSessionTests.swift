@@ -263,24 +263,38 @@ final class DJBreakSessionTests: XCTestCase {
     }
 
     /// Connections still lists every row. Only `ConnectionItemState.approved`
-    /// (`mayBeNarrated`) may be spoken.
+    /// (`mayBeNarrated`) may be spoken. Each enum case is seeded directly.
+    /// `ConsentState.notRequested` is not a case: `resolve` maps it to `.pendingApproval`.
     func testOnlyApprovedConsentStateIsNarrated() async throws {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertEqual(
+            ConnectionItemState.resolve(consent: .notRequested, expiresAt: nil, now: now, flagged: false, reconfirmed: false),
+            .pendingApproval,
+            "there is no ConnectionItemState for not-requested consent")
         let approvedID = UUID()
         let pendingID = UUID()
         let flaggedID = UUID()
-        let notRequestedID = UUID()
-        let notRequested = ConnectionItemState.resolve(consent: .notRequested, expiresAt: nil, now: now,
-                                                       flagged: false, reconfirmed: false)
+        let expiredID = UUID()
+        let revokedID = UUID()
+        let unavailableID = UUID()
         let rows = [
-            ConnectionItem(id: approvedID, integration: .calendar, title: "Design review", state: .approved),
             ConnectionItem(id: pendingID, integration: .calendar, title: "Pending sync", state: .pendingApproval),
             ConnectionItem(id: flaggedID, integration: .obsidian, title: "Flagged memo", state: .flaggedForReview),
-            ConnectionItem(id: notRequestedID, integration: .shareInbox, title: "Unasked task", state: notRequested),
+            ConnectionItem(id: approvedID, integration: .calendar, title: "Design review", state: .approved),
+            ConnectionItem(id: expiredID, integration: .shareInbox, title: "Expired reminder", state: .expired),
+            ConnectionItem(id: revokedID, integration: .obsidian, title: "Revoked note", state: .revoked),
+            ConnectionItem(id: unavailableID, integration: .calendar, title: "Unavailable calendar",
+                           state: .unavailable(.calendarAccess(.denied))),
         ]
+        XCTAssertEqual(Set(rows.map { Self.connectionStateCase($0.state) }), Set(Self.everyConnectionStateCase),
+                       "the seeded rows cover every ConnectionItemState case")
+        for row in rows {
+            XCTAssertEqual(row.state.mayBeNarrated, Self.narrationClass(of: row.state) == .spoken)
+        }
         XCTAssertEqual(rows.filter { $0.state.mayBeNarrated }.map(\.id), [approvedID])
-        XCTAssertEqual(rows.map(\.title), ["Design review", "Pending sync", "Flagged memo", "Unasked task"],
-                       "every consent state still appears in Connections")
+        XCTAssertEqual(rows.map(\.title),
+                       ["Pending sync", "Flagged memo", "Design review", "Expired reminder", "Revoked note", "Unavailable calendar"],
+                       "every item state still appears in Connections")
 
         func cue(_ id: UUID, _ order: Int, _ title: String, _ source: ContextSourceKind) -> NarrationCue {
             NarrationCue(id: UUID(), order: order, group: order, kind: .note,
@@ -288,10 +302,12 @@ final class DJBreakSessionTests: XCTestCase {
                          estimatedSeconds: 4, maxSeconds: 16, sourceItemID: id, source: source, provenance: "row:\(order)")
         }
         let handoff = NarrationHandoff(cues: [
-            cue(approvedID, 1, "Design review", .calendar),
-            cue(pendingID, 2, "Pending sync", .calendar),
-            cue(flaggedID, 3, "Flagged memo", .obsidian),
-            cue(notRequestedID, 4, "Unasked task", .userShared),
+            cue(pendingID, 1, "Pending sync", .calendar),
+            cue(flaggedID, 2, "Flagged memo", .obsidian),
+            cue(approvedID, 3, "Design review", .calendar),
+            cue(expiredID, 4, "Expired reminder", .userShared),
+            cue(revokedID, 5, "Revoked note", .obsidian),
+            cue(unavailableID, 6, "Unavailable calendar", .calendar),
         ], maxSpokenSeconds: 60, experienceSeconds: 300)
         let show = ApprovedShowHandoff(isMorningShow: true, approved: handoff, revokedOrUnapproved: false, connectionItems: rows)
         let queued = try XCTUnwrap(show.forQueue())
@@ -306,8 +322,34 @@ final class DJBreakSessionTests: XCTestCase {
         let spoken = handed.cues.map(\.text).joined(separator: " ")
         XCTAssertEqual(handed.cues.filter(\.isContent).compactMap(\.sourceItemID), [approvedID])
         XCTAssertTrue(spoken.contains("Design review"), spoken)
-        for hidden in ["Pending sync", "Flagged memo", "Unasked task"] {
+        for hidden in ["Pending sync", "Flagged memo", "Expired reminder", "Revoked note", "Unavailable calendar"] {
             XCTAssertFalse(spoken.contains(hidden), spoken)
+        }
+    }
+
+    /// A new `ConnectionItemState` case fails this switch until it is named here and seeded above.
+    private static let everyConnectionStateCase = [
+        "pendingApproval", "flaggedForReview", "approved", "expired", "revoked", "unavailable",
+    ]
+
+    private static func connectionStateCase(_ state: ConnectionItemState) -> String {
+        switch state {
+        case .pendingApproval: "pendingApproval"
+        case .flaggedForReview: "flaggedForReview"
+        case .approved: "approved"
+        case .expired: "expired"
+        case .revoked: "revoked"
+        case .unavailable: "unavailable"
+        }
+    }
+
+    private enum NarrationClass { case spoken, withheld }
+
+    /// Same exhaustiveness rule: a new case does not compile until it is spoken or withheld.
+    private static func narrationClass(of state: ConnectionItemState) -> NarrationClass {
+        switch state {
+        case .approved: .spoken
+        case .pendingApproval, .flaggedForReview, .expired, .revoked, .unavailable: .withheld
         }
     }
 
