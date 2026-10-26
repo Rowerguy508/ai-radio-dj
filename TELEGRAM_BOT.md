@@ -1,42 +1,23 @@
 # RAY.DO Telegram Bot
 
-Control your AI Radio DJ from Telegram!
+The app receives Telegram updates at `/api/telegram`. It does not register or move the bot webhook.
 
 ## Setup
 
-1. **Create a Telegram bot:**
-   - Open Telegram and search for @BotFather
-   - Send `/newbot` to create a new bot
-   - Copy your bot token
+1. Create a bot with BotFather and store the bot token as `TELEGRAM_BOT_TOKEN` in the server environment. Do not send that token to the app in a request.
+2. Set `TELEGRAM_WEBHOOK_SECRET` in the server environment. Both receivers reject every update when this value is missing or does not match the `X-Telegram-Bot-Api-Secret-Token` header.
+3. Register the webhook out of band, once, against your own deployment origin. Point it at `https://<your-deployment>/api/telegram` and configure the same webhook secret. Do not use an in-app route to do this.
 
-2. **Set up ngrok for local testing:**
-   ```bash
-   npx ngrok http 3000
-   ```
-   Copy the HTTPS URL (e.g., `https://abc123.ngrok.io`)
+## Commands
 
-3. **Configure webhook:**
-   ```bash
-   curl -X POST http://localhost:3000/api/telegram/set-webhook \
-     -H "Content-Type: application/json" \
-     -d '{"webhookUrl":"https://YOUR-NGROK-URL", "botToken":"YOUR_BOT_TOKEN"}'
-   ```
+Message the bot:
 
-4. **Start RAY.DO locally:**
-   ```bash
-   cd /Users/angelestrada/clawd/ai-radio-dj
-   npm run dev
-   ```
+- `/start` - Get started
+- `/play` - Start playing
+- `/pause` - Pause playback
+- `/next` - Skip track
+- `/stations` - List stations
 
-5. **Message your bot on Telegram and try commands:**
-   - `/start` - Get started
-   - `/play` - Start playing
-   - `/pause` - Pause playback
-   - `/next` - Skip track
-   - `/stations` - List stations
+## Production
 
-## Production Deployment
-
-For Vercel deployment:
-1. Add `TELEGRAM_BOT_TOKEN` to Vercel environment variables
-2. Set webhook to: `https://your-vercel-url.com/api/telegram`
+Add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_WEBHOOK_SECRET` to the hosting provider's environment. Register the webhook yourself for `https://<your-deployment>/api/telegram`. If the bot's current webhook host is unexpected, rotate the bot token and the webhook secret.
