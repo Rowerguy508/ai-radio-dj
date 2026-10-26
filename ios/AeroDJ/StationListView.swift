@@ -19,6 +19,7 @@ struct StationListView: View {
                 }
             }
             .navigationTitle("AeroDJ")
+            .task { await dependencies.start() }
             .toolbar {
                 // The real App Group inbox is never opened in the test station: its
                 // data must not appear next to fixtures.
@@ -33,7 +34,7 @@ struct StationListView: View {
                 }
             }
             .navigationDestination(for: Station.self) { station in
-                PlayerView(station: station, music: dependencies.playback)
+                PlayerView(station: station, music: dependencies.playback, djSession: dependencies.djSession)
             }
             .sheet(isPresented: $showSharedInbox) {
                 if dependencies.mode == .live, let review = SharedInboxReview.appGroupInbox() {

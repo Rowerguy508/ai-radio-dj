@@ -7,15 +7,14 @@ struct PlayerView: View {
     let station: Station
     @StateObject private var music: MusicKitService
     @StateObject private var interlude: InterludePlaybackAdapter
-    /// Device-test scaffold: one fixed line after the first song. The composite (#49)
-    /// replaces this with the approved briefing script.
-    private let breakPlan = DJBreakPlan(linesAfterTrack: [0: "That was song one. Here comes song two."])
+    let djSession: DJBreakSession
     @State private var searchQuery = ""
     @State private var results: [Track] = []
 
     /// `music` is the app-scoped session from `AppDependencies`. Never a new player.
-    init(station: Station, music: MusicKitService) {
+    init(station: Station, music: MusicKitService, djSession: DJBreakSession) {
         self.station = station
+        self.djSession = djSession
         _music = StateObject(wrappedValue: music)
         _interlude = StateObject(wrappedValue: InterludePlaybackAdapter(music: music))
     }
@@ -44,15 +43,23 @@ struct PlayerView: View {
         }
         .padding()
         .task {
-            music.onBoundary = { @MainActor [interlude, breakPlan, music] boundary, finishedIndex in
+            music.onBoundary = { @MainActor [interlude, music, djSession] boundary, finishedIndex in
                 guard case .naturalEnd = boundary else { return }
-                // Every natural end must resolve the transition: a line, or none.
-                guard breakPlan.line(afterTrack: finishedIndex) != nil, !interlude.isSpeaking else {
-                    music.skipInterlude()
-                    return
+                // A break is only ever played at a natural end. Anything late, missing or failed is
+                // skipped, and the next song is not delayed.
+                Task { @MainActor in
+                    guard !interlude.isSpeaking,
+                          let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex) else {
+                        music.skipInterlude()
+                        return
+                    }
+                    let line = prepared.cues.map(\.text).joined(separator: " ")
+                    guard !line.isEmpty else {
+                        music.skipInterlude()
+                        return
+                    }
+                    await interlude.play(clips: prepared.clips.map(\.audio.data), line: line)
                 }
-                // Prepared clips are not wired yet, so no break plays live speech here.
-                interlude.skipUnprepared()
             }
             music.onBreakMustStop = { [interlude] in interlude.stop() }
             await music.authorize()
@@ -118,5 +125,10 @@ struct PlayerView: View {
 
 #Preview {
     PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil),
-               music: MusicKitService.shared)
+               music: MusicKitService.shared,
+               djSession: DJBreakSession(preparer: DJBreakPreparer(renderer: VoiceRenderer.onDeviceDefault(),
+                                                                   userID: "preview", stationID: "preview"),
+                                         station: StationConfigurationModel(store: InMemoryStationConfigurationStore(),
+                                                                            consent: StaticIntegrationConsent([:])),
+                                         dj: DJPresentationStore()))
 }

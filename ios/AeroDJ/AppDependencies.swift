@@ -20,6 +20,14 @@ struct AppDependencies {
     let dj: DJPresentationStore
     /// The one Studio model (#56). Created here, never in a view.
     let studio: StudioPresentationModel
+    /// The one DJ session: plans breaks, prepares narration while a song plays, hands prepared breaks out at natural boundaries.
+    let djSession: DJBreakSession
+
+    /// Starts the Studio and the DJ session once per launch.
+    func start() async {
+        await studio.start()
+        await djSession.start()
+    }
 
     static func make(defaults: UserDefaults = .standard) -> AppDependencies {
         #if DEBUG
@@ -59,7 +67,8 @@ struct AppDependencies {
             station: station,
             playback: MusicKitService.shared,
             dj: dj,
-            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj))
+            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
+            djSession: DJBreakSession(preparer: preparer, station: station, dj: dj))
     }
 
     #if DEBUG
@@ -89,7 +98,8 @@ struct AppDependencies {
             station: station,
             playback: MusicKitService.shared,
             dj: dj,
-            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj))
+            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
+            djSession: DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence))
     }
     #endif
 
