@@ -32,7 +32,6 @@ struct ArtworkView: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .accessibilityIgnoresAccessibilityChildren()
     }
 
     private var placeholder: some View {
@@ -193,7 +192,7 @@ struct PlaybackErrorBanner: View {
                 errorCard(
                     title: "Allow Apple Music to play your station.",
                     detail: nil,
-                    primary: Button("Allow") { /* routes to system prompt (engine-owned) */ }.buttonStyle(.borderedProminent),
+                    primary: AnyView(Button("Allow") { /* routes to system prompt (engine-owned) */ }.buttonStyle(.borderedProminent)),
                     dismiss: nil
                 )
             case .subscriptionRequired:
@@ -207,24 +206,24 @@ struct PlaybackErrorBanner: View {
                 errorCard(
                     title: error.message,
                     detail: nil,
-                    primary: Button("Try again") {
+                    primary: AnyView(Button("Try again") {
                         Task { await actions.resume() }
-                    }.buttonStyle(.borderedProminent),
-                    dismiss: Button("Dismiss") { actions.dismissError() }
+                    }.buttonStyle(.borderedProminent)),
+                    dismiss: AnyView(Button("Dismiss") { actions.dismissError() })
                 )
             case .playbackFailed where error.isRecoverable:
                 errorCard(
                     title: error.message,
                     detail: nil,
-                    primary: Button("Try again") { actions.dismissError() }.buttonStyle(.borderedProminent),
-                    dismiss: Button("Dismiss") { actions.dismissError() }
+                    primary: AnyView(Button("Try again") { actions.dismissError() }.buttonStyle(.borderedProminent)),
+                    dismiss: AnyView(Button("Dismiss") { actions.dismissError() })
                 )
             case .playbackFailed:
                 errorCard(
                     title: error.message,
                     detail: nil,
                     primary: nil,
-                    dismiss: Button("Dismiss") { actions.dismissError() }
+                    dismiss: AnyView(Button("Dismiss") { actions.dismissError() })
                 )
             case .speechFailed:
                 // Subtle caption; music continues. Never a modal.
@@ -235,7 +234,7 @@ struct PlaybackErrorBanner: View {
         }
     }
 
-    private func errorCard(title: String, detail: String?, primary: (some View)?, dismiss: (some View)?) -> some View {
+    private func errorCard(title: String, detail: String?, primary: AnyView?, dismiss: AnyView?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Label(title, systemImage: "exclamationmark.triangle")
                 .font(.subheadline.weight(.semibold))
@@ -254,6 +253,13 @@ struct PlaybackErrorBanner: View {
 }
 
 // MARK: - Previews
+
+/// `PlaybackActions` is `@MainActor`; previews construct it on the main actor.
+private func previewActions() -> PlaybackActions {
+    MainActor.assumeIsolated {
+        PlaybackActions(pause: {}, resume: {}, skip: {}, dismissError: {}, editUpNext: { _ in })
+    }
+}
 
 #Preview("Speaking") {
     VStack(spacing: 16) {
@@ -283,9 +289,7 @@ struct PlaybackErrorBanner: View {
 }
 
 #Preview("Transport") {
-    let playing = PlaybackActions(
-        pause: {}, resume: {}, skip: {}, dismissError: {},
-        editUpNext: { _ in })
+    let playing = previewActions()
     VStack(spacing: 24) {
         TransportRow(transport: .playing, actions: playing)
         TransportRow(transport: .paused, actions: playing)
@@ -299,13 +303,11 @@ struct PlaybackErrorBanner: View {
 }
 
 #Preview("Playback error states") {
-    func actions() -> PlaybackActions {
-        PlaybackActions(pause: {}, resume: {}, skip: {}, dismissError: {}, editUpNext: nil)
-    }
+    let actions = previewActions()
     return VStack(spacing: 12) {
-        PlaybackErrorBanner(error: PlaybackFixtures.recoverableError.error, actions: actions())
-        PlaybackErrorBanner(error: PlaybackError(kind: .notAuthorized, message: "denied", isRecoverable: false), actions: actions())
-        PlaybackErrorBanner(error: PlaybackError(kind: .speechFailed, message: "The DJ line could not play.", isRecoverable: true), actions: actions())
+        PlaybackErrorBanner(error: PlaybackFixtures.recoverableError.error, actions: actions)
+        PlaybackErrorBanner(error: PlaybackError(kind: .notAuthorized, message: "denied", isRecoverable: false), actions: actions)
+        PlaybackErrorBanner(error: PlaybackError(kind: .speechFailed, message: "The DJ line could not play.", isRecoverable: true), actions: actions)
     }
     .padding()
 }
