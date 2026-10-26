@@ -15,7 +15,7 @@ these steps.
 | --- | --- |
 | Install commit | `939c34e8da505ca91d26b30b52f696974b06c1c5` |
 | Branch name at audit | `integration/device-duo` (PR #58). If the branch moves, install this SHA. |
-| Also read, not installed | PR #65 head `5171c372c0271edcee2c0a2dff6295d719ea8c5e`. Signing, entitlements, and `project.yml` match the install commit. #65 is a throwaway combined check. |
+| Also read, not installed | PR #65 head `aaff7e151c7b65738d67a99a6a6d47158e37f908`. Signing, entitlements, and `project.yml` match the install commit. #65 is a throwaway combined check. |
 | iOS workflow on the install commit | Run [40269782784](https://github.com/Rowerguy508/ai-radio-dj/actions/runs/40269782784). Unsigned Debug and Release device builds, the simulator runtime-mode check, and AeroDJCore tests succeeded. Studio UI tests failed. The workflow conclusion is failure. |
 | Xcode logged by that run | 26.6 (`/Applications/Xcode_26.6.app`). The workflow does not pin this. |
 | Apple Developer team | `S85APB73YV` (Individual). App IDs `com.aerodj.app` (MusicKit, App Groups) and `com.aerodj.app.share` (App Groups), and app group `group.com.aerodj`, were registered on this team on 2026-10-26. No keys, certificates, or profiles were created in the portal. |
