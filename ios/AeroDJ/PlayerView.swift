@@ -22,9 +22,10 @@ struct PlayerView: View {
         // Route on available width, not size class: an iPhone Duo when open is
         // a wide canvas and should show the Studio, even though it's still
         // technically .compact. Portrait iPhone (narrow) shows the compact player.
+        // AERODJ_OPEN forces the Studio for the screenshot harness.
         GeometryReader { geo in
             Group {
-                if geo.size.width >= 680 {
+                if ProcessInfo.processInfo.environment["AERODJ_OPEN"] == "1" || geo.size.width >= 680 {
                     StudioView(station: station, service: service)
                 } else {
                     compactLayout

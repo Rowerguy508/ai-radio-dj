@@ -132,14 +132,12 @@ jobs:
             xcrun simctl launch --terminate-running-process "$IPHONE" com.aerodj.app
           sleep 3
           xcrun simctl io "$IPHONE" screenshot /tmp/aerodj-closed-empty.png
-      - name: Capture open (unfolded Studio, wide iPhone)
+      - name: Capture open (unfolded Studio)
         run: |
-          # Duo open = a wide iPhone canvas; rotate the same iPhone to landscape
-          # so the two-zone studio layout engages.
+          # Duo open = wide canvas. AERODJ_OPEN forces the two-zone Studio
+          # layout regardless of sim orientation (headless rotate is unreliable).
           xcrun simctl terminate "$IPHONE" com.aerodj.app || true
-          xcrun simctl io "$IPHONE" rotate left || xcrun simctl io "$IPHONE" rotate right || true
-          sleep 2
-          SIMCTL_CHILD_AERODJ_LAUNCH=player SIMCTL_CHILD_AERODJ_DEMO=playing \
+          SIMCTL_CHILD_AERODJ_LAUNCH=player SIMCTL_CHILD_AERODJ_DEMO=playing SIMCTL_CHILD_AERODJ_OPEN=1 \
             xcrun simctl launch --terminate-running-process "$IPHONE" com.aerodj.app
           sleep 4
           xcrun simctl io "$IPHONE" screenshot /tmp/aerodj-open-studio.png
