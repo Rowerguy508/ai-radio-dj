@@ -75,12 +75,9 @@ struct BleedNowPlaying: View {
         let artHeight = overflow ? Self.minimumArt : max(Self.minimumArt, height - textHeight)
         return VStack(spacing: 0) {
             BleedArtwork(track: heroTrack, station: station)
-                .frame(width: width, height: artHeight)
+                .frame(width: width, height: artHeight, alignment: .top)
                 .clipped()
                 .modifier(BleedArtFrame(namespace: artworkNamespace))
-                // The ident is a square larger than the column. Hide it after the clip so
-                // Zone A's accessibility frame stays the column, not the unclipped square.
-                .accessibilityHidden(true)
             if overflow {
                 ScrollView(showsIndicators: false) {
                     measuredText
@@ -187,6 +184,18 @@ struct StationSoundRow: View {
     }
 }
 
+/// Wraps inside the column, then truncates, so the label's frame cannot cross the gutter.
+private struct ColumnLabel: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .lineLimit(8)
+            .truncationMode(.tail)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 /// Serif title, then artist and station in the system face. All of it wraps on the slab.
 struct TrackBlock: View {
     let track: TrackInfo
@@ -200,16 +209,16 @@ struct TrackBlock: View {
                 Text(track.title)
                     .font(.system(.largeTitle, design: .serif))
                     .foregroundStyle(AeroDJPalette.onMediaLight)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .modifier(ColumnLabel())
                 Text(track.artistName)
                     .font(.body)
                     .foregroundStyle(AeroDJPalette.slabSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .modifier(ColumnLabel())
                 if let stationName, !stationName.isEmpty {
                     Text(stationName)
                         .font(.subheadline)
                         .foregroundStyle(AeroDJPalette.slabSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .modifier(ColumnLabel())
                 }
             }
             .accessibilityElement(children: .ignore)

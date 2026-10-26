@@ -183,7 +183,7 @@ struct BleedArtwork: View {
 
     var body: some View {
         GeometryReader { geo in
-            let side = max(geo.size.width, geo.size.height, 1)
+            let column = geo.size.width
             ZStack {
                 if let track, let url = track.artworkURL {
                     AsyncImage(url: url) { phase in
@@ -191,19 +191,26 @@ struct BleedArtwork: View {
                             image.resizable().scaledToFill()
                                 .frame(width: geo.size.width, height: geo.size.height)
                         } else {
-                            StationArtwork(style: .track(track, on: station), size: side)
+                            fittedIdent(.track(track, on: station), width: column)
                         }
                     }
                 } else if let track {
-                    StationArtwork(style: .track(track, on: station), size: side)
+                    fittedIdent(.track(track, on: station), width: column)
                 } else {
-                    StationArtwork(style: .station(station), size: side)
+                    fittedIdent(.station(station), width: column)
                 }
             }
-            .frame(width: geo.size.width, height: geo.size.height)
+            .frame(width: column, height: geo.size.height, alignment: .top)
             .clipped()
         }
         .accessibilityHidden(true)
+    }
+
+    /// The ident is a square. Fit it to the column width so its frame cannot cross the gutter.
+    private func fittedIdent(_ style: StationArtStyle, width: CGFloat) -> some View {
+        StationArtwork(style: style, size: width)
+            .aspectRatio(1, contentMode: .fit)
+            .frame(width: width)
     }
 }
 
