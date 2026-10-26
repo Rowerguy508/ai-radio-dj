@@ -63,28 +63,39 @@ struct NowPlayingPanel: View {
     let snapshot: PlaybackSnapshot
     let actions: PlaybackActions
     let dj: DJStatusPresentation
-    let isTestStation: Bool
+    let accent: Color
+    let soundTags: [String]
     let artworkSide: CGFloat
+    let onQueue: () -> Void
+    let onTune: () -> Void
     let onReview: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            StationHeader(station: station, isTestStation: isTestStation)
+        VStack(alignment: .leading, spacing: 0) {
             switch content {
             case .track(let track):
-                ArtworkView(url: track.artworkURL, size: artworkSide)
+                ArtworkView(track: track, size: artworkSide)
                     .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
                 TrackBlock(track: track, dj: dj, onReview: onReview)
+                    .padding(.top, 22)
+                if !soundTags.isEmpty {
+                    StationSoundRow(tags: soundTags, action: onTune).padding(.top, 10)
+                }
             default:
                 NowPlayingPlaceholder(content: content).padding(.vertical, 40)
             }
-            PlaybackErrorBanner(error: snapshot.error, actions: actions)
-            Spacer(minLength: 0)
+            PlaybackErrorBanner(error: snapshot.error, actions: actions).padding(.top, 12)
+            Spacer(minLength: 16)
             if content.showsTransport {
-                TransportRow(transport: snapshot.transport, actions: actions)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-                    .studioSurface(cornerRadius: 28)
+                VStack(spacing: 8) {
+                    QueueAffordance(upNext: snapshot.upNext, action: onQueue)
+                    Divider().opacity(0.5)
+                    TransportRow(transport: snapshot.transport, actions: actions, accent: accent, onTune: onTune)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .studioSurface(cornerRadius: 30)
             }
         }
     }
@@ -194,7 +205,7 @@ struct QueueList: View {
     @ViewBuilder
     private func row(_ track: TrackInfo, isNowPlaying: Bool, index: Int?) -> some View {
         HStack(spacing: 12) {
-            ArtworkView(url: track.artworkURL, size: 44)
+            ArtworkView(track: track, size: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
                     .font(isNowPlaying ? .subheadline.weight(.semibold) : .subheadline)

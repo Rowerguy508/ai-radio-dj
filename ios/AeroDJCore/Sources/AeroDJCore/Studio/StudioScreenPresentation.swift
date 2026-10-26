@@ -54,11 +54,13 @@ public struct StudioZoneWidths: Equatable, Sendable {
         return StudioZoneWidths(zoneA: a, zoneB: content - a)
     }
 
-    /// Artwork side in Zone A: min(zone width − 2·inset, 300, height budget).
+    /// Artwork side in Zone A: min(zone width − 16, 360, 44% of the height). Zone A is not a
+    /// card, so the artwork may use nearly its full width; the height budget keeps the track
+    /// block and transport on screen.
     public func artworkSide(containerHeight: Double) -> Double {
         if containerHeight < StudioLayoutMetrics.lowHeight { return 120 }
-        let budget = (containerHeight * 0.42).rounded(.down)
-        return max(120, min(zoneA - StudioLayoutMetrics.edgeInset * 2, 300, budget))
+        let budget = (containerHeight * 0.44).rounded(.down)
+        return max(120, min(zoneA - 16, 360, budget))
     }
 }
 
@@ -313,5 +315,81 @@ public extension StationTunerRow {
             return "\(title): \(displayedSummary). \(appliesCopy). \(StationTunerCopy.nowUsing(activeSummary))."
         }
         return "\(title): \(displayedSummary)."
+    }
+}
+
+// MARK: - Tuner indicators
+
+/// The one indicator each tuner control shows: saved, pending or active (plus saving,
+/// consent and error states). "Active" is used only for settings something actually reads
+/// today; settings nothing reads yet (genres, mood, energy, discovery) say "Saved".
+public enum TunerIndicator: Equatable, Sendable {
+    /// Saved, and nothing reads it yet. Honest: song picking doesn't use these settings.
+    case saved
+    /// Saved, waiting for a safe moment (copy says when).
+    case pending(String)
+    /// Saved and in effect for what reads it (DJ breaks, briefings).
+    case active
+    case saving
+    /// Requested but consent isn't granted; nothing is read.
+    case needsConsent(String)
+    case problem(String)
+
+    public init(status: StationControlStatus, setting: StationSetting) {
+        switch status {
+        case .idle: self = setting.isReadToday ? .active : .saved
+        case .saving: self = .saving
+        case .pendingBoundary(let timing): self = .pending(timing.appliesCopy)
+        case .consentRequired(.granted): self = setting.isReadToday ? .active : .saved
+        case .consentRequired(.denied): self = .needsConsent("Access is off")
+        case .consentRequired(.revoked): self = .needsConsent("Revoked")
+        case .consentRequired(.notRequested): self = .needsConsent("Needs permission")
+        case .error(.notLoaded): self = .problem("Loading")
+        case .error(.readOnlyNewerVersion): self = .problem("Read-only")
+        case .error(.saveFailed): self = .problem("Couldn't save")
+        case .error(.reductionNotSaved): self = .problem("Will save with next change")
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .saved: "Saved"
+        case .pending: "Pending"
+        case .active: "Active"
+        case .saving: "Saving…"
+        case .needsConsent(let s), .problem(let s): s
+        }
+    }
+
+    /// Longer VoiceOver text.
+    public var accessibilityLabel: String {
+        switch self {
+        case .saved: "Saved. Song picking doesn't use this yet."
+        case .pending(let copy): "Pending. \(copy)."
+        case .active: "Active."
+        default: label + "."
+        }
+    }
+}
+
+public extension StationSetting {
+    /// Whether anything in the app reads this setting today. Tuning for song picking is
+    /// stored and applied at boundaries but no selection engine reads it yet.
+    var isReadToday: Bool {
+        switch self {
+        case .genres, .moods, .energy, .discovery: false
+        case .commentary, .personality, .briefing, .integration: true
+        }
+    }
+
+    /// One honest line on what the setting changes today.
+    var usageCopy: String {
+        switch self {
+        case .genres, .moods, .energy, .discovery: "Saved with your station. Not used for song picking yet."
+        case .commentary: "Changes how often the DJ talks between songs."
+        case .personality: "Changes how long a DJ break may be."
+        case .briefing: "Lets DJ breaks carry your briefing."
+        case .integration: "Read only with your consent, in Connections."
+        }
     }
 }

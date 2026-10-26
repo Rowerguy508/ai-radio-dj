@@ -45,74 +45,201 @@ extension View {
     }
 }
 
-/// Full-bleed background: the artwork, heavily blurred, over a station-tinted gradient.
-/// Decorative only, hidden from VoiceOver. Solid when Reduce Transparency is on.
-struct StationBackdrop: View {
-    let artworkURL: URL?
-    let tint: Color
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+/// The station whose colours the fallback art and backdrop use. Set once by `PlayingScreen`
+/// (and again on the compact sheet), read by every `ArtworkView` below it.
+private struct ArtStationKey: EnvironmentKey { static let defaultValue: StationRef? = nil }
 
-    var body: some View {
-        ZStack {
-            Color(.systemBackground)
-            LinearGradient(colors: [tint.opacity(0.45), tint.opacity(0.08), Color(.systemBackground)],
-                           startPoint: .top, endPoint: .bottom)
-            if !reduceTransparency, let artworkURL {
-                AsyncImage(url: artworkURL) { phase in
-                    if case .success(let image) = phase {
-                        image.resizable().scaledToFill().blur(radius: 60).opacity(0.35)
-                    }
-                }
-            }
-        }
-        .accessibilityHidden(true)
-    }
-
-    /// A stable tint per station, so the room keeps its colour across fold and relaunch.
-    static func tint(for station: StationRef?) -> Color {
-        let palette: [Color] = [.indigo, .teal, .orange, .pink, .purple, .mint, .blue]
-        let key = station?.id ?? "aerodj"
-        let index = key.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0x7fff_ffff } % palette.count
-        return palette[index]
+extension EnvironmentValues {
+    var artStation: StationRef? {
+        get { self[ArtStationKey.self] }
+        set { self[ArtStationKey.self] = newValue }
     }
 }
 
-// MARK: - ArtworkView
+extension StationArtStyle {
+    /// 0 = base, 1 = deeper neighbour, 2 = softer accent.
+    func color(_ index: Int) -> Color {
+        switch index {
+        case 1: Color(hue: hues[1], saturation: min(1, saturation + 0.1), brightness: brightness * 0.72)
+        case 2: Color(hue: hues[2], saturation: saturation * 0.75, brightness: min(1, brightness + 0.1))
+        default: Color(hue: hues[0], saturation: saturation, brightness: brightness)
+        }
+    }
 
-/// Square artwork at a size the container decides. The placeholder is a tinted tile with
-/// a music note, never a spinner.
+    var startPoint: UnitPoint {
+        let r = Double(angle) * .pi / 180
+        return UnitPoint(x: 0.5 - cos(r) / 2, y: 0.5 - sin(r) / 2)
+    }
+
+    var endPoint: UnitPoint {
+        let r = Double(angle) * .pi / 180
+        return UnitPoint(x: 0.5 + cos(r) / 2, y: 0.5 + sin(r) / 2)
+    }
+}
+
+/// Full-bleed atmosphere: a wash in the current track's station colours (or the station's
+/// own when nothing plays), with the real artwork blurred over it when there is one.
+/// Decorative only, hidden from VoiceOver. Solid when Reduce Transparency is on.
+struct StationBackdrop: View {
+    let artworkURL: URL?
+    let style: StationArtStyle
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let dark = scheme == .dark
+        ZStack {
+            Color(.systemBackground)
+            if !reduceTransparency {
+                LinearGradient(colors: [style.color(0).opacity(dark ? 0.55 : 0.40),
+                                        style.color(1).opacity(dark ? 0.28 : 0.14),
+                                        Color(.systemBackground).opacity(0)],
+                               startPoint: .top, endPoint: .bottom)
+                RadialGradient(colors: [style.color(2).opacity(dark ? 0.20 : 0.16), .clear],
+                               center: .bottomTrailing, startRadius: 0, endRadius: 700)
+                if let artworkURL {
+                    AsyncImage(url: artworkURL) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().scaledToFill().blur(radius: 70).opacity(dark ? 0.30 : 0.35)
+                        }
+                    }
+                }
+            } else {
+                style.color(0).opacity(dark ? 0.25 : 0.12)
+            }
+        }
+        .animation(.easeInOut(duration: 0.8), value: style)
+        .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Artwork
+
+/// Square artwork at a size the container decides. Without album art (or while it loads,
+/// or if it fails) the song gets generated station art: a gradient in the station's colours,
+/// radio rings and the song's monogram. Deterministic and offline (`StationArtStyle`).
 struct ArtworkView: View {
-    let url: URL?
+    let track: TrackInfo
     let size: CGFloat
+    @Environment(\.artStation) private var station
 
     var body: some View {
         Group {
-            if let url {
+            if let url = track.artworkURL {
                 AsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
                         image.resizable().scaledToFill()
                     } else {
-                        placeholder
+                        fallback
                     }
                 }
             } else {
-                placeholder
+                fallback
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: size > 160 ? 22 : 14, style: .continuous))
-        .shadow(color: .black.opacity(0.18), radius: size > 160 ? 24 : 8, y: 10)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+        .shadow(color: .black.opacity(size > 160 ? 0.22 : 0.12), radius: size > 160 ? 28 : 6, y: size > 160 ? 14 : 3)
         .accessibilityHidden(true)
     }
 
-    private var placeholder: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(.thinMaterial)
-            .overlay(
-                Image(systemName: "music.note")
-                    .font(.system(size: size * 0.28, weight: .medium))
+    private var cornerRadius: CGFloat { size > 160 ? 26 : max(8, size * 0.2) }
+
+    private var fallback: some View {
+        StationArtwork(style: .track(track, on: station), size: size,
+                       caption: size >= 200 ? station?.name : nil)
+    }
+}
+
+/// Generated cover: gradient, an accent glow, concentric "on air" rings and a monogram.
+/// Never a network request or an image asset.
+struct StationArtwork: View {
+    let style: StationArtStyle
+    let size: CGFloat
+    var caption: String?
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [style.color(0), style.color(1)],
+                           startPoint: style.startPoint, endPoint: style.endPoint)
+            RadialGradient(colors: [style.color(2).opacity(0.55), .clear],
+                           center: .bottomTrailing, startRadius: 0, endRadius: size * 0.95)
+            ForEach(1...max(1, style.rings), id: \.self) { ring in
+                Circle()
+                    .strokeBorder(.white.opacity(0.08 + 0.05 * Double(style.rings - ring + 1)),
+                                  lineWidth: max(0.75, size * 0.008))
+                    .frame(width: size * (0.38 + 0.26 * Double(ring)), height: size * (0.38 + 0.26 * Double(ring)))
+            }
+            Text(style.monogram)
+                .font(.system(size: size * 0.30, weight: .heavy, design: .rounded))
+                .foregroundStyle(.white.opacity(0.95))
+                .minimumScaleFactor(0.4)
+                .lineLimit(1)
+                .padding(size * 0.12)
+                .shadow(color: .black.opacity(0.22), radius: size * 0.03, y: size * 0.012)
+            if let caption {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 6) {
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                        Text(caption.uppercased()).lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: max(10, size * 0.042), weight: .bold, design: .rounded))
+                    .tracking(1.2)
+                    .foregroundStyle(.white.opacity(0.85))
+                }
+                .padding(size * 0.07)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipped()
+        .accessibilityHidden(true)
+    }
+}
+
+/// Station identity for the navigation bar: a small station-art tile, the station name and,
+/// in the debug fixture mode, a TEST STATION tag so a screenshot can't be mistaken for a
+/// listener's real station.
+struct StationTitle: View {
+    let station: StationRef
+    let isTestStation: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            StationArtwork(style: .station(station), size: 24)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            Text(station.name)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if isTestStation {
+                Text("TEST STATION")
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().strokeBorder(.secondary))
                     .foregroundStyle(.secondary)
-            )
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("station.title")
+    }
+}
+
+extension View {
+    /// Replaces the plain navigation title with `StationTitle`; the title string stays for
+    /// the back button and VoiceOver.
+    func stationToolbar(_ station: StationRef, isTestStation: Bool) -> some View {
+        navigationTitle(station.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .principal) { StationTitle(station: station, isTestStation: isTestStation) }
+            }
     }
 }
 
@@ -188,15 +315,36 @@ struct OnAirBadge: View {
 
 // MARK: - TransportRow
 
-/// Play/Pause (64 pt) and Skip (44 pt minimum). Haptics fire only on the user's own taps,
-/// via a counter bumped inside the button actions, never on a snapshot or DJ change.
+/// Tune (opens the tuner), Play/Pause (64 pt, filled in the station colour) and Skip.
+/// Haptics fire only on the user's own taps, via a counter bumped inside the button
+/// actions, never on a snapshot or DJ change.
 struct TransportRow: View {
     let transport: TransportState
     let actions: PlaybackActions
+    let accent: Color
+    var onTune: (() -> Void)?
     @State private var taps = 0
 
     var body: some View {
-        HStack(spacing: 36) {
+        HStack(spacing: 0) {
+            side {
+                if let onTune {
+                    Button {
+                        taps += 1
+                        onTune()
+                    } label: {
+                        Label("Tune station", systemImage: "slider.horizontal.3")
+                            .labelStyle(.iconOnly)
+                            .font(.system(size: 20, weight: .semibold))
+                            .frame(width: 52, height: 52)
+                            .contentShape(Circle())
+                    }
+                    .foregroundStyle(.secondary)
+                    .accessibilityHint("Opens the tuner. Music continues.")
+                    .accessibilityIdentifier("transport.tune")
+                }
+            }
+
             Button {
                 taps += 1
                 if transport == .playing { actions.pause() } else { Task { await actions.resume() } }
@@ -204,46 +352,75 @@ struct TransportRow: View {
                 Label(transport == .playing ? "Pause" : "Play",
                       systemImage: transport == .playing ? "pause.fill" : "play.fill")
                     .labelStyle(.iconOnly)
-                    .font(.system(size: 34, weight: .semibold))
-                    .frame(width: 64, height: 64)
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 68, height: 68)
+                    .background(Circle().fill(accent.gradient))
+                    .shadow(color: accent.opacity(0.35), radius: 10, y: 4)
                     .contentShape(Circle())
+                    .contentTransition(.symbolEffect(.replace))
             }
             .accessibilityIdentifier("transport.playPause")
 
-            Button {
-                taps += 1
-                Task { await actions.skip() }
-            } label: {
-                Label("Skip", systemImage: "forward.fill")
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 24, weight: .semibold))
-                    .frame(width: 52, height: 52)
-                    .contentShape(Circle())
+            side {
+                Button {
+                    taps += 1
+                    Task { await actions.skip() }
+                } label: {
+                    Label("Skip", systemImage: "forward.fill")
+                        .labelStyle(.iconOnly)
+                        .font(.system(size: 24, weight: .semibold))
+                        .frame(width: 52, height: 52)
+                        .contentShape(Circle())
+                }
+                .foregroundStyle(.primary)
+                .accessibilityIdentifier("transport.skip")
             }
-            .accessibilityIdentifier("transport.skip")
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
+    }
+
+    private func side<V: View>(@ViewBuilder _ content: () -> V) -> some View {
+        content().frame(maxWidth: .infinity)
     }
 }
 
-// MARK: - QueueAffordance
+// MARK: - Up next
 
-/// "Up next: <first title>" with a chevron. Opens the workspace on its Queue segment.
+/// The next song as a small card (art, "Up next", title — artist). Opens the workspace on
+/// its Queue segment.
 struct QueueAffordance: View {
     let upNext: [TrackInfo]
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: "list.bullet").foregroundStyle(.secondary).accessibilityHidden(true)
-                Text("Up next: \(upNext.first?.title ?? "nothing queued")")
-                    .font(.subheadline)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+            HStack(spacing: 10) {
+                if let next = upNext.first {
+                    ArtworkView(track: next, size: 36)
+                } else {
+                    Image(systemName: "list.bullet")
+                        .frame(width: 36, height: 36)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("UP NEXT")
+                        .font(.caption2.weight(.bold))
+                        .tracking(0.8)
+                        .foregroundStyle(.secondary)
+                    Text(upNext.first.map { "\($0.title) · \($0.artistName)" } ?? "Nothing queued")
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 Spacer(minLength: 8)
+                if upNext.count > 1 {
+                    Text("+\(upNext.count - 1)")
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
                 Image(systemName: "chevron.up").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                     .accessibilityHidden(true)
             }
@@ -251,7 +428,10 @@ struct QueueAffordance: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(upNext.first.map { "Up next: \($0.title) by \($0.artistName)" } ?? "Up next: nothing queued")
         .accessibilityHint("Opens the queue, tuner and connections")
+        .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("queue.affordance")
     }
 }
@@ -386,7 +566,7 @@ struct StartListeningView: View {
                         }
                     } label: {
                         HStack(spacing: 12) {
-                            ArtworkView(url: track.artworkURL, size: 44)
+                            ArtworkView(track: track, size: 44)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(track.title).font(.subheadline).lineLimit(1)
                                 Text(track.artistName).font(.caption).foregroundStyle(.secondary).lineLimit(1)

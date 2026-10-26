@@ -23,6 +23,7 @@ struct TuneForm: View {
                 }
                 if model.hasPendingChanges { PendingChangesCard(model: model) }
                 Group {
+                    TuneSectionHeader(title: "Sound", detail: StationTunerCopy.musicSelectionNotice)
                     TagControl(row: row(.genres), selected: model.displayed.genres,
                                suggestions: TuneVocabulary.genres) { tags in Task { await model.setGenres(tags) } }
                     TagControl(row: row(.moods), selected: model.displayed.moods,
@@ -33,10 +34,7 @@ struct TuneForm: View {
                     LevelControl(row: row(.discovery), value: model.displayed.discovery, low: "Favourites", high: "New music") { v in
                         Task { await model.setDiscovery(v) }
                     }
-                    Text(StationTunerCopy.musicSelectionNotice)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    TuneSectionHeader(title: "DJ", detail: "Applies to future DJ breaks, never the song that's playing.")
                     commentaryControl
                     personalityControl
                     briefingControl
@@ -99,10 +97,17 @@ struct TuneForm: View {
             // Requesting a source never grants access; Connections shows whether it is
             // actually readable. Turning one off applies now and purges its narration.
             ForEach(StationIntegration.allCases, id: \.self) { integration in
-                Toggle(StationSetting.integration(integration).title,
-                       isOn: Binding(get: { model.displayed.requestedIntegrations.contains(integration) },
-                                     set: { on in Task { await model.setIntegration(integration, requested: on) } }))
-                    .font(.subheadline)
+                let r = row(.integration(integration))
+                Toggle(isOn: Binding(get: { model.displayed.requestedIntegrations.contains(integration) },
+                                     set: { on in Task { await model.setIntegration(integration, requested: on) } })) {
+                    HStack(spacing: 8) {
+                        Text(r.title)
+                        if model.displayed.requestedIntegrations.contains(integration) {
+                            StatusBadge(indicator: TunerIndicator(status: r.status, setting: r.setting))
+                        }
+                    }
+                }
+                .font(.subheadline)
             }
         }
     }
@@ -125,7 +130,7 @@ struct ControlCard<Content: View>: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(row.title).font(.headline)
                 Spacer(minLength: 8)
-                StatusBadge(status: row.status)
+                StatusBadge(indicator: TunerIndicator(status: row.status, setting: row.setting))
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(row.accessibilitySummary)
@@ -145,34 +150,64 @@ struct ControlCard<Content: View>: View {
     }
 }
 
+/// Saved / Pending / Active (or saving, consent, error) as a small labelled chip. Never
+/// colour alone: every state has text and an icon.
 struct StatusBadge: View {
-    let status: StationControlStatus
+    let indicator: TunerIndicator
 
     var body: some View {
-        if let text {
-            Text(text)
+        Label(indicator.label, systemImage: icon)
+            .font(.caption.weight(.semibold))
+            .labelStyle(.titleAndIcon)
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(color.opacity(0.14)))
+            .lineLimit(1)
+            .accessibilityLabel(indicator.accessibilityLabel)
+            .accessibilityIdentifier("tune.indicator")
+    }
+
+    private var icon: String {
+        switch indicator {
+        case .saved: "tray.and.arrow.down"
+        case .pending: "clock"
+        case .active: "checkmark.circle.fill"
+        case .saving: "arrow.triangle.2.circlepath"
+        case .needsConsent: "lock"
+        case .problem: "exclamationmark.triangle"
+        }
+    }
+
+    private var color: Color {
+        switch indicator {
+        case .saved, .saving: .secondary
+        case .pending: .orange
+        case .active: .green
+        case .needsConsent: .secondary
+        case .problem: .red
+        }
+    }
+}
+
+/// A group title with one honest line about what the group changes today.
+struct TuneSectionHeader: View {
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title.uppercased())
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            Text(detail)
                 .font(.caption)
-                .foregroundStyle(isError ? Color.red : Color.secondary)
-                .lineLimit(1)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .padding(.top, 4)
     }
-
-    private var text: String? {
-        switch status {
-        case .idle, .pendingBoundary: nil   // pending copy is shown under the control
-        case .saving: "Saving…"
-        case .consentRequired(.denied): "Access is off"
-        case .consentRequired(.revoked): "Revoked"
-        case .consentRequired(.notRequested): "Needs permission"
-        case .consentRequired(.granted): nil
-        case .error(.notLoaded): "Loading"
-        case .error(.readOnlyNewerVersion): "Read-only"
-        case .error(.saveFailed): "Couldn't save"
-        case .error(.reductionNotSaved): "Will save with next change"
-        }
-    }
-
-    private var isError: Bool { if case .error(.saveFailed) = status { true } else { false } }
 }
 
 /// Toggleable tag chips (suggestions plus anything already chosen) and a custom tag field.
@@ -286,6 +321,8 @@ struct RecipesSection: View {
     let editable: Bool
     @State private var name = ""
     @State private var message: String?
+    @State private var renaming: StationRecipe?
+    @State private var newName = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -301,6 +338,14 @@ struct RecipesSection: View {
                     Spacer(minLength: 8)
                     Button("Apply") { Task { await apply(recipe) } }
                         .buttonStyle(.bordered).controlSize(.small)
+                        .accessibilityLabel("Apply \(recipe.name)")
+                    Button {
+                        newName = recipe.name
+                        renaming = recipe
+                    } label: {
+                        Label("Rename \(recipe.name)", systemImage: "pencil").labelStyle(.iconOnly).frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.borderless)
                     Button(role: .destructive) {
                         Task { if case .failure(let e) = await studio.recipes.delete(recipe.id) { message = e.userMessage } }
                     } label: {
@@ -329,6 +374,19 @@ struct RecipesSection: View {
         }
         .padding(14)
         .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .alert("Rename recipe", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: $newName)
+            Button("Save") {
+                guard let recipe = renaming else { return }
+                Task {
+                    switch await studio.recipes.rename(recipe.id, to: newName) {
+                    case .success(let r): message = "Renamed to \"\(r.name)\"."
+                    case .failure(let e): message = e.userMessage
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private func apply(_ recipe: StationRecipe) async {

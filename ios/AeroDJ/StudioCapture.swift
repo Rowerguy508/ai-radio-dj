@@ -32,9 +32,6 @@ struct StudioCaptureView: View {
                     ProgressView()
                 }
             }
-            .navigationTitle(PlaybackFixtures.station.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
         }
         .task {
             // The launch path does not start Studio yet; load it here so the tuner and

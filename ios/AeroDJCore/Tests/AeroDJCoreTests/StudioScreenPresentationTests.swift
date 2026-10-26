@@ -39,10 +39,10 @@ final class StudioScreenPresentationTests: XCTestCase {
 
     func testArtworkUsesZoneWidthAndHeightBudget() {
         let narrow = StudioZoneWidths.allocate(containerWidth: 716)!
-        XCTAssertEqual(narrow.artworkSide(containerHeight: 900), 288) // 320 - 32
+        XCTAssertEqual(narrow.artworkSide(containerHeight: 900), 304) // 320 - 16
         let wide = StudioZoneWidths.allocate(containerWidth: 1200)!
-        XCTAssertEqual(wide.artworkSide(containerHeight: 1000), 300)
-        XCTAssertEqual(wide.artworkSide(containerHeight: 600), 252) // 0.42 * 600
+        XCTAssertEqual(wide.artworkSide(containerHeight: 1000), 360)
+        XCTAssertEqual(wide.artworkSide(containerHeight: 600), 264) // 0.44 * 600
         XCTAssertEqual(wide.artworkSide(containerHeight: 479), 120) // low height keeps transport
     }
 
@@ -180,5 +180,41 @@ final class StudioScreenPresentationTests: XCTestCase {
         XCTAssertEqual(row.activeSummary, before, "the playing song keeps the active value")
         XCTAssertTrue(row.accessibilitySummary.contains("Applies after this song"))
         XCTAssertTrue(row.accessibilitySummary.contains("Now using: \(before)"))
+    }
+}
+
+final class TunerIndicatorTests: XCTestCase {
+    func testSettingsNothingReadsSaySavedNeverActive() {
+        for s in [StationSetting.genres, .moods, .energy, .discovery] {
+            XCTAssertEqual(TunerIndicator(status: .idle, setting: s), .saved)
+            XCTAssertNotEqual(TunerIndicator(status: .idle, setting: s).label, "Active")
+        }
+    }
+
+    func testReadSettingsAreActive() {
+        for s in [StationSetting.commentary, .personality, .briefing, .integration(.calendar)] {
+            XCTAssertEqual(TunerIndicator(status: .idle, setting: s), .active)
+        }
+    }
+
+    func testPendingCarriesBoundaryCopy() {
+        let i = TunerIndicator(status: .pendingBoundary(.nextSongBoundary), setting: .energy)
+        XCTAssertEqual(i, .pending("Applies after this song"))
+        XCTAssertEqual(i.label, "Pending")
+        XCTAssertTrue(i.accessibilityLabel.contains("after this song"))
+    }
+
+    func testConsentAndErrors() {
+        XCTAssertEqual(TunerIndicator(status: .consentRequired(.notRequested), setting: .integration(.obsidian)),
+                       .needsConsent("Needs permission"))
+        XCTAssertEqual(TunerIndicator(status: .consentRequired(.revoked), setting: .integration(.calendar)).label, "Revoked")
+        XCTAssertEqual(TunerIndicator(status: .error(.saveFailed), setting: .moods), .problem("Couldn't save"))
+        XCTAssertEqual(TunerIndicator(status: .saving, setting: .moods), .saving)
+    }
+
+    func testUsageCopyNeverClaimsSongPicking() {
+        for s in [StationSetting.genres, .moods, .energy, .discovery] {
+            XCTAssertTrue(s.usageCopy.contains("Not used for song picking"))
+        }
     }
 }
