@@ -50,6 +50,7 @@ struct PlayerView: View {
                         switch BreakHandoffPolicy.decide(prepared: prepared) {
                         case let .play(breakToPlay):
                             let line = breakToPlay.cues.map(\.text).joined(separator: " ")
+                            interlude.handOut(afterTrack: finishedIndex)
                             await interlude.play(clips: breakToPlay.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
                         case .continueMusic:
                             music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)

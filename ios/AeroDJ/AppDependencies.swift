@@ -133,8 +133,8 @@ struct AppDependencies {
     private static func makeInterlude(session: DJBreakSession, playback: MusicKitService) -> InterludePlaybackAdapter {
         let interlude = InterludePlaybackAdapter(music: playback)
         let speechStop = SpeechStopGate()
-        speechStop.arm { [interlude] reason in
-            interlude.stopCurrentInterlude(reason: reason)
+        speechStop.arm { [interlude] reason, afterTrack in
+            interlude.stopCurrentInterlude(reason: reason, afterTrack: afterTrack)
         }
         guard speechStop.canPlay, let hook = speechStop.onBreakMustStop else {
             preconditionFailure("speech stop hook is installed before a clip can play")

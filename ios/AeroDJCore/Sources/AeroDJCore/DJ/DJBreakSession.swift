@@ -39,20 +39,20 @@ public final class DJBreakSession {
     /// and only when it removes a source the break on air depends on.
     /// If a purge hits the on-air break while this is nil, the stop is held and delivered once
     /// when a hook is set (unless that break has ended by then).
-    public var onBreakMustStop: (@MainActor (InterludeStopReason) -> Void)? {
+    public var onBreakMustStop: (@MainActor (InterludeStopReason, Int?) -> Void)? {
         didSet { deliverPendingStop() }
     }
     /// A stop for the break after `afterTrack` that found no hook installed.
     private var pendingStop: (afterTrack: Int, reason: InterludeStopReason)?
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
-        if let hook = onBreakMustStop { hook(reason) } else { pendingStop = (k, reason) }
+        if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
     }
 
     private func deliverPendingStop() {
         guard let pending = pendingStop, let hook = onBreakMustStop else { return }
         pendingStop = nil
-        hook(pending.reason)
+        hook(pending.reason, nil)
     }
 
     public init(preparer: DJBreakPreparer, station: StationConfigurationModel, dj: DJPresentationStore,
