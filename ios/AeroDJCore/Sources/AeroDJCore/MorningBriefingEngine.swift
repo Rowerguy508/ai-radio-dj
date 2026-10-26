@@ -34,6 +34,8 @@ public struct BriefingScriptSegment: Identifiable, Codable, Equatable, Sendable 
     /// Declared in priority order.
     public enum Kind: Int, Codable, Comparable, Sendable {
         case opener, upcomingEvent, dueTask, followUp, note, fallback, closer
+        /// DJ talk between songs (no personal content).
+        case transition
         public static func < (lhs: Kind, rhs: Kind) -> Bool { lhs.rawValue < rhs.rawValue }
     }
 
