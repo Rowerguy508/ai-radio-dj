@@ -306,16 +306,52 @@ public struct RenderedNarration: Sendable {
 
 /// Renders cues through the route chain: cache -> paid route (if within the
 /// user's daily cap and before its timeout) -> next route ... -> on-device.
+/// Tombstones for personal items whose narration was purged (consent withdrawn, item revoked,
+/// deleted or demoted). A render that started before a purge must not leave audio for that item
+/// in the cache: `VoiceRenderer` takes a token before synthesis and re-checks it around the cache
+/// write. `NarrationPurger` marks items here *before* purging, so either the purge removes the
+/// stored clip, or the renderer sees the mark and removes it itself. Process-wide by default so
+/// the app's purger and renderer agree without extra wiring; tests inject their own.
+public final class NarrationRevocations: @unchecked Sendable {
+    public static let shared = NarrationRevocations()
+    private let lock = NSLock()
+    private var clock: UInt64 = 0
+    private var revokedAt: [UUID: UInt64] = [:]
+
+    public init() {}
+
+    /// The current revocation clock. Anything revoked after this token is `revoked(since:)`.
+    public func token() -> UInt64 { lock.withLock { clock } }
+
+    /// Marks items as revoked now.
+    public func revoke(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        lock.withLock {
+            clock &+= 1
+            for id in ids { revokedAt[id] = clock }
+        }
+    }
+
+    /// Whether any of `ids` was revoked after `token` was taken.
+    public func revoked(_ ids: [UUID], since token: UInt64) -> Bool {
+        guard !ids.isEmpty else { return false }
+        return lock.withLock { ids.contains { (revokedAt[$0] ?? 0) > token } }
+    }
+}
+
 public struct VoiceRenderer: Sendable {
     public static let cacheFormatVersion = "v1"
     public let routes: [VoiceRoute]
     public let budget: VoiceBudget
     public let cache: any AudioCache
+    public let revocations: NarrationRevocations
 
-    public init(routes: [VoiceRoute], budget: VoiceBudget, cache: any AudioCache) {
+    public init(routes: [VoiceRoute], budget: VoiceBudget, cache: any AudioCache,
+                revocations: NarrationRevocations = .shared) {
         self.routes = routes
         self.budget = budget
         self.cache = cache
+        self.revocations = revocations
     }
 
     public static func cacheKey(text: String, route: VoiceRoute) -> String {
@@ -354,6 +390,8 @@ public struct VoiceRenderer: Sendable {
 
     public func render(_ cue: NarrationCue, userID: String, stationID: String) async -> Result<RenderedClip, Failure> {
         var attempts: [VoiceAttempt] = []
+        let sources = cue.sourceItemID.map { [$0] } ?? []
+        let token = revocations.token()  // before any synthesis: a later purge of `sources` wins
         for route in routes {
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
             let text = route.acceptsSSML ? SpeechDelivery.ssml(cue.text) : SpeechDelivery.speakable(cue.text)
@@ -387,11 +425,19 @@ public struct VoiceRenderer: Sendable {
                 let audio = CachedAudio(data: artifact.data, seconds: artifact.durationSeconds,
                                         providerID: route.providerID, voiceID: route.voice.id,
                                         sourceItemIDs: cue.sourceItemID.map { [$0] } ?? [])
-                if Task.isCancelled {  // the caller gave up: no stale audio is cached or returned
+                if Task.isCancelled || revocations.revoked(sources, since: token) {
+                    // The caller gave up, or the source was purged mid-render: nothing is cached or returned.
                     attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
                     return .failure(Failure(reason: .renderFailed, attempts: attempts))
                 }
                 await cache.store(audio, for: key)
+                if revocations.revoked(sources, since: token) {
+                    // A purge landed while the write was in flight and may have run before it:
+                    // remove what we just wrote. (A purge after the write removes it itself.)
+                    await cache.purge(sourceItemIDs: Set(sources))
+                    attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
+                    return .failure(Failure(reason: .renderFailed, attempts: attempts))
+                }
                 attempts.append(VoiceAttempt(providerID: route.providerID, result: .rendered))
                 return .success(RenderedClip(cueID: cue.id, audio: audio, cacheKey: key, attempts: attempts))
             } catch is CancellationError {

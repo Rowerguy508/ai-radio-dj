@@ -356,15 +356,20 @@ public struct NarrationPurger: NarrationPurging {
     public let cache: any AudioCache
     public let preparer: DJBreakPreparer?
     public let session: DJBreakSession?
+    public let revocations: NarrationRevocations
 
-    public init(cache: any AudioCache, preparer: DJBreakPreparer?, session: DJBreakSession? = nil) {
+    public init(cache: any AudioCache, preparer: DJBreakPreparer?, session: DJBreakSession? = nil,
+                revocations: NarrationRevocations = .shared) {
         self.cache = cache
         self.preparer = preparer
         self.session = session
+        self.revocations = revocations
     }
 
     public func purge(sourceItemIDs: Set<UUID>) async {
         guard !sourceItemIDs.isEmpty else { return }
+        // First: an in-flight render for these items must not cache its result (VoiceRenderer).
+        revocations.revoke(sourceItemIDs)
         if let session { await session.purge(sourceItemIDs: sourceItemIDs) }
         await preparer?.purge(sourceItemIDs: sourceItemIDs)
         await cache.purge(sourceItemIDs: sourceItemIDs)
