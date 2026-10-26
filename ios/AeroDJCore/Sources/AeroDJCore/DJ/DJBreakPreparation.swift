@@ -155,7 +155,9 @@ public actor DJBreakPreparer {
         var cues: [NarrationCue] = []
         var clips: [RenderedClip] = []
         for var cue in djBreak.cues {
-            if Task.isCancelled { return .skipped(.notReadyAtBoundary) }
+            // The only cancellation whose result is kept is the preparation deadline: takeBreak,
+            // cancelAll and purge record their own outcome first and ignore this one.
+            if Task.isCancelled { return .skipped(.timedOut) }
             switch await renderer.render(cue, userID: userID, stationID: stationID) {
             case .success(let clip):
                 cue.renderedSeconds = clip.audio.seconds
@@ -165,7 +167,9 @@ public actor DJBreakPreparer {
                 cues.append(cue)
                 clips.append(clip)
             case .failure(let failure):
-                return .skipped(skipReason(failure))
+                // A render cut short by the deadline is a timeout, whichever side of the race
+                // (worker or timer) reports first.
+                return .skipped(Task.isCancelled ? .timedOut : skipReason(failure))
             }
         }
         let seconds = clips.reduce(0) { $0 + $1.audio.seconds }

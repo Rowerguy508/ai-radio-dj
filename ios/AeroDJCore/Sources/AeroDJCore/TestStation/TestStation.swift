@@ -92,4 +92,71 @@ public struct FixtureContextSource: ContextSource {
     }
     public func fetchItems() async throws -> [ContextItem] { items }
 }
+/// One synthetic fixture set shared by the briefing and the Connections screen, so the test
+/// station shows the same items it narrates and a revoke or delete in Connections removes the
+/// item from the next briefing. Holds no reader, store, URL or framework handle.
+public actor TestStationFixtures {
+    public nonisolated let items: [ContextItem]
+    private var states: [UUID: ConnectionItemState]
+
+    public init(now: Date = Date(), calendar: Calendar = .current) {
+        items = TestStation.fixtureSources(now: now, calendar: calendar)
+            .compactMap { ($0 as? FixtureContextSource)?.items }.flatMap { $0 }
+        states = Dictionary(uniqueKeysWithValues: items.map { ($0.id, ConnectionItemState.approved) })
+    }
+
+    /// Context sources for the briefing: only items still approved in Connections.
+    public nonisolated func contextSources() -> [any ContextSource] {
+        Dictionary(grouping: items, by: \.source).keys.sorted { $0.rawValue < $1.rawValue }.map { FixtureBackedSource(source: $0, fixtures: self) }
+    }
+
+    /// One provider per integration, backed by the same items.
+    public nonisolated func providers() -> [any ConnectionItemProvider] {
+        Set(items.map { StationIntegration(source: $0.source) }).sorted { $0.rawValue < $1.rawValue }
+            .map { FixtureConnectionProvider(integration: $0, fixtures: self) }
+    }
+
+    /// Calendar and notes report the fixture selection; nothing on the device is read.
+    public nonisolated func sourceReader() -> StaticConnectionSourceReader {
+        StaticConnectionSourceReader(
+            calendar: .init(access: .fullAccess, calendars: [.init(id: "fixture", title: "[TEST] Fixture calendar")],
+                            selectedCalendarIDs: ["fixture"]),
+            obsidian: .valid(fileCount: items.filter { $0.source == .obsidian }.count))
+    }
+
+    func narratable(_ source: ContextSourceKind) -> [ContextItem] {
+        items.filter { $0.source == source && states[$0.id] == .approved }
+    }
+
+    func connectionItems(_ integration: StationIntegration, now: Date) -> [ConnectionItem] {
+        items.filter { StationIntegration(source: $0.source) == integration }.compactMap { item in
+            guard let state = states[item.id] else { return nil }
+            let shown = item.expiresAt.map { $0 <= now } == true ? ConnectionItemState.expired : state
+            return ConnectionItem(id: item.id, integration: integration, title: item.title, state: shown, expiresAt: item.expiresAt)
+        }
+    }
+
+    func perform(_ action: ConnectionAction, on id: UUID) {
+        guard states[id] != nil else { return }
+        switch action {
+        case .approve, .readAnyway: states[id] = .approved
+        case .revoke: states[id] = .revoked
+        case .delete: states[id] = nil
+        default: break
+        }
+    }
+}
+
+struct FixtureBackedSource: ContextSource {
+    let source: ContextSourceKind
+    let fixtures: TestStationFixtures
+    func fetchItems() async throws -> [ContextItem] { await fixtures.narratable(source) }
+}
+
+struct FixtureConnectionProvider: ConnectionItemProvider {
+    let integration: StationIntegration
+    let fixtures: TestStationFixtures
+    func items(now: Date) async throws -> [ConnectionItem] { await fixtures.connectionItems(integration, now: now) }
+    func perform(_ action: ConnectionAction, on id: UUID) async throws { await fixtures.perform(action, on: id) }
+}
 #endif

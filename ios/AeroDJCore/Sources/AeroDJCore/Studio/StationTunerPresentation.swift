@@ -67,7 +67,7 @@ public extension CommentaryFrequency {
     var honestDescription: String {
         switch self {
         case .off: "Music only. The DJ doesn't talk between songs."
-        default: "The DJ talks after about \(Int((talkFraction * 100).rounded()))% of songs, never two in a row."
+        default: "The DJ talks after about \(Int((StationConfiguration(commentary: self).cadence().expectedTalkShare * 100).rounded()))% of songs, never two in a row."
         }
     }
 }
