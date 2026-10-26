@@ -174,7 +174,7 @@ jobs:
             "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
             "$DERIVED_DATA/Build/Products/Release-iphonesimulator/AeroDJ.app" \
             "$SIM_UDID"
-      - name: Release app excludes fixture assets and symbols
+      - name: Release app excludes FixtureAlbum
         run: |
           ios/scripts/check-release-excludes-fixture-album.sh \
             "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
