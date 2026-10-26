@@ -122,14 +122,12 @@ final class MusicKitService: ObservableObject {
     /// The user pressed play.
     func resume() async throws {
         intent.userPlay()
+        activateAudioSessionForPlayback()
         try await player.play()
         isPlaying = true
         stateMachine.apply(.resume)
         send(.userResumed)
-        if let index = pendingStartIndex, let song = queue[index].song {
-            pendingStartIndex = nil
-            onSongStarted?(index, song.duration)
-        }
+        reportPendingStart()
     }
 
     /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
@@ -143,9 +141,12 @@ final class MusicKitService: ObservableObject {
     func resumeIfAllowed() async {
         guard intent.mayAutoResume, player.queue.currentEntry != nil else { return }
         do {
+            activateAudioSessionForPlayback()
             try await player.play()
             isPlaying = true
             send(.userResumed)
+            // A song loaded during the break (paused) starts now; its break is planned here.
+            reportPendingStart()
         } catch {
             reportError("Could not resume music: \(error.localizedDescription)")
         }
@@ -182,6 +183,7 @@ final class MusicKitService: ObservableObject {
             pendingStartIndex = index
             return
         }
+        activateAudioSessionForPlayback()
         try await player.play()
         isPlaying = true
         pendingStartIndex = nil
@@ -350,18 +352,35 @@ final class MusicKitService: ObservableObject {
     /// interruption + route-change handlers.
     private func configureAudioSession() {
         if !audioSessionConfigured {
-            let session = AVAudioSession.sharedInstance()
+            // Category only. Setting it does not stop other audio; activation waits for playback.
             do {
-                try session.setCategory(.playback, mode: .default, options: [])
-                try session.setActive(true)
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
                 audioSessionConfigured = true
             } catch {
-                // Non-fatal: playback still works in foreground. A later call retries.
+                // Non-fatal: retried on the next call.
             }
         }
-        // Observers are registered once, whether or not activation succeeded.
+        // Observers are registered once, whether or not the category was set.
         guard sessionEventsTask == nil else { return }
         registerSessionObservers()
+    }
+
+    /// Activates the session right before playback starts, so launching the app does not stop
+    /// the user's other audio. Runs on every play, because the system can deactivate the session.
+    private func activateAudioSessionForPlayback() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            // Non-fatal: the play call below reports any real failure.
+        }
+    }
+
+    /// Reports a song that was loaded paused as started, once playback really begins.
+    private func reportPendingStart() {
+        guard let index = pendingStartIndex, queue.indices.contains(index),
+              let song = queue[index].song else { return }
+        pendingStartIndex = nil
+        onSongStarted?(index, song.duration)
     }
 
     /// Notifications are yielded in arrival order into one stream, and a single main-actor loop
