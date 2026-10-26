@@ -33,6 +33,9 @@ enum StudioCaptureScenario: String {
     case loading
     /// A recoverable playback error banner.
     case error
+    /// Music plays, and the player reported that the last DJ break failed to play
+    /// (`DJPresentationEvent.playbackFailed`, the same event the audio player sends).
+    case playbackFailed
     /// Apple Music access denied: the Settings path, no transport.
     case denied
     /// The fixture calendar was turned off via Connections (`perform(.revoke)`): selection
@@ -71,32 +74,57 @@ struct StudioCaptureView: View {
     let dependencies: AppDependencies
     @State private var loaded = false
     @State private var scenario: StudioCaptureScenario = .playing
+    /// Set when the station never finished loading. The capture refuses to render a screenshot
+    /// that depends on timing; UI tests fail on `capture.failed` (StudioScreenTests.launch).
+    @State private var failure: String?
 
     var body: some View {
         NavigationStack {
             Group {
-                if loaded {
+                if let failure {
+                    Text(failure)
+                        .accessibilityIdentifier("capture.failed")
+                } else if loaded {
                     PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
                                   snapshot: scenario.snapshot, actions: .preview,
                                   search: scenario == .empty ? .captureOffline : nil,
                                   studio: dependencies.studio, isTestStation: true)
                 } else {
                     ProgressView()
+                        .accessibilityIdentifier("capture.loading")
                 }
             }
         }
         .preferredColorScheme(UserDefaults.standard.bool(forKey: StudioCapture.darkKey) ? .dark : nil)
         .task {
-            // The launch path does not start Studio yet; load it here so the tuner and
-            // Connections show the test station's real state instead of "Loading".
+            // The app root's task starts Studio (b39d15f). Wait for that load to finish rather
+            // than loading again: a second load would overwrite the scenario's edits below.
             let studio = dependencies.studio
-            if studio.station.loadState == .notLoaded { await studio.start() }
             let defaults = UserDefaults.standard
-            scenario = defaults.string(forKey: StudioCapture.scenarioKey).flatMap(StudioCaptureScenario.init) ?? .playing
+            let name = defaults.string(forKey: StudioCapture.scenarioKey) ?? "playing"
+            var settled = false
+            for _ in 0..<200 {
+                switch studio.station.loadState {
+                case .ready, .failed: settled = true
+                default: try? await Task.sleep(for: .milliseconds(50))
+                }
+                if settled { break }
+            }
+            guard settled else {
+                failure = "Studio capture failed: station did not load within 10 s (scenario \(name))"
+                return
+            }
+            guard let chosen = StudioCaptureScenario(rawValue: name) else {
+                failure = "Studio capture failed: unknown scenario \(name)"
+                return
+            }
+            scenario = chosen
             switch scenario {
             case .revoked:
                 await studio.connections.refresh()
                 await studio.connections.perform(.revoke, onSource: .calendar)
+            case .playbackFailed:
+                studio.dj.send(.playbackFailed(afterTrack: 0))
             case .config:
                 await studio.station.setEnergy(0.85)
                 await studio.station.setGenres(["pop", "indie", "synthwave"])

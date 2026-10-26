@@ -81,13 +81,57 @@ What the test station guarantees: synthetic `[TEST]` context only; on-device
 voice only, with a $0 budget that refuses any paid reservation; fixture station
 configuration with fixture consent only.
 
+## Install the integration head (owner's Mac)
+
+1. Confirm the commit. Use the head SHA that #58 reports at the time of the
+   install, and check it out:
+   ```sh
+   git fetch origin integration/device-duo
+   git checkout <SHA reported on #58>
+   ```
+   Do not install from a branch name alone. Note the SHA in your install notes.
+2. Generate the project and open it (see **Build configuration** above).
+3. In Xcode, select the **AeroDJ** scheme, set the Run configuration to **Debug**,
+   and choose your iPhone as the destination.
+4. Add the test-station argument to **Run → Arguments** (see **Test station**).
+   Without it the app runs in live mode and reads the real calendar.
+5. Press Run. The first launch asks for Apple Music access. Grant it.
+
+Expected first-launch log line: `runtime mode: testStation` (with the argument)
+or `runtime mode: live` (without it).
+
+## Collect sanitized logs
+
+The app logs with the subsystem `com.aerodj.app`. The `playback` category records
+song starts (index and duration in seconds) and natural boundaries (index only). It
+never records song titles, artists or identifiers.
+
+1. Connect the iPhone to the Mac. In Console.app, select the iPhone under Devices.
+2. Filter the stream: `subsystem:com.aerodj.app`.
+3. Start a station, let at least two songs play through, and let one DJ break run.
+4. Export the matching lines (File → Save) and check them before sharing: they should
+   contain only `runtime mode`, `song started` and `boundary` lines with indices
+   and durations.
+
+Command-line alternative. Check the flags with `xcrun devicectl device process launch --help`
+on your Xcode version first; this form has not been run here:
+```sh
+xcrun devicectl device process launch --console --device <DEVICE_ID> com.aerodj.app
+```
+Keep the output file private. Do not paste raw device output into the repository or a
+PR; describe the timings instead.
+
 ## Known limitations
 
 - **Physical-device validation has not happened.** Nothing in this guide proves
   audible behavior, interruptions, or Duo fold/unfold on hardware.
-- **Composition-root wiring is partial.** `AppDependencies` builds the context
-  sources, voice and station configuration. No screen consumes them yet, so the
-  briefing and DJ narration do not run in the app.
+- **Narration is wired but unverified on hardware.** `PlayerView` sends song
+  starts, natural boundaries and break outcomes to `DJBreakSession`, and plays
+  prepared multi-clip breaks at song boundaries. Whether speech starts and stops
+  inside the real gap is unmeasured; see the log steps below.
+- **Some context is not consumed by any screen.** `AppDependencies` builds the
+  context sources and station configuration. Calendar and Notes readers are not
+  yet reviewed for security before a real note is read.
 - **Obsidian is not wired** in live mode: no app-side reader exists.
 - **Station configuration is not persisted for live mode** beyond a JSON file;
   integration consent is `notRequested` for every integration until a consent
