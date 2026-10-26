@@ -44,12 +44,12 @@ Without the argument the same line says `runtime mode: live`. `info` is not used
 
 ## Build and install
 
-Install the `integration/device-duo` tip **after the owner merges #86** (dark mode, rebased onto `0e37e30`, which carries #75). The exact SHA is filled in here once #86 merges; until then this line is pending. Orion's hard cutoff: if #86 is not green by 6:00pm ET, install `5dbf6d910195c06f7d4a03993951b25212b335f5` (`5dbf6d9`) as originally planned.
+Install the final `integration/device-duo` tip after the owner merges tonight's batch (Orion's order: #67, #85, #86, Fry's `isBreakPrepared`, Nova's hybrid, #73 if ready). The exact SHA is filled in here at merge. Whatever is not green by the 6:00pm ET cutoff is not in it.
 
-- The post-#86 tip contains #63 `129d0c6` and #64 `b69581b` (pause guard), #75 (briefing call site, `LiveQueueBriefing`), and #86 (dark colors). It does not contain #67, #73 or #77: no `InterludePlaybackAdapter`, no interlude-stop log line, no `didFinish` / `signal=… frames=…` line.
-- The iOS workflow runs on pull requests only. The green result for the install SHA is #86's gating run at the head that merges, rebased on `0e37e30`.
-- `5dbf6d9` (the cutoff fallback): tree `aaacf0d` equals #65's `aaff7e1`, which passed every job in iOS run 40327400994. It does not contain #75, so there is no briefing call site at all.
-- Fall back to `939c34e8da505ca91d26b30b52f696974b06c1c5` only if neither of the above will build or sign.
+- **Fallback: `0e37e3033d015700dee5f5ce50384ab935bdd75b` (`0e37e30`)**, the tip after #75 merged. It is a merge commit with tree `e6aeb3b`, identical to `7d202ad` (#75 `57a2cb8` merged into `5dbf6d9`), which passed every job in iOS run 40340171304. Use it if nothing from the batch merges in time.
+- `0e37e30` contains #63 `129d0c6` and #64 `b69581b` (pause guard) and #75 (briefing call site, `LiveQueueBriefing`, empty sensitivity table). It does not contain #67, #73, #77 or #86: no `InterludePlaybackAdapter`, no interlude-stop log line, no `didFinish` / `signal=… frames=…` line, no dark-mode fixes.
+- The iOS workflow runs on pull requests only. The green result for the final tip is the gating run of the last PR merged, at the head that merged, on the base it merged into.
+- Fall back to `5dbf6d910195c06f7d4a03993951b25212b335f5` (tree equals #65 `aaff7e1`, iOS run 40327400994) only if `0e37e30` will not build or sign, and to `939c34e8da505ca91d26b30b52f696974b06c1c5` only if neither will.
 
 **Tonight's briefing rule (Echo).** On the post-#86 build, starting a station plays music with **no briefing speech**: every Connections row fails closed until #73 and Echo's wiring follow-up land. **Any briefing speech on this build is a failure, not a pass.** Record it with the time, the headline shown, and the log lines around it.
 
@@ -403,7 +403,7 @@ Copy this table into your notes. Leave it blank in git. One link per step can be
 | Date | |
 | Tester | |
 | Device / iOS | |
-| Git SHA installed | `git rev-parse HEAD` from Build and install. Expected the post-#86 `integration/device-duo` tip (SHA filled in at merge); record `5dbf6d9` if the 6:00pm ET cutoff was missed, or `939c34e` only if neither would build or sign |
+| Git SHA installed | `git rev-parse HEAD` from Build and install. Expected the final `integration/device-duo` tip after tonight's batch (SHA filled in at merge); record `0e37e30` if nothing merged by the cutoff, `5dbf6d9` or `939c34e` only if the later SHAs would not build or sign |
 | Personal briefing expectation | `silence (no personal briefing)` or `briefing speaks approved rows only` |
 | Route for steps 1–6 | speaker or AirPods |
 | Test station log seen | `runtime mode: testStation` yes / no |
