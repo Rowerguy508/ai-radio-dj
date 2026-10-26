@@ -178,7 +178,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// loads the next track when this returns.
     private func cancelledPendingPlay(resumeMusic: Bool) async {
         log.notice("\(PlaybackLog.interludeStop(reason: .sourceRevoked), privacy: .public)")
-        log.notice("\(PlaybackLog.breakEnd(after: breakTrack, result: .revoked), privacy: .public)")
+        log.notice("\(PlaybackLog.breakEnd(after: self.breakTrack, result: .revoked), privacy: .public)")
         onPlayback?(.revoked(afterTrack: breakTrack))
         if resumeMusic, !music.currentEntryAlreadyFinished {
             await music.resumeIfAllowed()
@@ -218,7 +218,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             }
         }
 
-        log.notice("\(PlaybackLog.breakEnd(after: breakTrack, result: outcome), privacy: .public)")
+        log.notice("\(PlaybackLog.breakEnd(after: self.breakTrack, result: self.outcome), privacy: .public)")
 
         let end = NarrationResumePolicy.narrationEnd(for: outcome)
         let decision = NarrationResumePolicy.decide(end, mayAutoResume: music.mayAutoResume, phase: music.audioState)
