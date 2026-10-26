@@ -44,7 +44,9 @@ Without the argument the same line says `runtime mode: live`. `info` is not used
 
 ## Build and install
 
-Install the final `integration/device-duo` tip after the owner merges tonight's batch (Orion's order: #67, #85, #86, Fry's `isBreakPrepared`, Nova's hybrid, #73 if ready). The exact SHA is filled in here at merge. Whatever is not green by the 6:00pm ET cutoff is not in it.
+Install the final `integration/device-duo` tip after the owner merges tonight's batch, PR #90 (`batch/tonight`, head `652f0f8c6e5ea191a1012af97b0baddd216c0cd8`). It merges #67 `f175300`, #85 `cd7c6ed`, #86 `ed55fc5`, and #87 `938544d` (Fry's `isBreakPrepared`) onto `0e37e30`, and passed iOS run 40403952809. Nova's hybrid #89 and Fry's #73 are **not** in it. The exact installed SHA is filled in here at merge.
+
+**Known issue tonight (log it, do not fail on it).** In `.ready` the DJ status headline reads "DJ break after this song", and VoiceOver reads the `.ready` detail ("DJ break ready for after this song …"). If a prepared break is dropped (not played at the boundary), that headline can stay up after the song changes, with no break coming. Orion accepted this for tonight because it is in every candidate build, including the fallback, so it is a known issue and not a regression. If you see it stuck, write the song index, the time, and how long it stayed up in the step notes as "known issue: stale ready headline", and score the step on its audio and log criteria only. The fix is the hide in Nova's #89 plus #88 and Fry's Core change, all after the install.
 
 - **Fallback: `0e37e3033d015700dee5f5ce50384ab935bdd75b` (`0e37e30`)**, the tip after #75 merged. It is a merge commit with tree `e6aeb3b`, identical to `7d202ad` (#75 `57a2cb8` merged into `5dbf6d9`), which passed every job in iOS run 40340171304. Use it if nothing from the batch merges in time.
 - `0e37e30` contains #63 `129d0c6` and #64 `b69581b` (pause guard) and #75 (briefing call site, `LiveQueueBriefing`, empty sensitivity table). It does not contain #67, #73, #77 or #86: no `InterludePlaybackAdapter`, no interlude-stop log line, no `didFinish` / `signal=… frames=…` line, no dark-mode fixes.
