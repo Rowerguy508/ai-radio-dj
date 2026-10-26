@@ -49,6 +49,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         music.skipInterlude()
     }
 
+    /// Marks `afterTrack` as handed out, before `play` calls `begin`.
+    /// A stop that arrives in that gap is kept for this break only when it is untagged
+    /// or tagged with `afterTrack`.
+    func handOut(afterTrack: Int) {
+        pendingPlay.handOut(afterTrack: afterTrack)
+    }
+
     /// Plays one prepared clip. A clip that won't decode skips the break.
     func play(clip: Data, line: String, afterTrack: Int) async {
         await play(clips: [clip], line: line, afterTrack: afterTrack)
@@ -63,8 +70,9 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             music.skipInterlude()
             return
         }
-        // A revoke that landed after hand-out, before this play began, cancels it.
-        let opened = pendingPlay.begin(mayAutoResume: music.mayAutoResume)
+        // A nil tag, or a tag for this afterTrack, that landed after hand-out and before
+        // begin cancels this break. A tag for a different afterTrack does not.
+        let opened = pendingPlay.begin(afterTrack: afterTrack, mayAutoResume: music.mayAutoResume)
         guard opened.startAudio else {
             await cancelledPendingPlay(resumeMusic: opened.resumeMusic)
             return
@@ -110,7 +118,10 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         if !startNextClip() { finishBreak(.failed) }
     }
 
+    /// Untagged stop. `skip()` and pause send this. It cancels a handed-out or pending
+    /// break, and a break that is already playing.
     func stop() {
+        _ = pendingPlay.stop(reason: .sourceRevoked, afterTrack: nil, mayAutoResume: music.mayAutoResume)
         guard stopState.stop(reason: nil) else { return }
         haltAudio()
     }
@@ -152,21 +163,26 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     ///
     /// A `.sourceRevoked` that arrives while a play is pending, before the clip player
     /// exists, is kept by `PendingPlayStop`. `admit` then starts no audio and resumes
-    /// music once when that is still allowed. A revoke while idle does not cancel the
-    /// next break. A stop that never reaches this method, because the session hook was
-    /// nil, is outside this guarantee.
-    nonisolated func stopCurrentInterlude(reason: InterludeStopReason) {
+    /// music once when that is still allowed. A nil tag, and a tag for the handed-out
+    /// `afterTrack`, cancel that break before `begin`. A tag for a different `afterTrack`
+    /// does not. A revoke while idle, with nothing handed out, does not cancel the next
+    /// break. A stop that never reaches this method, because the session hook was nil,
+    /// is outside this guarantee.
+    nonisolated func stopCurrentInterlude(reason: InterludeStopReason, afterTrack: Int? = nil) {
         MainActorImmediate.run {
             // Consent revoke records a revoke and resumes once. Other reasons keep the
-            // existing halt, which ends the break as cancelled.
+            // existing halt, which ends the break as cancelled. A tag scopes the stop
+            // to that afterTrack. Nil fails closed for whatever is pending or playing.
             if reason == .sourceRevoked {
                 if self.stopState.isPlaying {
+                    if let afterTrack, afterTrack != self.breakTrack { return }
                     self.stopActiveBreak(reason: reason)
                 } else {
-                    _ = self.pendingPlay.stop(reason: reason, mayAutoResume: self.music.mayAutoResume)
+                    _ = self.pendingPlay.stop(reason: reason, afterTrack: afterTrack, mayAutoResume: self.music.mayAutoResume)
                 }
                 return
             }
+            if let afterTrack, self.stopState.isPlaying, afterTrack != self.breakTrack { return }
             guard self.stopState.stop(reason: reason) else { return }
             self.log.notice("\(PlaybackLog.interludeStop(reason: reason), privacy: .public)")
             self.haltAudio()

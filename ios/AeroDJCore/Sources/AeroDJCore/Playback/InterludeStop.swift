@@ -28,14 +28,14 @@ public enum InterludeStopReason: Equatable, Sendable {
 /// session and the interlude player are created, not when a view appears.
 @MainActor
 public final class SpeechStopGate {
-    public private(set) var onBreakMustStop: (@MainActor (InterludeStopReason) -> Void)?
+    public private(set) var onBreakMustStop: (@MainActor (InterludeStopReason, Int?) -> Void)?
 
     public init() {}
 
     /// A clip may start only after `arm`. That is the same moment the stop hook is stored.
     public var canPlay: Bool { onBreakMustStop != nil }
 
-    public func arm(_ stop: @escaping @MainActor (InterludeStopReason) -> Void) {
+    public func arm(_ stop: @escaping @MainActor (InterludeStopReason, Int?) -> Void) {
         onBreakMustStop = stop
     }
 }
@@ -44,11 +44,15 @@ public final class SpeechStopGate {
 ///
 /// The adapter guarantees this for every `stopCurrentInterlude(.sourceRevoked)` that
 /// reaches it while a play is pending, before the clip player is set:
-/// - while idle, with no play pending, the stop is ignored. The next break is unrelated;
+/// - while idle, with nothing handed out, the stop is ignored. The next break is unrelated;
+/// - after `handOut` and before `begin`, a nil tag or a tag for that `afterTrack` cancels
+///   that break. A tag for a different `afterTrack` does not;
 /// - after `begin` and before `admit` (decode, or stop state begun with no clip player),
-///   `admit` cancels that play.
-/// No clip starts. Music resumes once, from `admit`, when auto-resume is allowed.
-/// `stop` itself does not resume, so the play and the stop do not resume twice.
+///   a nil tag or a matching tag makes `admit` cancel that play. A different tag does not.
+/// A nil tag is the untagged stop `skip()` sends. It fails closed for a handed-out, pending,
+/// or playing break. No clip starts. Music resumes once, from `begin` or `admit`, when
+/// auto-resume is allowed. `stop` itself does not resume, so the play and the stop do not
+/// resume twice.
 ///
 /// A stop that never reaches the adapter, because the session hook was still nil, is not
 /// visible here. Production arms that hook before a clip can play. The order in which
@@ -66,35 +70,83 @@ public struct PendingPlayEffect: Equatable, Sendable {
 public struct PendingPlayStop: Equatable, Sendable {
     private enum Phase: Equatable, Sendable {
         case idle
+        case handedOut
         case pending
     }
 
+    /// A stop scoped to every current break, or to one `afterTrack`.
+    private enum HeldStop: Equatable, Sendable {
+        case any
+        case track(Int)
+    }
+
     private var phase: Phase = .idle
+    private var track: Int?
+    private var heldStop: HeldStop?
     private var revoked = false
 
     public init() {}
 
-    /// Records a revoke for the play that is pending. An idle revoke is ignored, so the
-    /// next unrelated break still starts. Resume is decided by the following `admit`, once.
-    public mutating func stop(reason: InterludeStopReason, mayAutoResume: Bool) -> PendingPlayEffect {
-        _ = reason
-        _ = mayAutoResume
-        guard phase == .pending else {
-            return PendingPlayEffect(startAudio: false, resumeMusic: false)
-        }
-        revoked = true
-        return PendingPlayEffect(startAudio: false, resumeMusic: false)
+    /// The break for `afterTrack` has been handed out and has not called `begin` yet.
+    public mutating func handOut(afterTrack: Int) {
+        guard phase != .pending else { return }
+        phase = .handedOut
+        track = afterTrack
     }
 
-    /// Opens the pending play, before decode. A revoke that is already pending cancels it.
-    public mutating func begin(mayAutoResume: Bool) -> PendingPlayEffect {
-        if revoked {
+    /// Records a revoke for the handed-out or pending play.
+    ///
+    /// `afterTrack == nil` is untagged and fails closed: it cancels whatever was handed
+    /// out or is pending. A tag cancels only the break with that index. An idle revoke,
+    /// with nothing handed out, is ignored, so the next unrelated break still starts.
+    /// Resume is decided by the following `begin` or `admit`, once.
+    public mutating func stop(reason: InterludeStopReason, afterTrack: Int? = nil, mayAutoResume: Bool) -> PendingPlayEffect {
+        _ = reason
+        _ = mayAutoResume
+        switch phase {
+        case .idle:
+            return PendingPlayEffect(startAudio: false, resumeMusic: false)
+        case .handedOut:
+            if let afterTrack, afterTrack != track {
+                if heldStop == nil { heldStop = .track(afterTrack) }
+                return PendingPlayEffect(startAudio: false, resumeMusic: false)
+            }
+            heldStop = afterTrack.map(HeldStop.track) ?? .any
+            return PendingPlayEffect(startAudio: false, resumeMusic: false)
+        case .pending:
+            if let afterTrack, afterTrack != track {
+                return PendingPlayEffect(startAudio: false, resumeMusic: false)
+            }
+            revoked = true
+            return PendingPlayEffect(startAudio: false, resumeMusic: false)
+        }
+    }
+
+    /// Opens the pending play, before decode.
+    ///
+    /// A nil-tagged or matching stop recorded after `handOut` cancels this break.
+    /// A stop tagged for a different `afterTrack` does not.
+    public mutating func begin(afterTrack: Int? = nil, mayAutoResume: Bool) -> PendingPlayEffect {
+        if let afterTrack { track = afterTrack }
+        if revoked || stopAppliesToBegin() {
+            heldStop = nil
             revoked = false
             phase = .idle
             return PendingPlayEffect(startAudio: false, resumeMusic: mayResume(mayAutoResume))
         }
         phase = .pending
         return PendingPlayEffect(startAudio: true, resumeMusic: false)
+    }
+
+    private func stopAppliesToBegin() -> Bool {
+        switch heldStop {
+        case .any:
+            return phase == .handedOut
+        case .track(let tagged):
+            return track == tagged
+        case nil:
+            return false
+        }
     }
 
     /// After decode, before a clip player is created. A revoke while pending refuses audio.

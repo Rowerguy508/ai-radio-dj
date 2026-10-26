@@ -161,10 +161,10 @@ final class DJBreakSessionTests: XCTestCase {
         let clip = ActiveBreakController()
         clip.play()
         let player = clip.currentPlayer
-        let onBreakMustStop: (@MainActor (InterludeStopReason) -> Void) = { reason in
+        let onBreakMustStop: (@MainActor (InterludeStopReason, Int?) -> Void) = { reason, _ in
             clip.stopActiveBreak(reason: reason, mayAutoResume: true)
         }
-        onBreakMustStop(.sourceRevoked)
+        onBreakMustStop(.sourceRevoked, nil)
 
         XCTAssertEqual(clip.playerStops, 1, "the player stops before the hook returns, inside one tick")
         XCTAssertTrue(clip.delegateCleared)
