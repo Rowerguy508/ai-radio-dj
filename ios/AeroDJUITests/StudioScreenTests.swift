@@ -13,11 +13,6 @@ final class StudioScreenTests: XCTestCase {
         continueAfterFailure = false
     }
 
-    override func tearDown() {
-        // Appearance is simulator-wide; leave it as the next test expects.
-        MainActor.assumeIsolated { XCUIDevice.shared.appearance = .light }
-    }
-
     @MainActor
     private func launch(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
                         dark: Bool = false) -> XCUIApplication {
@@ -28,7 +23,7 @@ final class StudioScreenTests: XCTestCase {
         if largeText {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"]
         }
-        XCUIDevice.shared.appearance = dark ? .dark : .light
+        if dark { app.launchArguments += ["-AeroDJStudioCaptureDark", "YES"] }
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         return app

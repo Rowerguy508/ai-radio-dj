@@ -392,6 +392,7 @@ struct TransportRow: View {
 /// its Queue segment.
 struct QueueAffordance: View {
     let upNext: [TrackInfo]
+    @Environment(\.dynamicTypeSize) private var typeSize
     let action: () -> Void
 
     var body: some View {
@@ -412,7 +413,8 @@ struct QueueAffordance: View {
                         .foregroundStyle(.secondary)
                     Text(upNext.first.map { "\($0.title) · \($0.artistName)" } ?? "Nothing queued")
                         .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
+                        // Large text wraps instead of hiding the song name.
+                        .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
                         .truncationMode(.tail)
                 }
                 Spacer(minLength: 8)

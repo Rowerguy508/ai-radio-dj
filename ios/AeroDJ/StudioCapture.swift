@@ -13,6 +13,9 @@ enum StudioCapture {
     static let segmentKey = "AeroDJStudioCaptureSegment"
     /// Optional: a `StudioCaptureScenario` raw value (default `playing`).
     static let scenarioKey = "AeroDJStudioCaptureScenario"
+    /// Optional: `YES` renders the capture in dark appearance (the simulator-wide
+    /// appearance switch is not reliable before launch).
+    static let darkKey = "AeroDJStudioCaptureDark"
 
     static func isRequested(mode: AppRuntimeMode, defaults: UserDefaults = .standard) -> Bool {
         mode == .testStation && defaults.bool(forKey: defaultsKey)
@@ -82,6 +85,7 @@ struct StudioCaptureView: View {
                 }
             }
         }
+        .preferredColorScheme(UserDefaults.standard.bool(forKey: StudioCapture.darkKey) ? .dark : nil)
         .task {
             // The launch path does not start Studio yet; load it here so the tuner and
             // Connections show the test station's real state instead of "Loading".
