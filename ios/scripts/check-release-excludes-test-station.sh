@@ -3,7 +3,7 @@
 # Positive control: the same pattern must be found in the Debug build, so the check can't pass vacuously.
 set -euo pipefail
 cd "$(dirname "$0")/../AeroDJCore"
-pattern='FixtureContextSource|fixture:synthetic/'
+pattern='FixtureContextSource|TestStationFixtures|fixture:synthetic/'
 # Library objects for one configuration; works with both SwiftPM build-directory layouts.
 objects() { find .build -name '*.o' -ipath "*/$1*" -path '*AeroDJCore*' ! -path '*Tests*'; }
 
