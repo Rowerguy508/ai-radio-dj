@@ -79,6 +79,22 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(e.snapshot.dj, .idle)
     }
 
+    func testInterruptionIsNotLabeledAsAUserPause() {
+        var engine = started()
+        let snap = engine.apply(.interruptionPaused)
+        XCTAssertEqual(snap.transport, .paused)
+        XCTAssertEqual(snap.hold, .interruption)
+        XCTAssertEqual(snap.hold?.caption, "Paused for an interruption")
+    }
+
+    func testRouteLossIsNotLabeledAsAUserPause() {
+        var engine = started()
+        let snap = engine.apply(.routePaused)
+        XCTAssertEqual(snap.transport, .paused)
+        XCTAssertEqual(snap.hold, .routeRemoved)
+        XCTAssertEqual(snap.hold?.caption, "Paused because the audio route was removed")
+    }
+
     func testPauseAndResumeKeepPosition() {
         var e = started()
         e.apply(.naturalBoundary(nextIndex: 1))

@@ -12,6 +12,10 @@ public enum PlaybackEvent: Equatable, Sendable {
     /// The user skipped to `nextIndex` (never a DJ break).
     case userSkipped(nextIndex: Int)
     case userPaused
+    /// The system interrupted playback. Not a user pause.
+    case interruptionPaused
+    /// The output route was removed. Not a user pause.
+    case routePaused
     case userResumed
     case djStarted(line: String)
     case djFinished
@@ -65,7 +69,8 @@ public struct PlaybackEngine: Sendable {
             snapshot.upNext = []
             snapshot.transport = .stopped
 
-        case .userPaused:
+        case .userPaused, .interruptionPaused, .routePaused:
+            // The new cases pause transport and do not record which hold it was.
             if snapshot.transport == .playing { snapshot.transport = .paused }
 
         case .userResumed:
