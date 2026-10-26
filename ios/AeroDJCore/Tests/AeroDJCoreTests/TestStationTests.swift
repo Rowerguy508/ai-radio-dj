@@ -119,3 +119,32 @@ final class TestStationTests: XCTestCase {
     }
 }
 #endif
+
+#if DEBUG
+@MainActor
+final class TestStationFixtureConnectionTests: XCTestCase {
+    func testConnectionsShowTheNarratedFixturesAndRevokeRemovesThemFromTheBriefing() async throws {
+        let fixtures = TestStationFixtures()
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: TestStation.configuration))),
+            consent: TestStation.fixtureConsent)
+        await station.load()
+        let connections = ConnectionsModel(station: station, sourceReader: fixtures.sourceReader(),
+                                           providers: fixtures.providers(), purger: NoopNarrationPurger())
+        await connections.refresh()
+
+        XCTAssertTrue(connections.sources.allSatisfy(\.mayShowConnected), "fixture sources are truthfully connected")
+        let shown = Set(StationIntegration.allCases.flatMap { connections.items(for: $0).map(\.id) })
+        XCTAssertEqual(shown, Set(fixtures.items.map(\.id)), "Connections lists exactly the narrated fixtures")
+        XCTAssertTrue(fixtures.items.allSatisfy { $0.provenance.hasPrefix(TestStation.provenancePrefix) })
+
+        let note = try XCTUnwrap(fixtures.items.first { $0.source == .obsidian })
+        _ = await connections.perform(.revoke, on: note.id)
+        var narrated: [ContextItem] = []
+        for source in fixtures.contextSources() { narrated += try await source.fetchItems() }
+        XCTAssertFalse(narrated.contains { $0.id == note.id }, "a revoked fixture leaves the next briefing")
+        XCTAssertEqual(connections.items(for: .obsidian).first?.state, .revoked)
+    }
+}
+
+#endif

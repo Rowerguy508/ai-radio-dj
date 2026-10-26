@@ -61,7 +61,7 @@ final class DJNarrationTests: XCTestCase {
         var standard = DJScriptWriter(seed: 3)
         let count = standard.plan(tracks: tracks, briefing: nil, hour: 9).breaks.count
         XCTAssertGreaterThan(count, 5)
-        XCTAssertLessThan(Double(count) / 199, 0.25, "default cadence talks at a minority of boundaries")
+        XCTAssertEqual(Double(count) / 199, 0.3, accuracy: 0.06, "default cadence talks at about 30% of boundaries, a minority")
         var silent = DJScriptWriter(cadence: .init(talkFraction: 0), seed: 3)
         XCTAssertTrue(silent.plan(tracks: tracks, briefing: nil, hour: 9).breaks.isEmpty)
     }
@@ -255,18 +255,67 @@ final class DJNarrationTests: XCTestCase {
         let djBreak = try XCTUnwrap(w.plan(tracks: djTracks(3), briefing: nil, hour: 9).breaks.first)
         let k = djBreak.afterTrack
 
-        let slow = DJBreakPreparer(renderer: djRenderer(free: DJFakeVoice(delay: .seconds(5))), userID: "u", stationID: "s")
-        await slow.prepare(djBreak, deadline: .milliseconds(100))
-        try await Task.sleep(for: .milliseconds(400))
+        // Event-driven, not wall-clock: wait for the preparer to settle, then take the break.
+        let slow = DJBreakPreparer(renderer: djRenderer(free: DJFakeVoice(delay: .seconds(30))), userID: "u", stationID: "s")
+        let lateSettled = await settled(slow, afterTrack: k)
+        await slow.prepare(djBreak, deadline: .milliseconds(50))
+        await fulfillment(of: [lateSettled], timeout: 10)
         let late = await slow.takeBreak(afterTrack: k)
-        XCTAssertEqual(late, .skipped(.timedOut))
+        XCTAssertEqual(late, .skipped(.timedOut), "a render cut by the deadline is a timeout, never renderFailed")
 
         let capped = DJBreakPreparer(renderer: djRenderer(paid: DJFakeVoice(id: "cloud"), free: nil, capMicrodollars: 0),
                                      userID: "u", stationID: "s")
-        await capped.prepare(djBreak, deadline: .seconds(2))
-        try await Task.sleep(for: .milliseconds(200))
+        let capSettled = await settled(capped, afterTrack: k)
+        await capped.prepare(djBreak, deadline: .seconds(10))
+        await fulfillment(of: [capSettled], timeout: 10)
         let cap = await capped.takeBreak(afterTrack: k)
         XCTAssertEqual(cap, .skipped(.costCap))
+    }
+
+    func testDeadlineAlwaysReportsTimeoutUnderRepeatedRaces() async throws {
+        var w = DJScriptWriter(cadence: .init(talkFraction: 1), seed: 1)
+        let djBreak = try XCTUnwrap(w.plan(tracks: djTracks(3), briefing: nil, hour: 9).breaks.first)
+        for _ in 0..<25 {
+            let p = DJBreakPreparer(renderer: djRenderer(free: DJFakeVoice(delay: .seconds(30))), userID: "u", stationID: "s")
+            let done = await settled(p, afterTrack: djBreak.afterTrack)
+            await p.prepare(djBreak, deadline: .milliseconds(1))
+            await fulfillment(of: [done], timeout: 10)
+            let outcome = await p.takeBreak(afterTrack: djBreak.afterTrack)
+            XCTAssertEqual(outcome, .skipped(.timedOut))
+        }
+    }
+
+    /// Fulfilled when the preparer reports the break after `k` as prepared or skipped.
+    private func settled(_ preparer: DJBreakPreparer, afterTrack k: Int) async -> XCTestExpectation {
+        let done = expectation(description: "break \(k) settled")
+        done.assertForOverFulfill = false
+        await preparer.observe { event in
+            switch event {
+            case .prepared(let t, _, _) where t == k, .skipped(let t, _) where t == k: done.fulfill()
+            default: break
+            }
+        }
+        return done
+    }
+
+    func testTalkCadenceDeliversAboutThirtyPercentOfBoundaries() {
+        // The beta default cadence (30%, never two in a row) over a long session, many seeds.
+        let cadence = DJCadence()
+        XCTAssertEqual(cadence.expectedTalkShare, 0.3, accuracy: 0.0001)
+        var breaks = 0, boundaries = 0
+        for seed in UInt64(1)...40 {
+            var w = DJScriptWriter(cadence: cadence, seed: seed)
+            let plan = w.plan(tracks: djTracks(251), briefing: nil, hour: 14)
+            let after = plan.breaks.map(\.afterTrack)
+            XCTAssertTrue(zip(after, after.dropFirst()).allSatisfy { $1 - $0 > cadence.minSongsBetweenBreaks }, "never back-to-back")
+            breaks += plan.breaks.count; boundaries += 250
+        }
+        let share = Double(breaks) / Double(boundaries)
+        XCTAssertEqual(share, 0.3, accuracy: 0.03, "delivered talk share \(share)")
+        var silent = DJScriptWriter(cadence: .init(talkFraction: 0), seed: 1)
+        XCTAssertTrue(silent.plan(tracks: djTracks(50), briefing: nil, hour: 14).breaks.isEmpty)
+        XCTAssertEqual(DJCadence(talkFraction: 0.45, minSongsBetweenBreaks: 2).expectedTalkShare, 1.0 / 3, accuracy: 0.0001,
+                       "the spacing rule caps what any preset can deliver")
     }
 
     func testCancelAllReleasesReservationsAndStaleAudioNeverPlays() async throws {
