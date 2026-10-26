@@ -177,6 +177,13 @@ public struct CachedAudio: Codable, Equatable, Sendable {
     }
 }
 
+/// Owner-approved beta voice defaults. Paid (cloud) voice spend is $0: any paid route is refused
+/// by the budget and the renderer falls back to on-device speech. Changing this needs a new
+/// owner approval.
+public enum VoiceBetaDefaults {
+    public static let paidDailyCapMicrodollars = 0
+}
+
 /// Retention for cached narration audio. Final beta default: 7 days, and never longer.
 public enum AudioCacheRetention {
     public static let maximum: TimeInterval = 7 * 24 * 3600
