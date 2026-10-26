@@ -164,7 +164,7 @@ final class ConsentWithdrawalTests: XCTestCase {
         let id = UUID()
         let provider = FlakyProvider(item: ConnectionItem(id: id, integration: .obsidian, title: "[TEST] note", state: .approved))
         let station = StationConfigurationModel(store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: .init()))),
-                                                consent: StaticIntegrationConsent([:]))
+                                                consent: StaticIntegrationConsent([.obsidian: .granted]))
         await station.load()
         let probe = PurgeProbe(NarrationPurger(cache: InMemoryAudioCache(), preparer: nil))
         let connections = ConnectionsModel(station: station, sourceReader: StaticConnectionSourceReader(),
@@ -194,6 +194,78 @@ final class ConsentWithdrawalTests: XCTestCase {
         await consent.set(.revoked)
         await connections.refresh()
         XCTAssertEqual(probe.calls, [[id]])
+    }
+}
+
+/// One item whose state the source can change under the same ID.
+private actor DemotingProvider: ConnectionItemProvider {
+    nonisolated let integration: StationIntegration = .shareInbox
+    let id: UUID
+    var state: ConnectionItemState = .approved
+    init(id: UUID) { self.id = id }
+    func set(_ s: ConnectionItemState) { state = s }
+    func items(now: Date) async throws -> [ConnectionItem] {
+        [ConnectionItem(id: id, integration: .shareInbox, title: "[TEST] shared", state: state)]
+    }
+    func perform(_ action: ConnectionAction, on id: UUID) async throws {}
+}
+
+@MainActor
+final class NarratableDemotionTests: XCTestCase {
+    // Reviewer finding on #62: pending/flagged were treated as alive. Visible is not narratable.
+    func testSameIDDemotedToPendingOrFlaggedPurgesEachTimeAndStaysVisible() async {
+        let id = UUID()
+        let provider = DemotingProvider(id: id)
+        let consent = MutableConsent()
+        let station = StationConfigurationModel(store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: .init()))),
+                                                consent: consent)
+        await station.load()
+        let cache = InMemoryAudioCache()
+        let probe = PurgeProbe(NarrationPurger(cache: cache, preparer: nil))
+        let connections = ConnectionsModel(station: station, sourceReader: StaticConnectionSourceReader(),
+                                           providers: [provider], purger: probe)
+        probe.model = connections
+        func cacheNarration() async {
+            await cache.store(CachedAudio(data: Data("x".utf8), seconds: 1, providerID: "device", voiceID: "host",
+                                          sourceItemIDs: [id]), for: "k-\(probe.calls.count)")
+        }
+        func cached() async -> Bool { await cache.audio(for: "k-\(probe.calls.count)") != nil }
+
+        await connections.refresh()
+        XCTAssertTrue(probe.calls.isEmpty, "approved + granted is narratable")
+        XCTAssertTrue(connections.isNarratable(connections.items[0]))
+
+        // 1. Same ID comes back pending approval.
+        await cacheNarration()
+        await provider.set(.pendingApproval)
+        await connections.refresh()
+        XCTAssertEqual(probe.calls, [[id]], "demoted to pending: purged")
+        XCTAssertEqual(probe.exposedDuringPurge.last, [id], "purged while the approved state was still exposed")
+        XCTAssertEqual(connections.items.map(\.id), [id], "still visible for review")
+        XCTAssertFalse(connections.isNarratable(connections.items[0]))
+        let afterPending = await cache.audio(for: "k-0")
+        XCTAssertNil(afterPending, "cached narration purged")
+
+        // 2. Re-approved, narration cached again, then flagged: purged a second time.
+        await provider.set(.approved)
+        await connections.refresh()
+        XCTAssertEqual(probe.calls.count, 1, "re-approval does not purge")
+        await cacheNarration()
+        await provider.set(.flaggedForReview)
+        await connections.refresh()
+        XCTAssertEqual(probe.calls, [[id], [id]], "no stale purge state after re-approval")
+        let afterFlag = await cache.audio(for: "k-1")
+        XCTAssertNil(afterFlag)
+
+        // 3. Re-approved, then integration consent drops to notRequested: purged a third time.
+        await provider.set(.approved)
+        await connections.refresh()
+        await cacheNarration()
+        await consent.set(.notRequested)
+        await connections.refresh()
+        XCTAssertEqual(probe.calls.count, 3, "consent no longer granted: purged")
+        let afterConsent = await cache.audio(for: "k-2")
+        XCTAssertNil(afterConsent)
     }
 }
 

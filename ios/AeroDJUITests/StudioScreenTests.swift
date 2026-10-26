@@ -26,6 +26,14 @@ final class StudioScreenTests: XCTestCase {
         if dark { app.launchArguments += ["-AeroDJStudioCaptureDark", "YES"] }
         XCUIDevice.shared.orientation = .portrait
         app.launch()
+        // The capture view loads the station before rendering. Never screenshot on a timer:
+        // wait for loading to end, and fail by name if the capture could not set up.
+        let loading = app.descendants(matching: .any)["capture.loading"]
+        let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: loading)
+        XCTAssertEqual(XCTWaiter().wait(for: [done], timeout: 20), .completed,
+                       "Studio capture still loading after 20 s (scenario \(scenario ?? "playing"))")
+        let failed = app.descendants(matching: .any)["capture.failed"]
+        if failed.exists { XCTFail(failed.label) }
         return app
     }
 
@@ -106,7 +114,11 @@ final class StudioScreenTests: XCTestCase {
         let app = launch(largeText: true)
         // Accessibility sizes: compact when closed, the stacked Studio when open (no two zones).
         let layout = isOpenLayout ? "layout.studioStacked" : "layout.compact"
-        XCTAssertTrue(app.otherElements[layout].waitForExistence(timeout: 15))
+        // Any element type: the stacked Studio is a ScrollView, which XCUITest surfaces as a
+        // scroll view, not "other" (same as the compact empty state).
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "\(layout) expected at accessibility text size:\n\(app.debugDescription)")
+        if isOpenLayout { XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, "no two zones at AX sizes") }
         XCTAssertTrue(shows(app, "Morning Light"))
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX sizes")
@@ -130,7 +142,9 @@ final class StudioScreenTests: XCTestCase {
         let cases: [(scenario: String, expect: String, transport: Bool)] = [
             ("empty", "Nothing playing", false),
             ("loading", "Connecting to Apple Music", false),
-            ("error", "could not play", true),
+            ("error", "DJ voice unavailable", true),  // speechFailed: caption, music continues
+            // The player reported the DJ break failed (DJStudioState.swift:62); music continues.
+            ("playbackFailed", "couldn't play", true),
             ("denied", "Apple Music access is off", false),
         ]
         for c in cases {
