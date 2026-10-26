@@ -44,6 +44,9 @@ final class MusicKitService: ObservableObject {
     /// The handler must resolve the transition: play a DJ line, or call `skipInterlude()`.
     var onBoundary: (@MainActor (PlaybackBoundary, Int) -> Void)?
     private var pollTimer: Timer?
+    /// Session notification tokens, owned here and removed in `deinit`. Written once on the
+    /// main actor in `configureAudioSession`; read only from `deinit`.
+    private nonisolated(unsafe) var sessionObservers: [NSObjectProtocol] = []
 
     var audioState: AudioState { stateMachine.state }
 
@@ -339,22 +342,35 @@ final class MusicKitService: ObservableObject {
             // Non-fatal: playback still works in foreground.
         }
 
-        NotificationCenter.default.addObserver(
+        // The callbacks read only Sendable values from the notification, then hop onto the
+        // main actor before touching playback state.
+        sessionObservers.append(NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
             let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
-            self?.handleInterruption(type, options: options)
-        }
+            Task { @MainActor [weak self] in
+                self?.handleInterruption(type, options: options)
+            }
+        })
 
-        NotificationCenter.default.addObserver(
+        sessionObservers.append(NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
                   let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
-            self?.handleRouteChange(reason == .oldDeviceUnavailable)
+            let wasDeviceRemoved = reason == .oldDeviceUnavailable
+            Task { @MainActor [weak self] in
+                self?.handleRouteChange(wasDeviceRemoved)
+            }
+        })
+    }
+
+    deinit {
+        for token in sessionObservers {
+            NotificationCenter.default.removeObserver(token)
         }
     }
 }
