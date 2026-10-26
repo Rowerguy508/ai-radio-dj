@@ -1,0 +1,82 @@
+# Generate with: cd ios && xcodegen generate   (XcodeGen 2.46.0, pinned in CI)
+# AeroDJ.xcodeproj is a generated artifact; edit this file instead.
+name: AeroDJ
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+options:
+  bundleIdPrefix: com.aerodj
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  # Single source of truth for domain code and its unit tests.
+  AeroDJCore:
+    path: AeroDJCore
+targets:
+  AeroDJ:
+    type: application
+    platform: iOS
+    sources: [AeroDJ]
+    dependencies:
+      - package: AeroDJCore
+      - target: AeroDJShare # embedded into AeroDJ.app/PlugIns
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSAppleMusicUsageDescription: AeroDJ uses Apple Music to play your station.
+        INFOPLIST_KEY_UIBackgroundModes: audio
+        INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: AeroDJ reads today's events, read-only, to mention them in your briefing.
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        CODE_SIGN_ENTITLEMENTS: AeroDJ/AeroDJ.entitlements
+  AeroDJShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: AeroDJShare
+        excludes: [Info.plist]
+    dependencies:
+      - package: AeroDJCore
+    settings:
+      base:
+        # Must be prefixed by the host app's bundle identifier.
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app.share
+        INFOPLIST_FILE: AeroDJShare/Info.plist
+        CODE_SIGN_ENTITLEMENTS: AeroDJShare/AeroDJShare.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+  AeroDJUITests:
+    # Debug-only UI integration tests and screenshots of the playing screen (capture mode).
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [AeroDJUITests]
+    dependencies:
+      - target: AeroDJ
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: AeroDJ
+schemes:
+  AeroDJ:
+    build:
+      targets:
+        AeroDJ: all
+    test:
+      targets:
+        - package: AeroDJCore/AeroDJCoreTests
+  AeroDJStudioUI:
+    # Separate scheme so the unit-test scheme stays fast; CI runs this on iPhone and iPad.
+    build:
+      targets:
+        AeroDJ: all
+        AeroDJUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - AeroDJUITests

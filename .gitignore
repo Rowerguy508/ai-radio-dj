@@ -9,3 +9,4 @@ tsconfig.tsbuildinfo
 *.pem
 *.key
 *.crt
+ios/Config/Signing.local.xcconfig

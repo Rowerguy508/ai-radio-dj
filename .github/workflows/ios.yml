@@ -1,0 +1,275 @@
+name: iOS
+
+# No top-level path filter: these checks must always report so they can be
+# required. The `changes` job skips the macOS jobs when nothing iOS changed,
+# and a skipped job reports success.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read # paths-filter lists PR files via the API
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ios: ${{ steps.filter.outputs.ios }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ios:
+              - 'ios/**'
+              - '.github/workflows/ios.yml'
+
+  core-tests:
+    name: AeroDJCore tests
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run core tests
+        run: swift test
+        working-directory: ios/AeroDJCore
+      - name: Release build excludes the debug test station
+        run: ios/scripts/check-release-excludes-test-station.sh
+
+  simulator-build:
+    name: iOS simulator build
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-latest
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      DERIVED_DATA: ios/build/DerivedData
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Build app and embedded share extension
+        run: |
+          xcodebuild build \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Verify share extension is embedded
+        run: |
+          APPEX="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app/PlugIns/AeroDJShare.appex"
+          test -d "$APPEX" || { echo "AeroDJShare.appex not embedded in AeroDJ.app"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" \
+            | grep -qx 'com.apple.share-services'
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" | grep -qx 'com.aerodj.app.share'
+      - name: Pick an available iPhone simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                      | select(.name | startswith("iPhone"))] | last | .udid // empty')
+          test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+      - name: Run unit tests on simulator
+        run: |
+          xcodebuild test \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -destination "id=$SIM_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO
+
+  device-build:
+    name: iOS device build (unsigned)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-latest
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      DERIVED_DATA: ios/build/DerivedData-device
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Build Debug and Release for a physical device without signing
+        # Proves both arm64 device slices compile. Release proves the test station is
+        # compiled out. Signing needs the owner's team (ios/Config/Signing.local.xcconfig),
+        # so CI signs nothing.
+        run: |
+          for CONFIG in Debug Release; do
+            xcodebuild build \
+              -project ios/AeroDJ.xcodeproj \
+              -scheme AeroDJ \
+              -configuration "$CONFIG" \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath "$DERIVED_DATA" \
+              CODE_SIGNING_ALLOWED=NO
+          done
+
+  runtime-mode:
+    name: Runtime mode on simulator (Debug vs Release)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-latest
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      DERIVED_DATA: ios/build/DerivedData-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Build Debug and Release for the simulator
+        run: |
+          for CONFIG in Debug Release; do
+            xcodebuild build \
+              -project ios/AeroDJ.xcodeproj \
+              -scheme AeroDJ \
+              -configuration "$CONFIG" \
+              -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath "$DERIVED_DATA" \
+              CODE_SIGNING_ALLOWED=NO
+          done
+      - name: Boot an iPhone simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                      | select(.name | startswith("iPhone"))] | last | .udid // empty')
+          test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+      - name: Verify the launch argument changes runtime dependencies
+        run: |
+          ios/scripts/verify-runtime-mode.sh \
+            "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
+            "$DERIVED_DATA/Build/Products/Release-iphonesimulator/AeroDJ.app" \
+            "$SIM_UDID"
+
+  studio-screenshots:
+    name: Studio UI tests and screenshots (closed + open)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: macos-latest
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      DERIVED_DATA: ios/build/DerivedData-ui
+      SHOTS: ${{ github.workspace }}/studio-screenshots
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Toolchain
+        run: xcodebuild -version
+      - name: Pick iPhone (closed) and iPad (open) simulators
+        run: |
+          pick() {
+            xcrun simctl list devices available -j \
+              | jq -r --arg p "$1" '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                        | select(.name | startswith($p))] | last | .udid // empty'
+          }
+          PHONE=$(pick iPhone); PAD=$(pick iPad)
+          test -n "$PHONE" && test -n "$PAD" || { echo "Need an iPhone and an iPad simulator"; exit 1; }
+          echo "PHONE_UDID=$PHONE" >> "$GITHUB_ENV"
+          echo "PAD_UDID=$PAD" >> "$GITHUB_ENV"
+          xcrun simctl list devices available | grep -E "$PHONE|$PAD"
+      - name: Build for testing
+        run: |
+          xcodebuild build-for-testing \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: UI tests on iPhone (closed, compact player)
+        run: |
+          mkdir -p "$SHOTS"
+          TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath "$RUNNER_TEMP/phone.xcresult" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Record a tapped walkthrough on iPhone (XCUITest + simctl recordVideo)
+        run: |
+          xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$PHONE_UDID" -b
+          xcrun simctl io "$PHONE_UDID" recordVideo --codec h264 --force "$SHOTS/walkthrough-closed.mp4" &
+          REC=$!
+          sleep 2
+          TEST_RUNNER_STUDIO_WALKTHROUGH=1 xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -only-testing:AeroDJUITests/StudioScreenTests/testRecordedWalkthrough \
+            CODE_SIGNING_ALLOWED=NO || STATUS=$?
+          kill -INT "$REC"; wait "$REC" || true
+          ls -la "$SHOTS"/*.mp4
+          exit ${STATUS:-0}
+      - name: UI tests on iPad (open, two-zone Studio)
+        run: |
+          TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PAD_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath "$RUNNER_TEMP/pad.xcresult" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Require screenshots
+        run: |
+          ls -la "$SHOTS"
+          ls "$SHOTS" | grep -q '^closed-compact_' || { echo "missing closed screenshot"; exit 1; }
+          ls "$SHOTS" | grep -q '^open-studio-queue_' || { echo "missing open screenshot"; exit 1; }
+          for shot in closed-dark closed-state-empty closed-state-loading closed-state-error closed-state-denied \
+                      closed-connections-revoked closed-tune-config-change closed-large-text \
+                      open-studio-tune-dark open-large-text open-connections-revoked open-tune-config-change; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
+          test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-screenshots
+          path: |
+            studio-screenshots/*.png
+            studio-screenshots/*.mp4
+          if-no-files-found: warn
