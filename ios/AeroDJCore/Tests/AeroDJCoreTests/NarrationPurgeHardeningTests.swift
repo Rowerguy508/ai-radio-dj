@@ -55,9 +55,11 @@ private final class TestClock: @unchecked Sendable {
 }
 
 @MainActor
-private final class FakeInterlude: InterludeStopping {
+private final class FakeInterlude {
     private(set) var stops: [InterludeStopReason] = []
     func stopCurrentInterlude(reason: InterludeStopReason) { stops.append(reason) }
+    /// Installs this fake as the session's stop hook (as PlayerView does with the adapter).
+    func attach(to session: DJBreakSession) { session.onBreakMustStop = { [self] in stopCurrentInterlude(reason: $0) } }
 }
 
 private func personalCue(_ id: UUID, text: String = "From your notes: water the plants.") -> NarrationCue {
@@ -227,7 +229,7 @@ final class OnAirRevocationTests: XCTestCase {
         let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 9 })
         await session.start()
         let interlude = FakeInterlude()
-        session.interlude = interlude
+        interlude.attach(to: session)
         let item = UUID(), other = UUID()
 
         var states = dj.updates().makeAsyncIterator()
@@ -271,7 +273,7 @@ final class OnAirRevocationTests: XCTestCase {
         let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 9 })
         await session.start()
         let interlude = FakeInterlude()
-        session.interlude = interlude
+        interlude.attach(to: session)
         let item = UUID()
         var states = dj.updates().makeAsyncIterator()
         await session.queueStarted(djTracks(8), briefing: briefing(item), sources: approvedSources(briefing(item)))
@@ -489,7 +491,7 @@ final class BriefingOffIsNotAPurgeTests: XCTestCase {
         let spy = SpyPurger()
         session.purger = spy
         let interlude = FakeInterlude()
-        session.interlude = interlude
+        interlude.attach(to: session)
         await session.start()
         let item = UUID()
         let briefing = NarrationHandoff(cues: [NarrationCue(
@@ -519,5 +521,76 @@ final class BriefingOffIsNotAPurgeTests: XCTestCase {
         let cachedAfter = await cache.fileCount()
         XCTAssertEqual(cachedAfter, cachedBefore, "cached audio stays on disk")
         XCTAssertEqual(dj.state, .speaking(afterTrack: 0, includesBriefing: true), "still speaking")
+    }
+}
+
+/// `DJBreakSession.onBreakMustStop` (#67's hook; PlayerView routes it to
+/// `InterludePlaybackAdapter.stopCurrentInterlude(reason:)` at 82664c8). The purge calls it
+/// exactly once, and only when the purge removes a source the break on air depends on.
+@MainActor
+final class OnBreakMustStopHookTests: XCTestCase {
+    final class StopLog { var reasons: [InterludeStopReason] = [] }
+
+    private struct OnAir { let session: DJBreakSession; let station: StationConfigurationModel
+                           let stops: StopLog; let item: UUID; let purger: NarrationPurger }
+
+    /// A personal break about `item` is on air, with a fake stop hook installed.
+    private func onAir() async throws -> OnAir {
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: .init(commentary: .frequent)))),
+            consent: StaticIntegrationConsent([:]))
+        await station.load()
+        let cache = InMemoryAudioCache()
+        let revocations = NarrationRevocations()
+        let renderer = VoiceRenderer(routes: [deviceRoute], budget: VoiceBudget(dailyCapMicrodollars: 0),
+                                     cache: cache, revocations: revocations)
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: station.active.cadence())
+        let dj = DJPresentationStore()
+        let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 9 })
+        let stops = StopLog()
+        session.onBreakMustStop = { stops.reasons.append($0) }
+        await session.start()
+        let item = UUID()
+        let briefing = NarrationHandoff(cues: [NarrationCue(
+            id: UUID(), order: 1, group: 0, kind: .upcomingEvent, text: "Coming up: Standup at ten.",
+            estimatedSeconds: 4, maxSeconds: 30, sourceItemID: item, source: .calendar, provenance: "fixture:1")],
+            maxSpokenSeconds: 60, experienceSeconds: 600)
+        var states = dj.updates().makeAsyncIterator()
+        await session.queueStarted(djTracks(8), briefing: briefing, sources: approvedSources(briefing))
+        await session.songStarted(index: 0, remaining: .seconds(180))
+        while let s = await states.next() { if case .ready = s { break } }
+        let handed = await session.naturalBoundary(afterTrack: 0)
+        XCTAssertTrue(try XCTUnwrap(handed).cues.contains { $0.sourceItemID == item })
+        session.playbackStarted(afterTrack: 0)
+        let purger = NarrationPurger(cache: cache, preparer: preparer, session: session, revocations: revocations,
+                                     feed: NarrationPurgeFeed())
+        return OnAir(session: session, station: station, stops: stops, item: item, purger: purger)
+    }
+
+    func testRevokingTheOnAirSourceFiresTheStopHookOnceWithSourceRevoked() async throws {
+        let r = try await onAir()
+        await r.purger.purge(sourceItemIDs: [r.item])
+        XCTAssertEqual(r.stops.reasons, [.sourceRevoked], "fires in the purge, with .sourceRevoked")
+        await r.purger.purge(sourceItemIDs: [r.item])
+        r.session.purge(sourceItemIDs: [r.item])
+        XCTAssertEqual(r.stops.reasons, [.sourceRevoked], "exactly once: the break is no longer on air")
+    }
+
+    func testAPurgeThatDoesNotTouchTheOnAirBreakDoesNotFire() async throws {
+        let r = try await onAir()
+        await r.purger.purge(sourceItemIDs: [UUID()])
+        r.session.purge(sourceItemIDs: [UUID(), UUID()])
+        r.session.purge(sourceItemIDs: [])
+        XCTAssertEqual(r.stops.reasons, [], "unrelated purges leave the break playing")
+    }
+
+    func testTurningTheBriefingOffDoesNotFire() async throws {
+        let r = try await onAir()
+        var changes = r.station.changes().makeAsyncIterator()
+        await r.station.setBriefing { $0.enabled = false }
+        let next = await changes.next()
+        let change = try XCTUnwrap(next)
+        await r.session.stationChanged(change)
+        XCTAssertEqual(r.stops.reasons, [], "briefing off is a station edit, not a purge")
     }
 }

@@ -17,16 +17,13 @@ import Foundation
 /// - tuner changes apply at the next boundary to *future* breaks; the playing song and the
 ///   break already preparing for it are untouched unless the change requires dropping them.
 /// Why the player is asked to stop the DJ line that is playing.
+///
+/// Reconcile with #67: #67 declares this enum in `Playback/InterludeStop.swift` (Atlas's file)
+/// with `sourceRevoked`, `interruption` and `routeRemoved`. This minimal, source-compatible
+/// copy exists only because #67 is not in this base; delete it when the two meet.
 public enum InterludeStopReason: Equatable, Sendable {
     /// A source the line speaks about was revoked, deleted or demoted.
     case sourceRevoked
-}
-
-/// Stops the DJ line that is playing now. Matches `InterludePlaybackAdapter.stopCurrentInterlude(reason:)`
-/// (Atlas, PR #67); the adapter conforms with an empty extension once that lands.
-@MainActor
-public protocol InterludeStopping: AnyObject {
-    func stopCurrentInterlude(reason: InterludeStopReason)
 }
 
 @MainActor
@@ -49,9 +46,10 @@ public final class DJBreakSession {
     private var observing = false
     /// The break handed to the player at the last natural boundary, until its audio ends.
     private var onAir: (afterTrack: Int, sources: Set<UUID>)?
-    /// The player's speech output. Set by the app to the interlude adapter
-    /// (`stopCurrentInterlude(reason:)`, PR #67); revoking a source stops a break on air with it.
-    public weak var interlude: (any InterludeStopping)?
+    /// Stops the DJ line on air. Same declaration as #67: PlayerView (82664c8) routes it to
+    /// `InterludePlaybackAdapter.stopCurrentInterlude(reason:)`. `purge` calls it exactly once,
+    /// and only when it removes a source the break on air depends on.
+    public var onBreakMustStop: (@MainActor (InterludeStopReason) -> Void)?
     /// Purges prepared and cached narration for sources that stop being narratable at a
     /// boundary (expiry). The app sets the same `NarrationPurger` the connections use.
     public var purger: (any NarrationPurging)?
@@ -187,7 +185,7 @@ public final class DJBreakSession {
         // A break already playing that speaks about these items stops now, in this call.
         if let live = onAir, !live.sources.isDisjoint(with: ids) {
             onAir = nil
-            interlude?.stopCurrentInterlude(reason: .sourceRevoked)
+            onBreakMustStop?(.sourceRevoked)
         }
         func mentions(_ cue: NarrationCue) -> Bool { cue.sourceItemID.map(ids.contains) ?? false }
         if let b = briefing {
