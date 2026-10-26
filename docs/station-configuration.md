@@ -1,5 +1,7 @@
 # Station configuration
 
+> The Studio UI binds to [`studio-presentation-contract.md`](studio-presentation-contract.md), which is the single entry point (tuner rows, recipes, connections, DJ status). This document stays the reference for configuration rules.
+
 This document is the contract between the core and the UI for station settings. It isn't a UI design. DJ presentation state (idle, preparing, ready, speaking, unavailable) and the LIVE rules are defined in [`dj-presentation-state.md`](dj-presentation-state.md) (#55) and aren't repeated here.
 
 Beta defaults are final: commentary is `occasional` (~30% of song boundaries).
