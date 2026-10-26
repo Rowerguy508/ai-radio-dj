@@ -593,6 +593,12 @@ public final class ConnectionsModel {
         items.filter { $0.integration == integration }
     }
 
+    /// Each row's own source sensitivity, keyed by row id (the same id briefing adapters use).
+    /// Rows without a value are left out, never defaulted (#75's adapter treats missing as blocked).
+    public var sensitivityByItemID: [UUID: Sensitivity] {
+        Dictionary(items.compactMap { row in row.sensitivity.map { (row.id, $0) } }, uniquingKeysWith: { a, _ in a })
+    }
+
     // MARK: Intents
 
     /// Re-reads consent, source state and items, and purges narration that may no longer be used

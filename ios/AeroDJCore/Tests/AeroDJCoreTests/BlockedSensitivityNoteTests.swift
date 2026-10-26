@@ -111,3 +111,63 @@ final class BlockedSensitivityNoteTests: XCTestCase {
 private extension Result {
     var failure: Failure? { if case .failure(let e) = self { e } else { nil } }
 }
+
+/// Through the real `StudioPresentationModel` and real picked-notes provider (no stand-in that
+/// injects `.low`): sensitivity comes from each note's own `aerodj-sensitivity`, keyed by the
+/// row id. The rows are adapted into engine inputs the way #75's `LiveQueueBriefing` does
+/// (row consent, `sensitivityByItemID[id] ?? .blocked`). Retarget to `LiveQueueBriefing.provider`
+/// once #75 is in this base.
+@MainActor
+final class StudioSensitivityBriefingTests: XCTestCase {
+    func testPrivateNoteGivesNoContentCueAndApprovedPlainNoteDoes() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let files = EditableFiles([
+            "p": "---\naerodj-sensitivity: blocked\n---\n# Therapy notes\nTalk about the move.",
+            "g": "# Groceries\n- [ ] oat milk"])
+        let sources = LiveConnectionSources(calendar: nil, files: files, store: InMemoryConnectionChoicesStore(),
+                                            shareInboxAvailable: false)
+        try await sources.addNotes([PickedNote(fileName: "Therapy.md", bookmark: Data("p".utf8)),
+                                    PickedNote(fileName: "Groceries.md", bookmark: Data("g".utf8))])
+        var config = StationConfiguration.sampleMorningMix
+        config.requestedIntegrations = Set(StationIntegration.allCases)
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))), consent: sources)
+        await station.load()
+        let connections = ConnectionsModel(station: station, sourceReader: sources,
+                                           providers: [PickedNotesConnectionProvider(sources: sources)],
+                                           purger: NarrationPurger(cache: InMemoryAudioCache(), preparer: nil,
+                                                                   revocations: NarrationRevocations(), feed: NarrationPurgeFeed()),
+                                           now: { now })
+        let studio = StudioPresentationModel(station: station, recipes: StationRecipeLibrary(store: InMemoryStationRecipeStore()),
+                                             connections: connections, dj: DJPresentationStore())
+        await studio.connections.refresh()
+        let privateRow = try XCTUnwrap(studio.connections.items.first { $0.title == "Therapy notes" })
+        let plainRow = try XCTUnwrap(studio.connections.items.first { $0.title == "Groceries" })
+        _ = await studio.connections.perform(.approve, on: privateRow.id)   // refused: .notAllowed
+        _ = try await studio.connections.perform(.approve, on: plainRow.id).get()
+
+        let sensitivity = studio.connections.sensitivityByItemID
+        XCTAssertEqual(sensitivity[privateRow.id], .blocked, "the note's own value, keyed by row id")
+        XCTAssertEqual(sensitivity[plainRow.id], .medium, "notes default to .medium, never .low")
+        XCTAssertFalse(sensitivity.values.contains(.low))
+
+        // Adapter as in #75: row consent, and a missing sensitivity is blocked.
+        let context = studio.connections.items.map { row in
+            ContextItem(id: row.id, source: .obsidian, createdAt: now, title: row.title, summary: "",
+                        sensitivity: sensitivity[row.id] ?? .blocked,
+                        consent: row.state.mayBeNarrated ? .granted : .denied,
+                        expiresAt: row.expiresAt, provenance: "connection:\(row.id.uuidString)")
+        }
+        let cues = MorningBriefingEngine(now: { now }).script(from: context).handoff(maxSpokenSeconds: 150).cues
+        XCTAssertFalse(cues.contains { $0.sourceItemID == privateRow.id }, "the private note gives no content cue")
+        XCTAssertTrue(cues.contains { $0.sourceItemID == plainRow.id }, "the approved plain note does")
+
+        // Fallback regression guard: without the table every row is blocked (fails closed), so a
+        // caller that drops the table is caught by the assertion above, not silently given .low.
+        let blind = context.map { ContextItem(id: $0.id, source: $0.source, createdAt: $0.createdAt, title: $0.title,
+                                              summary: $0.summary, sensitivity: .blocked, consent: $0.consent,
+                                              expiresAt: $0.expiresAt, provenance: $0.provenance) }
+        XCTAssertFalse(MorningBriefingEngine(now: { now }).script(from: blind).handoff(maxSpokenSeconds: 150)
+            .cues.contains(where: \.isContent))
+    }
+}
