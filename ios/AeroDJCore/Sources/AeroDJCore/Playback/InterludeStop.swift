@@ -43,11 +43,11 @@ public final class SpeechStopGate {
 /// Whether a play that has not started a clip player may start one.
 ///
 /// The adapter guarantees this for every `stopCurrentInterlude(.sourceRevoked)` that
-/// reaches it, including one that arrives before the clip player is set:
-/// - before `begin`, the stop is kept and the next `begin` cancels that play;
+/// reaches it while a play is pending, before the clip player is set:
+/// - while idle, with no play pending, the stop is ignored. The next break is unrelated;
 /// - after `begin` and before `admit` (decode, or stop state begun with no clip player),
 ///   `admit` cancels that play.
-/// No clip starts. Music resumes once, from `begin` or `admit`, when auto-resume is allowed.
+/// No clip starts. Music resumes once, from `admit`, when auto-resume is allowed.
 /// `stop` itself does not resume, so the play and the stop do not resume twice.
 ///
 /// A stop that never reaches the adapter, because the session hook was still nil, is not
@@ -74,15 +74,19 @@ public struct PendingPlayStop: Equatable, Sendable {
 
     public init() {}
 
-    /// Records a revoke. Resume is decided by the following `begin` or `admit`, once.
+    /// Records a revoke for the play that is pending. An idle revoke is ignored, so the
+    /// next unrelated break still starts. Resume is decided by the following `admit`, once.
     public mutating func stop(reason: InterludeStopReason, mayAutoResume: Bool) -> PendingPlayEffect {
         _ = reason
         _ = mayAutoResume
+        guard phase == .pending else {
+            return PendingPlayEffect(startAudio: false, resumeMusic: false)
+        }
         revoked = true
         return PendingPlayEffect(startAudio: false, resumeMusic: false)
     }
 
-    /// Opens the pending play, before decode. An earlier revoke cancels it.
+    /// Opens the pending play, before decode. A revoke that is already pending cancels it.
     public mutating func begin(mayAutoResume: Bool) -> PendingPlayEffect {
         if revoked {
             revoked = false

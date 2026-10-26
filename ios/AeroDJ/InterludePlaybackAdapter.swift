@@ -150,10 +150,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// Consent and deletion pass `.sourceRevoked`. The instance is the app-scoped
     /// interlude adapter.
     ///
-    /// A `.sourceRevoked` that arrives before the clip player exists is kept by
-    /// `PendingPlayStop`. `play` then starts no audio and resumes music once when that
-    /// is still allowed. A stop that never reaches this method, because the session
-    /// hook was nil, is outside this guarantee.
+    /// A `.sourceRevoked` that arrives while a play is pending, before the clip player
+    /// exists, is kept by `PendingPlayStop`. `admit` then starts no audio and resumes
+    /// music once when that is still allowed. A revoke while idle does not cancel the
+    /// next break. A stop that never reaches this method, because the session hook was
+    /// nil, is outside this guarantee.
     nonisolated func stopCurrentInterlude(reason: InterludeStopReason) {
         MainActorImmediate.run {
             // Consent revoke records a revoke and resumes once. Other reasons keep the

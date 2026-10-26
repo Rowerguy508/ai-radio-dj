@@ -34,6 +34,26 @@ public final class DJBreakSession {
     private var playing: Int?
     private var changeTask: Task<Void, Never>?
     private var observing = false
+    /// Stops the DJ line on air. Same declaration as #67: PlayerView (82664c8) routes it to
+    /// `InterludePlaybackAdapter.stopCurrentInterlude(reason:)`. `purge` calls it exactly once,
+    /// and only when it removes a source the break on air depends on.
+    /// If a purge hits the on-air break while this is nil, the stop is held and delivered once
+    /// when a hook is set (unless that break has ended by then).
+    public var onBreakMustStop: (@MainActor (InterludeStopReason) -> Void)? {
+        didSet { deliverPendingStop() }
+    }
+    /// A stop for the break after `afterTrack` that found no hook installed.
+    private var pendingStop: (afterTrack: Int, reason: InterludeStopReason)?
+
+    private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
+        if let hook = onBreakMustStop { hook(reason) } else { pendingStop = (k, reason) }
+    }
+
+    private func deliverPendingStop() {
+        guard let pending = pendingStop, let hook = onBreakMustStop else { return }
+        pendingStop = nil
+        hook(pending.reason)
+    }
 
     public init(preparer: DJBreakPreparer, station: StationConfigurationModel, dj: DJPresentationStore,
                 base: DJCadence = .init(), seed: UInt64 = .random(in: .min ... .max),
@@ -115,6 +135,7 @@ public final class DJBreakSession {
         await preparer.cancelAll()
         breaks = [:]
         playing = nil
+        pendingStop = nil
         dj.send(.sessionStopped)
     }
 

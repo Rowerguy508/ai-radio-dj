@@ -148,15 +148,29 @@ final class InterludeStopTests: XCTestCase {
         XCTAssertFalse(admitted.resumeMusic)
     }
 
-    /// A revoke that reaches the adapter before `play` begins is kept and cancels that play.
+    /// A revoke while nothing is playing, and no play is pending, must not cancel the next break.
+    func testRevokeWhileIdleDoesNotCancelTheNextBreak() {
+        var play = PendingPlayStop()
+        let idle = play.stop(reason: .sourceRevoked, mayAutoResume: true)
+        XCTAssertFalse(idle.startAudio)
+        XCTAssertFalse(idle.resumeMusic)
+
+        let next = play.begin(mayAutoResume: true)
+        XCTAssertTrue(next.startAudio, "an idle revoke does not cancel the next unrelated break")
+        XCTAssertFalse(next.resumeMusic)
+    }
+
+    /// A revoke that reaches the adapter after `begin` and before a clip player exists
+    /// cancels that play. An idle revoke is covered by `testRevokeWhileIdleDoesNotCancelTheNextBreak`.
     /// A stop that never reaches the adapter (session hook still nil) is not something this
     /// type can see. Production arms the hook before a clip can play.
     func testStopBeforeTheClipPlayerIsSetCancelsTheNextPlay() {
         var play = PendingPlayStop()
+        XCTAssertTrue(play.begin(mayAutoResume: true).startAudio)
         let early = play.stop(reason: .sourceRevoked, mayAutoResume: true)
         XCTAssertFalse(early.resumeMusic, "nothing is paused until play begins")
 
-        let opened = play.begin(mayAutoResume: true)
+        let opened = play.admit(mayAutoResume: true)
         XCTAssertFalse(opened.startAudio, "the stop is not lost")
         XCTAssertTrue(opened.resumeMusic)
 
