@@ -37,6 +37,8 @@ jobs:
       - name: Run core tests
         run: swift test
         working-directory: ios/AeroDJCore
+      - name: Release build excludes the debug test station
+        run: ios/scripts/check-release-excludes-test-station.sh
 
   simulator-build:
     name: iOS simulator build
