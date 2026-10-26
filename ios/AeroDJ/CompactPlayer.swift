@@ -212,7 +212,7 @@ struct TrackBlock: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel(spokenTitle)
             DJStatusLine(presentation: dj, onReview: onReview)
                 .padding(.top, 6)
