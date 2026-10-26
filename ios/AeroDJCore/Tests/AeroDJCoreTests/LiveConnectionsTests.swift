@@ -212,6 +212,7 @@ final class LiveConnectionsTests: XCTestCase {
         XCTAssertEqual(reloaded.notes.map(\.fileName), ["Plan.md"])
     }
 
+    #if DEBUG
     /// The test station must never construct a real private source.
     func testFixtureModeNeverCallsLiveFactories() async {
         let now = self.now
@@ -235,14 +236,13 @@ final class LiveConnectionsTests: XCTestCase {
         _ = ConnectionsComposition.make(mode: .live, live: live, fixtures: TestStationFixtures(now: now))
         XCTAssertEqual(calls.names, ["calendar", "files", "shareInbox", "store"])
     }
+    #endif
 
     func testLiveCompositionOnlyAddsAvailableSources() {
         let now = self.now
-        let live = ConnectionsComposition.make(
-            mode: .live,
-            live: .init(calendar: { FakeCalendar(access: .notDetermined, now: now) }, files: { nil },
-                        store: { InMemoryConnectionChoicesStore() }, shareInbox: { [] }),
-            fixtures: TestStationFixtures(now: now))
+        let live = ConnectionsComposition.live(
+            .init(calendar: { FakeCalendar(access: .notDetermined, now: now) }, files: { nil },
+                  store: { InMemoryConnectionChoicesStore() }, shareInbox: { [] }))
         XCTAssertNil(live.notes, "no file reader, no picker")
         XCTAssertEqual(live.providers.map(\.integration), [.calendar])
         XCTAssertEqual(live.contextSources.map(\.source), [.calendar])

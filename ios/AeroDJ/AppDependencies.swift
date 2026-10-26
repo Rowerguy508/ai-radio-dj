@@ -47,13 +47,11 @@ struct AppDependencies {
         // Live connection sources (Fry, #61): EventKit for calendars the listener chooses, a
         // security-scoped reader for .md files they pick, the App Group inbox when it exists.
         // Consent is derived from those sources, never assumed.
-        let composition = ConnectionsComposition.make(
-            mode: .live,
-            live: .init(calendar: { EventKitCalendarReader() },
+        let composition = ConnectionsComposition.live(
+            .init(calendar: { EventKitCalendarReader() },
                         files: { SecurityScopedNoteReader() },
                         store: { FileConnectionChoicesStore(fileURL: supportURL("Connections/choices.json")) },
-                        shareInbox: { SharedInboxReview.appGroupInbox().map { [SharedInboxConnectionProvider(review: $0)] } ?? [] }),
-            fixtures: TestStationFixtures())
+                        shareInbox: { SharedInboxReview.appGroupInbox().map { [SharedInboxConnectionProvider(review: $0)] } ?? [] }))
         let station = StationConfigurationModel(store: FileStationConfigurationStore(fileURL: stationFileURL()),
                                                 consent: composition.consent)
         let voice = VoiceRenderer.onDeviceDefault()

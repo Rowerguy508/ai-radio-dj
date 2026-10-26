@@ -140,7 +140,8 @@ final class StudioScreenTests: XCTestCase {
         ]
         for c in cases {
             let app = launch(scenario: c.scenario)
-            XCTAssertTrue(app.otherElements["layout.compact"].waitForExistence(timeout: 15), c.scenario)
+            // Any element type: without a track the container may not surface as "other".
+            XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15), c.scenario)
             XCTAssertTrue(shows(app, c.expect), "\(c.scenario) shows \(c.expect)")
             // Transport appears only when there is a session it can control.
             XCTAssertEqual(app.buttons["transport.playPause"].exists, c.transport, c.scenario)

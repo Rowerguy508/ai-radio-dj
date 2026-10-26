@@ -385,6 +385,31 @@ public struct ConnectionsComposition: Sendable {
         }
     }
 
+    /// Live: the only composition a Release build can construct.
+    public static func live(_ live: LiveFactories) -> ConnectionsComposition {
+        let calendar = live.calendar()
+        let files = live.files()
+        let inbox = live.shareInbox()
+        let sources = LiveConnectionSources(calendar: calendar, files: files, store: live.store(),
+                                            shareInboxAvailable: !inbox.isEmpty)
+        var providers = inbox
+        var context: [any ContextSource] = []
+        if let calendar {
+            let chosen = ChosenCalendarContextSource(reader: calendar, sources: sources)
+            providers.append(CalendarConnectionProvider(source: chosen))
+            context.append(chosen)
+        }
+        if files != nil {
+            providers.append(PickedNotesConnectionProvider(sources: sources))
+            context.append(ApprovedNotesContextSource(sources: sources))
+        }
+        return ConnectionsComposition(sourceReader: sources, consent: sources, providers: providers,
+                                      contextSources: context, notes: files != nil ? sources : nil)
+    }
+
+    #if DEBUG
+    /// Both modes (Debug only: the test station does not exist in Release). In `.testStation`
+    /// no live factory is called.
     public static func make(mode: AppRuntimeMode, live: LiveFactories,
                             fixtures: @autoclosure () -> TestStationFixtures) -> ConnectionsComposition {
         switch mode {
@@ -393,24 +418,8 @@ public struct ConnectionsComposition: Sendable {
             return ConnectionsComposition(sourceReader: f.sourceReader(), consent: TestStation.fixtureConsent,
                                           providers: f.providers(), contextSources: f.contextSources(), notes: nil)
         case .live:
-            let calendar = live.calendar()
-            let files = live.files()
-            let inbox = live.shareInbox()
-            let sources = LiveConnectionSources(calendar: calendar, files: files, store: live.store(),
-                                                shareInboxAvailable: !inbox.isEmpty)
-            var providers = inbox
-            var context: [any ContextSource] = []
-            if let calendar {
-                let chosen = ChosenCalendarContextSource(reader: calendar, sources: sources)
-                providers.append(CalendarConnectionProvider(source: chosen))
-                context.append(chosen)
-            }
-            if files != nil {
-                providers.append(PickedNotesConnectionProvider(sources: sources))
-                context.append(ApprovedNotesContextSource(sources: sources))
-            }
-            return ConnectionsComposition(sourceReader: sources, consent: sources, providers: providers,
-                                          contextSources: context, notes: files != nil ? sources : nil)
+            return Self.live(live)
         }
     }
+    #endif
 }
