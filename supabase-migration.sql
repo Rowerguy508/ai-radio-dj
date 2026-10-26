@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS public.stations (
   description TEXT,
   energy_level FLOAT DEFAULT 0.5,
   style TEXT CHECK (style IN ('chill', 'balanced', 'hype')),
-  voice_id TEXT, -- ElevenLabs voice ID
+  elevenlabs_voice_id TEXT, -- ElevenLabs voice ID
   music_genres TEXT[] DEFAULT '{}',
   include_messages BOOLEAN DEFAULT TRUE,
   include_calendar BOOLEAN DEFAULT FALSE,
@@ -171,7 +171,7 @@ BEGIN
   VALUES (NEW.id, NEW.email, NEW.raw_user_meta_data->>'name');
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Trigger for new user creation
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
