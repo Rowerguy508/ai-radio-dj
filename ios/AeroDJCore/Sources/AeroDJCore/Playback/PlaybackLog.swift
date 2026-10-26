@@ -58,7 +58,7 @@ extension BreakPlayerOutcome {
     public var logToken: String {
         switch self {
         case .finished: "finished"
-        case .cancelled: "cancelled"
+        case .cancelled, .revoked: "cancelled"
         case .failed: "failed"
         }
     }

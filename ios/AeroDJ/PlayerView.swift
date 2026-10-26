@@ -78,6 +78,10 @@ struct PlayerView: View {
                     interlude.stop()
                 }
             }
+            // Purge calls this. It is the same stop the speaking player has to hear.
+            djSession.onBreakMustStop = { [interlude] reason in
+                interlude.stopActiveBreak(reason: reason)
+            }
             // A skip cuts the skipped song's break, so a prepared break for it is never played.
             music.onSongSkipped = { [djSession] index in
                 Task { await djSession.songCut(afterTrack: index) }
@@ -87,6 +91,7 @@ struct PlayerView: View {
                 switch event {
                 case .started(let k): djSession.playbackStarted(afterTrack: k)
                 case .finished(let k): djSession.playbackFinished(afterTrack: k)
+                case .revoked(let k): djSession.playbackFinished(afterTrack: k)
                 case .failed(let k): djSession.playbackFailed(afterTrack: k)
                 }
             }

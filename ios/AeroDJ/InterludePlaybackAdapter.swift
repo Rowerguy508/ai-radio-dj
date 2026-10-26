@@ -34,7 +34,10 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     /// Real audio lifecycle for the DJ session. Emitted only from the player: started when
     /// AVAudioPlayer really starts, finished when the whole break ends, failed otherwise.
-    enum Playback { case started(afterTrack: Int), finished(afterTrack: Int), failed(afterTrack: Int) }
+    /// `.revoked` is a consent stop, not a natural end and not a speech failure.
+    enum Playback {
+        case started(afterTrack: Int), finished(afterTrack: Int), failed(afterTrack: Int), revoked(afterTrack: Int)
+    }
     var onPlayback: ((Playback) -> Void)?
     private var breakTrack = 0
 
@@ -96,6 +99,32 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         haltAudio()
     }
 
+    /// Stops the clip that is already playing. Main-actor isolated. Idle is a no-op.
+    ///
+    /// Clears the player and its delegate before returning, so a late finish callback is ignored.
+    /// The break ends as `.revoked`, not as a natural finish. Music is asked to resume once,
+    /// and only when `NarrationResumePolicy` still permits it. A finished queue entry is not
+    /// replayed: `resumeIfAllowed` refuses it, and `PlayerView` loads the next track.
+    ///
+    /// `DJBreakSession.purge` reaches this through `onBreakMustStop`. Sentinel calls purge;
+    /// this method is the player entry point.
+    func stopActiveBreak(reason: InterludeStopReason) {
+        let effect = ActiveBreakStop.apply(
+            isPlaying: stopState.isPlaying,
+            reason: reason,
+            mayAutoResume: music.mayAutoResume
+        )
+        guard effect.stopped, stopState.stop(reason: reason) else { return }
+        log.notice("\(PlaybackLog.interludeStop(reason: reason), privacy: .public)")
+        queue = []
+        let player = clipPlayer
+        clipPlayer = nil
+        player?.delegate = nil
+        player?.stop()
+        outcome = .revoked
+        finishBreak(.revoked)
+    }
+
     /// Stops the speaking break before this returns. Safe from any isolation.
     ///
     /// On the main thread the player stops in this turn. Off the main thread the call
@@ -151,11 +180,20 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         let end = NarrationResumePolicy.narrationEnd(for: outcome)
         let decision = NarrationResumePolicy.decide(end, mayAutoResume: music.mayAutoResume, phase: music.audioState)
         music.completeNarration(decision)
-        switch decision.playbackEvent {
+        switch outcome {
         case .finished:
             onPlayback?(.finished(afterTrack: breakTrack))
+        case .revoked:
+            onPlayback?(.revoked(afterTrack: breakTrack))
         case .cancelled, .failed:
             onPlayback?(.failed(afterTrack: breakTrack))
+        }
+        if outcome == .revoked {
+            // One resume, and only when the policy allows it. The finished entry stays stopped.
+            if decision.resumeMusic, !music.currentEntryAlreadyFinished {
+                await music.resumeIfAllowed()
+            }
+            return
         }
         // This break follows a natural end. The finished entry stays stopped; PlayerView
         // loads the next song after play returns.

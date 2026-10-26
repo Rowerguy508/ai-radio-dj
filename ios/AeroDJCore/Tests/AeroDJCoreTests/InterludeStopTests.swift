@@ -6,13 +6,17 @@ import XCTest
 @MainActor
 private final class SpeakingBreak {
     private var state = InterludeStopState()
+    /// Retained so a later clip cannot reuse this object's address.
+    private var token: NSObject?
     private var clip = ObjectIdentifier(NSObject())
     private(set) var audioStops = 0
     private(set) var delivered = 0
 
     func play() {
         state.begin()
-        clip = ObjectIdentifier(NSObject())
+        let object = NSObject()
+        token = object
+        clip = ObjectIdentifier(object)
         state.adopt(player: clip)
     }
 
@@ -38,7 +42,7 @@ private final class SpeakingBreak {
 
 final class InterludeStopTests: XCTestCase {
     func testStopDuringPlayRetiresTheBreak() async {
-        let speaker = SpeakingBreak()
+        let speaker = await MainActor.run { SpeakingBreak() }
         await speaker.play()
         let clip = await speaker.currentClip
         speaker.stopCurrentInterlude(reason: .sourceRevoked)
@@ -55,7 +59,7 @@ final class InterludeStopTests: XCTestCase {
     }
 
     func testStopFromANonMainContextStopsBeforeReturning() async {
-        let speaker = SpeakingBreak()
+        let speaker = await MainActor.run { SpeakingBreak() }
         await speaker.play()
         let clip = await speaker.currentClip
         let stopped = expectation(description: "stop returned")
@@ -76,7 +80,7 @@ final class InterludeStopTests: XCTestCase {
     }
 
     func testStopWhenIdleIsANoOp() async {
-        let speaker = SpeakingBreak()
+        let speaker = await MainActor.run { SpeakingBreak() }
         speaker.stopCurrentInterlude(reason: .sourceRevoked)
         speaker.stopCurrentInterlude(reason: .sourceRevoked)
 
@@ -91,7 +95,7 @@ final class InterludeStopTests: XCTestCase {
     }
 
     func testLateDelegateAfterStopIsIgnored() async {
-        let speaker = SpeakingBreak()
+        let speaker = await MainActor.run { SpeakingBreak() }
         await speaker.play()
         let first = await speaker.currentClip
         speaker.stopCurrentInterlude(reason: .sourceRevoked)

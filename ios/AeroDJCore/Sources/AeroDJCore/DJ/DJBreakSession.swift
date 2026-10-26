@@ -126,16 +126,18 @@ public final class DJBreakSession {
         dj.send(.sessionStopped)
     }
 
-    /// Set to the player's `onBreakMustStop`. `purge` does not call it yet, so a clip
-    /// already in the player keeps going.
+    /// The player sets this to `InterludePlaybackAdapter.stopActiveBreak(reason:)`.
+    /// `purge` calls it so a clip that is already playing stops in this turn.
     public var onBreakMustStop: (@MainActor (InterludeStopReason) -> Void)?
 
     /// Personal items deleted or revoked: they leave the briefing and every break planned from
     /// them is re-planned without them, so they can never start rendering later. Called by
     /// `NarrationPurger` before the preparer and cache are purged.
+    ///
+    /// Also calls `onBreakMustStop(.sourceRevoked)` before it returns. Idle is a no-op in the player.
     public func purge(sourceItemIDs ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
-        _ = onBreakMustStop
+        onBreakMustStop?(.sourceRevoked)
         func mentions(_ cue: NarrationCue) -> Bool { cue.sourceItemID.map(ids.contains) ?? false }
         if let b = briefing {
             briefing = NarrationHandoff(cues: b.cues.filter { !mentions($0) },

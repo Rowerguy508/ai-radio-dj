@@ -44,6 +44,11 @@ final class MusicKitService: ObservableObject {
     private var queueIndex = 0
     /// Queue entry that already reached a natural end. `resumeIfAllowed` must not play it again.
     private var finishedEntryID: String?
+    /// True when the current queue entry is the one a natural end already finished.
+    var currentEntryAlreadyFinished: Bool {
+        let currentID = player.queue.currentEntry?.id
+        return currentID != nil && currentID == finishedEntryID
+    }
     /// Called when a song really starts, with its catalog duration if MusicKit reports one.
     var onSongStarted: (@MainActor (Int, TimeInterval?) -> Void)?
     /// Called once per boundary. For a natural end, the index is the song that just finished.

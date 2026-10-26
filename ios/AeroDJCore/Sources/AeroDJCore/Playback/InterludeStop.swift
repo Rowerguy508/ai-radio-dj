@@ -85,10 +85,20 @@ public struct ActiveBreakEffect: Equatable, Sendable {
 }
 
 public enum ActiveBreakStop {
-    /// A playing clip is left running. `mayAutoResume` is not applied.
+    /// Halt a playing clip, record a revoke, and resume music once when that is still allowed.
+    /// An idle break is unchanged. The result is never a natural end.
     public static func apply(isPlaying: Bool, reason: InterludeStopReason, mayAutoResume: Bool) -> ActiveBreakEffect {
-        _ = (isPlaying, reason, mayAutoResume)
-        return ActiveBreakEffect(stopped: false, end: .finished, resumeMusic: false, naturalEnd: true)
+        guard isPlaying else {
+            return ActiveBreakEffect(stopped: false, end: .skipped, resumeMusic: false, naturalEnd: false)
+        }
+        _ = reason
+        let decision = NarrationResumePolicy.decide(.revoked, mayAutoResume: mayAutoResume, phase: .voice)
+        return ActiveBreakEffect(
+            stopped: true,
+            end: .revoked,
+            resumeMusic: decision.resumeMusic,
+            naturalEnd: false
+        )
     }
 }
 
@@ -96,6 +106,8 @@ public enum ActiveBreakStop {
 @MainActor
 public final class ActiveBreakController {
     private var stopState = InterludeStopState()
+    /// Retained so a later clip cannot reuse this object's address.
+    private var token: NSObject?
     private var player: ObjectIdentifier?
     public private(set) var playerStops = 0
     public private(set) var delegateCleared = false
@@ -108,8 +120,11 @@ public final class ActiveBreakController {
 
     public func play() {
         stopState.begin()
-        player = ObjectIdentifier(NSObject())
-        if let player { stopState.adopt(player: player) }
+        let object = NSObject()
+        token = object
+        let id = ObjectIdentifier(object)
+        player = id
+        stopState.adopt(player: id)
     }
 
     public var currentPlayer: ObjectIdentifier? { player }
