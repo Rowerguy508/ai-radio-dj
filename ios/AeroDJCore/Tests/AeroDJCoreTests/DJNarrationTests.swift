@@ -384,3 +384,11 @@ final class DJNarrationTests: XCTestCase {
         XCTAssertEqual(leftover, withSource.cues.count + other.cues.count - 1, "only the clip spoken from the revoked item is purged")
     }
 }
+
+/// The briefing's personal items as approved, non-expiring connection items: what the app
+/// passes to `DJBreakSession.queueStarted(_:briefing:sources:)` alongside a briefing.
+func approvedSources(_ briefing: NarrationHandoff) -> [ConnectionItem] {
+    Set(briefing.cues.compactMap(\.sourceItemID)).map {
+        ConnectionItem(id: $0, integration: .calendar, title: "[TEST] item", state: .approved)
+    }
+}

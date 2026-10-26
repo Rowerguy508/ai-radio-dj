@@ -61,11 +61,14 @@ struct AppDependencies {
         // One preparer per launch: revoking a source purges prepared breaks as well as cached audio.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence())
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
+        let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
+        // The same purger handles sources that expire mid-show (checked at each song boundary).
+        djSession.purger = purger
         let connections = ConnectionsModel(
             station: station,
             sourceReader: composition.sourceReader,
             providers: composition.providers,
-            purger: NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession))
+            purger: purger)
         let recipes = StationRecipeLibrary(store: FileStationRecipeStore(fileURL: supportURL("StationRecipes/recipes.json")))
         return AppDependencies(
             mode: .live,
@@ -98,11 +101,14 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,
                                        cadence: TestStation.cadence)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
+        let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
+        // The same purger handles sources that expire mid-show (checked at each song boundary).
+        djSession.purger = purger
         let connections = ConnectionsModel(
             station: station,
             sourceReader: composition.sourceReader,
             providers: composition.providers,
-            purger: NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession))
+            purger: purger)
         let recipes = StationRecipeLibrary(store: InMemoryStationRecipeStore())
         return AppDependencies(
             mode: .testStation,

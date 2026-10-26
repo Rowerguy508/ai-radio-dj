@@ -231,7 +231,7 @@ final class OnAirRevocationTests: XCTestCase {
         let item = UUID(), other = UUID()
 
         var states = dj.updates().makeAsyncIterator()
-        await session.queueStarted(djTracks(8), briefing: briefing(item))
+        await session.queueStarted(djTracks(8), briefing: briefing(item), sources: approvedSources(briefing(item)))
         await session.songStarted(index: 0, remaining: .seconds(180))
         while let s = await states.next() { if case .ready = s { break } }
         let handed = await session.naturalBoundary(afterTrack: 0)
@@ -274,7 +274,7 @@ final class OnAirRevocationTests: XCTestCase {
         session.interlude = interlude
         let item = UUID()
         var states = dj.updates().makeAsyncIterator()
-        await session.queueStarted(djTracks(8), briefing: briefing(item))
+        await session.queueStarted(djTracks(8), briefing: briefing(item), sources: approvedSources(briefing(item)))
         await session.songStarted(index: 0, remaining: .seconds(180))
         while let s = await states.next() { if case .ready = s { break } }
         let handed = await session.naturalBoundary(afterTrack: 0)
@@ -336,5 +336,188 @@ final class AudioCacheFileLogTests: XCTestCase {
         await cache.purgeAllPersonal()
         let afterAll = Set(try FileManager.default.contentsOfDirectory(atPath: dir.path))
         XCTAssertEqual(afterAll, ["k2.json", "k2.m4a"], "purge-all removes orphaned audio too")
+    }
+}
+
+/// Sentinel (#75): a prepared break whose source expires mid-show must not air. The check runs
+/// at `naturalBoundary` with the session's injected clock, without `ConnectionsModel.refresh()`.
+@MainActor
+final class BoundaryExpiryTests: XCTestCase {
+    final class Clock: @unchecked Sendable {
+        var now: Date
+        init(_ now: Date) { self.now = now }
+    }
+
+    private struct Rig {
+        let session: DJBreakSession
+        let cache: FileAudioCache
+        let dir: URL
+        let dj: DJPresentationStore
+        let revocations: NarrationRevocations
+    }
+
+    private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func cue(_ item: UUID, _ order: Int, _ text: String) -> NarrationCue {
+        NarrationCue(id: UUID(), order: order, group: 0, kind: .upcomingEvent, text: text,
+                     estimatedSeconds: 4, maxSeconds: 30, sourceItemID: item, source: .calendar, provenance: "fixture:\(order)")
+    }
+
+    private func approved(_ id: UUID, expiresAt: Date?) -> ConnectionItem {
+        ConnectionItem(id: id, integration: .calendar, title: "[TEST] item", state: .approved, expiresAt: expiresAt)
+    }
+
+    /// Queues `cues` from `sources`, renders the first break (cached to disk) at `t0`, then waits
+    /// until it is ready. The caller moves the clock and calls `naturalBoundary(afterTrack: 0)`.
+    private func rig(_ clock: Clock, cues: [NarrationCue], sources: [ConnectionItem]) async -> Rig {
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: .init(commentary: .frequent)))),
+            consent: StaticIntegrationConsent([:]))
+        await station.load()
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("boundary-expiry-\(UUID().uuidString)")
+        let cache = FileAudioCache(directory: dir, now: { clock.now })
+        let revocations = NarrationRevocations()
+        let renderer = VoiceRenderer(routes: [deviceRoute], budget: VoiceBudget(dailyCapMicrodollars: 0),
+                                     cache: cache, revocations: revocations)
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: station.active.cadence())
+        let dj = DJPresentationStore()
+        let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 9 }, now: { clock.now })
+        session.purger = NarrationPurger(cache: cache, preparer: preparer, session: session, revocations: revocations,
+                                         feed: NarrationPurgeFeed())
+        await session.start()
+        var states = dj.updates().makeAsyncIterator()
+        await session.queueStarted(djTracks(8),
+                                   briefing: NarrationHandoff(cues: cues, maxSpokenSeconds: 60, experienceSeconds: 600),
+                                   sources: sources)
+        await session.songStarted(index: 0, remaining: .seconds(180))
+        while let s = await states.next() { if case .ready = s { break } }
+        return Rig(session: session, cache: cache, dir: dir, dj: dj, revocations: revocations)
+    }
+
+    /// (1) Approved item expiring at t0+60 s; the clock passes it, no refresh(): its cues are not
+    /// in the break and its cached audio is purged. The other approved item still airs.
+    func testItemExpiringMidShowIsDroppedAtTheBoundaryAndPurgedWithoutRefresh() async throws {
+        let clock = Clock(t0)
+        let expiring = UUID(), staying = UUID()
+        let r = await rig(clock, cues: [cue(expiring, 1, "Coming up: Standup at ten."), cue(staying, 2, "And lunch with Sam.")],
+                          sources: [approved(expiring, expiresAt: t0.addingTimeInterval(60)), approved(staying, expiresAt: nil)])
+        defer { try? FileManager.default.removeItem(at: r.dir) }
+        let token = r.revocations.token()
+        let before = await r.cache.fileCount()
+        XCTAssertEqual(before.personal, 2, "both items rendered and cached before expiry")
+
+        clock.now = t0.addingTimeInterval(61)
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        let aired = try XCTUnwrap(handed, "the still-approved item keeps its break")
+        XCTAssertFalse(aired.cues.contains { $0.sourceItemID == expiring }, "expired item's cues are not handed out")
+        XCTAssertTrue(aired.cues.contains { $0.sourceItemID == staying })
+        XCTAssertEqual(Set(aired.clips.map(\.cueID)), Set(aired.cues.map(\.id)), "no clip without its cue")
+        let after = await r.cache.fileCount()
+        XCTAssertEqual(after.personal, 1, "the expired item's cached audio is purged; the other's stays")
+        XCTAssertTrue(r.revocations.revoked([expiring], since: token), "purged through NarrationPurger (renders refused)")
+        XCTAssertFalse(r.revocations.revoked([staying], since: token))
+    }
+
+    /// (2) `expiresAt == now` is expired, as in `ConnectionItemState.resolve` (`expiresAt <= now`).
+    func testExpiryExactlyAtTheBoundaryCountsAsExpired() async throws {
+        let expiry = t0.addingTimeInterval(60)
+        for (at, airs) in [(expiry.addingTimeInterval(-1), true), (expiry, false)] {
+            let clock = Clock(t0)
+            let item = UUID()
+            let r = await rig(clock, cues: [cue(item, 1, "Coming up: Standup at ten.")],
+                              sources: [approved(item, expiresAt: expiry)])
+            defer { try? FileManager.default.removeItem(at: r.dir) }
+            clock.now = at
+            let handed = await r.session.naturalBoundary(afterTrack: 0)
+            XCTAssertEqual(handed?.cues.contains { $0.sourceItemID == item } ?? false, airs,
+                           "at expiresAt\(airs ? " - 1 s" : "") the item \(airs ? "airs" : "does not air")")
+            XCTAssertEqual(ConnectionItemState.resolve(consent: .granted, expiresAt: expiry, now: at, flagged: false,
+                                                       reconfirmed: false).mayBeNarrated, airs, "same rule as resolve()")
+        }
+    }
+
+    /// (3) Audio rendered and cached before expiry: at the boundary the break is dropped (music
+    /// plays) and the item's audio and metadata files are deleted from disk.
+    func testCachedAudioOfAnExpiredItemIsDroppedAndItsFilesDeleted() async throws {
+        let clock = Clock(t0)
+        let item = UUID()
+        let r = await rig(clock, cues: [cue(item, 1, "Coming up: Standup at ten.")],
+                          sources: [approved(item, expiresAt: t0.addingTimeInterval(60))])
+        defer { try? FileManager.default.removeItem(at: r.dir) }
+        // Audio beside each clip's metadata (as a .caf), so deletion of both is visible on disk.
+        for json in try FileManager.default.contentsOfDirectory(atPath: r.dir.path) where json.hasSuffix(".json") {
+            try Data([9]).write(to: r.dir.appendingPathComponent(json.replacingOccurrences(of: ".json", with: ".caf")))
+        }
+        let before = await r.cache.fileCount()
+        XCTAssertEqual(before.personal, 2, "the item's metadata and audio are on disk before expiry")
+        clock.now = t0.addingTimeInterval(120)
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertNil(handed, "nothing personal is left to say: the player plays music at once")
+        let after = await r.cache.fileCount()
+        XCTAssertEqual(after.personal, 0, "the item's audio and metadata files are deleted")
+        XCTAssertEqual(after.files, after.generic, "only generic clips (and their audio) remain")
+        XCTAssertEqual(r.dj.state, .idle, "the DJ shows music, not a ready break")
+    }
+}
+
+/// Only consent changes in Connections purge narration. Turning the briefing preference off is a
+/// station edit: future breaks are re-planned, but nothing is purged and a break on air keeps
+/// playing. (#75's `ApprovedShowHandoff.revokedOrUnapproved` becomes true here; it is not in this
+/// base yet, so this pins the StationConfiguration -> DJBreakSession -> NarrationPurger seam.)
+@MainActor
+final class BriefingOffIsNotAPurgeTests: XCTestCase {
+    final class SpyPurger: NarrationPurging, @unchecked Sendable {
+        var calls: [Set<UUID>] = []
+        func purge(sourceItemIDs: Set<UUID>) async { calls.append(sourceItemIDs) }
+    }
+
+    func testTurningTheBriefingOffNeitherPurgesTheCacheNorStopsTheBreakOnAir() async throws {
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: .init(commentary: .frequent)))),
+            consent: StaticIntegrationConsent([:]))
+        await station.load()
+        XCTAssertTrue(station.active.briefing.enabled, "precondition: briefing on")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("briefing-off-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = FileAudioCache(directory: dir)
+        let revocations = NarrationRevocations()
+        let renderer = VoiceRenderer(routes: [deviceRoute], budget: VoiceBudget(dailyCapMicrodollars: 0),
+                                     cache: cache, revocations: revocations)
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: station.active.cadence())
+        let dj = DJPresentationStore()
+        let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 9 })
+        let spy = SpyPurger()
+        session.purger = spy
+        let interlude = FakeInterlude()
+        session.interlude = interlude
+        await session.start()
+        let item = UUID()
+        let briefing = NarrationHandoff(cues: [NarrationCue(
+            id: UUID(), order: 1, group: 0, kind: .upcomingEvent, text: "Coming up: Standup at ten.",
+            estimatedSeconds: 4, maxSeconds: 30, sourceItemID: item, source: .calendar, provenance: "fixture:1")],
+            maxSpokenSeconds: 60, experienceSeconds: 600)
+        var states = dj.updates().makeAsyncIterator()
+        await session.queueStarted(djTracks(8), briefing: briefing, sources: approvedSources(briefing))
+        await session.songStarted(index: 0, remaining: .seconds(180))
+        while let s = await states.next() { if case .ready = s { break } }
+        let handed = await session.naturalBoundary(afterTrack: 0)
+        XCTAssertTrue(try XCTUnwrap(handed).cues.contains { $0.sourceItemID == item })
+        session.playbackStarted(afterTrack: 0)
+        let cachedBefore = await cache.fileCount()
+        XCTAssertGreaterThan(cachedBefore.personal, 0)
+
+        var changes = station.changes().makeAsyncIterator()
+        await station.setBriefing { $0.enabled = false }
+        let next = await changes.next()
+        let change = try XCTUnwrap(next)
+        XCTAssertTrue(change.invalidatesPreparedBreaks, "briefing off drops future breaks")
+        await session.stationChanged(change)   // the same path the session's change stream runs
+
+        XCTAssertEqual(interlude.stops, [], "the break on air keeps playing")
+        XCTAssertEqual(spy.calls, [], "NarrationPurger is not called")
+        XCTAssertEqual(revocations.count, 0, "nothing is revoked")
+        let cachedAfter = await cache.fileCount()
+        XCTAssertEqual(cachedAfter, cachedBefore, "cached audio stays on disk")
+        XCTAssertEqual(dj.state, .speaking(afterTrack: 0, includesBriefing: true), "still speaking")
     }
 }

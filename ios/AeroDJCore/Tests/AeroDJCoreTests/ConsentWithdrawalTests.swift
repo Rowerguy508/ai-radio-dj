@@ -93,8 +93,8 @@ final class ConsentWithdrawalTests: XCTestCase {
 
     /// Prepares a break that uses `id`, and waits until it is ready.
     private func prepare(_ session: DJBreakSession, dj: DJPresentationStore, using id: UUID) async {
-        await session.queueStarted(djTracks(12), briefing: NarrationHandoff(cues: [cue(for: id)], maxSpokenSeconds: 60,
-                                                                           experienceSeconds: 600))
+        let briefing = NarrationHandoff(cues: [cue(for: id)], maxSpokenSeconds: 60, experienceSeconds: 600)
+        await session.queueStarted(djTracks(12), briefing: briefing, sources: approvedSources(briefing))
         await session.songStarted(index: 0, remaining: .seconds(180))
         await until({ if case .ready(true, _) = dj.studioState { true } else { false } }, "break with the event is prepared")
     }

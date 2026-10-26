@@ -321,6 +321,15 @@ public struct ConnectionItem: Equatable, Sendable, Identifiable {
 
     public var description: String { state.description }
     public var actions: [ConnectionAction] { state.actions(for: integration) }
+
+    /// Whether the DJ may narrate it at `now`: its last known state is `.approved` and it has
+    /// not expired since, by the same rule as `ConnectionItemState.resolve` (`expiresAt <= now`
+    /// is expired). Used at song boundaries, where no `refresh()` has re-resolved the state.
+    public func mayBeNarrated(at now: Date) -> Bool {
+        state.mayBeNarrated
+            && ConnectionItemState.resolve(consent: .granted, expiresAt: expiresAt, now: now,
+                                           flagged: false, reconfirmed: false).mayBeNarrated
+    }
 }
 
 // MARK: - Boundaries the app implements
@@ -355,7 +364,8 @@ public protocol NarrationPurging: Sendable {
 public struct NarrationPurger: NarrationPurging {
     public let cache: any AudioCache
     public let preparer: DJBreakPreparer?
-    public let session: DJBreakSession?
+    /// Weak: the session holds this purger too (`DJBreakSession.purger`, boundary expiry).
+    public private(set) weak var session: DJBreakSession?
     public let revocations: NarrationRevocations
     /// Every completed purge is published here (for example, to stop on-air speech elsewhere).
     public let feed: NarrationPurgeFeed

@@ -112,7 +112,8 @@ final class DJBreakSessionTests: XCTestCase {
             return NarrationHandoff(cues: [cue], maxSpokenSeconds: 60, experienceSeconds: 600)
         }
         let ok = await rig(voice: PacedVoice(secondsPerWord: 0.8))
-        await ok.session.queueStarted(djTracks(8), briefing: handoff(UUID()))
+        let okBriefing = handoff(UUID())
+        await ok.session.queueStarted(djTracks(8), briefing: okBriefing, sources: approvedSources(okBriefing))
         await ok.session.songStarted(index: 0, remaining: .seconds(180))
         await until { if case .ready = ok.dj.studioState { true } else { false } }
         let handed = await ok.session.naturalBoundary(afterTrack: 0)
@@ -122,7 +123,8 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertLessThanOrEqual(briefing.measuredSeconds, 45)
 
         let long = await rig(voice: PacedVoice(secondsPerWord: 2.5))
-        await long.session.queueStarted(djTracks(8), briefing: handoff(UUID()))
+        let longBriefing = handoff(UUID())
+        await long.session.queueStarted(djTracks(8), briefing: longBriefing, sources: approvedSources(longBriefing))
         await long.session.songStarted(index: 0, remaining: .seconds(180))
         await until { if case .failed = long.dj.studioState { true } else { false } }
         let skipped = await long.session.naturalBoundary(afterTrack: 0)
@@ -163,7 +165,8 @@ final class DJBreakSessionTests: XCTestCase {
         let cue = NarrationCue(id: UUID(), order: 1, group: 0, kind: .note, text: "From your notes: water the plants.",
                                estimatedSeconds: 3, maxSeconds: 20, sourceItemID: item, source: .obsidian, provenance: "fixture:n1")
         let r = await rig()
-        await r.session.queueStarted(djTracks(12), briefing: NarrationHandoff(cues: [cue], maxSpokenSeconds: 60, experienceSeconds: 600))
+        let briefing = NarrationHandoff(cues: [cue], maxSpokenSeconds: 60, experienceSeconds: 600)
+        await r.session.queueStarted(djTracks(12), briefing: briefing, sources: approvedSources(briefing))
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await until({ if case .ready(true, _) = r.dj.studioState { true } else { false } }, "the item is in the prepared break")
 
