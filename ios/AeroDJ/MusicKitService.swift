@@ -42,6 +42,9 @@ final class MusicKitService: ObservableObject {
     /// Called with the index of the song the user skipped, so its prepared break is discarded.
     var onSongSkipped: (@MainActor (Int) -> Void)?
     private var queueIndex = 0
+    /// Advances in `play()` only. A boundary continuation captures it before awaiting.
+    private var queueGeneration = QueueGeneration()
+    var currentQueueGeneration: UInt64 { queueGeneration.value }
     /// Queue entry that already reached a natural end. `resumeIfAllowed` must not play it again.
     private var finishedEntryID: String?
     /// True when the current queue entry is the one a natural end already finished.
@@ -105,12 +108,13 @@ final class MusicKitService: ObservableObject {
         // is replaced, the same as `skip()`. Nil routes to `interlude.stop()`, which cancels
         // a pending play and halts a playing clip.
         onBreakMustStop?(nil)
+        _ = queueGeneration.beginQueue()
         queue = tracks
         currentTrack = tracks.first
         boundaries.userRequestedChange()
         queueIndex = 0
         send(.queueStarted(tracks: tracks.map(\.info), startIndex: 0, station: station))
-        stateMachine.apply(.startMusic)
+        adoptQueuePlaybackState()
         do {
             try await startTrack(at: 0, autoplay: true)
             lastError = nil
@@ -159,7 +163,14 @@ final class MusicKitService: ObservableObject {
 
     /// Starts music again after a DJ break or an interruption, only if the user still
     /// wants playback and the system is not holding it paused.
+    /// Uses the live queue generation. A boundary continuation passes the generation
+    /// it captured, so a queue `play()` replaced is left alone.
     func resumeIfAllowed() async {
+        await resumeIfAllowed(generation: queueGeneration.value)
+    }
+
+    func resumeIfAllowed(generation: UInt64) async {
+        guard QueueGenerationGuard.isCurrent(captured: generation, live: queueGeneration.value) else { return }
         let currentID = player.queue.currentEntry?.id
         let action = NarrationResumePolicy.musicAfterBreak(
             entryAlreadyFinished: currentID != nil && currentID == finishedEntryID,
@@ -218,9 +229,15 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Starts the song after `index` when the break for `index` is over.
-    func startNextTrack(after index: Int) async {
-        let next = index + 1
-        guard queue.indices.contains(next) else { return }
+    /// `generation` is the queue the boundary captured. A newer `play()` makes this a no-op,
+    /// so the new queue is not jumped to `index + 1`.
+    func startNextTrack(after index: Int, generation: UInt64) async {
+        guard let next = QueueGenerationGuard.nextTrack(
+            after: index,
+            captured: generation,
+            live: queueGeneration.value,
+            queueCount: queue.count
+        ) else { return }
         do {
             try await startTrack(at: next, autoplay: true)
         } catch {
@@ -266,8 +283,25 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Called when a boundary has no DJ line: transition -> music, so playback never sticks.
-    func skipInterlude() {
+    /// A generation from an older queue does not move the state of the queue now playing.
+    func skipInterlude(generation: UInt64) {
+        guard QueueGenerationGuard.isCurrent(captured: generation, live: queueGeneration.value) else { return }
         stateMachine.apply(.noInterlude)
+    }
+
+    /// A new queue is music. `startMusic` only leaves idle, so a queue that replaces a
+    /// boundary or a speaking break takes the one valid step back to music first.
+    private func adoptQueuePlaybackState() {
+        switch stateMachine.state {
+        case .idle:
+            stateMachine.apply(.startMusic)
+        case .transition:
+            stateMachine.apply(.noInterlude)
+        case .voice:
+            stateMachine.apply(.interludeEnded)
+        case .music:
+            break
+        }
     }
 
     // MARK: - Track-boundary observation

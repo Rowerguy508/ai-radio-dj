@@ -42,11 +42,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     }
     var onPlayback: ((Playback) -> Void)?
     private var breakTrack = 0
+    /// Queue generation captured by the boundary that started this break.
+    private var boundaryGeneration: UInt64 = 0
 
     /// A line with no prepared clip. Routine, so the break is skipped quietly; the
     /// DJ status goes idle without an error. Only real failures are reported.
-    func skipUnprepared() {
-        music.skipInterlude()
+    func skipUnprepared(generation: UInt64) {
+        music.skipInterlude(generation: generation)
     }
 
     /// Marks `afterTrack` as handed out, before `play` calls `begin`.
@@ -57,17 +59,20 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     /// Plays one prepared clip. A clip that won't decode skips the break.
-    func play(clip: Data, line: String, afterTrack: Int) async {
-        await play(clips: [clip], line: line, afterTrack: afterTrack)
+    func play(clip: Data, line: String, afterTrack: Int, generation: UInt64) async {
+        await play(clips: [clip], line: line, afterTrack: afterTrack, generation: generation)
     }
 
     /// Plays a prepared break: every clip back to back inside ONE break. Music is paused
     /// once before the first clip and resumed once after the last one.
-    func play(clips: [Data], line: String, afterTrack: Int) async {
+    /// `generation` is the queue the boundary captured. A newer `play()` makes the
+    /// skip and resume below no-ops.
+    func play(clips: [Data], line: String, afterTrack: Int, generation: UInt64) async {
         breakTrack = afterTrack
+        boundaryGeneration = generation
         guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
             music.logBreakSkipped(after: afterTrack, reason: .notPlanned)
-            music.skipInterlude()
+            music.skipInterlude(generation: generation)
             return
         }
         // A nil tag, or a tag for this afterTrack, that landed after hand-out and before
@@ -90,7 +95,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         guard players.count == clips.count, players.allSatisfy({ $0.duration > 0 }) else {
             music.logBreakSkipped(after: afterTrack, reason: .renderFailed)
             music.reportSpeechError("A DJ line could not be played and was skipped.")
-            music.skipInterlude()
+            music.skipInterlude(generation: boundaryGeneration)
             return
         }
         queue = players
@@ -197,7 +202,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         log.notice("\(PlaybackLog.breakEnd(after: self.breakTrack, result: .revoked), privacy: .public)")
         onPlayback?(.revoked(afterTrack: breakTrack))
         if resumeMusic, !music.currentEntryAlreadyFinished {
-            await music.resumeIfAllowed()
+            await music.resumeIfAllowed(generation: boundaryGeneration)
         }
     }
 
@@ -250,7 +255,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         if outcome == .revoked {
             // One resume, and only when the policy allows it. The finished entry stays stopped.
             if decision.resumeMusic, !music.currentEntryAlreadyFinished {
-                await music.resumeIfAllowed()
+                await music.resumeIfAllowed(generation: boundaryGeneration)
             }
             return
         }
@@ -262,7 +267,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             queueHasEntry: true
         )
         if action == .resumeCurrentEntry {
-            await music.resumeIfAllowed()
+            await music.resumeIfAllowed(generation: boundaryGeneration)
         }
     }
 

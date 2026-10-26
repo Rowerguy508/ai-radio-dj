@@ -40,27 +40,35 @@ struct PlayerView: View {
         .task {
             music.onBoundary = { @MainActor [interlude, music, djSession] boundary, finishedIndex in
                 guard case .naturalEnd = boundary else { return }
+                // Captured before this closure awaits. `play()` advances it when the user
+                // starts a new queue, and the continuation below must not move that queue.
+                let generation = music.currentQueueGeneration
                 // A break is only ever played at a natural end. Anything late, missing or failed is
                 // skipped, and the next song is not delayed.
                 Task { @MainActor in
                     // The break (or its skip) comes first; the next song is loaded only after it.
                     if interlude.isSpeaking {
-                        music.skipInterlude()
+                        music.skipInterlude(generation: generation)
                     } else if let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex) {
                         switch BreakHandoffPolicy.decide(prepared: prepared) {
                         case let .play(breakToPlay):
                             let line = breakToPlay.cues.map(\.text).joined(separator: " ")
                             interlude.handOut(afterTrack: finishedIndex)
-                            await interlude.play(clips: breakToPlay.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                            await interlude.play(
+                                clips: breakToPlay.clips.map(\.audio.data),
+                                line: line,
+                                afterTrack: finishedIndex,
+                                generation: generation
+                            )
                         case .continueMusic:
                             music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
-                            music.skipInterlude()
+                            music.skipInterlude(generation: generation)
                         }
                     } else {
                         music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
-                        music.skipInterlude()
+                        music.skipInterlude(generation: generation)
                     }
-                    await music.startNextTrack(after: finishedIndex)
+                    await music.startNextTrack(after: finishedIndex, generation: generation)
                 }
             }
             // A song really started: the DJ session plans its break with the catalog duration.
