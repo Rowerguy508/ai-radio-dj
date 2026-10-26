@@ -74,9 +74,9 @@ struct NowPlayingPanel: View {
 
     var body: some View {
         BleedNowPlaying(station: station, content: content, snapshot: snapshot, actions: actions,
-                        dj: dj, soundTags: soundTags, showsUpNext: showsUpNext,
-                        artworkNamespace: artworkNamespace, lockedHeight: lockedHeight,
-                        searchQuery: .constant(""),
+                        dj: dj, soundTags: soundTags, searchQuery: .constant(""),
+                        showsUpNext: showsUpNext, artworkNamespace: artworkNamespace,
+                        lockedHeight: lockedHeight,
                         onQueue: onQueue, onTune: onTune, onReview: onReview)
     }
 }
