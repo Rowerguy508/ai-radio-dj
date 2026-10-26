@@ -48,10 +48,11 @@ struct PlayerView: View {
                     if !interlude.isSpeaking {
                         prepared = await djSession.naturalBoundary(afterTrack: finishedIndex)
                     }
-                    let line = prepared?.cues.map(\.text).joined(separator: " ") ?? ""
-                    if let prepared, !line.isEmpty {
-                        await interlude.play(clips: prepared.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
-                    } else {
+                    switch BreakHandoffPolicy.decide(prepared: prepared) {
+                    case let .play(breakToPlay):
+                        let line = breakToPlay.cues.map(\.text).joined(separator: " ")
+                        await interlude.play(clips: breakToPlay.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                    case .continueMusic:
                         music.skipInterlude()
                     }
                     await music.startNextTrack(after: finishedIndex)

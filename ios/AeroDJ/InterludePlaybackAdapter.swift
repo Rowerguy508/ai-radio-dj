@@ -114,16 +114,19 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             }
         }
 
-        music.endInterlude() // voice -> music
-        if outcome == .finished {
-            music.djFinished()
+        let end: NarrationEnd = outcome == .finished ? .finished : .cancelled
+        let decision = NarrationResumePolicy.decide(end, mayAutoResume: music.mayAutoResume, phase: music.audioState)
+        music.completeNarration(decision)
+        switch decision.playbackEvent {
+        case .finished:
             onPlayback?(.finished(afterTrack: breakTrack))
-        } else {
-            music.djCancelled()
+        case .cancelled, .failed:
             onPlayback?(.failed(afterTrack: breakTrack))
         }
-        // Music returns only if the user still wants it and the system is not holding it.
-        await music.resumeIfAllowed()
+        // Music returns only when the same policy still permits it.
+        if decision.resumeMusic {
+            await music.resumeIfAllowed()
+        }
     }
 
     private func finishBreak(_ result: Outcome) {

@@ -32,13 +32,14 @@ final class MusicKitService: ObservableObject {
     private let player = ApplicationMusicPlayer.shared
     private var stateMachine = AudioStateMachine()
     private var audioSessionConfigured = false
-    private var boundaryDetector = PlaybackBoundaryDetector()
-    private var intent = PlaybackIntent()
+    private var boundaries = BoundaryInterpreter()
+    private var sessionPolicy = AudioSessionPolicy()
+    private var deferredStart = DeferredSongStart()
+    /// True after the first observer install, including a retry that follows a failed `setActive`.
+    private var sessionRegistration = SessionRegistrationGate()
     /// Stops any DJ line that is speaking. Set by the app to the break adapter.
     var onBreakMustStop: (@MainActor () -> Void)?
     private var queueIndex = 0
-    /// A song loaded but not started (the user paused during the break before it).
-    private var pendingStartIndex: Int?
     /// Called when a song really starts, with its catalog duration if MusicKit reports one.
     var onSongStarted: (@MainActor (Int, TimeInterval?) -> Void)?
     /// Called once per boundary. For a natural end, the index is the song that just finished.
@@ -47,13 +48,12 @@ final class MusicKitService: ObservableObject {
     private var pollTimer: Timer?
     /// Playback timing for device validation. Indices and durations only: no titles or identifiers.
     private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
-    /// Session notification tokens, owned here and removed in `deinit`. Written once on the
-    /// main actor in `registerSessionObservers`; read only from `deinit`.
-    private nonisolated(unsafe) var sessionObservers: [NSObjectProtocol] = []
-    /// The main-actor loop that handles session events in order. Cancelled in `deinit`.
-    private nonisolated(unsafe) var sessionEventsTask: Task<Void, Never>?
+    /// Keeps the nonisolated monitor alive. The monitor removes its own observers in its deinit.
+    /// This class has no deinit: a `@MainActor` deinit is nonisolated and must not touch isolated state.
+    private var sessionMonitor: AudioSessionMonitor?
 
     var audioState: AudioState { stateMachine.state }
+    var mayAutoResume: Bool { sessionPolicy.mayAutoResume }
 
     /// Request MusicKit authorization. Explicit degraded state on denial.
     func authorize() async {
@@ -83,7 +83,7 @@ final class MusicKitService: ObservableObject {
 
     /// Start playing a queue of tracks.
     func play(_ tracks: [Track], station: StationRef? = nil) async throws {
-        intent.userPlay()
+        sessionPolicy.userPlay()
         guard authState == .authorized else {
             lastError = MusicKitError.notAuthorized.errorDescription ?? "Apple Music authorization required."
             send(.errorRaised(PlaybackError(kind: .notAuthorized, message: lastError ?? "", isRecoverable: false)))
@@ -92,7 +92,7 @@ final class MusicKitService: ObservableObject {
         guard !tracks.isEmpty else { return }
         queue = tracks
         currentTrack = tracks.first
-        boundaryDetector.userRequestedChange()
+        boundaries.userRequestedChange()
         queueIndex = 0
         send(.queueStarted(tracks: tracks.map(\.info), startIndex: 0, station: station))
         stateMachine.apply(.startMusic)
@@ -109,7 +109,7 @@ final class MusicKitService: ObservableObject {
 
     /// The user pressed pause. A DJ line that is speaking stops too.
     func pause() {
-        intent.userPause()
+        _ = sessionPolicy.userPause()
         player.pause()
         isPlaying = false
         send(.userPaused)
@@ -119,15 +119,12 @@ final class MusicKitService: ObservableObject {
 
     /// The user pressed play.
     func resume() async throws {
-        intent.userPlay()
+        sessionPolicy.userPlay()
         try await player.play()
         isPlaying = true
         stateMachine.apply(.resume)
         send(.userResumed)
-        if let index = pendingStartIndex, let song = queue[index].song {
-            pendingStartIndex = nil
-            onSongStarted?(index, song.duration)
-        }
+        reportDeferredSongStart()
     }
 
     /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
@@ -139,11 +136,12 @@ final class MusicKitService: ObservableObject {
     /// Starts music again after a DJ break or an interruption, only if the user still
     /// wants playback and the system is not holding it paused.
     func resumeIfAllowed() async {
-        guard intent.mayAutoResume, player.queue.currentEntry != nil else { return }
+        guard sessionPolicy.mayAutoResume, player.queue.currentEntry != nil else { return }
         do {
             try await player.play()
             isPlaying = true
             send(.userResumed)
+            reportDeferredSongStart()
         } catch {
             reportError("Could not resume music: \(error.localizedDescription)")
         }
@@ -151,8 +149,8 @@ final class MusicKitService: ObservableObject {
 
     /// A user skip is not a natural boundary: no DJ break is triggered by it.
     func skip() async throws {
-        boundaryDetector.userRequestedChange()
-        intent.userPlay()
+        boundaries.userRequestedChange()
+        sessionPolicy.userPlay()
         let next = queueIndex + 1
         guard queue.indices.contains(next) else {
             player.stop()
@@ -172,16 +170,15 @@ final class MusicKitService: ObservableObject {
         queueIndex = index
         currentTrack = queue[index]
         player.queue = ApplicationMusicPlayer.Queue(for: [song])
-        guard autoplay, intent.mayAutoResume else {
+        guard autoplay, sessionPolicy.mayAutoResume else {
             isPlaying = false
-            pendingStartIndex = index
+            deferredStart.arm(index)
             return
         }
         try await player.play()
         isPlaying = true
-        pendingStartIndex = nil
-        log.notice("song started index=\(index, privacy: .public) durationSeconds=\(song.duration ?? -1, privacy: .public)")
-        onSongStarted?(index, song.duration)
+        deferredStart.clear()
+        noteSongStarted(index: index, duration: song.duration)
     }
 
     /// Starts the song after `index` when the break for `index` is over.
@@ -259,66 +256,60 @@ final class MusicKitService: ObservableObject {
             entryID: player.queue.currentEntry?.id,
             isPlaying: player.state.playbackStatus == .playing
         )
-        guard let boundary = boundaryDetector.consume(observation) else { return }
+        guard let step = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count) else { return }
         isPlaying = observation.isPlaying
-        switch boundary {
-        case .naturalEnd:
-            let finishedIndex = queueIndex
+        switch step {
+        case let .advancedEntry(finishedIndex, boundary):
             log.notice("boundary naturalEnd finished=\(finishedIndex, privacy: .public)")
             send(.naturalBoundary(nextIndex: finishedIndex + 1))
             queueIndex += 1
             currentTrack = queue.indices.contains(queueIndex) ? queue[queueIndex] : nil
             stateMachine.apply(.trackEnded)
             onBoundary?(boundary, finishedIndex)
-        case .queueFinished(let lastEntryID):
-            switch QueueHandoff.afterSongEnds(finishedIndex: queueIndex, count: queue.count) {
-            case .advance(let next):
-                // One song is loaded at a time, so this end is the end of song `queueIndex`.
-                // The break runs now; the next song is loaded after it (startNextTrack).
-                let finished = queueIndex
-                log.notice("boundary queueEnd finished=\(finished, privacy: .public)")
-                send(.naturalBoundary(nextIndex: next))
-                stateMachine.apply(.trackEnded)
-                onBoundary?(.naturalEnd(finishedEntryID: lastEntryID), finished)
-            case .stop:
-                currentTrack = nil
-                stateMachine.apply(.stop)
-                send(.queueFinished)
-                onBoundary?(boundary, queueIndex)
-            }
+        case let .plannedHandoff(finishedIndex, nextIndex, boundary):
+            // One song is loaded at a time, so this end is the end of song `queueIndex`.
+            // The break runs now; the next song is loaded after it (startNextTrack).
+            log.notice("boundary queueEnd finished=\(finishedIndex, privacy: .public)")
+            send(.naturalBoundary(nextIndex: nextIndex))
+            stateMachine.apply(.trackEnded)
+            onBoundary?(boundary, finishedIndex)
+        case let .stopped(finishedIndex, boundary):
+            currentTrack = nil
+            stateMachine.apply(.stop)
+            send(.queueFinished)
+            onBoundary?(boundary, finishedIndex)
         }
     }
 
     // MARK: - Interruptions & route changes
 
-    /// Handle a phone call / system interruption. No stuck-paused state:
-    /// pause on begin; resume on end only if the system says to.
-    func handleInterruption(_ reason: AVAudioSession.InterruptionType,
-                            options: AVAudioSession.InterruptionOptions = []) {
-        switch reason {
-        case .began:
-            intent.systemInterruptionBegan()
+    /// Phone call or route change. The policy decides; this only performs the directive.
+    private func applySession(_ notice: AudioSessionNotice) {
+        switch sessionPolicy.handle(notice, breakIsActive: isBreakActive) {
+        case .suspendPlayback:
             pausePlayerForBreak()
             send(.userPaused)
             onBreakMustStop?()
-        case .ended:
-            intent.systemInterruptionEnded(shouldResume: options.contains(.shouldResume))
-            // While a DJ line is speaking, the break resumes music when it ends.
-            if !isBreakActive {
-                Task { await resumeIfAllowed() }
-            }
-        @unknown default:
+        case .resumeIfPermitted:
+            Task { await resumeIfAllowed() }
+        case .none:
             break
         }
     }
 
-    /// Handle headphones unplugging: hold playback until the user presses play.
-    func handleRouteChange(_ wasDeviceRemoved: Bool) {
-        if wasDeviceRemoved {
-            intent.routeRemoved()
-            pausePlayerForBreak()
-            send(.userPaused)
-            onBreakMustStop?()
+    /// Applies the state-machine and playback events for a break that just ended.
+    /// The caller starts music only when `decision.resumeMusic` is true.
+    func completeNarration(_ decision: NarrationResumeDecision) {
+        if let event = decision.audioEvent {
+            stateMachine.apply(event)
+        }
+        switch decision.playbackEvent {
+        case .finished:
+            send(.djFinished)
+        case .cancelled:
+            send(.djCancelled)
+        case .failed:
+            send(.djFailed(message: "The DJ line could not play."))
         }
     }
 
@@ -351,55 +342,85 @@ final class MusicKitService: ObservableObject {
             }
         }
         // Observers are registered once, whether or not activation succeeded.
-        guard sessionEventsTask == nil else { return }
-        registerSessionObservers()
+        guard sessionRegistration.registerIfNeeded() else { return }
+        installSessionMonitor()
     }
 
     /// Notifications are yielded in arrival order into one stream, and a single main-actor loop
     /// handles them, so a rapid began/ended or route-removal sequence runs in the order it happened.
-    private func registerSessionObservers() {
-        let (events, continuation) = AsyncStream.makeStream(of: SessionEvent.self)
-        sessionObservers.append(NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
-        ) { note in
-            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  let type = AVAudioSession.InterruptionType(rawValue: raw),
-                  type == .began || type == .ended else { return }
-            let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
-            continuation.yield(.interruption(began: type == .began, shouldResume: shouldResume))
-        })
-        sessionObservers.append(NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
-        ) { note in
-            guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-                  let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
-            continuation.yield(.routeChange(wasDeviceRemoved: reason == .oldDeviceUnavailable))
-        })
-        sessionEventsTask = Task { @MainActor [weak self] in
-            for await event in events {
-                switch event {
-                case let .interruption(began, shouldResume):
-                    self?.handleInterruption(began ? .began : .ended, options: shouldResume ? .shouldResume : [])
-                case let .routeChange(wasDeviceRemoved):
-                    self?.handleRouteChange(wasDeviceRemoved)
-                }
+    private func installSessionMonitor() {
+        let monitor = AudioSessionMonitor()
+        sessionMonitor = monitor
+        let events = monitor.events
+        Task { @MainActor [weak self] in
+            for await notice in events {
+                if Task.isCancelled { break }
+                self?.applySession(notice)
             }
         }
     }
 
-    deinit {
-        for token in sessionObservers {
-            NotificationCenter.default.removeObserver(token)
-        }
-        sessionEventsTask?.cancel()
+    /// The song that was loaded paused has now started. Reported once.
+    private func reportDeferredSongStart() {
+        guard let index = deferredStart.take(), queue.indices.contains(index) else { return }
+        noteSongStarted(index: index, duration: queue[index].song?.duration)
+    }
+
+    private func noteSongStarted(index: Int, duration: TimeInterval?) {
+        log.notice("song started index=\(index, privacy: .public) durationSeconds=\(duration ?? -1, privacy: .public)")
+        onSongStarted?(index, duration)
     }
 }
 
-/// A session notification, reduced to Sendable values before it leaves the notification thread.
-private enum SessionEvent: Sendable {
-    case interruption(began: Bool, shouldResume: Bool)
-    case routeChange(wasDeviceRemoved: Bool)
+/// Owns the audio-session observers off the main actor.
+///
+/// `MusicKitService` is `@MainActor`, and its deinit is nonisolated, so it cannot remove
+/// main-actor tokens without a data race. This object is not actor-isolated: its own deinit
+/// removes the observers and finishes the stream, which ends the consumer loop.
+private final class AudioSessionMonitor: NSObject {
+    let events: AsyncStream<AudioSessionNotice>
+    private let continuation: AsyncStream<AudioSessionNotice>.Continuation
+
+    override init() {
+        let pair = AsyncStream<AudioSessionNotice>.makeStream()
+        events = pair.stream
+        continuation = pair.continuation
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        continuation.finish()
+    }
+
+    @objc
+    private func handleInterruption(_ note: Notification) {
+        guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw),
+              type == .began || type == .ended else { return }
+        let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+        let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
+        continuation.yield(.interruption(began: type == .began, shouldResume: shouldResume))
+    }
+
+    @objc
+    private func handleRouteChange(_ note: Notification) {
+        guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+        continuation.yield(.routeChange(deviceRemoved: reason == .oldDeviceUnavailable))
+    }
 }
 
 enum MusicKitError: LocalizedError {
