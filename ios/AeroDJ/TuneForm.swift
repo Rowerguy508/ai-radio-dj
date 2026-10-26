@@ -1,263 +1,386 @@
 import AeroDJCore
 import SwiftUI
 
-/// Made-up shared preview container: loads Fry's model asynchronously, then
-/// renders a TuneForm (ui-contract.md §2.4). Status per control is read from
-/// `model.status(for:)`; nothing here invents consent or connected state.
-struct TuneFormPreviewLoader: View {
-    @State private var model: StationConfigurationModel?
-
-    var body: some View {
-        Group {
-            if let model {
-                TuneForm(model: model)
-            } else {
-                ProgressView()
-            }
-        }
-        .task { model = await StationConfigurationModel.preview() }
-    }
-}
-
-/// The station tuner: every config control with its honest status and fate
-/// (idle / saving / pending-boundary / consent-required / error). Editing is
-/// disabled and the reason shown when settings aren't loaded or are newer.
+/// The Station Tuner (studio-presentation-contract.md, Station Tuner). Every control binds
+/// to `station.displayed` and shows its row from `station.tunerRows`: pending vs active,
+/// "Applies after this song" and status. Edits never touch the song that is playing.
+///
+/// Originally written by Claudio (#60); taken over and revised by Fry.
 struct TuneForm: View {
-    let model: StationConfigurationModel
+    let studio: StudioPresentationModel
+    private var model: StationConfigurationModel { studio.station }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 20) {
-                if case .failed(.newerVersion) = model.loadState {
-                    settingsUnavailable("Update AeroDJ to change these settings.",
-                                        state: .readOnlyNewerVersion)
-                } else if case .failed = model.loadState {
-                    settingsUnavailable("Loading your station settings.", state: .notLoaded)
-                } else if case .notLoaded = model.loadState {
-                    settingsUnavailable("Loading your station settings.", state: .notLoaded)
-                } else {
-                    controlSection
+            VStack(alignment: .leading, spacing: 22) {
+                if let blocked = blockedMessage {
+                    Label(blocked, systemImage: "lock")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
+                if model.hasPendingChanges { PendingChangesCard(model: model) }
+                Group {
+                    TagControl(row: row(.genres), selected: model.displayed.genres,
+                               suggestions: TuneVocabulary.genres) { tags in Task { await model.setGenres(tags) } }
+                    TagControl(row: row(.moods), selected: model.displayed.moods,
+                               suggestions: TuneVocabulary.moods) { tags in Task { await model.setMoods(tags) } }
+                    LevelControl(row: row(.energy), value: model.displayed.energy, low: "Calm", high: "High energy") { v in
+                        Task { await model.setEnergy(v) }
+                    }
+                    LevelControl(row: row(.discovery), value: model.displayed.discovery, low: "Favourites", high: "New music") { v in
+                        Task { await model.setDiscovery(v) }
+                    }
+                    Text(StationTunerCopy.musicSelectionNotice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    commentaryControl
+                    personalityControl
+                    briefingControl
+                }
+                .disabled(blockedMessage != nil)
+                RecipesSection(studio: studio, editable: blockedMessage == nil)
             }
+            .padding(.vertical, 4)
             .padding(.bottom, 16)
         }
     }
 
-    @ViewBuilder
-    private var controlSection: some View {
-        let displayed = model.displayed
+    private func row(_ setting: StationSetting) -> StationTunerRow { model.tunerRow(for: setting) }
 
-        tuneGroup("Genres") {
-            ForEach(Array(displayed.genres.enumerated()), id: \.offset) { _, g in
-                tagChip(g)
+    /// ui-contract.md §9: not loaded → disabled; newer file → read-only.
+    private var blockedMessage: String? {
+        switch model.loadState {
+        case .notLoaded, .loading: "Loading your station settings"
+        case .failed(.newerVersion(_)): "Update AeroDJ to change these settings"
+        case .ready, .failed: nil
+        }
+    }
+
+    private var commentaryControl: some View {
+        ControlCard(row: row(.commentary)) {
+            Picker("DJ talk", selection: Binding(get: { model.displayed.commentary },
+                                                 set: { c in Task { await model.setCommentary(c) } })) {
+                ForEach(CommentaryFrequency.allCases, id: \.self) { Text($0.title).tag($0) }
             }
-            if displayed.genres.isEmpty {
-                Text("No genres yet.").font(.caption).foregroundStyle(.secondary)
+            .pickerStyle(.segmented)
+            Text(model.displayed.commentary.honestDescription)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var personalityControl: some View {
+        ControlCard(row: row(.personality)) {
+            Picker("DJ personality", selection: Binding(get: { model.displayed.personality },
+                                                        set: { p in Task { await model.setPersonality(p) } })) {
+                ForEach(DJPersonality.allCases, id: \.self) { Text($0.title).tag($0) }
             }
+            .pickerStyle(.segmented)
+            Text(model.displayed.personality.honestDescription)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
+    }
 
-        tuneGroup("Moods") {
-            ForEach(Array(displayed.moods.enumerated()), id: \.offset) { _, m in
-                tagChip(m)
+    private var briefingControl: some View {
+        ControlCard(row: row(.briefing)) {
+            Toggle("Morning briefing", isOn: Binding(get: { model.displayed.briefing.enabled },
+                                                     set: { on in Task { await model.setBriefing { $0.enabled = on } } }))
+            Text("Uses only sources you approved in Connections. Music comes first; the briefing may run shorter.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Divider()
+            Text("Briefing sources").font(.subheadline.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            // Requesting a source never grants access; Connections shows whether it is
+            // actually readable. Turning one off applies now and purges its narration.
+            ForEach(StationIntegration.allCases, id: \.self) { integration in
+                Toggle(StationSetting.integration(integration).title,
+                       isOn: Binding(get: { model.displayed.requestedIntegrations.contains(integration) },
+                                     set: { on in Task { await model.setIntegration(integration, requested: on) } }))
+                    .font(.subheadline)
             }
-            if displayed.moods.isEmpty {
-                Text("No moods yet.").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-
-        energyControl(displayed.energy)
-        discoveryControl(displayed.discovery)
-
-        tuneGroup("DJ personality") {
-            ForEach(DJPersonality.allCases, id: \.self) { p in
-                Button {
-                    Task { await model.setPersonality(p) }
-                } label: {
-                    HStack {
-                        Text(title(for: p)).font(.subheadline)
-                        Spacer()
-                        if displayed.personality == p {
-                            Image(systemName: "checkmark").font(.subheadline.weight(.semibold))
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-
-        tuneGroup("Commentary") {
-            ForEach(CommentaryFrequency.allCases, id: \.self) { c in
-                Button {
-                    Task { await model.setCommentary(c) }
-                } label: {
-                    HStack {
-                        Text(title(for: c)).font(.subheadline)
-                        Spacer()
-                        if displayed.commentary == c {
-                            Image(systemName: "checkmark").font(.subheadline.weight(.semibold))
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-
-        briefingControl(displayed.briefing)
-    }
-
-    private func tuneGroup(_ name: String, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(name)
-                .font(.subheadline.weight(.semibold))
-            content()
-        }
-    }
-
-    private func tagChip(_ tag: String) -> some View {
-        Text(tag)
-            .font(.caption)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(.quaternary))
-            .lineLimit(1)
-    }
-
-    private func energyControl(_ energy: Double) -> some View {
-        statusControl("Energy", setting: .energy) {
-            Slider(value: Binding(
-                get: { model.displayed.energy },
-                set: { newValue in Task { await model.setEnergy(newValue) } }
-            ), in: 0...1)
-            HStack {
-                Text("Calm").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Text("High energy").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func discoveryControl(_ discovery: Double) -> some View {
-        statusControl("Discovery", setting: .discovery) {
-            Slider(value: Binding(
-                get: { model.displayed.discovery },
-                set: { newValue in Task { await model.setDiscovery(newValue) } }
-            ), in: 0...1)
-            HStack {
-                Text("Favourites").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Text("New music").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func briefingControl(_ briefing: BriefingPreferences) -> some View {
-        statusControl("Briefing", setting: .briefing) {
-            Toggle("Morning briefing", isOn: Binding(
-                get: { model.displayed.briefing.enabled },
-                set: { newValue in Task {
-                    await model.setBriefing { $0.enabled = newValue }
-                } }
-            ))
-        }
-    }
-
-    @ViewBuilder
-    private func statusControl(_ name: String, setting: StationSetting,
-                               @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(name).font(.subheadline.weight(.semibold))
-                Spacer()
-                statusBadge(for: model.status(for: setting))
-            }
-            content()
-        }
-    }
-
-    @ViewBuilder
-    private func statusBadge(for status: StationControlStatus) -> some View {
-        switch status {
-        case .idle:
-            EmptyView()
-        case .saving:
-            labelBadge("Saving…")
-        case .pendingBoundary(let timing):
-            labelBadge(copyForBoundary(timing))
-        case .consentRequired(.denied):
-            labelBadge("Access is off")
-        case .consentRequired(.revoked):
-            labelBadge("Revoked")
-        case .consentRequired(.notRequested):
-            labelBadge("Consent needed")
-        case .consentRequired(.granted):
-            EmptyView()
-        case .error(let err):
-            labelBadge(errorCopy(err), role: .destructive)
-        }
-    }
-
-    @ViewBuilder
-    private func labelBadge(_ text: String, role: ButtonRole? = nil) -> some View {
-        Text(text)
-            .font(.caption)
-            .foregroundStyle(role == .destructive ? Color.red : Color.secondary)
-            .background(Capsule().fill(.quaternary).padding(-6))
-            .padding(6)
-            .lineLimit(1)
-    }
-
-    private func copyForBoundary(_ timing: StationChangeTiming) -> String {
-        switch timing {
-        case .nextSongBoundary: "Applies after this song"
-        case .nextDJBreak: "Applies at the next DJ break"
-        case .nextBriefing: "Applies to the next briefing"
-        case .immediate: "Applies now"
-        }
-    }
-
-    private func errorCopy(_ error: StationControlError) -> String {
-        switch error {
-        case .notLoaded: "Loading your station settings"
-        case .readOnlyNewerVersion: "Update AeroDJ to change this"
-        case .saveFailed: "Could not save"
-        case .reductionNotSaved: "Will save with next change"
-        }
-    }
-
-    private func settingsUnavailable(_ message: String, state: StationControlError) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Text("Station settings aren't editable right now.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding()
-        .background(RoundedRectangle(cornerRadius: 12).fill(.quaternary.opacity(0.5)))
-    }
-
-    private func title(for personality: DJPersonality) -> String {
-        switch personality {
-        case .warm: "Warm"
-        case .upbeat: "Upbeat"
-        case .laidBack: "Laid-back"
-        case .minimal: "Minimal"
-        }
-    }
-
-    private func title(for cadence: CommentaryFrequency) -> String {
-        switch cadence {
-        case .off: "No commentary"
-        case .rare: "Rarely"
-        case .occasional: "Occasional"
-        case .frequent: "Frequently"
         }
     }
 }
 
-#Preview("Tune form") {
-    TuneFormPreviewLoader()
+/// Suggestions only. Tags are free-form and normalized by `StationConfiguration`.
+enum TuneVocabulary {
+    static let genres = ["pop", "indie pop", "rock", "hip hop", "r&b", "neo soul", "jazz", "electronic",
+                         "house", "ambient", "classical", "folk", "latin", "country"]
+    static let moods = ["calm", "bright", "focused", "dreamy", "energetic", "warm", "melancholy", "late night"]
+}
+
+/// Card with the control's title, its displayed value, status and pending copy.
+struct ControlCard<Content: View>: View {
+    let row: StationTunerRow
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(row.title).font(.headline)
+                Spacer(minLength: 8)
+                StatusBadge(status: row.status)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(row.accessibilitySummary)
+            content
+            if let applies = row.appliesCopy {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath").accessibilityHidden(true)
+                    Text("\(applies) · \(StationTunerCopy.nowUsing(row.activeSummary))")
+                        .lineLimit(2)
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.tint)
+            }
+        }
+        .padding(14)
+        .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+struct StatusBadge: View {
+    let status: StationControlStatus
+
+    var body: some View {
+        if let text {
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(isError ? Color.red : Color.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private var text: String? {
+        switch status {
+        case .idle, .pendingBoundary: nil   // pending copy is shown under the control
+        case .saving: "Saving…"
+        case .consentRequired(.denied): "Access is off"
+        case .consentRequired(.revoked): "Revoked"
+        case .consentRequired(.notRequested): "Needs permission"
+        case .consentRequired(.granted): nil
+        case .error(.notLoaded): "Loading"
+        case .error(.readOnlyNewerVersion): "Read-only"
+        case .error(.saveFailed): "Couldn't save"
+        case .error(.reductionNotSaved): "Will save with next change"
+        }
+    }
+
+    private var isError: Bool { if case .error(.saveFailed) = status { true } else { false } }
+}
+
+/// Toggleable tag chips (suggestions plus anything already chosen) and a custom tag field.
+struct TagControl: View {
+    let row: StationTunerRow
+    let selected: [String]
+    let suggestions: [String]
+    let onChange: ([String]) -> Void
+    @State private var custom = ""
+
+    var body: some View {
+        ControlCard(row: row) {
+            FlowLayout(spacing: 8) {
+                ForEach(allTags, id: \.self) { tag in
+                    let isOn = selected.contains(tag)
+                    Button {
+                        onChange(isOn ? selected.filter { $0 != tag } : selected + [tag])
+                    } label: {
+                        Text(tag)
+                            .font(.subheadline)
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 36)
+                            .background(Capsule().fill(isOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary)))
+                            .foregroundStyle(isOn ? Color.white : Color.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(isOn ? .isSelected : [])
+                    .accessibilityHint(isOn ? "Removes \(tag)" : "Adds \(tag)")
+                }
+            }
+            HStack {
+                TextField("Add your own", text: $custom)
+                    .textInputAutocapitalization(.never)
+                    .onSubmit(addCustom)
+                Button("Add", action: addCustom)
+                    .disabled(custom.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .font(.subheadline)
+        }
+    }
+
+    private var allTags: [String] { selected + suggestions.filter { !selected.contains($0) } }
+
+    private func addCustom() {
+        let tag = custom.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !tag.isEmpty, !selected.contains(tag) else { custom = ""; return }
+        onChange(selected + [tag])
+        custom = ""
+    }
+}
+
+/// A 0–1 slider. It saves once when the drag ends, not on every tick.
+struct LevelControl: View {
+    let row: StationTunerRow
+    let value: Double
+    let low: String
+    let high: String
+    let onCommit: (Double) -> Void
+    @State private var draft: Double?
+
+    var body: some View {
+        ControlCard(row: row) {
+            Slider(value: Binding(get: { draft ?? value }, set: { draft = $0 }), in: 0...1) { editing in
+                if !editing, let d = draft {
+                    onCommit(d)
+                    draft = nil
+                }
+            }
+            .accessibilityLabel(row.title)
+            .accessibilityValue("\(Int(((draft ?? value) * 100).rounded())) percent")
+            HStack {
+                Text(low)
+                Spacer()
+                Text(high)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+        }
+    }
+}
+
+/// Edits waiting for a safe boundary, with a way to keep what is playing now.
+struct PendingChangesCard: View {
+    let model: StationConfigurationModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(StationTunerCopy.pendingHeader, systemImage: "clock.arrow.circlepath")
+                .font(.subheadline.weight(.semibold))
+            ForEach(model.tunerRows.filter(\.isPending)) { row in
+                Text("\(row.title): \(row.displayedSummary) — \(row.appliesCopy ?? "")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button("Keep current settings") { Task { await model.discardPendingChanges() } }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// Saved station recipes: tuning only, never connections.
+struct RecipesSection: View {
+    let studio: StudioPresentationModel
+    let editable: Bool
+    @State private var name = ""
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Station recipes").font(.headline).accessibilityAddTraits(.isHeader)
+            Text("A recipe saves the tuning above. It never turns a connection on or off.")
+                .font(.caption).foregroundStyle(.secondary)
+            if studio.recipes.recipes.isEmpty {
+                Text("No recipes yet.").font(.subheadline).foregroundStyle(.secondary)
+            }
+            ForEach(studio.recipes.recipes) { recipe in
+                HStack {
+                    Text(recipe.name).font(.subheadline).lineLimit(1)
+                    Spacer(minLength: 8)
+                    Button("Apply") { Task { await apply(recipe) } }
+                        .buttonStyle(.bordered).controlSize(.small)
+                    Button(role: .destructive) {
+                        Task { if case .failure(let e) = await studio.recipes.delete(recipe.id) { message = e.userMessage } }
+                    } label: {
+                        Label("Delete \(recipe.name)", systemImage: "trash").labelStyle(.iconOnly).frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .disabled(!editable)
+            }
+            HStack {
+                TextField("Name this tuning", text: $name)
+                Button("Save") {
+                    Task {
+                        switch await studio.saveRecipe(named: name) {
+                        case .success(let r): message = "Saved \"\(r.name)\"."; name = ""
+                        case .failure(let e): message = e.userMessage
+                        }
+                    }
+                }
+                .disabled(!editable || name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .font(.subheadline)
+            if let message {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func apply(_ recipe: StationRecipe) async {
+        switch await studio.applyRecipe(recipe.id) {
+        case .success(let timings):
+            let waits = Set(timings.values).subtracting([.immediate])
+            message = waits.isEmpty ? "Applied \"\(recipe.name)\"."
+                : "\"\(recipe.name)\" is set. " + waits.map(\.appliesCopy).sorted().joined(separator: "; ") + "."
+        case .failure(let e):
+            message = e.userMessage
+        }
+    }
+}
+
+/// Wraps chips onto as many lines as needed (iOS 16+ `Layout`).
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0, maxX: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { x = 0; y += lineHeight + spacing; lineHeight = 0 }
+            x += size.width + spacing
+            maxX = max(maxX, x - spacing)
+            lineHeight = max(lineHeight, size.height)
+        }
+        return CGSize(width: min(maxX, width), height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, lineHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX { x = bounds.minX; y += lineHeight + spacing; lineHeight = 0 }
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+    }
+}
+
+#Preview("Tune") {
+    TunePreviewLoader()
+}
+
+struct TunePreviewLoader: View {
+    @State private var studio: StudioPresentationModel?
+    var body: some View {
+        Group {
+            if let studio { TuneForm(studio: studio).padding() } else { ProgressView() }
+        }
+        .task { studio = await StudioPresentationModel.preview() }
+    }
 }

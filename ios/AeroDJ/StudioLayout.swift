@@ -1,129 +1,125 @@
 import AeroDJCore
 import SwiftUI
 
-/// Unfolded Studio (ui-contract.md §4). Two persistent zones: Zone A = Now
-/// Playing + transport; Zone B = segmented Queue / Tune / Connections workspace.
-/// Both zones share the leaf views from PlaybackComponents.swift. Switching a
-/// segment never resets playback or scrolls Zone A.
+/// Open Duo: a two-zone radio control room (ui-contract.md §4). Zone A is the persistent
+/// Now Playing panel with transport; Zone B is the Queue / Tune / Connections workspace.
+/// Zone widths come from `StudioZoneWidths.allocate`, the same source of truth as the
+/// compact/Studio switch, so the switch and the geometry can never disagree (#60 P1).
+/// The split is even when possible, so the gutter sits over the Duo's hinge.
 ///
-/// Binds to Fry's `StudioPresentationModel` (station tuner + Connections +
-/// DJ store), per ui-contract.md §11. It never owns those models.
+/// Originally written by Claudio (#60); taken over and revised by Fry.
 struct StudioLayout: View {
-    let station: StationRef?
-    let snapshot: PlaybackSnapshot
-    let actions: PlaybackActions
-    let studio: StudioPresentationModel
-    @State private var segment: WorkspaceSegment = .queue
+    let widths: StudioZoneWidths
+    let containerHeight: CGFloat
+    let zoneA: NowPlayingPanel
+    let workspace: WorkspaceView
 
     var body: some View {
-        GeometryReader { geo in
-            HStack(alignment: .top, spacing: StudioMetrics.gutter) {
-                // Zone A: persistent Now Playing + transport. Enforce its minimum
-                // width so project-critical text/controls never collapse.
-                NowPlayingPanel(station: station, snapshot: snapshot,
-                                actions: actions, dj: studio.dj.state,
-                                height: geo.size.height)
-                    .frame(minWidth: StudioMetrics.zoneAMinWidth,
-                           maxWidth: .infinity)
-                    .padding(.leading, StudioMetrics.edgeInset)
-
-                // Zone B: persistent workspace. Enforce its minimum width.
-                WorkspaceView(studio: studio, snapshot: snapshot,
-                              actions: actions, segment: $segment)
-                    .frame(minWidth: StudioMetrics.zoneBMinWidth,
-                           maxWidth: .infinity)
-                    .padding(.trailing, StudioMetrics.edgeInset)
-            }
-            .padding(.vertical, 16)
+        HStack(alignment: .top, spacing: CGFloat(StudioLayoutMetrics.gutter)) {
+            zoneA
+                .frame(width: CGFloat(widths.zoneA))
+                .frame(maxHeight: .infinity, alignment: .top)
+                .accessibilityIdentifier("studio.zoneA")
+            workspace
+                .padding(14)
+                .frame(width: CGFloat(widths.zoneB))
+                .frame(maxHeight: .infinity, alignment: .top)
+                .studioSurface(cornerRadius: 28)
+                .accessibilityIdentifier("studio.zoneB")
         }
-        .background(Color(.systemBackground))
+        .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))
+        .padding(.vertical, 12)
     }
 }
 
-/// Additive layout constants shared with the width switch in PlayingScreen.
-/// Source of truth for the breakpoint AND the zones' actual minimum widths, so
-/// the container switch and the HStack geometry can never disagree.
-enum StudioMetrics {
-    static let gutter: CGFloat = 24
-    static let edgeInset: CGFloat = 16
-    static let zoneAMinWidth: CGFloat = 320
-    static let zoneBMinWidth: CGFloat = 340
-    /// Includes both horizontal edge insets (16 + 16), so at this width the
-    /// zones still get exactly their minimums: 320 + 24 + 340 + 32 = 716.
-    static var studioMinWidth: CGFloat {
-        zoneAMinWidth + gutter + zoneBMinWidth + (edgeInset * 2)
+/// Open Duo at an accessibility text size: the two zones stack in one scroll view and the
+/// transport stays reachable (ui-contract.md §6).
+struct StudioStackedLayout: View {
+    let zoneA: NowPlayingPanel
+    let workspace: WorkspaceView
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                zoneA
+                workspace
+                    .padding(14)
+                    .frame(minHeight: 640, alignment: .top)
+                    .studioSurface(cornerRadius: 28)
+            }
+            .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))
+            .padding(.vertical, 12)
+        }
     }
 }
 
-/// Zone A: persistent Now Playing + always-visible transport.
+/// Zone A: persistent Now Playing. Transport is always visible when there is a track;
+/// below 480 pt of height the artwork drops to 120 pt instead of hiding transport.
 struct NowPlayingPanel: View {
     let station: StationRef?
+    let content: NowPlayingContent
     let snapshot: PlaybackSnapshot
     let actions: PlaybackActions
-    let dj: DJPresentationState
-    let height: CGFloat
+    let dj: DJStatusPresentation
+    let isTestStation: Bool
+    let artworkSide: CGFloat
+    let onReview: () -> Void
 
     var body: some View {
-        let artwork: CGFloat = min(height < 480 ? 120 : 300, 300)
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 16) {
-                StationHeader(station: station, dj: dj)
-
-                ArtworkView(url: snapshot.nowPlaying?.artworkURL, size: artwork)
+        VStack(alignment: .leading, spacing: 18) {
+            StationHeader(station: station, isTestStation: isTestStation)
+            switch content {
+            case .track(let track):
+                ArtworkView(url: track.artworkURL, size: artworkSide)
                     .frame(maxWidth: .infinity)
-
-                TrackBlock(snapshot: snapshot, dj: dj)
-
-                // §5: at low height keep transport, drop artwork to 120.
-                if height >= 480 {
-                    TransportRow(transport: snapshot.transport, actions: actions)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 8)
-                }
+                TrackBlock(track: track, dj: dj, onReview: onReview)
+            default:
+                NowPlayingPlaceholder(content: content).padding(.vertical, 40)
             }
-            .padding(.bottom, 16)
-        }
-        .safeAreaInset(edge: .bottom) {
-            if height < 480 {
-                // Transport must never be hidden, even at low height.
+            PlaybackErrorBanner(error: snapshot.error, actions: actions)
+            Spacer(minLength: 0)
+            if content.showsTransport {
                 TransportRow(transport: snapshot.transport, actions: actions)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 8)
                     .frame(maxWidth: .infinity)
-                    .background(.regularMaterial)
+                    .studioSurface(cornerRadius: 28)
             }
         }
     }
 }
 
-/// Zone B: the three-segment workspace.
+/// Zone B: the three-segment workspace. The selected segment is scene state owned by
+/// `PlayingScreen`, so it survives folding (the compact sheet shows the same workspace).
 struct WorkspaceView: View {
     let studio: StudioPresentationModel
+    let content: NowPlayingContent
     let snapshot: PlaybackSnapshot
     let actions: PlaybackActions
+    let search: MusicSearch?
     @Binding var segment: WorkspaceSegment
+    @Binding var searchQuery: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             Picker("Workspace", selection: $segment) {
                 ForEach(WorkspaceSegment.allCases) { s in
                     Text(s.title).tag(s)
                 }
             }
             .pickerStyle(.segmented)
+            .accessibilityIdentifier("workspace.segment")
 
-            Group {
-                switch segment {
-                case .queue:
-                    QueueList(snapshot: snapshot, editingAllowed: actions.editUpNext != nil,
-                              applyEdit: actions.editUpNext)
-                case .tune:
-                    TuneForm(model: studio.station)
-                case .connections:
-                    ConnectionsList(model: studio.connections)
-                }
+            switch segment {
+            case .queue:
+                QueueList(content: content, snapshot: snapshot, applyEdit: actions.editUpNext,
+                          search: search, searchQuery: $searchQuery)
+            case .tune:
+                TuneForm(studio: studio)
+            case .connections:
+                ConnectionsList(model: studio.connections)
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -139,127 +135,91 @@ enum WorkspaceSegment: String, CaseIterable, Identifiable {
     }
 }
 
-/// Queue: a "Now playing" row above the up-next list. Read-only in live
-/// (editUpNext == nil hides all edit affordances per §2.2).
+/// Now playing, then Up Next. Read-only in live: `editUpNext == nil` hides every edit
+/// control (ui-contract.md §2.2). Below the list, the real Apple Music search starts
+/// something new.
 struct QueueList: View {
+    let content: NowPlayingContent
     let snapshot: PlaybackSnapshot
-    let editingAllowed: Bool
     let applyEdit: ((UpNextEdit) -> Void)?
+    let search: MusicSearch?
+    @Binding var searchQuery: String
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
-                if let now = snapshot.nowPlaying {
-                    LabeledRow(title: now.title, subtitle: now.artistName,
-                               isNowPlaying: true)
+                if case .track(let now) = content {
+                    sectionTitle("Now playing")
+                    row(now, isNowPlaying: true, index: nil)
                 }
-                Divider()
+                sectionTitle("Up next")
                 if snapshot.upNext.isEmpty {
-                    Text("Up next is empty.")
+                    Text("Nothing queued after this song.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .padding(.vertical, 16)
+                        .padding(.vertical, 12)
                 } else {
                     ForEach(Array(snapshot.upNext.enumerated()), id: \.element.id) { index, track in
-                        queueRow(for: track, at: index)
+                        row(track, isNowPlaying: false, index: index)
+                        if index < snapshot.upNext.count - 1 { Divider() }
                     }
                 }
+                if applyEdit == nil, !snapshot.upNext.isEmpty {
+                    Text("Reordering Up Next isn't available yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 8)
+                }
+                if let search {
+                    sectionTitle(content.showsTransport ? "Play something else" : "Start listening")
+                    StartListeningView(search: search, query: $searchQuery)
+                }
             }
+            .padding(.bottom, 16)
         }
     }
 
+    private func sectionTitle(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .padding(.top, 14)
+            .padding(.bottom, 6)
+            .accessibilityAddTraits(.isHeader)
+    }
+
     @ViewBuilder
-    private func queueRow(for track: TrackInfo, at index: Int) -> some View {
-        HStack(alignment: .center, spacing: 8) {
+    private func row(_ track: TrackInfo, isNowPlaying: Bool, index: Int?) -> some View {
+        HStack(spacing: 12) {
+            ArtworkView(url: track.artworkURL, size: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
-                    .font(.subheadline)
+                    .font(isNowPlaying ? .subheadline.weight(.semibold) : .subheadline)
                     .lineLimit(1)
-                    .truncationMode(.tail)
                 Text(track.artistName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .truncationMode(.tail)
             }
-            Spacer()
-            if editingAllowed {
-                Button {
-                    applyEdit?(.move(from: index, to: index - 1))
-                } label: {
-                    Image(systemName: "chevron.up")
+            Spacer(minLength: 8)
+            if isNowPlaying {
+                Image(systemName: "speaker.wave.2.fill")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            } else if let applyEdit, let index {
+                Button { applyEdit(.move(from: index, to: index - 1)) } label: {
+                    Label("Move up", systemImage: "chevron.up").labelStyle(.iconOnly).frame(width: 44, height: 44)
                 }
                 .disabled(index == 0)
-                .buttonStyle(.borderless)
-
-                Button {
-                    applyEdit?(.move(from: index, to: index + 1))
-                } label: {
-                    Image(systemName: "chevron.down")
+                Button(role: .destructive) { applyEdit(.remove(id: track.id)) } label: {
+                    Label("Remove", systemImage: "minus.circle").labelStyle(.iconOnly).frame(width: 44, height: 44)
                 }
-                .disabled(index == snapshot.upNext.count - 1)
-                .buttonStyle(.borderless)
-
-                Button(role: .destructive) {
-                    applyEdit?(.remove(id: track.id))
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
             }
         }
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-    }
-}
-
-struct LabeledRow: View {
-    let title: String
-    let subtitle: String
-    let isNowPlaying: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(isNowPlaying ? .subheadline.weight(.semibold) : .subheadline)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            Spacer()
-            if isNowPlaying {
-                Text("Now playing")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 8)
-    }
-}
-
-#Preview("Studio layout") {
-    StudioLayoutPreviewLoader()
-}
-
-struct StudioLayoutPreviewLoader: View {
-    @State private var studio: StudioPresentationModel?
-
-    var body: some View {
-        Group {
-            if let studio {
-                StudioLayout(station: PlaybackFixtures.station,
-                             snapshot: PlaybackFixtures.playing,
-                             actions: .preview,
-                             studio: studio)
-            } else {
-                ProgressView()
-            }
-        }
-        .task { studio = await StudioPresentationModel.preview() }
+        .buttonStyle(.borderless)
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(isNowPlaying ? "Now playing: \(track.title), \(track.artistName)" : "\(track.title), \(track.artistName)")
     }
 }

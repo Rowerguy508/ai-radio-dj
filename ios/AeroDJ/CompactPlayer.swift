@@ -1,148 +1,136 @@
 import AeroDJCore
 import SwiftUI
 
-/// Compact Now Playing (ui-contract.md §3). Used when the container is below
-/// `studioMinWidth`. Renders a `PlaybackSnapshot` + `PlaybackActions` + DJ state;
-/// owns no playback service. Safe-area-aware; never clips; text never breaks
-/// mid-word. Scrolls only when the content exceeds the container height.
+/// Closed Duo: a focused, immersive radio player (ui-contract.md §3). Used whenever the
+/// container is narrower than `StudioLayoutMetrics.studioMinWidth`. Renders values and
+/// sends intents; owns no playback service.
+///
+/// Originally written by Claudio (#60); taken over and revised by Fry.
 struct CompactPlayer: View {
     let station: StationRef?
+    let content: NowPlayingContent
     let snapshot: PlaybackSnapshot
     let actions: PlaybackActions
-    let dj: DJPresentationState
-    let onOpenQueue: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.dynamicTypeSize) private var typeSize
+    let dj: DJStatusPresentation
+    let isTestStation: Bool
+    let search: MusicSearch?
+    @Binding var searchQuery: String
+    let onOpenWorkspace: () -> Void
+    let onReview: () -> Void
 
     var body: some View {
         GeometryReader { geo in
-            let content = VStack(alignment: .leading, spacing: 0) {
-                StationHeader(station: station, dj: dj)
-                    .padding(.bottom, 20)
-
-                // Artwork: scaled frame, never a fixed size beyond the container.
-                ArtworkView(url: snapshot.nowPlaying?.artworkURL,
-                            size: artworkSize(in: geo.size))
-                    .frame(maxWidth: .infinity)
-                    .padding(.bottom, 28)
-
-                TrackBlock(snapshot: snapshot, dj: dj)
-            }
-
-            // Fixed VStack if it fits, ScrollView only when it doesn't.
-            if fits(content: geo.size.height) {
-                content
-                    .frame(maxHeight: .infinity, alignment: .top)
-            } else {
-                ScrollView(showsIndicators: false) { content.padding(16) }
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 22) {
+                    StationHeader(station: station, isTestStation: isTestStation)
+                    switch content {
+                    case .track(let track):
+                        ArtworkView(url: track.artworkURL, size: artworkSize(in: geo.size))
+                            .padding(.top, 4)
+                        TrackBlock(track: track, dj: dj, onReview: onReview, alignment: .leading)
+                    case .nothingPlaying:
+                        NowPlayingPlaceholder(content: content).padding(.top, 24)
+                        if let search { StartListeningView(search: search, query: $searchQuery) }
+                    default:
+                        NowPlayingPlaceholder(content: content).padding(.top, 48)
+                    }
+                    PlaybackErrorBanner(error: snapshot.error, actions: actions)
+                }
+                .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))
+                .padding(.bottom, 16)
+                .frame(minHeight: geo.size.height, alignment: .top)
             }
         }
-        .padding(.horizontal, 16)
         .safeAreaInset(edge: .bottom) {
-            transportAndQueue
+            if content.showsTransport {
+                VStack(spacing: 6) {
+                    TransportRow(transport: snapshot.transport, actions: actions)
+                    QueueAffordance(upNext: snapshot.upNext, action: onOpenWorkspace)
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .studioSurface(cornerRadius: 28)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 4)
+            }
         }
     }
 
-    /// min(containerWidth − 2·16, 360, 0.45·containerHeight), scaled frame.
+    /// min(width − 2·16, 360, 0.45·height), never below 120.
     private func artworkSize(in size: CGSize) -> CGFloat {
-        min(min(size.width - 32, 360), max(0.45 * size.height, 120))
-    }
-
-    private func fits(content height: CGFloat) -> Bool {
-        // Rough budget: header (~60) + artwork (<= 0.45·h, capped) + track block
-        // (~120) + transport (~90). When Dynamic Type grows, give up and scroll.
-        if typeSize >= .xxxLarge { return false }
-        return height >= 520
-    }
-
-    private var transportAndQueue: some View {
-        VStack(spacing: 20) {
-            TransportRow(transport: snapshot.transport, actions: actions)
-            QueueAffordance(upNext: snapshot.upNext, action: onOpenQueue)
-        }
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity)
-        .background(.regularMaterial)
+        max(120, min(size.width - 32, 360, size.height * 0.45))
     }
 }
 
-/// §3.1 Station identity row.
+/// Station identity: name, plus a visible TEST STATION tag in the debug fixture mode so a
+/// screenshot can never be mistaken for the listener's real station.
 struct StationHeader: View {
     let station: StationRef?
-    let dj: DJPresentationState
+    let isTestStation: Bool
 
     var body: some View {
-        VStack(alignment: .center, spacing: 4) {
+        HStack(spacing: 8) {
+            Image(systemName: "dot.radiowaves.left.and.right").foregroundStyle(.secondary).accessibilityHidden(true)
             Text(station?.name ?? "AeroDJ")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(.headline)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            if dj.isLive {
-                Text("DJ on air")
-                    .font(.caption)
+            if isTestStation {
+                Text("TEST STATION")
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().strokeBorder(.secondary))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// Title (2 lines), artist (1 line), then the truthful DJ line.
+struct TrackBlock: View {
+    let track: TrackInfo
+    let dj: DJStatusPresentation
+    let onReview: () -> Void
+    var alignment: HorizontalAlignment = .leading
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 6) {
+            VStack(alignment: alignment, spacing: 4) {
+                Text(track.title)
+                    .font(.title2.weight(.bold))
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                Text(track.artistName)
+                    .font(.body)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(track.title), \(track.artistName)")
+            DJStatusLine(presentation: dj, onReview: onReview)
+                .padding(.top, 6)
         }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-/// §3.3 Track block: title (2 lines) + artist (1 line) + DJ line.
-struct TrackBlock: View {
-    let snapshot: PlaybackSnapshot
-    let dj: DJPresentationState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(snapshot.nowPlaying?.title ?? "Nothing playing")
-                .font(.title2.weight(.semibold))
-                .lineLimit(2)
-                .truncationMode(.tail)
-            Text(snapshot.nowPlaying?.artistName ?? " ")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            DJStatusLine(state: dj, spokenLine: snapshot.dj.speakingLine)
-                .padding(.top, 4)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-extension DJActivity {
-    /// The spoken line text, if the DJ is speaking.
-    var speakingLine: String? {
-        if case .speaking(let line) = self { return line }
-        return nil
+        .frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
     }
 }
 
 #Preview("Compact playing") {
-    CompactPlayer(
-        station: PlaybackFixtures.station,
-        snapshot: PlaybackFixtures.playing,
-        actions: .preview,
-        dj: .idle,
-        onOpenQueue: {})
+    CompactPlayer(station: PlaybackFixtures.station,
+                  content: .track(PlaybackFixtures.songs[0]),
+                  snapshot: PlaybackFixtures.playing, actions: .preview,
+                  dj: .init(state: .idle, playerReportedLine: nil), isTestStation: true,
+                  search: nil, searchQuery: .constant(""), onOpenWorkspace: {}, onReview: {})
 }
 
-#Preview("Compact DJ speaking") {
-    CompactPlayer(
-        station: PlaybackFixtures.station,
-        snapshot: PlaybackFixtures.djSpeaking,
-        actions: .preview,
-        dj: .speaking(afterTrack: 0, includesBriefing: false),
-        onOpenQueue: {})
-}
-
-#Preview("Compact stopped / empty") {
-    CompactPlayer(
-        station: PlaybackFixtures.station,
-        snapshot: PlaybackFixtures.stopped,
-        actions: .preview,
-        dj: .idle,
-        onOpenQueue: {})
+#Preview("Compact DJ on air") {
+    CompactPlayer(station: PlaybackFixtures.station,
+                  content: .track(PlaybackFixtures.songs[1]),
+                  snapshot: PlaybackFixtures.djSpeaking, actions: .preview,
+                  dj: .init(state: .speaking(includesBriefing: false), playerReportedLine: nil),
+                  isTestStation: true, search: nil, searchQuery: .constant(""), onOpenWorkspace: {}, onReview: {})
 }
