@@ -192,9 +192,10 @@ public struct MorningBriefingEngine: BriefingPlanner {
         var chosen: [BriefingScriptSegment] = []
         for candidate in candidates {
             if chosen.count >= configuration.maxItemSegments { excluded[candidate.sourceItemID!] = .segmentCap; continue }
-            guard candidate.estimatedSpokenSeconds <= remaining else { excluded[candidate.sourceItemID!] = .overBudget; continue }
-            chosen.append(candidate)
-            remaining -= candidate.estimatedSpokenSeconds
+            let line = chosen.isEmpty ? candidate : candidate.replacingText(Self.continuation(candidate))
+            guard line.estimatedSpokenSeconds <= remaining else { excluded[candidate.sourceItemID!] = .overBudget; continue }
+            chosen.append(line)
+            remaining -= line.estimatedSpokenSeconds
         }
 
         let segments = chosen.isEmpty
@@ -246,19 +247,19 @@ public struct MorningBriefingEngine: BriefingPlanner {
         }
 
         let subject = title.isEmpty ? detail : title
-        // Host sentences, not a list. Every slot is a field already on the item:
-        // title (or detail when the title is empty), time phrase, detail, and
-        // "From {source}". Nothing else is added.
+        // Host sentences, not a list. Slots are title (or detail when the title
+        // is empty), time phrase, and detail. Source stays on the segment
+        // (`source`, `provenance`) and is not spoken. A later item continues
+        // with "Then", "Also", or "And". Nothing else is added.
+        // Naturalness of the read-aloud is UNVERIFIED.
         let lead: String
         switch kind {
         case .upcomingEvent: lead = phrase == "now" ? "You've got \(subject) on now" : "You've got \(subject) \(phrase!)"
         case .dueTask: lead = "Don't lose track of \(subject). It's \(phrase!)"
         case .followUp: lead = "When you get a minute, \(subject)"
-        default: lead = "You've also got \(subject)"
+        default: lead = subject
         }
-        var text = Self.sentence(lead)
-        if !title.isEmpty, !detail.isEmpty { text += " " + Self.sentence(detail) }
-        text += " From \(Self.attribution(item.source))."
+        let text = Self.withDetail(lead, detail: detail, hasTitle: !title.isEmpty)
         return .success(BriefingScriptSegment(
             id: item.id, kind: kind, text: text, title: title.isEmpty ? nil : title,
             detail: detail.isEmpty ? nil : detail, timePhrase: phrase, sourceItemID: item.id, source: item.source,
@@ -282,6 +283,33 @@ public struct MorningBriefingEngine: BriefingPlanner {
         formatter.timeZone = calendar.timeZone
         formatter.dateFormat = calendar.component(.minute, from: date) == 0 ? "h a" : "h:mm a"
         return formatter.string(from: date)
+    }
+
+    /// Later items continue the previous sentence instead of starting another list entry.
+    static func continuation(_ segment: BriefingScriptSegment) -> String {
+        let subject = segment.title ?? segment.detail ?? ""
+        let phrase = segment.timePhrase
+        let detail = segment.detail ?? ""
+        let hasTitle = segment.title != nil
+        switch segment.kind {
+        case .upcomingEvent:
+            let when = phrase == "now" ? "\(subject) on now" : "\(subject) \(phrase ?? "")"
+            return withDetail("Then \(when)", detail: detail, hasTitle: hasTitle)
+        case .dueTask:
+            return withDetail("Also, don't lose track of \(subject). It's \(phrase ?? "")", detail: detail, hasTitle: hasTitle)
+        case .followUp:
+            return withDetail("Also, when you get a minute, \(subject)", detail: detail, hasTitle: hasTitle)
+        case .note:
+            return withDetail("And \(subject)", detail: detail, hasTitle: hasTitle)
+        default:
+            return segment.text
+        }
+    }
+
+    static func withDetail(_ lead: String, detail: String, hasTitle: Bool) -> String {
+        var text = sentence(lead)
+        if hasTitle, !detail.isEmpty { text += " " + sentence(detail) }
+        return text
     }
 
     static func attribution(_ source: ContextSourceKind) -> String {

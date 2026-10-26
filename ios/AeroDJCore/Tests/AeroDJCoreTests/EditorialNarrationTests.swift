@@ -85,7 +85,7 @@ final class EditorialNarrationTests: XCTestCase {
         ]
         let script = engine().script(from: hidden + [visible])
         let voiced = script.segments.filter { $0.sourceItemID != nil }
-        XCTAssertEqual(voiced.map { $0.text }, ["You've got Design review at 9:30 AM. From your calendar."])
+        XCTAssertEqual(voiced.map { $0.text }, ["You've got Design review at 9:30 AM."])
         XCTAssertEqual(voiced.first?.provenance, "cal:design")
         for title in ["Pending item", "Denied item", "Revoked item", "Blocked item", "Expired item"] {
             XCTAssertFalse(script.segments.contains { $0.text.contains(title) })
@@ -97,7 +97,8 @@ final class EditorialNarrationTests: XCTestCase {
         let plan = writer.plan(tracks: djTracks(6), briefing: script.handoff(maxSpokenSeconds: 150), hour: 7)
         let spokenCues = plan.breaks.flatMap { $0.cues }
         let design = spokenCues.first { $0.text.contains("Design review") }
-        XCTAssertEqual(design?.text, "You've got Design review at 9:30 AM. From your calendar.")
+        XCTAssertEqual(design?.text, "You've got Design review at 9:30 AM.")
+        XCTAssertFalse(design?.text.localizedCaseInsensitiveContains("from your") == true)
         XCTAssertEqual(design?.provenance, "cal:design")
         XCTAssertEqual(design?.source, .calendar)
         XCTAssertEqual(design?.sourceItemID, visible.id)
@@ -375,15 +376,16 @@ final class EditorialNarrationTests: XCTestCase {
         ])
         XCTAssertEqual(showPlan.breaks.map { $0.cues.map(\.text) }, [
             ["Morning.", "While we're between songs.",
-             "You've got Design review at 9:30 AM. Bring the notes. From your calendar.",
-             "You've also got Grocery list. Milk and bread. From your notes.", "Here's Myth."],
+             "You've got Design review at 9:30 AM. Bring the notes.",
+             "And Grocery list. Milk and bread.", "Here's Myth."],
             ["Midnight City by M83.", "Up next, Vienna by Billy Joel."],
             ["That was Dreams by Fleetwood Mac.", "Coming up: Frank Ocean, Pink + White."],
         ])
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[0].cues.map(\.text)), 2)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[1].cues.map(\.text)), 5)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[2].cues.map(\.text)), 4)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 15)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 11)
+        // Word-count estimate only. Naturalness of this read-aloud is UNVERIFIED.
         XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 45)
 
         var station = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "AeroDJ")

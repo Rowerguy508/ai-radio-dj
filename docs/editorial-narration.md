@@ -13,11 +13,11 @@ Contract for DJ copy. Playback stays with `DJBreakPreparer` / `DJBreakSession`. 
 | Artist focus | About 20% of later talk breaks | That artist and title only |
 | Station ID | About 12% | The usable station name only |
 | Time of day | About 13% | Fixed atmosphere line, no weather |
-| Briefing | While approved cues remain | Cue text from the morning engine, plus a short lead-in. Item lines are host sentences built only from the title, time phrase, detail, and `From {source}` |
+| Briefing | While approved cues remain | Cue text from the morning engine, plus a short lead-in. Item lines are host sentences built only from the title, time phrase, and detail. A later item continues the previous one. Source stays on the cue and is not spoken |
 
 Ordinary breaks are capped at 12 estimated seconds. A briefing break is capped at 45. The five-minute morning show is `NarrationHandoff.experienceSeconds` (300): a label for the plan, not a playback cutoff. Music is never trimmed to hit it.
 
-Durations in this layer are `SpokenDurationEstimate` (150 words per minute, rounded up per line). They are not synthesized-audio measurements.
+Durations in this layer are `SpokenDurationEstimate` (150 words per minute, rounded up per line). They are not synthesized-audio measurements. Naturalness of the spoken briefing is UNVERIFIED.
 
 ## Carry-forward
 

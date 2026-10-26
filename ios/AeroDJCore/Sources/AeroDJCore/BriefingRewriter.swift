@@ -61,8 +61,12 @@ public struct BriefingRewriteGuard: Sendable {
         guard words <= (originalWords * maxWordGrowth).rounded(.up) else { return false }
         guard Self.numbers(in: trimmed).isSubset(of: Self.numbers(in: original.text)) else { return false }
         var facts = [original.title, original.detail, original.timePhrase].compactMap { $0 }.filter { !$0.isEmpty }
-        if let source = original.source { facts.append("From \(MorningBriefingEngine.attribution(source))") }
         for fact in facts where trimmed.range(of: fact, options: .caseInsensitive) == nil { return false }
+        // Source stays on the segment. A restyle must not speak it.
+        if let source = original.source {
+            let tag = "From \(MorningBriefingEngine.attribution(source))"
+            if trimmed.range(of: tag, options: .caseInsensitive) != nil { return false }
+        }
         let added = Self.words(in: trimmed).subtracting(Self.words(in: original.text))
         return added.isSubset(of: Self.neutralWords)
     }
