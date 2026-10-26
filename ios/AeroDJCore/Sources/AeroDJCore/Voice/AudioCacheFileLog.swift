@@ -24,23 +24,27 @@ public protocol AudioCacheCounting: Sendable {
 }
 
 /// Device-run evidence that purges delete files, not only stop audio (#76 step 9).
-/// Stable, content-free line: `AeroDJ.cache files=<n> personal=<p> generic=<g> after=<purge|launch>`.
+/// Stable, content-free line: `AeroDJ.cache narration cache count=<n> personal=<p> after=<purge|launch>`.
+/// `count` is every file in the cache directory (metadata and audio, any extension).
 /// Per-source breakdown is personal versus generic: clips record item ids, not source kinds,
 /// and ids are never logged.
 public enum AudioCacheFileLog {
     public enum Moment: String, Sendable { case purge, launch }
 
     public static func message(_ count: AudioCacheCount, after moment: Moment) -> String {
-        "AeroDJ.cache files=\(count.files) personal=\(count.personal) generic=\(count.generic) after=\(moment.rawValue)"
+        "AeroDJ.cache narration cache count=\(count.files) personal=\(count.personal) after=\(moment.rawValue)"
     }
 
     /// Logs the cache's current count, if it can report one. Returns the line (for tests).
     @discardableResult
     public static func record(_ cache: any AudioCache, after moment: Moment) async -> String? {
         guard let counting = cache as? any AudioCacheCounting else { return nil }
-        let line = message(await counting.fileCount(), after: moment)
+        let count = await counting.fileCount()
+        let line = message(count, after: moment)
         #if canImport(os)
-        Logger(subsystem: "com.aerodj.app", category: "cache").notice("\(line, privacy: .public)")
+        // Integers and a fixed moment word only, each marked public: no names, titles or ids.
+        Logger(subsystem: "com.aerodj.app", category: "cache").notice(
+            "AeroDJ.cache narration cache count=\(count.files, privacy: .public) personal=\(count.personal, privacy: .public) after=\(moment.rawValue, privacy: .public)")
         #endif
         return line
     }

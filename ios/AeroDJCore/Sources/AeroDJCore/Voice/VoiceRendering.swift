@@ -282,11 +282,13 @@ extension InMemoryAudioCache: AudioCacheCounting {
 }
 
 extension FileAudioCache: AudioCacheCounting {
-    /// Unreadable files count as personal: they cannot be shown to be generic.
+    /// Every file counts, metadata and audio alike. Files of personal or unattributable keys
+    /// (orphaned audio included) count as personal.
     public func fileCount() async -> AudioCacheCount {
-        let files = entries()
-        return AudioCacheCount(files: files.count,
-                               personal: files.filter { read($0).map { !$0.sourceItemIDs.isEmpty } ?? true }.count)
+        let groups = groups()
+        return AudioCacheCount(files: groups.reduce(0) { $0 + $1.files.count },
+                               personal: groups.filter { $0.clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
+                                   .reduce(0) { $0 + $1.files.count })
     }
 }
 
@@ -314,41 +316,52 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func audio(for key: String) async -> CachedAudio? {
-        let file = url(key)
-        guard let clip = read(file) else { return nil }
+        guard let clip = read(url(key)) else { return nil }
         guard now().timeIntervalSince(clip.createdAt) <= maxAge else {
-            try? FileManager.default.removeItem(at: file)
+            remove(group: key)
             return nil
         }
         return clip
     }
 
-    private func entries() -> [URL] {
-        ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.pathExtension == "json" }
+    /// Every regular file in the cache directory, any extension: `.json` metadata and any
+    /// audio beside it (`<key>.caf`, `<key>.m4a`, ...), so orphaned audio is seen too.
+    private func allFiles() -> [URL] {
+        ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey])) ?? [])
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false }
+    }
+
+    /// Files grouped by key (file name without extension), with the key's clip if its
+    /// metadata is readable. A group with no readable metadata (orphaned audio, corrupt
+    /// file) cannot be attributed, so every purge removes it.
+    private func groups() -> [(files: [URL], clip: CachedAudio?)] {
+        Dictionary(grouping: allFiles(), by: { $0.deletingPathExtension().lastPathComponent })
+            .map { key, files in (files, files.contains { $0.pathExtension == "json" } ? read(url(key)) : nil) }
+    }
+
+    /// Deletes a key's metadata together with its audio, whatever the audio's extension.
+    private func remove(group key: String) {
+        for file in allFiles() where file.deletingPathExtension().lastPathComponent == key {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    private func removeGroups(where shouldRemove: (CachedAudio?) -> Bool) {
+        for group in groups() where shouldRemove(group.clip) {
+            for file in group.files { try? FileManager.default.removeItem(at: file) }
+        }
     }
 
     public func purge(sourceItemIDs: Set<UUID>) async {
-        for file in entries() {
-            // Unreadable entries cannot be attributed, so they are removed too.
-            if let clip = read(file), sourceItemIDs.isDisjoint(with: clip.sourceItemIDs) { continue }
-            try? FileManager.default.removeItem(at: file)
-        }
+        removeGroups { clip in clip.map { !sourceItemIDs.isDisjoint(with: $0.sourceItemIDs) } ?? true }
     }
 
     public func purgeExpired() async {
-        for file in entries() {
-            if let clip = read(file), now().timeIntervalSince(clip.createdAt) <= maxAge { continue }
-            try? FileManager.default.removeItem(at: file)
-        }
+        removeGroups { clip in clip.map { now().timeIntervalSince($0.createdAt) > maxAge } ?? true }
     }
 
     public func purgeAllPersonal() async {
-        for file in entries() {
-            // Unreadable entries cannot be attributed, so they are removed too.
-            if let clip = read(file), clip.sourceItemIDs.isEmpty { continue }
-            try? FileManager.default.removeItem(at: file)
-        }
+        removeGroups { clip in clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
     }
 
     public func store(_ audio: CachedAudio, for key: String) async {

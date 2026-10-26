@@ -297,16 +297,44 @@ final class AudioCacheFileLogTests: XCTestCase {
         await cache.store(CachedAudio(data: Data([2]), seconds: 1, providerID: "device", voiceID: "v", sourceItemIDs: [b]), for: "k2")
         await cache.store(CachedAudio(data: Data([3]), seconds: 1, providerID: "device", voiceID: "v"), for: "k3")
         let launch = await AudioCacheFileLog.record(cache, after: .launch)
-        XCTAssertEqual(launch, "AeroDJ.cache files=3 personal=2 generic=1 after=launch")
+        XCTAssertEqual(launch, "AeroDJ.cache narration cache count=3 personal=2 after=launch")
 
         await NarrationPurger(cache: cache, preparer: nil, revocations: NarrationRevocations(), feed: NarrationPurgeFeed())
             .purge(sourceItemIDs: [a])
         let afterPurge = await AudioCacheFileLog.record(cache, after: .purge)
-        XCTAssertEqual(afterPurge, "AeroDJ.cache files=2 personal=1 generic=1 after=purge")
+        XCTAssertEqual(afterPurge, "AeroDJ.cache narration cache count=2 personal=1 after=purge")
         for line in [launch, afterPurge].compactMap({ $0 }) {
             XCTAssertFalse(line.contains(a.uuidString) || line.contains(b.uuidString) || line.contains("k1"), "no ids or keys")
         }
         let count = await cache.fileCount()
         XCTAssertEqual(count, AudioCacheCount(files: 2, personal: 1))
+    }
+
+    /// Sentinel: the count covers every file (audio and metadata), and a purge deletes a
+    /// clip's audio together with its metadata, so orphaned audio cannot pass.
+    func testCountIncludesAudioFilesAndPurgeDeletesAudioWithItsMetadataAndOrphans() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cache-files-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = FileAudioCache(directory: dir)
+        let a = UUID()
+        await cache.store(CachedAudio(data: Data([1]), seconds: 1, providerID: "device", voiceID: "v", sourceItemIDs: [a]), for: "k1")
+        await cache.store(CachedAudio(data: Data([2]), seconds: 1, providerID: "device", voiceID: "v"), for: "k2")
+        try Data([9]).write(to: dir.appendingPathComponent("k1.caf"))       // audio beside k1's metadata
+        try Data([9]).write(to: dir.appendingPathComponent("k2.m4a"))       // audio beside generic k2
+        try Data([9]).write(to: dir.appendingPathComponent("orphan.caf"))   // audio with no metadata
+        var count = await cache.fileCount()
+        XCTAssertEqual(count, AudioCacheCount(files: 5, personal: 3), "every file counts; orphans count as personal")
+
+        await NarrationPurger(cache: cache, preparer: nil, revocations: NarrationRevocations(), feed: NarrationPurgeFeed())
+            .purge(sourceItemIDs: [a])
+        let left = Set(try FileManager.default.contentsOfDirectory(atPath: dir.path))
+        XCTAssertEqual(left, ["k2.json", "k2.m4a"], "k1's audio went with its metadata; the orphan is gone")
+        count = await cache.fileCount()
+        XCTAssertEqual(AudioCacheFileLog.message(count, after: .purge), "AeroDJ.cache narration cache count=2 personal=0 after=purge")
+
+        try Data([9]).write(to: dir.appendingPathComponent("orphan2.caf"))
+        await cache.purgeAllPersonal()
+        let afterAll = Set(try FileManager.default.contentsOfDirectory(atPath: dir.path))
+        XCTAssertEqual(afterAll, ["k2.json", "k2.m4a"], "purge-all removes orphaned audio too")
     }
 }
