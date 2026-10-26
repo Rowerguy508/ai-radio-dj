@@ -106,7 +106,11 @@ final class StudioScreenTests: XCTestCase {
         let app = launch(largeText: true)
         // Accessibility sizes: compact when closed, the stacked Studio when open (no two zones).
         let layout = isOpenLayout ? "layout.studioStacked" : "layout.compact"
-        XCTAssertTrue(app.otherElements[layout].waitForExistence(timeout: 15))
+        // Any element type: the stacked Studio is a ScrollView, which XCUITest surfaces as a
+        // scroll view, not "other" (same as the compact empty state).
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "\(layout) expected at accessibility text size:\n\(app.debugDescription)")
+        if isOpenLayout { XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, "no two zones at AX sizes") }
         XCTAssertTrue(shows(app, "Morning Light"))
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX sizes")
