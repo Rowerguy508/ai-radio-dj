@@ -203,6 +203,20 @@ public final class StationConfigurationModel {
         }
     }
 
+    /// Applies a saved recipe's tuning (everything except connections) with the same
+    /// boundary rules as editing each control: music settings wait for the song boundary,
+    /// personality for the next DJ break, briefing for the next briefing; turning
+    /// commentary or the briefing off applies now. Connections (`requestedIntegrations`)
+    /// are never changed by a recipe.
+    public func applyRecipe(_ recipe: StationRecipe) async {
+        let target = recipe.configuration
+        await edit(Set(StationSetting.tuning)) { config in
+            let keep = config.requestedIntegrations
+            config = target
+            config.requestedIntegrations = keep
+        }
+    }
+
     /// Throws away pending edits; active settings are untouched.
     public func discardPendingChanges() async {
         guard state.pending != nil, canSave else { return }
@@ -218,33 +232,42 @@ public final class StationConfigurationModel {
     }
 
     private func edit(_ setting: StationSetting, _ transform: (inout StationConfiguration) -> Void) async {
+        await edit([setting], transform)
+    }
+
+    /// One edit that may touch several controls (a recipe). Same rules as single edits:
+    /// privacy reductions apply now, everything else waits for its boundary, and a failed
+    /// save rolls back only what was not a reduction.
+    private func edit(_ settings: Set<StationSetting>, _ transform: (inout StationConfiguration) -> Void) async {
+        guard !settings.isEmpty else { return }
         switch loadState {
-        case .notLoaded, .loading: errors[setting] = .notLoaded; return
-        case .failed(.newerVersion): errors[setting] = .readOnlyNewerVersion; return
+        case .notLoaded, .loading: for s in settings { errors[s] = .notLoaded }; return
+        case .failed(.newerVersion): for s in settings { errors[s] = .readOnlyNewerVersion }; return
         default: break
         }
         let before = state
         let outcome = state.edit(transform)
-        let reduction: Bool
+        var reductions = Set<StationSetting>()
         switch outcome {
         case .unchanged:
             return
         case .pending:
-            reduction = false
+            break
         case .applied(let change, _):
-            reduction = change.applied.contains(setting)
+            reductions = change.applied.intersection(settings)
             publish(change)  // privacy reductions take effect before any disk write
         }
-        errors[setting] = nil
-        saving[setting, default: 0] += 1
+        for s in settings { errors[s] = nil; saving[s, default: 0] += 1 }
         let saved = await enqueueSave().value
-        saving[setting, default: 1] -= 1
+        for s in settings { saving[s, default: 1] -= 1 }
         guard !saved else { return }
-        if reduction {
-            errors[setting] = .reductionNotSaved
-        } else {
-            state.restore(setting, from: before)
-            errors[setting] = .saveFailed
+        for s in settings {
+            if reductions.contains(s) {
+                errors[s] = .reductionNotSaved
+            } else if s.differs(before.displayed, state.displayed) || s.differs(before.active, state.active) {
+                state.restore(s, from: before)
+                errors[s] = .saveFailed
+            }
         }
     }
 
