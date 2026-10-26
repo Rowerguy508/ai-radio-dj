@@ -26,11 +26,46 @@ public final class StudioPresentationModel {
     /// DJ status in the owner's five states. `isOnAir` is true only while `speaking`.
     public var djState: DJStudioState { dj.studioState }
     public var isOnAir: Bool { djState.isOnAir }
-    /// True only while a rendered DJ break waits for the next boundary (`.ready`): false when
-    /// idle, preparing, speaking or failed, and once the break is dropped or its source revoked,
-    /// purged or expired. Derived from the one DJ status the break session feeds; a Bool only,
-    /// never text, names or ids. Backs the fixed "A break is coming" line.
-    public var isBreakPrepared: Bool { if case .ready = dj.state { true } else { false } }
+    /// True only while a rendered DJ break waits for the boundary of the song playing now: the
+    /// DJ status is `.ready(afterTrack: k)`, song `k` is playing and its boundary hasn't passed.
+    /// False when idle, preparing, speaking or failed, once the break is dropped or its source
+    /// revoked, purged or expired, and once playback moved past `k` (a break handed out that
+    /// never played leaves the status on `.ready`). Fails closed: false until the player reports
+    /// a position. A Bool only, never text, names or ids. Backs the fixed "A break is coming" line.
+    public var isBreakPrepared: Bool {
+        guard case .ready(let k, _, _) = dj.state, k == playingSong, dj.state != staleBreak else { return false }
+        return true
+    }
+
+    /// Index of the song playing now, as the player reports it; nil until the first report.
+    private var playingSong: Int?
+    /// A `.ready` status left behind after playback passed its boundary. Cleared on the next
+    /// DJ status change, so an equal new break counts again once it is prepared.
+    private var staleBreak: DJPresentationState?
+    @ObservationIgnored private var staleWatch: Task<Void, Never>?
+
+    /// Player input: song `index` of the queue started (natural advance, skip or new queue).
+    public func songStarted(index: Int) {
+        playingSong = index
+        if case .ready(let k, _, _) = dj.state, k != index { markStale() }
+    }
+
+    /// Player input: song `k` ended on its own; its break, if any, is no longer coming.
+    public func songBoundaryReached(afterTrack k: Int) {
+        if case .ready(k, _, _) = dj.state { markStale() }
+    }
+
+    private func markStale() {
+        staleBreak = dj.state
+        staleWatch?.cancel()
+        let updates = dj.updates()   // current status first, then each change
+        staleWatch = Task { [weak self] in
+            for await state in updates {
+                guard let self, !Task.isCancelled else { return }
+                if state != self.staleBreak { self.staleBreak = nil; return }
+            }
+        }
+    }
 
     /// Loads persisted state and starts forwarding station changes to Connections, so a
     /// withdrawn integration purges its narration immediately.
@@ -89,6 +124,10 @@ public extension StudioPresentationModel {
         let store = DJPresentationStore()
         for event in DJPresentationEvent.previewEvents(for: dj) { store.send(event) }
         let model = StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: store)
+        switch dj {   // the synthetic break belongs to the song "playing" in the preview
+        case .preparing(let k, _), .ready(let k, _, _), .speaking(let k, _): model.songStarted(index: k)
+        case .idle, .unavailable: break
+        }
         await recipes.load()
         await connections.refresh()
         return model
