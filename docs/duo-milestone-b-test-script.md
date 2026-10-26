@@ -44,11 +44,14 @@ Without the argument the same line says `runtime mode: live`. `info` is not used
 
 ## Build and install
 
-Install `5dbf6d910195c06f7d4a03993951b25212b335f5` (`5dbf6d9`), the `integration/device-duo` tip after the owner merged #65.
+Install the `integration/device-duo` tip **after the owner merges #86** (dark mode, rebased onto `0e37e30`, which carries #75). The exact SHA is filled in here once #86 merges; until then this line is pending. Orion's hard cutoff: if #86 is not green by 6:00pm ET, install `5dbf6d910195c06f7d4a03993951b25212b335f5` (`5dbf6d9`) as originally planned.
 
-- It is a merge commit, so the iOS workflow (which runs on pull requests only) never ran on it directly. Its tree, `aaacf0d`, is identical to #65's `aaff7e1`, which passed every job in iOS run 40327400994. Orion accepted that run as the green result for `5dbf6d9`.
-- `5dbf6d9` contains #63 `129d0c6` and #64 `b69581b`, so it has the pause guard. It does not contain #67, so it has no `InterludePlaybackAdapter` and no interlude-stop log line.
-- Fall back to `939c34e8da505ca91d26b30b52f696974b06c1c5` only if `5dbf6d9` will not build or sign.
+- The post-#86 tip contains #63 `129d0c6` and #64 `b69581b` (pause guard), #75 (briefing call site, `LiveQueueBriefing`), and #86 (dark colors). It does not contain #67, #73 or #77: no `InterludePlaybackAdapter`, no interlude-stop log line, no `didFinish` / `signal=… frames=…` line.
+- The iOS workflow runs on pull requests only. The green result for the install SHA is #86's gating run at the head that merges, rebased on `0e37e30`.
+- `5dbf6d9` (the cutoff fallback): tree `aaacf0d` equals #65's `aaff7e1`, which passed every job in iOS run 40327400994. It does not contain #75, so there is no briefing call site at all.
+- Fall back to `939c34e8da505ca91d26b30b52f696974b06c1c5` only if neither of the above will build or sign.
+
+**Tonight's briefing rule (Echo).** On the post-#86 build, starting a station plays music with **no briefing speech**: every Connections row fails closed until #73 and Echo's wiring follow-up land. **Any briefing speech on this build is a failure, not a pass.** Record it with the time, the headline shown, and the log lines around it.
 
 Checklist section 3 may still name `939c34e`. Use this section when the two disagree. Signing still comes from checklist section 5.
 
@@ -114,7 +117,7 @@ On #75 at `14c907eed0b9d5cfea73c39a9527f36538de5303` (still true at the branch t
 
 Fry's privacy PR is #73, `fix/consent-purge-demotion-race`, head `b83cbd747a1f193c867e77bb6a05445a4a81d1a7`. Commit `fffa6747952d512b107e4654df72fe568cc4a654` fills `ConnectionItem.sensitivity` and adds `ConnectionsModel.sensitivityByItemID`. That commit does not change `LiveQueueBriefing.swift`. This script depends on that PR for the values. Speech of approved rows also needs the installed `LiveQueueBriefing.swift` to pass `connections.sensitivityByItemID` instead of `[:]`.
 
-- The installed SHA does not contain `fffa674`: **expected: silence (no personal briefing)**. A silent briefing is a pass, not a defect.
+- The installed SHA does not contain `fffa674`: **expected: silence (no personal briefing)**. A silent briefing is a pass, not a defect. Any briefing speech on such a build is a failure.
 - The installed SHA contains `fffa674` and the Studio connection passes that table: **expected: briefing speaks approved rows only**.
 - The installed SHA contains `fffa674` but line 28 is still `[:]`: the live path still says nothing. Silence is a pass. Do not apply the speaks label.
 
@@ -400,7 +403,7 @@ Copy this table into your notes. Leave it blank in git. One link per step can be
 | Date | |
 | Tester | |
 | Device / iOS | |
-| Git SHA installed | `git rev-parse HEAD` from Build and install. Expected `5dbf6d9`; record `939c34e` only if the fallback was used |
+| Git SHA installed | `git rev-parse HEAD` from Build and install. Expected the post-#86 `integration/device-duo` tip (SHA filled in at merge); record `5dbf6d9` if the 6:00pm ET cutoff was missed, or `939c34e` only if neither would build or sign |
 | Personal briefing expectation | `silence (no personal briefing)` or `briefing speaks approved rows only` |
 | Route for steps 1–6 | speaker or AirPods |
 | Test station log seen | `runtime mode: testStation` yes / no |
