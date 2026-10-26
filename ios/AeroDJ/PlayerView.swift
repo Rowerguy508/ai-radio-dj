@@ -46,21 +46,18 @@ struct PlayerView: View {
                     // The break (or its skip) comes first; the next song is loaded only after it.
                     if interlude.isSpeaking {
                         music.skipInterlude()
-                    } else {
-                        switch await djSession.naturalBoundaryOutcome(afterTrack: finishedIndex) {
-                        case let .ready(prepared):
-                            switch BreakHandoffPolicy.decide(prepared: prepared) {
-                            case let .play(breakToPlay):
-                                let line = breakToPlay.cues.map(\.text).joined(separator: " ")
-                                await interlude.play(clips: breakToPlay.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
-                            case .continueMusic:
-                                music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
-                                music.skipInterlude()
-                            }
-                        case let .skipped(reason):
-                            music.logBreakSkipped(after: finishedIndex, reason: reason)
+                    } else if let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex) {
+                        switch BreakHandoffPolicy.decide(prepared: prepared) {
+                        case let .play(breakToPlay):
+                            let line = breakToPlay.cues.map(\.text).joined(separator: " ")
+                            await interlude.play(clips: breakToPlay.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                        case .continueMusic:
+                            music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
                             music.skipInterlude()
                         }
+                    } else {
+                        music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
+                        music.skipInterlude()
                     }
                     await music.startNextTrack(after: finishedIndex)
                 }
@@ -78,7 +75,7 @@ struct PlayerView: View {
                     interlude.stop()
                 }
             }
-            // Purge calls this. The closure is the only production caller of the stop.
+            // Player side of the session hook. Fry #73 owns the property and the purge call.
             djSession.onBreakMustStop = { [interlude] reason in
                 interlude.stopCurrentInterlude(reason: reason)
             }
@@ -91,6 +88,7 @@ struct PlayerView: View {
                 switch event {
                 case .started(let k): djSession.playbackStarted(afterTrack: k)
                 case .finished(let k): djSession.playbackFinished(afterTrack: k)
+                // A revoke stops On Air without a voice failure. The session has no cancel event.
                 case .revoked(let k): djSession.playbackFinished(afterTrack: k)
                 case .failed(let k): djSession.playbackFailed(afterTrack: k)
                 }

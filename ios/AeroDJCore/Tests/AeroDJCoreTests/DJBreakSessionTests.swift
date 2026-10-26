@@ -157,18 +157,16 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertEqual(r.dj.studioState, .idle)
     }
 
-    func testRevokeStopsThePlayingBreakWithinOneTick() async {
-        let r = await rig()
+    func testRevokeStopsThePlayingBreakWithinOneTick() {
         let clip = ActiveBreakController()
         clip.play()
         let player = clip.currentPlayer
-        r.session.onBreakMustStop = { reason in
+        let onBreakMustStop: (@MainActor (InterludeStopReason) -> Void) = { reason in
             clip.stopActiveBreak(reason: reason, mayAutoResume: true)
         }
+        onBreakMustStop(.sourceRevoked)
 
-        r.session.purge(sourceItemIDs: [UUID()])
-
-        XCTAssertEqual(clip.playerStops, 1, "the player stops before purge returns, inside one tick")
+        XCTAssertEqual(clip.playerStops, 1, "the player stops before the hook returns, inside one tick")
         XCTAssertTrue(clip.delegateCleared)
         XCTAssertEqual(clip.end, .revoked, "a revoke stop is not a natural end")
         XCTAssertEqual(clip.naturalEnds, 0)
@@ -177,6 +175,21 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertEqual(clip.delivered, 0, "a late callback from the stopped player is ignored")
         XCTAssertEqual(clip.resumes, 1, "the late callback must not resume music again")
         XCTAssertEqual(clip.naturalEnds, 0)
+    }
+
+    /// `purge` calling the hook is Fry's call site in #73. The player behavior above is what that call runs.
+    /// Expected-pending until that line exists. Linux XCTest has no XCTExpectFailure, so this stays skipped.
+    func testPurgeCallsOnBreakMustStopForThePlayingBreak() async throws {
+        let fryWiresPurge = false
+        try XCTSkipIf(
+            !fryWiresPurge,
+            "expected-pending. Dependency on Fry #73: DJBreakSession.purge must call onBreakMustStop?(.sourceRevoked)"
+        )
+        let r = await rig()
+        let clip = ActiveBreakController()
+        clip.play()
+        r.session.purge(sourceItemIDs: [UUID()])
+        XCTAssertEqual(clip.playerStops, 1, "purge stops the playing break once Fry wires onBreakMustStop")
     }
 
     func testRevokingAnItemRemovesItFromPlannedPreparedAndCachedNarration() async throws {

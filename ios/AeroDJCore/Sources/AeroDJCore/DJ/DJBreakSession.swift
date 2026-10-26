@@ -91,21 +91,13 @@ public final class DJBreakSession {
     /// Song `k` ended on its own. Applies pending station edits at this safe boundary, then
     /// returns the prepared break, or nil when there is none (the player plays music at once).
     public func naturalBoundary(afterTrack k: Int) async -> PreparedDJBreak? {
-        guard case let .ready(prepared) = await naturalBoundaryOutcome(afterTrack: k) else { return nil }
-        return prepared
-    }
-
-    /// Song `k` ended on its own. Same station update as `naturalBoundary`, including the skip reason.
-    public func naturalBoundaryOutcome(afterTrack k: Int) async -> DJBreakOutcome {
         await station.handle(.songBoundary(afterTrack: k))
         // The change stream is async; apply a cadence change here so the next song's break
         // is planned with it before `songStarted(index: k + 1)` arrives.
         replanIfCadenceChanged(after: k)
-        let outcome = await preparer.takeBreak(afterTrack: k)
-        if case let .ready(prepared) = outcome {
-            deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
-        }
-        return outcome
+        guard case .ready(let prepared) = await preparer.takeBreak(afterTrack: k) else { return nil }
+        deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
+        return prepared
     }
 
     /// Song `k` was cut (skip, queue change): its break is dropped, never played after a cut song.
@@ -126,18 +118,11 @@ public final class DJBreakSession {
         dj.send(.sessionStopped)
     }
 
-    /// The player sets this to `InterludePlaybackAdapter.stopCurrentInterlude(reason:)`.
-    /// `purge` calls it so a clip that is already playing stops in this turn.
-    public var onBreakMustStop: (@MainActor (InterludeStopReason) -> Void)?
-
     /// Personal items deleted or revoked: they leave the briefing and every break planned from
     /// them is re-planned without them, so they can never start rendering later. Called by
     /// `NarrationPurger` before the preparer and cache are purged.
-    ///
-    /// Also calls `onBreakMustStop(.sourceRevoked)` before it returns. Idle is a no-op in the player.
     public func purge(sourceItemIDs ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
-        onBreakMustStop?(.sourceRevoked)
         func mentions(_ cue: NarrationCue) -> Bool { cue.sourceItemID.map(ids.contains) ?? false }
         if let b = briefing {
             briefing = NarrationHandoff(cues: b.cues.filter { !mentions($0) },
