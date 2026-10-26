@@ -34,6 +34,24 @@ public enum PlaybackBoundary: Equatable, Sendable {
     case queueFinished(lastEntryID: String)
 }
 
+/// What the DJ session does at a boundary. A natural end may play a break.
+/// The end of the queue stops the session and logs `boundary stationFinished`.
+public enum StationEndAction: Equatable, Sendable {
+    case playOrSkipBreak
+    case stopSession(log: String)
+}
+
+public enum StationEndPolicy {
+    public static func action(for boundary: PlaybackBoundary, finishedTrack: Int) -> StationEndAction {
+        switch boundary {
+        case .naturalEnd:
+            return .playOrSkipBreak
+        case .queueFinished:
+            return .stopSession(log: PlaybackLog.stationFinished(finished: finishedTrack))
+        }
+    }
+}
+
 /// Reports natural track boundaries exactly once each.
 ///
 /// Signal: the current queue entry *changes identity* while playback was

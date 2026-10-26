@@ -178,6 +178,31 @@ final class CatalogPlaybackLifecycleTests: XCTestCase {
         XCTAssertNil(boundaries.interpret(PlaybackObservation(entryID: "b", isPlaying: true), queueIndex: 1, queueCount: 3))
     }
 
+    func testNaturalBoundaryWithNoCuesDoesNotPlayCachedAudio() async throws {
+        let (preparer, djBreak) = try await readyBreak()
+        guard case let .ready(rendered) = await preparer.takeBreak(afterTrack: djBreak.afterTrack) else {
+            return XCTFail("the break was rendered and cached")
+        }
+        XCTAssertFalse(rendered.clips.isEmpty)
+        XCTAssertFalse(rendered.cues.isEmpty)
+        let cache = InMemoryAudioCache()
+        for clip in rendered.clips {
+            await cache.store(clip.audio, for: clip.cacheKey)
+        }
+        let stored = await cache.audio(for: rendered.clips[0].cacheKey)
+        XCTAssertNotNil(stored, "rendered break audio is still in the cache")
+
+        let noCues = PreparedDJBreak(afterTrack: rendered.afterTrack, cues: [], clips: rendered.clips, attributions: [:])
+        let line = noCues.cues.map(\.text).joined(separator: " ")
+        XCTAssertEqual(BreakHandoffPolicy.decide(prepared: noCues), .continueMusic, "no cues: the cached clip is not played")
+        XCTAssertFalse(BreakHandoffPolicy.shouldPlay(line: line, clipCount: noCues.clips.count), "the adapter does not start cached audio")
+        XCTAssertEqual(BreakHandoffPolicy.decide(prepared: rendered), .play(rendered), "the same clips play when the cues are still there")
+
+        var machine = AudioStateMachine(state: .transition)
+        XCTAssertEqual(machine.apply(.noInterlude), .music, "the adapter returns straight to music")
+        XCTAssertNotEqual(machine.state, .voice)
+    }
+
     func testDJTransitionIsExactlyOnce() async throws {
         let (preparer, djBreak) = try await readyBreak()
         let outcome = await preparer.takeBreak(afterTrack: djBreak.afterTrack)
@@ -276,6 +301,42 @@ final class CatalogPlaybackLifecycleTests: XCTestCase {
         let outcome = await preparer.takeBreak(afterTrack: djBreak.afterTrack)
         if case .ready = outcome { XCTFail("a cancelled break must not be handed to the player") }
         XCTAssertEqual(BreakHandoffPolicy.decide(outcome), .continueMusic)
+    }
+
+    func testInterruptionEndNotifiesADeferredSongStartOnce() {
+        var policy = AudioSessionPolicy()
+        var deferred = DeferredSongStart()
+        var player = ScriptedCatalogPlayer(duration: .seconds(180))
+        var notifications: [Int] = []
+
+        func apply(_ notice: AudioSessionNotice) {
+            switch policy.handle(notice, breakIsActive: false) {
+            case .resumeIfPermitted:
+                player.play()
+                if let index = deferred.take() {
+                    notifications.append(index)
+                }
+            case .suspendPlayback, .none:
+                break
+            }
+        }
+
+        policy.userPlay()
+        apply(.interruptionBegan)
+        player.load("song-2")
+        deferred.arm(2)
+        XCTAssertEqual(player.playCount, 0, "the song stays paused for the call")
+
+        apply(.interruptionEnded(shouldResume: false))
+        XCTAssertEqual(notifications, [], "a resume that does not play does not notify")
+        XCTAssertEqual(deferred.index, 2)
+
+        apply(.interruptionEnded(shouldResume: true))
+        XCTAssertEqual(notifications, [2], "play resuming notifies the DJ session once")
+        XCTAssertEqual(player.playCount, 1)
+
+        apply(.interruptionEnded(shouldResume: true))
+        XCTAssertEqual(notifications, [2], "a second resume does not notify again")
     }
 
     func testDeferredSongStartIsReportedOnceWhenResumeIsPermitted() {

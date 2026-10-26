@@ -80,6 +80,20 @@ final class AudioReliabilityTests: XCTestCase {
         XCTAssertEqual(machine.apply(event), .music)
     }
 
+    func testUndecodableClipIsAFailureAndMusicReturnsImmediately() {
+        let effect = ClipDecodePolicy.effect(for: .undecodable, mayAutoResume: true)
+        XCTAssertEqual(effect.outcome, .failed, "a clip that will not decode is a failure")
+        XCTAssertNotEqual(effect.outcome, .cancelled)
+        XCTAssertTrue(effect.resumeMusic, "music comes back immediately")
+        let decision = NarrationResumePolicy.decide(
+            NarrationResumePolicy.narrationEnd(for: effect.outcome),
+            mayAutoResume: true,
+            phase: .music
+        )
+        XCTAssertEqual(decision.playbackEvent, .failed)
+        XCTAssertEqual(ClipDecodePolicy.effect(for: .playable, mayAutoResume: true).outcome, .finished)
+    }
+
     func testFailedBreakIsAFailureNotACancel() {
         XCTAssertEqual(NarrationResumePolicy.narrationEnd(for: .failed), .failed)
         let decision = NarrationResumePolicy.decide(
