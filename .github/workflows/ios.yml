@@ -37,7 +37,9 @@ jobs:
       - name: Run core tests
         run: swift test
         working-directory: ios/AeroDJCore
-      - name: Release SwiftPM objects exclude fixture tokens
+      - name: Fixture scan script tests
+        run: ios/scripts/check-release-fixture-scan-test.sh
+      - name: Release linked executable excludes fixture tokens
         run: ios/scripts/check-release-excludes-test-station.sh
 
   simulator-build:

@@ -4,9 +4,11 @@
 # Usage: check-release-bundle-fixtures.sh <Debug AeroDJ.app> <Release AeroDJ.app>
 #
 # Tokens: ios/scripts/release-fixture-denylist.txt
-# Mach-O executables are read with nm (demangled when swift-demangle is present)
-# and strings. Every other file in the bundle, including compiled asset catalogs
-# and Info.plists, is an asset: its path and its strings are checked.
+# Every file is scanned as raw bytes. A token immediately preceded by "/" and
+# immediately followed by ".swift" is a source path and is exempt. Every other
+# occurrence fails, including the bundle-relative path of the file.
+# Mach-O executables are reported as symbols. Every other file, including
+# compiled asset catalogs and Info.plists, is an asset.
 # The Debug app executable is the positive control. Release must have no hits.
 set -euo pipefail
 
@@ -19,6 +21,7 @@ DEBUG_APP=$1
 RELEASE_APP=$2
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DENYLIST="$SCRIPT_DIR/release-fixture-denylist.txt"
+MATCH="$SCRIPT_DIR/fixture-scan-match.py"
 PATFILE=$(mktemp)
 HITS=$(mktemp)
 debug_hits=$(mktemp)
@@ -30,20 +33,8 @@ grep -E -v '^[[:space:]]*(#|$)' "$DENYLIST" > "$PATFILE"
 for required in FixtureContextSource PlayingScreenPreviewLoader mockStations; do
   grep -q -x -F -- "$required" "$PATFILE" || { echo "FAIL: denylist is missing $required"; exit 1; }
 done
-
-demangle() {
-  if command -v xcrun >/dev/null 2>&1 && xcrun --find swift-demangle >/dev/null 2>&1; then
-    xcrun swift-demangle
-  elif command -v swift >/dev/null 2>&1; then
-    swift demangle
-  else
-    cat
-  fi
-}
-
-is_macho() {
-  file "$1" 2>/dev/null | grep -q 'Mach-O'
-}
+command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 is required to scan fixture bytes"; exit 1; }
+[[ -f "$MATCH" ]] || { echo "FAIL: matcher missing: $MATCH"; exit 1; }
 
 # Bundle-relative executable name from Info.plist, else the bundle's own name.
 executable_rel() {
@@ -69,19 +60,16 @@ appex_dirs() {
 }
 
 record_file() {
-  local root=$1 file=$2 kind=$3 rel text pat
+  local root=$1 file=$2 kind=$3 rel matched token
   rel=${file#"$root"/}
-  text=$(mktemp)
-  if is_macho "$file"; then
-    { nm -a "$file" 2>/dev/null || true; } | demangle >> "$text" || true
+  if ! matched=$(python3 "$MATCH" "$DENYLIST" "$file" "$rel"); then
+    echo "FAIL: fixture scan matcher failed on $file" >&2
+    exit 1
   fi
-  { strings -a "$file" 2>/dev/null || true; } >> "$text" || true
-  while IFS= read -r pat; do
-    if grep -q -F -- "$pat" "$text" || [[ "$rel" == *"$pat"* ]]; then
-      printf '%s %s %s\n' "$kind" "$rel" "$pat" >> "$HITS"
-    fi
-  done < "$PATFILE"
-  rm -f "$text"
+  while IFS= read -r token; do
+    [[ -n "$token" ]] || continue
+    printf '%s %s %s\n' "$kind" "$rel" "$token" >> "$HITS"
+  done <<< "$matched"
 }
 
 scan_bundle() {
