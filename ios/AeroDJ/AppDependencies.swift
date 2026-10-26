@@ -15,6 +15,11 @@ struct AppDependencies {
     let voice: VoiceRenderer
     let cadence: DJCadence
     let station: StationConfigurationModel
+    /// The one app-scoped playback session. Layouts receive it; none creates another.
+    let playback: MusicKitService
+    let dj: DJPresentationStore
+    /// The one Studio model (#56). Created here, never in a view.
+    let studio: StudioPresentationModel
 
     static func make(defaults: UserDefaults = .standard) -> AppDependencies {
         #if DEBUG
@@ -30,33 +35,66 @@ struct AppDependencies {
     private static func live() -> AppDependencies {
         let consent = StaticIntegrationConsent(
             Dictionary(uniqueKeysWithValues: StationIntegration.allCases.map { ($0, ConsentState.notRequested) }))
+        let station = StationConfigurationModel(store: FileStationConfigurationStore(fileURL: stationFileURL()),
+                                                consent: consent)
+        let voice = VoiceRenderer.onDeviceDefault()
+        let dj = DJPresentationStore()
+        // Live connection sources: the App Group inbox when it exists. Calendar and Notes
+        // readers are not built yet, so they report "not determined" and cannot be authorized.
+        let inbox = SharedInboxReview.appGroupInbox().map { [SharedInboxConnectionProvider(review: $0)] } ?? []
+        let connections = ConnectionsModel(
+            station: station,
+            sourceReader: StaticConnectionSourceReader(),
+            providers: inbox,
+            purger: NarrationPurger(cache: voice.cache, preparer: nil))
+        let recipes = StationRecipeLibrary(store: FileStationRecipeStore(fileURL: supportURL("StationRecipes/recipes.json")))
         return AppDependencies(
             mode: .live,
             // Calendar policy is the default: no calendar is included until the user chooses one.
             contextSources: [CalendarContextSource(reader: EventKitCalendarReader())],
-            voice: VoiceRenderer.onDeviceDefault(),
+            voice: voice,
             cadence: DJCadence(),
-            station: StationConfigurationModel(store: FileStationConfigurationStore(fileURL: stationFileURL()),
-                                               consent: consent))
+            station: station,
+            playback: MusicKitService.shared,
+            dj: dj,
+            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj))
     }
 
     #if DEBUG
+    /// Synthetic only: fixture context, fixture station, $0 in-memory voice, no shared
+    /// inbox and no calendar reader. Playback is Apple Music, the same session as live.
     private static func testStation() -> AppDependencies {
-        AppDependencies(
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(
+                snapshot: StationConfigurationSnapshot(state: StationConfigurationState(active: TestStation.configuration))),
+            consent: TestStation.fixtureConsent)
+        let voice = TestStation.makeRenderer(routes: [VoiceRoute.onDevice()],
+                                             cache: InMemoryAudioCache(maxAge: TestStation.cacheRetention))
+        let dj = DJPresentationStore()
+        let connections = ConnectionsModel(
+            station: station,
+            sourceReader: StaticConnectionSourceReader(),
+            providers: [InMemoryConnectionItemProvider(integration: .shareInbox, items: [])],
+            purger: NarrationPurger(cache: voice.cache, preparer: nil))
+        let recipes = StationRecipeLibrary(store: InMemoryStationRecipeStore())
+        return AppDependencies(
             mode: .testStation,
             contextSources: TestStation.fixtureSources(),
-            voice: TestStation.makeRenderer(routes: [VoiceRoute.onDevice()],
-                                            cache: InMemoryAudioCache(maxAge: TestStation.cacheRetention)),
+            voice: voice,
             cadence: TestStation.cadence,
-            station: StationConfigurationModel(
-                store: InMemoryStationConfigurationStore(
-                    snapshot: StationConfigurationSnapshot(state: StationConfigurationState(active: TestStation.configuration))),
-                consent: TestStation.fixtureConsent))
+            station: station,
+            playback: MusicKitService.shared,
+            dj: dj,
+            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj))
     }
     #endif
 
-    private static func stationFileURL() -> URL {
+    private static func supportURL(_ path: String) -> URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return support.appendingPathComponent("StationConfiguration/station.json")
+        return support.appendingPathComponent(path)
+    }
+
+    private static func stationFileURL() -> URL {
+        supportURL("StationConfiguration/station.json")
     }
 }

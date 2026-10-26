@@ -15,6 +15,7 @@ import AeroDJCore
 final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private let music: MusicKitService
     private var clipPlayer: AVAudioPlayer?
+    private var queue: [AVAudioPlayer] = []
     private var finish: CheckedContinuation<Void, Never>?
     private var timeout: Task<Void, Never>?
     private var outcome: Outcome = .cancelled
@@ -35,26 +36,51 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         music.skipInterlude()
     }
 
-    /// Plays a pre-rendered clip. A clip that won't decode skips the break.
+    /// Plays one prepared clip. A clip that won't decode skips the break.
     func play(clip: Data, line: String) async {
-        guard !isSpeaking, !line.isEmpty else {
+        await play(clips: [clip], line: line)
+    }
+
+    /// Plays a prepared break: every clip back to back inside ONE break. Music is paused
+    /// once before the first clip and resumed once after the last one.
+    func play(clips: [Data], line: String) async {
+        guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
             music.skipInterlude()
             return
         }
-        guard let player = try? AVAudioPlayer(data: clip), player.duration > 0 else {
+        // A clip that won't decode skips the whole break; nothing is spoken partially.
+        let players = clips.compactMap { try? AVAudioPlayer(data: $0) }
+        guard players.count == clips.count, players.allSatisfy({ $0.duration > 0 }) else {
             music.reportSpeechError("A DJ line could not be played and was skipped.")
             music.skipInterlude()
             return
         }
-        player.delegate = self
-        clipPlayer = player
-        await runBreak(line: line, timeout: player.duration + 2) {
-            player.play()
-        }
+        queue = players
+        let total = players.reduce(0) { $0 + $1.duration } + 2
+        await runBreak(line: line, timeout: total) { self.startNextClip() }
+        queue = []
         clipPlayer = nil
     }
 
+    /// Starts the next queued clip. False if it could not start.
+    private func startNextClip() -> Bool {
+        guard !queue.isEmpty else { return false }
+        let player = queue.removeFirst()
+        player.delegate = self
+        clipPlayer = player
+        return player.play()
+    }
+
+    /// One clip finished. Continue with the next clip, or end the break.
+    private func clipFinished(successful: Bool) {
+        guard finish != nil else { return }
+        guard successful else { finishBreak(.cancelled); return }
+        if queue.isEmpty { finishBreak(.finished); return }
+        if !startNextClip() { finishBreak(.cancelled) }
+    }
+
     func stop() {
+        queue = []
         clipPlayer?.stop()
         finishBreak(.cancelled)
     }
@@ -98,7 +124,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     // MARK: AVAudioPlayerDelegate
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor [weak self] in self?.finishBreak(flag ? .finished : .cancelled) }
+        Task { @MainActor [weak self] in self?.clipFinished(successful: flag) }
     }
 
     nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
