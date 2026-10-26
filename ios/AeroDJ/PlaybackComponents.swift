@@ -159,11 +159,11 @@ struct ArtworkView: View {
         .accessibilityHidden(true)
     }
 
-    private var cornerRadius: CGFloat { size > 160 ? 26 : max(8, size * 0.2) }
+    private var cornerRadius: CGFloat { StationIdentPlate.playingCardCornerRadius(size: size) }
 
     private var fallback: some View {
         StationArtwork(style: .track(track, on: station), size: size,
-                       caption: size >= 200 ? station?.name : nil)
+                       caption: size >= 180 ? station?.name : nil)
     }
 }
 
@@ -192,6 +192,7 @@ struct StationTitle: View {
             Text(station.name)
                 .font(.headline)
                 .lineLimit(1)
+                .minimumScaleFactor(0.6)
                 .truncationMode(.tail)
             if isTestStation {
                 Text("TEST STATION")
@@ -326,7 +327,9 @@ struct TransportRow: View {
                             .contentShape(Circle())
                     }
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("Tune station")
                     .accessibilityHint("Opens the tuner. Music continues.")
+                    .accessibilityAddTraits(.isButton)
                     .accessibilityIdentifier("transport.tune")
                 }
             }
@@ -344,6 +347,8 @@ struct TransportRow: View {
                     .shadow(color: accent.opacity(0.35), radius: 10, y: 4)
                     .contentShape(Circle())
             }
+            .accessibilityLabel(transport == .playing ? "Pause" : "Play")
+            .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("transport.playPause")
 
             side {
@@ -359,6 +364,8 @@ struct TransportRow: View {
                         .contentShape(Circle())
                 }
                 .foregroundStyle(.primary)
+                .accessibilityLabel("Skip")
+                .accessibilityAddTraits(.isButton)
                 .accessibilityIdentifier("transport.skip")
             }
         }

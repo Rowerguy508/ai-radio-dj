@@ -14,13 +14,15 @@ final class StudioArtworkTests: XCTestCase {
 
     @MainActor
     private func launch(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
-                        dark: Bool = false, albumArt: Bool = false) -> XCUIApplication {
+                        ax5: Bool = false, dark: Bool = false, albumArt: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if albumArt { app.launchArguments += ["-AeroDJAlbumArtFixture", "YES"] }
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
         if let scenario { app.launchArguments += ["-AeroDJStudioCaptureScenario", scenario] }
-        if largeText {
+        if ax5 {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        } else if largeText {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"]
         }
         if dark { app.launchArguments += ["-AeroDJStudioCaptureDark", "YES"] }
@@ -100,6 +102,19 @@ final class StudioArtworkTests: XCTestCase {
         XCTAssertTrue(shows(app, "Nothing playing"))
         XCTAssertFalse(app.buttons["transport.playPause"].exists)
         save(app, isOpenLayout ? "open-state-empty-large-text" : "closed-state-empty-large-text")
+    }
+
+    /// Empty stage at AX5. The plate shrinks so the status can grow, and the transport stays absent.
+    @MainActor
+    func testEmptyStateAtAX5() throws {
+        let app = launch(scenario: "empty", ax5: true)
+        let layout = isOpenLayout ? "layout.studioStacked" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "\(layout) expected:\n\(app.debugDescription)")
+        XCTAssertTrue(app.descendants(matching: .any)["empty.stage"].waitForExistence(timeout: 5))
+        XCTAssertTrue(shows(app, "Nothing playing"))
+        XCTAssertFalse(app.buttons["transport.playPause"].exists)
+        save(app, isOpenLayout ? "open-state-empty-ax5" : "closed-state-empty-ax5")
     }
 
     /// Taps a real genre chip. Song picking still doesn't use it, so the row goes Pending

@@ -19,6 +19,7 @@ struct StudioLayout: View {
             zoneA
                 .frame(width: CGFloat(widths.zoneA))
                 .frame(maxHeight: .infinity, alignment: .top)
+                .clipped()
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneA")
             workspace
@@ -26,6 +27,7 @@ struct StudioLayout: View {
                 .frame(width: CGFloat(widths.zoneB))
                 .frame(maxHeight: .infinity, alignment: .top)
                 .studioSurface(cornerRadius: 28)
+                .clipped()
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneB")
         }
@@ -171,6 +173,7 @@ struct QueueList: View {
     let applyEdit: ((UpNextEdit) -> Void)?
     let search: MusicSearch?
     @Binding var searchQuery: String
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -223,11 +226,13 @@ struct QueueList: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
                     .font(isNowPlaying ? .subheadline.weight(.semibold) : .subheadline)
-                    .lineLimit(1)
+                    .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+                    .fixedSize(horizontal: false, vertical: typeSize.isAccessibilitySize)
                 Text(track.artistName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
+                    .fixedSize(horizontal: false, vertical: typeSize.isAccessibilitySize)
             }
             Spacer(minLength: 8)
             if isNowPlaying {

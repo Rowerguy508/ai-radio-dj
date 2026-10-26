@@ -31,10 +31,14 @@ struct StationIdentityLine: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(typeSize.isAccessibilitySize ? 4 : 2)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .clipped()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(.isStaticText)
@@ -45,6 +49,7 @@ struct StationIdentityLine: View {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.primary)
             .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: typeSize.isAccessibilitySize)
             .truncationMode(.tail)
     }

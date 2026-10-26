@@ -15,12 +15,15 @@ final class StudioScreenTests: XCTestCase {
 
     @MainActor
     private func launch(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
-                        dark: Bool = false) -> XCUIApplication {
+                        ax5: Bool = false, dark: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
         if let scenario { app.launchArguments += ["-AeroDJStudioCaptureScenario", scenario] }
-        if largeText {
+        if ax5 {
+            // AX5. The AX1 case stays on `largeText` so both sizes keep a screenshot.
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        } else if largeText {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"]
         }
         if dark { app.launchArguments += ["-AeroDJStudioCaptureDark", "YES"] }
@@ -123,6 +126,40 @@ final class StudioScreenTests: XCTestCase {
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX sizes")
         save(app, isOpenLayout ? "open-large-text" : "closed-large-text")
+    }
+
+    /// AX5 (`accessibility5` / AccessibilityXXXL). Closed keeps the transport on screen.
+    /// Open stacks instead of placing two zones side by side. Labels are the VoiceOver names.
+    @MainActor
+    func testAX5KeepsTransportReachableAndNamed() throws {
+        let app = launch(ax5: true)
+        let layout = isOpenLayout ? "layout.studioStacked" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "\(layout) expected at AX5:\n\(app.debugDescription)")
+        if isOpenLayout {
+            XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, "no two zones at AX5")
+            let stacked = app.descendants(matching: .any)["layout.studioStacked"]
+            let play = app.buttons["transport.playPause"]
+            for _ in 0..<8 where !play.isHittable {
+                stacked.swipeUp()
+            }
+        }
+        XCTAssertTrue(shows(app, "Morning Light"))
+        let play = app.buttons["transport.playPause"]
+        let skip = app.buttons["transport.skip"]
+        let tune = app.buttons["transport.tune"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
+        XCTAssertEqual(play.label, "Pause", "Playing fixture announces Pause")
+        XCTAssertEqual(skip.label, "Skip")
+        XCTAssertEqual(tune.label, "Tune station")
+        if isOpenLayout {
+            XCTAssertTrue(play.isHittable, "Transport stays reachable in the stacked Studio at AX5")
+        } else {
+            XCTAssertTrue(play.isHittable, "Play stays on screen at AX5")
+            XCTAssertTrue(skip.isHittable)
+            XCTAssertTrue(tune.isHittable)
+        }
+        save(app, isOpenLayout ? "open-ax5" : "closed-ax5")
     }
 
     @MainActor

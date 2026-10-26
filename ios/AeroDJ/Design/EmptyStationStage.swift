@@ -38,6 +38,7 @@ struct EmptyStationStage: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(statusAccessibilityLabel)
             .accessibilityAddTraits(.isStaticText)
+            .accessibilityIdentifier("empty.stage")
 
             if content == .accessDenied, let url = URL(string: UIApplication.openSettingsURLString) {
                 Button("Open Settings") { openURL(url) }
@@ -47,7 +48,6 @@ struct EmptyStationStage: View {
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("empty.stage")
     }
 
     /// The station plate shrinks at accessibility sizes so the status text can grow.

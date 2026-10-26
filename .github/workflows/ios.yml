@@ -264,8 +264,10 @@ jobs:
           ls "$SHOTS" | grep -q '^closed-compact_' || { echo "missing closed screenshot"; exit 1; }
           ls "$SHOTS" | grep -q '^open-studio-queue_' || { echo "missing open screenshot"; exit 1; }
           for shot in closed-dark closed-state-empty closed-state-loading closed-state-error closed-state-denied \
-                      closed-connections-revoked closed-tune-config-change closed-large-text \
-                      open-studio-tune-dark open-large-text open-connections-revoked open-tune-config-change; do
+                      closed-connections-revoked closed-tune-config-change closed-large-text closed-ax5 \
+                      closed-state-empty-ax5 \
+                      open-studio-tune-dark open-large-text open-connections-revoked open-tune-config-change \
+                      open-ax5 open-state-empty-ax5; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }

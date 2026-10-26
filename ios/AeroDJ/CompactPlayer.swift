@@ -118,18 +118,21 @@ struct TrackBlock: View {
     let dj: DJStatusPresentation
     let onReview: () -> Void
     var alignment: HorizontalAlignment = .leading
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         VStack(alignment: alignment, spacing: 6) {
             VStack(alignment: alignment, spacing: 4) {
                 Text(track.title)
                     .font(.system(.title2, design: .serif, weight: .semibold))
-                    .lineLimit(2)
+                    .lineLimit(typeSize.isAccessibilitySize ? 4 : 2)
+                    .fixedSize(horizontal: false, vertical: typeSize.isAccessibilitySize)
                     .truncationMode(.tail)
                 Text(track.artistName)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
+                    .fixedSize(horizontal: false, vertical: typeSize.isAccessibilitySize)
                     .truncationMode(.tail)
             }
             .accessibilityElement(children: .combine)

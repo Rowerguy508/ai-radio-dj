@@ -14,6 +14,14 @@ struct StationIdentPlate: View {
     let size: CGFloat
     var caption: String?
 
+    /// Same curve `ArtworkView` clips the playing card to. The sleeve caption has to sit
+    /// inside it, or the rounded edge cuts the station name.
+    static func playingCardCornerRadius(size: CGFloat) -> CGFloat {
+        size > 160 ? 26 : max(8, size * 0.2)
+    }
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     private enum Tier { case mark, cover, sleeve }
 
     /// Queue thumbs stay a monogram. Mid sizes center it. Hero art is an editorial sleeve.
@@ -127,27 +135,43 @@ struct StationIdentPlate: View {
             .frame(width: size, height: size)
     }
 
+    /// Clear the continuous corner, including at AX5 where the card is shorter.
+    private var sleeveInset: CGFloat {
+        max(size * 0.1, Self.playingCardCornerRadius(size: size) + 8)
+    }
+
+    /// Graphic lettering. It does not grow with Dynamic Type; it wraps instead, so AX5
+    /// cannot push the station name through the rounded edge.
+    private var captionPointSize: CGFloat {
+        let fitted = min(16, max(11, size * 0.04))
+        return typeSize.isAccessibilitySize ? min(fitted, 13) : fitted
+    }
+
     private var sleeve: some View {
-        VStack(alignment: .leading, spacing: size * 0.045) {
+        VStack(alignment: .leading, spacing: size * 0.04) {
             Text(style.monogram)
-                .font(.system(size: size * 0.25, weight: .semibold, design: .serif))
+                .font(.system(size: size * 0.22, weight: .semibold, design: .serif))
                 .foregroundStyle(.white)
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
             RoundedRectangle(cornerRadius: 1)
                 .fill(.white.opacity(0.92))
                 .frame(width: size * 0.16, height: max(2, size * 0.007))
-            Spacer(minLength: 0)
+            Spacer(minLength: 4)
             if let caption, !caption.isEmpty {
                 Text(caption.uppercased())
-                    .font(.system(size: max(12, size * 0.048), weight: .semibold, design: .rounded))
-                    .tracking(1.15)
+                    .font(.system(size: captionPointSize, weight: .semibold, design: .rounded))
+                    .tracking(0.35)
                     .foregroundStyle(.white.opacity(0.92))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
+                    .lineLimit(typeSize.isAccessibilitySize ? 3 : 2)
+                    .minimumScaleFactor(0.55)
+                    .allowsTightening(true)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(size * 0.1)
+        .padding(sleeveInset)
         .frame(width: size, height: size, alignment: .topLeading)
     }
 }
