@@ -47,7 +47,10 @@ public final class SpeechStopGate {
 /// - while idle, with nothing handed out, the stop is ignored. The next break is unrelated;
 /// - after `handOut` and before `begin`, a nil tag or a tag for that `afterTrack` cancels
 ///   that break. A tag for a different `afterTrack` is ignored and not stored. `handOut`
-///   and a `begin` that starts audio clear any held stop, so it cannot cancel a later break;
+///   and a `begin` that starts audio clear any held stop, so it cannot cancel a later break.
+///   The natural-end boundary calls `handOut` before it awaits break preparation. A stop
+///   during that await is held. `abandonHandOut` drops the hand-out when nothing will be
+///   spoken, including a stop held for it, and does not resume music;
 /// - after `begin` and before `admit` (decode, or stop state begun with no clip player),
 ///   a nil tag or a matching tag makes `admit` cancel that play. A different tag does not.
 /// A nil tag is the untagged stop `skip()` sends. It fails closed for a handed-out, pending,
@@ -89,11 +92,22 @@ public struct PendingPlayStop: Equatable, Sendable {
     public init() {}
 
     /// The break for `afterTrack` has been handed out and has not called `begin` yet.
-    /// A new hand-out drops any stop held for the previous break.
+    /// A new hand-out drops any stop held for the previous break, so the natural-end
+    /// boundary must hand out once, before any await, and must not hand out again.
     public mutating func handOut(afterTrack: Int) {
         guard phase != .pending else { return }
         phase = .handedOut
         track = afterTrack
+        heldStop = nil
+    }
+
+    /// Nothing will be spoken for the hand-out (nothing prepared, or music continues).
+    /// Drops the hand-out and any stop held for it, so that stop cannot cancel a later
+    /// break. A pending play is left for `admit`. This does not start or resume audio.
+    public mutating func abandonHandOut() {
+        guard phase == .handedOut else { return }
+        phase = .idle
+        track = nil
         heldStop = nil
     }
 

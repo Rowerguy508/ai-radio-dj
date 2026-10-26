@@ -329,4 +329,103 @@ final class InterludeStopTests: XCTestCase {
         XCTAssertTrue(playing)
         XCTAssertNotEqual(first, second)
     }
+
+    /// The natural-end boundary hands the break out before awaiting `naturalBoundary`.
+    /// An unplug during that await is held, so `begin` starts no audio and does not
+    /// resume onto the speaker. The system hold is `mayAutoResume == false`.
+    func testUnplugArrivingBetweenBoundaryAndHandOutCancelsTheBreak() {
+        assertStopDuringBoundaryPreparationCancels(.routeRemoved)
+    }
+
+    /// A phone call during that same await. The break does not start on the speaker.
+    func testInterruptionArrivingBetweenBoundaryAndHandOutCancelsTheBreak() {
+        assertStopDuringBoundaryPreparationCancels(.interruption)
+    }
+
+    /// Nothing prepared, or the policy continues music: the boundary hand-out is dropped,
+    /// including a stop that arrived during preparation, and the next break still starts.
+    func testAbandoningAnUnspokenBoundaryHandOutDoesNotLatchTheNextBreak() {
+        var play = PendingPlayStop()
+        play.handOut(afterTrack: 4)
+        _ = play.stop(reason: .routeRemoved, afterTrack: nil, mayAutoResume: false)
+        play.abandonHandOut()
+        play.handOut(afterTrack: 5)
+        let next = play.begin(afterTrack: 5, mayAutoResume: true)
+        XCTAssertTrue(next.startAudio, "an abandoned hand-out does not cancel the next break")
+        XCTAssertFalse(next.resumeMusic)
+    }
+
+    /// `play` refuses while headphones are unplugged or a call holds playback.
+    /// No clip starts, and the unplayed report does not resume music.
+    func testPlayWhileSystemPausedStartsNoAudio() {
+        var route = PlaybackIntent()
+        route.userPlay()
+        route.routeRemoved()
+        assertSystemPauseRefusesPlay(route, phase: .transition, afterTrack: 4)
+
+        var call = PlaybackIntent()
+        call.userPlay()
+        call.systemInterruptionBegan()
+        assertSystemPauseRefusesPlay(call, phase: .transition, afterTrack: 4)
+
+        var stale = PlaybackIntent()
+        stale.userPlay()
+        stale.routeRemoved()
+        let forced = BreakPlayAdmissionPolicy.decide(
+            pausedBySystem: stale.pausedBySystem,
+            mayAutoResume: true,
+            phase: .music,
+            afterTrack: 1
+        )
+        XCTAssertFalse(forced.startAudio, "a stale mayAutoResume still starts no audio")
+        let staleReport = forced.unplayed
+        XCTAssertEqual(staleReport?.event, .playbackFailed(afterTrack: 1))
+        XCTAssertFalse(staleReport?.resume.resumeMusic ?? true, "a stale mayAutoResume does not resume on the speaker")
+        XCTAssertNil(staleReport?.resume.audioEvent)
+
+        var clear = PlaybackIntent()
+        clear.userPlay()
+        let allowed = BreakPlayAdmissionPolicy.decide(
+            pausedBySystem: clear.pausedBySystem,
+            mayAutoResume: clear.mayAutoResume,
+            phase: .transition,
+            afterTrack: 4
+        )
+        XCTAssertTrue(allowed.startAudio)
+        XCTAssertNil(allowed.unplayed)
+    }
+
+    private func assertStopDuringBoundaryPreparationCancels(_ reason: InterludeStopReason) {
+        var play = PendingPlayStop()
+        // Synchronous hand-out at the natural end, before `naturalBoundary` is awaited.
+        // A stop that used to land while this value was idle is now held.
+        play.handOut(afterTrack: 4)
+        let action = InterludeBoundaryStop.action(
+            reason: reason, afterTrack: nil, isPlaying: false, playingTrack: 4)
+        guard case .cancelPending(let tag) = action else {
+            XCTFail("\(reason) during preparation cancels the handed-out break")
+            return
+        }
+        XCTAssertNil(tag, "the session stop is untagged and fails closed")
+        _ = play.stop(reason: reason, afterTrack: tag, mayAutoResume: false)
+        let opened = play.begin(afterTrack: 4, mayAutoResume: false)
+        XCTAssertFalse(opened.startAudio, "\(reason) between the boundary hand-out and play starts no audio")
+        XCTAssertFalse(opened.resumeMusic, "\(reason) does not resume music on the speaker")
+    }
+
+    private func assertSystemPauseRefusesPlay(_ intent: PlaybackIntent, phase: AudioState, afterTrack: Int) {
+        XCTAssertTrue(intent.pausedBySystem)
+        XCTAssertFalse(intent.mayAutoResume)
+        let decision = BreakPlayAdmissionPolicy.decide(
+            pausedBySystem: intent.pausedBySystem,
+            mayAutoResume: intent.mayAutoResume,
+            phase: phase,
+            afterTrack: afterTrack
+        )
+        XCTAssertFalse(decision.startAudio, "a system pause starts no break audio")
+        XCTAssertEqual(decision.unplayed?.event, .playbackFailed(afterTrack: afterTrack))
+        XCTAssertFalse(decision.unplayed?.resume.resumeMusic ?? true, "music does not resume on the speaker")
+        XCTAssertEqual(decision.unplayed?.resume.audioEvent, .noInterlude)
+        XCTAssertEqual(decision.unplayed?.resume.playbackEvent, .failed)
+    }
 }

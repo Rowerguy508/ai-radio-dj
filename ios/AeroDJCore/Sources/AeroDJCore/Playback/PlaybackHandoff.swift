@@ -167,3 +167,47 @@ public enum HandedOutBreakReport {
         }
     }
 }
+
+/// Whether `play` may start a clip. A system hold refuses through the unplayed report.
+///
+/// `pausedBySystem` is the route-removal or interruption hold on `PlaybackIntent`.
+/// `mayAutoResume` and `phase` are the player's existing flags. A refusal never
+/// asks music to resume, including when `mayAutoResume` is still true.
+public struct BreakPlayAdmission: Equatable, Sendable {
+    public var startAudio: Bool
+    public var unplayed: HandedOutBreakEffect?
+
+    public init(startAudio: Bool, unplayed: HandedOutBreakEffect?) {
+        self.startAudio = startAudio
+        self.unplayed = unplayed
+    }
+}
+
+public enum BreakPlayAdmissionPolicy {
+    public static func decide(
+        pausedBySystem: Bool,
+        mayAutoResume: Bool,
+        phase: AudioState,
+        afterTrack: Int
+    ) -> BreakPlayAdmission {
+        guard pausedBySystem else {
+            return BreakPlayAdmission(startAudio: true, unplayed: nil)
+        }
+        let skipped = HandedOutBreakReport.skipped(
+            .notPlayable, afterTrack: afterTrack, mayAutoResume: false)
+        let live = NarrationResumePolicy.decide(
+            .failed,
+            mayAutoResume: mayAutoResume && !pausedBySystem,
+            phase: phase
+        )
+        let effect = HandedOutBreakEffect(
+            event: skipped.event,
+            resume: NarrationResumeDecision(
+                resumeMusic: false,
+                audioEvent: live.audioEvent,
+                playbackEvent: live.playbackEvent
+            )
+        )
+        return BreakPlayAdmission(startAudio: false, unplayed: effect)
+    }
+}

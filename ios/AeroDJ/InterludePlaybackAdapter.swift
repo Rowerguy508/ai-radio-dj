@@ -51,9 +51,16 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     /// Marks `afterTrack` as handed out, before `play` calls `begin`.
     /// A stop that arrives in that gap is kept for this break only when it is untagged
-    /// or tagged with `afterTrack`.
+    /// or tagged with `afterTrack`. The natural-end boundary calls this once, synchronously,
+    /// before it awaits break preparation. `play` must not call it again.
     func handOut(afterTrack: Int) {
         pendingPlay.handOut(afterTrack: afterTrack)
+    }
+
+    /// The boundary handed a break out and then found nothing to say.
+    /// Drops that hand-out, including a stop that arrived during preparation.
+    func abandonHandOut() {
+        pendingPlay.abandonHandOut()
     }
 
     /// Plays one prepared clip. A clip that won't decode skips the break.
@@ -68,6 +75,21 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
             // Handed out, but this break will not start. `.failed` clears `.ready`.
             abandonUnplayedBreak(.notPlayable, afterTrack: afterTrack, skip: .notPlanned)
+            return
+        }
+        // Route removal or an interruption already holds playback. Do not start a clip
+        // and do not resume onto the speaker, even if the stop missed the hand-out.
+        let admission = BreakPlayAdmissionPolicy.decide(
+            pausedBySystem: music.pausedBySystem,
+            mayAutoResume: music.mayAutoResume,
+            phase: music.audioState,
+            afterTrack: afterTrack
+        )
+        guard admission.startAudio else {
+            pendingPlay.abandonHandOut()
+            if let unplayed = admission.unplayed {
+                applyUnplayed(unplayed, afterTrack: afterTrack, skip: .notPlanned)
+            }
             return
         }
         // A nil tag, or a tag for this afterTrack, that landed after hand-out and before
@@ -100,15 +122,27 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     /// The break was handed out and audio will not start. Reports `.failed` for `afterTrack`
-    /// and returns the boundary transition to music.
+    /// and returns the boundary transition to music. Does not resume the player.
     private func abandonUnplayedBreak(_ reason: HandedOutBreakSkip, afterTrack: Int, skip: DJBreakSkipReason) {
+        pendingPlay.abandonHandOut()
         let report = HandedOutBreakReport.skipped(reason, afterTrack: afterTrack, mayAutoResume: music.mayAutoResume)
+        applyUnplayed(report, afterTrack: afterTrack, skip: skip)
+    }
+
+    /// Applies an unplayed report. Moves the state machine back toward music when the
+    /// report names that transition. Never calls `resumeIfAllowed`.
+    private func applyUnplayed(_ report: HandedOutBreakEffect, afterTrack: Int, skip: DJBreakSkipReason) {
         if case .playbackFailed(let k) = report.event {
             onPlayback?(.failed(afterTrack: k))
         }
         music.logBreakSkipped(after: afterTrack, reason: skip)
-        if report.resume.audioEvent != nil {
+        switch report.resume.audioEvent {
+        case .noInterlude?:
             music.skipInterlude()
+        case .interludeEnded?:
+            music.endInterlude()
+        default:
+            break
         }
     }
 
