@@ -31,7 +31,6 @@ struct StationListView: View {
                 }
             }
             .navigationTitle("AeroDJ")
-            .task { await dependencies.start() }
             .toolbar {
                 // The real App Group inbox is never opened in the test station: its
                 // data must not appear next to fixtures.
