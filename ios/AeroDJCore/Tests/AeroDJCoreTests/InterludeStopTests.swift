@@ -195,6 +195,103 @@ final class InterludeStopTests: XCTestCase {
         XCTAssertFalse(opened.resumeMusic)
     }
 
+    /// A mismatched tag is not kept. After this break finishes, and after a station change
+    /// hands out a new break at that same index, the later break still starts.
+    func testMismatchedTagDoesNotCancelALaterBreakWithThatIndex() {
+        var finished = PendingPlayStop()
+        finished.handOut(afterTrack: 4)
+        _ = finished.stop(reason: .sourceRevoked, afterTrack: 9, mayAutoResume: true)
+        let current = finished.begin(afterTrack: 4, mayAutoResume: true)
+        XCTAssertTrue(current.startAudio, "a tag for another afterTrack does not cancel this break")
+        XCTAssertFalse(current.resumeMusic)
+        let admitted = finished.admit(mayAutoResume: true)
+        XCTAssertTrue(admitted.startAudio)
+
+        finished.handOut(afterTrack: 9)
+        let later = finished.begin(afterTrack: 9, mayAutoResume: true)
+        XCTAssertTrue(later.startAudio, "the stale tag does not cancel a later break with that index")
+        XCTAssertFalse(later.resumeMusic)
+
+        var stationChange = PendingPlayStop()
+        stationChange.handOut(afterTrack: 4)
+        _ = stationChange.stop(reason: .sourceRevoked, afterTrack: 9, mayAutoResume: true)
+        stationChange.handOut(afterTrack: 9)
+        let changed = stationChange.begin(afterTrack: 9, mayAutoResume: true)
+        XCTAssertTrue(changed.startAudio, "a station change is not cancelled by the previous break's tag")
+        XCTAssertFalse(changed.resumeMusic)
+    }
+
+    /// Headphone unplug between hand-out and begin. The break must not start on the speaker.
+    func testUnplugBetweenHandoutAndBeginCancelsTheBreak() {
+        assertBoundaryStopCancelsHandout(.routeRemoved, "an unplug cancels the handed-out break")
+    }
+
+    /// A phone call between hand-out and begin. The break must not start on the speaker.
+    func testInterruptionBetweenHandoutAndBeginCancelsTheBreak() {
+        assertBoundaryStopCancelsHandout(.interruption, "an interruption cancels the handed-out break")
+    }
+
+    private func assertBoundaryStopCancelsHandout(_ reason: InterludeStopReason, _ message: String) {
+        var play = PendingPlayStop()
+        play.handOut(afterTrack: 4)
+        let action = InterludeBoundaryStop.action(
+            reason: reason, afterTrack: nil, isPlaying: false, playingTrack: 4)
+        guard case .cancelPending(let tag) = action else {
+            XCTFail(message)
+            return
+        }
+        XCTAssertNil(tag, "the session stop is untagged and fails closed")
+        _ = play.stop(reason: reason, afterTrack: tag, mayAutoResume: true)
+        let opened = play.begin(afterTrack: 4, mayAutoResume: true)
+        XCTAssertFalse(opened.startAudio, message)
+        XCTAssertTrue(opened.resumeMusic)
+
+        var pending = PendingPlayStop()
+        pending.handOut(afterTrack: 1)
+        XCTAssertTrue(pending.begin(afterTrack: 1, mayAutoResume: true).startAudio)
+        let duringPending = InterludeBoundaryStop.action(
+            reason: reason, afterTrack: nil, isPlaying: false, playingTrack: 1)
+        guard case .cancelPending(let pendingTag) = duringPending else {
+            XCTFail("\(message) while the play is pending")
+            return
+        }
+        _ = pending.stop(reason: reason, afterTrack: pendingTag, mayAutoResume: true)
+        let admitted = pending.admit(mayAutoResume: true)
+        XCTAssertFalse(admitted.startAudio, "\(message) before a clip player exists")
+        XCTAssertTrue(admitted.resumeMusic)
+
+        XCTAssertEqual(
+            InterludeBoundaryStop.action(reason: reason, afterTrack: nil, isPlaying: true, playingTrack: 4),
+            .stopPlaying,
+            "a playing break still stops"
+        )
+        XCTAssertEqual(
+            InterludeBoundaryStop.action(reason: reason, afterTrack: 3, isPlaying: true, playingTrack: 4),
+            .ignore,
+            "a tag for a different playing break is ignored"
+        )
+    }
+
+    /// A nil tag still cancels the break that is handed out or pending. A foreign tag
+    /// does not take its place.
+    func testNilTagFailsClosedWhileHandedOutAndWhilePending() {
+        var handed = PendingPlayStop()
+        handed.handOut(afterTrack: 4)
+        _ = handed.stop(reason: .sourceRevoked, afterTrack: 9, mayAutoResume: true)
+        _ = handed.stop(reason: .sourceRevoked, afterTrack: nil, mayAutoResume: true)
+        let opened = handed.begin(afterTrack: 4, mayAutoResume: true)
+        XCTAssertFalse(opened.startAudio, "a nil tag still cancels the handed-out break")
+        XCTAssertTrue(opened.resumeMusic)
+
+        var pending = PendingPlayStop()
+        pending.handOut(afterTrack: 2)
+        XCTAssertTrue(pending.begin(afterTrack: 2, mayAutoResume: true).startAudio)
+        _ = pending.stop(reason: .sourceRevoked, afterTrack: nil, mayAutoResume: true)
+        let admitted = pending.admit(mayAutoResume: true)
+        XCTAssertFalse(admitted.startAudio, "a nil tag still cancels the pending break")
+        XCTAssertTrue(admitted.resumeMusic)
+    }
+
     /// A revoke that reaches the adapter after `begin` and before a clip player exists
     /// cancels that play. An idle revoke is covered by `testRevokeWhileIdleDoesNotCancelTheNextBreak`.
     /// A stop that never reaches the adapter (session hook still nil) is not something this
