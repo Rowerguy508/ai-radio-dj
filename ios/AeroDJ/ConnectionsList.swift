@@ -10,13 +10,18 @@ import SwiftUI
 /// Originally written by Claudio (#60); taken over and revised by Fry.
 struct ConnectionsList: View {
     let model: ConnectionsModel
-    var capabilities: ConnectionUICapabilities = .current
 
+    @Environment(\.pickedNotes) private var pickedNotes
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @State private var calendarPicker = false
     @State private var reviewing: ReviewTarget?
     @State private var returningFromSettings = false
+    @State private var choosingNotes = false
+    @State private var pickError: String?
+
+    /// The file picker exists only when the composition has a note store (live builds).
+    private var capabilities: ConnectionUICapabilities { .init(canPickObsidianFiles: pickedNotes != nil) }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -26,8 +31,17 @@ struct ConnectionsList: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
-                ForEach(model.sources) { row in SourceCard(row: row, perform: { handle($0, on: row) },
-                                                           route: { capabilities.route($0, onSource: row.integration) }) }
+                if let pickError {
+                    Label(pickError, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                ForEach(model.sources) { row in
+                    SourceCard(row: row, itemCount: model.items(for: row.integration).count,
+                               perform: { handle($0, on: row) },
+                               route: { capabilities.route($0, onSource: row.integration) },
+                               review: { reviewing = ReviewTarget(integration: row.integration) })
+                }
                 Text("Turning a source off or deleting an item also removes any DJ speech prepared from it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -51,6 +65,28 @@ struct ConnectionsList: View {
         .sheet(item: $reviewing) { target in
             ItemReviewSheet(model: model, integration: target.integration)
         }
+        .fileImporter(isPresented: $choosingNotes, allowedContentTypes: SecurityScopedNoteReader.contentTypes,
+                      allowsMultipleSelection: true) { result in
+            Task { await importNotes(result) }
+        }
+    }
+
+    /// Stores bookmarks for exactly the picked `.md` files, then re-reads the source. Notes
+    /// still need approval, one by one, before the DJ may mention them.
+    private func importNotes(_ result: Result<[URL], Error>) async {
+        guard let pickedNotes, case .success(let urls) = result else { return }
+        let notes = SecurityScopedNoteReader.pickedNotes(from: urls)
+        guard !notes.isEmpty else {
+            pickError = urls.isEmpty ? nil : "Only Markdown (.md) files can be used."
+            return
+        }
+        do {
+            try await pickedNotes.addNotes(notes)
+            pickError = nil
+        } catch {
+            pickError = "Couldn't save your choice. Try again."
+        }
+        await model.refresh()
     }
 
     private func handle(_ action: ConnectionAction, on row: ConnectionSourceRow) {
@@ -63,6 +99,7 @@ struct ConnectionsList: View {
             }
         case .calendarPicker: calendarPicker = true
         case .itemReview: reviewing = ReviewTarget(integration: row.integration)
+        case .filePicker: choosingNotes = true
         case .unavailable: break   // rendered as text, never as a button
         }
     }
@@ -84,8 +121,10 @@ private struct ReviewTarget: Identifiable {
 
 private struct SourceCard: View {
     let row: ConnectionSourceRow
+    let itemCount: Int
     let perform: (ConnectionAction) -> Void
     let route: (ConnectionAction) -> ConnectionActionRoute
+    let review: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -117,10 +156,10 @@ private struct SourceCard: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             let actions = row.actions
-            if !actions.isEmpty {
+            if !actions.isEmpty || itemCount > 0 {
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) { buttons(actions) }
-                    VStack(alignment: .leading, spacing: 8) { buttons(actions) }
+                    HStack(spacing: 8) { buttons(actions); reviewButton }
+                    VStack(alignment: .leading, spacing: 8) { buttons(actions); reviewButton }
                 }
             }
             ForEach(unavailableReasons(actions), id: \.self) { reason in
@@ -146,6 +185,18 @@ private struct SourceCard: View {
             }
             .buttonStyle(.bordered)
             .accessibilityIdentifier("connections.\(row.integration.rawValue).\(action.rawValue)")
+        }
+    }
+
+    /// What exactly may be used from this source, one item at a time.
+    @ViewBuilder
+    private var reviewButton: some View {
+        if itemCount > 0, !row.actions.contains(.review) {
+            Button(action: review) {
+                Text("Items (\(itemCount))").font(.subheadline.weight(.medium)).frame(minHeight: 32)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("connections.\(row.integration.rawValue).items")
         }
     }
 
@@ -216,6 +267,14 @@ private struct ItemReviewSheet: View {
     let integration: StationIntegration
     @Environment(\.dismiss) private var dismiss
 
+    private var emptyCopy: String {
+        switch integration {
+        case .calendar: "No events today in the calendars you chose."
+        case .obsidian: "Notes you pick appear here for your OK."
+        case .shareInbox: "Items you share to AeroDJ appear here."
+        }
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -239,7 +298,7 @@ private struct ItemReviewSheet: View {
             .overlay {
                 if model.items(for: integration).isEmpty {
                     ContentUnavailableView("Nothing to review", systemImage: "tray",
-                                           description: Text("Items you share to AeroDJ appear here."))
+                                           description: Text(emptyCopy))
                 }
             }
             .navigationTitle(StationSetting.integration(integration).title)

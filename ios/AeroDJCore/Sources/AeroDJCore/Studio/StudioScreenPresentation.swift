@@ -244,6 +244,8 @@ public enum ConnectionActionRoute: Equatable, Sendable {
     case calendarPicker
     /// The item list for this source (review, approve, read anyway, revoke, delete).
     case itemReview
+    /// The system file picker for `.md` files; picks are stored as security-scoped bookmarks.
+    case filePicker
     /// Shown as disabled text with this reason. No button.
     case unavailable(String)
 }
@@ -256,10 +258,11 @@ public struct ConnectionUICapabilities: Equatable, Sendable {
 
     public init(canPickObsidianFiles: Bool) { self.canPickObsidianFiles = canPickObsidianFiles }
 
-    /// This build: there is no bookmark store for picked Obsidian files yet.
+    /// Without a file reader (previews, the test station): no picker. The live app passes
+    /// `canPickObsidianFiles: true` when its composition has one (`ConnectionsComposition.notes`).
     public static let current = ConnectionUICapabilities(canPickObsidianFiles: false)
 
-    public static let obsidianPickerUnavailable = "Choosing notes isn't available in this build yet."
+    public static let obsidianPickerUnavailable = "Choosing notes isn't available here."
 
     public func route(_ action: ConnectionAction, onSource integration: StationIntegration) -> ConnectionActionRoute {
         switch action {
@@ -268,7 +271,7 @@ public struct ConnectionUICapabilities: Equatable, Sendable {
         case .reselect:
             switch integration {
             case .calendar: return .calendarPicker
-            case .obsidian: return canPickObsidianFiles ? .model : .unavailable(Self.obsidianPickerUnavailable)
+            case .obsidian: return canPickObsidianFiles ? .filePicker : .unavailable(Self.obsidianPickerUnavailable)
             case .shareInbox: return .itemReview
             }
         case .review: return .itemReview

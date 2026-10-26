@@ -518,10 +518,13 @@ public final class ConnectionsModel {
 
     // MARK: Intents
 
-    /// Re-reads source state and items. Items that became expired or revoked are purged.
+    /// Re-reads consent, source state and items. Items that became expired or revoked are purged.
+    /// Consent is re-read first: a permission granted or withdrawn (here or in Settings) changes
+    /// what the station may use, and the rows must never show a stale "Connected".
     public func refresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
+        await station.refreshConsent()
         calendar = await sourceReader.calendarState()
         obsidian = await sourceReader.obsidianSelection()
         var next: [ConnectionItem] = []

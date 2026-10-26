@@ -145,7 +145,7 @@ final class StudioScreenPresentationTests: XCTestCase {
         XCTAssertEqual(caps.route(.revoke, onSource: .obsidian), .model)
         // No bookmark store yet: choosing notes is explained, not a dead button.
         XCTAssertEqual(caps.route(.reselect, onSource: .obsidian), .unavailable(ConnectionUICapabilities.obsidianPickerUnavailable))
-        XCTAssertEqual(ConnectionUICapabilities(canPickObsidianFiles: true).route(.reselect, onSource: .obsidian), .model)
+        XCTAssertEqual(ConnectionUICapabilities(canPickObsidianFiles: true).route(.reselect, onSource: .obsidian), .filePicker)
     }
 
     @MainActor
