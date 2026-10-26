@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState, useCallback, useRef, ReactNode } from 'react';
+import { fetchDeveloperToken } from '@/lib/apple-music/client-token';
 import { useRadioStore, Track } from '@/lib/store/radio';
 
 interface AppleMusicContextType {
@@ -37,10 +38,16 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
   const trackMapRef = useRef<Map<string, Track>>(new Map());
 
   useEffect(() => {
-    const token = process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN || '';
-    log('Token present:', !!token, 'length:', token.length);
+    let cancelled = false;
+    let poll: ReturnType<typeof setInterval> | undefined;
 
     const configure = async () => {
+      const token = await fetchDeveloperToken();
+      if (cancelled) return;
+      if (!token) {
+        log('Developer token unavailable; skipping MusicKit.configure');
+        return;
+      }
       const MK = (window as any).MusicKit;
       if (!MK) { log('MusicKit not on window'); return; }
       log('MusicKit found, configuring...');
@@ -50,40 +57,44 @@ export function AppleMusicProvider({ children }: { children: ReactNode }) {
           developerToken: token,
           app: { name: 'RAY.DO', build: '1.0.0' },
         });
+        if (cancelled) return;
         const instance = MK.getInstance();
         log('Configured successfully, instance:', !!instance);
         log('isAuthorized:', instance?.isAuthorized);
         setMusic(instance);
-      } catch (e) {
-        log('Configure error:', e);
+      } catch {
+        log('Configure error');
         try {
           const instance = MK.getInstance();
           log('Got existing instance:', !!instance);
-          setMusic(instance);
-        } catch (e2) {
-          log('getInstance also failed:', e2);
+          if (!cancelled) setMusic(instance);
+        } catch {
+          log('getInstance also failed');
         }
       }
     };
 
+    const onLoaded = () => { log('musickitloaded event fired'); void configure(); };
+
     if ((window as any).MusicKit) {
-      configure();
+      void configure();
     } else {
       log('Waiting for MusicKit script...');
-      const onLoaded = () => { log('musickitloaded event fired'); configure(); };
       document.addEventListener('musickitloaded', onLoaded);
-      const poll = setInterval(() => {
+      poll = setInterval(() => {
         if ((window as any).MusicKit) {
           log('MusicKit found via polling');
           clearInterval(poll);
-          configure();
+          void configure();
         }
       }, 500);
-      return () => {
-        document.removeEventListener('musickitloaded', onLoaded);
-        clearInterval(poll);
-      };
     }
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener('musickitloaded', onLoaded);
+      if (poll) clearInterval(poll);
+    };
   }, []);
 
   // Listen to MusicKit playback events to sync with our store

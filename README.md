@@ -67,8 +67,10 @@ NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
-# Apple Music
-NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN=your-token
+# Apple Music (server only; the browser receives a short-lived token)
+APPLE_MUSIC_TEAM_ID=your-team-id
+APPLE_MUSIC_KEY_ID=your-key-id
+APPLE_MUSIC_PRIVATE_KEY=your-p8-pem
 
 # ElevenLabs
 ELEVENLABS_API_KEY=your-api-key
