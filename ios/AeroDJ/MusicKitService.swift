@@ -36,6 +36,10 @@ final class MusicKitService: ObservableObject {
     /// Stops any DJ line that is speaking. Set by the app to the break adapter.
     var onBreakMustStop: (@MainActor () -> Void)?
     private var queueIndex = 0
+    /// A song loaded but not started (the user paused during the break before it).
+    private var pendingStartIndex: Int?
+    /// Called when a song really starts, with its catalog duration if MusicKit reports one.
+    var onSongStarted: (@MainActor (Int, TimeInterval?) -> Void)?
     /// Called once per boundary. For a natural end, the index is the song that just finished.
     /// The handler must resolve the transition: play a DJ line, or call `skipInterlude()`.
     var onBoundary: (@MainActor (PlaybackBoundary, Int) -> Void)?
@@ -83,11 +87,9 @@ final class MusicKitService: ObservableObject {
         boundaryDetector.userRequestedChange()
         queueIndex = 0
         send(.queueStarted(tracks: tracks.map(\.info), startIndex: 0, station: station))
-        player.queue = ApplicationMusicPlayer.Queue(for: tracks.compactMap { $0.song })
         stateMachine.apply(.startMusic)
         do {
-            try await player.play()
-            isPlaying = true
+            try await startTrack(at: 0, autoplay: true)
             lastError = nil
             send(.errorCleared)
         } catch {
@@ -114,6 +116,10 @@ final class MusicKitService: ObservableObject {
         isPlaying = true
         stateMachine.apply(.resume)
         send(.userResumed)
+        if let index = pendingStartIndex, let song = queue[index].song {
+            pendingStartIndex = nil
+            onSongStarted?(index, song.duration)
+        }
     }
 
     /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
@@ -125,7 +131,7 @@ final class MusicKitService: ObservableObject {
     /// Starts music again after a DJ break or an interruption, only if the user still
     /// wants playback and the system is not holding it paused.
     func resumeIfAllowed() async {
-        guard intent.mayAutoResume else { return }
+        guard intent.mayAutoResume, player.queue.currentEntry != nil else { return }
         do {
             try await player.play()
             isPlaying = true
@@ -138,9 +144,46 @@ final class MusicKitService: ObservableObject {
     /// A user skip is not a natural boundary: no DJ break is triggered by it.
     func skip() async throws {
         boundaryDetector.userRequestedChange()
-        try await player.skipToNextEntry()
-        send(.userSkipped(nextIndex: queueIndex + 1))
-        advanceDisplayedTrack()
+        intent.userPlay()
+        let next = queueIndex + 1
+        guard queue.indices.contains(next) else {
+            player.stop()
+            send(.queueFinished)
+            stateMachine.apply(.stop)
+            return
+        }
+        send(.userSkipped(nextIndex: next))
+        try await startTrack(at: next, autoplay: true)
+    }
+
+    /// Loads one song into the player. Only the current song is ever queued, so it ends on
+    /// its own and the next one starts only through `startNextTrack` or a user action.
+    /// With `autoplay` false (the user paused during a break) the song waits, loaded and paused.
+    func startTrack(at index: Int, autoplay: Bool) async throws {
+        guard queue.indices.contains(index), let song = queue[index].song else { return }
+        queueIndex = index
+        currentTrack = queue[index]
+        player.queue = ApplicationMusicPlayer.Queue(for: [song])
+        guard autoplay, intent.mayAutoResume else {
+            isPlaying = false
+            pendingStartIndex = index
+            return
+        }
+        try await player.play()
+        isPlaying = true
+        pendingStartIndex = nil
+        onSongStarted?(index, song.duration)
+    }
+
+    /// Starts the song after `index` when the break for `index` is over.
+    func startNextTrack(after index: Int) async {
+        let next = index + 1
+        guard queue.indices.contains(next) else { return }
+        do {
+            try await startTrack(at: next, autoplay: true)
+        } catch {
+            reportError("Could not start the next song: \(error.localizedDescription)")
+        }
     }
 
     /// Called when a spoken interlude is ready: transition -> voice.
@@ -185,11 +228,6 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.noInterlude)
     }
 
-    private func advanceDisplayedTrack() {
-        queueIndex += 1
-        currentTrack = queue.indices.contains(queueIndex) ? queue[queueIndex] : nil
-    }
-
     // MARK: - Track-boundary observation
 
     /// Poll the player once a second. The boundary detector turns queue-entry
@@ -222,11 +260,21 @@ final class MusicKitService: ObservableObject {
             currentTrack = queue.indices.contains(queueIndex) ? queue[queueIndex] : nil
             stateMachine.apply(.trackEnded)
             onBoundary?(boundary, finishedIndex)
-        case .queueFinished:
-            currentTrack = nil
-            stateMachine.apply(.stop)
-            send(.queueFinished)
-            onBoundary?(boundary, queueIndex)
+        case .queueFinished(let lastEntryID):
+            switch QueueHandoff.afterSongEnds(finishedIndex: queueIndex, count: queue.count) {
+            case .advance(let next):
+                // One song is loaded at a time, so this end is the end of song `queueIndex`.
+                // The break runs now; the next song is loaded after it (startNextTrack).
+                let finished = queueIndex
+                send(.naturalBoundary(nextIndex: next))
+                stateMachine.apply(.trackEnded)
+                onBoundary?(.naturalEnd(finishedEntryID: lastEntryID), finished)
+            case .stop:
+                currentTrack = nil
+                stateMachine.apply(.stop)
+                send(.queueFinished)
+                onBoundary?(boundary, queueIndex)
+            }
         }
     }
 

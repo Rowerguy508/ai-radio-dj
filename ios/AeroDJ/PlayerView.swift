@@ -48,18 +48,25 @@ struct PlayerView: View {
                 // A break is only ever played at a natural end. Anything late, missing or failed is
                 // skipped, and the next song is not delayed.
                 Task { @MainActor in
-                    guard !interlude.isSpeaking,
-                          let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex) else {
-                        music.skipInterlude()
-                        return
+                    // The break (or its skip) comes first; the next song is loaded only after it.
+                    var prepared: PreparedDJBreak?
+                    if !interlude.isSpeaking {
+                        prepared = await djSession.naturalBoundary(afterTrack: finishedIndex)
                     }
-                    let line = prepared.cues.map(\.text).joined(separator: " ")
-                    guard !line.isEmpty else {
+                    let line = prepared?.cues.map(\.text).joined(separator: " ") ?? ""
+                    if let prepared, !line.isEmpty {
+                        await interlude.play(clips: prepared.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                    } else {
                         music.skipInterlude()
-                        return
                     }
-                    await interlude.play(clips: prepared.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                    await music.startNextTrack(after: finishedIndex)
                 }
+            }
+            // A song really started: the DJ session plans its break with the catalog duration.
+            // Without a duration nothing is planned, so the DJ stays quiet rather than guessing.
+            music.onSongStarted = { [djSession] index, duration in
+                guard let duration else { return }
+                Task { await djSession.songStarted(index: index, remaining: .seconds(duration)) }
             }
             music.onBreakMustStop = { [interlude] in interlude.stop() }
             // Only real audio events reach the DJ session; nothing is synthesized from the plan.
@@ -115,9 +122,14 @@ struct PlayerView: View {
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { Task { results = (try? await music.search(searchQuery)) ?? [] } }
 
-            List(results) { track in
+            List(Array(results.enumerated()), id: \.element.id) { index, track in
                 Button {
-                    Task { try? await music.play([track]) }
+                    // The queue is the tapped song and the songs after it; one song is loaded at a time.
+                    let tracks = Array(results[index...])
+                    Task {
+                        await djSession.queueStarted(tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) })
+                        try? await music.play(tracks)
+                    }
                 } label: {
                     HStack {
                         Text(track.title)
