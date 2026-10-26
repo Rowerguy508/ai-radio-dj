@@ -281,23 +281,11 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
                       "ready capture did not show \(layout):\n\(app.debugDescription)")
         XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen while the break line is hidden")
-        assertNoBreakCopy(app)
+        // `shows` reads XCUIElement.label, which is the visible text and the accessibility label.
+        XCTAssertFalse(shows(app, "break"), ".ready must not expose break text in visible text or the accessibility label")
+        XCTAssertFalse(shows(app, "after this song"), ".ready must not expose after-this-song text in visible text or the accessibility label")
         XCTAssertTrue(app.buttons["transport.playPause"].exists)
         save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-no-break")
-    }
-
-    /// Visible text and accessibility labels share `XCUIElement.label` here.
-    @MainActor
-    private func assertNoBreakCopy(_ app: XCUIApplication) {
-        let exposed = app.descendants(matching: .any).allElementsBoundByIndex.flatMap { element -> [String] in
-            var parts = [element.label]
-            if let value = element.value as? String { parts.append(value) }
-            return parts
-        }
-        for phrase in ["break", "after this song"] {
-            let hits = exposed.filter { $0.range(of: phrase, options: .caseInsensitive) != nil }
-            XCTAssertTrue(hits.isEmpty, ".ready must not expose \(phrase) in visible text or the accessibility label: \(hits)")
-        }
     }
 
     @MainActor

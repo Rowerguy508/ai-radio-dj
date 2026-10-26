@@ -62,8 +62,11 @@ struct BleedNowPlaying: View {
         .frame(height: lockedHeight)
         .frame(maxWidth: .infinity, maxHeight: lockedHeight == nil ? .infinity : nil)
         .onPreferenceChange(BleedTextHeightKey.self) { new in
-            guard new > 0, abs(new - textHeight) > 1 else { return }
-            withTransaction(Transaction(animation: nil)) { textHeight = new }
+            let next = new.rounded()
+            guard next > 0, abs(next - textHeight) >= 2 else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { textHeight = next }
         }
     }
 

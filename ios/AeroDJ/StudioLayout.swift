@@ -31,6 +31,7 @@ struct StudioLayout: View {
         }
         .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))
         .padding(.bottom, 12)
+        .frame(height: containerHeight, alignment: .top)
     }
 }
 

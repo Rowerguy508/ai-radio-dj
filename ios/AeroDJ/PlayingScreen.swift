@@ -26,7 +26,12 @@ struct PlayingScreen: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var bleedArt
 
-    private var morphNamespace: Namespace.ID? { reduceMotion ? nil : bleedArt }
+    private var morphNamespace: Namespace.ID? {
+        // UI tests read frames on Zone A. A live matched-geometry effect keeps that
+        // query from settling, so capture runs skip the morph. The app still animates it.
+        if reduceMotion || ProcessInfo.processInfo.environment["STUDIO_SCREENSHOT_DIR"] != nil { return nil }
+        return bleedArt
+    }
 
     var body: some View {
         GeometryReader { geo in
