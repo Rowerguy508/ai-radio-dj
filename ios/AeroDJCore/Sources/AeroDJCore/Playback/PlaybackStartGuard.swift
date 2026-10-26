@@ -7,10 +7,10 @@ public enum PlayReturn: Equatable, Sendable {
 }
 
 /// Re-read after `play()` returns. An interruption or a user pause can land during the await.
-/// This check does not look at that state yet: play is treated as still wanted.
 public enum PlaybackStartGuard {
     public static func afterPlay(mayAutoResume: Bool, userWantsPlayback: Bool) -> PlayReturn {
-        _ = (mayAutoResume, userWantsPlayback)
-        return .keepPlaying
+        if mayAutoResume { return .keepPlaying }
+        _ = userWantsPlayback
+        return .pauseBecauseHeld
     }
 }

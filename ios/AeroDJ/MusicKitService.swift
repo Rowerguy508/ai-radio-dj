@@ -125,9 +125,7 @@ final class MusicKitService: ObservableObject {
     /// The user pressed play.
     func resume() async throws {
         sessionPolicy.userPlay()
-        activateAudioSessionForPlayback()
-        try await player.play()
-        isPlaying = true
+        guard try await playIfStillAllowed() else { return }
         stateMachine.apply(.resume)
         send(.userResumed)
         reportDeferredSongStart()
@@ -151,9 +149,7 @@ final class MusicKitService: ObservableObject {
         )
         guard action == .resumeCurrentEntry else { return }
         do {
-            activateAudioSessionForPlayback()
-            try await player.play()
-            isPlaying = true
+            guard try await playIfStillAllowed() else { return }
             send(.userResumed)
             // A song loaded during the break (paused) starts now; its break is planned here.
             reportDeferredSongStart()
@@ -194,9 +190,10 @@ final class MusicKitService: ObservableObject {
             deferredStart.arm(index)
             return
         }
-        activateAudioSessionForPlayback()
-        try await player.play()
-        isPlaying = true
+        guard try await playIfStillAllowed() else {
+            deferredStart.arm(index)
+            return
+        }
         deferredStart.clear()
         noteSongStarted(index: index, duration: song.duration)
     }
@@ -321,7 +318,7 @@ final class MusicKitService: ObservableObject {
     // MARK: - Interruptions & route changes
 
     /// Phone call or route change. The policy decides; this only performs the directive.
-    private func applySession(_ notice: AudioSessionNotice) {
+    private func applySession(_ notice: AudioSessionNotice) async {
         switch notice {
         case .interruptionBegan:
             boundaries.pausedByApp(.systemInterruption)
@@ -343,7 +340,7 @@ final class MusicKitService: ObservableObject {
             }
             onBreakMustStop?()
         case .resumeIfPermitted:
-            Task { await resumeIfAllowed() }
+            await resumeIfAllowed()
         case .none:
             break
         }
@@ -397,6 +394,24 @@ final class MusicKitService: ObservableObject {
         installSessionMonitor()
     }
 
+    /// `setActive(true)` then `play()`. After `play()` returns, a hold that landed during the
+    /// await pauses again and does not count as a resume.
+    private func playIfStillAllowed() async throws -> Bool {
+        activateAudioSessionForPlayback()
+        try await player.play()
+        let decision = PlaybackStartGuard.afterPlay(
+            mayAutoResume: sessionPolicy.mayAutoResume,
+            userWantsPlayback: sessionPolicy.userWantsPlayback
+        )
+        guard decision == .keepPlaying else {
+            player.pause()
+            isPlaying = false
+            return false
+        }
+        isPlaying = true
+        return true
+    }
+
     /// Activates the session right before playback starts, so launching the app does not stop
     /// the user's other audio. Runs on every play, because the system can deactivate the session.
     private func activateAudioSessionForPlayback() {
@@ -416,7 +431,7 @@ final class MusicKitService: ObservableObject {
         Task { @MainActor [weak self] in
             for await notice in events {
                 if Task.isCancelled { break }
-                self?.applySession(notice)
+                await self?.applySession(notice)
             }
         }
     }
@@ -439,13 +454,10 @@ final class MusicKitService: ObservableObject {
 /// main-actor tokens without a data race. This object is not actor-isolated: its own deinit
 /// removes the observers and finishes the stream, which ends the consumer loop.
 private final class AudioSessionMonitor: NSObject {
-    let events: AsyncStream<AudioSessionNotice>
-    private let continuation: AsyncStream<AudioSessionNotice>.Continuation
+    private let eventsStream = FinishingStream<AudioSessionNotice>()
+    var events: AsyncStream<AudioSessionNotice> { eventsStream.stream }
 
     override init() {
-        let pair = AsyncStream<AudioSessionNotice>.makeStream()
-        events = pair.stream
-        continuation = pair.continuation
         super.init()
         NotificationCenter.default.addObserver(
             self,
@@ -463,7 +475,7 @@ private final class AudioSessionMonitor: NSObject {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
-        continuation.finish()
+        // `eventsStream` deinit finishes the stream after this body returns.
     }
 
     @objc
@@ -473,14 +485,14 @@ private final class AudioSessionMonitor: NSObject {
               type == .began || type == .ended else { return }
         let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
         let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
-        continuation.yield(.interruption(began: type == .began, shouldResume: shouldResume))
+        eventsStream.yield(.interruption(began: type == .began, shouldResume: shouldResume))
     }
 
     @objc
     private func handleRouteChange(_ note: Notification) {
         guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
-        continuation.yield(.routeChange(deviceRemoved: reason == .oldDeviceUnavailable))
+        eventsStream.yield(.routeChange(deviceRemoved: reason == .oldDeviceUnavailable))
     }
 }
 
