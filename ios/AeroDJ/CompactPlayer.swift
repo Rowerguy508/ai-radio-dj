@@ -82,14 +82,14 @@ struct StationSoundRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                Image(systemName: "dial.medium").foregroundStyle(.secondary).accessibilityHidden(true)
+                Image(systemName: "dial.medium").foregroundStyle(AeroDJPalette.secondaryText).accessibilityHidden(true)
                 Text(tags.prefix(4).joined(separator: " · "))
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 0)
             }
             .font(.footnote.weight(.medium))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(AeroDJPalette.secondaryText)
             .frame(minHeight: 32)
             .contentShape(Rectangle())
         }
@@ -116,7 +116,7 @@ struct TrackBlock: View {
                     .truncationMode(.tail)
                 Text(track.artistName)
                     .font(.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AeroDJPalette.secondaryText)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }

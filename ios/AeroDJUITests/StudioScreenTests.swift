@@ -15,12 +15,14 @@ final class StudioScreenTests: XCTestCase {
 
     @MainActor
     private func launch(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
-                        dark: Bool = false) -> XCUIApplication {
+                        dark: Bool = false, contentSize: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
         if let scenario { app.launchArguments += ["-AeroDJStudioCaptureScenario", scenario] }
-        if largeText {
+        if let contentSize {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSize]
+        } else if largeText {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"]
         }
         if dark { app.launchArguments += ["-AeroDJStudioCaptureDark", "YES"] }
@@ -181,6 +183,108 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(labels.contains { $0.localizedCaseInsensitiveContains("pending") || $0.localizedCaseInsensitiveContains("next") },
                       "A changed setting is marked pending: \(labels)")
         save(app, isOpenLayout ? "open-tune-config-change" : "closed-tune-config-change")
+    }
+
+    // MARK: Dark appearance (fixtures only; additive — light tests above are unchanged)
+
+    /// AX5 is `accessibilityExtraExtraExtraLarge`.
+    private static let ax5 = "UICTContentSizeCategoryAccessibilityXXXL"
+
+    @MainActor
+    func testClosedQueueSheetDark() throws {
+        try XCTSkipIf(isOpenLayout, "Closed layout is checked on an iPhone-width simulator")
+        let app = launch(dark: true)
+        XCTAssertTrue(app.otherElements["layout.compact"].waitForExistence(timeout: 15))
+        app.buttons["queue.affordance"].tap()
+        XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
+        XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
+        save(app, "closed-queue-sheet-dark")
+    }
+
+    @MainActor
+    func testOpenQueueDark() throws {
+        try XCTSkipUnless(isOpenLayout, "Open layout is checked on an iPad-width simulator")
+        let app = launch(segment: "queue", dark: true)
+        XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
+        XCTAssertTrue(shows(app, "Slow Burn"))
+        save(app, "open-studio-queue-dark")
+    }
+
+    @MainActor
+    func testClosedConnectionsDark() throws {
+        try XCTSkipIf(isOpenLayout, "Closed layout is checked on an iPhone-width simulator")
+        let app = launch(segment: "connections", dark: true)
+        XCTAssertTrue(app.scrollViews["connections.list"].waitForExistence(timeout: 15))
+        XCTAssertTrue(shows(app, "Calendar"))
+        save(app, "closed-connections-dark")
+    }
+
+    @MainActor
+    func testOpenConnectionsDark() throws {
+        try XCTSkipUnless(isOpenLayout, "Open layout is checked on an iPad-width simulator")
+        let app = launch(segment: "connections", dark: true)
+        XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.scrollViews["connections.list"].waitForExistence(timeout: 10))
+        XCTAssertTrue(shows(app, "Calendar"))
+        save(app, "open-studio-connections-dark")
+    }
+
+    @MainActor
+    func testStationListDark() throws {
+        let app = launch(scenario: "stations", dark: true)
+        let calm = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS[c] %@", "Morning Calm")).firstMatch
+        XCTAssertTrue(calm.waitForExistence(timeout: 15), "Fixture station list")
+        XCTAssertTrue(shows(app, "Late Night"))
+        XCTAssertFalse(shows(app, "Morning Light"), "The station list is not the player")
+        save(app, isOpenLayout ? "open-station-list-dark" : "closed-station-list-dark")
+    }
+
+    @MainActor
+    func testClosedStatesDark() throws {
+        try XCTSkipIf(isOpenLayout, "Closed layout is checked on an iPhone-width simulator")
+        try assertStatesDark(prefix: "closed-state")
+    }
+
+    @MainActor
+    func testOpenStatesDark() throws {
+        try XCTSkipUnless(isOpenLayout, "Open layout is checked on an iPad-width simulator")
+        try assertStatesDark(prefix: "open-state")
+    }
+
+    @MainActor
+    private func assertStatesDark(prefix: String) throws {
+        let cases: [(scenario: String, expect: String, transport: Bool)] = [
+            ("empty", "Nothing playing", false),
+            ("loading", "Connecting to Apple Music", false),
+            ("error", "DJ voice unavailable", true),
+            ("playbackFailed", "couldn't play", true),
+            ("denied", "Apple Music access is off", false),
+        ]
+        for c in cases {
+            let app = launch(scenario: c.scenario, dark: true)
+            let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+            XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15), c.scenario)
+            XCTAssertTrue(shows(app, c.expect), "\(c.scenario) shows \(c.expect)")
+            XCTAssertEqual(app.buttons["transport.playPause"].exists, c.transport, c.scenario)
+            if c.scenario == "denied" { XCTAssertTrue(app.buttons["Open Settings"].exists) }
+            save(app, "\(prefix)-\(c.scenario)-dark")
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testAX5DarkAppearance() throws {
+        let app = launch(dark: true, contentSize: Self.ax5)
+        let layout = isOpenLayout ? "layout.studioStacked" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "\(layout) expected at AX5:\n\(app.debugDescription)")
+        if isOpenLayout {
+            XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, "no two zones at AX sizes")
+        }
+        XCTAssertTrue(shows(app, "Morning Light"))
+        let play = app.buttons["transport.playPause"]
+        XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX5")
+        save(app, isOpenLayout ? "open-ax5-dark" : "closed-ax5-dark")
     }
 
     // MARK: Recorded walkthrough (CI records the simulator screen while this runs)
