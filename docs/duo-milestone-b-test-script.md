@@ -248,24 +248,34 @@ A tick here is the player's one-second poll. The bar is: speech is silent before
 interlude stop reason=sourceRevoked
 ```
 
-Silence on that recording does not prove the rendered-voice files are gone. Record the cache file count three times: before the revoke (baseline), right after the revoke while the app is still running, and again after a relaunch. The two counts Sentinel asked for are the last two. The baseline is what makes a drop visible. A baseline of 0 means nothing was cached, and the file half of this step cannot be scored.
+Silence on that recording does not prove the rendered-voice files are gone. A count of only `*.json` does not prove it either. `purge` deletes the files `entries()` returns, and `entries()` keeps `pathExtension == "json"` (`VoiceRendering.swift` lines 252–254 on `939c34e`; lines 259–261 on #63 `129d0c6`). Deleted JSON can pass while an orphaned audio file stays in the same folder. Record every regular file in that folder, grouped by extension, three times: before the revoke (baseline), right after the revoke while the app is still running, and again after a relaunch. The two samples Sentinel asked for are the last two. The baseline is what makes a drop visible. A baseline with no files means nothing was cached, and the file half of this step cannot be scored.
 
 **Where the cache actually is.** `VoiceRendering.swift` has two caches and no logger.
 
-- Live mode, the launch line `runtime mode: live`. `VoiceRenderer.onDeviceDefault()` (`OnDeviceSpeechProvider.swift`) builds a `FileAudioCache` at Application Support `Voice/Cache`. Each clip is one file, `<cache key>.json`. The key is `VoiceRenderer.cacheKey` (a SHA-256). `FileAudioCache.entries()` counts files with extension `json`. `purge(sourceItemIDs:)` deletes a file whose `sourceItemIDs` intersect the revoked set, and also deletes a file it cannot decode. Files for a source you did not revoke stay. The next launch calls `purgeExpired()`, which removes clips older than 7 days. It does not write deleted files back.
+- Live mode, the launch line `runtime mode: live`. `VoiceRenderer.onDeviceDefault()` (`OnDeviceSpeechProvider.swift`) builds a `FileAudioCache` at Application Support `Voice/Cache`. The only extension that cache writes is `.json`. On `939c34e`, `url(_:)` is `directory.appendingPathComponent("\(key).json")` (line 236). `store` JSON-encodes the `CachedAudio` and `ProtectedFile.write`s those bytes to that URL (lines 272–276). On #63 `129d0c6` the same two statements are lines 243 and 279–283. `ProtectedFile.write` (`SharedInboxReader.swift` lines 101–103) writes that URL with `.atomic`. It does not add a second file. The key is `VoiceRenderer.cacheKey` (a SHA-256). The rendered samples are the `data` field inside that JSON (`CachedAudio`, lines 144–151 on `939c34e`), together with duration, provider id, voice id, source-item UUIDs, and `createdAt`. There is no `.caf`, `.m4a`, `.wav`, or `.aac` beside it.
+- The `.caf` in on-device speech is not in this folder. `OnDeviceSpeechProvider.swift` line 44 writes `temporaryDirectory`/`aerodj-tts-<UUID>.caf`. Line 48 removes it with `defer` before the bytes are returned, and those bytes become `CachedAudio.data`. `Voice/budget.json` sits next to the cache directory (`OnDeviceSpeechProvider.swift` line 129), not inside it. Do not count it.
+- `purge(sourceItemIDs:)` deletes a `.json` whose `sourceItemIDs` intersect the revoked set, and also deletes a `.json` it cannot decode. It never looks at another extension, so an orphaned audio file would survive. Files for a source you did not revoke stay. The next launch calls `purgeExpired()`, which removes `.json` clips older than 7 days. It does not write deleted files back, and it does not remove a non-JSON file.
 - Test station, the launch line `runtime mode: testStation`. `AppDependencies.testStation()` passes an `InMemoryAudioCache`. There is no directory. Downloading the container cannot show a count, and a relaunch drops process memory, which is not a purge. If the log says `testStation`, write "no files: in-memory cache" and leave the file-count half unscored. The rest of this script can stay on the test station. This file count is the live-mode check.
 
-**How to count, on a live-mode install.** Unlock the Duo first. The files are written with complete-until-first-unlock protection, so a download from a locked phone can hide them. Xcode → Window → Devices and Simulators → your Duo → Installed Apps → AeroDJ → the gear menu → Download Container. Show Package Contents on the `.xcappdata`. Count the files in:
+**How to count, on a live-mode install.** Unlock the Duo first. The files are written with complete-until-first-unlock protection, so a download from a locked phone can hide them. Xcode → Window → Devices and Simulators → your Duo → Installed Apps → AeroDJ → the gear menu → Download Container. Show Package Contents on the `.xcappdata`. List every regular file (not a directory) one level down in:
 
 ```text
-AppData/Library/Application Support/Voice/Cache/*.json
+AppData/Library/Application Support/Voice/Cache
 ```
 
-That is `applicationSupportDirectory` plus `Voice/Cache`, which is the URL `onDeviceDefault()` passes to `FileAudioCache`. Count only. Do not open a JSON: the body is a `CachedAudio` (audio bytes, voice id, source-item UUIDs). Do not paste filenames into the notes or a PR. They are hashes of the spoken text. Write three integers in the step 9 notes: baseline, right after revoke, after relaunch.
+That is `applicationSupportDirectory` plus `Voice/Cache`, which is the URL `onDeviceDefault()` passes to `FileAudioCache`. Group those files by extension and write the counts. Do not stop at `*.json`. Do not open a JSON: the body is a `CachedAudio` (audio bytes, voice id, source-item UUIDs). Do not paste filenames into the notes or a PR. They are hashes of the spoken text. A notes line names the extension and the integer only:
+
+```text
+baseline: json=4
+after revoke: json=2
+after relaunch: json=2
+```
+
+If any other extension is present, add it on the same line (`caf=1`). Write `json=0` when the folder has no JSON.
 
 Download the container right after the revoke, before you force-quit, so you see the purge that ran in the still-living process. Then force-quit, relaunch, wait until Console shows `runtime mode: live`, and download again.
 
-**Expected file result.** The count right after the revoke is lower than the baseline by the clips that cited the revoked source. The count after relaunch equals that post-revoke count. Those files are still absent. The count is 0 only when every cached clip cited the revoked source.
+**Expected file result.** The `json` count right after the revoke is lower than the baseline by the clips that cited the revoked source. Every other extension is 0 at all three samples, because `FileAudioCache` writes `.json` only. A regular file with any other extension after the revoke fails this step even when the `json` count dropped. The breakdown after relaunch equals the post-revoke breakdown. `json` is 0 only when every cached clip cited the revoked source.
 
 **What the source does today.** `stopCurrentInterlude(reason: .sourceRevoked)` stops `AVAudioPlayer` before it returns, on the main thread in that turn (`MainActorImmediate`). Nothing calls it. `PlayerView` wires `onBreakMustStop` to `interlude.stop()` for pause, calls, and route removal only. `NarrationPurger.purge` drops future plans, prepared breaks, and cached audio. `takeBreak` has already cleared the playing break out of the preparer, so a purge cannot see it. `DJBreakSession.purge` replans later breaks and does not stop the player. Routine transitions are built with `sourceItemID: nil`, and `MusicSearch.live` calls `queueStarted` without a `briefing`. Until that handoff exists, the on-screen headline is "DJ" and this step **cannot be scored**: there is no personal source in the clip to revoke, and the live cache directory stays empty.
 
@@ -275,13 +285,15 @@ Download the container right after the revoke, before you force-quit, so you see
 narration purge count=<Int> speaking=<true or false> stopRequested=<true or false>
 ```
 
-No log line reports how many rendered-voice files remain. `VoiceRendering.swift` does not use `Logger`. `InMemoryAudioCache.count` exists and is not logged. This gap belongs to Fry, who owns that file. Proposed line, a public integer and nothing else:
+No log line reports how many rendered-voice files remain. `VoiceRendering.swift` does not use `Logger`. `InMemoryAudioCache.count` exists and is not logged. This gap belongs to Fry, who owns that file. Proposed line, one integer, marked public, and nothing else:
 
 ```text
-narration cache count=<Int>
+narration cache count=\(count, privacy: .public)
 ```
 
-Until that line exists, the container count above is the evidence. Do not treat a missing log as a count of zero.
+`count` is an `Int` of every regular file left in the cache directory, including extensions other than `.json`. `privacy: .public` applies to that integer. The message is the static label and that integer. No file name, path, extension, cache key, title, cue text, or source id.
+
+Until that line exists, the container breakdown above is the evidence. Do not treat a missing log as a count of zero. Do not invent the line.
 
 ## Logging gaps (proposed lines only)
 
@@ -298,7 +310,7 @@ These strings are **not** in the tree. They are proposals. Each one is a static 
 | Stop reason other than consent | `interlude stop reason=sourceRevoked` exists on `3a66085` and is the only stop line. | `interlude stop reason=interruption` and `interlude stop reason=routeRemoved` |
 | Deferred song | #67 logs `song started` when play really begins. Nothing logs the hold. #64 does not log the deferred start at all. | `song deferred index=<K>` when the song is armed and not played |
 | Purge vs player | The consent stop log exists only inside a method the purge path does not call. | `narration purge count=<Int> speaking=<bool> stopRequested=<bool>` |
-| Rendered-voice file count (Fry) | `VoiceRendering.swift` has no `Logger`. Hearing speech stop does not show that `Voice/Cache/*.json` was deleted. `InMemoryAudioCache.count` is not logged. The test station has no files at all. | `narration cache count=<Int>` after a purge and again after launch `purgeExpired` |
+| Rendered-voice file count (Fry) | `VoiceRendering.swift` has no `Logger`. Hearing speech stop does not show that every regular file in `Voice/Cache` was deleted. `entries()` only sees `.json`, so a JSON count can pass while another extension remains. `InMemoryAudioCache.count` is not logged. The test station has no files at all. | `narration cache count=\(count, privacy: .public)` after a purge and again after launch `purgeExpired`. `count` is one `Int` of every regular file in the directory. No file name, title, or id |
 | Position | A natural end cannot be tied to the last sample. | `playback position index=<Int> seconds=<Int>` at a low rate |
 
 Do not add the unimplemented `handoff.*` signpost names beside these. One set of lines is enough.
@@ -327,7 +339,7 @@ CI here is Linux Swift tests plus the macOS GitHub Actions jobs. Those tests do 
 | Consent stop of a speaking player | `InterludeStopTests.testStopDuringPlayRetiresTheBreak`, `testStopFromANonMainContextStopsBeforeReturning`, `testStopWhenIdleIsANoOp`, `testLateDelegateAfterStopIsIgnored` | These drive a test double. They do not revoke a Connection. Step 9 is still a Duo step, and the app does not call the method |
 | Prepared audio dropped on revoke | `DJNarrationTests` asserts `.sourceRevoked` for a break that has not started | Does not stop a clip that has already started |
 | In-flight render dropped on purge | `InFlightRenderRevocationTests` on PR #65 | Synthesis, not the speaker |
-| Revoke deletes cached voice files | `VoiceRenderingTests.testDeletingOrRevokingASourcePurgesDerivedAudio` purges an `InMemoryAudioCache` and a temp `FileAudioCache`. It does not read the app container | Step 9 file counts. Live mode only: `Library/Application Support/Voice/Cache/*.json`, before, right after revoke, and after relaunch |
+| Revoke deletes cached voice files | `VoiceRenderingTests.testDeletingOrRevokingASourcePurgesDerivedAudio` purges an `InMemoryAudioCache` and a temp `FileAudioCache`. It does not read the app container. `FileAudioCache` writes `.json` only (`VoiceRendering.swift:236` on `939c34e`) and `entries()` ignores every other extension | Step 9 file counts. Live mode only: every regular file in `Library/Application Support/Voice/Cache`, by extension, before, right after revoke, and after relaunch |
 
 ## Results
 
@@ -354,6 +366,6 @@ Copy this table into your notes. Leave it blank in git. One link per step can be
 | 6. Call during a break | | | |
 | 7. AirPods disconnect mid-song | | | |
 | 8. AirPods disconnect during a break | | | |
-| 9. Revoke consent during a break | | Cache counts (baseline / after revoke / after relaunch), or "no files: in-memory cache" | |
+| 9. Revoke consent during a break | | Extension counts (baseline / after revoke / after relaunch), or "no files: in-memory cache" | |
 
 -Atlas
