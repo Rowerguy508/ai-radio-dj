@@ -273,6 +273,21 @@ final class StudioScreenTests: XCTestCase {
     }
 
     @MainActor
+    func testAX5LightAppearance() throws {
+        let app = launch(contentSize: Self.ax5)
+        let layout = isOpenLayout ? "layout.studioStacked" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "\(layout) expected at AX5:\n\(app.debugDescription)")
+        if isOpenLayout {
+            XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, "no two zones at AX sizes")
+        }
+        XCTAssertTrue(shows(app, "Morning Light"))
+        let play = app.buttons["transport.playPause"]
+        XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX5")
+        save(app, isOpenLayout ? "open-ax5" : "closed-ax5")
+    }
+
+    @MainActor
     func testAX5DarkAppearance() throws {
         let app = launch(dark: true, contentSize: Self.ax5)
         let layout = isOpenLayout ? "layout.studioStacked" : "layout.compact"

@@ -48,11 +48,19 @@ extension View {
 /// The station whose colours the fallback art and backdrop use. Set once by `PlayingScreen`
 /// (and again on the compact sheet), read by every `ArtworkView` below it.
 private struct ArtStationKey: EnvironmentKey { static let defaultValue: StationRef? = nil }
+private struct OnSlabKey: EnvironmentKey { static let defaultValue = false }
 
 extension EnvironmentValues {
     var artStation: StationRef? {
         get { self[ArtStationKey.self] }
         set { self[ArtStationKey.self] = newValue }
+    }
+
+    /// True for views drawn on the warm-black Now Playing slab, so type does not use the
+    /// panel colours (those are for light surfaces in light mode).
+    var onSlab: Bool {
+        get { self[OnSlabKey.self] }
+        set { self[OnSlabKey.self] = newValue }
     }
 }
 
@@ -74,42 +82,6 @@ extension StationArtStyle {
     var endPoint: UnitPoint {
         let r = Double(angle) * .pi / 180
         return UnitPoint(x: 0.5 + cos(r) / 2, y: 0.5 + sin(r) / 2)
-    }
-}
-
-/// Full-bleed atmosphere: a wash in the current track's station colours (or the station's
-/// own when nothing plays), with the real artwork blurred over it when there is one.
-/// Decorative only, hidden from VoiceOver. Solid when Reduce Transparency is on.
-struct StationBackdrop: View {
-    let artworkURL: URL?
-    let style: StationArtStyle
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        let dark = scheme == .dark
-        ZStack {
-            Color(.systemBackground)
-            if !reduceTransparency {
-                LinearGradient(colors: [style.color(0).opacity(dark ? 0.55 : 0.40),
-                                        style.color(1).opacity(dark ? 0.28 : 0.14),
-                                        Color(.systemBackground).opacity(0)],
-                               startPoint: .top, endPoint: .bottom)
-                RadialGradient(colors: [style.color(2).opacity(dark ? 0.20 : 0.16), .clear],
-                               center: .bottomTrailing, startRadius: 0, endRadius: 700)
-                if let artworkURL {
-                    AsyncImage(url: artworkURL) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().scaledToFill().blur(radius: 70).opacity(dark ? 0.30 : 0.35)
-                        }
-                    }
-                }
-            } else {
-                style.color(0).opacity(dark ? 0.25 : 0.12)
-            }
-        }
-        .animation(.easeInOut(duration: 0.8), value: style)
-        .accessibilityHidden(true)
     }
 }
 
@@ -153,8 +125,8 @@ struct ArtworkView: View {
     }
 }
 
-/// Generated cover: gradient, an accent glow, concentric "on air" rings and a monogram.
-/// Never a network request or an image asset.
+/// Generated cover: gradient, an accent glow, concentric radio rings and a monogram.
+/// Never a network request or an image asset. The same pixels in light and dark.
 struct StationArtwork: View {
     let style: StationArtStyle
     let size: CGFloat
@@ -202,6 +174,52 @@ struct StationArtwork: View {
     }
 }
 
+/// Hero artwork for Listen and Studio. Edge to edge, corner radius 0. Album art when the
+/// current track has it; otherwise the station ident. Dark mode does not tint, dim, or blur it.
+struct BleedArtwork: View {
+    static let morphID = "bleed-art"
+    let track: TrackInfo?
+    let station: StationRef?
+
+    var body: some View {
+        GeometryReader { geo in
+            let side = max(geo.size.width, geo.size.height, 1)
+            ZStack {
+                if let track, let url = track.artworkURL {
+                    AsyncImage(url: url) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().scaledToFill()
+                                .frame(width: geo.size.width, height: geo.size.height)
+                        } else {
+                            StationArtwork(style: .track(track, on: station), size: side)
+                        }
+                    }
+                } else if let track {
+                    StationArtwork(style: .track(track, on: station), size: side)
+                } else {
+                    StationArtwork(style: .station(station), size: side)
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .clipped()
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+struct BleedArtFrame: ViewModifier {
+    var namespace: Namespace.ID?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let namespace {
+            content.matchedGeometryEffect(id: BleedArtwork.morphID, in: namespace)
+        } else {
+            content
+        }
+    }
+}
+
 /// Station identity for the navigation bar: a small station-art tile, the station name and,
 /// in the debug fixture mode, a TEST STATION tag so a screenshot can't be mistaken for a
 /// listener's real station.
@@ -215,6 +233,7 @@ struct StationTitle: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             Text(station.name)
                 .font(.headline)
+                .foregroundStyle(AeroDJPalette.onMediaLight)
                 .lineLimit(1)
                 .truncationMode(.tail)
             if isTestStation {
@@ -222,8 +241,8 @@ struct StationTitle: View {
                     .font(.caption2.weight(.bold))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Capsule().strokeBorder(AeroDJPalette.secondaryText))
-                    .foregroundStyle(AeroDJPalette.secondaryText)
+                    .background(Capsule().strokeBorder(AeroDJPalette.slabSecondary))
+                    .foregroundStyle(AeroDJPalette.slabSecondary)
             }
         }
         .accessibilityElement(children: .combine)
@@ -238,7 +257,9 @@ extension View {
     func stationToolbar(_ station: StationRef, isTestStation: Bool) -> some View {
         navigationTitle(station.name)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbarBackground(AeroDJPalette.slab, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .principal) { StationTitle(station: station, isTestStation: isTestStation) }
             }
@@ -247,13 +268,11 @@ extension View {
 
 // MARK: - DJ status
 
-/// The DJ line. Renders `DJStatusPresentation` only: "On Air" only while the player has
-/// confirmed DJ audio (`studio.djState`), no caption or transcript, and nothing at all
-/// when the DJ is idle.
+/// The DJ line. Renders `DJStatusPresentation` headlines for preparing, ready, and failed.
+/// Speaking draws no badge and no activity mark. Idle draws nothing.
 struct DJStatusLine: View {
     let presentation: DJStatusPresentation
     var onReview: (() -> Void)?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if let count = presentation.reviewCount {
@@ -262,20 +281,20 @@ struct DJStatusLine: View {
             } label: {
                 Label("\(count) to review", systemImage: "exclamationmark.bubble")
                     .font(.subheadline.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .buttonStyle(.bordered)
+            .tint(AeroDJPalette.onMediaLight)
             .accessibilityHint("Opens Connections to review shared items. Music continues.")
-        } else if let headline = presentation.headline {
-            HStack(spacing: 8) {
-                if let badge = presentation.onAirBadge {
-                    OnAirBadge(text: badge, pulses: presentation.animatesActivity && !reduceMotion)
-                } else {
-                    Image(systemName: icon).foregroundStyle(AeroDJPalette.secondaryText).accessibilityHidden(true)
-                }
+        } else if let headline = presentation.headline, presentation.onAirBadge == nil {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: icon)
+                    .foregroundStyle(AeroDJPalette.slabSecondary)
+                    .accessibilityHidden(true)
                 Text(headline)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(presentation.onAirBadge == nil ? AeroDJPalette.secondaryText : .primary)
-                    .lineLimit(1)
+                    .foregroundStyle(AeroDJPalette.slabSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(presentation.accessibilityLabel)
@@ -287,30 +306,7 @@ struct DJStatusLine: View {
         case .preparing: "hourglass"
         case .ready: "clock"
         case .failed: "speaker.slash"
-        case .idle, .speaking: "waveform"
-        }
-    }
-}
-
-/// "ON AIR": system red with a text label, never colour alone. Pulses only while the DJ is
-/// actually speaking and Reduce Motion is off.
-struct OnAirBadge: View {
-    let text: String
-    let pulses: Bool
-    @State private var dim = false
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(AeroDJPalette.onMediaLight).frame(width: 6, height: 6).opacity(dim ? 0.35 : 1)
-            Text(text.uppercased()).font(.caption.weight(.heavy))
-        }
-        .foregroundStyle(AeroDJPalette.onMediaLight)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(AeroDJPalette.onAirFill))
-        .onAppear {
-            guard pulses else { return }
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { dim = true }
+        case .idle, .speaking: "music.note"
         }
     }
 }
@@ -323,14 +319,11 @@ struct OnAirBadge: View {
 struct TransportRow: View {
     let transport: TransportState
     let actions: PlaybackActions
-    let accent: Color
     var onTune: (() -> Void)?
     @State private var taps = 0
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let lightIcon = AeroDJPalette.prefersLightText(on: accent, minimum: AeroDJPalette.textMinimum, scheme: scheme)
-        let fill = lightIcon ? AeroDJPalette.backing(forLightText: accent) : accent
         HStack(spacing: 0) {
             side {
                 if let onTune {
@@ -344,7 +337,7 @@ struct TransportRow: View {
                             .frame(width: 52, height: 52)
                             .contentShape(Circle())
                     }
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AeroDJPalette.onMediaLight)
                     .accessibilityHint("Opens the tuner. Music continues.")
                     .accessibilityIdentifier("transport.tune")
                 }
@@ -358,12 +351,11 @@ struct TransportRow: View {
                       systemImage: transport == .playing ? "pause.fill" : "play.fill")
                     .labelStyle(.iconOnly)
                     .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(lightIcon ? AeroDJPalette.onMediaLight : AeroDJPalette.onMediaInk)
+                    .foregroundStyle(AeroDJPalette.onMediaInk)
                     .frame(width: 68, height: 68)
-                    .background(Circle().fill(fill.gradient))
-                    .shadow(color: fill.opacity(0.35), radius: 10, y: 4)
+                    .background(Circle().fill(AeroDJPalette.onMediaLight))
                     .contentShape(Circle())
-                    .contentTransition(.symbolEffect(.replace))
+                    .modifier(SymbolReplace(enabled: !reduceMotion))
             }
             .accessibilityIdentifier("transport.playPause")
 
@@ -378,7 +370,7 @@ struct TransportRow: View {
                         .frame(width: 52, height: 52)
                         .contentShape(Circle())
                 }
-                .foregroundStyle(.primary)
+                .foregroundStyle(AeroDJPalette.onMediaLight)
                 .accessibilityIdentifier("transport.skip")
             }
         }
@@ -397,38 +389,37 @@ struct TransportRow: View {
 /// its Queue segment.
 struct QueueAffordance: View {
     let upNext: [TrackInfo]
-    @Environment(\.dynamicTypeSize) private var typeSize
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 if let next = upNext.first {
                     ArtworkView(track: next, size: 36)
                 } else {
                     Image(systemName: "list.bullet")
                         .frame(width: 36, height: 36)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(AeroDJPalette.slabSecondary)
                         .accessibilityHidden(true)
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text("UP NEXT")
                         .font(.caption2.weight(.bold))
                         .tracking(0.8)
-                        .foregroundStyle(AeroDJPalette.secondaryText)
+                        .foregroundStyle(AeroDJPalette.slabSecondary)
                     Text(upNext.first.map { "\($0.title) · \($0.artistName)" } ?? "Nothing queued")
                         .font(.subheadline.weight(.medium))
-                        // Large text wraps instead of hiding the song name.
-                        .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
-                        .truncationMode(.tail)
+                        .foregroundStyle(AeroDJPalette.onMediaLight)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
                 if upNext.count > 1 {
                     Text("+\(upNext.count - 1)")
                         .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(AeroDJPalette.secondaryText)
+                        .foregroundStyle(AeroDJPalette.slabSecondary)
                 }
-                Image(systemName: "chevron.up").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                Image(systemName: "chevron.up").font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AeroDJPalette.onMediaLight)
                     .accessibilityHidden(true)
             }
             .frame(minHeight: 44)
@@ -457,7 +448,8 @@ struct PlaybackErrorBanner: View {
             case .caption:
                 Label(p.title, systemImage: "speaker.slash")
                     .font(.caption)
-                    .foregroundStyle(AeroDJPalette.secondaryText)
+                    .foregroundStyle(AeroDJPalette.slabSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             case .banner:
                 VStack(alignment: .leading, spacing: 10) {
                     Label(p.title, systemImage: "exclamationmark.triangle")
@@ -506,15 +498,19 @@ struct NowPlayingPlaceholder: View {
     var body: some View {
         VStack(spacing: 10) {
             if content == .connecting {
-                ProgressView().accessibilityHidden(true)
+                ProgressView()
+                    .tint(AeroDJPalette.onMediaLight)
+                    .accessibilityHidden(true)
             }
             Text(content.title)
                 .font(.title3.weight(.semibold))
+                .foregroundStyle(AeroDJPalette.onMediaLight)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             if let detail = content.detail {
                 Text(detail)
                     .font(.subheadline)
-                    .foregroundStyle(AeroDJPalette.secondaryText)
+                    .foregroundStyle(AeroDJPalette.slabSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -535,8 +531,12 @@ struct NowPlayingPlaceholder: View {
 struct StartListeningView: View {
     let search: MusicSearch
     @Binding var query: String
+    @Environment(\.onSlab) private var onSlab
     @State private var results: [TrackInfo] = []
     @State private var phase: Phase = .idle
+
+    private var ink: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
+    private var secondaryInk: Color { onSlab ? AeroDJPalette.slabSecondary : AeroDJPalette.secondaryText }
 
     enum Phase: Equatable { case idle, searching, failed(String), empty }
 
@@ -556,14 +556,15 @@ struct StartListeningView: View {
             switch phase {
             case .idle: EmptyView()
             case .searching: ProgressView("Searching Apple Music")
-            case .failed(let message): Text(message).font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
-            case .empty: Text("No songs found.").font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
+            case .failed(let message): Text(message).font(.caption).foregroundStyle(secondaryInk).fixedSize(horizontal: false, vertical: true)
+            case .empty: Text("No songs found.").font(.caption).foregroundStyle(secondaryInk).fixedSize(horizontal: false, vertical: true)
             }
 
             if !results.isEmpty {
                 Text("Playing a song replaces the queue with it and the songs after it.")
                     .font(.caption)
-                    .foregroundStyle(AeroDJPalette.secondaryText)
+                    .foregroundStyle(secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
                 ForEach(Array(results.enumerated()), id: \.element.id) { index, track in
                     Button {
                         Task {
@@ -575,8 +576,8 @@ struct StartListeningView: View {
                         HStack(spacing: 12) {
                             ArtworkView(track: track, size: 44)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(track.title).font(.subheadline).lineLimit(1)
-                                Text(track.artistName).font(.caption).foregroundStyle(AeroDJPalette.secondaryText).lineLimit(1)
+                                Text(track.title).font(.subheadline).foregroundStyle(ink).lineLimit(1)
+                                Text(track.artistName).font(.caption).foregroundStyle(secondaryInk).lineLimit(1)
                             }
                             Spacer(minLength: 0)
                             Image(systemName: "play.circle").foregroundStyle(.secondary).accessibilityHidden(true)
@@ -618,6 +619,7 @@ struct StartListeningView: View {
         DJStatusLine(presentation: .init(state: .failed(.consentReviewRequired(pendingCount: 2))))
     }
     .padding()
+    .background(AeroDJPalette.slab)
 }
 
 #Preview("Errors") {
@@ -628,4 +630,18 @@ struct StartListeningView: View {
         PlaybackErrorBanner(error: PlaybackFixtures.recoverableError.error, actions: .preview)
     }
     .padding()
+    .background(AeroDJPalette.slab)
+}
+
+private struct SymbolReplace: ViewModifier {
+    var enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.contentTransition(.symbolEffect(.replace))
+        } else {
+            content
+        }
+    }
 }

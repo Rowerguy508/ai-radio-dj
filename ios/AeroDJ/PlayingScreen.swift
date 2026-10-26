@@ -23,17 +23,18 @@ struct PlayingScreen: View {
     @State private var showWorkspace = false
     @State private var searchQuery = ""
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var bleedArt
+
+    private var morphNamespace: Namespace.ID? { reduceMotion ? nil : bleedArt }
 
     var body: some View {
         GeometryReader { geo in
             let width = Double(geo.size.width)
             let mode = StudioLayoutMode.resolve(containerWidth: width,
                                                 accessibilityTextSize: typeSize.isAccessibilitySize)
-            ZStack {
-                StationBackdrop(artworkURL: snapshot.nowPlaying?.artworkURL, style: atmosphere)
-                    .ignoresSafeArea()
-                layout(mode: mode, width: width, height: geo.size.height)
-            }
+            layout(mode: mode, width: width, height: geo.size.height)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: mode)
             #if DEBUG
             .onAppear {
                 if let initial = StudioCaptureSegment.initial {
@@ -49,6 +50,10 @@ struct PlayingScreen: View {
                 if newMode != .compact { showWorkspace = false }
             }
         }
+        .transaction { transaction in
+            if reduceMotion { transaction.disablesAnimations = true }
+        }
+        .background(Color(.systemBackground))
         .environment(\.artStation, currentStation)
         .stationToolbar(currentStation, isTestStation: isTestStation)
         .sheet(isPresented: $showWorkspace) {
@@ -74,8 +79,8 @@ struct PlayingScreen: View {
         switch mode {
         case .compact:
             CompactPlayer(station: currentStation, content: content, snapshot: snapshot,
-                          actions: actions, dj: dj, accent: accent, soundTags: soundTags, search: search,
-                          searchQuery: $searchQuery,
+                          actions: actions, dj: dj, soundTags: soundTags, search: search,
+                          searchQuery: $searchQuery, artworkNamespace: morphNamespace,
                           onOpenWorkspace: { segment = .queue; showWorkspace = true },
                           onTune: { segment = .tune; showWorkspace = true },
                           onReview: { segment = .connections; showWorkspace = true })
@@ -84,28 +89,19 @@ struct PlayingScreen: View {
         case .studio:
             if let widths = StudioZoneWidths.allocate(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,
-                             zoneA: zoneA(artworkSide: CGFloat(widths.artworkSide(containerHeight: Double(height)))),
+                             zoneA: zoneA(),
                              workspace: workspace)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("layout.studio")
             }
         case .studioStacked:
-            StudioStackedLayout(zoneA: zoneA(artworkSide: 160), workspace: workspace)
+            StudioStackedLayout(zoneA: zoneA(lockedHeight: height), workspace: workspace)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.studioStacked")
         }
     }
 
     private var currentStation: StationRef { snapshot.station ?? station }
-
-    /// The room's colour: the playing song's station art (same hue family as the station),
-    /// or the station's own when nothing plays. Deterministic, no network.
-    private var atmosphere: StationArtStyle {
-        if let track = snapshot.nowPlaying { return .track(track, on: currentStation) }
-        return .station(currentStation)
-    }
-
-    private var accent: Color { StationArtStyle.station(currentStation).color(1) }
 
     /// Saved genres and moods: identity only. Song picking doesn't use them yet.
     private var soundTags: [String] {
@@ -120,10 +116,11 @@ struct PlayingScreen: View {
     /// is shown: the contract exposes no clip text.
     private var dj: DJStatusPresentation { DJStatusPresentation(state: studio.djState) }
 
-    private func zoneA(artworkSide: CGFloat) -> NowPlayingPanel {
+    private func zoneA(lockedHeight: CGFloat? = nil) -> NowPlayingPanel {
         NowPlayingPanel(station: currentStation, content: content, snapshot: snapshot,
-                        actions: actions, dj: dj, accent: accent, soundTags: soundTags,
-                        artworkSide: artworkSide, showsUpNext: segment != .queue,
+                        actions: actions, dj: dj, soundTags: soundTags,
+                        showsUpNext: segment != .queue,
+                        artworkNamespace: morphNamespace, lockedHeight: lockedHeight,
                         onQueue: { segment = .queue }, onTune: { segment = .tune },
                         onReview: { segment = .connections })
     }
