@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Print denylist tokens that appear in a file other than as a source path.
+"""Print denylist tokens found in a linked image.
 
-A match is exempt only when the token is immediately preceded by "/" and
-immediately followed by ".swift". Every other occurrence is reported.
+Inputs, in order:
+  1. Raw bytes of the file. A token immediately preceded by "/" and
+     immediately followed by ".swift" is a source path and is exempt.
+  2. Optional label (a bundle-relative path), scanned with the same
+     path exemption.
+  3. Optional demangled symbol text (nm piped through swift demangle).
+     Any occurrence fails. The path exemption does not apply here.
+
 The denylist is one literal token per line. Blank lines and lines whose
 first non-whitespace character is "#" are ignored.
 
-Usage: fixture-scan-match.py <denylist> <file> [label]
-Also scans label, when given, with the same rule (a bundle-relative path).
+Usage: fixture-scan-match.py <denylist> <file> [label] [demangled]
 Prints one disallowed token per line. Exits 0 even when tokens match.
 """
 
@@ -25,7 +30,8 @@ def load_tokens(path: Path) -> list[str]:
     return tokens
 
 
-def has_disallowed_match(data: bytes, token: str) -> bool:
+def has_disallowed_raw_match(data: bytes, token: str) -> bool:
+    """True when token occurs other than as '/<token>.swift'."""
     needle = token.encode("utf-8")
     if not needle:
         return False
@@ -42,17 +48,27 @@ def has_disallowed_match(data: bytes, token: str) -> bool:
         start = index + 1
 
 
+def has_any_match(data: bytes, token: str) -> bool:
+    needle = token.encode("utf-8")
+    return bool(needle) and data.find(needle) >= 0
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) not in (3, 4):
-        sys.stderr.write("usage: fixture-scan-match.py <denylist> <file> [label]\n")
+    if len(argv) not in (3, 4, 5):
+        sys.stderr.write(
+            "usage: fixture-scan-match.py <denylist> <file> [label] [demangled]\n"
+        )
         return 2
-    denylist = Path(argv[1])
-    target = Path(argv[2])
-    blobs = [target.read_bytes()]
-    if len(argv) == 4:
-        blobs.append(argv[3].encode("utf-8"))
-    for token in load_tokens(denylist):
-        if any(has_disallowed_match(blob, token) for blob in blobs):
+    raw = Path(argv[2]).read_bytes()
+    label = argv[3].encode("utf-8") if len(argv) >= 4 else None
+    demangled = Path(argv[4]).read_bytes() if len(argv) == 5 else None
+    for token in load_tokens(Path(argv[1])):
+        hit = has_disallowed_raw_match(raw, token)
+        if label is not None:
+            hit = hit or has_disallowed_raw_match(label, token)
+        if demangled is not None:
+            hit = hit or has_any_match(demangled, token)
+        if hit:
             print(token)
     return 0
 

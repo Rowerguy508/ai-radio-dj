@@ -5,10 +5,12 @@
 #
 # Tokens: ios/scripts/release-fixture-denylist.txt
 # Every file is scanned as raw bytes. A token immediately preceded by "/" and
-# immediately followed by ".swift" is a source path and is exempt. Every other
-# occurrence fails, including the bundle-relative path of the file.
-# Mach-O executables are reported as symbols. Every other file, including
-# compiled asset catalogs and Info.plists, is an asset.
+# immediately followed by ".swift" is a source path and is exempt there.
+# Every Mach-O file (the main executable, *.debug.dylib, frameworks, and the
+# appex) also contributes demangled `nm -a` output. A token in that text
+# fails even when it looks like a path. Mach-O executables are reported as
+# symbols. Every other file, including compiled asset catalogs and Info.plists,
+# is an asset.
 # The Debug app executable is the positive control. Release must have no hits.
 set -euo pipefail
 
@@ -22,6 +24,8 @@ RELEASE_APP=$2
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DENYLIST="$SCRIPT_DIR/release-fixture-denylist.txt"
 MATCH="$SCRIPT_DIR/fixture-scan-match.py"
+# shellcheck source=fixture-scan-symbols.sh
+source "$SCRIPT_DIR/fixture-scan-symbols.sh"
 PATFILE=$(mktemp)
 HITS=$(mktemp)
 debug_hits=$(mktemp)
@@ -34,7 +38,13 @@ for required in FixtureContextSource PlayingScreenPreviewLoader mockStations; do
   grep -q -x -F -- "$required" "$PATFILE" || { echo "FAIL: denylist is missing $required"; exit 1; }
 done
 command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 is required to scan fixture bytes"; exit 1; }
+command -v nm >/dev/null 2>&1 || { echo "FAIL: nm is required to scan Mach-O symbols"; exit 1; }
+command -v file >/dev/null 2>&1 || { echo "FAIL: file is required to recognize Mach-O images"; exit 1; }
 [[ -f "$MATCH" ]] || { echo "FAIL: matcher missing: $MATCH"; exit 1; }
+
+is_macho() {
+  file "$1" 2>/dev/null | grep -q 'Mach-O'
+}
 
 # Bundle-relative executable name from Info.plist, else the bundle's own name.
 executable_rel() {
@@ -60,12 +70,23 @@ appex_dirs() {
 }
 
 record_file() {
-  local root=$1 file=$2 kind=$3 rel matched token
+  local root=$1 file=$2 kind=$3 rel matched token demangled
   rel=${file#"$root"/}
-  if ! matched=$(python3 "$MATCH" "$DENYLIST" "$file" "$rel"); then
+  demangled=$(mktemp)
+  : > "$demangled"
+  if is_macho "$file"; then
+    if ! fixture_nm_demangle "$file" "$demangled"; then
+      rm -f "$demangled"
+      echo "FAIL: could not demangle Mach-O symbols in $rel" >&2
+      exit 1
+    fi
+  fi
+  if ! matched=$(python3 "$MATCH" "$DENYLIST" "$file" "$rel" "$demangled"); then
+    rm -f "$demangled"
     echo "FAIL: fixture scan matcher failed on $file" >&2
     exit 1
   fi
+  rm -f "$demangled"
   while IFS= read -r token; do
     [[ -n "$token" ]] || continue
     printf '%s %s %s\n' "$kind" "$rel" "$token" >> "$HITS"
