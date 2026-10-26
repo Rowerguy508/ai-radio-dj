@@ -40,6 +40,11 @@ struct PlayerView: View {
         .task {
             music.onBoundary = { @MainActor [interlude, music, djSession] boundary, finishedIndex in
                 guard case .naturalEnd = boundary else { return }
+                // Hand the break out before this closure awaits anything. The window was the
+                // `Task` below awaiting `naturalBoundary` while `PendingPlayStop` was still idle:
+                // an unplug or interruption in that await was ignored, then `handOut` plus `play`
+                // could start the break on the speaker. A second `handOut` would clear the held stop.
+                interlude.handOut(afterTrack: finishedIndex)
                 // A break is only ever played at a natural end. Anything late, missing or failed is
                 // skipped, and the next song is not delayed.
                 Task { @MainActor in
@@ -58,6 +63,7 @@ struct PlayerView: View {
                     }
                     // The break (or its skip) comes first; the next song is loaded only after it.
                     if interlude.isSpeaking {
+                        interlude.abandonHandOut()
                         music.skipInterlude()
                     } else if let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex) {
                         switch BreakHandoffPolicy.decide(prepared: prepared) {
@@ -66,15 +72,20 @@ struct PlayerView: View {
                             let clips = breakToPlay.clips.map(\.audio.data)
                             // Empty line or no clips: the break was handed out and will not play.
                             guard !line.isEmpty, !clips.isEmpty else {
+                                interlude.abandonHandOut()
                                 reportUnplayed(.emptyLine)
                                 break
                             }
-                            interlude.handOut(afterTrack: finishedIndex)
                             await interlude.play(clips: clips, line: line, afterTrack: finishedIndex)
                         case .continueMusic:
+                            // Close the early hand-out. A later stop must see idle, not a break
+                            // that will never play.
+                            interlude.abandonHandOut()
                             reportUnplayed(.emptyLine)
                         }
                     } else {
+                        // No prepared break. Same close-out: the hand-out is over.
+                        interlude.abandonHandOut()
                         music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
                         music.skipInterlude()
                     }

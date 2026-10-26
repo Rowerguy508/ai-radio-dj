@@ -167,3 +167,48 @@ public enum HandedOutBreakReport {
         }
     }
 }
+
+/// Extra guard for `play`, used only when no stop is held.
+///
+/// The refusal itself is the stop `PendingPlayStop` held from the boundary hand-out.
+/// This flag catches a missed stop while route removal or an interruption is still
+/// holding playback. `mayAutoResume` and `phase` are the player's existing flags.
+/// A refusal never asks music to resume, including when `mayAutoResume` is still true.
+public struct BreakPlayAdmission: Equatable, Sendable {
+    public var startAudio: Bool
+    public var unplayed: HandedOutBreakEffect?
+
+    public init(startAudio: Bool, unplayed: HandedOutBreakEffect?) {
+        self.startAudio = startAudio
+        self.unplayed = unplayed
+    }
+}
+
+public enum BreakPlayAdmissionPolicy {
+    public static func decide(
+        pausedBySystem: Bool,
+        mayAutoResume: Bool,
+        phase: AudioState,
+        afterTrack: Int
+    ) -> BreakPlayAdmission {
+        guard pausedBySystem else {
+            return BreakPlayAdmission(startAudio: true, unplayed: nil)
+        }
+        let skipped = HandedOutBreakReport.skipped(
+            .notPlayable, afterTrack: afterTrack, mayAutoResume: false)
+        let live = NarrationResumePolicy.decide(
+            .failed,
+            mayAutoResume: mayAutoResume && !pausedBySystem,
+            phase: phase
+        )
+        let effect = HandedOutBreakEffect(
+            event: skipped.event,
+            resume: NarrationResumeDecision(
+                resumeMusic: false,
+                audioEvent: live.audioEvent,
+                playbackEvent: live.playbackEvent
+            )
+        )
+        return BreakPlayAdmission(startAudio: false, unplayed: effect)
+    }
+}
