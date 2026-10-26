@@ -4,9 +4,19 @@ import XCTest
 /// The construction seam `PlayerView` passes to `MusicSearch.live(briefing:)`.
 /// `PlayerView` itself is SwiftUI and MusicKit in the app target, which has no
 /// unit-test target and is not part of AeroDJCore, so it is not executed here.
-private final class ItemBox: @unchecked Sendable {
+/// `PlayerView` calls `LiveQueueBriefing.provider(studio:)`. This test calls that
+/// same function. Returning `ApprovedShowHandoff.unapproved` from it fails here.
+@MainActor
+private final class FixtureStudio: LiveQueueStudio {
     var items: [ConnectionItem]
-    init(_ items: [ConnectionItem]) { self.items = items }
+    var preferences: BriefingPreferences
+    var liveQueueBriefing: LiveQueueBriefingInput {
+        LiveQueueBriefingInput(items: items, preferences: preferences)
+    }
+    init(items: [ConnectionItem], preferences: BriefingPreferences) {
+        self.items = items
+        self.preferences = preferences
+    }
 }
 
 @MainActor
@@ -30,21 +40,28 @@ final class LiveQueueBriefingTests: XCTestCase {
         BriefingPreferences(enabled: enabled, window: BriefingWindow(startMinute: 7 * 60, durationMinutes: 120), sections: sections)
     }
 
+    /// The one builder, given the same title the adapter is allowed to pass.
+    private func engineContent(id: UUID, title: String, source: ContextSourceKind) -> [NarrationCue] {
+        let item = ContextItem(id: id, source: source, createdAt: morning, title: title, summary: "",
+                               sensitivity: .low, consent: .granted, provenance: "connection:\(id.uuidString)")
+        let now = morning
+        let script = MorningBriefingEngine(
+            configuration: MorningBriefingConfiguration(experienceSeconds: 300, maxSpokenSeconds: 150),
+            calendar: calendar, now: { now }).script(from: [item])
+        return script.handoff(maxSpokenSeconds: 150).cues.filter(\.isContent)
+    }
+
     func testPlayerViewProviderPassesOnlyTheApprovedMorningHandoff() async throws {
         let approvedID = UUID()
         let pendingID = UUID()
-        let box = ItemBox([
+        let studio = FixtureStudio(items: [
             ConnectionItem(id: pendingID, integration: .calendar, title: "Pending sync", state: .pendingApproval),
-        ])
-        let prefs = preferences()
-        let provider = LiveQueueBriefing.provider(
-            items: { box.items },
-            preferences: { prefs },
-            now: { self.morning },
-            calendar: calendar)
+        ], preferences: preferences())
+        let now = morning
+        let provider = LiveQueueBriefing.provider(studio: studio, now: { now }, calendar: calendar)
         XCTAssertNil(provider().forQueue(), "read at play time: nothing approved yet")
 
-        box.items += [
+        studio.items += [
             ConnectionItem(id: approvedID, integration: .calendar, title: "Design review", state: .approved),
             ConnectionItem(id: UUID(), integration: .obsidian, title: "Flagged memo", state: .flaggedForReview),
             ConnectionItem(id: UUID(), integration: .shareInbox, title: "Expired reminder", state: .expired),
@@ -52,14 +69,17 @@ final class LiveQueueBriefingTests: XCTestCase {
             ConnectionItem(id: UUID(), integration: .calendar, title: "Unavailable calendar",
                            state: .unavailable(.calendarAccess(.denied))),
         ]
-        let queued = provider().forQueue()
-        let cues = queued?.cues ?? []
-        XCTAssertEqual(cues.compactMap(\.sourceItemID), [approvedID])
-        XCTAssertEqual(cues.map(\.text), ["You've got Design review."])
-        XCTAssertEqual(cues.map(\.source), [.calendar])
-        XCTAssertEqual(cues.map(\.provenance), ["connection:\(approvedID.uuidString)"])
+        let handed = provider()
+        XCTAssertNotEqual(handed, .unapproved)
+        XCTAssertFalse(handed.revokedOrUnapproved)
+        let cues = try XCTUnwrap(handed.forQueue()).cues
+        let content = cues.filter(\.isContent)
+        let expected = engineContent(id: approvedID, title: "Design review", source: .calendar)
+        XCTAssertEqual(content.map(\.sourceItemID), [approvedID])
+        XCTAssertEqual(content.map(\.text), expected.map(\.text))
+        XCTAssertEqual(content.map(\.source), expected.map(\.source))
+        XCTAssertEqual(content.map(\.provenance), expected.map(\.provenance))
         let spoken = cues.map(\.text).joined(separator: " ")
-        XCTAssertFalse(spoken.localizedCaseInsensitiveContains("from your"), spoken)
         for hidden in ["Pending sync", "Flagged memo", "Expired reminder", "Revoked note", "Unavailable calendar"] {
             XCTAssertFalse(spoken.contains(hidden), spoken)
         }
@@ -70,8 +90,9 @@ final class LiveQueueBriefingTests: XCTestCase {
         let on = preferences()
         XCTAssertNil(LiveQueueBriefing.handoff(items: items, preferences: on, now: afternoon, calendar: calendar).forQueue())
         let off = preferences(enabled: false)
-        XCTAssertNil(LiveQueueBriefing.handoff(items: items, preferences: off, now: morning, calendar: calendar).forQueue())
-        XCTAssertTrue(LiveQueueBriefing.handoff(items: items, preferences: off, now: morning, calendar: calendar).revokedOrUnapproved)
+        let disabled = LiveQueueBriefing.handoff(items: items, preferences: off, now: morning, calendar: calendar)
+        XCTAssertNil(disabled.forQueue())
+        XCTAssertTrue(disabled.revokedOrUnapproved)
     }
 
     func testTurnedOffSectionAndPreparedHandoff() async throws {
@@ -83,9 +104,11 @@ final class LiveQueueBriefingTests: XCTestCase {
         ]
         let notesOnly = preferences(sections: [.notes])
         let queued = LiveQueueBriefing.handoff(items: items, preferences: notesOnly, now: morning, calendar: calendar).forQueue()
-        XCTAssertEqual(queued?.cues.compactMap(\.sourceItemID), [noteID])
-        XCTAssertEqual(queued?.cues.map(\.text), ["You've got Grocery list."])
-        XCTAssertEqual(queued?.cues.map(\.source), [.obsidian])
+        let content = queued?.cues.filter(\.isContent) ?? []
+        let expected = engineContent(id: noteID, title: "Grocery list", source: .obsidian)
+        XCTAssertEqual(content.map(\.sourceItemID), [noteID])
+        XCTAssertEqual(content.map(\.text), expected.map(\.text))
+        XCTAssertEqual(content.map(\.source), [.obsidian])
 
         let preparedCue = NarrationCue(id: UUID(), order: 1, group: 0, kind: .note,
                                        text: "Item Pending sync stays in the script.",

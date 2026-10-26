@@ -31,7 +31,7 @@ struct PlayerView: View {
                       access: access,
                       snapshot: music.snapshot,
                       actions: .live(music),
-                      search: .live(music, station: stationRef, djSession: djSession, briefing: LiveQueueBriefing.provider(items: { studio.connections.items }, preferences: { studio.station.active.briefing })),
+                      search: .live(music, station: stationRef, djSession: djSession, briefing: LiveQueueBriefing.provider(studio: studio)),
                       studio: studio,
                       isTestStation: isTestStation)
         .navigationTitle(station.name)

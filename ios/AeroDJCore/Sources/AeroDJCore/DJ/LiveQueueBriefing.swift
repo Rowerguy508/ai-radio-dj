@@ -1,29 +1,55 @@
 import Foundation
 
+/// What the player reads when a queue starts. Core has no Studio or SwiftUI type.
+public struct LiveQueueBriefingInput: Sendable, Equatable {
+    public var items: [ConnectionItem]
+    public var preferences: BriefingPreferences
+
+    public init(items: [ConnectionItem], preferences: BriefingPreferences) {
+        self.items = items
+        self.preferences = preferences
+    }
+}
+
+/// The Studio fields `PlayerView` already holds. Implemented by `StudioPresentationModel`.
+@MainActor
+public protocol LiveQueueStudio: AnyObject {
+    var liveQueueBriefing: LiveQueueBriefingInput { get }
+}
+
+extension StudioPresentationModel: LiveQueueStudio {
+    public var liveQueueBriefing: LiveQueueBriefingInput {
+        LiveQueueBriefingInput(items: connections.items, preferences: station.active.briefing)
+    }
+}
+
 /// The briefing provider `PlayerView` passes to `MusicSearch.live`.
 ///
-/// Read when play starts, from the Connections rows and briefing preferences the
-/// Studio already holds. No MusicKit. Spoken lines use the row title only.
-/// Source and provenance stay on the cue. A later show has no carry-forward on
-/// the player, so personal speech stays nil outside the morning window.
+/// Adapts consent-approved Connections rows into `ContextItem`s and asks
+/// `MorningBriefingEngine` for the handoff. It does not write cue text.
+/// A later show has no carry-forward on the player, so personal speech stays
+/// nil outside the morning window.
 public enum LiveQueueBriefing {
-    /// Closure `PlayerView` passes as the `briefing` argument. `items` and
-    /// `preferences` run when the closure runs, which is when play starts.
+    /// Closure `PlayerView` passes as the `briefing` argument. The studio is read
+    /// when the closure runs, which is when play starts.
+    @MainActor
     public static func provider(
-        items: @escaping @MainActor () -> [ConnectionItem],
-        preferences: @escaping @MainActor () -> BriefingPreferences,
+        studio: some LiveQueueStudio,
         now: (@MainActor () -> Date)? = nil,
         calendar: Calendar = .current
     ) -> @MainActor () -> ApprovedShowHandoff {
         let clock = now ?? { Date() }
         return {
-            handoff(items: items(), preferences: preferences(), now: clock(), calendar: calendar)
+            let input = studio.liveQueueBriefing
+            return handoff(items: input.items, preferences: input.preferences, now: clock(), calendar: calendar)
         }
     }
 
-    /// Morning window plus an approved row: that handoff. Briefing off, or nothing
-    /// approved: revoked. Outside the window: a later show with no carry-forward.
-    /// `prepared` is used instead of title lines when the caller already has a script.
+    /// Morning window plus an approved row: the engine's handoff. Briefing off, or
+    /// nothing approved: `revokedOrUnapproved`, which `forQueue()` turns into nil.
+    /// Outside the window: a later show with no carry-forward.
+    /// `prepared` is used as-is when the caller already has a script. It is not
+    /// filtered by briefing section; that check is a follow-up.
     public static func handoff(
         items: [ConnectionItem],
         preferences: BriefingPreferences,
@@ -41,46 +67,37 @@ public enum LiveQueueBriefing {
             return ApprovedShowHandoff(isMorningShow: false, approved: nil, revokedOrUnapproved: false,
                                        carryForward: nil, connectionItems: items)
         }
-        let script = prepared ?? narration(from: speakable, targetSeconds: preferences.targetSeconds)
+        let script = prepared ?? narration(from: speakable, now: now, calendar: calendar,
+                                           targetSeconds: preferences.targetSeconds)
         return ApprovedShowHandoff(isMorningShow: true, approved: script, revokedOrUnapproved: false,
                                    connectionItems: items)
     }
 
+    /// Consent and section selection only. Sentence composition stays in the engine.
     private static func approvedRows(_ items: [ConnectionItem], preferences: BriefingPreferences) -> [ConnectionItem] {
         guard preferences.enabled else { return [] }
         return items.filter { item in
-            item.state.mayBeNarrated && preferences.sections.contains(section(for: item.integration))
-                && !spokenTitle(item.title).isEmpty
+            item.state.mayBeNarrated
+                && preferences.sections.contains(section(for: item.integration))
+                && !item.title.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).isEmpty
         }
     }
 
-    private static func narration(from items: [ConnectionItem], targetSeconds: Int) -> NarrationHandoff {
-        let cues: [NarrationCue] = items.enumerated().compactMap { index, item in
-            let text = hostLine(item.title, continuing: index > 0)
-            guard !text.isEmpty else { return nil }
-            let seconds = DefaultBriefingPlanner.estimatedSpokenSeconds(for: text)
-            return NarrationCue(
-                id: item.id, order: index + 1, group: index, kind: kind(for: item.integration),
-                text: text, estimatedSeconds: seconds,
-                maxSeconds: NarrationCue.bound(estimated: seconds, budget: 45),
-                sourceItemID: item.id, source: source(for: item.integration),
-                provenance: "connection:\(item.id.uuidString)")
-        }
+    /// One briefing builder. Rows become engine inputs: title, source, provenance.
+    /// No clock time and no summary, because a Connections row does not have them.
+    private static func narration(from items: [ConnectionItem], now: Date, calendar: Calendar,
+                                  targetSeconds: Int) -> NarrationHandoff {
         let spokenCap = min(max(targetSeconds, BriefingPreferences.targetRange.lowerBound), 150)
-        return NarrationHandoff(cues: cues, maxSpokenSeconds: spokenCap, experienceSeconds: 300)
-    }
-
-    /// Title only. No clock time, no source tag, no detail the row does not have.
-    private static func hostLine(_ title: String, continuing: Bool) -> String {
-        let sentence = spokenTitle(title)
-        guard !sentence.isEmpty else { return "" }
-        return continuing ? "And \(sentence)" : "You've got \(sentence)"
-    }
-
-    private static func spokenTitle(_ title: String) -> String {
-        let clean = title.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
-        guard let last = clean.last else { return "" }
-        return ".!?…".contains(last) ? clean : clean + "."
+        let engine = MorningBriefingEngine(
+            configuration: MorningBriefingConfiguration(experienceSeconds: 300, maxSpokenSeconds: spokenCap),
+            calendar: calendar,
+            now: { now })
+        let context = items.map { item in
+            ContextItem(id: item.id, source: source(for: item.integration), createdAt: now,
+                        title: item.title, summary: "", sensitivity: .low, consent: .granted,
+                        expiresAt: item.expiresAt, provenance: "connection:\(item.id.uuidString)")
+        }
+        return engine.script(from: context).handoff(maxSpokenSeconds: spokenCap)
     }
 
     private static func section(for integration: StationIntegration) -> BriefingSection {
@@ -96,14 +113,6 @@ public enum LiveQueueBriefing {
         case .calendar: .calendar
         case .obsidian: .obsidian
         case .shareInbox: .userShared
-        }
-    }
-
-    private static func kind(for integration: StationIntegration) -> BriefingScriptSegment.Kind {
-        switch integration {
-        case .calendar: .upcomingEvent
-        case .obsidian: .note
-        case .shareInbox: .followUp
         }
     }
 }
