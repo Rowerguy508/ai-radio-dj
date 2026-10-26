@@ -59,12 +59,14 @@ public enum NarrationResumePolicy {
         return queueHasEntry ? .resumeCurrentEntry : .hold
     }
 
-    /// A failed clip is still reported as cancelled.
+    /// A clip that fails is a failure. A user stop or a timeout is a cancel.
     public static func narrationEnd(for outcome: BreakPlayerOutcome) -> NarrationEnd {
         switch outcome {
         case .finished:
             .finished
-        case .failed, .cancelled:
+        case .failed:
+            .failed
+        case .cancelled:
             .cancelled
         }
     }

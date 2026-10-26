@@ -19,14 +19,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     private var queue: [AVAudioPlayer] = []
     private var finish: CheckedContinuation<Void, Never>?
     private var timeout: Task<Void, Never>?
-    private var outcome: Outcome = .cancelled
+    private var outcome: BreakPlayerOutcome = .cancelled
     /// Retires the current clip on stop, so a late finish callback cannot end a later break.
     private var stopState = InterludeStopState()
     /// Indices and the stop reason only. No line text.
     private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
-
-    /// How a break ended. Only `.finished` means the whole line was heard.
-    private enum Outcome { case finished, cancelled }
 
     init(music: MusicKitService) {
         self.music = music
@@ -87,9 +84,9 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// One clip finished. Continue with the next clip, or end the break.
     private func clipFinished(successful: Bool) {
         guard finish != nil else { return }
-        guard successful else { finishBreak(.cancelled); return }
+        guard successful else { finishBreak(.failed); return }
         if queue.isEmpty { finishBreak(.finished); return }
-        if !startNextClip() { finishBreak(.cancelled) }
+        if !startNextClip() { finishBreak(.failed) }
     }
 
     func stop() {
@@ -145,11 +142,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
                 music.djStarted(line)
                 onPlayback?(.started(afterTrack: breakTrack))
             } else {
-                finishBreak(.cancelled)
+                finishBreak(.failed)
             }
         }
 
-        let end: NarrationEnd = outcome == .finished ? .finished : .cancelled
+        let end = NarrationResumePolicy.narrationEnd(for: outcome)
         let decision = NarrationResumePolicy.decide(end, mayAutoResume: music.mayAutoResume, phase: music.audioState)
         music.completeNarration(decision)
         switch decision.playbackEvent {
@@ -170,7 +167,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
     }
 
-    private func finishBreak(_ result: Outcome) {
+    private func finishBreak(_ result: BreakPlayerOutcome) {
         stopState.end()
         timeout?.cancel()
         timeout = nil
@@ -194,7 +191,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         let id = ObjectIdentifier(player)
         Task { @MainActor [weak self] in
             guard let self, self.stopState.acceptsDelegate(player: id) else { return }
-            self.finishBreak(.cancelled)
+            self.finishBreak(.failed)
         }
     }
 }
