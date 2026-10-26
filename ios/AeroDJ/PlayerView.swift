@@ -44,16 +44,23 @@ struct PlayerView: View {
                 // skipped, and the next song is not delayed.
                 Task { @MainActor in
                     // The break (or its skip) comes first; the next song is loaded only after it.
-                    var prepared: PreparedDJBreak?
-                    if !interlude.isSpeaking {
-                        prepared = await djSession.naturalBoundary(afterTrack: finishedIndex)
-                    }
-                    switch BreakHandoffPolicy.decide(prepared: prepared) {
-                    case let .play(breakToPlay):
-                        let line = breakToPlay.cues.map(\.text).joined(separator: " ")
-                        await interlude.play(clips: breakToPlay.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
-                    case .continueMusic:
+                    if interlude.isSpeaking {
                         music.skipInterlude()
+                    } else {
+                        switch await djSession.naturalBoundaryOutcome(afterTrack: finishedIndex) {
+                        case let .ready(prepared):
+                            switch BreakHandoffPolicy.decide(prepared: prepared) {
+                            case let .play(breakToPlay):
+                                let line = breakToPlay.cues.map(\.text).joined(separator: " ")
+                                await interlude.play(clips: breakToPlay.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                            case .continueMusic:
+                                music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
+                                music.skipInterlude()
+                            }
+                        case let .skipped(reason):
+                            music.logBreakSkipped(after: finishedIndex, reason: reason)
+                            music.skipInterlude()
+                        }
                     }
                     await music.startNextTrack(after: finishedIndex)
                 }
@@ -64,7 +71,13 @@ struct PlayerView: View {
                 guard let duration else { return }
                 Task { await djSession.songStarted(index: index, remaining: .seconds(duration)) }
             }
-            music.onBreakMustStop = { [interlude] in interlude.stop() }
+            music.onBreakMustStop = { [interlude] reason in
+                if let reason {
+                    interlude.stopCurrentInterlude(reason: reason)
+                } else {
+                    interlude.stop()
+                }
+            }
             // A skip cuts the skipped song's break, so a prepared break for it is never played.
             music.onSongSkipped = { [djSession] index in
                 Task { await djSession.songCut(afterTrack: index) }

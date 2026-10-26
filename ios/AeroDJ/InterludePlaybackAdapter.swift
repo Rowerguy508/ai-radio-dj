@@ -54,12 +54,14 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     func play(clips: [Data], line: String, afterTrack: Int) async {
         breakTrack = afterTrack
         guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
+            music.logBreakSkipped(after: afterTrack, reason: .notPlanned)
             music.skipInterlude()
             return
         }
         // A clip that won't decode skips the whole break; nothing is spoken partially.
         let players = clips.compactMap { try? AVAudioPlayer(data: $0) }
         guard players.count == clips.count, players.allSatisfy({ $0.duration > 0 }) else {
+            music.logBreakSkipped(after: afterTrack, reason: .renderFailed)
             music.reportSpeechError("A DJ line could not be played and was skipped.")
             music.skipInterlude()
             return
@@ -106,10 +108,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     nonisolated func stopCurrentInterlude(reason: InterludeStopReason) {
         MainActorImmediate.run {
             guard self.stopState.stop(reason: reason) else { return }
-            switch reason {
-            case .sourceRevoked:
-                self.log.notice("interlude stop reason=sourceRevoked")
-            }
+            self.log.notice("\(PlaybackLog.interludeStop(reason: reason), privacy: .public)")
             self.haltAudio()
         }
     }
@@ -139,12 +138,15 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             }
             // The line is reported as started only once audio is really playing.
             if start() {
+                self.log.notice("\(PlaybackLog.breakStart(after: self.breakTrack), privacy: .public)")
                 music.djStarted(line)
                 onPlayback?(.started(afterTrack: breakTrack))
             } else {
                 finishBreak(.failed)
             }
         }
+
+        log.notice("\(PlaybackLog.breakEnd(after: breakTrack, result: outcome), privacy: .public)")
 
         let end = NarrationResumePolicy.narrationEnd(for: outcome)
         let decision = NarrationResumePolicy.decide(end, mayAutoResume: music.mayAutoResume, phase: music.audioState)

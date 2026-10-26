@@ -37,8 +37,8 @@ final class MusicKitService: ObservableObject {
     private var deferredStart = DeferredSongStart()
     /// True after the first observer install, including a retry that follows a failed `setActive`.
     private var sessionRegistration = SessionRegistrationGate()
-    /// Stops any DJ line that is speaking. Set by the app to the break adapter.
-    var onBreakMustStop: (@MainActor () -> Void)?
+    /// Stops any DJ line that is speaking. Nil is a user pause or skip. A reason is logged.
+    var onBreakMustStop: (@MainActor (InterludeStopReason?) -> Void)?
     /// Called with the index of the song the user skipped, so its prepared break is discarded.
     var onSongSkipped: (@MainActor (Int) -> Void)?
     private var queueIndex = 0
@@ -61,6 +61,7 @@ final class MusicKitService: ObservableObject {
 
     /// Request MusicKit authorization. Explicit degraded state on denial.
     func authorize() async {
+        // Category and observers only. setActive(true) runs in playIfStillAllowed, immediately before play().
         let status = await MusicAuthorization.request()
         switch status {
         case .authorized:
@@ -119,7 +120,15 @@ final class MusicKitService: ObservableObject {
         isPlaying = false
         send(.userPaused)
         stateMachine.apply(.pause)
-        onBreakMustStop?()
+        let duration = queue.indices.contains(queueIndex) ? queue[queueIndex].song?.duration : nil
+        let nearEnd = PlaybackObservation(
+            entryID: player.queue.currentEntry?.id,
+            isPlaying: false,
+            position: player.playbackTime,
+            duration: duration
+        ).isNearEnd()
+        logPlayback(PlaybackLog.userPause(index: queueIndex, nearEnd: nearEnd))
+        onBreakMustStop?(nil)
     }
 
     /// The user pressed play.
@@ -163,7 +172,7 @@ final class MusicKitService: ObservableObject {
         boundaries.userRequestedChange()
         sessionPolicy.userPlay()
         // The skipped song's break, speaking or prepared, belongs to that song and must not play.
-        onBreakMustStop?()
+        onBreakMustStop?(nil)
         onSongSkipped?(queueIndex)
         let next = queueIndex + 1
         guard queue.indices.contains(next) else {
@@ -187,11 +196,11 @@ final class MusicKitService: ObservableObject {
         finishedEntryID = nil
         guard autoplay, sessionPolicy.mayAutoResume else {
             isPlaying = false
-            deferredStart.arm(index)
+            armDeferredStart(index)
             return
         }
         guard try await playIfStillAllowed() else {
-            deferredStart.arm(index)
+            armDeferredStart(index)
             return
         }
         deferredStart.clear()
@@ -303,11 +312,13 @@ final class MusicKitService: ObservableObject {
         case let .plannedHandoff(finishedIndex, nextIndex, boundary):
             // One song is loaded at a time, so this end is the end of song `queueIndex`.
             // The break runs now; the next song is loaded after it (startNextTrack).
-            log.notice("boundary queueEnd finished=\(finishedIndex, privacy: .public)")
+            let signal: QueueEndSignal = observation.entryID == nil ? .entryCleared : .position
+            logPlayback(PlaybackLog.queueEnd(finished: finishedIndex, signal: signal))
             send(.naturalBoundary(nextIndex: nextIndex))
             stateMachine.apply(.trackEnded)
             onBoundary?(boundary, finishedIndex)
         case let .stopped(finishedIndex, boundary):
+            logPlayback(PlaybackLog.stationFinished(finished: finishedIndex))
             currentTrack = nil
             stateMachine.apply(.stop)
             send(.queueFinished)
@@ -319,15 +330,24 @@ final class MusicKitService: ObservableObject {
 
     /// Phone call or route change. The policy decides; this only performs the directive.
     private func applySession(_ notice: AudioSessionNotice) async {
+        let breakActive = isBreakActive
+        let stopReason: InterludeStopReason?
         switch notice {
         case .interruptionBegan:
+            logPlayback(PlaybackLog.interruptionBegan())
             boundaries.pausedByApp(.systemInterruption)
+            stopReason = .interruption
+        case let .interruptionEnded(shouldResume):
+            logPlayback(PlaybackLog.interruptionEnded(shouldResume: shouldResume, breakActive: breakActive))
+            stopReason = nil
         case .routeChanged(.oldDeviceUnavailable):
+            logPlayback(PlaybackLog.routeRemoved())
             boundaries.pausedByApp(.routeLoss)
-        case .interruptionEnded, .routeChanged(.other):
-            break
+            stopReason = .routeRemoved
+        case .routeChanged(.other):
+            stopReason = nil
         }
-        switch sessionPolicy.handle(notice, breakIsActive: isBreakActive) {
+        switch sessionPolicy.handle(notice, breakIsActive: breakActive) {
         case .suspendPlayback:
             pausePlayerForBreak()
             switch notice {
@@ -338,7 +358,7 @@ final class MusicKitService: ObservableObject {
             case .interruptionEnded, .routeChanged(.other):
                 send(.userPaused)
             }
-            onBreakMustStop?()
+            onBreakMustStop?(stopReason)
         case .resumeIfPermitted:
             await resumeIfAllowed()
         case .none:
@@ -415,6 +435,7 @@ final class MusicKitService: ObservableObject {
     /// Activates the session right before playback starts, so launching the app does not stop
     /// the user's other audio. Runs on every play, because the system can deactivate the session.
     private func activateAudioSessionForPlayback() {
+        guard AudioSessionActivation.shouldActivate(during: .playback) else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
@@ -440,6 +461,19 @@ final class MusicKitService: ObservableObject {
     private func reportDeferredSongStart() {
         guard let index = deferredStart.take(), queue.indices.contains(index) else { return }
         noteSongStarted(index: index, duration: queue[index].song?.duration)
+    }
+
+    func logBreakSkipped(after track: Int, reason: DJBreakSkipReason) {
+        logPlayback(PlaybackLog.breakSkipped(after: track, reason: reason))
+    }
+
+    private func armDeferredStart(_ index: Int) {
+        deferredStart.arm(index)
+        logPlayback(PlaybackLog.songDeferred(index: index))
+    }
+
+    private func logPlayback(_ line: String) {
+        log.notice("\(line, privacy: .public)")
     }
 
     private func noteSongStarted(index: Int, duration: TimeInterval?) {

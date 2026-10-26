@@ -238,6 +238,11 @@ final class AudioReliabilityTests: XCTestCase {
         XCTAssertTrue(finished, "releasing the monitor must finish its AsyncStream")
     }
 
+    func testAuthorizationAloneDoesNotActivateTheSession() {
+        XCTAssertFalse(AudioSessionActivation.shouldActivate(during: .authorization))
+        XCTAssertTrue(AudioSessionActivation.shouldActivate(during: .playback))
+    }
+
     func testObserverRegistrationIsOnceEvenIfActivationFailed() {
         var gate = SessionRegistrationGate()
         XCTAssertTrue(gate.registerIfNeeded(), "first attempt registers even when setActive throws")

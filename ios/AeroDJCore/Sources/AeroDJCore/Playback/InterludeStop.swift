@@ -7,6 +7,18 @@ import Foundation
 public enum InterludeStopReason: Equatable, Sendable {
     /// A personal source this break was built from was deleted or its consent was revoked.
     case sourceRevoked
+    /// A system interruption stopped the speaking break.
+    case interruption
+    /// The output route was removed while the break was speaking.
+    case routeRemoved
+
+    public var logToken: String {
+        switch self {
+        case .sourceRevoked: "sourceRevoked"
+        case .interruption: "interruption"
+        case .routeRemoved: "routeRemoved"
+        }
+    }
 }
 
 /// Which player, if any, may still deliver a finish callback.
