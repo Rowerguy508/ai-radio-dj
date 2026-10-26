@@ -385,13 +385,21 @@ public struct ConnectionsComposition: Sendable {
         }
     }
 
+    /// Empty Connections: no sources, nothing granted. Used where no fixtures apply.
+    public static var unavailable: ConnectionsComposition {
+        ConnectionsComposition(
+            sourceReader: StaticConnectionSourceReader(),
+            consent: StaticIntegrationConsent(Dictionary(uniqueKeysWithValues: StationIntegration.allCases.map { ($0, ConsentState.notRequested) })),
+            providers: [], contextSources: [], notes: nil)
+    }
+
+    /// `.testStation` returns the caller's fixture composition; the shared code never names the
+    /// fixture type, so Release builds (which do not compile the test station) stay clean.
     public static func make(mode: AppRuntimeMode, live: LiveFactories,
-                            fixtures: @autoclosure () -> TestStationFixtures) -> ConnectionsComposition {
+                            testStation: @autoclosure () -> ConnectionsComposition = .unavailable) -> ConnectionsComposition {
         switch mode {
         case .testStation:
-            let f = fixtures()
-            return ConnectionsComposition(sourceReader: f.sourceReader(), consent: TestStation.fixtureConsent,
-                                          providers: f.providers(), contextSources: f.contextSources(), notes: nil)
+            return testStation()
         case .live:
             let calendar = live.calendar()
             let files = live.files()
