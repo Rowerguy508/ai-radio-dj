@@ -6,24 +6,24 @@ import AeroDJCore
 ///
 /// The UI is `PlayingScreen` (Listen on the closed Duo, the two-zone Studio when open). It
 /// binds to the app-scoped session's `snapshot`, `studio` (tuner, Connections, DJ state)
-/// and real actions. The `.task` audio wiring is owned by Claude (#58) and is kept verbatim.
+/// and real actions. The session speech-stop hook is armed in `AppDependencies`, not here.
 struct PlayerView: View {
     let station: Station
     @StateObject private var music: MusicKitService
-    @StateObject private var interlude: InterludePlaybackAdapter
+    @ObservedObject private var interlude: InterludePlaybackAdapter
     let djSession: DJBreakSession
     let studio: StudioPresentationModel
     let isTestStation: Bool
 
-    /// `music` is the app-scoped session from `AppDependencies`. Never a new player.
-    init(station: Station, music: MusicKitService, djSession: DJBreakSession,
-         studio: StudioPresentationModel, isTestStation: Bool) {
+    /// `music` and `interlude` are the app-scoped players from `AppDependencies`. Never new ones.
+    init(station: Station, music: MusicKitService, interlude: InterludePlaybackAdapter,
+         djSession: DJBreakSession, studio: StudioPresentationModel, isTestStation: Bool) {
         self.station = station
         self.djSession = djSession
         self.studio = studio
         self.isTestStation = isTestStation
         _music = StateObject(wrappedValue: music)
-        _interlude = StateObject(wrappedValue: InterludePlaybackAdapter(music: music))
+        self.interlude = interlude
     }
 
     var body: some View {
@@ -44,14 +44,20 @@ struct PlayerView: View {
                 // skipped, and the next song is not delayed.
                 Task { @MainActor in
                     // The break (or its skip) comes first; the next song is loaded only after it.
-                    var prepared: PreparedDJBreak?
-                    if !interlude.isSpeaking {
-                        prepared = await djSession.naturalBoundary(afterTrack: finishedIndex)
-                    }
-                    let line = prepared?.cues.map(\.text).joined(separator: " ") ?? ""
-                    if let prepared, !line.isEmpty {
-                        await interlude.play(clips: prepared.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                    if interlude.isSpeaking {
+                        music.skipInterlude()
+                    } else if let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex) {
+                        switch BreakHandoffPolicy.decide(prepared: prepared) {
+                        case let .play(breakToPlay):
+                            let line = breakToPlay.cues.map(\.text).joined(separator: " ")
+                            interlude.handOut(afterTrack: finishedIndex)
+                            await interlude.play(clips: breakToPlay.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                        case .continueMusic:
+                            music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
+                            music.skipInterlude()
+                        }
                     } else {
+                        music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
                         music.skipInterlude()
                     }
                     await music.startNextTrack(after: finishedIndex)
@@ -63,7 +69,13 @@ struct PlayerView: View {
                 guard let duration else { return }
                 Task { await djSession.songStarted(index: index, remaining: .seconds(duration)) }
             }
-            music.onBreakMustStop = { [interlude] in interlude.stop() }
+            music.onBreakMustStop = { [interlude] reason in
+                if let reason {
+                    interlude.stopCurrentInterlude(reason: reason)
+                } else {
+                    interlude.stop()
+                }
+            }
             // A skip cuts the skipped song's break, so a prepared break for it is never played.
             music.onSongSkipped = { [djSession] index in
                 Task { await djSession.songCut(afterTrack: index) }
@@ -73,6 +85,8 @@ struct PlayerView: View {
                 switch event {
                 case .started(let k): djSession.playbackStarted(afterTrack: k)
                 case .finished(let k): djSession.playbackFinished(afterTrack: k)
+                // A revoke stops On Air without a voice failure. The session has no cancel event.
+                case .revoked(let k): djSession.playbackFinished(afterTrack: k)
                 case .failed(let k): djSession.playbackFailed(afterTrack: k)
                 }
             }
@@ -96,7 +110,8 @@ struct PlayerView: View {
     let dependencies = AppDependencies.make()
     NavigationStack {
         PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil),
-                   music: dependencies.playback, djSession: dependencies.djSession,
-                   studio: dependencies.studio, isTestStation: dependencies.mode == .testStation)
+                   music: dependencies.playback, interlude: dependencies.interlude,
+                   djSession: dependencies.djSession, studio: dependencies.studio,
+                   isTestStation: dependencies.mode == .testStation)
     }
 }

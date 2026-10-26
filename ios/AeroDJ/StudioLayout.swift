@@ -174,7 +174,7 @@ struct QueueList: View {
                 if snapshot.upNext.isEmpty {
                     Text("Nothing queued after this song.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(AeroDJPalette.secondaryText)
                         .padding(.vertical, 12)
                 } else {
                     ForEach(Array(snapshot.upNext.enumerated()), id: \.element.id) { index, track in
@@ -185,7 +185,7 @@ struct QueueList: View {
                 if applyEdit == nil, !snapshot.upNext.isEmpty {
                     Text("Reordering Up Next isn't available yet.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(AeroDJPalette.secondaryText)
                         .padding(.top, 8)
                 }
                 if let search {
@@ -200,7 +200,7 @@ struct QueueList: View {
     private func sectionTitle(_ text: String) -> some View {
         Text(text)
             .font(.footnote.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(AeroDJPalette.secondaryText)
             .textCase(.uppercase)
             .padding(.top, 14)
             .padding(.bottom, 6)
@@ -217,7 +217,7 @@ struct QueueList: View {
                     .lineLimit(1)
                 Text(track.artistName)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AeroDJPalette.secondaryText)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)

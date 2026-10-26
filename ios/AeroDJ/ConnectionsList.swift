@@ -29,12 +29,12 @@ struct ConnectionsList: View {
                 if let error = model.lastError {
                     Label(Self.message(for: error), systemImage: "exclamationmark.triangle")
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(AeroDJPalette.statusProblem)
                 }
                 if let pickError {
                     Label(pickError, systemImage: "exclamationmark.triangle")
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(AeroDJPalette.statusProblem)
                 }
                 ForEach(model.sources) { row in
                     SourceCard(row: row, itemCount: model.items(for: row.integration).count,
@@ -44,7 +44,7 @@ struct ConnectionsList: View {
                 }
                 Text("Turning a source off or deleting an item also removes any DJ speech prepared from it.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AeroDJPalette.secondaryText)
             }
             .padding(.vertical, 4)
             .padding(.bottom, 16)
@@ -140,8 +140,8 @@ private struct SourceCard: View {
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
-                        .background(Capsule().fill(row.mayShowConnected ? Color.green.opacity(0.2) : Color.secondary.opacity(0.15)))
-                        .foregroundStyle(row.mayShowConnected ? Color.green : Color.secondary)
+                        .background(Capsule().fill((row.mayShowConnected ? AeroDJPalette.statusPositive : AeroDJPalette.secondaryText).opacity(0.12)))
+                        .foregroundStyle(row.mayShowConnected ? AeroDJPalette.statusPositive : AeroDJPalette.secondaryText)
                         .accessibilityIdentifier("connections.badge.\(row.integration.rawValue)")
                 }
             }
@@ -152,7 +152,7 @@ private struct SourceCard: View {
                 .fixedSize(horizontal: false, vertical: true)
             Text(row.scope)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(AeroDJPalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
             let actions = row.actions
@@ -165,7 +165,7 @@ private struct SourceCard: View {
             ForEach(unavailableReasons(actions), id: \.self) { reason in
                 Label(reason, systemImage: "info.circle")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AeroDJPalette.secondaryText)
             }
         }
         .padding(14)
@@ -281,7 +281,7 @@ private struct ItemReviewSheet: View {
                 ForEach(model.items(for: integration)) { item in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(item.title).font(.subheadline.weight(.semibold))
-                        Text(item.description).font(.caption).foregroundStyle(.secondary)
+                        Text(item.description).font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
                         HStack {
                             ForEach(item.actions.filter { $0 != .review }, id: \.self) { action in
                                 Button(action.title, role: action.purgesNarration ? .destructive : nil) {

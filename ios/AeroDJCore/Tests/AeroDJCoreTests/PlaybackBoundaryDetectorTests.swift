@@ -131,6 +131,30 @@ final class PlaybackBoundaryDetectorTests: XCTestCase {
         XCTAssertNil(d.consume(timed("A", playing: false, at: 199)))
     }
 
+    private func assertNoBreak(for cause: PlaybackBoundaryDetector.HoldCause, file: StaticString = #filePath, line: UInt = #line) {
+        var d = PlaybackBoundaryDetector()
+        XCTAssertNil(d.consume(timed("A", playing: true, at: 199)), file: file, line: line)
+        d.pausedByApp(cause)
+        XCTAssertNil(
+            d.consume(timed("A", playing: false, at: 199.2)),
+            "\(cause) inside the last 1.5s produces no break",
+            file: file,
+            line: line
+        )
+    }
+
+    func testUserPauseInsideTheLastSecondProducesNoBreak() {
+        assertNoBreak(for: .userPause)
+    }
+
+    func testInterruptionInsideTheLastSecondProducesNoBreak() {
+        assertNoBreak(for: .systemInterruption)
+    }
+
+    func testRouteLossInsideTheLastSecondProducesNoBreak() {
+        assertNoBreak(for: .routeLoss)
+    }
+
     func testAPauseTheAppMadeInTheLastSecondsIsNotAFinish() {
         // A user pause, call or route change at 199.5 s must not play the break or advance the queue.
         var d = PlaybackBoundaryDetector()

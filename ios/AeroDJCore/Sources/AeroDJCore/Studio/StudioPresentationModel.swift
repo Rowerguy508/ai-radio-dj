@@ -26,6 +26,11 @@ public final class StudioPresentationModel {
     /// DJ status in the owner's five states. `isOnAir` is true only while `speaking`.
     public var djState: DJStudioState { dj.studioState }
     public var isOnAir: Bool { djState.isOnAir }
+    /// True only while a rendered DJ break waits for the next boundary (`.ready`): false when
+    /// idle, preparing, speaking or failed, and once the break is dropped or its source revoked,
+    /// purged or expired. Derived from the one DJ status the break session feeds; a Bool only,
+    /// never text, names or ids. Backs the fixed "A break is coming" line.
+    public var isBreakPrepared: Bool { if case .ready = dj.state { true } else { false } }
 
     /// Loads persisted state and starts forwarding station changes to Connections, so a
     /// withdrawn integration purges its narration immediately.

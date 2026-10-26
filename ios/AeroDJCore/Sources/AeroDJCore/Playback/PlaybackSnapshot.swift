@@ -28,6 +28,26 @@ public struct StationRef: Equatable, Sendable {
     }
 }
 
+/// Why transport is paused. The Play control is the user pause. The other two have their own words.
+public enum PlaybackHold: Equatable, Sendable {
+    case user
+    case interruption
+    case routeRemoved
+
+    /// Nil for a user pause: the Play button is already the truthful control.
+    /// The other captions are for the player UI. Nothing in Studio reads them yet.
+    public var caption: String? {
+        switch self {
+        case .user:
+            nil
+        case .interruption:
+            "Paused for an interruption"
+        case .routeRemoved:
+            "Paused because the audio route was removed"
+        }
+    }
+}
+
 /// What the user asked for. `.playing` means the show is on, even during a DJ break.
 public enum TransportState: String, Equatable, Sendable {
     case stopped
@@ -71,6 +91,8 @@ public struct PlaybackSnapshot: Equatable, Sendable {
     public var transport: TransportState
     public var dj: DJActivity
     public var error: PlaybackError?
+    /// Set while transport is paused for a reason the Play/Pause button cannot say.
+    public var hold: PlaybackHold?
 
     public init(
         station: StationRef? = nil,
@@ -78,7 +100,8 @@ public struct PlaybackSnapshot: Equatable, Sendable {
         upNext: [TrackInfo] = [],
         transport: TransportState = .stopped,
         dj: DJActivity = .idle,
-        error: PlaybackError? = nil
+        error: PlaybackError? = nil,
+        hold: PlaybackHold? = nil
     ) {
         self.station = station
         self.nowPlaying = nowPlaying
@@ -86,5 +109,6 @@ public struct PlaybackSnapshot: Equatable, Sendable {
         self.transport = transport
         self.dj = dj
         self.error = error
+        self.hold = hold
     }
 }
