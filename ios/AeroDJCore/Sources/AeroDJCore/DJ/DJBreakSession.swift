@@ -49,7 +49,23 @@ public final class DJBreakSession {
     /// Stops the DJ line on air. Same declaration as #67: PlayerView (82664c8) routes it to
     /// `InterludePlaybackAdapter.stopCurrentInterlude(reason:)`. `purge` calls it exactly once,
     /// and only when it removes a source the break on air depends on.
-    public var onBreakMustStop: (@MainActor (InterludeStopReason) -> Void)?
+    /// If a purge hits the on-air break while this is nil, the stop is held and delivered once
+    /// when a hook is set (unless that break has ended by then).
+    public var onBreakMustStop: (@MainActor (InterludeStopReason) -> Void)? {
+        didSet { deliverPendingStop() }
+    }
+    /// A stop for the break after `afterTrack` that found no hook installed.
+    private var pendingStop: (afterTrack: Int, reason: InterludeStopReason)?
+
+    private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
+        if let hook = onBreakMustStop { hook(reason) } else { pendingStop = (k, reason) }
+    }
+
+    private func deliverPendingStop() {
+        guard let pending = pendingStop, let hook = onBreakMustStop else { return }
+        pendingStop = nil
+        hook(pending.reason)
+    }
     /// Purges prepared and cached narration for sources that stop being narratable at a
     /// boundary (expiry). The app sets the same `NarrationPurger` the connections use.
     public var purger: (any NarrationPurging)?
@@ -140,7 +156,12 @@ public final class DJBreakSession {
                 await preparer.purge(sourceItemIDs: lapsed)
             }
         }
-        let cues = ready.cues.filter { $0.sourceItemID.map { !lapsed.contains($0) } ?? true }
+        // Re-check after the awaits: a source revoked, expired, demoted or blocked while this
+        // call was suspended (before the on-air marker exists) is not handed out either.
+        let handOut = now()
+        let cues = ready.cues.filter { cue in
+            (cue.sourceItemID.map { !lapsed.contains($0) } ?? true) && mayBeNarrated(cue, at: handOut)
+        }
         if ready.includesBriefing, !cues.contains(where: \.isContent) {
             // Nothing personal left to say: music plays at once.
             dj.send(.breakSkipped(afterTrack: k, .sourceRevoked))
@@ -165,7 +186,10 @@ public final class DJBreakSession {
     public func playbackFinished(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFinished(afterTrack: k)) }
     public func playbackFailed(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFailed(afterTrack: k)) }
 
-    private func endOnAir(_ k: Int) { if onAir?.afterTrack == k { onAir = nil } }
+    private func endOnAir(_ k: Int) {
+        if onAir?.afterTrack == k { onAir = nil }
+        if pendingStop?.afterTrack == k { pendingStop = nil }   // nothing left to stop
+    }
 
     /// Playback stopped or the session ended: nothing prepared may play later.
     public func stop() async {
@@ -173,6 +197,7 @@ public final class DJBreakSession {
         breaks = [:]
         playing = nil
         onAir = nil
+        pendingStop = nil
         dj.send(.sessionStopped)
     }
 
@@ -185,7 +210,7 @@ public final class DJBreakSession {
         // A break already playing that speaks about these items stops now, in this call.
         if let live = onAir, !live.sources.isDisjoint(with: ids) {
             onAir = nil
-            onBreakMustStop?(.sourceRevoked)
+            requestStop(afterTrack: live.afterTrack, .sourceRevoked)
         }
         func mentions(_ cue: NarrationCue) -> Bool { cue.sourceItemID.map(ids.contains) ?? false }
         if let b = briefing {

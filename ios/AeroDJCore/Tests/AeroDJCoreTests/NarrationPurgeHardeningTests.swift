@@ -444,6 +444,46 @@ final class BoundaryExpiryTests: XCTestCase {
                        sensitivity: sensitivity)
     }
 
+    /// Revokes `ids` from inside the boundary purge: the barrier is the purge itself, so a revoke
+    /// lands exactly while `naturalBoundary` is suspended at its `await`. No sleeps.
+    final class RevokeDuringPurge: NarrationPurging, @unchecked Sendable {
+        weak var session: DJBreakSession?
+        let revokes: Set<UUID>
+        private(set) var calls: [Set<UUID>] = []
+        init(revokes: Set<UUID>) { self.revokes = revokes }
+        func purge(sourceItemIDs ids: Set<UUID>) async {
+            calls.append(ids)
+            let revokes = revokes
+            await MainActor.run { [session] in session?.purge(sourceItemIDs: revokes) }
+        }
+    }
+
+    /// Sentinel B4: a kept source revoked during the boundary's purge await (before the on-air
+    /// marker exists) must not be handed out: the cues are re-checked against current consent.
+    func testRevokeDuringTheBoundaryPurgeIsNotHandedOut() async throws {
+        let clock = Clock(t0)
+        let expiring = UUID(), kept = UUID(), other = UUID()
+        let r = await rig(clock, cues: [cue(expiring, 1, "Coming up: Standup at ten."), cue(kept, 2, "And lunch with Sam."),
+                                        cue(other, 3, "Then the dentist at four.")],
+                          sources: [approved(expiring, expiresAt: t0.addingTimeInterval(60)),
+                                    approved(kept, expiresAt: nil), approved(other, expiresAt: nil)])
+        defer { try? FileManager.default.removeItem(at: r.dir) }
+        let spy = RevokeDuringPurge(revokes: [kept])
+        spy.session = r.session
+        r.session.purger = spy
+        let stops = OnBreakMustStopHookTests.StopLog()
+        r.session.onBreakMustStop = { stops.reasons.append($0) }
+        clock.now = t0.addingTimeInterval(61)
+
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertEqual(spy.calls, [[expiring]], "the boundary purged the expired item, and the revoke landed in that await")
+        let ids = Set(try XCTUnwrap(handed, "the other approved item still airs").cues.compactMap(\.sourceItemID))
+        XCTAssertFalse(ids.contains(kept), "the source revoked during the await is not handed out")
+        XCTAssertFalse(ids.contains(expiring))
+        XCTAssertTrue(ids.contains(other))
+        XCTAssertEqual(stops.reasons, [], "nothing was on air yet, so nothing to stop")
+    }
+
     /// Sentinel item 2: the boundary re-check treats a missing sensitivity as blocked (as #75's
     /// adapter does): an approved row without a value is never narrated.
     func testApprovedItemWithMissingSensitivityIsNotNarratedAtTheBoundary() async throws {
@@ -626,10 +666,11 @@ final class OnBreakMustStopHookTests: XCTestCase {
     final class StopLog { var reasons: [InterludeStopReason] = [] }
 
     private struct OnAir { let session: DJBreakSession; let station: StationConfigurationModel
-                           let stops: StopLog; let item: UUID; let purger: NarrationPurger }
+                           let stops: StopLog; let items: [UUID]; let purger: NarrationPurger
+                           var item: UUID { items[0] } }
 
     /// A personal break about `item` is on air, with a fake stop hook installed.
-    private func onAir() async throws -> OnAir {
+    private func onAir(sources n: Int = 1, hook: Bool = true) async throws -> OnAir {
         let station = StationConfigurationModel(
             store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: .init(commentary: .frequent)))),
             consent: StaticIntegrationConsent([:]))
@@ -642,23 +683,23 @@ final class OnBreakMustStopHookTests: XCTestCase {
         let dj = DJPresentationStore()
         let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 9 })
         let stops = StopLog()
-        session.onBreakMustStop = { stops.reasons.append($0) }
+        if hook { session.onBreakMustStop = { stops.reasons.append($0) } }
         await session.start()
-        let item = UUID()
-        let briefing = NarrationHandoff(cues: [NarrationCue(
-            id: UUID(), order: 1, group: 0, kind: .upcomingEvent, text: "Coming up: Standup at ten.",
-            estimatedSeconds: 4, maxSeconds: 30, sourceItemID: item, source: .calendar, provenance: "fixture:1")],
+        let items = (0..<n).map { _ in UUID() }
+        let briefing = NarrationHandoff(cues: items.enumerated().map { i, item in NarrationCue(
+            id: UUID(), order: i + 1, group: 0, kind: .upcomingEvent, text: "Coming up: event \(i + 1) at ten.",
+            estimatedSeconds: 4, maxSeconds: 30, sourceItemID: item, source: .calendar, provenance: "fixture:\(i + 1)") },
             maxSpokenSeconds: 60, experienceSeconds: 600)
         var states = dj.updates().makeAsyncIterator()
         await session.queueStarted(djTracks(8), briefing: briefing, sources: approvedSources(briefing))
         await session.songStarted(index: 0, remaining: .seconds(180))
         while let s = await states.next() { if case .ready = s { break } }
         let handed = await session.naturalBoundary(afterTrack: 0)
-        XCTAssertTrue(try XCTUnwrap(handed).cues.contains { $0.sourceItemID == item })
+        XCTAssertEqual(Set(try XCTUnwrap(handed).cues.compactMap(\.sourceItemID)), Set(items))
         session.playbackStarted(afterTrack: 0)
         let purger = NarrationPurger(cache: cache, preparer: preparer, session: session, revocations: revocations,
                                      feed: NarrationPurgeFeed())
-        return OnAir(session: session, station: station, stops: stops, item: item, purger: purger)
+        return OnAir(session: session, station: station, stops: stops, items: items, purger: purger)
     }
 
     func testRevokingTheOnAirSourceFiresTheStopHookOnceWithSourceRevoked() async throws {
@@ -676,6 +717,50 @@ final class OnBreakMustStopHookTests: XCTestCase {
         r.session.purge(sourceItemIDs: [UUID(), UUID()])
         r.session.purge(sourceItemIDs: [])
         XCTAssertEqual(r.stops.reasons, [], "unrelated purges leave the break playing")
+    }
+
+    /// Sentinel question 2: any one of the on-air break's sources stops it, once.
+    func testRevokingOneOfTwoOnAirSourcesStopsOnce() async throws {
+        let r = try await onAir(sources: 2)
+        await r.purger.purge(sourceItemIDs: [r.items[0]])
+        await r.purger.purge(sourceItemIDs: [r.items[1]])
+        XCTAssertEqual(r.stops.reasons, [.sourceRevoked])
+    }
+
+    /// Sentinel question 4: a purge from inside the hook neither fires again nor deadlocks.
+    func testPurgeFromInsideTheHookFiresOnceAndCompletes() async throws {
+        let r = try await onAir()
+        let session = r.session, item = r.item, stops = r.stops
+        session.onBreakMustStop = { reason in
+            stops.reasons.append(reason)
+            session.purge(sourceItemIDs: [item])
+            session.purge(sourceItemIDs: [UUID()])
+        }
+        await r.purger.purge(sourceItemIDs: [item])
+        XCTAssertEqual(r.stops.reasons, [.sourceRevoked])
+    }
+
+    /// Sentinel item 6: with no hook installed, the stop is held and delivered once when one is set.
+    func testStopIsNotLostWhenTheHookIsInstalledLate() async throws {
+        let r = try await onAir(hook: false)
+        await r.purger.purge(sourceItemIDs: [r.item])
+        XCTAssertEqual(r.stops.reasons, [], "no hook yet")
+        let stops = r.stops
+        r.session.onBreakMustStop = { stops.reasons.append($0) }
+        XCTAssertEqual(r.stops.reasons, [.sourceRevoked], "delivered as soon as the hook is attached")
+        r.session.onBreakMustStop = { stops.reasons.append($0) }
+        await r.purger.purge(sourceItemIDs: [r.item])
+        XCTAssertEqual(r.stops.reasons, [.sourceRevoked], "delivered once, not again")
+    }
+
+    /// A held stop is dropped when that break has already ended: a later hook gets nothing.
+    func testHeldStopIsDroppedOnceThatBreakHasEnded() async throws {
+        let r = try await onAir(hook: false)
+        await r.purger.purge(sourceItemIDs: [r.item])
+        r.session.playbackFinished(afterTrack: 0)
+        let stops = r.stops
+        r.session.onBreakMustStop = { stops.reasons.append($0) }
+        XCTAssertEqual(r.stops.reasons, [], "nothing is playing any more, so nothing to stop")
     }
 
     func testTurningTheBriefingOffDoesNotFire() async throws {
