@@ -197,6 +197,71 @@ public protocol AudioCache: Sendable {
     func purge(sourceItemIDs: Set<UUID>) async
     /// Removes clips older than the retention limit.
     func purgeExpired() async
+    /// Removes every clip derived from any personal item, whatever its id. For when consent
+    /// cannot be checked per item (live mode does not persist consent across launches).
+    func purgeAllPersonal() async
+}
+
+/// Enforces the 7-day cap on a schedule, not only when a clip is read: an expired clip that
+/// is never asked for again is still deleted. `run` sweeps once at start and once per tick.
+public struct AudioCacheSweeper: Sendable {
+    public static let defaultInterval: Duration = .seconds(3600)
+    public let cache: any AudioCache
+
+    public init(cache: any AudioCache) { self.cache = cache }
+
+    /// Production entry point. With `purgingPersonalFirst`, personal clips left by an earlier
+    /// launch are removed before the first sweep (live consent is not persisted).
+    @discardableResult
+    public func start(every interval: Duration = Self.defaultInterval, purgingPersonalFirst: Bool,
+                      onLaunchSweep: @escaping @Sendable (String?) -> Void = { _ in }) -> Task<Void, Never> {
+        let cache = cache
+        let ticks = Self.ticks(every: interval)
+        return Task.detached(priority: .utility) {
+            let line = await AudioCacheSweeper(cache: cache).prepareForLaunch(purgingPersonalFirst: purgingPersonalFirst)
+            onLaunchSweep(line)
+            for await _ in ticks {
+                if Task.isCancelled { return }
+                await cache.purgeExpired()
+            }
+        }
+    }
+
+    /// The launch step, finished before the first tick: personal clips from an earlier launch
+    /// (when asked), expired clips and unattributable files are deleted, then the count of what
+    /// is left is logged. Returns the log line (nil if the cache can't count).
+    @discardableResult
+    public func prepareForLaunch(purgingPersonalFirst: Bool) async -> String? {
+        if purgingPersonalFirst { await cache.purgeAllPersonal() }
+        await cache.purgeExpired()
+        return await AudioCacheFileLog.record(cache, after: .launch)
+    }
+
+    /// Sweeps now, then after each tick, until `ticks` finishes or the task is cancelled.
+    /// `onSweep` runs after each sweep completes (tests wait on it instead of sleeping).
+    public func run(ticks: AsyncStream<Void>, onSweep: @Sendable () -> Void = {}) async {
+        await cache.purgeExpired()
+        onSweep()
+        for await _ in ticks {
+            if Task.isCancelled { return }
+            await cache.purgeExpired()
+            onSweep()
+        }
+    }
+
+    static func ticks(every interval: Duration) -> AsyncStream<Void> {
+        AsyncStream { continuation in
+            let timer = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: interval)
+                    if Task.isCancelled { break }
+                    continuation.yield()
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in timer.cancel() }
+        }
+    }
 }
 
 public actor InMemoryAudioCache: AudioCache {
@@ -219,8 +284,32 @@ public actor InMemoryAudioCache: AudioCache {
     public func purge(sourceItemIDs: Set<UUID>) {
         clips = clips.filter { sourceItemIDs.isDisjoint(with: $0.value.sourceItemIDs) }
     }
-    public func purgeExpired() { clips = clips.filter { now().timeIntervalSince($0.value.createdAt) <= maxAge } }
+    /// A clip stamped later than now (stored while the clock ran ahead) is first re-stamped to
+    /// now, so its 7 days run from no later than the first sweep after the clock is corrected.
+    public func purgeExpired() {
+        let t = now()
+        for (key, clip) in clips where clip.createdAt > t { clips[key]?.createdAt = t }
+        clips = clips.filter { t.timeIntervalSince($0.value.createdAt) <= maxAge }
+    }
+    public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
     public var count: Int { clips.count }
+}
+
+extension InMemoryAudioCache: AudioCacheCounting {
+    public func fileCount() -> AudioCacheCount {
+        AudioCacheCount(files: clips.count, personal: clips.values.filter { !$0.sourceItemIDs.isEmpty }.count)
+    }
+}
+
+extension FileAudioCache: AudioCacheCounting {
+    /// Every file counts, metadata and audio alike. Files of personal or unattributable keys
+    /// (orphaned audio included) count as personal.
+    public func fileCount() async -> AudioCacheCount {
+        let groups = groups()
+        return AudioCacheCount(files: groups.reduce(0) { $0 + $1.files.count },
+                               personal: groups.filter { $0.clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
+                                   .reduce(0) { $0 + $1.files.count })
+    }
 }
 
 /// On-device cache, one protected file per key. Personal narration stays on
@@ -247,33 +336,69 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func audio(for key: String) async -> CachedAudio? {
-        let file = url(key)
-        guard let clip = read(file) else { return nil }
+        guard let clip = read(url(key)).map({ clampingFutureStamp($0, key: key) }) else { return nil }
         guard now().timeIntervalSince(clip.createdAt) <= maxAge else {
-            try? FileManager.default.removeItem(at: file)
+            remove(group: key)
             return nil
         }
         return clip
     }
 
-    private func entries() -> [URL] {
-        ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.pathExtension == "json" }
+    /// Every regular file in the cache directory, any extension: `.json` metadata and any
+    /// audio beside it (`<key>.caf`, `<key>.m4a`, ...), so orphaned audio is seen too.
+    private func allFiles() -> [URL] {
+        ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey])) ?? [])
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false }
+    }
+
+    /// Files grouped by key (file name without extension), with the key's clip if its
+    /// metadata is readable. A group with no readable metadata (orphaned audio, corrupt
+    /// file) cannot be attributed, so every purge removes it.
+    private func groups() -> [(key: String, files: [URL], clip: CachedAudio?)] {
+        Dictionary(grouping: allFiles(), by: { $0.deletingPathExtension().lastPathComponent })
+            .map { key, files in (key, files, files.contains { $0.pathExtension == "json" } ? read(url(key)) : nil) }
+    }
+
+    /// Clock skew: a clip stamped later than now (stored while the clock ran ahead) is re-stamped
+    /// to now and saved, so its 7 days run from no later than the first sweep or read after the
+    /// clock is corrected, and it cannot outlive the cap by the size of the skew.
+    private func clampingFutureStamp(_ clip: CachedAudio, key: String) -> CachedAudio {
+        let t = now()
+        guard clip.createdAt > t else { return clip }
+        var clamped = clip
+        clamped.createdAt = t
+        if let data = try? JSONEncoder().encode(clamped) { try? ProtectedFile.write(data, to: url(key)) }
+        return clamped
+    }
+
+    /// Deletes a key's metadata together with its audio, whatever the audio's extension.
+    private func remove(group key: String) {
+        for file in allFiles() where file.deletingPathExtension().lastPathComponent == key {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    private func removeGroups(where shouldRemove: (CachedAudio?) -> Bool) {
+        for group in groups() where shouldRemove(group.clip) {
+            for file in group.files { try? FileManager.default.removeItem(at: file) }
+        }
     }
 
     public func purge(sourceItemIDs: Set<UUID>) async {
-        for file in entries() {
-            // Unreadable entries cannot be attributed, so they are removed too.
-            if let clip = read(file), sourceItemIDs.isDisjoint(with: clip.sourceItemIDs) { continue }
-            try? FileManager.default.removeItem(at: file)
-        }
+        removeGroups { clip in clip.map { !sourceItemIDs.isDisjoint(with: $0.sourceItemIDs) } ?? true }
     }
 
     public func purgeExpired() async {
-        for file in entries() {
-            if let clip = read(file), now().timeIntervalSince(clip.createdAt) <= maxAge { continue }
-            try? FileManager.default.removeItem(at: file)
+        let t = now()
+        for group in groups() {
+            let clip = group.clip.map { clampingFutureStamp($0, key: group.key) }
+            guard clip.map({ t.timeIntervalSince($0.createdAt) > maxAge }) ?? true else { continue }
+            for file in group.files { try? FileManager.default.removeItem(at: file) }
         }
+    }
+
+    public func purgeAllPersonal() async {
+        removeGroups { clip in clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
     }
 
     public func store(_ audio: CachedAudio, for key: String) async {
@@ -321,28 +446,75 @@ public struct RenderedNarration: Sendable {
 /// the app's purger and renderer agree without extra wiring; tests inject their own.
 public final class NarrationRevocations: @unchecked Sendable {
     public static let shared = NarrationRevocations()
+    /// Most tombstones kept. Older ones are dropped, and any render whose token is older than
+    /// a dropped tombstone is treated as revoked (fails closed; music continues).
+    public let limit: Int
     private let lock = NSLock()
     private var clock: UInt64 = 0
     private var revokedAt: [UUID: UInt64] = [:]
+    /// Highest clock among dropped tombstones.
+    private var evictedThrough: UInt64 = 0
+    /// Clock of the last "purge all personal narration".
+    private var allRevokedAt: UInt64 = 0
+    /// Purges started and not yet finished: renders for these items are refused meanwhile.
+    private var pending: [UUID: Int] = [:]
+    private var pendingAll = 0
 
-    public init() {}
+    public init(limit: Int = 4096) { self.limit = max(1, limit) }
 
     /// The current revocation clock. Anything revoked after this token is `revoked(since:)`.
     public func token() -> UInt64 { lock.withLock { clock } }
 
-    /// Marks items as revoked now.
+    /// Marks items as revoked now, with their purge pending until `purgeCompleted`.
     public func revoke(_ ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
         lock.withLock {
             clock &+= 1
-            for id in ids { revokedAt[id] = clock }
+            for id in ids { revokedAt[id] = clock; pending[id, default: 0] += 1 }
+            evictIfNeeded()
         }
     }
+
+    /// The purge started by `revoke(ids)` finished.
+    public func purgeCompleted(_ ids: Set<UUID>) {
+        lock.withLock {
+            for id in ids {
+                let left = (pending[id] ?? 1) - 1
+                pending[id] = left > 0 ? left : nil
+            }
+        }
+    }
+
+    /// Every personal item counts as revoked now (ids unknown), pending until `purgeAllCompleted`.
+    public func revokeAll() {
+        lock.withLock { clock &+= 1; allRevokedAt = clock; pendingAll += 1 }
+    }
+
+    public func purgeAllCompleted() { lock.withLock { pendingAll = max(0, pendingAll - 1) } }
 
     /// Whether any of `ids` was revoked after `token` was taken.
     public func revoked(_ ids: [UUID], since token: UInt64) -> Bool {
         guard !ids.isEmpty else { return false }
-        return lock.withLock { ids.contains { (revokedAt[$0] ?? 0) > token } }
+        return lock.withLock {
+            allRevokedAt > token || evictedThrough > token || ids.contains { (revokedAt[$0] ?? 0) > token }
+        }
+    }
+
+    /// Whether a purge covering any of `ids` is still running.
+    public func purgePending(_ ids: [UUID]) -> Bool {
+        guard !ids.isEmpty else { return false }
+        return lock.withLock { pendingAll > 0 || ids.contains { pending[$0] != nil } }
+    }
+
+    /// Tombstones held now (at most `limit`).
+    public var count: Int { lock.withLock { revokedAt.count } }
+
+    private func evictIfNeeded() {
+        guard revokedAt.count > limit else { return }
+        // Drop the oldest quarter at once, so eviction is not paid on every revoke.
+        let keep = max(1, limit - limit / 4)
+        let oldest = revokedAt.sorted { $0.value < $1.value }.prefix(revokedAt.count - keep)
+        for (id, at) in oldest { revokedAt[id] = nil; evictedThrough = max(evictedThrough, at) }
     }
 }
 
@@ -399,11 +571,23 @@ public struct VoiceRenderer: Sendable {
         var attempts: [VoiceAttempt] = []
         let sources = cue.sourceItemID.map { [$0] } ?? []
         let token = revocations.token()  // before any synthesis: a later purge of `sources` wins
+        if revocations.purgePending(sources) {
+            // A purge of this item is still running: render nothing that it could miss.
+            return .failure(Failure(reason: .renderFailed, attempts: [VoiceAttempt(providerID: routes.first?.providerID ?? "", result: .cancelled)]))
+        }
         for route in routes {
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
             let text = route.acceptsSSML ? SpeechDelivery.ssml(cue.text) : SpeechDelivery.speakable(cue.text)
             let key = Self.cacheKey(text: text, route: route)
             if let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
+                // Keys are text + voice, so the clip may carry other items' ids: check both.
+                let hitSources = Array(Set(sources).union(cached.sourceItemIDs))
+                if revocations.revoked(hitSources, since: token) || revocations.purgePending(hitSources) {
+                    // Revoked while the read was in flight: never hand back, and remove, that clip.
+                    await cache.purge(sourceItemIDs: Set(hitSources))
+                    attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
+                    return .failure(Failure(reason: .renderFailed, attempts: attempts))
+                }
                 attempts.append(VoiceAttempt(providerID: route.providerID, result: .cacheHit))
                 return .success(RenderedClip(cueID: cue.id, audio: cached, cacheKey: key, attempts: attempts))
             }

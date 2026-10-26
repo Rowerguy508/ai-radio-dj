@@ -67,6 +67,8 @@ final class StudioBreakPreparedTests: XCTestCase {
         let dj: DJPresentationStore
         let clock: TestClock
         let item: UUID
+        /// The item's Connections row, as the app passes it with the briefing.
+        let source: ConnectionItem
         let purger: NarrationPurger
         /// Every `isBreakPrepared` value seen on each DJ state change (current value first).
         let seen: () -> [Bool]
@@ -104,7 +106,9 @@ final class StudioBreakPreparedTests: XCTestCase {
         let recorder = Task { @MainActor in
             for await _ in updates { values.all.append(studio.isBreakPrepared) }
         }
-        return Rig(studio: studio, session: session, connections: connections, dj: dj, clock: clock, item: item,
+        let source = ConnectionItem(id: item, integration: .obsidian, title: "[TEST] note", state: .approved,
+                                    expiresAt: expiresIn.map { clock.now + $0 }, sensitivity: .low)
+        return Rig(studio: studio, session: session, connections: connections, dj: dj, clock: clock, item: item, source: source,
                    purger: purger, seen: { values.all }, recorder: recorder)
     }
 
@@ -124,7 +128,7 @@ final class StudioBreakPreparedTests: XCTestCase {
     /// Queue started with the item's note in break 0, song 0 playing, break 0 rendered and waiting.
     private func readyRig(voice: BPVoice = .init(), expiresIn: TimeInterval? = nil) async -> Rig {
         let r = await rig(voice: voice, expiresIn: expiresIn)
-        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
+        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item), sources: [r.source])
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await until(r.dj, isReady)
         XCTAssertTrue(r.studio.isBreakPrepared, "rendered and waiting for the boundary")
@@ -149,7 +153,7 @@ final class StudioBreakPreparedTests: XCTestCase {
         XCTAssertFalse(r.studio.isBreakPrepared, "initial: false")
         XCTAssertEqual(r.dj.state, .idle)
 
-        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
+        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item), sources: [r.source])
         XCTAssertFalse(r.studio.isBreakPrepared, "idle: false")
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await until(r.dj, isPreparing)
@@ -179,7 +183,7 @@ final class StudioBreakPreparedTests: XCTestCase {
 
     func testRenderFailureNeverBecomesTrue() async {
         let r = await rig(voice: BPVoice(fails: true))
-        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
+        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item), sources: [r.source])
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await until(r.dj) { if case .unavailable(.voiceFailed) = $0 { true } else { false } }
         XCTAssertFalse(r.studio.isBreakPrepared, "render failure: false")
@@ -190,7 +194,7 @@ final class StudioBreakPreparedTests: XCTestCase {
     func testBreakStillRenderingAtTheBoundaryIsDroppedAndNeverTrue() async {
         let gate = Gate()
         let r = await rig(voice: BPVoice(gate: gate))
-        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
+        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item), sources: [r.source])
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await gate.arrived()
         let outcome = await r.session.naturalBoundary(afterTrack: 0)   // missed its deadline: dropped
@@ -268,7 +272,7 @@ final class StudioBreakPreparedTests: XCTestCase {
     func testRevokeDuringPreparationNeverBecomesTrue() async {
         let gate = Gate()
         let r = await rig(voice: BPVoice(gate: gate))
-        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item))
+        await r.session.queueStarted(djTracks(8), briefing: briefing(r.item), sources: [r.source])
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await gate.arrived()                                        // rendering now
         _ = await r.connections.perform(.revoke, on: r.item)
