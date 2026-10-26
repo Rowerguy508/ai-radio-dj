@@ -4,21 +4,26 @@ import AeroDJCore
 /// Player shell. MusicKit playback is managed by the framework; this view
 /// reflects state and forwards user actions. No protected-stream mixing.
 ///
-/// The UI is `PlayingScreen` (compact on the closed Duo, two-zone Studio when open). It
+/// The UI is `PlayingScreen` (Listen on the closed Duo, the two-zone Studio when open). It
 /// binds to the app-scoped session's `snapshot`, `studio` (tuner, Connections, DJ state)
-/// and real actions. Audio wiring stays in `.task` below and belongs to the player owner.
+/// and real actions. The `.task` audio wiring is owned by Claude (#58) and is kept verbatim.
 struct PlayerView: View {
     let station: Station
-    let dependencies: AppDependencies
     @StateObject private var music: MusicKitService
     @StateObject private var interlude: InterludePlaybackAdapter
+    let djSession: DJBreakSession
+    let studio: StudioPresentationModel
+    let isTestStation: Bool
 
     /// `music` is the app-scoped session from `AppDependencies`. Never a new player.
-    init(station: Station, dependencies: AppDependencies) {
+    init(station: Station, music: MusicKitService, djSession: DJBreakSession,
+         studio: StudioPresentationModel, isTestStation: Bool) {
         self.station = station
-        self.dependencies = dependencies
-        _music = StateObject(wrappedValue: dependencies.playback)
-        _interlude = StateObject(wrappedValue: InterludePlaybackAdapter(music: dependencies.playback))
+        self.djSession = djSession
+        self.studio = studio
+        self.isTestStation = isTestStation
+        _music = StateObject(wrappedValue: music)
+        _interlude = StateObject(wrappedValue: InterludePlaybackAdapter(music: music))
     }
 
     var body: some View {
@@ -27,19 +32,39 @@ struct PlayerView: View {
                       snapshot: music.snapshot,
                       actions: .live(music),
                       search: .live(music, station: stationRef),
-                      studio: dependencies.studio,
-                      isTestStation: dependencies.mode == .testStation)
+                      studio: studio,
+                      isTestStation: isTestStation)
         .navigationTitle(station.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {
-            music.onBoundary = { @MainActor [music] boundary, _ in
+            music.onBoundary = { @MainActor [interlude, music, djSession] boundary, finishedIndex in
                 guard case .naturalEnd = boundary else { return }
-                // No prepared break is wired to the player yet (DJBreakSession lands with
-                // #58), so every natural end resolves the transition with no speech.
-                music.skipInterlude()
+                // A break is only ever played at a natural end. Anything late, missing or failed is
+                // skipped, and the next song is not delayed.
+                Task { @MainActor in
+                    guard !interlude.isSpeaking,
+                          let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex) else {
+                        music.skipInterlude()
+                        return
+                    }
+                    let line = prepared.cues.map(\.text).joined(separator: " ")
+                    guard !line.isEmpty else {
+                        music.skipInterlude()
+                        return
+                    }
+                    await interlude.play(clips: prepared.clips.map(\.audio.data), line: line, afterTrack: finishedIndex)
+                }
             }
             music.onBreakMustStop = { [interlude] in interlude.stop() }
+            // Only real audio events reach the DJ session; nothing is synthesized from the plan.
+            interlude.onPlayback = { [djSession] event in
+                switch event {
+                case .started(let k): djSession.playbackStarted(afterTrack: k)
+                case .finished(let k): djSession.playbackFinished(afterTrack: k)
+                case .failed(let k): djSession.playbackFailed(afterTrack: k)
+                }
+            }
             await music.authorize()
         }
     }
@@ -57,8 +82,10 @@ struct PlayerView: View {
 }
 
 #Preview {
+    let dependencies = AppDependencies.make()
     NavigationStack {
         PlayerView(station: Station(id: UUID(), name: "Morning Calm", description: nil),
-                   dependencies: AppDependencies.make())
+                   music: dependencies.playback, djSession: dependencies.djSession,
+                   studio: dependencies.studio, isTestStation: dependencies.mode == .testStation)
     }
 }

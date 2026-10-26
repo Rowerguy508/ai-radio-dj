@@ -30,6 +30,12 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     var isSpeaking: Bool { finish != nil }
 
+    /// Real audio lifecycle for the DJ session. Emitted only from the player: started when
+    /// AVAudioPlayer really starts, finished when the whole break ends, failed otherwise.
+    enum Playback { case started(afterTrack: Int), finished(afterTrack: Int), failed(afterTrack: Int) }
+    var onPlayback: ((Playback) -> Void)?
+    private var breakTrack = 0
+
     /// A line with no prepared clip. Routine, so the break is skipped quietly; the
     /// DJ status goes idle without an error. Only real failures are reported.
     func skipUnprepared() {
@@ -37,13 +43,14 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     /// Plays one prepared clip. A clip that won't decode skips the break.
-    func play(clip: Data, line: String) async {
-        await play(clips: [clip], line: line)
+    func play(clip: Data, line: String, afterTrack: Int) async {
+        await play(clips: [clip], line: line, afterTrack: afterTrack)
     }
 
     /// Plays a prepared break: every clip back to back inside ONE break. Music is paused
     /// once before the first clip and resumed once after the last one.
-    func play(clips: [Data], line: String) async {
+    func play(clips: [Data], line: String, afterTrack: Int) async {
+        breakTrack = afterTrack
         guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
             music.skipInterlude()
             return
@@ -101,13 +108,20 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             // The line is reported as started only once audio is really playing.
             if start() {
                 music.djStarted(line)
+                onPlayback?(.started(afterTrack: breakTrack))
             } else {
                 finishBreak(.cancelled)
             }
         }
 
         music.endInterlude() // voice -> music
-        if outcome == .finished { music.djFinished() } else { music.djCancelled() }
+        if outcome == .finished {
+            music.djFinished()
+            onPlayback?(.finished(afterTrack: breakTrack))
+        } else {
+            music.djCancelled()
+            onPlayback?(.failed(afterTrack: breakTrack))
+        }
         // Music returns only if the user still wants it and the system is not holding it.
         await music.resumeIfAllowed()
     }
