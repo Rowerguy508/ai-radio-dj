@@ -364,17 +364,34 @@ struct TransportRow: View {
 
             Button {
                 taps += 1
-                if transport == .playing { actions.pause() } else { Task { await actions.resume() } }
+                switch transport {
+                case .playing:
+                    actions.pause()
+                case .preparing:
+                    // Cancel a start that has not confirmed yet.
+                    actions.pause()
+                case .paused, .stopped:
+                    Task { await actions.resume() }
+                }
             } label: {
-                Label(transport == .playing ? "Pause" : "Play",
-                      systemImage: transport == .playing ? "pause.fill" : "play.fill")
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(AeroDJPalette.onMediaInk)
-                    .frame(width: 68, height: 68)
-                    .background(Circle().fill(AeroDJPalette.onMediaLight))
-                    .contentShape(Circle())
-                    .modifier(SymbolReplace(enabled: !reduceMotion))
+                Group {
+                    if transport == .preparing {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(AeroDJPalette.onMediaInk)
+                            .accessibilityLabel("Starting playback")
+                    } else {
+                        Label(transport == .playing ? "Pause" : "Play",
+                              systemImage: transport == .playing ? "pause.fill" : "play.fill")
+                            .labelStyle(.iconOnly)
+                    }
+                }
+                .font(.system(size: 28, weight: .bold))
+                .foregroundStyle(AeroDJPalette.onMediaInk)
+                .frame(width: 68, height: 68)
+                .background(Circle().fill(AeroDJPalette.onMediaLight))
+                .contentShape(Circle())
+                .modifier(SymbolReplace(enabled: !reduceMotion))
             }
             .accessibilityIdentifier("transport.playPause")
 
@@ -588,7 +605,7 @@ struct StartListeningView: View {
                     Button {
                         Task {
                             do { try await search.play(results, index) } catch {
-                                phase = .failed("Couldn't start that song. Try another.")
+                                phase = .failed(Self.playFailureMessage(error))
                             }
                         }
                     } label: {
@@ -623,7 +640,19 @@ struct StartListeningView: View {
         return "Apple Music search failed: \(typeName) code \(code). \(text)"
     }
 
+    /// TEMPORARY diagnostic for device builds (remove once the playback failure's cause is
+    /// known): type, NSError code and localizedDescription only. Never debugDescription,
+    /// the underlying-error chain, request URLs, titles or search terms.
+    static func playFailureMessage(_ error: Error) -> String {
+        let typeName = String(describing: type(of: error))
+        let code = (error as NSError).code
+        let text = error.localizedDescription
+        playLog.error("TEMPORARY Apple Music play failed: \(typeName, privacy: .public) code \(code, privacy: .public): \(text, privacy: .public)")
+        return "TEMPORARY: couldn't start playback: \(typeName) code \(code). \(text)"
+    }
+
     private static let searchLog = Logger(subsystem: "com.aerodj.app", category: "search")
+    private static let playLog = Logger(subsystem: "com.aerodj.app", category: "playback")
 
     private func runSearch() {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)

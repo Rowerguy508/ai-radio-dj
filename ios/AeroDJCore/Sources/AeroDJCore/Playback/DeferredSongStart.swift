@@ -22,3 +22,18 @@ public struct DeferredSongStart: Equatable, Sendable {
         return index
     }
 }
+
+
+/// What to do when `startTrack` would play but `mayAutoResume` is false.
+public enum HeldStartAction: Equatable, Sendable {
+    /// Natural boundary / auto start: arm deferred start, no error.
+    case deferSilently
+    /// User-initiated start (search play, user resume/skip): arm deferred start and report.
+    case deferAndReport
+}
+
+public enum HeldStartPolicy {
+    public static func action(userInitiated: Bool) -> HeldStartAction {
+        userInitiated ? .deferAndReport : .deferSilently
+    }
+}
