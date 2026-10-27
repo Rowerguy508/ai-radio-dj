@@ -48,9 +48,11 @@ public enum PlaybackHold: Equatable, Sendable {
     }
 }
 
-/// What the user asked for. `.playing` means the show is on, even during a DJ break.
+/// Transport as shown to the user. `.preparing` means a queue was requested but MusicKit
+/// has not confirmed `.playing` yet. `.playing` means the show is on (including during a DJ break).
 public enum TransportState: String, Equatable, Sendable {
     case stopped
+    case preparing
     case playing
     case paused
 }

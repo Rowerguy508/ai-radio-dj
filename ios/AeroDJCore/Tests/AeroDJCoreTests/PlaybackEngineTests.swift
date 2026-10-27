@@ -11,7 +11,19 @@ final class PlaybackEngineTests: XCTestCase {
     private func started() -> PlaybackEngine {
         var e = PlaybackEngine()
         e.apply(.queueStarted(tracks: queue, startIndex: 0, station: station))
+        e.apply(.playbackConfirmed)
         return e
+    }
+
+    func testQueueStartShowsPreparingUntilMusicKitConfirms() {
+        var e = PlaybackEngine()
+        e.apply(.queueStarted(tracks: queue, startIndex: 0, station: station))
+        XCTAssertEqual(e.snapshot.nowPlaying, track(1))
+        XCTAssertEqual(e.snapshot.upNext, [track(2), track(3)])
+        XCTAssertEqual(e.snapshot.transport, .preparing)
+        e.apply(.playbackConfirmed)
+        XCTAssertEqual(e.snapshot.transport, .playing)
+        XCTAssertEqual(e.snapshot.dj, .idle)
     }
 
     func testQueueStartShowsFirstTrackAndUpNext() {
@@ -104,9 +116,11 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertNil(e.snapshot.hold?.caption, "a user pause has no extra caption")
         XCTAssertEqual(e.snapshot.nowPlaying, track(2))
         e.apply(.userResumed)
-        XCTAssertEqual(e.snapshot.transport, .playing)
+        XCTAssertEqual(e.snapshot.transport, .preparing)
         XCTAssertNil(e.snapshot.hold)
         XCTAssertEqual(e.snapshot.nowPlaying, track(2))
+        e.apply(.playbackConfirmed)
+        XCTAssertEqual(e.snapshot.transport, .playing)
     }
 
     func testPauseBeforeStartIsIgnored() {
