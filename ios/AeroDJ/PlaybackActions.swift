@@ -56,6 +56,9 @@ struct MusicSearch {
     /// `briefing` is read when play starts. There is no default: omitting it does not
     /// compile, so an unapproved handoff cannot slip back in. `PlayerView` passes
     /// `LiveQueueBriefing.provider`, which speaks an approved morning row and nothing else.
+    ///
+    /// P0 build 8: `music.play` runs first. `queueStarted` / break prep runs in a cancellable
+    /// background task via `beginQueueInBackground` and must never delay the song.
     static func live(_ music: MusicKitService, station: StationRef, djSession: DJBreakSession,
                      briefing: @escaping @MainActor () -> ApprovedShowHandoff) -> MusicSearch {
         return MusicSearch(
@@ -68,11 +71,20 @@ struct MusicSearch {
                 // Resolve before touching the DJ session. Out-of-range / expired cache throw a
                 // visible TEMPORARY error; queueStarted never runs with an empty queue.
                 let tracks = try music.searchResults.resolve(results: results, startIndex: startIndex)
+                // Consent / approved-handoff check runs here, before personal cues reach the session.
                 let handoff = briefing()
-                await djSession.queueStarted(
-                    tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) },
-                    briefing: handoff.forQueue(), sources: handoff.connectionItems)
-                try await music.play(tracks, station: station)
+                let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) }
+                let briefingForQueue = handoff.forQueue()
+                let sources = handoff.connectionItems
+                // Play first (P0 build 8). TapPlaySequence is the live order: play, then
+                // schedule cancellable break prep. Consent already ran via `briefing()` /
+                // `forQueue()` above.
+                _ = try await TapPlaySequence.run(
+                    play: { try await music.play(tracks, station: station) },
+                    scheduleBreakPrep: {
+                        djSession.beginQueueInBackground(
+                            djTracks, briefing: briefingForQueue, sources: sources)
+                    })
             })
     }
 }

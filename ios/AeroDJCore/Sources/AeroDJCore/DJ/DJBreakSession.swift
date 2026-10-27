@@ -46,6 +46,18 @@ public final class DJBreakSession {
     }
     /// A stop for the break after `afterTrack` that found no hook installed.
     private var pendingStop: (afterTrack: Int, reason: InterludeStopReason)?
+    /// Background `queueStarted` from a song tap. Cancelled on stop, detach, or a newer
+    /// tap — not on commentary/briefing off (that lets setup finish with the new settings).
+    private var queueSetupTask: Task<Void, Never>?
+    /// `songStarted` arrived before background queue setup finished planning breaks.
+    private var pendingSongStart: (index: Int, remaining: Duration)?
+    /// True while `beginQueueInBackground`'s task has not finished `queueStarted`.
+    private var queueSetupPending = false
+    /// Bumped on every begin/cancel so a cancelled setup cannot clear a newer one.
+    private var queueSetupGeneration = 0
+    /// Integrations withdrawn while background tap setup was still applying the new queue.
+    /// `queueStarted` strips tap-time sources/briefing for these so snapshots cannot re-introduce them.
+    private var pendingWithdrawnIntegrations: Set<StationIntegration> = []
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -97,18 +109,67 @@ public final class DJBreakSession {
         }
     }
 
+    /// Schedules `queueStarted` in the background so a song tap can call `music.play` first.
+    /// Cancels any in-flight setup from a prior tap. The returned task is also retained
+    /// internally and cancelled on `stop`, `detach`, or a newer begin — not when commentary
+    /// or the briefing turns off (setup finishes with the new station settings).
+    /// Consent filtering in `queueStarted` is unchanged: personal cues still pass
+    /// `mayBeNarrated` before they are planned.
+    @discardableResult
+    public func beginQueueInBackground(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
+                                       sources: [ConnectionItem] = []) -> Task<Void, Never> {
+        queueSetupTask?.cancel()
+        pendingSongStart = nil
+        // A newer tap captures fresh sources; prior mid-setup withdrawals do not apply to it.
+        pendingWithdrawnIntegrations = []
+        queueSetupGeneration += 1
+        let generation = queueSetupGeneration
+        queueSetupPending = true
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
+            await self.queueStarted(tracks, briefing: briefing, sources: sources)
+            guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
+            self.queueSetupPending = false
+            if let pending = self.pendingSongStart {
+                self.pendingSongStart = nil
+                await self.songStarted(index: pending.index, remaining: pending.remaining)
+            }
+        }
+        queueSetupTask = task
+        return task
+    }
+
+    /// Cancels in-flight background queue setup (and any pending songStarted replay).
+    /// Call from skip/stop paths that must not leave voice rendering after the user leaves.
+    public func cancelBackgroundQueueSetup() {
+        queueSetupTask?.cancel()
+        queueSetupTask = nil
+        pendingSongStart = nil
+        queueSetupGeneration += 1
+        queueSetupPending = false
+        // Cancelled setup never applies tap-time sources; do not poison a later tap.
+        pendingWithdrawnIntegrations = []
+    }
+
     /// A new queue: everything prepared for the old one is dropped, then the queue is planned
     /// with the active station's cadence. `briefing` is approved narration (may be nil);
     /// `sources` are the items its personal cues come from. A personal cue whose source is
     /// missing from `sources` or not narratable now is left out (fails closed).
     public func queueStarted(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
                              sources: [ConnectionItem] = []) async {
+        if let hook = testBeforeQueueStarted {
+            await hook()
+            guard !Task.isCancelled else { return }
+        }
         // A new queue never talks over its first song: the old queue's handed-out or speaking
         // line stops now, personal or not. Untagged, as in `purge`. Not `.sourceRevoked` (it
         // isn't one); there is no queue-change case, so the nearest non-revoke reason is used.
         if let live = onAir { requestStop(afterTrack: live.afterTrack, .interruption) }
         await preparer.cancelAll()
+        guard !Task.isCancelled else { return }
         if briefing != nil { await station.handle(.briefingWillPlan) }
+        guard !Task.isCancelled else { return }
         self.tracks = tracks
         // A stop held for the old queue's break (no hook yet) has nothing left to stop; it must
         // not cancel a break of this queue later. Likewise the old queue's on-air break: a purge
@@ -116,11 +177,27 @@ public final class DJBreakSession {
         pendingStop = nil
         onAir = nil
         self.sources = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // Integrations withdrawn while this setup was in flight: drop their tap-time
+        // ConnectionItem snapshots so mayBeNarrated fails closed (sources are snapshots,
+        // not live consent — see ConnectionsPresentation.ConnectionItem.mayBeNarrated).
+        let withdrawn = pendingWithdrawnIntegrations
+        if !withdrawn.isEmpty {
+            for (id, item) in self.sources where withdrawn.contains(item.integration) {
+                self.sources[id] = nil
+            }
+            pendingWithdrawnIntegrations = []
+        }
         let at = now()
-        self.briefing = station.active.briefing.enabled ? briefing.map { b in
-            NarrationHandoff(cues: b.cues.filter { mayBeNarrated($0, at: at) },
-                             maxSpokenSeconds: b.maxSpokenSeconds, experienceSeconds: b.experienceSeconds)
-        } : nil
+        // Withdrawal during pending setup cleared briefing and recorded integrations;
+        // never re-introduce the tap-time briefing after a withdrawal.
+        if !withdrawn.isEmpty || !station.active.briefing.enabled {
+            self.briefing = nil
+        } else {
+            self.briefing = briefing.map { b in
+                NarrationHandoff(cues: b.cues.filter { mayBeNarrated($0, at: at) },
+                                 maxSpokenSeconds: b.maxSpokenSeconds, experienceSeconds: b.experienceSeconds)
+            }
+        }
         deliveredBriefing = []
         playing = nil
         breaks = [:]
@@ -129,8 +206,15 @@ public final class DJBreakSession {
 
     /// Song `index` started with `remaining` time left. Starts rendering its break, if one is
     /// planned and there is time to render before the boundary.
+    /// When background queue setup has not finished planning yet, the start is held and
+    /// replayed once `beginQueueInBackground` completes — the song itself is already playing.
     public func songStarted(index: Int, remaining: Duration) async {
         playing = index
+        // Queue identity not applied yet (tap played first; break prep still in flight).
+        if queueSetupPending {
+            pendingSongStart = (index, remaining)
+            return
+        }
         guard breaks[index] != nil, let deadline = DJBreakPreparer.deadline(remainingInSong: remaining) else { return }
         // Personality edits apply when a break starts preparing; re-plan this break if they did.
         await station.handle(.djBreakWillPrepare(afterTrack: index))
@@ -195,6 +279,7 @@ public final class DJBreakSession {
 
     /// Playback stopped or the session ended: nothing prepared may play later.
     public func stop() async {
+        cancelBackgroundQueueSetup()
         await preparer.cancelAll()
         breaks = [:]
         playing = nil
@@ -246,15 +331,45 @@ public final class DJBreakSession {
         return sources[id]?.mayBeNarrated(at: at) ?? false
     }
 
-    public func detach() { changeTask?.cancel(); changeTask = nil }
+    public func detach() {
+        cancelBackgroundQueueSetup()
+        changeTask?.cancel()
+        changeTask = nil
+    }
 
     // MARK: Station changes
 
     func stationChanged(_ change: StationConfigurationChange) async {
         if change.invalidatesPreparedBreaks {
+            // Always cancel in-flight VOICE renders (no spend after commentary/briefing off).
+            await preparer.cancelAll()
+            // Withdrawal / briefing-off handling must run even while tap setup is pending
+            // (Sentinel P1). The early return below only skips replan on the previous queue.
+            if !change.withdrawnIntegrations.isEmpty {
+                pendingWithdrawnIntegrations.formUnion(change.withdrawnIntegrations)
+                briefing = nil
+                // Same immediate purge ConnectionsModel does via NarrationPurger: drop known
+                // sources for the withdrawn integrations (stops an on-air break that mentions them).
+                let ids = Set(sources.values
+                    .filter { change.withdrawnIntegrations.contains($0.integration) }
+                    .map(\.id))
+                if !ids.isEmpty {
+                    if let purger { await purger.purge(sourceItemIDs: ids) }
+                    else {
+                        purge(sourceItemIDs: ids)
+                        await preparer.purge(sourceItemIDs: ids)
+                    }
+                }
+            } else if !change.active.briefing.enabled {
+                briefing = nil
+            }
+            if queueSetupPending {
+                // Let setup finish with the new tracks + current settings (P2). Withdrawal
+                // was recorded above; queueStarted strips tap-time snapshots before planning.
+                return
+            }
             // Commentary or briefing off, or an integration withdrawn: drop everything prepared,
             // including the break for the playing song, then plan the rest with the new settings.
-            await preparer.cancelAll()
             if !change.withdrawnIntegrations.isEmpty || !change.active.briefing.enabled { briefing = nil }
             replan(from: (playing ?? -1) + 1, keepingThrough: -1)
             return
@@ -293,4 +408,18 @@ public final class DJBreakSession {
 
     /// Test hook: the planned boundaries.
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
+    /// Test hook: background tap setup has not finished planning.
+    var testQueueSetupPending: Bool { queueSetupPending }
+    /// Test hook: ids of the queue `queueStarted` last applied.
+    var testQueueTrackIDs: [String] { tracks.map(\.id) }
+    /// Test hook: briefing is absent after withdrawal / briefing-off.
+    var testBriefingIsNil: Bool { briefing == nil }
+    /// Test hook: personal source item ids still present in the briefing or planned breaks.
+    var testPlannedSourceItemIDs: Set<UUID> {
+        var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
+        for b in breaks.values { ids.formUnion(b.cues.compactMap(\.sourceItemID)) }
+        return ids
+    }
+    /// Test hook: runs at the start of `queueStarted` so cancel races can be asserted.
+    var testBeforeQueueStarted: (@MainActor () async -> Void)?
 }
