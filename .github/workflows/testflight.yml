@@ -338,26 +338,27 @@ jobs:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: |
           set -euo pipefail
-          # Write the p8 only for this step. altool --upload-app is deprecated
-          # on current Xcode; --upload-package needs --apple-id and version
-          # metadata. iTMSTransporter -m upload -assetFile is the supported
-          # replacement and finds AuthKey_<id>.p8 via API_PRIVATE_KEYS_DIR.
+          # Write the p8 only for this step. The runner image no longer ships
+          # a standalone iTMSTransporter (it now requires the Transporter app),
+          # so upload with altool, which finds AuthKey_<id>.p8 via
+          # API_PRIVATE_KEYS_DIR.
           mkdir -p "$PRIVATE_KEYS_DIR"
           ( umask 077; printf '%s\n' "$ASC_KEY_P8" > "$PRIVATE_KEYS_DIR/AuthKey_${ASC_KEY_ID}.p8" )
           chmod 600 "$PRIVATE_KEYS_DIR/AuthKey_${ASC_KEY_ID}.p8"
           export API_PRIVATE_KEYS_DIR="$PRIVATE_KEYS_DIR"
-          xcrun iTMSTransporter -m upload \
-            -assetFile "$IPA_PATH" \
-            -apiKey "$ASC_KEY_ID" \
-            -apiIssuer "$ASC_ISSUER_ID" \
-            -v informational \
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$IPA_PATH" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID" \
+            --output-format normal \
             2>&1 | tee "$LOG_DIR/upload.log"
           rm -f "$PRIVATE_KEYS_DIR/AuthKey_${ASC_KEY_ID}.p8"
           {
             echo "### Upload"
             echo "- Build number: \`$BUILD_NUMBER\`"
             echo "- Resolved SHA: \`$RESOLVED_SHA\`"
-            echo "- Uploaded via iTMSTransporter; the build appears in TestFlight after processing."
+            echo "- Uploaded via altool; the build appears in TestFlight after processing."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Transporter output can echo auth material. Drop upload.log from the
