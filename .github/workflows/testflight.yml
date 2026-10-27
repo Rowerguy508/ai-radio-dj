@@ -1,0 +1,216 @@
+name: TestFlight upload
+
+# Manual only: archives the app, signs it automatically through an App Store
+# Connect API key, and uploads the build to TestFlight. No push or
+# pull_request trigger, so nothing here runs on untrusted code.
+#
+# Required repository secrets:
+#   ASC_KEY_ID      App Store Connect API key ID
+#   ASC_ISSUER_ID   App Store Connect issuer ID
+#   ASC_KEY_P8      Contents of the AuthKey_<KEY_ID>.p8 file
+#
+# The Apple Developer Team ID is not a secret: it comes from the repository
+# variable APPLE_TEAM_ID when set, otherwise the default S85APB73YV.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or SHA to archive and upload
+        required: false
+        default: integration/device-duo
+        type: string
+
+permissions:
+  contents: read
+
+# One upload at a time; a second dispatch waits instead of cancelling an
+# upload that is already talking to App Store Connect.
+concurrency:
+  group: testflight-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Archive and upload to TestFlight
+    # Pinned image. ios.yml's macos-latest currently resolves to macos-26-arm64
+    # (Xcode 26.6 as /Applications/Xcode.app, seen in iOS run 40417697194).
+    runs-on: macos-26
+    timeout-minutes: 60
+    # ASC secrets live in this GitHub Environment. The owner limits its
+    # deployment branches to main and integration/device-duo.
+    environment: testflight
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      # sha256 of XcodeGen 2.46.0 xcodegen.zip (matches the release asset digest).
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+      # Unique, monotonically increasing build number per upload.
+      BUILD_NUMBER: ${{ github.run_number }}
+      # Not a secret. Override with the repository variable APPLE_TEAM_ID.
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || 'S85APB73YV' }}
+    steps:
+      - name: Set working paths
+        run: |
+          {
+            echo "ARCHIVE_PATH=$RUNNER_TEMP/AeroDJ.xcarchive"
+            echo "EXPORT_PATH=$RUNNER_TEMP/export"
+            echo "LOG_DIR=$RUNNER_TEMP/testflight-logs"
+          } >> "$GITHUB_ENV"
+
+      # Check out the dispatching commit with full history, then validate the
+      # requested ref against this repository's branches before any secret is
+      # touched.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate and resolve the requested ref
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          REF="${INPUT_REF:-integration/device-duo}"
+          fail() { echo "::error::Rejected ref '$REF': $1"; exit 1; }
+          case "$REF" in
+            refs/*) fail "full refs (refs/..., including refs/pull/...) are not allowed; pass a branch name or a 40-character SHA." ;;
+          esac
+          if printf '%s' "$REF" | grep -Eqx '[0-9a-f]{40}'; then
+            git cat-file -e "${REF}^{commit}" 2>/dev/null || fail "commit not found in this repository."
+            if git merge-base --is-ancestor "$REF" refs/remotes/origin/main 2>/dev/null \
+              || git merge-base --is-ancestor "$REF" refs/remotes/origin/integration/device-duo 2>/dev/null; then
+              SHA="$REF"
+            else
+              fail "SHA is not reachable from origin/main or origin/integration/device-duo."
+            fi
+          else
+            case "$REF" in
+              main|integration/device-duo) ;;
+              *) fail "only the branches main and integration/device-duo, or a full 40-character SHA on one of them, are allowed." ;;
+            esac
+            if git show-ref --verify --quiet "refs/tags/$REF"; then
+              fail "name matches a tag; tags are not allowed."
+            fi
+            git show-ref --verify --quiet "refs/remotes/origin/$REF" || fail "no branch with that name exists in this repository."
+            SHA=$(git rev-parse --verify "refs/remotes/origin/$REF^{commit}")
+          fi
+          git checkout --quiet --detach "$SHA"
+          test "$(git rev-parse HEAD)" = "$SHA" || fail "checkout did not land on $SHA."
+          echo "RESOLVED_SHA=$SHA" >> "$GITHUB_ENV"
+          {
+            echo "### TestFlight source"
+            echo "- Requested ref: \`$REF\`"
+            echo "- Resolved SHA: \`$SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Archiving $REF at $SHA"
+
+      - name: Check required secrets
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          missing=0
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is empty or not set."
+              missing=1
+            fi
+          done
+          if ! printf '%s' "$APPLE_TEAM_ID" | grep -Eqx '[A-Z0-9]{10}'; then
+            echo "::error::APPLE_TEAM_ID '$APPLE_TEAM_ID' is not a 10-character Team ID (check the repository variable)."
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Fix the values above under Settings > Secrets and variables > Actions, then rerun."
+            exit 1
+          fi
+
+
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          ( umask 077; printf '%s\n' "$ASC_KEY_P8" > "$KEY_PATH" )
+          chmod 600 "$KEY_PATH"
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+          mkdir -p "$LOG_DIR"
+
+      - name: Archive (Release, automatic signing)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            2>&1 | tee "$LOG_DIR/archive.log"
+
+      - name: Export and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          PLIST="$RUNNER_TEMP/ExportOptions.plist"
+          /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :destination string upload" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :signingStyle string automatic" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :manageAppVersionAndBuildNumber bool false" "$PLIST"
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$PLIST" \
+            -exportPath "$EXPORT_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            2>&1 | tee "$LOG_DIR/export.log"
+          echo "Uploaded com.aerodj.app build $BUILD_NUMBER ($RESOLVED_SHA) to App Store Connect; it appears in TestFlight after processing." >> "$GITHUB_STEP_SUMMARY"
+
+      # Only the xcodebuild logs, and only on failure. Never the .p8, the
+      # archive or a signed .ipa.
+      - name: Upload xcodebuild logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: testflight-xcodebuild-logs
+          path: ${{ runner.temp }}/testflight-logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove API key and signing outputs
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP"/AuthKey_*.p8 "$RUNNER_TEMP/ExportOptions.plist"
+          if [ -n "${ARCHIVE_PATH:-}" ]; then rm -rf "$ARCHIVE_PATH"; fi
+          if [ -n "${EXPORT_PATH:-}" ]; then rm -rf "$EXPORT_PATH"; fi
