@@ -46,7 +46,7 @@ enum StudioCaptureScenario: String {
     case revoked
     /// The listener changed energy and genres in the tuner: saved, pending the next boundary.
     case config
-    /// The fixture station list (`Station.mockStations`). Not the playing screen.
+    /// The fixture station list (`Station.defaultStations`). Not the playing screen.
     /// The share extension is not a scenario: `AeroDJShare` draws nothing and has no colours.
     case stations
 
@@ -154,7 +154,7 @@ struct StudioCaptureView: View {
 /// The same fixture rows as `StationListView`, with no live inbox and no playback.
 private struct StationListCapture: View {
     var body: some View {
-        List(Station.mockStations) { station in
+        List(Station.defaultStations) { station in
             NavigationLink {
                 EmptyView()
             } label: {

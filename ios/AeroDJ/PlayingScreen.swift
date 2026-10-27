@@ -48,6 +48,8 @@ struct PlayingScreen: View {
                     // Closed: the workspace is a sheet, so open it on that segment.
                     if mode == .compact { showWorkspace = true }
                 }
+                // Keep the preview type in the Debug binary. Nothing reads it.
+                _ = PlayingScreenPreviewLoader.self
             }
             #endif
             .onChange(of: mode) { _, newMode in
@@ -137,6 +139,7 @@ struct PlayingScreen: View {
     }
 }
 
+#if DEBUG
 #Preview("Playing screen") {
     PlayingScreenPreviewLoader()
 }
@@ -157,3 +160,4 @@ struct PlayingScreenPreviewLoader: View {
         .task { studio = await StudioPresentationModel.preview() }
     }
 }
+#endif
