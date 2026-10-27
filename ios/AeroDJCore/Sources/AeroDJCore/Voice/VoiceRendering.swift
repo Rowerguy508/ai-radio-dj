@@ -658,7 +658,7 @@ public struct VoiceRenderer: Sendable {
         }
         let timer = Task {
             try? await Task.sleep(for: timeout)
-            if !Task.isCancelled { worker.cancel(); once.resume(.failure(VoiceRenderError.timedOut)) }
+            if !Task.isCancelled { once.resume(.failure(VoiceRenderError.timedOut)); worker.cancel() }
         }
         once.onResume { timer.cancel() }
         // Caller cancellation returns at once, even if the provider ignores cancellation.

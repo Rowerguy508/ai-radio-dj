@@ -173,8 +173,10 @@ final class StudioScreenPresentationTests: XCTestCase {
     @MainActor
     func testPendingRowSaysAppliesAfterThisSongAndWhatIsActive() async {
         let station = await StationConfigurationModel.preview()
+        await station.setPlaybackActivity(.holdingSong)
         let before = station.tunerRow(for: .energy).activeSummary
         await station.setEnergy(0.95)
+        await station.saveChanges()
         let row = station.tunerRow(for: .energy)
         XCTAssertEqual(row.appliesCopy, "Applies after this song")
         XCTAssertEqual(row.activeSummary, before, "the playing song keeps the active value")

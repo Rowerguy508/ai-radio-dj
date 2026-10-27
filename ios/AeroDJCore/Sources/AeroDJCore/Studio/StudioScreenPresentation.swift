@@ -288,7 +288,12 @@ public extension ConnectionSourceRow {
         case .off: return "Off"
         case .checking: return "Checking"
         case .consentReviewRequired: return "Needs permission"
-        case .blocked: return "Permission off"
+        case .blocked(let consent):
+            switch consent {
+            case .denied: return "Access off"
+            case .revoked: return "Stopped"
+            case .notRequested, .granted: return "Permission off"
+            }
         case .on: return nil
         }
     }
@@ -308,6 +313,13 @@ public enum StationTunerCopy {
     public static let musicSelectionNotice =
         "Saved with your station. Song picking doesn't use these settings yet; music comes from what you start in Apple Music."
     public static let pendingHeader = "Waiting for a safe moment"
+    public static let unsavedHeader = "Unsaved changes"
+    /// Truthful about idle vs holding: idle Save applies now; a held song waits for the boundary.
+    public static func unsavedDetail(idle: Bool) -> String {
+        idle
+            ? "Nothing is playing. Save applies these now."
+            : "Save keeps them until the next safe moment. The song that is playing is not changed."
+    }
     public static func nowUsing(_ summary: String) -> String { "Now using: \(summary)" }
 }
 

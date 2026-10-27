@@ -3,7 +3,8 @@ import SwiftUI
 
 /// The Station Tuner (studio-presentation-contract.md, Station Tuner). Every control binds
 /// to `station.displayed` and shows its row from `station.tunerRows`: pending vs active,
-/// "Applies after this song" and status. Edits never touch the song that is playing.
+/// "Applies after this song" and status. Edits go into an unsaved draft until Save; Save
+/// never stops the current song. When playback is idle, Save applies immediately.
 ///
 /// Originally written by Claudio (#60); taken over and revised by Fry.
 struct TuneForm: View {
@@ -21,6 +22,7 @@ struct TuneForm: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
+                if model.hasUnsavedChanges { UnsavedChangesCard(model: model) }
                 if model.hasPendingChanges { PendingChangesCard(model: model) }
                 Group {
                     TuneSectionHeader(title: "Sound", detail: StationTunerCopy.musicSelectionNotice)
@@ -290,7 +292,38 @@ struct LevelControl: View {
     }
 }
 
-/// Edits waiting for a safe boundary, with a way to keep what is playing now.
+/// Unsaved Tune edits. Save schedules them for the next safe boundary (or applies now when
+/// idle). Discard reverts the controls. Connections / consent never appear here.
+struct UnsavedChangesCard: View {
+    let model: StationConfigurationModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(StationTunerCopy.unsavedHeader, systemImage: "pencil.line")
+                .font(.subheadline.weight(.semibold))
+            Text(StationTunerCopy.unsavedDetail(idle: model.playbackActivity == .idle))
+                .font(.caption)
+                .foregroundStyle(AeroDJPalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Button("Save") { Task { await model.saveChanges() } }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("tune.save")
+                Button("Discard") { model.discardUnsavedChanges() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("tune.discard")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// Saved edits waiting for a safe boundary, with a way to keep what is playing now.
 struct PendingChangesCard: View {
     let model: StationConfigurationModel
 

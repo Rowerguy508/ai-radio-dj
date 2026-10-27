@@ -85,12 +85,38 @@ public enum StationBoundaryEvent: Equatable, Sendable {
     case djBreakWillPrepare(afterTrack: Int)
     /// A briefing is about to be planned. Applies `.nextBriefing` changes.
     case briefingWillPlan
+    /// Nothing is holding a song (no queue, or playback stopped with no mid-song hold).
+    /// Applies every pending change, same as a song boundary. Paused mid-song is not idle.
+    case playbackIdle
 
     func applies(_ timing: StationChangeTiming) -> Bool {
         switch self {
-        case .songBoundary: true
+        case .songBoundary, .playbackIdle: true
         case .djBreakWillPrepare: timing <= .nextDJBreak
         case .briefingWillPlan: timing == .nextBriefing || timing == .immediate
+        }
+    }
+}
+
+/// Whether a song is loaded on the real player. Idle Save (and going idle) apply pending
+/// changes immediately; holding a song keeps them pending until the next safe boundary.
+/// Paused mid-song is `.holdingSong`, not idle (including a system interruption hold).
+public enum StationPlaybackActivity: Equatable, Sendable {
+    case idle
+    case holdingSong
+
+    /// From real `PlaybackSnapshot.transport`, never a UI "playing" flag.
+    /// Only `.stopped` is idle. `.playing`, `.paused` (user or system hold), and any
+    /// future case (Atlas #109 may add `.preparing`) fail toward `.holdingSong` so
+    /// Tune Save stays pending until a real boundary. Follow up the switch after #109.
+    public init(transport: TransportState) {
+        switch transport {
+        case .stopped:
+            self = .idle
+        case .playing, .paused:
+            self = .holdingSong
+        @unknown default:
+            self = .holdingSong
         }
     }
 }
