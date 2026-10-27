@@ -23,6 +23,33 @@ final class TapPlayBeforeBreakTests: XCTestCase {
         }
     }
 
+    /// Resume-able wait for mid-setup races (commentary off while queueStarted is held open).
+    private final class Gate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var opened = false
+        func wait() async {
+            await withCheckedContinuation { cont in
+                lock.lock()
+                if opened {
+                    lock.unlock()
+                    cont.resume()
+                } else {
+                    continuation = cont
+                    lock.unlock()
+                }
+            }
+        }
+        func open() {
+            lock.lock()
+            opened = true
+            let c = continuation
+            continuation = nil
+            lock.unlock()
+            c?.resume()
+        }
+    }
+
     private func tracks(_ n: Int) -> [DJTrack] {
         (0..<n).map { DJTrack(id: "t\($0)", title: "T\($0)", artist: "A\($0)") }
     }
@@ -44,35 +71,25 @@ final class TapPlayBeforeBreakTests: XCTestCase {
 
     func testTapPlaySequenceRunsPlayBeforeBreakPrep() async throws {
         var order: [String] = []
-        let started = expectation(description: "break prep started")
-        let hang = Task<Void, Never>.detached {
-            try? await Task.sleep(for: .seconds(30))
-        }
+        let started = expectation(description: "break prep scheduled after play")
+        let hang = Gate()
         let prepTask = try await TapPlaySequence.run(
-            policy: .playThenBackgroundBreakPrep,
             play: { order.append("play") },
-            breakPrep: {
+            scheduleBreakPrep: {
                 order.append("breakPrep-start")
                 started.fulfill()
-                await hang.value
-                order.append("breakPrep-done")
+                return Task { @MainActor in
+                    await hang.wait()
+                    order.append("breakPrep-done")
+                }
             })
-        // Play already finished; give the background task one turn to start.
         await fulfillment(of: [started], timeout: 1.0)
         XCTAssertEqual(order, ["play", "breakPrep-start"],
                        "play must finish before break prep is scheduled; prep must not be awaited")
         XCTAssertFalse(order.contains("breakPrep-done"), "must not await hung prep")
-        prepTask.cancel()
-        hang.cancel()
-    }
-
-    func testLegacyBreakPrepThenPlayStillAwaitableForTests() async throws {
-        var order: [String] = []
-        _ = try await TapPlaySequence.run(
-            policy: .breakPrepThenPlay,
-            play: { order.append("play") },
-            breakPrep: { order.append("breakPrep") })
-        XCTAssertEqual(order, ["breakPrep", "play"])
+        hang.open()
+        await prepTask.value
+        XCTAssertEqual(order, ["play", "breakPrep-start", "breakPrep-done"])
     }
 
     func testBeginQueueInBackgroundDoesNotBlockAndSongStartsWhilePrepHangs() async throws {
@@ -84,9 +101,12 @@ final class TapPlayBeforeBreakTests: XCTestCase {
             try? await Task.sleep(for: .seconds(30))
         }
 
-        // Mirror PlaybackActions: play first, then background queue setup.
-        playReached = true
-        let setup = session.beginQueueInBackground(tracks(8))
+        // Mirror PlaybackActions: play first, then schedule break prep via TapPlaySequence.
+        let setup = try await TapPlaySequence.run(
+            play: { playReached = true },
+            scheduleBreakPrep: {
+                session.beginQueueInBackground(tracks(8))
+            })
         XCTAssertTrue(playReached, "play path finished without awaiting break prep")
         for _ in 0..<100 where !session.queueSetupIsPendingForTests {
             try? await Task.sleep(for: .milliseconds(5))
@@ -125,7 +145,6 @@ final class TapPlayBeforeBreakTests: XCTestCase {
 
     func testBackgroundQueueSetupCancelledOnStop() async throws {
         let (session, _, _) = await session(voice: NeverCompletingVoice())
-        // Hold queueStarted open so stop has something in-flight to cancel.
         session.testBeforeQueueStarted = {
             try? await Task.sleep(for: .seconds(30))
         }
@@ -139,8 +158,8 @@ final class TapPlayBeforeBreakTests: XCTestCase {
         XCTAssertTrue(setup.isCancelled)
     }
 
-    func testBackgroundQueueSetupCancelledWhenCommentaryTurnsOff() async throws {
-        let (session, _, station) = await session(voice: NeverCompletingVoice())
+    func testBackgroundQueueSetupCancelledOnDetach() async throws {
+        let (session, _, _) = await session(voice: NeverCompletingVoice())
         session.testBeforeQueueStarted = {
             try? await Task.sleep(for: .seconds(30))
         }
@@ -149,15 +168,82 @@ final class TapPlayBeforeBreakTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(5))
         }
         XCTAssertTrue(session.queueSetupIsPendingForTests)
-        // Immediate privacy reduction: commentary off invalidates prepared breaks and
-        // cancels in-flight background tap setup (Sentinel: cancellable prep).
+        session.detach()
+        XCTAssertFalse(session.queueSetupIsPendingForTests)
+        XCTAssertTrue(setup.isCancelled)
+    }
+
+    func testNewerTapCancelsPriorBackgroundQueueSetup() async throws {
+        let (session, _, _) = await session(voice: PacedVoice())
+        let firstGate = Gate()
+        session.testBeforeQueueStarted = { await firstGate.wait() }
+        let firstTracks = tracks(4)
+        let first = session.beginQueueInBackground(firstTracks)
+        for _ in 0..<100 where !session.queueSetupIsPendingForTests {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(session.queueSetupIsPendingForTests)
+        session.testBeforeQueueStarted = nil
+        let secondTracks = tracks(6)
+        let second = session.beginQueueInBackground(secondTracks)
+        // First task was cancelled by the newer begin; opening the gate is harmless.
+        firstGate.open()
+        await first.value
+        await second.value
+        XCTAssertEqual(session.testQueueTrackIDs, secondTracks.map(\.id),
+                       "newer tap's queue must win")
+        XCTAssertFalse(session.plannedBoundaries.isEmpty,
+                       "second tap plans breaks under frequent commentary")
+        await session.stop()
+    }
+
+    /// Sentinel P2: commentary off mid-setup must not drop the new queue. Setup finishes
+    /// with current settings → new tracks planned, no speech.
+    func testCommentaryOffMidSetupPlansNewQueueWithNoSpeech() async throws {
+        let (session, _, station) = await session(voice: PacedVoice())
+        let newTracks = tracks(8)
+        let gate = Gate()
+        session.testBeforeQueueStarted = { await gate.wait() }
+        let setup = session.beginQueueInBackground(newTracks)
+        for _ in 0..<100 where !session.queueSetupIsPendingForTests {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(session.queueSetupIsPendingForTests)
+
         await station.setCommentary(.off)
-        for _ in 0..<200 where session.queueSetupIsPendingForTests {
+        // Give the change stream a turn to reach stationChanged.
+        for _ in 0..<50 {
             try? await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertFalse(session.queueSetupIsPendingForTests,
-                       "commentary off must cancel in-flight background queue setup")
-        XCTAssertTrue(setup.isCancelled)
+        XCTAssertTrue(session.queueSetupIsPendingForTests,
+                      "commentary off must not cancel in-flight tap queue setup")
+        XCTAssertFalse(setup.isCancelled)
+
+        gate.open()
+        await setup.value
+        XCTAssertFalse(session.queueSetupIsPendingForTests)
+        XCTAssertEqual(session.testQueueTrackIDs, newTracks.map(\.id),
+                       "new queue tracks must be applied after commentary-off mid-setup")
+        XCTAssertTrue(session.plannedBoundaries.isEmpty,
+                      "commentary off → talkFraction 0 → no speech planned")
+        await session.stop()
+    }
+
+    /// After setup finished, commentary off still cancels voice and replans with no speech.
+    func testCommentaryOffAfterSetupReplansWithNoSpeech() async throws {
+        let (session, _, station) = await session(voice: PacedVoice())
+        let newTracks = tracks(8)
+        await session.beginQueueInBackground(newTracks).value
+        XCTAssertEqual(session.testQueueTrackIDs, newTracks.map(\.id))
+        XCTAssertFalse(session.plannedBoundaries.isEmpty,
+                       "frequent commentary plans breaks before turn-off")
+        await station.setCommentary(.off)
+        for _ in 0..<200 where !session.plannedBoundaries.isEmpty {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(session.testQueueTrackIDs, newTracks.map(\.id))
+        XCTAssertTrue(session.plannedBoundaries.isEmpty,
+                      "commentary off after setup replans with no speech")
         await session.stop()
     }
 
@@ -198,31 +284,8 @@ final class TapPlayBeforeBreakTests: XCTestCase {
             RemotePlayGate.admit(mayAutoResume: false, userWantsPlayback: false),
             .pauseBecauseHeld)
     }
-
-    func testSongStartedBeforeQueueReadyIsReplayedAfterBackgroundSetup() async throws {
-        let (session, dj, _) = await session(voice: PacedVoice())
-        let setup = session.beginQueueInBackground(tracks(8))
-        // Song reports start before planning finishes.
-        await session.songStarted(index: 0, remaining: .seconds(180))
-        for _ in 0..<200 where session.queueSetupIsPendingForTests {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        await until({
-            if case .preparing = dj.studioState { return true }
-            if case .ready = dj.studioState { return true }
-            return false
-        }, "replayed songStarted should start preparing or finish ready")
-        setup.cancel()
-        await session.stop()
-    }
-
-    private func until(_ condition: @MainActor () -> Bool, _ message: String) async {
-        for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertTrue(condition(), message)
-    }
 }
 
 extension DJBreakSession {
-    /// Test-only: whether background tap setup has not finished planning.
     var queueSetupIsPendingForTests: Bool { testQueueSetupPending }
 }

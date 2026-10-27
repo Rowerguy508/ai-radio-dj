@@ -8,37 +8,19 @@ import Foundation
 /// timeout never armed. Lock-screen remote play then bypassed the app gate by driving
 /// `ApplicationMusicPlayer` directly.
 ///
-/// Rule: call `play` first; schedule `queueStarted` (and any intro/break prep) in a
-/// cancellable background task. Consent/approved-handoff filtering still runs when the
-/// handoff is read, before `queueStarted` receives personal cues.
-public enum TapPlayOrdering: Equatable, Sendable {
-    /// The song play request runs to completion (or throws) before break prep is scheduled.
-    case playThenBackgroundBreakPrep
-    /// Legacy build-8 order: await break prep, then play. Must not be used on the tap path.
-    case breakPrepThenPlay
-}
-
-/// Runs the tap-play sequence. `play` is always awaited first when policy is
-/// `.playThenBackgroundBreakPrep`. `breakPrep` is started in a task the caller keeps
-/// and cancels on stop / skip / commentary-off / a newer tap.
+/// Rule: call `play` first; then schedule break prep (via the returned / caller-held task).
+/// `MusicSearch.live` uses this helper so tests guard the real tap order.
 public enum TapPlaySequence {
-    /// Executes `play`, then schedules `breakPrep` in a new `Task` and returns that handle.
-    /// Does not await `breakPrep`. Throws only what `play` throws.
+    /// Awaits `play`, then returns the task from `scheduleBreakPrep` without awaiting it.
+    /// Throws only what `play` throws. The live path passes `beginQueueInBackground`.
     @MainActor
+    @discardableResult
     public static func run(
-        policy: TapPlayOrdering = .playThenBackgroundBreakPrep,
         play: @MainActor () async throws -> Void,
-        breakPrep: @MainActor @escaping () async -> Void
+        scheduleBreakPrep: @MainActor () -> Task<Void, Never>
     ) async throws -> Task<Void, Never> {
-        switch policy {
-        case .playThenBackgroundBreakPrep:
-            try await play()
-            return Task { @MainActor in await breakPrep() }
-        case .breakPrepThenPlay:
-            await breakPrep()
-            try await play()
-            return Task { @MainActor in }
-        }
+        try await play()
+        return scheduleBreakPrep()
     }
 }
 

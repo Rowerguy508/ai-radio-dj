@@ -76,12 +76,15 @@ struct MusicSearch {
                 let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) }
                 let briefingForQueue = handoff.forQueue()
                 let sources = handoff.connectionItems
-                // Play first (P0 build 8). Break prep must not delay the song; schedule it
-                // in a cancellable background task. TapPlaySequence encodes the same rule
-                // for Linux tests. Consent already ran via `briefing()` / `forQueue()` above.
-                try await music.play(tracks, station: station)
-                _ = djSession.beginQueueInBackground(
-                    djTracks, briefing: briefingForQueue, sources: sources)
+                // Play first (P0 build 8). TapPlaySequence is the live order: play, then
+                // schedule cancellable break prep. Consent already ran via `briefing()` /
+                // `forQueue()` above.
+                _ = try await TapPlaySequence.run(
+                    play: { try await music.play(tracks, station: station) },
+                    scheduleBreakPrep: {
+                        djSession.beginQueueInBackground(
+                            djTracks, briefing: briefingForQueue, sources: sources)
+                    })
             })
     }
 }

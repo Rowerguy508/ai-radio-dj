@@ -46,8 +46,8 @@ public final class DJBreakSession {
     }
     /// A stop for the break after `afterTrack` that found no hook installed.
     private var pendingStop: (afterTrack: Int, reason: InterludeStopReason)?
-    /// Background `queueStarted` from a song tap. Cancelled on stop, a newer tap,
-    /// skip-driven queue replacement, or commentary/briefing off that invalidates prep.
+    /// Background `queueStarted` from a song tap. Cancelled on stop, detach, or a newer
+    /// tap — not on commentary/briefing off (that lets setup finish with the new settings).
     private var queueSetupTask: Task<Void, Never>?
     /// `songStarted` arrived before background queue setup finished planning breaks.
     private var pendingSongStart: (index: Int, remaining: Duration)?
@@ -108,7 +108,8 @@ public final class DJBreakSession {
 
     /// Schedules `queueStarted` in the background so a song tap can call `music.play` first.
     /// Cancels any in-flight setup from a prior tap. The returned task is also retained
-    /// internally and cancelled on `stop`, commentary/briefing off, or a newer begin.
+    /// internally and cancelled on `stop`, `detach`, or a newer begin — not when commentary
+    /// or the briefing turns off (setup finishes with the new station settings).
     /// Consent filtering in `queueStarted` is unchanged: personal cues still pass
     /// `mayBeNarrated` before they are planned.
     @discardableResult
@@ -317,11 +318,17 @@ public final class DJBreakSession {
 
     func stationChanged(_ change: StationConfigurationChange) async {
         if change.invalidatesPreparedBreaks {
+            // Always cancel in-flight VOICE renders (no spend after commentary/briefing off).
+            await preparer.cancelAll()
+            if queueSetupPending {
+                // Tap setup is still applying the new queue. Let it finish: queueStarted /
+                // replan read station.active, so the planned queue is the new tracks with
+                // current settings (no speech when commentary is off). Do not cancel setup
+                // or replan on the previous queue's tracks (Sentinel P2).
+                return
+            }
             // Commentary or briefing off, or an integration withdrawn: drop everything prepared,
             // including the break for the playing song, then plan the rest with the new settings.
-            // Also cancel in-flight tap background setup so voice does not keep rendering.
-            cancelBackgroundQueueSetup()
-            await preparer.cancelAll()
             if !change.withdrawnIntegrations.isEmpty || !change.active.briefing.enabled { briefing = nil }
             replan(from: (playing ?? -1) + 1, keepingThrough: -1)
             return
@@ -362,6 +369,8 @@ public final class DJBreakSession {
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: background tap setup has not finished planning.
     var testQueueSetupPending: Bool { queueSetupPending }
+    /// Test hook: ids of the queue `queueStarted` last applied.
+    var testQueueTrackIDs: [String] { tracks.map(\.id) }
     /// Test hook: runs at the start of `queueStarted` so cancel races can be asserted.
     var testBeforeQueueStarted: (@MainActor () async -> Void)?
 }
