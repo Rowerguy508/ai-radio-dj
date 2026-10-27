@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import AeroDJCore
 
 /// What the UI may ask playback to do. Views receive a `PlaybackSnapshot` and this
@@ -38,7 +39,57 @@ struct PlaybackActions {
         authorize: {},
         editUpNext: nil
     )
+
+    #if DEBUG
+    /// Capture harness only. Resume and a search play are counted and do not touch MusicKit.
+    static let counting = PlaybackActions(
+        pause: {},
+        resume: { PlaybackCallLog.shared.recordPlay() },
+        skip: {},
+        dismissError: {},
+        authorize: {},
+        editUpNext: nil
+    )
+    #endif
 }
+
+#if DEBUG
+/// Counts catalog search and queue play. A compact-to-regular change must leave both at zero.
+/// Not main-actor isolated: the search and play closures are not `@MainActor`.
+final class PlaybackCallLog: ObservableObject, @unchecked Sendable {
+    static let shared = PlaybackCallLog()
+    /// `plays/searches` — unchanged so existing UI tests keep matching `0/0`.
+    @Published private(set) var label = "0/0"
+    /// How many times `MusicKitService.authorize()` ran (permission request path).
+    @Published private(set) var authorizeCount = 0
+    private var plays = 0
+    private var searches = 0
+    private var authorizes = 0
+    private let lock = NSLock()
+
+    nonisolated func recordSearch() { bump(play: false) }
+    nonisolated func recordPlay() { bump(play: true) }
+    nonisolated func recordAuthorize() {
+        lock.lock()
+        authorizes += 1
+        let next = authorizes
+        lock.unlock()
+        DispatchQueue.main.async { self.authorizeCount = next }
+    }
+
+    private nonisolated func bump(play: Bool) {
+        lock.lock()
+        if play { plays += 1 } else { searches += 1 }
+        let next = "\(plays)/\(searches)"
+        lock.unlock()
+        DispatchQueue.main.async {
+            self.label = next
+        }
+    }
+
+    private init() {}
+}
+#endif
 
 /// Starting music: the real Apple Music catalog search and `play(_:station:)`. Playing a
 /// result queues it and the results after it, replacing the current queue.
@@ -99,4 +150,67 @@ struct MusicSearch {
                     })
             })
     }
+
+    #if DEBUG
+    /// Fixture search and play: they count, and they never reach `MusicKitService`.
+    /// Search returns the shared fixture songs so compact and Studio can assert results.
+    static let counting = MusicSearch(
+        search: { _ in
+            PlaybackCallLog.shared.recordSearch()
+            return PlaybackFixtures.songs
+        },
+        play: { _, _ in
+            PlaybackCallLog.shared.recordPlay()
+        }
+    )
+    #endif
+}
+
+/// One search session for Listen and Studio. Results live here so a fold, the compact
+/// sheet, or a view rebuild cannot wipe them, and both layouts share the same path.
+@MainActor
+final class StudioSearchModel: ObservableObject {
+    enum Phase: Equatable {
+        case idle, searching, failed(String), empty
+    }
+
+    @Published var query: String
+    @Published var results: [TrackInfo] = []
+    @Published var phase: Phase = .idle
+
+    init(query: String = SearchText.stored) {
+        self.query = query
+    }
+
+    func updateQuery(_ newValue: String) {
+        query = newValue
+        SearchText.stored = newValue
+    }
+
+    func run(using search: MusicSearch) {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return }
+        phase = .searching
+        Task {
+            do {
+                let found = try await search.search(term)
+                results = found
+                phase = found.isEmpty ? .empty : .idle
+            } catch {
+                results = []
+                phase = .failed(Self.searchFailureMessage(error))
+            }
+        }
+    }
+
+    /// TEMPORARY diagnostic (Atlas #104): type, code, localizedDescription only.
+    static func searchFailureMessage(_ error: Error) -> String {
+        let typeName = String(describing: type(of: error))
+        let code = (error as NSError).code
+        let text = error.localizedDescription
+        searchLog.error("Apple Music search failed: \(typeName, privacy: .public) code \(code, privacy: .public): \(text, privacy: .public)")
+        return "Apple Music search failed: \(typeName) code \(code). \(text)"
+    }
+
+    private static let searchLog = Logger(subsystem: "com.aerodj.app", category: "search")
 }

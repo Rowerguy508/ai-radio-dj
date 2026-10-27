@@ -241,9 +241,14 @@ struct TagControl: View {
                 }
             }
             HStack {
-                TextField("Add your own", text: $custom)
+                TextField("", text: $custom,
+                          prompt: Text("Add your own").foregroundStyle(.secondary))
                     .textInputAutocapitalization(.never)
                     .onSubmit(addCustom)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .accessibilityLabel("Add your own")
                 Button("Add", action: addCustom)
                     .disabled(custom.trimmingCharacters(in: .whitespaces).isEmpty)
             }

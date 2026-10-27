@@ -15,44 +15,56 @@ struct StudioLayout: View {
     let workspace: WorkspaceView
 
     var body: some View {
-        HStack(alignment: .top, spacing: CGFloat(StudioLayoutMetrics.gutter)) {
+        let edge = CGFloat(StudioLayoutMetrics.edgeInset)
+        let gutter = CGFloat(StudioLayoutMetrics.gutter)
+        // Exact column widths. Edge is outer padding only — never folded into zoneA/zoneB,
+        // which previously made Zone A’s container report past the gutter (430 > 422).
+        HStack(alignment: .top, spacing: gutter) {
             zoneA
                 .frame(width: CGFloat(widths.zoneA))
                 .frame(maxHeight: .infinity, alignment: .top)
                 .clipped()
+                .contentShape(Rectangle())
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneA")
             workspace
-                .padding(14)
-                .frame(width: CGFloat(widths.zoneB))
-                .frame(maxHeight: .infinity, alignment: .top)
-                .studioSurface(cornerRadius: 28)
+                .padding(16)
+                .frame(width: CGFloat(widths.zoneB), alignment: .topLeading)
+                .frame(maxHeight: .infinity, alignment: .topLeading)
+                .systemMaterialBackground()
+                .clipped()
+                .contentShape(Rectangle())
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneB")
         }
-        .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))
+        .padding(.horizontal, edge)
         .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .frame(height: containerHeight, alignment: .top)
+        .background(Color(.systemBackground))
     }
 }
 
 /// Open Duo at an accessibility text size: the two zones stack in one scroll view and the
-/// transport stays reachable (ui-contract.md §6).
+/// transport stays reachable (ui-contract.md §6). The inset keeps the transport on screen
+/// and lets the title scroll clear of it. Nothing here uses a fixed height.
 struct StudioStackedLayout: View {
     let zoneA: NowPlayingPanel
     let workspace: WorkspaceView
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 24) {
+            VStack(spacing: 0) {
                 zoneA
                 workspace
-                    .padding(14)
-                    .frame(minHeight: 640, alignment: .top)
-                    .studioSurface(cornerRadius: 28)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .systemMaterialBackground()
             }
-            .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))
             .padding(.bottom, 12)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            zoneA.chromeBar
         }
     }
 }
@@ -65,21 +77,34 @@ struct NowPlayingPanel: View {
     let actions: PlaybackActions
     let dj: DJStatusPresentation
     let soundTags: [String]
+    @ObservedObject var studioSearch: StudioSearchModel
+    var timeSource: PlaybackTimeSource? = nil
     /// Off while Zone B already shows the queue, so Up Next isn't listed twice.
     var showsUpNext = true
     var artworkNamespace: Namespace.ID? = nil
-    /// Set on the stacked accessibility layout, which scrolls and offers no height.
-    var lockedHeight: CGFloat? = nil
+    /// Closed Listen draws the art under the safe areas. Zone A stays clipped to its column.
+    var extendsUnderSafeArea = false
+    /// The stacked layout already scrolls and pins this panel's transport. Zone A is then
+    /// only the title, metadata, and art, so a second scroll does not nest inside the first.
+    var usesParentScroll = false
     let onQueue: () -> Void
     let onTune: () -> Void
     let onReview: () -> Void
 
     var body: some View {
         BleedNowPlaying(station: station, content: content, snapshot: snapshot, actions: actions,
-                        dj: dj, soundTags: soundTags, searchQuery: .constant(""),
+                        dj: dj, soundTags: soundTags, studioSearch: studioSearch,
+                        timeSource: timeSource,
                         showsUpNext: showsUpNext, artworkNamespace: artworkNamespace,
-                        lockedHeight: lockedHeight,
+                        extendsUnderSafeArea: extendsUnderSafeArea, usesParentScroll: usesParentScroll,
                         onQueue: onQueue, onTune: onTune, onReview: onReview)
+    }
+
+    /// The transport bar the stacked scroll pins to the bottom edge.
+    var chromeBar: some View {
+        PlaybackChromeBar(content: content, snapshot: snapshot, actions: actions, dj: dj,
+                          timeSource: timeSource, showsUpNext: showsUpNext,
+                          onQueue: onQueue, onTune: onTune, onReview: onReview)
     }
 }
 
@@ -91,8 +116,8 @@ struct WorkspaceView: View {
     let snapshot: PlaybackSnapshot
     let actions: PlaybackActions
     let search: MusicSearch?
+    @ObservedObject var studioSearch: StudioSearchModel
     @Binding var segment: WorkspaceSegment
-    @Binding var searchQuery: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -107,7 +132,7 @@ struct WorkspaceView: View {
             switch segment {
             case .queue:
                 QueueList(content: content, snapshot: snapshot, applyEdit: actions.editUpNext,
-                          search: search, searchQuery: $searchQuery)
+                          search: search, studioSearch: studioSearch)
             case .tune:
                 TuneForm(studio: studio)
             case .connections:
@@ -138,7 +163,8 @@ struct QueueList: View {
     let snapshot: PlaybackSnapshot
     let applyEdit: ((UpNextEdit) -> Void)?
     let search: MusicSearch?
-    @Binding var searchQuery: String
+    @ObservedObject var studioSearch: StudioSearchModel
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -167,7 +193,7 @@ struct QueueList: View {
                 }
                 if let search {
                     sectionTitle(content.showsTransport ? "Play something else" : "Start listening")
-                    StartListeningView(search: search, query: $searchQuery)
+                    StartListeningView(search: search, model: studioSearch)
                 }
             }
             .padding(.bottom, 16)
@@ -186,16 +212,21 @@ struct QueueList: View {
 
     @ViewBuilder
     private func row(_ track: TrackInfo, isNowPlaying: Bool, index: Int?) -> some View {
+        // The hero already speaks this song. Repeating the title here makes a shorter
+        // "Morning Light" below the transport, and a containing element still exposes it.
+        let repeatsHeroTitle = isNowPlaying && typeSize.isAccessibilitySize
         HStack(spacing: 12) {
             ArtworkView(track: track, size: 44)
             VStack(alignment: .leading, spacing: 2) {
-                Text(track.title)
+                Text(repeatsHeroTitle ? track.artistName : track.title)
                     .font(isNowPlaying ? .subheadline.weight(.semibold) : .subheadline)
                     .lineLimit(1)
-                Text(track.artistName)
-                    .font(.caption)
-                    .foregroundStyle(AeroDJPalette.secondaryText)
-                    .lineLimit(1)
+                if !repeatsHeroTitle {
+                    Text(track.artistName)
+                        .font(.caption)
+                        .foregroundStyle(AeroDJPalette.secondaryText)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 8)
             if isNowPlaying {
@@ -215,6 +246,8 @@ struct QueueList: View {
         .buttonStyle(.borderless)
         .padding(.vertical, 6)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(isNowPlaying ? "Now playing: \(track.title), \(track.artistName)" : "\(track.title), \(track.artistName)")
+        .accessibilityLabel(repeatsHeroTitle
+            ? "Now playing, \(track.artistName)"
+            : (isNowPlaying ? "Now playing: \(track.title), \(track.artistName)" : "\(track.title), \(track.artistName)"))
     }
 }

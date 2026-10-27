@@ -18,12 +18,27 @@ struct PlayingScreen: View {
     let search: MusicSearch?
     let studio: StudioPresentationModel
     let isTestStation: Bool
+    /// Capture/fixture progress only for now. Live stays nil until Atlas's read-only
+    /// playbackTime/currentDuration can be polled (do not reference them here yet).
+    var timeSource: PlaybackTimeSource? = nil
 
     @SceneStorage("aerodj.studio.segment") private var segment: WorkspaceSegment = .queue
     @State private var showWorkspace = false
-    @State private var searchQuery = ""
+    /// One search session above the compact/Studio switch so a fold cannot wipe results.
+    @StateObject private var studioSearch = StudioSearchModel()
     @Environment(\.dynamicTypeSize) private var typeSize
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+
+    /// System Reduce Motion, or the capture launch flag. The system value is read-only,
+    /// so a UI test turns the same paths on with `-AeroDJReduceMotion YES`.
+    private var reduceMotion: Bool {
+        #if DEBUG
+        systemReduceMotion || UserDefaults.standard.bool(forKey: StudioCapture.reduceMotionKey)
+        #else
+        systemReduceMotion
+        #endif
+    }
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Namespace private var bleedArt
 
     private var morphNamespace: Namespace.ID? {
@@ -36,8 +51,7 @@ struct PlayingScreen: View {
     var body: some View {
         GeometryReader { geo in
             let width = Double(geo.size.width)
-            let mode = StudioLayoutMode.resolve(containerWidth: width,
-                                                accessibilityTextSize: typeSize.isAccessibilitySize)
+            let mode = resolvedMode(containerWidth: width)
             layout(mode: mode, width: width, height: geo.size.height)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: mode)
             #if DEBUG
@@ -46,16 +60,42 @@ struct PlayingScreen: View {
                     segment = initial
                     StudioCaptureSegment.initial = nil
                     // Closed: the workspace is a sheet, so open it on that segment.
-                    if mode == .compact { showWorkspace = true }
+                    // Queue stays on the closed player. Tune and Connections open the sheet.
+                    if mode == .compact, initial != .queue { showWorkspace = true }
                 }
             }
             #endif
             .onChange(of: mode) { _, newMode in
                 // The compact sheet's content moves into Zone B on the same segment.
+                // This must not search or play: folding only changes which column is visible.
                 if newMode != .compact { showWorkspace = false }
             }
         }
-        .transaction { transaction in
+        .overlay(alignment: .topLeading) {
+            // In front of the player, not in a background layer a pushed column can drop.
+            // One element: the selection test counts identifiers that start with this prefix.
+            ZStack(alignment: .topLeading) {
+                if isTestStation {
+                    Text("Studio")
+                        .font(.system(size: 1))
+                        .frame(width: 4, height: 4)
+                        .accessibilityElement()
+                        .accessibilityIdentifier(studioIdentity)
+                        .accessibilityLabel("Studio")
+                }
+                if reduceMotion {
+                    Text("Reduce Motion")
+                        .font(.system(size: 1))
+                        .opacity(0.02)
+                        .accessibilityIdentifier("motion.reduced")
+                        .accessibilityLabel("Reduce Motion")
+                }
+            }
+            .allowsHitTesting(false)
+        }
+        .transaction(value: reduceMotion) { transaction in
+            // Only when Reduce Motion is on. An unconditional transaction here was
+            // swallowing the station-list → Studio push animation.
             if reduceMotion { transaction.disablesAnimations = true }
         }
         .background(Color(.systemBackground))
@@ -85,7 +125,9 @@ struct PlayingScreen: View {
         case .compact:
             CompactPlayer(station: currentStation, content: content, snapshot: snapshot,
                           actions: actions, dj: dj, soundTags: soundTags, search: search,
-                          searchQuery: $searchQuery, artworkNamespace: morphNamespace,
+                          studioSearch: studioSearch, timeSource: timeSource,
+                          artworkNamespace: morphNamespace,
+                          extendsUnderSafeArea: true,
                           onOpenWorkspace: { segment = .queue; showWorkspace = true },
                           onTune: { segment = .tune; showWorkspace = true },
                           onReview: { segment = .connections; showWorkspace = true })
@@ -100,10 +142,22 @@ struct PlayingScreen: View {
                     .accessibilityIdentifier("layout.studio")
             }
         case .studioStacked:
-            StudioStackedLayout(zoneA: zoneA(lockedHeight: height), workspace: workspace)
+            StudioStackedLayout(zoneA: zoneA(usesParentScroll: true), workspace: workspace)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.studioStacked")
         }
+    }
+
+    /// Compact width class collapses to Listen. Otherwise the existing width rule decides
+    /// Studio vs the stacked accessibility layout. No device size is named here.
+    private func resolvedMode(containerWidth: Double) -> StudioLayoutMode {
+        if horizontalSizeClass == .compact { return .compact }
+        return StudioLayoutMode.resolve(containerWidth: containerWidth,
+                                        accessibilityTextSize: typeSize.isAccessibilitySize)
+    }
+
+    private var studioIdentity: String {
+        "studio.model.\(String(describing: ObjectIdentifier(studio)))"
     }
 
     private var currentStation: StationRef { snapshot.station ?? station }
@@ -121,11 +175,13 @@ struct PlayingScreen: View {
     /// is shown: the contract exposes no clip text.
     private var dj: DJStatusPresentation { DJStatusPresentation(state: studio.djState) }
 
-    private func zoneA(lockedHeight: CGFloat? = nil) -> NowPlayingPanel {
+    private func zoneA(usesParentScroll: Bool = false) -> NowPlayingPanel {
         NowPlayingPanel(station: currentStation, content: content, snapshot: snapshot,
                         actions: actions, dj: dj, soundTags: soundTags,
+                        studioSearch: studioSearch, timeSource: timeSource,
                         showsUpNext: segment != .queue,
-                        artworkNamespace: morphNamespace, lockedHeight: lockedHeight,
+                        artworkNamespace: morphNamespace,
+                        extendsUnderSafeArea: false, usesParentScroll: usesParentScroll,
                         onQueue: { segment = .queue }, onTune: { segment = .tune },
                         onReview: { segment = .connections })
     }
@@ -133,12 +189,22 @@ struct PlayingScreen: View {
     private var workspace: WorkspaceView {
         WorkspaceView(studio: studio, content: content, snapshot: snapshot, actions: actions,
                       search: access == .authorized ? search : nil,
-                      segment: $segment, searchQuery: $searchQuery)
+                      studioSearch: studioSearch, segment: $segment)
     }
 }
 
 #Preview("Playing screen") {
     PlayingScreenPreviewLoader()
+}
+
+/// The search field's only stored value. Not `@SceneStorage`, which pushes a stale
+/// string back into the field while the next characters are still being typed.
+enum SearchText {
+    static let key = "aerodj.studio.search"
+    static var stored: String {
+        get { UserDefaults.standard.string(forKey: key) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
 }
 
 struct PlayingScreenPreviewLoader: View {

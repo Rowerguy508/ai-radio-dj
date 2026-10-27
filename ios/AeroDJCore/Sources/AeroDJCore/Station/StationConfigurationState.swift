@@ -113,9 +113,8 @@ public enum StationPlaybackActivity: Equatable, Sendable {
         switch transport {
         case .stopped:
             self = .idle
-        case .playing, .paused:
-            self = .holdingSong
-        @unknown default:
+        // `.preparing` (a song is starting, #109) holds too: Save must not apply mid-start.
+        case .preparing, .playing, .paused:
             self = .holdingSong
         }
     }
