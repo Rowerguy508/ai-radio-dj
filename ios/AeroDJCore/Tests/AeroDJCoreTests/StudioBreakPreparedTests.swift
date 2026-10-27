@@ -378,4 +378,19 @@ final class StudioBreakPreparedTests: XCTestCase {
         for _ in 0..<1000 where !studio.isBreakPrepared { await Task.yield() }
         XCTAssertTrue(studio.isBreakPrepared, "a new break, equal by value, is coming")
     }
+    /// `songBoundaryReached` only marks the Studio flag stale. It must never stop a speaking
+    /// break (no `onBreakMustStop` / `requestStop`). Stops stay with purge, queue change, and
+    /// PlayerView's handOut / reportUnplayed path (#88).
+    func testSongBoundaryReachedNeverFiresAStop() async {
+        let r = await readyRig()
+        var stops: [(InterludeStopReason, Int?)] = []
+        r.session.onBreakMustStop = { reason, tag in stops.append((reason, tag)) }
+        r.studio.songBoundaryReached(afterTrack: 0)
+        XCTAssertFalse(r.studio.isBreakPrepared, "boundary passed: flag clears")
+        XCTAssertEqual(stops.count, 0, "songBoundaryReached must not fire onBreakMustStop")
+        r.studio.songStarted(index: 1)
+        XCTAssertEqual(stops.count, 0, "songStarted must not fire onBreakMustStop either")
+        r.recorder.cancel()
+    }
+
 }

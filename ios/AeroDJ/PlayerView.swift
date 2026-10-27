@@ -38,13 +38,16 @@ struct PlayerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {
-            music.onBoundary = { @MainActor [interlude, music, djSession] boundary, finishedIndex in
+            music.onBoundary = { @MainActor [interlude, music, djSession, studio] boundary, finishedIndex in
                 guard case .naturalEnd = boundary else { return }
                 // Hand the break out before this closure awaits anything. The window was the
                 // `Task` below awaiting `naturalBoundary` while `PendingPlayStop` was still idle:
                 // an unplug or interruption in that await was ignored, then `handOut` plus `play`
                 // could start the break on the speaker. A second `handOut` would clear the held stop.
                 interlude.handOut(afterTrack: finishedIndex)
+                // Studio only: clear a stale "break is coming" once this song's boundary passed.
+                // Never a stop — handOut / naturalBoundary / reportUnplayed own cancel and .failed.
+                studio.songBoundaryReached(afterTrack: finishedIndex)
                 // A break is only ever played at a natural end. Anything late, missing or failed is
                 // skipped, and the next song is not delayed.
                 Task { @MainActor in
@@ -94,7 +97,8 @@ struct PlayerView: View {
             }
             // A song really started: the DJ session plans its break with the catalog duration.
             // Without a duration nothing is planned, so the DJ stays quiet rather than guessing.
-            music.onSongStarted = { [djSession] index, duration in
+            music.onSongStarted = { [djSession, studio] index, duration in
+                studio.songStarted(index: index)   // before the duration guard: fail closed needs a position
                 guard let duration else { return }
                 Task { await djSession.songStarted(index: index, remaining: .seconds(duration)) }
             }
