@@ -699,12 +699,12 @@ final class MusicKitService: ObservableObject {
                     return
                 }
                 if self.snapshot.transport != .preparing { return }
-                switch self.player.state.playbackStatus {
-                case .paused, .stopped, .interrupted:
-                    self.failPlaybackConfirm(status: self.player.state.playbackStatus)
+                // P0 build 9: right after `play()` returns, a catalog stream can still read
+                // `.paused` while it buffers. Failing on that first read paused our own start.
+                // Only `.interrupted` fails early; `.paused`/`.stopped` wait for the deadline. -Atlas
+                if self.player.state.playbackStatus == .interrupted {
+                    self.failPlaybackConfirm(status: .interrupted)
                     return
-                default:
-                    continue
                 }
             }
             guard let self, !Task.isCancelled else { return }

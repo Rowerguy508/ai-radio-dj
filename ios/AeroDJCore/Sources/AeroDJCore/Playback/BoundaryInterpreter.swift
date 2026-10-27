@@ -42,6 +42,12 @@ public struct BoundaryInterpreter: Sendable {
         detector.pausedByApp(cause)
     }
 
+    /// True once after the detector refused a change or clear because the entry never
+    /// progressed (build 9 P0). The caller must surface a failed start and must not advance.
+    public mutating func takeNoProgressEnd() -> Bool {
+        detector.takeNoProgressEnd()
+    }
+
     public mutating func interpret(
         _ observation: PlaybackObservation,
         queueIndex: Int,
