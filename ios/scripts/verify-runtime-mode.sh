@@ -12,18 +12,46 @@ UDID="$3"
 BUNDLE_ID="com.aerodj.app"
 
 # Install and launch an app, then return the runtime mode it logged during this launch.
+# On iOS 27 sims (esp. right after first boot / data migration), App.init notice
+# lines can miss `log show --start`. Stream during launch and poll --last as fallback.
 runtime_mode() {
   local app="$1"; shift
-  local since
+  local stream spid mode i
   xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
   xcrun simctl install "$UDID" "$app"
-  since="$(date '+%Y-%m-%d %H:%M:%S')"
-  xcrun simctl launch "$UDID" "$BUNDLE_ID" "$@" >/dev/null
-  sleep 6
-  xcrun simctl spawn "$UDID" log show --style compact --start "$since" \
+  stream=$(mktemp)
+  xcrun simctl spawn "$UDID" log stream --level default --style compact \
     --predicate "subsystem == \"$BUNDLE_ID\" AND category == \"runtime\"" \
-    | grep -o 'runtime mode: [a-zA-Z]*' | tail -1 || true
+    >"$stream" 2>/dev/null &
+  spid=$!
+  # Let log stream attach before App.init runs.
+  sleep 2
+  xcrun simctl launch "$UDID" "$BUNDLE_ID" "$@" >/dev/null
+  mode=""
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 2
+    mode=$(grep -o 'runtime mode: [a-zA-Z]*' "$stream" 2>/dev/null | tail -1 || true)
+    if [ -n "$mode" ]; then
+      break
+    fi
+    mode=$(xcrun simctl spawn "$UDID" log show --style compact --last 60s \
+      --predicate "subsystem == \"$BUNDLE_ID\" AND category == \"runtime\"" 2>/dev/null \
+      | grep -o 'runtime mode: [a-zA-Z]*' | tail -1 || true)
+    if [ -n "$mode" ]; then
+      break
+    fi
+    mode=$(xcrun simctl spawn "$UDID" log show --style compact --last 60s \
+      --predicate 'process == "AeroDJ"' 2>/dev/null \
+      | grep -o 'runtime mode: [a-zA-Z]*' | tail -1 || true)
+    if [ -n "$mode" ]; then
+      break
+    fi
+  done
+  kill "$spid" >/dev/null 2>&1 || true
+  wait "$spid" 2>/dev/null || true
+  rm -f "$stream"
   xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+  printf '%s' "$mode"
 }
 
 expect() {
