@@ -514,6 +514,83 @@ final class StationConfigurationModelTests: XCTestCase {
         XCTAssertEqual(model.status(for: .energy), .idle)
     }
 
+    func testCommentaryOffCommitsImmediatelyWithoutSave() async {
+        let (model, _) = await makeModel(.init(active: .init(commentary: .frequent)))
+        await model.setPlaybackActivity(.holdingSong)
+        await model.setCommentary(.off)
+        XCTAssertEqual(model.active.commentary, .off, "commentary off must not wait for Save")
+        XCTAssertFalse(model.hasUnsavedChanges)
+        XCTAssertFalse(model.hasPendingChanges)
+    }
+
+    func testBriefingOffCommitsImmediatelyWithoutSave() async {
+        let (model, _) = await makeModel(
+            .init(active: .init(briefing: .init(enabled: true), requestedIntegrations: [.calendar])),
+            consent: [.calendar: .granted])
+        await model.setPlaybackActivity(.holdingSong)
+        XCTAssertFalse(model.plannableBriefingSections.isEmpty)
+        await model.setBriefing { $0.enabled = false }
+        XCTAssertFalse(model.active.briefing.enabled, "briefing off must not wait for Save")
+        XCTAssertFalse(model.hasUnsavedChanges)
+        XCTAssertTrue(model.plannableBriefingSections.isEmpty,
+                      "next briefingWillPlan must not narrate calendar (or any) items")
+        await model.handle(.briefingWillPlan)
+        XCTAssertFalse(model.active.briefing.enabled)
+        XCTAssertTrue(model.plannableBriefingSections.isEmpty)
+    }
+
+    func testDiscardAfterImmediateOffKeepsItOff() async {
+        let (model, _) = await makeModel(.init(active: .init(commentary: .occasional, briefing: .init(enabled: true))))
+        await model.setEnergy(0.9)
+        await model.setCommentary(.off)
+        await model.setBriefing { $0.enabled = false }
+        XCTAssertEqual(model.active.commentary, .off)
+        XCTAssertFalse(model.active.briefing.enabled)
+        XCTAssertTrue(model.hasUnsavedChanges, "energy is still drafted")
+        model.discardUnsavedChanges()
+        XCTAssertFalse(model.hasUnsavedChanges)
+        XCTAssertEqual(model.active.commentary, .off, "Discard must never undo an immediate off")
+        XCTAssertFalse(model.active.briefing.enabled)
+        XCTAssertEqual(model.displayed.commentary, .off)
+        XCTAssertFalse(model.displayed.briefing.enabled)
+    }
+
+    func testImmediateOffWithOtherDraftThenSaveKeepsOffAndAppliesEdits() async {
+        let (model, _) = await makeModel(.init(active: .init(commentary: .frequent, briefing: .init(enabled: true))))
+        await model.setPlaybackActivity(.holdingSong)
+        await model.setEnergy(0.9)
+        await model.setGenres(["house"])
+        await model.setCommentary(.off)
+        XCTAssertEqual(model.active.commentary, .off)
+        XCTAssertTrue(model.hasUnsavedChanges)
+        await model.saveChanges()
+        XCTAssertEqual(model.active.commentary, .off, "Save must not turn commentary back on")
+        XCTAssertEqual(model.status(for: .energy), .pendingBoundary(.nextSongBoundary))
+        XCTAssertEqual(model.status(for: .genres), .pendingBoundary(.nextSongBoundary))
+        await model.handle(.songBoundary(afterTrack: 0))
+        XCTAssertEqual(model.active.energy, 0.9, accuracy: 1e-9)
+        XCTAssertEqual(model.active.genres, ["house"])
+        XCTAssertEqual(model.active.commentary, .off)
+    }
+
+    func testTurningCommentaryOrBriefingOnWaitsForSave() async {
+        let (model, _) = await makeModel(.init(active: .init(commentary: .off, briefing: .init(enabled: false))))
+        await model.setPlaybackActivity(.holdingSong)
+        await model.setCommentary(.frequent)
+        await model.setBriefing { $0.enabled = true }
+        XCTAssertEqual(model.active.commentary, .off, "turning on stays drafted")
+        XCTAssertFalse(model.active.briefing.enabled)
+        XCTAssertTrue(model.hasUnsavedChanges)
+        await model.saveChanges()
+        XCTAssertEqual(model.active.commentary, .off, "still pending at the boundary while holding")
+        XCTAssertFalse(model.active.briefing.enabled)
+        XCTAssertEqual(model.status(for: .commentary), .pendingBoundary(.nextSongBoundary))
+        XCTAssertEqual(model.status(for: .briefing), .pendingBoundary(.nextBriefing))
+        await model.handle(.songBoundary(afterTrack: 0))
+        XCTAssertEqual(model.active.commentary, .frequent)
+        XCTAssertTrue(model.active.briefing.enabled)
+    }
+
     func testTransportMapsToPlaybackActivityFailingTowardHolding() {
         XCTAssertEqual(StationPlaybackActivity(transport: .stopped), .idle)
         XCTAssertEqual(StationPlaybackActivity(transport: .playing), .holdingSong)

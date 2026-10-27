@@ -204,8 +204,9 @@ public final class StationConfigurationModel {
     // MARK: Intents
 
     /// Tune edits go into an unsaved draft. Call `saveChanges()` to schedule them for the
-    /// next safe boundary (or apply immediately when playback is idle). Connections /
-    /// consent never use this path.
+    /// next safe boundary (or apply immediately when playback is idle). Privacy reductions
+    /// with `.immediate` timing (commentary → `.off`, briefing off) bypass the draft and
+    /// commit now — same as revoke. Connections / consent never use this path.
     public func setGenres(_ genres: [String]) async { await draftTune { $0.genres = genres } }
     public func setMoods(_ moods: [String]) async { await draftTune { $0.moods = moods } }
     public func setEnergy(_ energy: Double) async { await draftTune { $0.energy = energy } }
@@ -288,7 +289,11 @@ public final class StationConfigurationModel {
         return true
     }
 
-    /// Records a Tune edit in the unsaved draft. Does not persist or schedule a boundary.
+    /// Records a Tune edit in the unsaved draft. Privacy/silence reductions whose timing is
+    /// `.immediate` (commentary → `.off`, briefing turned off) bypass the draft and commit
+    /// like revoke: active updates now, Discard cannot undo them. Any other draft edits are
+    /// kept, with those fields pinned to the committed off so a later Save cannot turn them
+    /// back on. Turning commentary or the briefing *on* stays drafted until Save.
     private func draftTune(_ transform: (inout StationConfiguration) -> Void) async {
         switch loadState {
         case .notLoaded, .loading:
@@ -303,12 +308,27 @@ public final class StationConfigurationModel {
         transform(&next)
         next = next.validated()
         next.requestedIntegrations = state.displayed.requestedIntegrations
+
+        var immediate = Set<StationSetting>()
+        for setting in StationSetting.tuning where setting.differs(state.active, next)
+            && setting.timing(from: state.active, to: next) == .immediate {
+            immediate.insert(setting)
+        }
+        if !immediate.isEmpty {
+            let snapshot = next
+            await edit(immediate) { config in
+                for setting in immediate { setting.copy(from: snapshot, into: &config) }
+            }
+            // Pin immediate fields to the committed value so Discard/Save cannot revive them.
+            for setting in immediate { setting.copy(from: state.displayed, into: &next) }
+        }
+
         if StationSetting.tuning.contains(where: { $0.differs(next, state.displayed) }) {
             tuningDraft = next
         } else {
             tuningDraft = nil
         }
-        for s in StationSetting.tuning { errors[s] = nil }
+        for s in StationSetting.tuning where !immediate.contains(s) { errors[s] = nil }
     }
 
     /// Promotes every pending change as if a song had ended. Used when Save runs idle, and
