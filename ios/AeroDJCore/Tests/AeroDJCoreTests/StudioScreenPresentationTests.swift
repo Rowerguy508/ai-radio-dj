@@ -51,11 +51,12 @@ final class StudioScreenPresentationTests: XCTestCase {
     func testTransportOnlyWithAControllableTrack() {
         let playing = PlaybackFixtures.playing
         XCTAssertEqual(NowPlayingContent.resolve(access: .checking, snapshot: playing), .connecting)
+        XCTAssertEqual(NowPlayingContent.resolve(access: .needsAuthorization, snapshot: playing), .needsAuthorization)
         XCTAssertEqual(NowPlayingContent.resolve(access: .denied, snapshot: playing), .accessDenied)
         XCTAssertEqual(NowPlayingContent.resolve(access: .subscriptionRequired, snapshot: playing), .subscriptionRequired)
         XCTAssertEqual(NowPlayingContent.resolve(access: .authorized, snapshot: PlaybackFixtures.stopped), .nothingPlaying)
         XCTAssertEqual(NowPlayingContent.resolve(access: .authorized, snapshot: playing), .track(PlaybackFixtures.songs[0]))
-        for c in [NowPlayingContent.connecting, .accessDenied, .subscriptionRequired, .nothingPlaying] {
+        for c in [NowPlayingContent.connecting, .needsAuthorization, .accessDenied, .subscriptionRequired, .nothingPlaying] {
             XCTAssertFalse(c.showsTransport, "\(c)")
         }
         XCTAssertTrue(NowPlayingContent.track(PlaybackFixtures.songs[0]).showsTransport)

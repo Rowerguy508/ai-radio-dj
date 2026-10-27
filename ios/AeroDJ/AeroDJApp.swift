@@ -18,7 +18,8 @@ struct AeroDJApp: App {
     var body: some Scene {
         WindowGroup {
             StationListView(dependencies: dependencies)
-                // The root view's task runs once per window, not each time a screen reappears.
+                // Starts the one studio and the one DJ session. Station selection and the
+                // MusicKit player stay on the split root below this window.
                 .task { await dependencies.start() }
         }
     }

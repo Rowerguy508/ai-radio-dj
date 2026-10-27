@@ -69,6 +69,8 @@ public struct StudioZoneWidths: Equatable, Sendable {
 /// Apple Music access as the app's session reports it (`MusicKitService.authState`).
 public enum PlaybackAccess: Equatable, Sendable {
     case checking
+    /// Status is `.notDetermined`: show Allow (never the bare Connecting spinner).
+    case needsAuthorization
     case authorized
     case denied
     case subscriptionRequired
@@ -79,6 +81,8 @@ public enum PlaybackAccess: Equatable, Sendable {
 public enum NowPlayingContent: Equatable, Sendable {
     /// "Connecting to Apple Music". No transport.
     case connecting
+    /// Status still `.notDetermined`. Named Allow button → `authorize()`; never a bare spinner.
+    case needsAuthorization
     /// Access was denied. The only real fix is Settings (the system won't prompt twice).
     case accessDenied
     /// "An Apple Music subscription is required." No retry, no transport.
@@ -91,6 +95,7 @@ public enum NowPlayingContent: Equatable, Sendable {
     public static func resolve(access: PlaybackAccess, snapshot: PlaybackSnapshot) -> NowPlayingContent {
         switch access {
         case .checking: return .connecting
+        case .needsAuthorization: return .needsAuthorization
         case .denied: return .accessDenied
         case .subscriptionRequired: return .subscriptionRequired
         case .authorized:
@@ -104,6 +109,7 @@ public enum NowPlayingContent: Equatable, Sendable {
     public var title: String {
         switch self {
         case .connecting: "Connecting to Apple Music"
+        case .needsAuthorization: "Allow Apple Music to play your station."
         case .accessDenied: "Apple Music access is off"
         case .subscriptionRequired: "An Apple Music subscription is required"
         case .nothingPlaying: "Nothing playing"
@@ -114,6 +120,7 @@ public enum NowPlayingContent: Equatable, Sendable {
     public var detail: String? {
         switch self {
         case .connecting: nil
+        case .needsAuthorization: "AeroDJ needs permission before it can play from Apple Music."
         case .accessDenied: "Allow Apple Music for AeroDJ in Settings to play your station."
         case .subscriptionRequired: "AeroDJ plays music through your Apple Music subscription."
         case .nothingPlaying: "Search Apple Music to start your station."
