@@ -1,6 +1,7 @@
 import Foundation
 @preconcurrency import MusicKit
 import AVFoundation
+import MediaPlayer
 import AeroDJCore
 import OSLog
 
@@ -62,6 +63,8 @@ final class MusicKitService: ObservableObject {
     private var sessionMonitor: AudioSessionMonitor?
     /// TEMPORARY: waits for MusicKit `.playing` after a start; cancelled on confirm or pause.
     private var playbackConfirmTask: Task<Void, Never>?
+    /// Lock-screen / Control Center commands routed through `resume` / `pause`.
+    private var remoteCommandsInstalled = false
     /// App-scoped catalog hits for `MusicSearch.live`. Survives every `PlayerView` body
     /// rebuild so a song-row tap after a re-render still resolves MusicKit `Track`s.
     let searchResults = SearchResultCache()
@@ -401,9 +404,25 @@ final class MusicKitService: ObservableObject {
             position: player.playbackTime,
             duration: currentDuration
         )
-        if observation.isPlaying, snapshot.transport == .preparing {
-            send(.playbackConfirmed)
-            cancelPlaybackConfirmTimeout()
+        if observation.isPlaying {
+            // Lock-screen / Control Center can start ApplicationMusicPlayer without our
+            // playIfStillAllowed gate (build 8 bypass). Re-apply the same hold rule.
+            let remote = RemotePlayGate.admit(
+                mayAutoResume: sessionPolicy.mayAutoResume,
+                userWantsPlayback: sessionPolicy.userWantsPlayback)
+            if remote == .pauseBecauseHeld {
+                player.pause()
+                isPlaying = false
+                logPlayGate("remoteOrPoll.pausedBecauseHeld", index: queueIndex)
+                if snapshot.transport == .preparing {
+                    send(.playbackStartRefused)
+                }
+                return
+            }
+            if snapshot.transport == .preparing {
+                send(.playbackConfirmed)
+                cancelPlaybackConfirmTimeout()
+            }
         }
         guard let step = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count) else {
             isPlaying = observation.isPlaying
@@ -523,6 +542,7 @@ final class MusicKitService: ObservableObject {
         // Observers are registered once, whether or not the category was set.
         guard sessionRegistration.registerIfNeeded() else { return }
         installSessionMonitor()
+        installRemoteCommands()
     }
 
     /// `setActive(true)`, `prepareToPlay()`, then `play()`. After `play()` returns, a hold that
@@ -627,6 +647,42 @@ final class MusicKitService: ObservableObject {
         let code = (error as NSError).code
         let text = error.localizedDescription
         return "TEMPORARY: playback failed: \(typeName) code \(code). \(text)"
+    }
+
+    /// Route lock-screen / Control Center play through `resume()` (userPlay + playIfStillAllowed)
+    /// and pause through `pause()`, so remote commands cannot bypass the hold gate.
+    private func installRemoteCommands() {
+        guard !remoteCommandsInstalled else { return }
+        remoteCommandsInstalled = true
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.isEnabled = true
+        center.pauseCommand.isEnabled = true
+        center.togglePlayPauseCommand.isEnabled = true
+        center.playCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            Task { @MainActor in
+                // Explicit user intent: clears system holds the same way in-app Play does.
+                _ = try? await self.resume()
+            }
+            return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            Task { @MainActor in self.pause() }
+            return .success
+        }
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            Task { @MainActor in
+                if self.isPlaying || self.snapshot.transport == .playing
+                    || self.snapshot.transport == .preparing {
+                    self.pause()
+                } else {
+                    _ = try? await self.resume()
+                }
+            }
+            return .success
+        }
     }
 
     private func armPlaybackConfirmTimeout() {
