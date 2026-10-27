@@ -32,10 +32,17 @@ concurrency:
 jobs:
   upload:
     name: Archive and upload to TestFlight
-    runs-on: macos-latest
+    # Pinned image. ios.yml's macos-latest currently resolves to macos-26-arm64
+    # (Xcode 26.6 as /Applications/Xcode.app, seen in iOS run 40417697194).
+    runs-on: macos-26
     timeout-minutes: 60
+    # ASC secrets live in this GitHub Environment. The owner limits its
+    # deployment branches to main and integration/device-duo.
+    environment: testflight
     env:
       XCODEGEN_VERSION: 2.46.0
+      # sha256 of XcodeGen 2.46.0 xcodegen.zip (matches the release asset digest).
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
       # Unique, monotonically increasing build number per upload.
       BUILD_NUMBER: ${{ github.run_number }}
       # Not a secret. Override with the repository variable APPLE_TEAM_ID.
@@ -48,6 +55,49 @@ jobs:
             echo "EXPORT_PATH=$RUNNER_TEMP/export"
             echo "LOG_DIR=$RUNNER_TEMP/testflight-logs"
           } >> "$GITHUB_ENV"
+
+      # Check out the dispatching commit with full history, then validate the
+      # requested ref against this repository's branches before any secret is
+      # touched.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate and resolve the requested ref
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          REF="${INPUT_REF:-integration/device-duo}"
+          fail() { echo "::error::Rejected ref '$REF': $1"; exit 1; }
+          case "$REF" in
+            refs/*) fail "full refs (refs/..., including refs/pull/...) are not allowed; pass a branch name or a 40-character SHA." ;;
+          esac
+          if printf '%s' "$REF" | grep -Eqx '[0-9a-f]{40}'; then
+            git cat-file -e "${REF}^{commit}" 2>/dev/null || fail "commit not found in this repository."
+            if git merge-base --is-ancestor "$REF" refs/remotes/origin/main 2>/dev/null \
+              || git merge-base --is-ancestor "$REF" refs/remotes/origin/integration/device-duo 2>/dev/null; then
+              SHA="$REF"
+            else
+              fail "SHA is not reachable from origin/main or origin/integration/device-duo."
+            fi
+          else
+            git check-ref-format --branch "$REF" >/dev/null 2>&1 || fail "not a valid branch name."
+            if git show-ref --verify --quiet "refs/tags/$REF"; then
+              fail "name matches a tag; tags are not allowed."
+            fi
+            git show-ref --verify --quiet "refs/remotes/origin/$REF" || fail "no branch with that name exists in this repository."
+            SHA=$(git rev-parse --verify "refs/remotes/origin/$REF^{commit}")
+          fi
+          git checkout --quiet --detach "$SHA"
+          test "$(git rev-parse HEAD)" = "$SHA" || fail "checkout did not land on $SHA."
+          echo "RESOLVED_SHA=$SHA" >> "$GITHUB_ENV"
+          {
+            echo "### TestFlight source"
+            echo "- Requested ref: \`$REF\`"
+            echo "- Resolved SHA: \`$SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Archiving $REF at $SHA"
 
       - name: Check required secrets
         env:
@@ -71,15 +121,12 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          ref: ${{ inputs.ref || 'integration/device-duo' }}
-          persist-credentials: false
 
       - name: Install pinned XcodeGen
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
             "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
 
@@ -145,7 +192,7 @@ jobs:
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             2>&1 | tee "$LOG_DIR/export.log"
-          echo "Uploaded com.aerodj.app build $BUILD_NUMBER to App Store Connect; it appears in TestFlight after processing." >> "$GITHUB_STEP_SUMMARY"
+          echo "Uploaded com.aerodj.app build $BUILD_NUMBER ($RESOLVED_SHA) to App Store Connect; it appears in TestFlight after processing." >> "$GITHUB_STEP_SUMMARY"
 
       # Only the xcodebuild logs, and only on failure. Never the .p8, the
       # archive or a signed .ipa.
