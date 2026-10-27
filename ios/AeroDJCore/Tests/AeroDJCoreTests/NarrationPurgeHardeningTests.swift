@@ -603,8 +603,9 @@ final class BoundaryExpiryTests: XCTestCase {
 }
 
 /// Only consent changes in Connections purge narration. Turning the briefing preference off is a
-/// station edit: future breaks are re-planned, but nothing is purged and a break on air keeps
-/// playing. (#75's `ApprovedShowHandoff.revokedOrUnapproved` becomes true here; it is not in this
+/// station edit: future breaks are re-planned and nothing is purged. A briefing break already on
+/// air stops now (Atlas, privacy P1: the listener turned it off, so it must stop talking), through
+/// the same stop hook a purge uses, but the cache and revocations are untouched. (#75's `ApprovedShowHandoff.revokedOrUnapproved` becomes true here; it is not in this
 /// base yet, so this pins the StationConfiguration -> DJBreakSession -> NarrationPurger seam.)
 @MainActor
 final class BriefingOffIsNotAPurgeTests: XCTestCase {
@@ -613,7 +614,7 @@ final class BriefingOffIsNotAPurgeTests: XCTestCase {
         func purge(sourceItemIDs: Set<UUID>) async { calls.append(sourceItemIDs) }
     }
 
-    func testTurningTheBriefingOffNeitherPurgesTheCacheNorStopsTheBreakOnAir() async throws {
+    func testTurningTheBriefingOffStopsTheBriefingBreakOnAirWithoutPurgingTheCache() async throws {
         let station = StationConfigurationModel(
             store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: .init(commentary: .frequent)))),
             consent: StaticIntegrationConsent([:]))
@@ -656,12 +657,14 @@ final class BriefingOffIsNotAPurgeTests: XCTestCase {
         XCTAssertTrue(change.invalidatesPreparedBreaks, "briefing off drops future breaks")
         await session.stationChanged(change)   // the same path the session's change stream runs
 
-        XCTAssertEqual(interlude.stops, [], "the break on air keeps playing")
+        // Changed deliberately (was: "the break on air keeps playing"). Briefing off is an
+        // `.immediate` privacy reduction: the briefing break on air stops, once, untagged.
+        XCTAssertEqual(interlude.stops, [.sourceRevoked], "the briefing break on air stops now")
+        XCTAssertEqual(interlude.tags, [nil])
         XCTAssertEqual(spy.calls, [], "NarrationPurger is not called")
         XCTAssertEqual(revocations.count, 0, "nothing is revoked")
         let cachedAfter = await cache.fileCount()
         XCTAssertEqual(cachedAfter, cachedBefore, "cached audio stays on disk")
-        XCTAssertEqual(dj.state, .speaking(afterTrack: 0, includesBriefing: true), "still speaking")
     }
 }
 
@@ -772,7 +775,9 @@ final class OnBreakMustStopHookTests: XCTestCase {
         XCTAssertEqual(r.stops.reasons, [], "nothing is playing any more, so nothing to stop")
     }
 
-    func testTurningTheBriefingOffDoesNotFire() async throws {
+    /// Changed deliberately (was `testTurningTheBriefingOffDoesNotFire`): briefing off is still
+    /// not a purge, but the briefing break on air must stop talking (Atlas, privacy P1).
+    func testTurningTheBriefingOffStopsTheBriefingBreakOnAir() async throws {
         let r = try await onAir()
         var changes = r.station.changes().makeAsyncIterator()
         await r.station.setBriefing { $0.enabled = false }
@@ -780,7 +785,8 @@ final class OnBreakMustStopHookTests: XCTestCase {
         let next = await changes.next()
         let change = try XCTUnwrap(next)
         await r.session.stationChanged(change)
-        XCTAssertEqual(r.stops.reasons, [], "briefing off is a station edit, not a purge")
+        XCTAssertEqual(r.stops.reasons, [.sourceRevoked], "the briefing break on air stops once")
+        XCTAssertEqual(r.stops.tags, [nil], "untagged, as in purge")
     }
 }
 

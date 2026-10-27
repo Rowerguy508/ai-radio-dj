@@ -35,7 +35,7 @@ public final class DJBreakSession {
     private var changeTask: Task<Void, Never>?
     private var observing = false
     /// The break handed to the player at the last natural boundary, until its audio ends.
-    private var onAir: (afterTrack: Int, sources: Set<UUID>)?
+    private var onAir: (afterTrack: Int, sources: Set<UUID>, includesBriefing: Bool)?
     /// Stops the DJ line on air. Same declaration as #67: PlayerView (82664c8) routes it to
     /// `InterludePlaybackAdapter.stopCurrentInterlude(reason:)`. `purge` calls it exactly once,
     /// and only when it removes a source the break on air depends on.
@@ -248,6 +248,13 @@ public final class DJBreakSession {
         let cues = ready.cues.filter { cue in
             (cue.sourceItemID.map { !lapsed.contains($0) } ?? true) && mayBeNarrated(cue, at: handOut)
         }
+        // Commentary or the briefing turned off while this call was suspended (before the
+        // on-air marker exists, so `stationChanged` had nothing to stop): not handed out.
+        if station.active.commentary == .off
+            || (ready.includesBriefing && !station.active.briefing.enabled) {
+            dj.send(.breakSkipped(afterTrack: k, .cancelled))
+            return nil
+        }
         if ready.includesBriefing, !cues.contains(where: \.isContent) {
             // Nothing personal left to say: music plays at once.
             dj.send(.breakSkipped(afterTrack: k, .sourceRevoked))
@@ -258,7 +265,7 @@ public final class DJBreakSession {
             afterTrack: k, cues: cues, clips: ready.clips.filter { kept.contains($0.cueID) },
             attributions: ready.attributions.filter { kept.contains($0.key) })
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
-        onAir = (k, Set(prepared.cues.compactMap(\.sourceItemID)))
+        onAir = (k, Set(prepared.cues.compactMap(\.sourceItemID)), ready.includesBriefing)
         return prepared
     }
 
@@ -341,6 +348,11 @@ public final class DJBreakSession {
 
     func stationChanged(_ change: StationConfigurationChange) async {
         if change.invalidatesPreparedBreaks {
+            // Commentary off (or the briefing off while a briefing break is out): the break
+            // handed out or speaking stops now, before any await, through the same hook a
+            // purge uses. The adapter ends it as `.revoked` and the boundary hands back to
+            // music (`startNextTrack` -> `playIfStillAllowed`), exactly as for a purge.
+            stopOnAirIfSilenced(by: change)
             // Always cancel in-flight VOICE renders (no spend after commentary/briefing off).
             await preparer.cancelAll()
             // Withdrawal / briefing-off handling must run even while tap setup is pending
@@ -375,6 +387,20 @@ public final class DJBreakSession {
             return
         }
         replanIfCadenceChanged(after: playing ?? -1)
+    }
+
+    /// Stops the handed-out or speaking break when `change` silences it: commentary went to
+    /// `.off`, or the briefing went off and that break carries briefing content. Untagged and
+    /// `.sourceRevoked`, as in `purge`, so the adapter takes its revoke stop path (halt now,
+    /// end `.revoked`, music resumes or the next track loads once). Turning anything on never
+    /// reaches here (`invalidatesPreparedBreaks` is only true for reductions).
+    private func stopOnAirIfSilenced(by change: StationConfigurationChange) {
+        guard let live = onAir else { return }
+        let commentaryOff = change.previous.commentary != .off && change.active.commentary == .off
+        let briefingOff = change.previous.briefing.enabled && !change.active.briefing.enabled
+        guard commentaryOff || (briefingOff && live.includesBriefing) else { return }
+        onAir = nil
+        requestStop(afterTrack: live.afterTrack, .sourceRevoked)
     }
 
     private func replanIfCadenceChanged(after k: Int) {
