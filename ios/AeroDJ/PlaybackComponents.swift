@@ -611,13 +611,16 @@ struct StartListeningView: View {
         }
     }
 
-    /// Diagnostic for device builds: shows the real MusicKit error (type, domain, code, text)
-    /// instead of a generic line, so a TestFlight build reports why search failed.
-    /// The query is never included. Replace with friendly copy once the cause is known.
+    /// TEMPORARY diagnostic for device builds (remove once the search failure's cause is
+    /// known): shows the error's type, code and localizedDescription instead of a generic line.
+    /// Never debugDescription, the underlying-error chain, a request URL or the query, which
+    /// can carry storefront or token details.
     static func searchFailureMessage(_ error: Error) -> String {
-        let ns = error as NSError
-        searchLog.error("Apple Music search failed: \(String(describing: type(of: error)), privacy: .public) \(ns.domain, privacy: .public) \(ns.code, privacy: .public) \(String(describing: error), privacy: .public)")
-        return "Apple Music search failed: \(type(of: error)) (\(ns.domain) \(ns.code)). \(error.localizedDescription)"
+        let typeName = String(describing: type(of: error))
+        let code = (error as NSError).code
+        let text = error.localizedDescription
+        searchLog.error("Apple Music search failed: \(typeName, privacy: .public) code \(code, privacy: .public): \(text, privacy: .public)")
+        return "Apple Music search failed: \(typeName) code \(code). \(text)"
     }
 
     private static let searchLog = Logger(subsystem: "com.aerodj.app", category: "search")
