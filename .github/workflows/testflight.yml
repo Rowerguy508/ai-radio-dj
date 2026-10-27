@@ -166,10 +166,14 @@ jobs:
 
           KC_PASS=$(openssl rand -base64 32)
           echo "::add-mask::$KC_PASS"
-          echo "KEYCHAIN_PASSWORD=$KC_PASS" >> "$GITHUB_ENV"
+          # KC_PASS stays local to this step: later steps (archive runs repo
+          # build phases and SwiftPM plugins) must never be able to unlock the
+          # keychain or export the distribution key.
 
           # Capture the runner's user keychain search list before we change it.
           ORIGINAL_KEYCHAINS=$(security list-keychains -d user | sed 's/"//g' | xargs echo)
+          # Not secret; exported so the always-run cleanup can restore it.
+          echo "ORIGINAL_KEYCHAINS=$ORIGINAL_KEYCHAINS" >> "$GITHUB_ENV"
 
           security create-keychain -p "$KC_PASS" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -355,6 +359,19 @@ jobs:
             echo "- Resolved SHA: \`$RESOLVED_SHA\`"
             echo "- Uploaded via iTMSTransporter; the build appears in TestFlight after processing."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Transporter output can echo auth material. Drop upload.log from the
+      # artifact if it contains a JWT or bearer token, and fail loudly.
+      - name: Screen upload log for tokens
+        if: failure()
+        run: |
+          set -u
+          LOG="$RUNNER_TEMP/testflight-logs/upload.log"
+          if [ -f "$LOG" ] && grep -qE 'eyJ|Bearer' "$LOG"; then
+            rm -f "$LOG"
+            echo "::error::upload.log contained token-like content and was removed from the artifact"
+            exit 1
+          fi
 
       # Only the xcodebuild / transporter logs, and only on failure. Never the
       # .p8, the .p12, the profiles, the archive or a signed .ipa.
