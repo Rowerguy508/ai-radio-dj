@@ -12,21 +12,29 @@ public enum ConfirmStatus: String, Equatable, Sendable {
 
 /// One poll of #109's start confirm.
 public enum ConfirmStep: Equatable, Sendable {
-    /// MusicKit reports `.playing`: confirm the start.
-    case confirm
+    /// MusicKit reports `.playing`: confirm the start (also after a reported timeout).
+    case confirmed
     /// Not playing yet. Keep waiting; a slow start is not a failure.
     case keepWaiting
-    /// The transport already left `.preparing` (pause, refusal, error). Stop polling.
+    /// The 8 s deadline passed without `.playing`. Report it on screen, keep transport out of
+    /// `.playing`, and do NOT pause the player: a stream still buffering on cellular may start
+    /// late, and a late `.playing` confirms this same attempt (Fry's review).
+    case reportTimeoutKeepPlayer
+    /// MusicKit reported `.interrupted` while preparing. Report it at once; the player is not
+    /// paused either, and a late `.playing` still confirms.
+    case failInterrupted
+    /// The transport already left `.preparing` (user pause, refusal, error). Stop watching.
     case stopWaiting
-    /// The deadline passed without `.playing`. Report the failure.
-    case fail
+    /// A newer attempt started (another tap, resume or skip). This watchdog stops without
+    /// touching the player or the snapshot: it must never fail or confirm the new attempt.
+    case superseded
 }
 
 /// Build 9 P0 (-Atlas): the confirm used to fail on the first `.paused` / `.stopped` poll, 0.5 s
-/// after it was armed. After `play()` returns, MusicKit can still report `.paused` while the
-/// catalog item loads, so that early failure paused a start that was only slow. A non-playing
-/// status now waits until the deadline; only the deadline reports a failure. `.interrupted`
-/// is a real system hold and still fails at once.
+/// after it was armed, and then call `player.pause()`. After `play()` returns, MusicKit can still
+/// report `.paused` while the catalog item loads, so that paused a start that was only slow. Now a
+/// non-playing status waits until the deadline, the deadline only REPORTS, and nothing here ever
+/// pauses the player. `.interrupted` is the only early report.
 public enum PlaybackConfirmPolicy {
     /// 16 polls x 0.5 s = the 8 s deadline from #109.
     public static let maxPolls = 16
@@ -34,9 +42,15 @@ public enum PlaybackConfirmPolicy {
     /// `poll` is 1-based: the first check after the first sleep is poll 1.
     public static func step(status: ConfirmStatus, transportIsPreparing: Bool, poll: Int,
                             maxPolls: Int = PlaybackConfirmPolicy.maxPolls) -> ConfirmStep {
-        if status == .playing { return .confirm }
+        if status == .playing { return .confirmed }
         guard transportIsPreparing else { return .stopWaiting }
-        if status == .interrupted { return .fail }
-        return poll >= maxPolls ? .fail : .keepWaiting
+        if status == .interrupted { return .failInterrupted }
+        return poll >= maxPolls ? .reportTimeoutKeepPlayer : .keepWaiting
+    }
+
+    /// Whether a step lets the app touch the player. Always false: the confirm never pauses.
+    public static func pausesPlayer(_ step: ConfirmStep) -> Bool {
+        _ = step
+        return false
     }
 }

@@ -13,17 +13,23 @@ final class P0Build9NoAudioTests: XCTestCase {
     }
 
     func testPlayingConfirmsAtAnyPoll() {
-        XCTAssertEqual(PlaybackConfirmPolicy.step(status: .playing, transportIsPreparing: true, poll: 1), .confirm)
-        XCTAssertEqual(PlaybackConfirmPolicy.step(status: .playing, transportIsPreparing: true, poll: 16), .confirm)
+        XCTAssertEqual(PlaybackConfirmPolicy.step(status: .playing, transportIsPreparing: true, poll: 1), .confirmed)
+        XCTAssertEqual(PlaybackConfirmPolicy.step(status: .playing, transportIsPreparing: true, poll: 16), .confirmed)
+        XCTAssertEqual(PlaybackConfirmPolicy.step(status: .playing, transportIsPreparing: true, poll: 40), .confirmed)
     }
 
-    func testDeadlineStillFails() {
+    /// Fry's review: the deadline reports and keeps the player; it no longer fails-and-pauses.
+    func testDeadlineReportsWithoutPausing() {
         XCTAssertEqual(PlaybackConfirmPolicy.maxPolls, 16, "16 x 0.5 s is #109's 8 s deadline")
-        XCTAssertEqual(PlaybackConfirmPolicy.step(status: .paused, transportIsPreparing: true, poll: 16), .fail)
+        let step = PlaybackConfirmPolicy.step(status: .paused, transportIsPreparing: true, poll: 16)
+        XCTAssertEqual(step, .reportTimeoutKeepPlayer)
+        XCTAssertFalse(PlaybackConfirmPolicy.pausesPlayer(step))
     }
 
-    func testInterruptedFailsAtOnce() {
-        XCTAssertEqual(PlaybackConfirmPolicy.step(status: .interrupted, transportIsPreparing: true, poll: 1), .fail)
+    func testInterruptedReportsAtOnceWithoutPausing() {
+        let step = PlaybackConfirmPolicy.step(status: .interrupted, transportIsPreparing: true, poll: 1)
+        XCTAssertEqual(step, .failInterrupted)
+        XCTAssertFalse(PlaybackConfirmPolicy.pausesPlayer(step))
     }
 
     func testLeavingPreparingStopsTheConfirm() {
@@ -134,5 +140,15 @@ final class P0Build9NoAudioTests: XCTestCase {
         XCTAssertEqual(log.entries.first?.detail, "n=2")
         XCTAssertEqual(log.entries.last?.offsetMs, 1100)
         XCTAssertEqual(log.entries.last?.tag, "pause.user")
+    }
+
+    /// Orion/Sentinel: every record says which attempt it belongs to.
+    func testRingRecordsCarryTheAttemptNumber() {
+        var log = TapDiagnosticsLog(capacity: 4)
+        log.record("pre", at: 0)
+        log.record("queue.loaded", detail: "index=0 autoplay=true", attempt: 1, at: 1)
+        log.record("tapPlay.superseded", attempt: 1, at: 2)
+        log.record("queue.loaded", detail: "index=0 autoplay=true", attempt: 2, at: 2)
+        XCTAssertEqual(log.entries.map(\.attempt), [nil, 1, 1, 2])
     }
 }

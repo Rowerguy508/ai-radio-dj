@@ -13,6 +13,8 @@ public struct TapDiagnosticsLog: Equatable, Sendable {
         public let tag: String
         /// Optional short detail: enum names, booleans or integers only.
         public let detail: String
+        /// The playback attempt (`PlaybackAttemptID.number`) this record belongs to; nil before the first.
+        public let attempt: Int?
     }
 
     public let capacity: Int
@@ -32,8 +34,8 @@ public struct TapDiagnosticsLog: Equatable, Sendable {
         tapAt.map { Int(((now - $0) * 1000).rounded()) }
     }
 
-    public mutating func record(_ tag: StaticString, detail: String = "", at now: TimeInterval) {
-        entries.append(Entry(offsetMs: offsetMs(at: now), tag: "\(tag)", detail: detail))
+    public mutating func record(_ tag: StaticString, detail: String = "", attempt: Int? = nil, at now: TimeInterval) {
+        entries.append(Entry(offsetMs: offsetMs(at: now), tag: "\(tag)", detail: detail, attempt: attempt))
         if entries.count > capacity {
             entries.removeFirst(entries.count - capacity)
         }

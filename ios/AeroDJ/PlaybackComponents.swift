@@ -666,7 +666,9 @@ struct StartListeningView: View {
                 ForEach(Array(model.results.enumerated()), id: \.element.id) { index, track in
                     Button {
                         Task {
-                            do { try await search.play(model.results, index) } catch {
+                            do { try await search.play(model.results, index) } catch MusicKitError.superseded {
+                                // Build 9 P0 (-Atlas): a newer tap owns the screen; nothing to show.
+                            } catch {
                                 model.phase = .failed(Self.playFailureMessage(error))
                             }
                         }
@@ -697,15 +699,13 @@ struct StartListeningView: View {
         Binding(get: { model.query }, set: { model.updateQuery($0) })
     }
 
-    /// TEMPORARY diagnostic for device builds (remove once the playback failure's cause is
-    /// known): type, NSError code and localizedDescription only. Never debugDescription,
-    /// the underlying-error chain, request URLs, titles or search terms. From Atlas #109.
+    /// TEMPORARY diagnostic for device builds (remove: #121): error type, NSError domain and
+    /// code only (`PlaybackErrorCode`). Never localizedDescription, debugDescription, the
+    /// underlying-error chain, request URLs, titles or search terms. From Atlas #109.
     static func playFailureMessage(_ error: Error) -> String {
-        let typeName = String(describing: type(of: error))
-        let code = (error as NSError).code
-        let text = error.localizedDescription
-        playLog.error("TEMPORARY Apple Music play failed: \(typeName, privacy: .public) code \(code, privacy: .public): \(text, privacy: .public)")
-        return "TEMPORARY: couldn't start playback: \(typeName) code \(code). \(text)"
+        let code = PlaybackErrorCode(error)
+        playLog.error("TEMPORARY Apple Music play failed: \(code.typeName, privacy: .public) \(code.domain, privacy: .public) code \(code.code, privacy: .public)")
+        return "TEMPORARY: couldn't start playback: \(code)."
     }
 
     private static let playLog = Logger(subsystem: "com.aerodj.app", category: "playback")

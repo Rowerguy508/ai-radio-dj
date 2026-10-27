@@ -3,8 +3,8 @@
 // once the device cause is known; removal is tracked in the PR that added it
 // (branch atlas/p0-no-audio-diag).
 //
-// Privacy (Sentinel): enum names, booleans, counts, raw enum values and error type + code +
-// localizedDescription only. Never titles, song/queue IDs, search terms, URLs, storefront or
+// Privacy (Sentinel, Orion): enum names, booleans, counts, raw enum values, attempt numbers and
+// error type + NSError domain + code only (`PlaybackErrorCode`). Never localizedDescription, titles, song/queue IDs, search terms, URLs, storefront or
 // subscription details beyond one Bool, String(describing:) of an error, debugDescription
 // or userInfo. Read-only: the overlay has no controls and ignores touches.
 
@@ -47,6 +47,8 @@ final class P0TapDiagnostics: ObservableObject {
     var commentary = "unknown"
     /// Set by PlayerView: index of the station in the app's fixed station list.
     var viewStationIndex = -1
+    /// Newest playback attempt seen; records without an explicit attempt are tagged with it.
+    private(set) var latestAttempt: Int?
 
     private var readingTask: Task<Void, Never>?
 
@@ -66,21 +68,24 @@ final class P0TapDiagnostics: ObservableObject {
         }
     }
 
-    func record(_ tag: StaticString, detail: String = "") {
-        log.record(tag, detail: detail, at: now)
+    /// Every record carries an attempt number: the one given, else the newest seen.
+    func record(_ tag: StaticString, detail: String = "", attempt: PlaybackAttemptID? = nil) {
+        if let number = attempt?.number, number > (latestAttempt ?? 0) { latestAttempt = number }
+        log.record(tag, detail: detail, attempt: attempt?.number ?? latestAttempt, at: now)
     }
 
-    /// Error type + NSError code + localizedDescription, marked TEMPORARY. Nothing else.
-    func recordPlayError(_ gate: StaticString, _ error: Error) {
-        let text = Self.describe(error)
-        lastPlayError = "\(gate): \(text)"
-        record(gate, detail: "error")
+    /// Error type + NSError domain + code and the attempt, marked TEMPORARY. Nothing else.
+    func recordPlayError(_ gate: StaticString, _ error: Error, attempt: PlaybackAttemptID? = nil) {
+        record(gate, detail: "error", attempt: attempt)
+        let number = attempt?.number ?? latestAttempt ?? 0
+        lastPlayError = "\(gate) a\(number): \(Self.describe(error))"
     }
 
-    /// Which gate last refused or paused a start.
-    func recordRefusal(_ gate: StaticString) {
-        lastRefusal = "\(gate)"
-        record(gate)
+    /// Which gate last refused or paused a start, and for which attempt.
+    func recordRefusal(_ gate: StaticString, attempt: PlaybackAttemptID? = nil) {
+        record(gate, attempt: attempt)
+        let number = attempt?.number ?? latestAttempt ?? 0
+        lastRefusal = "\(gate) a\(number)"
     }
 
     func setCanPlayCatalog(_ value: Bool?) {
@@ -97,10 +102,9 @@ final class P0TapDiagnostics: ObservableObject {
         record("break.audio.started")
     }
 
+    /// Type name, NSError domain and code. No localizedDescription or other raw text.
     static func describe(_ error: Error) -> String {
-        let typeName = String(describing: type(of: error))
-        let code = (error as NSError).code
-        return "TEMPORARY \(typeName) code \(code). \(error.localizedDescription)"
+        "TEMPORARY \(PlaybackErrorCode(error))"
     }
 
     static func statusName(_ status: MusicKit.MusicPlayer.PlaybackStatus) -> String {
@@ -166,7 +170,7 @@ struct P0TapDiagnosticsOverlay: View {
                 Text(diagnostics.log.tapAt == nil ? "tap a song" : "reading at 3 s…")
             }
             ForEach(Array(diagnostics.log.entries.enumerated()), id: \.offset) { _, entry in
-                Text("\(entry.offsetMs.map { "+\($0)ms" } ?? "pre-tap") \(entry.tag) \(entry.detail)")
+                Text("\(entry.offsetMs.map { "+\($0)ms" } ?? "pre-tap") a\(entry.attempt.map(String.init) ?? "-") \(entry.tag) \(entry.detail)")
             }
         }
         .font(.system(size: 9, design: .monospaced))
