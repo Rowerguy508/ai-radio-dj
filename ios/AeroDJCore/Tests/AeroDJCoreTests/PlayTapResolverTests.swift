@@ -39,6 +39,14 @@ final class PlayTapResolverTests: XCTestCase {
         XCTAssertEqual(result, .success(["b", "c"]))
     }
 
+    func testTappedSongMissingFailsEvenIfLaterRowsResolve() {
+        // Sentinel P2: a stale cache must never start a different song than the one tapped.
+        let shown = ["a", "b", "c"]
+        let result = PlayTapResolver.resolveIDs(
+            allResultIDs: shown, startIndex: 0, orderedIDs: ["b", "c"], available: ["b", "c"])
+        XCTAssertEqual(result, .failure(.tracksUnavailable))
+    }
+
     func testEmptyQueueStartedDoesNotClaimPreparing() {
         // Defense: even if a caller wrongly forwards [], the engine must not show .preparing.
         var e = PlaybackEngine()

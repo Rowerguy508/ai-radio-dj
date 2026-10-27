@@ -15,7 +15,8 @@ public enum PlayTapResolver {
     ///
     /// When `orderedIDs` still matches `allResultIDs` (same search the UI is showing), returns
     /// the ordered slice from `startIndex` — the results captured at search time, not a fresh
-    /// per-row lookup. Otherwise compactMaps through `available` and fails if nothing resolves.
+    /// per-row lookup. Otherwise the tapped ID must be in `available` (else `.tracksUnavailable`),
+    /// and the rest of the slice is filtered through `available`.
     public static func resolveIDs(
         allResultIDs: [String],
         startIndex: Int,
@@ -28,8 +29,11 @@ public enum PlayTapResolver {
         if orderedIDs == allResultIDs {
             return .success(Array(orderedIDs[startIndex...]))
         }
+        // The tapped song itself must resolve; never start a different song than the one tapped.
+        guard available.contains(allResultIDs[startIndex]) else {
+            return .failure(.tracksUnavailable)
+        }
         let resolved = allResultIDs[startIndex...].filter { available.contains($0) }
-        guard !resolved.isEmpty else { return .failure(.tracksUnavailable) }
         return .success(Array(resolved))
     }
 }
