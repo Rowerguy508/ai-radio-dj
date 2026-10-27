@@ -119,7 +119,7 @@ struct MusicSearch {
                 return tracks.map(\.info)
             },
             play: { results, startIndex in
-                // TEMPORARY P0 diagnostics -Atlas: offsets are measured from this tap; the
+                // TEMPORARY P0 diagnostics (remove: #121) -Atlas: offsets are measured from this tap; the
                 // overlay freezes a reading 3 s later.
                 P0TapDiagnostics.shared.markTap(transport: { music.snapshot.transport.rawValue })
                 // Station jump check: does the on-screen station match the view that took the tap?
@@ -131,7 +131,7 @@ struct MusicSearch {
                 do {
                     tracks = try music.searchResults.resolve(results: results, startIndex: startIndex)
                 } catch {
-                    P0TapDiagnostics.shared.recordPlayError("tapResolve.threw", error) // TEMPORARY P0 diagnostics -Atlas
+                    P0TapDiagnostics.shared.recordPlayError("tapResolve.threw", error) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
                     throw error
                 }
                 // Consent / approved-handoff check runs here, before personal cues reach the session.

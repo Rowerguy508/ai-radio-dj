@@ -1,5 +1,5 @@
-// TEMPORARY P0 diagnostics -Atlas
-// Build 9 no-audio trace. Delete this file and every line tagged "TEMPORARY P0 diagnostics"
+// TEMPORARY P0 diagnostics (remove: #121) -Atlas
+// Build 9 no-audio trace. Delete this file and every line tagged "TEMPORARY P0 diagnostics (remove: #121)"
 // once the device cause is known; removal is tracked in the PR that added it
 // (branch atlas/p0-no-audio-diag).
 //
@@ -147,13 +147,13 @@ enum P0TapDiagnosticsBridge {
     }
 }
 
-/// TEMPORARY P0 diagnostics -Atlas. Read-only text; no buttons, no gestures, ignores touches.
+/// TEMPORARY P0 diagnostics (remove: #121) -Atlas. Read-only text; no buttons, no gestures, ignores touches.
 struct P0TapDiagnosticsOverlay: View {
     @ObservedObject private var diagnostics = P0TapDiagnostics.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("TEMPORARY P0 diagnostics").bold()
+            Text("TEMPORARY P0 diagnostics (remove: #121)").bold()
             if let r = diagnostics.reading {
                 Text("@\(r.offsetMs)ms transport=\(r.transport) player=\(r.playerStatus) queueEntry=\(String(r.queueHasEntry))")
                 Text("session=\(r.category)/\(r.mode) otherAudio=\(String(r.otherAudioPlaying)) silenceHint=\(String(r.silenceSecondaryHint))")

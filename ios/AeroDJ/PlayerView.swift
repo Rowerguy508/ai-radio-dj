@@ -42,10 +42,10 @@ struct PlayerView: View {
         .navigationTitle(station.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        // TEMPORARY P0 diagnostics -Atlas: read-only overlay, ignores touches. Debug and TestFlight.
+        // TEMPORARY P0 diagnostics (remove: #121) -Atlas: read-only overlay, ignores touches. Debug and TestFlight.
         .overlay(alignment: .bottomLeading) { P0TapDiagnosticsOverlay() }
         .onAppear {
-            // TEMPORARY P0 diagnostics -Atlas: fixed station list index and the commentary
+            // TEMPORARY P0 diagnostics (remove: #121) -Atlas: fixed station list index and the commentary
             // enum name only, so the overlay shows which station view is on screen.
             let diagnostics = P0TapDiagnostics.shared
             diagnostics.viewStationIndex = Station.mockStations.firstIndex(of: station) ?? -1
@@ -53,7 +53,7 @@ struct PlayerView: View {
             diagnostics.record("playerView.appear", detail: "station=\(diagnostics.viewStationIndex)")
         }
         .onChange(of: studio.station.active.commentary) { _, value in
-            P0TapDiagnostics.shared.commentary = value.rawValue // TEMPORARY P0 diagnostics -Atlas
+            P0TapDiagnostics.shared.commentary = value.rawValue // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         }
         // Fry #110: Tune Save/Discard waits on real transport. Callbacks + auth refresh stay
         // on PlaybackSessionBinder (once-only); do not authorize() here.

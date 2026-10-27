@@ -69,7 +69,7 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
             let signal = completion.winner?.rawValue ?? "none"
             Self.log.info("speech render complete signal=\(signal, privacy: .public) frames=\(Int(frames), privacy: .public)")
         }
-        P0TapDiagnosticsBridge.speechRenderBegan() // TEMPORARY P0 diagnostics -Atlas
+        P0TapDiagnosticsBridge.speechRenderBegan() // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         try await completion.wait(start: { [self] in
             synthesizer.write(utterance) { [self] buffer in handle(buffer) }
         }, onCancel: { [self] in

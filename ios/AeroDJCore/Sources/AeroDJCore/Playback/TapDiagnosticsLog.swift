@@ -1,6 +1,6 @@
 import Foundation
 
-/// TEMPORARY P0 diagnostics -Atlas (build 9 no-audio). Remove with the overlay; tracked in
+/// TEMPORARY P0 diagnostics (remove: #121) -Atlas (build 9 no-audio). Remove with the overlay; tracked in
 /// the PR that added it (atlas/p0-no-audio-diag).
 ///
 /// A bounded ring of play-path events for the on-screen overlay. A tag is a `StaticString`,
