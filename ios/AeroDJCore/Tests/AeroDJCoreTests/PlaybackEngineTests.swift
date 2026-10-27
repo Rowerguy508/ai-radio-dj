@@ -117,10 +117,37 @@ final class PlaybackEngineTests: XCTestCase {
         XCTAssertEqual(e.snapshot.nowPlaying, track(2))
         e.apply(.userResumed)
         XCTAssertEqual(e.snapshot.transport, .preparing)
-        XCTAssertNil(e.snapshot.hold)
+        XCTAssertEqual(e.snapshot.hold, .user, "hold stays until MusicKit confirms")
         XCTAssertEqual(e.snapshot.nowPlaying, track(2))
         e.apply(.playbackConfirmed)
         XCTAssertEqual(e.snapshot.transport, .playing)
+        XCTAssertNil(e.snapshot.hold)
+    }
+
+    /// P2 #1: a late confirmation after unplug must not claim playing or drop the caption.
+    func testLatePlaybackConfirmedDoesNotClearRouteHold() {
+        var e = started()
+        e.apply(.routePaused)
+        XCTAssertEqual(e.snapshot.transport, .paused)
+        XCTAssertEqual(e.snapshot.hold, .routeRemoved)
+        XCTAssertEqual(e.snapshot.hold?.caption, "Paused because the audio route was removed")
+        e.apply(.playbackConfirmed)
+        XCTAssertEqual(e.snapshot.transport, .paused, "late confirm must not override a hold")
+        XCTAssertEqual(e.snapshot.hold, .routeRemoved)
+        XCTAssertEqual(e.snapshot.hold?.caption, "Paused because the audio route was removed")
+    }
+
+    /// P2 #2: when a start gate refuses after preparing, restore paused with the hold intact.
+    func testPlaybackStartRefusedRestoresPausedWithRouteHold() {
+        var e = started()
+        e.apply(.routePaused)
+        e.apply(.userResumed)
+        XCTAssertEqual(e.snapshot.transport, .preparing)
+        XCTAssertEqual(e.snapshot.hold, .routeRemoved)
+        e.apply(.playbackStartRefused)
+        XCTAssertEqual(e.snapshot.transport, .paused, "refusal must not leave transport preparing")
+        XCTAssertEqual(e.snapshot.hold, .routeRemoved)
+        XCTAssertEqual(e.snapshot.hold?.caption, "Paused because the audio route was removed")
     }
 
     func testPauseBeforeStartIsIgnored() {

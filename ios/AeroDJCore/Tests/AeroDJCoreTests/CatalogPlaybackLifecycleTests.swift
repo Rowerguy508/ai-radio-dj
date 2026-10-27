@@ -278,6 +278,25 @@ final class CatalogPlaybackLifecycleTests: XCTestCase {
         XCTAssertEqual(BreakHandoffPolicy.decide(outcome), .continueMusic)
     }
 
+    /// P2 #3: a natural-boundary start during a hold defers silently; only user-initiated starts report.
+    func testHeldStartDuringBoundaryDefersSilentlyWithoutError() {
+        XCTAssertEqual(HeldStartPolicy.action(userInitiated: false), .deferSilently)
+        XCTAssertEqual(HeldStartPolicy.action(userInitiated: true), .deferAndReport)
+
+        var policy = AudioSessionPolicy()
+        var deferred = DeferredSongStart()
+        policy.userPlay()
+        _ = policy.handle(.routeChanged(.oldDeviceUnavailable), breakIsActive: false)
+        XCTAssertFalse(policy.mayAutoResume)
+
+        // Auto / natural-boundary path: arm deferred, do not treat as an error.
+        let action = HeldStartPolicy.action(userInitiated: false)
+        XCTAssertEqual(action, .deferSilently)
+        deferred.arm(2)
+        XCTAssertEqual(deferred.index, 2)
+        XCTAssertFalse(policy.mayAutoResume, "hold remains; no error signal at core level")
+    }
+
     func testDeferredSongStartIsReportedOnceWhenResumeIsPermitted() {
         var policy = AudioSessionPolicy()
         var deferred = DeferredSongStart()

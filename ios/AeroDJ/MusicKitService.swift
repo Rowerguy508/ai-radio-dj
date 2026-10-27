@@ -125,7 +125,7 @@ final class MusicKitService: ObservableObject {
         stateMachine.apply(.startMusic)
         armPlaybackConfirmTimeout()
         do {
-            try await startTrack(at: 0, autoplay: true)
+            try await startTrack(at: 0, autoplay: true, userInitiated: true)
             lastError = nil
             send(.errorCleared)
             await confirmPlaybackAfterStart()
@@ -163,18 +163,22 @@ final class MusicKitService: ObservableObject {
     /// The user pressed play.
     func resume() async throws {
         sessionPolicy.userPlay()
-        send(.userResumed)
         armPlaybackConfirmTimeout()
         do {
             guard try await playIfStillAllowed() else {
                 cancelPlaybackConfirmTimeout()
+                // Never left a preparing state without a hold: we only send userResumed after
+                // the gate passes. If a prior prepare left us preparing, restore the hold.
+                send(.playbackStartRefused)
                 return
             }
+            send(.userResumed)
             stateMachine.apply(.resume)
             reportDeferredSongStart()
             await confirmPlaybackAfterStart()
         } catch {
             cancelPlaybackConfirmTimeout()
+            send(.playbackStartRefused)
             let message = Self.playbackFailureMessage(error)
             lastError = message
             send(.errorRaised(PlaybackError(kind: .resumeFailed, message: message, isRecoverable: true)))
@@ -200,17 +204,19 @@ final class MusicKitService: ObservableObject {
         )
         guard action == .resumeCurrentEntry else { return }
         do {
-            send(.userResumed)
             armPlaybackConfirmTimeout()
             guard try await playIfStillAllowed() else {
                 cancelPlaybackConfirmTimeout()
+                send(.playbackStartRefused)
                 return
             }
+            send(.userResumed)
             // A song loaded during the break (paused) starts now; its break is planned here.
             reportDeferredSongStart()
             await confirmPlaybackAfterStart()
         } catch {
             cancelPlaybackConfirmTimeout()
+            send(.playbackStartRefused)
             reportError(Self.playbackFailureMessage(error))
         }
     }
@@ -230,13 +236,13 @@ final class MusicKitService: ObservableObject {
             return
         }
         send(.userSkipped(nextIndex: next))
-        try await startTrack(at: next, autoplay: true)
+        try await startTrack(at: next, autoplay: true, userInitiated: true)
     }
 
     /// Loads one song into the player. Only the current song is ever queued, so it ends on
     /// its own and the next one starts only through `startNextTrack` or a user action.
     /// With `autoplay` false (the user paused during a break) the song waits, loaded and paused.
-    func startTrack(at index: Int, autoplay: Bool) async throws {
+    func startTrack(at index: Int, autoplay: Bool, userInitiated: Bool = false) async throws {
         guard queue.indices.contains(index) else {
             logPlayGate("startTrack.outOfRange", index: index)
             return
@@ -257,12 +263,17 @@ final class MusicKitService: ObservableObject {
             return
         }
         guard sessionPolicy.mayAutoResume else {
-            // User-initiated play already called userPlay(); a false mayAutoResume means a
-            // system hold raced in. Do not silently pretend we started.
+            // Keep #88 deferral for natural-boundary / auto starts. Only user-initiated
+            // starts (search play, skip, explicit resume path) raise an error.
             isPlaying = false
             armDeferredStart(index)
             logPlayGate("startTrack.deferred.held", index: index)
-            throw MusicKitError.playbackFailed(message: "TEMPORARY: playback held before play (mayAutoResume=false).")
+            switch HeldStartPolicy.action(userInitiated: userInitiated) {
+            case .deferSilently:
+                return
+            case .deferAndReport:
+                throw MusicKitError.playbackFailed(message: "TEMPORARY: playback held before play (mayAutoResume=false).")
+            }
         }
         do {
             let started = try await playIfStillAllowed()

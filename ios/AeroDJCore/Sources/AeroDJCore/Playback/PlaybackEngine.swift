@@ -19,6 +19,9 @@ public enum PlaybackEvent: Equatable, Sendable {
     case userResumed
     /// MusicKit confirmed `playbackStatus == .playing` after a start or resume.
     case playbackConfirmed
+    /// A start/resume gate refused after transport moved to `.preparing`. Restore `.paused`
+    /// without clearing a system hold (unplug / interruption).
+    case playbackStartRefused
     case djStarted(line: String)
     case djFinished
     /// The speech was cancelled or timed out. Music has already been resumed by the adapter.
@@ -88,15 +91,23 @@ public struct PlaybackEngine: Sendable {
             holdTransport(.routeRemoved)
 
         case .userResumed:
-            // User asked to resume; stay honest until MusicKit confirms via playbackConfirmed.
+            // User asked to resume; stay in preparing until MusicKit confirms.
+            // Do not clear a system hold here — only playbackConfirmed clears it, and only
+            // from .preparing. A refused gate uses playbackStartRefused to keep the hold.
             if snapshot.transport == .paused { snapshot.transport = .preparing }
-            snapshot.hold = nil
 
         case .playbackConfirmed:
-            if snapshot.transport == .preparing || snapshot.transport == .paused {
-                snapshot.transport = .playing
+            // Only .preparing may become .playing. A late confirm must not override a
+            // route-removed or interruption hold that already moved transport to .paused.
+            guard snapshot.transport == .preparing else { break }
+            snapshot.transport = .playing
+            snapshot.hold = nil
+
+        case .playbackStartRefused:
+            if snapshot.transport == .preparing {
+                snapshot.transport = .paused
             }
-            if snapshot.transport == .playing { snapshot.hold = nil }
+            // hold unchanged (including .routeRemoved / .interruption captions)
 
         case let .djStarted(line):
             snapshot.dj = line.isEmpty ? .idle : .speaking(line: line)
