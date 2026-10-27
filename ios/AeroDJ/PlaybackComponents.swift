@@ -684,6 +684,7 @@ struct StartListeningView: View {
     .background(AeroDJPalette.slab)
 }
 
+#if DEBUG
 #Preview("Errors") {
     VStack(spacing: 16) {
         PlaybackErrorBanner(error: PlaybackError(kind: .notAuthorized, message: "", isRecoverable: false), actions: .preview)
@@ -694,6 +695,7 @@ struct StartListeningView: View {
     .padding()
     .background(AeroDJPalette.slab)
 }
+#endif
 
 private struct SymbolReplace: ViewModifier {
     var enabled: Bool
