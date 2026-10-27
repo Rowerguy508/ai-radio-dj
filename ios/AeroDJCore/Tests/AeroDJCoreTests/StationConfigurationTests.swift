@@ -596,7 +596,8 @@ final class StationConfigurationModelTests: XCTestCase {
         XCTAssertEqual(StationPlaybackActivity(transport: .playing), .holdingSong)
         XCTAssertEqual(StationPlaybackActivity(transport: .paused), .holdingSong,
                        "paused mid-song (user or system hold) is not idle")
-        // @unknown default covers future cases such as Atlas #109 `.preparing`.
+        XCTAssertEqual(StationPlaybackActivity(transport: .preparing), .holdingSong,
+                       "a song that is starting holds: Save waits for the boundary")
     }
 
     func testIdleSaveAppliesImmediately() async {
