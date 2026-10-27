@@ -201,6 +201,19 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertEqual(r.dj.studioState, .idle)
     }
 
+    func testCommentaryOffWithoutSaveDropsPreparedBreakBeforeBoundary() async {
+        let r = await rig()
+        await r.session.queueStarted(djTracks(12))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until { if case .ready = r.dj.studioState { true } else { false } }
+        await r.station.setCommentary(.off)
+        XCTAssertFalse(r.station.hasUnsavedChanges, "an immediate off leaves nothing to Save")
+        await until { r.session.plannedBoundaries.isEmpty }
+        let outcome = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertNil(outcome, "commentary off with no Save: the prepared break never airs")
+        XCTAssertEqual(r.dj.studioState, .idle)
+    }
+
     func testRevokeStopsThePlayingBreakWithinOneTick() {
         let clip = ActiveBreakController()
         clip.play()
