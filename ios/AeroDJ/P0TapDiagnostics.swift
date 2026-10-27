@@ -52,7 +52,7 @@ final class P0TapDiagnostics: ObservableObject {
 
     private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
-    func markTap(transport: @escaping @MainActor () -> String) {
+    func markTap(transport: @escaping @MainActor @Sendable () -> String) {
         log.markTap(at: now)
         reading = nil
         lastPlayError = "none"
@@ -87,9 +87,9 @@ final class P0TapDiagnostics: ObservableObject {
         canPlayCatalog = value.map { $0 ? "true" : "false" } ?? "unknown"
     }
 
-    func noteSpeechRender(_ tag: StaticString) {
-        if "\(tag)" == "speech.render.begin" { speechRenders += 1 }
-        record(tag)
+    func noteSpeechRenderBegan() {
+        speechRenders += 1
+        record("speech.render.begin")
     }
 
     func noteBreakStarted() {
@@ -138,8 +138,8 @@ final class P0TapDiagnostics: ObservableObject {
 
 /// Nonisolated entry point for the speech renderer and the session monitor.
 enum P0TapDiagnosticsBridge {
-    static func speech(_ tag: StaticString) {
-        Task { @MainActor in P0TapDiagnostics.shared.noteSpeechRender(tag) }
+    static func speechRenderBegan() {
+        Task { @MainActor in P0TapDiagnostics.shared.noteSpeechRenderBegan() }
     }
 
     static func record(_ tag: StaticString, detail: String = "") {

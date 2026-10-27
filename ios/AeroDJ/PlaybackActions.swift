@@ -68,9 +68,21 @@ struct MusicSearch {
                 return tracks.map(\.info)
             },
             play: { results, startIndex in
+                // TEMPORARY P0 diagnostics -Atlas: offsets are measured from this tap; the
+                // overlay freezes a reading 3 s later.
+                P0TapDiagnostics.shared.markTap(transport: { music.snapshot.transport.rawValue })
+                // Station jump check: does the on-screen station match the view that took the tap?
+                let shown = music.snapshot.station.map { $0 == station ? "same" : "other" } ?? "none"
+                P0TapDiagnostics.shared.record("tap.station", detail: "snapshotStation=\(shown)")
                 // Resolve before touching the DJ session. Out-of-range / expired cache throw a
                 // visible TEMPORARY error; queueStarted never runs with an empty queue.
-                let tracks = try music.searchResults.resolve(results: results, startIndex: startIndex)
+                let tracks: [Track]
+                do {
+                    tracks = try music.searchResults.resolve(results: results, startIndex: startIndex)
+                } catch {
+                    P0TapDiagnostics.shared.recordPlayError("tapResolve.threw", error) // TEMPORARY P0 diagnostics -Atlas
+                    throw error
+                }
                 // Consent / approved-handoff check runs here, before personal cues reach the session.
                 let handoff = briefing()
                 let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) }

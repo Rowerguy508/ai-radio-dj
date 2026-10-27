@@ -50,6 +50,12 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
         utterance.voice = AVSpeechSynthesisVoice(identifier: voiceID) ?? AVSpeechSynthesisVoice(language: "en-US")
         self.url = url
         super.init()
+        // Build 9 P0 (-Atlas): this synthesizer only renders to a buffer, in the background,
+        // right after a song tap (#115). With the default (true) it shares the app's audio
+        // session, the one ApplicationMusicPlayer plays through, and the system may activate
+        // or deactivate that session around the utterance. False gives it a separate,
+        // system-managed session, so a render can never pause or deactivate the music.
+        synthesizer.usesApplicationAudioSession = false
         synthesizer.delegate = self
     }
 
@@ -63,6 +69,7 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
             let signal = completion.winner?.rawValue ?? "none"
             Self.log.info("speech render complete signal=\(signal, privacy: .public) frames=\(Int(frames), privacy: .public)")
         }
+        P0TapDiagnosticsBridge.speechRenderBegan() // TEMPORARY P0 diagnostics -Atlas
         try await completion.wait(start: { [self] in
             synthesizer.write(utterance) { [self] buffer in handle(buffer) }
         }, onCancel: { [self] in
