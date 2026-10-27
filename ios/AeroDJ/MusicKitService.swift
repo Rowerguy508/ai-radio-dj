@@ -659,7 +659,7 @@ final class MusicKitService: ObservableObject {
         logPlayGate("confirm.wait", index: queueIndex)
     }
 
-    private func failPlaybackConfirm(status: MusicPlayer.PlaybackStatus) {
+    private func failPlaybackConfirm(status: MusicKit.MusicPlayer.PlaybackStatus) {
         cancelPlaybackConfirmTimeout()
         let statusName = String(describing: status)
         log.notice("TEMPORARY confirm.fail status=\(statusName, privacy: .public) index=\(self.queueIndex, privacy: .public)")
