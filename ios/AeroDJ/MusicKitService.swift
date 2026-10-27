@@ -63,6 +63,8 @@ final class MusicKitService: ObservableObject {
 
     var audioState: AudioState { stateMachine.state }
     var mayAutoResume: Bool { sessionPolicy.mayAutoResume }
+    /// Route removal or a system interruption is holding playback. A user pause is not this flag.
+    var pausedBySystem: Bool { sessionPolicy.pausedBySystem }
 
     /// Request MusicKit authorization. Explicit degraded state on denial.
     func authorize() async {
