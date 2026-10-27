@@ -1,5 +1,6 @@
 import AeroDJCore
 import SwiftUI
+import OSLog
 
 /// Shared leaf views for both layouts (ui-contract.md §11). Each renders values and sends
 /// intents; none owns a service. The rules they render (what may show, which buttons are
@@ -610,6 +611,17 @@ struct StartListeningView: View {
         }
     }
 
+    /// Diagnostic for device builds: shows the real MusicKit error (type, domain, code, text)
+    /// instead of a generic line, so a TestFlight build reports why search failed.
+    /// The query is never included. Replace with friendly copy once the cause is known.
+    static func searchFailureMessage(_ error: Error) -> String {
+        let ns = error as NSError
+        searchLog.error("Apple Music search failed: \(String(describing: type(of: error)), privacy: .public) \(ns.domain, privacy: .public) \(ns.code, privacy: .public) \(String(describing: error), privacy: .public)")
+        return "Apple Music search failed: \(type(of: error)) (\(ns.domain) \(ns.code)). \(error.localizedDescription)"
+    }
+
+    private static let searchLog = Logger(subsystem: "com.aerodj.app", category: "search")
+
     private func runSearch() {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty else { return }
@@ -620,7 +632,7 @@ struct StartListeningView: View {
                 phase = results.isEmpty ? .empty : .idle
             } catch {
                 results = []
-                phase = .failed("Apple Music search isn't available right now.")
+                phase = .failed(Self.searchFailureMessage(error))
             }
         }
     }
