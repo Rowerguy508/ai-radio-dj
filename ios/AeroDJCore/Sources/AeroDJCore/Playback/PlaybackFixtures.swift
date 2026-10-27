@@ -1,7 +1,9 @@
+#if DEBUG
 import Foundation
 
 /// Shared sample snapshots for SwiftUI previews and tests. The same values drive
 /// both, so a preview shows exactly what the tests check.
+/// Compiled only when DEBUG is set. Release builds do not include it.
 public enum PlaybackFixtures {
     public static let station = StationRef(id: "morning-calm", name: "Morning Calm")
 
@@ -49,3 +51,4 @@ public enum PlaybackFixtures {
 
     public static let stopped = PlaybackSnapshot(station: station)
 }
+#endif
