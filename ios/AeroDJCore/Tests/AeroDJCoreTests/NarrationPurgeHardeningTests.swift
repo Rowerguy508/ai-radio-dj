@@ -650,6 +650,7 @@ final class BriefingOffIsNotAPurgeTests: XCTestCase {
 
         var changes = station.changes().makeAsyncIterator()
         await station.setBriefing { $0.enabled = false }
+        await station.saveChanges()
         let next = await changes.next()
         let change = try XCTUnwrap(next)
         XCTAssertTrue(change.invalidatesPreparedBreaks, "briefing off drops future breaks")
@@ -775,6 +776,7 @@ final class OnBreakMustStopHookTests: XCTestCase {
         let r = try await onAir()
         var changes = r.station.changes().makeAsyncIterator()
         await r.station.setBriefing { $0.enabled = false }
+        await r.station.saveChanges()
         let next = await changes.next()
         let change = try XCTUnwrap(next)
         await r.session.stationChanged(change)

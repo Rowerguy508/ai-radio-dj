@@ -50,8 +50,10 @@ final class StationTunerPresentationTests: XCTestCase {
 
     func testRowsShowPendingAndActiveSeparatelyUntilTheBoundary() async {
         let station = await loadedStation()
+        await station.setPlaybackActivity(.holdingSong)
         await station.setEnergy(0.9)
         await station.setPersonality(.minimal)
+        await station.saveChanges()
         let energy = station.tunerRow(for: .energy)
         XCTAssertEqual(energy.activeSummary, "60%")
         XCTAssertEqual(energy.displayedSummary, "90%")
@@ -151,6 +153,7 @@ final class StationRecipeTests: XCTestCase {
 
     func testApplyingARecipeFollowsBoundaryRulesAndKeepsConnections() async throws {
         let station = await loadedStation()  // active = morning mix, calendar + share requested
+        await station.setPlaybackActivity(.holdingSong)
         let lib = await library()
         let late = try await lib.save(name: "Late", configuration: .sampleLateNight).get()
 

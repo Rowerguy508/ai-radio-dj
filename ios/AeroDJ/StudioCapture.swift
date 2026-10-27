@@ -138,8 +138,10 @@ struct StudioCaptureView: View {
             case .breakReady:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .config:
+                await studio.station.setPlaybackActivity(.holdingSong)
                 await studio.station.setEnergy(0.85)
                 await studio.station.setGenres(["pop", "indie", "synthwave"])
+                await studio.station.saveChanges()
             default:
                 break
             }

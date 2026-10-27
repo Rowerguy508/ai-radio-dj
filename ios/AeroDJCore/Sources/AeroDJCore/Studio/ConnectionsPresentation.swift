@@ -181,7 +181,25 @@ public struct ConnectionSourceRow: Equatable, Sendable, Identifiable {
         case .off: return "Off. Turn it on in the Station Tuner to use it in briefings."
         case .checking: return "Checking…"
         case .consentReviewRequired: return "Needs your permission before anything is used."
-        case .blocked: return "Permission is off. Nothing from here is used."
+        case .blocked(let consent):
+            // OS denial is different from an in-app Stop using: say so, and never claim a
+            // generic "Permission off" when EventKit itself is the blocker.
+            if case .calendar(let c) = detail {
+                switch c.access {
+                case .denied, .restricted, .writeOnly:
+                    return c.description
+                case .fullAccess, .notDetermined:
+                    break
+                }
+            }
+            switch consent {
+            case .denied:
+                return "Access is off. Nothing from here is used. You can turn it on in Settings."
+            case .revoked:
+                return "You stopped using this. Nothing from here is used. Choose again to turn it back on."
+            case .notRequested, .granted:
+                return "Permission is off. Nothing from here is used."
+            }
         case .on:
             switch detail {
             case .calendar(let c): return c.description
@@ -688,6 +706,12 @@ public final class ConnectionsModel {
         let dropped = calendar.selectedCalendarIDs.subtracting(allowed)
         if !dropped.isEmpty { await purge(Set(items(for: .calendar).map(\.id))) }
         do { try await sourceReader.setSelectedCalendars(allowed) } catch { return fail(.failed) }
+        // Re-choosing calendars is an explicit grant of calendar consent (isolated: other
+        // integrations are untouched). Ensure the tuner still requests Calendar so status
+        // can move from blocked/off to the truthful granted state after refresh.
+        if !allowed.isEmpty, !station.displayed.requestedIntegrations.contains(.calendar) {
+            await station.setIntegration(.calendar, requested: true)
+        }
         lastError = nil
         await refresh()
         return .success(())

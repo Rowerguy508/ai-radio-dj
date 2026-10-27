@@ -120,7 +120,20 @@ struct PlayerView: View {
                 }
             }
             await music.authorize()
+            await reportPlaybackActivity(music.snapshot)
         }
+        // Real player state (snapshot.transport), not a UI "playing" flag: paused mid-song
+        // stays holding so Tune Save waits; stopped / empty is idle so Save applies now.
+        .onChange(of: music.snapshot) { _, snap in
+            Task { await reportPlaybackActivity(snap) }
+        }
+    }
+
+    /// Real transport only (not a UI playing flag). `.stopped` → idle apply; playing,
+    /// paused mid-song (incl. system hold), and unknown future cases (e.g. `.preparing`
+    /// from Atlas #109) → holding so Save stays pending. See `StationPlaybackActivity.init(transport:)`.
+    private func reportPlaybackActivity(_ snap: PlaybackSnapshot) async {
+        await studio.station.setPlaybackActivity(StationPlaybackActivity(transport: snap.transport))
     }
 
     private var stationRef: StationRef { StationRef(id: station.id.uuidString, name: station.name) }

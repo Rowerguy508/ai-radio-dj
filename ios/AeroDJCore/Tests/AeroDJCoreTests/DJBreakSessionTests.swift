@@ -176,7 +176,9 @@ final class DJBreakSessionTests: XCTestCase {
         await until { if case .ready = r.dj.studioState { true } else { false } }
         let before = r.session.plannedBoundaries
 
+        await r.station.setPlaybackActivity(.holdingSong)
         await r.station.setCommentary(.rare)       // a cadence change: future breaks, after this song
+        await r.station.saveChanges()
         XCTAssertEqual(r.station.active.commentary, .frequent, "pending until the boundary")
         XCTAssertEqual(r.session.plannedBoundaries, before, "nothing re-planned mid-song")
 
@@ -192,6 +194,7 @@ final class DJBreakSessionTests: XCTestCase {
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await until { if case .ready = r.dj.studioState { true } else { false } }
         await r.station.setCommentary(.off)
+        await r.station.saveChanges()
         await until { r.session.plannedBoundaries.isEmpty }
         let outcome = await r.session.naturalBoundary(afterTrack: 0)
         XCTAssertNil(outcome, "off applies now: nothing prepared plays")

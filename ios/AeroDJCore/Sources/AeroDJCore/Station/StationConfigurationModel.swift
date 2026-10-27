@@ -70,6 +70,11 @@ public final class StationConfigurationModel {
     public private(set) var state: StationConfigurationState
     public private(set) var loadState: StationConfigurationLoadState = .notLoaded
     public private(set) var consent: [StationIntegration: ConsentState] = [:]
+    /// Real player activity. Defaults to idle so a Save with nothing playing applies now.
+    public private(set) var playbackActivity: StationPlaybackActivity = .idle
+    /// Unsaved Tune edits. Nil when the controls match the committed (pending ?? active) config.
+    /// Survives fold/unfold because this model lives above the layout.
+    private var tuningDraft: StationConfiguration? = nil
     private var saving: [StationSetting: Int] = [:]
     private var errors: [StationSetting: StationControlError] = [:]
 
@@ -89,11 +94,24 @@ public final class StationConfigurationModel {
 
     // MARK: Read model
 
-    /// What every control should display (pending value if one is waiting).
-    public var displayed: StationConfiguration { state.displayed }
+    /// Committed config the controls show when there is no unsaved draft (pending if scheduled).
+    public var committedDisplayed: StationConfiguration { state.displayed }
+    /// What every control should display: unsaved draft, else pending, else active.
+    public var displayed: StationConfiguration {
+        guard let draft = tuningDraft else { return state.displayed }
+        var merged = draft
+        // Connections stay on their own immediate path; never draft them.
+        merged.requestedIntegrations = state.displayed.requestedIntegrations
+        return merged
+    }
     /// What playback and the DJ use right now.
     public var active: StationConfiguration { state.active }
     public var hasPendingChanges: Bool { state.pending != nil }
+    /// True while Tune has edits that have not been Saved (or Discarded).
+    public var hasUnsavedChanges: Bool {
+        guard let draft = tuningDraft else { return false }
+        return StationSetting.tuning.contains { $0.differs(draft, state.displayed) }
+    }
 
     public func status(for setting: StationSetting) -> StationControlStatus {
         if saving[setting, default: 0] > 0 { return .saving }
@@ -149,6 +167,7 @@ public final class StationConfigurationModel {
             state = .init()
             loadState = .failed(.unreadable)
         }
+        tuningDraft = nil
         await refreshConsent()
     }
 
@@ -184,18 +203,22 @@ public final class StationConfigurationModel {
 
     // MARK: Intents
 
-    public func setGenres(_ genres: [String]) async { await edit(.genres) { $0.genres = genres } }
-    public func setMoods(_ moods: [String]) async { await edit(.moods) { $0.moods = moods } }
-    public func setEnergy(_ energy: Double) async { await edit(.energy) { $0.energy = energy } }
-    public func setDiscovery(_ discovery: Double) async { await edit(.discovery) { $0.discovery = discovery } }
-    public func setPersonality(_ p: DJPersonality) async { await edit(.personality) { $0.personality = p } }
-    public func setCommentary(_ c: CommentaryFrequency) async { await edit(.commentary) { $0.commentary = c } }
+    /// Tune edits go into an unsaved draft. Call `saveChanges()` to schedule them for the
+    /// next safe boundary (or apply immediately when playback is idle). Connections /
+    /// consent never use this path.
+    public func setGenres(_ genres: [String]) async { await draftTune { $0.genres = genres } }
+    public func setMoods(_ moods: [String]) async { await draftTune { $0.moods = moods } }
+    public func setEnergy(_ energy: Double) async { await draftTune { $0.energy = energy } }
+    public func setDiscovery(_ discovery: Double) async { await draftTune { $0.discovery = discovery } }
+    public func setPersonality(_ p: DJPersonality) async { await draftTune { $0.personality = p } }
+    public func setCommentary(_ c: CommentaryFrequency) async { await draftTune { $0.commentary = c } }
     public func setBriefing(_ transform: @escaping (inout BriefingPreferences) -> Void) async {
-        await edit(.briefing) { transform(&$0.briefing) }
+        await draftTune { transform(&$0.briefing) }
     }
 
     /// Requests or withdraws an integration. Requesting never grants access: if consent is
     /// not granted the control shows `.consentRequired` and the UI should open the consent flow.
+    /// Revoke applies immediately and never waits for Save.
     public func setIntegration(_ integration: StationIntegration, requested: Bool) async {
         await edit(.integration(integration)) {
             if requested { $0.requestedIntegrations.insert(integration) }
@@ -204,24 +227,58 @@ public final class StationConfigurationModel {
     }
 
     /// Applies a saved recipe's tuning (everything except connections) with the same
-    /// boundary rules as editing each control: music settings wait for the song boundary,
-    /// personality for the next DJ break, briefing for the next briefing; turning
-    /// commentary or the briefing off applies now. Connections (`requestedIntegrations`)
-    /// are never changed by a recipe.
+    /// boundary rules as Save: music settings wait for the song boundary (or apply now when
+    /// idle), personality for the next DJ break, briefing for the next briefing; turning
+    /// commentary or the briefing off applies now. Connections are never changed by a recipe.
     public func applyRecipe(_ recipe: StationRecipe) async {
+        tuningDraft = nil
         let target = recipe.configuration
         await edit(Set(StationSetting.tuning)) { config in
             let keep = config.requestedIntegrations
             config = target
             config.requestedIntegrations = keep
         }
+        if playbackActivity == .idle { await applyPendingBecauseIdle() }
     }
 
-    /// Throws away pending edits; active settings are untouched.
+    /// Commits the unsaved Tune draft: schedules it for the next safe boundary, persists, and
+    /// when playback is idle applies it immediately. Never stops the current song or a DJ break.
+    /// No-op when there is nothing unsaved.
+    public func saveChanges() async {
+        guard hasUnsavedChanges, let draft = tuningDraft else { return }
+        let snapshot = draft
+        tuningDraft = nil
+        await edit(Set(StationSetting.tuning)) { config in
+            for setting in StationSetting.tuning {
+                setting.copy(from: snapshot, into: &config)
+            }
+        }
+        // If a save failed and rolled the committed config back, keep the draft so Save can retry.
+        if StationSetting.tuning.contains(where: { $0.differs(snapshot, state.displayed) }) {
+            tuningDraft = snapshot
+            return
+        }
+        if playbackActivity == .idle { await applyPendingBecauseIdle() }
+    }
+
+    /// Reverts unsaved Tune edits to the committed config. No playback effect.
+    public func discardUnsavedChanges() {
+        tuningDraft = nil
+    }
+
+    /// Throws away already-saved pending edits; active settings are untouched.
     public func discardPendingChanges() async {
         guard state.pending != nil, canSave else { return }
         state.discardPending()
         _ = await enqueueSave().value
+    }
+
+    /// Reports real player activity (not a UI "playing" flag). Going idle applies any
+    /// already-saved pending changes. Paused mid-song must be reported as `.holdingSong`.
+    public func setPlaybackActivity(_ activity: StationPlaybackActivity) async {
+        let previous = playbackActivity
+        playbackActivity = activity
+        if activity == .idle, previous != .idle { await applyPendingBecauseIdle() }
     }
 
     // MARK: Internals
@@ -229,6 +286,36 @@ public final class StationConfigurationModel {
     private var canSave: Bool {
         if case .failed(.newerVersion) = loadState { return false }
         return true
+    }
+
+    /// Records a Tune edit in the unsaved draft. Does not persist or schedule a boundary.
+    private func draftTune(_ transform: (inout StationConfiguration) -> Void) async {
+        switch loadState {
+        case .notLoaded, .loading:
+            for s in StationSetting.tuning { errors[s] = .notLoaded }
+            return
+        case .failed(.newerVersion):
+            for s in StationSetting.tuning { errors[s] = .readOnlyNewerVersion }
+            return
+        default: break
+        }
+        var next = tuningDraft ?? state.displayed
+        transform(&next)
+        next = next.validated()
+        next.requestedIntegrations = state.displayed.requestedIntegrations
+        if StationSetting.tuning.contains(where: { $0.differs(next, state.displayed) }) {
+            tuningDraft = next
+        } else {
+            tuningDraft = nil
+        }
+        for s in StationSetting.tuning { errors[s] = nil }
+    }
+
+    /// Promotes every pending change as if a song had ended. Used when Save runs idle, and
+    /// when playback goes idle with something already pending.
+    private func applyPendingBecauseIdle() async {
+        guard state.pending != nil else { return }
+        await handle(.playbackIdle)
     }
 
     private func edit(_ setting: StationSetting, _ transform: (inout StationConfiguration) -> Void) async {

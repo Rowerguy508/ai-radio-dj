@@ -292,6 +292,18 @@ final class StationConfigurationStateTests: XCTestCase {
         XCTAssertEqual(s.displayed, .default)
     }
 
+    func testPlaybackIdleAppliesEveryPendingChangeLikeSongBoundary() {
+        var s = StationConfigurationState()
+        s.edit { $0.energy = 0.9; $0.personality = .laidBack; $0.briefing.targetSeconds = 240 }
+        XCTAssertEqual(s.pendingSettings[.energy], .nextSongBoundary)
+        XCTAssertEqual(s.pendingSettings[.personality], .nextDJBreak)
+        XCTAssertEqual(s.pendingSettings[.briefing], .nextBriefing)
+        let change = s.apply(.playbackIdle)
+        XCTAssertEqual(change?.applied, [.energy, .personality, .briefing])
+        XCTAssertEqual(change?.boundary, .playbackIdle)
+        XCTAssertNil(s.pending)
+    }
+
     func testRepeatedEditsCoalesceIntoOnePendingConfig() {
         var s = StationConfigurationState()
         for v in [0.55, 0.65, 0.75, 0.85, 0.95] { s.edit { $0.energy = v } }
@@ -333,7 +345,11 @@ final class StationConfigurationModelTests: XCTestCase {
 
     func testEditSavesAndShowsPendingBoundary() async {
         let (model, store) = await makeModel()
+        await model.setPlaybackActivity(.holdingSong)
         await model.setEnergy(0.9)
+        XCTAssertTrue(model.hasUnsavedChanges)
+        XCTAssertEqual(model.status(for: .energy), .idle, "draft is not pending until Save")
+        await model.saveChanges()
         XCTAssertEqual(model.status(for: .energy), .pendingBoundary(.nextSongBoundary))
         let count = await store.saveCount
         XCTAssertEqual(count, 1)
@@ -345,6 +361,8 @@ final class StationConfigurationModelTests: XCTestCase {
         let (model, store) = await makeModel()
         await model.setEnergy(0.5)
         await model.setGenres([])
+        XCTAssertFalse(model.hasUnsavedChanges)
+        await model.saveChanges()
         let count = await store.saveCount
         XCTAssertEqual(count, 0)
         XCTAssertEqual(model.status(for: .energy), .idle)
@@ -352,13 +370,17 @@ final class StationConfigurationModelTests: XCTestCase {
 
     func testFailedSaveRollsBackAndReportsError() async {
         let (model, store) = await makeModel()
+        await model.setPlaybackActivity(.holdingSong)
         await store.setFailSaves(true)
         await model.setEnergy(0.9)
-        XCTAssertEqual(model.displayed.energy, 0.5, "UI never shows a value that was not saved")
+        await model.saveChanges()
+        XCTAssertEqual(model.displayed.energy, 0.9, "draft kept so the listener can retry Save")
+        XCTAssertTrue(model.hasUnsavedChanges)
         XCTAssertEqual(model.status(for: .energy), .error(.saveFailed))
         await store.setFailSaves(false)
-        await model.setEnergy(0.8)
+        await model.saveChanges()
         XCTAssertEqual(model.status(for: .energy), .pendingBoundary(.nextSongBoundary))
+        XCTAssertFalse(model.hasUnsavedChanges)
     }
 
     func testFailedSaveKeepsPrivacyReductionInEffect() async {
@@ -401,6 +423,7 @@ final class StationConfigurationModelTests: XCTestCase {
         let model = StationConfigurationModel(store: InMemoryStationConfigurationStore(), consent: StaticIntegrationConsent([:]))
         await model.setEnergy(0.9)
         XCTAssertEqual(model.status(for: .energy), .error(.notLoaded))
+        XCTAssertFalse(model.hasUnsavedChanges)
         XCTAssertEqual(model.displayed.energy, 0.5)
     }
 
@@ -411,6 +434,7 @@ final class StationConfigurationModelTests: XCTestCase {
         XCTAssertEqual(model.active, .default)
         await model.setEnergy(0.9)
         XCTAssertEqual(model.status(for: .energy), .error(.readOnlyNewerVersion))
+        await model.saveChanges()
         let count = await store.saveCount
         XCTAssertEqual(count, 0, "never overwrite a newer file")
     }
@@ -419,7 +443,9 @@ final class StationConfigurationModelTests: XCTestCase {
         let store = InMemoryStationConfigurationStore(rawData: Data("garbage".utf8))
         let (model, _) = await makeModel(store: store)
         XCTAssertEqual(model.loadState, .failed(.unreadable))
+        await model.setPlaybackActivity(.holdingSong)
         await model.setEnergy(0.7)
+        await model.saveChanges()
         XCTAssertEqual(model.status(for: .energy), .pendingBoundary(.nextSongBoundary))
     }
 
@@ -428,8 +454,10 @@ final class StationConfigurationModelTests: XCTestCase {
         let changes = model.changes()
         let source = FakeBoundarySource()
         model.attach(to: source)
+        await model.setPlaybackActivity(.holdingSong)
         await model.setEnergy(0.9)
         await model.setPersonality(.laidBack)
+        await model.saveChanges()
 
         source.continuation.yield(.djBreakWillPrepare(afterTrack: 4))
         var iterator = changes.makeAsyncIterator()
@@ -465,9 +493,12 @@ final class StationConfigurationModelTests: XCTestCase {
 
     func testStateSurvivesModelRecreation() async {
         // Fold/unfold or relaunch: a new model over the same store sees the same active + pending.
+        // Unsaved drafts do not persist; Save first.
         let (model, store) = await makeModel()
+        await model.setPlaybackActivity(.holdingSong)
         await model.setMoods(["Calm"])
         await model.setBriefing { $0.targetSeconds = 240 }
+        await model.saveChanges()
         let (again, _) = await makeModel(store: store)
         XCTAssertEqual(again.state, model.state)
         XCTAssertEqual(again.status(for: .briefing), .pendingBoundary(.nextBriefing))
@@ -475,10 +506,86 @@ final class StationConfigurationModelTests: XCTestCase {
 
     func testDiscardPendingChanges() async {
         let (model, _) = await makeModel()
+        await model.setPlaybackActivity(.holdingSong)
         await model.setEnergy(0.9)
+        await model.saveChanges()
         await model.discardPendingChanges()
         XCTAssertFalse(model.hasPendingChanges)
         XCTAssertEqual(model.status(for: .energy), .idle)
+    }
+
+    func testTransportMapsToPlaybackActivityFailingTowardHolding() {
+        XCTAssertEqual(StationPlaybackActivity(transport: .stopped), .idle)
+        XCTAssertEqual(StationPlaybackActivity(transport: .playing), .holdingSong)
+        XCTAssertEqual(StationPlaybackActivity(transport: .paused), .holdingSong,
+                       "paused mid-song (user or system hold) is not idle")
+        // @unknown default covers future cases such as Atlas #109 `.preparing`.
+    }
+
+    func testIdleSaveAppliesImmediately() async {
+        let (model, _) = await makeModel()
+        XCTAssertEqual(model.playbackActivity, .idle)
+        await model.setEnergy(0.9)
+        await model.setGenres(["house"])
+        XCTAssertTrue(model.hasUnsavedChanges)
+        await model.saveChanges()
+        XCTAssertFalse(model.hasUnsavedChanges)
+        XCTAssertFalse(model.hasPendingChanges, "idle Save applies now — no pending badges")
+        XCTAssertEqual(model.active.energy, 0.9, accuracy: 1e-9)
+        XCTAssertEqual(model.active.genres, ["house"])
+        XCTAssertEqual(model.status(for: .energy), .idle)
+        XCTAssertEqual(model.status(for: .genres), .idle)
+    }
+
+    func testPlayingSaveWaitsForBoundary() async {
+        let (model, _) = await makeModel()
+        await model.setPlaybackActivity(.holdingSong)
+        await model.setEnergy(0.9)
+        await model.saveChanges()
+        XCTAssertTrue(model.hasPendingChanges)
+        XCTAssertEqual(model.active.energy, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(model.status(for: .energy), .pendingBoundary(.nextSongBoundary))
+        await model.handle(.songBoundary(afterTrack: 0))
+        XCTAssertFalse(model.hasPendingChanges)
+        XCTAssertEqual(model.active.energy, 0.9, accuracy: 1e-9)
+    }
+
+    func testPendingAppliesWhenPlaybackGoesIdle() async {
+        let (model, _) = await makeModel()
+        await model.setPlaybackActivity(.holdingSong)
+        await model.setEnergy(0.9)
+        await model.setPersonality(.laidBack)
+        await model.saveChanges()
+        XCTAssertTrue(model.hasPendingChanges)
+        await model.setPlaybackActivity(.idle)
+        XCTAssertFalse(model.hasPendingChanges, "going idle applies every pending change")
+        XCTAssertEqual(model.active.energy, 0.9, accuracy: 1e-9)
+        XCTAssertEqual(model.active.personality, .laidBack)
+    }
+
+    func testDiscardUnsavedChangesLeavesActiveUntouched() async {
+        let (model, _) = await makeModel()
+        await model.setEnergy(0.9)
+        XCTAssertTrue(model.hasUnsavedChanges)
+        model.discardUnsavedChanges()
+        XCTAssertFalse(model.hasUnsavedChanges)
+        XCTAssertEqual(model.displayed.energy, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(model.active.energy, 0.5, accuracy: 1e-9)
+    }
+
+    func testPausedMidSongStaysHoldingUntilIdle() async {
+        // Paused mid-song is holdingSong, not idle: Save stays pending until the song
+        // ends or playback fully stops.
+        let (model, _) = await makeModel()
+        await model.setPlaybackActivity(.holdingSong)
+        await model.setEnergy(0.9)
+        await model.saveChanges()
+        XCTAssertTrue(model.hasPendingChanges)
+        // Still holding (e.g. user paused): must not apply.
+        await model.setPlaybackActivity(.holdingSong)
+        XCTAssertTrue(model.hasPendingChanges)
+        await model.setPlaybackActivity(.idle)
+        XCTAssertFalse(model.hasPendingChanges)
     }
 
     func testPreviewModelIsLoaded() async {
