@@ -100,13 +100,15 @@ struct PlayingScreen: View {
         }
         .background(Color(.systemBackground))
         .environment(\.artStation, currentStation)
-        .stationToolbar(currentStation, isTestStation: isTestStation)
+        // The opened station, never the playing one: build 9 kept "Morning Calm" here after the
+        // owner opened Late Night, so the next song tap looked like a station jump.
+        .stationToolbar(heading.header, isTestStation: isTestStation)
         .sheet(isPresented: $showWorkspace) {
             NavigationStack {
                 workspace
                     .environment(\.artStation, currentStation)
                     .padding(.horizontal, CGFloat(StudioLayoutMetrics.edgeInset))
-                    .navigationTitle(snapshot.station?.name ?? station.name)
+                    .navigationTitle(heading.header.name)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
@@ -160,7 +162,9 @@ struct PlayingScreen: View {
         "studio.model.\(String(describing: ObjectIdentifier(studio)))"
     }
 
-    private var currentStation: StationRef { snapshot.station ?? station }
+    /// Header = the opened station. `currentStation` labels the now-playing track only.
+    private var heading: StationHeading { StationHeading(opened: station, playing: snapshot.station) }
+    private var currentStation: StationRef { heading.nowPlaying }
 
     /// Saved genres and moods: identity only. Song picking doesn't use them yet.
     private var soundTags: [String] {
