@@ -1,21 +1,28 @@
 import AVFoundation
 import AeroDJCore
 import Foundation
+import os
 
 /// Free, offline Apple TTS: the last route in the voice fallback chain.
 ///
-/// Renders with `AVSpeechSynthesizer.write`, which signals completion with a
-/// zero-frame buffer. Buffers are written in their own format (no forced
+/// Renders with `AVSpeechSynthesizer.write`. Completion is whichever comes first:
+/// a zero-frame buffer or the delegate's `didFinish` (iOS may skip the empty
+/// buffer); `SpeechRenderCompletion` resumes exactly once. Buffers are written in their own format (no forced
 /// sample rate), write errors fail the render, and the duration is measured
 /// from rendered frames, not estimated.
 public struct OnDeviceSpeechProvider: VoiceProvider {
     public static let providerID = "avspeech"
 
-    public init() {}
+    /// Once per launch: remove temp audio a crash or kill left in tmp/aerodj-speech/.
+    private static let launchSweep: Void = { SpeechTempFiles.shared.sweep() }()
+
+    public init() { _ = Self.launchSweep }
 
     public func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
-        let job = SpeechRenderJob(text: text, voiceID: voice.id)
-        let (data, seconds) = try await job.run()
+        // The temp file is deleted on success, error and cancellation.
+        let (data, seconds) = try await SpeechTempFiles.shared.withFile { url in
+            try await SpeechRenderJob(text: text, voiceID: voice.id, url: url).run()
+        }
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: 0,
                              provider: Self.providerID, cacheKey: nil)
     }
@@ -26,41 +33,41 @@ enum OnDeviceSpeechError: Error {
     case emptyAudio
 }
 
-private final class SpeechRenderJob: @unchecked Sendable {
+private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
     private let synthesizer = AVSpeechSynthesizer()
     private let utterance: AVSpeechUtterance
     private let url: URL
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, Error>?
+    private let completion = SpeechRenderCompletion()
     private var file: AVAudioFile?
     private var frames: AVAudioFramePosition = 0
     private var sampleRate: Double = 0
-    private var finished = false
+    private var closed = false  // set before the temp file is deleted; blocks late writes
 
-    init(text: String, voiceID: String) {
+    init(text: String, voiceID: String, url: URL) {
         let ssml = text.hasPrefix("<speak>") ? AVSpeechUtterance(ssmlRepresentation: text) : nil
         utterance = ssml ?? AVSpeechUtterance(string: SpeechDelivery.plainText(fromSSML: text))
         utterance.voice = AVSpeechSynthesisVoice(identifier: voiceID) ?? AVSpeechSynthesisVoice(language: "en-US")
-        url = FileManager.default.temporaryDirectory.appendingPathComponent("aerodj-tts-\(UUID().uuidString).caf")
+        self.url = url
+        super.init()
+        synthesizer.delegate = self
     }
 
+    private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
+
     func run() async throws -> (Data, Double) {
-        defer { try? FileManager.default.removeItem(at: url) }
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                lock.lock()
-                if finished {  // cancelled before we started
-                    lock.unlock()
-                    return continuation.resume(throwing: CancellationError())
-                }
-                self.continuation = continuation
-                lock.unlock()
-                synthesizer.write(utterance) { [self] buffer in handle(buffer) }
-            }
-        } onCancel: { [self] in
-            synthesizer.stopSpeaking(at: .immediate)
-            finish(CancellationError())
+        defer {
+            // every path: no write can (re)create the file after deletion
+            let (frames, _) = closeFile()
+            // Sanitized: an enum and an integer only, never text or voice. `cancelled` = deadline or caller cancel.
+            let signal = completion.winner?.rawValue ?? "none"
+            Self.log.info("speech render complete signal=\(signal, privacy: .public) frames=\(Int(frames), privacy: .public)")
         }
+        try await completion.wait(start: { [self] in
+            synthesizer.write(utterance) { [self] buffer in handle(buffer) }
+        }, onCancel: { [self] in
+            synthesizer.stopSpeaking(at: .immediate)
+        })
         let (rendered, rate) = closeFile()
         guard rendered > 0, rate > 0 else { throw OnDeviceSpeechError.emptyAudio }
         let data = try Data(contentsOf: url)
@@ -73,16 +80,17 @@ private final class SpeechRenderJob: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         file = nil  // closes the file
+        closed = true
         return (frames, sampleRate)
     }
 
     private func handle(_ buffer: AVAudioBuffer) {
-        guard let pcm = buffer as? AVAudioPCMBuffer else { return finish(OnDeviceSpeechError.unexpectedBuffer) }
-        if pcm.frameLength == 0 { return finish(nil) }
+        guard let pcm = buffer as? AVAudioPCMBuffer else { return finish(.failed, OnDeviceSpeechError.unexpectedBuffer) }
+        if pcm.frameLength == 0 { return finish(.finalBuffer) }
         do {
             lock.lock()
             defer { lock.unlock() }
-            guard !finished else { return }
+            guard !completion.isFinished, !closed else { return }
             if file == nil {
                 file = try AVAudioFile(forWriting: url, settings: pcm.format.settings,
                                        commonFormat: pcm.format.commonFormat, interleaved: pcm.format.isInterleaved)
@@ -91,18 +99,18 @@ private final class SpeechRenderJob: @unchecked Sendable {
             try file?.write(from: pcm)
             frames += AVAudioFramePosition(pcm.frameLength)
         } catch {
-            finish(error)
+            finish(.failed, error)
         }
     }
 
-    private func finish(_ error: Error?) {
-        lock.lock()
-        guard !finished else { lock.unlock(); return }
-        finished = true
-        let c = continuation
-        continuation = nil
-        lock.unlock()
-        if let error { c?.resume(throwing: error) } else { c?.resume() }
+    /// Some iOS versions never send the empty final buffer; finishing also completes the render.
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        finish(.didFinish)
+    }
+
+    /// Idempotent: only the first signal resumes the render.
+    private func finish(_ signal: SpeechRenderCompletion.Signal, _ error: Error? = nil) {
+        completion.signal(signal, error: error)
     }
 }
 
