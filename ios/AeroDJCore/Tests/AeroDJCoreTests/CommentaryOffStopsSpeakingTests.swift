@@ -76,6 +76,9 @@ final class CommentaryOffStopsSpeakingTests: XCTestCase {
 
     /// Nothing later is handed out: commentary is off, so nothing more is spoken.
     private func assertNothingMoreSpoken(_ r: Rig) async {
+        // The stop is synchronous; the replan runs after `await preparer.cancelAll()`, so wait
+        // for it rather than racing it (failed on the macOS simulator at 8176236). -Atlas
+        await until({ r.session.plannedBoundaries.isEmpty }, "replan with commentary off has finished")
         XCTAssertEqual(r.session.plannedBoundaries, [], "no break planned with commentary off")
         for k in 1..<11 {
             await r.session.songStarted(index: k, remaining: .seconds(180))
