@@ -32,9 +32,11 @@ concurrency:
 jobs:
   upload:
     name: Archive and upload to TestFlight
-    # Pinned image. ios.yml's macos-latest currently resolves to macos-26-arm64
-    # (Xcode 26.6 as /Applications/Xcode.app, seen in iOS run 40417697194).
-    runs-on: macos-26
+    # Pinned image with the iOS 27 SDK. macos-26 tops out at Xcode 26.6 /
+    # iphoneos26.5, and iOS letterboxes a binary linked against a pre-27 SDK on the
+    # Duo (TestFlight run 40437725131). xcode-27 is GitHub's Xcode 27 preview image
+    # (actions/runner-images#14404).
+    runs-on: xcode-27
     timeout-minutes: 60
     # Signing and ASC secrets live in this GitHub Environment. The owner limits
     # its deployment branches to main and integration/device-duo.
@@ -137,10 +139,29 @@ jobs:
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
 
+      # Newest installed Xcode 27 (betas included). Fails unless its iOS SDK is 27+,
+      # so a build can't silently fall back to an SDK that letterboxes on the Duo.
       - name: Select Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode.app
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app
+          XCODE=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$XCODE" ]; then
+            echo "::error::No Xcode 27 found on this runner"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
           xcodebuild -version
+          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          case "$SDK_VERSION" in
+            2[7-9]*|[3-9][0-9]*) ;;
+            *) echo "::error::iOS SDK $SDK_VERSION is older than 27"; exit 1 ;;
+          esac
+          {
+            echo "### Toolchain"
+            echo "- Xcode: \`$XCODE\` ($(xcodebuild -version | tr '\n' ' '))"
+            echo "- iOS SDK: \`$SDK_VERSION\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install distribution certificate and profiles
         env:
