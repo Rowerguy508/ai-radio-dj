@@ -114,7 +114,8 @@ final class DJNarrationTests: XCTestCase {
         XCTAssertEqual(plan.briefingReport.entries.count, cues.count)
         let outcomes = plan.briefingReport.entries.map(\.outcome)
         XCTAssertEqual(outcomes.first, .dropped(.notPlacedByScheduler))
-        XCTAssertTrue(outcomes.contains(.deferred(.noTrackBoundary)), "music wins; the rest waits for later breaks")
+        XCTAssertTrue(outcomes.contains(.dropped(.notCarriedForward)), "time-sensitive items that miss this show are not rolled forward")
+        XCTAssertFalse(outcomes.contains(.deferred(.noTrackBoundary)))
         XCTAssertTrue(outcomes.contains(.scheduled(.afterTrack(3))))
     }
 
@@ -382,5 +383,13 @@ final class DJNarrationTests: XCTestCase {
         guard case .ready = await preparer.takeBreak(afterTrack: other.afterTrack) else { return XCTFail("unrelated break still plays") }
         let leftover = await cache.count
         XCTAssertEqual(leftover, withSource.cues.count + other.cues.count - 1, "only the clip spoken from the revoked item is purged")
+    }
+}
+
+/// The briefing's personal items as approved, non-expiring connection items: what the app
+/// passes to `DJBreakSession.queueStarted(_:briefing:sources:)` alongside a briefing.
+func approvedSources(_ briefing: NarrationHandoff) -> [ConnectionItem] {
+    Set(briefing.cues.compactMap(\.sourceItemID)).map {
+        ConnectionItem(id: $0, integration: .calendar, title: "[TEST] item", state: .approved, sensitivity: .medium)
     }
 }

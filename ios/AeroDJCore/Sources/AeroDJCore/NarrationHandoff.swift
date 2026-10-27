@@ -94,7 +94,11 @@ public struct NarrationHandoff: Codable, Equatable, Sendable {
 }
 
 public enum NarrationDeferralReason: String, Codable, Sendable {
-    /// No track boundary left for it in this show; offer it again next show.
+    /// No track boundary left in this show.
+    /// `DJScriptWriter` uses this only for durable notes and follow-ups, which
+    /// `EditorialCarryForward.eligibleNextShow` may offer again.
+    /// Time-sensitive cues are `.dropped(.notCarriedForward)` instead, so a
+    /// missed calendar item or due task does not roll into a later show.
     case noTrackBoundary
     /// The scheduler failed; nothing was played.
     case schedulerFailed
@@ -113,6 +117,12 @@ public enum NarrationDropReason: String, Codable, Sendable {
     case overBudget
     /// Personal content without a source/provenance to attribute it to; never spoken.
     case unattributed
+    /// Instruction-shaped text. It is reported and never spoken, so it cannot
+    /// redirect the host or be read aloud as a command.
+    case rejectedAsInstruction
+    /// Time-sensitive item (calendar event or due task) that did not air in this
+    /// show. Do not pass it into a later show.
+    case notCarriedForward
 }
 
 public enum NarrationOutcome: Codable, Equatable, Sendable {

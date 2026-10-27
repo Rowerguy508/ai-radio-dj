@@ -36,6 +36,7 @@ final class UpNextEditTests: XCTestCase {
     private func started() -> PlaybackEngine {
         var e = PlaybackEngine()
         e.apply(.queueStarted(tracks: [t(1), t(2), t(3), t(4)], startIndex: 0, station: nil))
+        e.apply(.playbackConfirmed)
         return e
     }
 

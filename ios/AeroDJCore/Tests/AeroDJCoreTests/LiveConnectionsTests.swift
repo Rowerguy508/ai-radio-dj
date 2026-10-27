@@ -143,6 +143,69 @@ final class LiveConnectionsTests: XCTestCase {
     /// Revoking a source purges every narration derived from it (prepared breaks and cached
     /// audio, through `NarrationPurger`) before the choice is forgotten, and nothing from it
     /// is read again.
+    /// P0: Stop using → Choose again → Save must re-grant calendar consent and show a
+    /// granted status with the selected calendars. Other integrations stay untouched.
+    func testRevokeThenReselectCalendarsRegrantsConsentAndStatus() async throws {
+        let now = self.now
+        let cal = FakeCalendar(access: .fullAccess, now: now)
+        let sources = LiveConnectionSources(calendar: cal, files: nil, store: InMemoryConnectionChoicesStore(),
+                                            shareInboxAvailable: true)
+        try await sources.setSelectedCalendars(["work", "home"])
+        let chosen = ChosenCalendarContextSource(reader: cal, sources: sources, now: { now })
+        let station = await station(consent: sources)
+        // Obsidian stays granted via empty notes → notRequested; mark share granted path.
+        let model = ConnectionsModel(station: station, sourceReader: sources,
+                                     providers: [CalendarConnectionProvider(source: chosen)],
+                                     purger: PurgeLog(), now: { now })
+        await model.refresh()
+        XCTAssertEqual(model.source(.calendar).status, .on)
+        XCTAssertEqual(model.source(.calendar).badge, "Connected")
+        let shareBefore = await sources.consentState(for: .shareInbox)
+
+        _ = try await model.perform(.revoke, onSource: .calendar).get()
+        var consent = await sources.consentState(for: .calendar)
+        XCTAssertEqual(consent, .revoked)
+        XCTAssertEqual(model.source(.calendar).status, .blocked(.revoked))
+        XCTAssertEqual(model.source(.calendar).badge, "Stopped")
+        XCTAssertTrue(model.source(.calendar).description.contains("stopped using"),
+                      model.source(.calendar).description)
+        var shareAfter = await sources.consentState(for: .shareInbox)
+        XCTAssertEqual(shareAfter, shareBefore, "calendar revoke must not touch other integrations")
+
+        _ = try await model.selectCalendars(["work"]).get()
+        consent = await sources.consentState(for: .calendar)
+        XCTAssertEqual(consent, .granted)
+        XCTAssertEqual(model.calendar.selectedCalendarIDs, ["work"])
+        XCTAssertEqual(model.source(.calendar).status, .on)
+        XCTAssertEqual(model.source(.calendar).badge, "Connected")
+        XCTAssertTrue(model.source(.calendar).description.contains("1 of"),
+                      model.source(.calendar).description)
+        shareAfter = await sources.consentState(for: .shareInbox)
+        XCTAssertEqual(shareAfter, shareBefore)
+
+        _ = try await model.perform(.revoke, onSource: .calendar).get()
+        consent = await sources.consentState(for: .calendar)
+        XCTAssertEqual(consent, .revoked)
+        XCTAssertTrue(model.calendar.selectedCalendarIDs.isEmpty)
+        XCTAssertTrue(model.items(for: .calendar).isEmpty)
+    }
+
+    func testDeniedCalendarStatusOffersSettingsNotGenericPermissionOff() async {
+        let now = self.now
+        let sources = LiveConnectionSources(calendar: FakeCalendar(access: .denied, now: now), files: nil,
+                                            store: InMemoryConnectionChoicesStore(), shareInboxAvailable: false)
+        let station = await station(consent: sources)
+        let model = ConnectionsModel(station: station, sourceReader: sources, providers: [],
+                                     purger: PurgeLog(), now: { now })
+        await model.refresh()
+        let row = model.source(.calendar)
+        XCTAssertEqual(row.status, .blocked(.denied))
+        XCTAssertEqual(row.badge, "Access off")
+        XCTAssertTrue(row.description.contains("Settings"), row.description)
+        XCTAssertFalse(row.description.lowercased().contains("permission off"), row.description)
+        XCTAssertEqual(row.actions, [.openSettings])
+    }
+
     func testRevokingCalendarPurgesCachedAudioThenStopsReading() async throws {
         let now = self.now
         let cal = FakeCalendar(access: .fullAccess, now: now)

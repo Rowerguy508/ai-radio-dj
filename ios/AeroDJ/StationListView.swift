@@ -26,7 +26,7 @@ struct StationListView: View {
                 NavigationLink(value: station) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(station.name).font(.headline)
-                        Text(station.description ?? "").font(.subheadline).foregroundStyle(.secondary)
+                        Text(station.description ?? "").font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
                     }
                 }
             }
@@ -45,8 +45,9 @@ struct StationListView: View {
                 }
             }
             .navigationDestination(for: Station.self) { station in
-                PlayerView(station: station, music: dependencies.playback, djSession: dependencies.djSession,
-                           studio: dependencies.studio, isTestStation: dependencies.mode == .testStation)
+                PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
+                           djSession: dependencies.djSession, studio: dependencies.studio,
+                           isTestStation: dependencies.mode == .testStation)
             }
             .sheet(isPresented: $showSharedInbox) {
                 if dependencies.mode == .live, let review = SharedInboxReview.appGroupInbox() {

@@ -34,11 +34,45 @@ public final class DJBreakSession {
     private var playing: Int?
     private var changeTask: Task<Void, Never>?
     private var observing = false
+    /// The break handed to the player at the last natural boundary, until its audio ends.
+    private var onAir: (afterTrack: Int, sources: Set<UUID>)?
+    /// Stops the DJ line on air. Same declaration as #67: PlayerView (82664c8) routes it to
+    /// `InterludePlaybackAdapter.stopCurrentInterlude(reason:)`. `purge` calls it exactly once,
+    /// and only when it removes a source the break on air depends on.
+    /// If a purge hits the on-air break while this is nil, the stop is held and delivered once
+    /// when a hook is set (unless that break has ended by then).
+    public var onBreakMustStop: (@MainActor (InterludeStopReason, Int?) -> Void)? {
+        didSet { deliverPendingStop() }
+    }
+    /// A stop for the break after `afterTrack` that found no hook installed.
+    private var pendingStop: (afterTrack: Int, reason: InterludeStopReason)?
+
+    private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
+        if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
+    }
+
+    private func deliverPendingStop() {
+        guard let pending = pendingStop, let hook = onBreakMustStop else { return }
+        pendingStop = nil
+        hook(pending.reason, nil)
+    }
+    /// Purges prepared and cached narration for sources that stop being narratable at a
+    /// boundary (expiry). The app sets the same `NarrationPurger` the connections use.
+    public var purger: (any NarrationPurging)?
+    /// True once both the purger and the stop hook are set. Both app compositions check it
+    /// before playback can start.
+    public var isWiredForPurge: Bool { purger != nil && onBreakMustStop != nil }
+    /// The personal items the briefing was built from, with their state when it was planned.
+    /// Each boundary re-checks them against `now` (expiry), independent of `refresh()`.
+    private var sources: [UUID: ConnectionItem] = [:]
+    private let now: () -> Date
 
     public init(preparer: DJBreakPreparer, station: StationConfigurationModel, dj: DJPresentationStore,
                 base: DJCadence = .init(), seed: UInt64 = .random(in: .min ... .max),
-                hour: @escaping () -> Int = { Calendar.current.component(.hour, from: Date()) }) {
+                hour: @escaping () -> Int = { Calendar.current.component(.hour, from: Date()) },
+                now: @escaping () -> Date = { Date() }) {
         self.preparer = preparer
+        self.now = now
         self.station = station
         self.dj = dj
         self.base = base
@@ -64,12 +98,29 @@ public final class DJBreakSession {
     }
 
     /// A new queue: everything prepared for the old one is dropped, then the queue is planned
-    /// with the active station's cadence. `briefing` is approved narration (may be nil).
-    public func queueStarted(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil) async {
+    /// with the active station's cadence. `briefing` is approved narration (may be nil);
+    /// `sources` are the items its personal cues come from. A personal cue whose source is
+    /// missing from `sources` or not narratable now is left out (fails closed).
+    public func queueStarted(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
+                             sources: [ConnectionItem] = []) async {
+        // A new queue never talks over its first song: the old queue's handed-out or speaking
+        // line stops now, personal or not. Untagged, as in `purge`. Not `.sourceRevoked` (it
+        // isn't one); there is no queue-change case, so the nearest non-revoke reason is used.
+        if let live = onAir { requestStop(afterTrack: live.afterTrack, .interruption) }
         await preparer.cancelAll()
         if briefing != nil { await station.handle(.briefingWillPlan) }
         self.tracks = tracks
-        self.briefing = station.active.briefing.enabled ? briefing : nil
+        // A stop held for the old queue's break (no hook yet) has nothing left to stop; it must
+        // not cancel a break of this queue later. Likewise the old queue's on-air break: a purge
+        // of its sources must not stop this queue's break.
+        pendingStop = nil
+        onAir = nil
+        self.sources = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let at = now()
+        self.briefing = station.active.briefing.enabled ? briefing.map { b in
+            NarrationHandoff(cues: b.cues.filter { mayBeNarrated($0, at: at) },
+                             maxSpokenSeconds: b.maxSpokenSeconds, experienceSeconds: b.experienceSeconds)
+        } : nil
         deliveredBriefing = []
         playing = nil
         breaks = [:]
@@ -95,8 +146,35 @@ public final class DJBreakSession {
         // The change stream is async; apply a cadence change here so the next song's break
         // is planned with it before `songStarted(index: k + 1)` arrives.
         replanIfCadenceChanged(after: k)
-        guard case .ready(let prepared) = await preparer.takeBreak(afterTrack: k) else { return nil }
+        guard case .ready(let ready) = await preparer.takeBreak(afterTrack: k) else { return nil }
+        // Consent or expiry may have changed since the break was rendered, with no refresh():
+        // re-check every source at `now`, purge what may no longer be narrated, drop its cues.
+        let at = now()
+        let lapsed = Set(sources.values.filter { !$0.mayBeNarrated(at: at) }.map(\.id))
+            .union(ready.cues.filter { !mayBeNarrated($0, at: at) }.compactMap(\.sourceItemID))
+        if !lapsed.isEmpty {
+            if let purger { await purger.purge(sourceItemIDs: lapsed) } else {
+                purge(sourceItemIDs: lapsed)
+                await preparer.purge(sourceItemIDs: lapsed)
+            }
+        }
+        // Re-check after the awaits: a source revoked, expired, demoted or blocked while this
+        // call was suspended (before the on-air marker exists) is not handed out either.
+        let handOut = now()
+        let cues = ready.cues.filter { cue in
+            (cue.sourceItemID.map { !lapsed.contains($0) } ?? true) && mayBeNarrated(cue, at: handOut)
+        }
+        if ready.includesBriefing, !cues.contains(where: \.isContent) {
+            // Nothing personal left to say: music plays at once.
+            dj.send(.breakSkipped(afterTrack: k, .sourceRevoked))
+            return nil
+        }
+        let kept = Set(cues.map(\.id))
+        let prepared = cues.count == ready.cues.count ? ready : PreparedDJBreak(
+            afterTrack: k, cues: cues, clips: ready.clips.filter { kept.contains($0.cueID) },
+            attributions: ready.attributions.filter { kept.contains($0.key) })
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
+        onAir = (k, Set(prepared.cues.compactMap(\.sourceItemID)))
         return prepared
     }
 
@@ -107,14 +185,21 @@ public final class DJBreakSession {
 
     /// Player audio callbacks. `playbackStarted` only once DJ audio is actually audible.
     public func playbackStarted(afterTrack k: Int) { dj.send(.playbackStarted(afterTrack: k)) }
-    public func playbackFinished(afterTrack k: Int) { dj.send(.playbackFinished(afterTrack: k)) }
-    public func playbackFailed(afterTrack k: Int) { dj.send(.playbackFailed(afterTrack: k)) }
+    public func playbackFinished(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFinished(afterTrack: k)) }
+    public func playbackFailed(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFailed(afterTrack: k)) }
+
+    private func endOnAir(_ k: Int) {
+        if onAir?.afterTrack == k { onAir = nil }
+        if pendingStop?.afterTrack == k { pendingStop = nil }   // nothing left to stop
+    }
 
     /// Playback stopped or the session ended: nothing prepared may play later.
     public func stop() async {
         await preparer.cancelAll()
         breaks = [:]
         playing = nil
+        onAir = nil
+        pendingStop = nil
         dj.send(.sessionStopped)
     }
 
@@ -123,6 +208,17 @@ public final class DJBreakSession {
     /// `NarrationPurger` before the preparer and cache are purged.
     public func purge(sourceItemIDs ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
+        for id in ids { sources[id] = nil }
+        // A break already playing that speaks about these items stops now, in this call.
+        // The handed-out (pending) or playing break counts: `onAir` is set when it is handed out.
+        // The stop is untagged (nil afterTrack), which fails closed for whatever is pending or
+        // playing in the adapter.
+        // TODO(atlas/interlude-stop-hardening): tag with `live.afterTrack` once the
+        // mismatched-tag fix lands, so a stale stop can't cancel an unrelated break.
+        if let live = onAir, !live.sources.isDisjoint(with: ids) {
+            onAir = nil
+            requestStop(afterTrack: live.afterTrack, .sourceRevoked)
+        }
         func mentions(_ cue: NarrationCue) -> Bool { cue.sourceItemID.map(ids.contains) ?? false }
         if let b = briefing {
             briefing = NarrationHandoff(cues: b.cues.filter { !mentions($0) },
@@ -130,6 +226,24 @@ public final class DJBreakSession {
         }
         guard let first = breaks.filter({ $0.value.cues.contains(where: mentions) }).keys.min() else { return }
         replan(from: first, keepingThrough: first - 1)
+    }
+
+    /// Every personal item: stops a personal break on air, drops personal briefing cues and
+    /// re-plans breaks that mention any. Returns the item ids it knew of, for the preparer.
+    public func purgeAllPersonal() -> Set<UUID> {
+        var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
+        for b in breaks.values { ids.formUnion(b.cues.compactMap(\.sourceItemID)) }
+        if let live = onAir, !live.sources.isEmpty {
+            ids.formUnion(live.sources)
+        }
+        purge(sourceItemIDs: ids)
+        return ids
+    }
+
+    /// A personal cue may be narrated only if its source is known and narratable at `at`.
+    private func mayBeNarrated(_ cue: NarrationCue, at: Date) -> Bool {
+        guard let id = cue.sourceItemID else { return true }
+        return sources[id]?.mayBeNarrated(at: at) ?? false
     }
 
     public func detach() { changeTask?.cancel(); changeTask = nil }

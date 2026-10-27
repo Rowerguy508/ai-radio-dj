@@ -131,7 +131,9 @@ extension VoiceRenderer {
     static func onDeviceDefault() -> VoiceRenderer {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let cache = FileAudioCache(directory: support.appendingPathComponent("Voice/Cache"))
-        Task { await cache.purgeExpired() }
+        // Live consent is not persisted, so personal clips from an earlier launch go first; then
+        // the 7-day cap is swept hourly, not only when a clip is read.
+        AudioCacheSweeper(cache: cache).start(purgingPersonalFirst: true)
         return VoiceRenderer(
             routes: [VoiceRoute.onDevice()],
             budget: VoiceBudget(dailyCapMicrodollars: VoiceBetaDefaults.paidDailyCapMicrodollars, file: support.appendingPathComponent("Voice/budget.json")),

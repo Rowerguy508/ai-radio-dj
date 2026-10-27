@@ -3,7 +3,8 @@ import SwiftUI
 
 /// The Station Tuner (studio-presentation-contract.md, Station Tuner). Every control binds
 /// to `station.displayed` and shows its row from `station.tunerRows`: pending vs active,
-/// "Applies after this song" and status. Edits never touch the song that is playing.
+/// "Applies after this song" and status. Edits go into an unsaved draft until Save; Save
+/// never stops the current song. When playback is idle, Save applies immediately.
 ///
 /// Originally written by Claudio (#60); taken over and revised by Fry.
 struct TuneForm: View {
@@ -16,11 +17,12 @@ struct TuneForm: View {
                 if let blocked = blockedMessage {
                     Label(blocked, systemImage: "lock")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(AeroDJPalette.secondaryText)
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
+                if model.hasUnsavedChanges { UnsavedChangesCard(model: model) }
                 if model.hasPendingChanges { PendingChangesCard(model: model) }
                 Group {
                     TuneSectionHeader(title: "Sound", detail: StationTunerCopy.musicSelectionNotice)
@@ -67,7 +69,7 @@ struct TuneForm: View {
             }
             .pickerStyle(.segmented)
             Text(model.displayed.commentary.honestDescription)
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -80,7 +82,7 @@ struct TuneForm: View {
             }
             .pickerStyle(.segmented)
             Text(model.displayed.personality.honestDescription)
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -90,7 +92,7 @@ struct TuneForm: View {
             Toggle("Morning briefing", isOn: Binding(get: { model.displayed.briefing.enabled },
                                                      set: { on in Task { await model.setBriefing { $0.enabled = on } } }))
             Text("Uses only sources you approved in Connections. Music comes first; the briefing may run shorter.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             Divider()
             Text("Briefing sources").font(.subheadline.weight(.semibold)).accessibilityAddTraits(.isHeader)
@@ -142,7 +144,7 @@ struct ControlCard<Content: View>: View {
                         .lineLimit(2)
                 }
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.tint)
+                .foregroundStyle(AeroDJPalette.accentText)
             }
         }
         .padding(14)
@@ -162,7 +164,7 @@ struct StatusBadge: View {
             .foregroundStyle(color)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Capsule().fill(color.opacity(0.14)))
+            .background(Capsule().fill(color.opacity(0.12)))
             .lineLimit(1)
             .accessibilityLabel(indicator.accessibilityLabel)
             .accessibilityIdentifier("tune.indicator")
@@ -181,11 +183,11 @@ struct StatusBadge: View {
 
     private var color: Color {
         switch indicator {
-        case .saved, .saving: .secondary
-        case .pending: .orange
-        case .active: .green
-        case .needsConsent: .secondary
-        case .problem: .red
+        case .saved, .saving: AeroDJPalette.secondaryText
+        case .pending: AeroDJPalette.statusPending
+        case .active: AeroDJPalette.statusPositive
+        case .needsConsent: AeroDJPalette.secondaryText
+        case .problem: AeroDJPalette.statusProblem
         }
     }
 }
@@ -199,11 +201,11 @@ struct TuneSectionHeader: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title.uppercased())
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(AeroDJPalette.secondaryText)
                 .accessibilityAddTraits(.isHeader)
             Text(detail)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(AeroDJPalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.top, 4)
@@ -230,8 +232,8 @@ struct TagControl: View {
                             .font(.subheadline)
                             .padding(.horizontal, 12)
                             .frame(minHeight: 36)
-                            .background(Capsule().fill(isOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary)))
-                            .foregroundStyle(isOn ? Color.white : Color.primary)
+                            .background(Capsule().fill(isOn ? AnyShapeStyle(AeroDJPalette.chipSelectedFill) : AnyShapeStyle(.quaternary)))
+                            .foregroundStyle(isOn ? AeroDJPalette.onMediaLight : Color.primary)
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(isOn ? .isSelected : [])
@@ -284,13 +286,44 @@ struct LevelControl: View {
                 Text(high)
             }
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(AeroDJPalette.secondaryText)
             .accessibilityHidden(true)
         }
     }
 }
 
-/// Edits waiting for a safe boundary, with a way to keep what is playing now.
+/// Unsaved Tune edits. Save schedules them for the next safe boundary (or applies now when
+/// idle). Discard reverts the controls. Connections / consent never appear here.
+struct UnsavedChangesCard: View {
+    let model: StationConfigurationModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(StationTunerCopy.unsavedHeader, systemImage: "pencil.line")
+                .font(.subheadline.weight(.semibold))
+            Text(StationTunerCopy.unsavedDetail(idle: model.playbackActivity == .idle))
+                .font(.caption)
+                .foregroundStyle(AeroDJPalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Button("Save") { Task { await model.saveChanges() } }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("tune.save")
+                Button("Discard") { model.discardUnsavedChanges() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("tune.discard")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// Saved edits waiting for a safe boundary, with a way to keep what is playing now.
 struct PendingChangesCard: View {
     let model: StationConfigurationModel
 
@@ -301,7 +334,7 @@ struct PendingChangesCard: View {
             ForEach(model.tunerRows.filter(\.isPending)) { row in
                 Text("\(row.title): \(row.displayedSummary) — \(row.appliesCopy ?? "")")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AeroDJPalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Button("Keep current settings") { Task { await model.discardPendingChanges() } }
@@ -328,9 +361,9 @@ struct RecipesSection: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Station recipes").font(.headline).accessibilityAddTraits(.isHeader)
             Text("A recipe saves the tuning above. It never turns a connection on or off.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
             if studio.recipes.recipes.isEmpty {
-                Text("No recipes yet.").font(.subheadline).foregroundStyle(.secondary)
+                Text("No recipes yet.").font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
             }
             ForEach(studio.recipes.recipes) { recipe in
                 HStack {
@@ -369,7 +402,7 @@ struct RecipesSection: View {
             }
             .font(.subheadline)
             if let message {
-                Text(message).font(.caption).foregroundStyle(.secondary)
+                Text(message).font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
             }
         }
         .padding(14)

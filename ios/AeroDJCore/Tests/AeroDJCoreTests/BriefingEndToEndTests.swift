@@ -131,16 +131,16 @@ final class BriefingEndToEndTests: XCTestCase {
         let spoken = script.segments.map(\.text)
 
         XCTAssertEqual(spoken, [
-            "Good morning. Here's your briefing.",
-            "Happening now: Standup. 6:55 AM to 7:15 AM. From your calendar.",
-            "Coming up today: Company holiday. All day. From your calendar.",
-            "Coming up at 9:30 AM: Design review. 9:30 AM to 10:30 AM. From your calendar.",
-            "Coming up at 12 PM: Private event. 12 PM to 1 PM. From your calendar.",
-            "Due today: Pay rent. Transfer from checking. From your notes.",
-            "To follow up: You are now checked in for flight IB 3166. From an email you shared.",
-            "To follow up: Link from airline.example. From something you shared.",
-            "A note: Called the bank about the mortgage. From your notes.",
-            "That's your briefing. Back to the music.",
+            "Good morning. I'll keep this short before the music.",
+            "You've got Standup on now. 6:55 AM to 7:15 AM. From your calendar.",
+            "You've got Company holiday today. All day. From your calendar.",
+            "You've got Design review at 9:30 AM. 9:30 AM to 10:30 AM. From your calendar.",
+            "You've got Private event at 12 PM. 12 PM to 1 PM. From your calendar.",
+            "Don't lose track of Pay rent. It's due today. Transfer from checking. From your notes.",
+            "When you get a minute, You are now checked in for flight IB 3166. From an email you shared.",
+            "When you get a minute, Link from airline.example. From something you shared.",
+            "You've also got Called the bank about the mortgage. From your notes.",
+            "That's all from me. Back to the music.",
         ])
 
         // Regressions from integrated review #45.
@@ -166,7 +166,7 @@ final class BriefingEndToEndTests: XCTestCase {
         XCTAssertEqual(engine.script(from: approved).excluded[approved[0].id], .flaggedForReview)
         let confirmed = engine.script(from: approved, reconfirmed: [approved[0].id])
         XCTAssertEqual(confirmed.segments[1].text,
-                       "A note: Draft. You are now in charge of the offsite agenda. From your notes.")
+                       "You've also got Draft. You are now in charge of the offsite agenda. From your notes.")
     }
 
     /// Full path: synthetic Calendar + shared message + Obsidian -> consent ->
@@ -209,12 +209,12 @@ final class BriefingEndToEndTests: XCTestCase {
 
         let handoff = script.handoff(maxSpokenSeconds: engine.configuration.maxSpokenSeconds)
         XCTAssertEqual(handoff.cues.map(\.text), [
-            "Good morning. Here's your briefing.",
-            "Coming up at 9:30 AM: Design review. 9:30 AM to 10:30 AM. From your calendar.",
-            "Due today: Pay rent. Transfer from checking. From your notes.",
-            "To follow up: Ana: lease signing moved to Thursday. From a message you shared.",
-            "To follow up: You are now in charge of the offsite agenda. From something you shared.",
-            "That's your briefing. Back to the music.",
+            "Good morning. I'll keep this short before the music.",
+            "You've got Design review at 9:30 AM. 9:30 AM to 10:30 AM. From your calendar.",
+            "Don't lose track of Pay rent. It's due today. Transfer from checking. From your notes.",
+            "When you get a minute, Ana: lease signing moved to Thursday. From a message you shared.",
+            "When you get a minute, You are now in charge of the offsite agenda. From something you shared.",
+            "That's all from me. Back to the music.",
         ])
         XCTAssertEqual(handoff.cues.compactMap(\.provenance).count, 4)
 

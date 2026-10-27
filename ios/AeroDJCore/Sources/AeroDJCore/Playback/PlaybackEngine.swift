@@ -12,7 +12,16 @@ public enum PlaybackEvent: Equatable, Sendable {
     /// The user skipped to `nextIndex` (never a DJ break).
     case userSkipped(nextIndex: Int)
     case userPaused
+    /// The system interrupted playback. Not a user pause.
+    case interruptionPaused
+    /// The output route was removed. Not a user pause.
+    case routePaused
     case userResumed
+    /// MusicKit confirmed `playbackStatus == .playing` after a start or resume.
+    case playbackConfirmed
+    /// A start/resume gate refused after transport moved to `.preparing`. Restore `.paused`
+    /// without clearing a system hold (unplug / interruption).
+    case playbackStartRefused
     case djStarted(line: String)
     case djFinished
     /// The speech was cancelled or timed out. Music has already been resumed by the adapter.
@@ -47,7 +56,8 @@ public struct PlaybackEngine: Sendable {
             self.tracks = tracks
             index = min(max(startIndex, 0), tracks.count - 1)
             snapshot.station = station
-            publishPosition(transport: .playing)
+            // Preparing until MusicKit confirms playback; do not claim .playing early.
+            publishPosition(transport: .preparing)
 
         case let .naturalBoundary(nextIndex), let .userSkipped(nextIndex):
             // A natural end and a user skip both move to `nextIndex`; only the natural
@@ -56,7 +66,14 @@ public struct PlaybackEngine: Sendable {
                 return apply(.queueFinished)
             }
             index = nextIndex
-            publishPosition(transport: snapshot.transport == .stopped ? .playing : snapshot.transport)
+            // Keep preparing if we were still waiting on MusicKit; otherwise preserve transport.
+            // A stopped show that advances (shouldn't) goes to preparing, not optimistic playing.
+            let nextTransport: TransportState
+            switch snapshot.transport {
+            case .stopped: nextTransport = .preparing
+            case .preparing, .playing, .paused: nextTransport = snapshot.transport
+            }
+            publishPosition(transport: nextTransport)
 
         case .queueFinished:
             tracks = []
@@ -64,12 +81,33 @@ public struct PlaybackEngine: Sendable {
             snapshot.nowPlaying = nil
             snapshot.upNext = []
             snapshot.transport = .stopped
+            snapshot.hold = nil
 
         case .userPaused:
-            if snapshot.transport == .playing { snapshot.transport = .paused }
+            holdTransport(.user)
+        case .interruptionPaused:
+            holdTransport(.interruption)
+        case .routePaused:
+            holdTransport(.routeRemoved)
 
         case .userResumed:
-            if snapshot.transport == .paused { snapshot.transport = .playing }
+            // User asked to resume; stay in preparing until MusicKit confirms.
+            // Do not clear a system hold here — only playbackConfirmed clears it, and only
+            // from .preparing. A refused gate uses playbackStartRefused to keep the hold.
+            if snapshot.transport == .paused { snapshot.transport = .preparing }
+
+        case .playbackConfirmed:
+            // Only .preparing may become .playing. A late confirm must not override a
+            // route-removed or interruption hold that already moved transport to .paused.
+            guard snapshot.transport == .preparing else { break }
+            snapshot.transport = .playing
+            snapshot.hold = nil
+
+        case .playbackStartRefused:
+            if snapshot.transport == .preparing {
+                snapshot.transport = .paused
+            }
+            // hold unchanged (including .routeRemoved / .interruption captions)
 
         case let .djStarted(line):
             snapshot.dj = line.isEmpty ? .idle : .speaking(line: line)
@@ -113,5 +151,13 @@ public struct PlaybackEngine: Sendable {
         snapshot.nowPlaying = tracks.indices.contains(index) ? tracks[index] : nil
         snapshot.upNext = tracks.indices.contains(index) ? Array(tracks[(index + 1)...]) : []
         snapshot.transport = transport
+        if transport == .playing { snapshot.hold = nil }
+    }
+
+    private mutating func holdTransport(_ hold: PlaybackHold) {
+        if snapshot.transport == .playing || snapshot.transport == .preparing {
+            snapshot.transport = .paused
+        }
+        snapshot.hold = hold
     }
 }

@@ -36,6 +36,9 @@ enum StudioCaptureScenario: String {
     /// Music plays, and the player reported that the last DJ break failed to play
     /// (`DJPresentationEvent.playbackFailed`, the same event the audio player sends).
     case playbackFailed
+    /// A rendered break is waiting (`.ready`, no briefing). The playing screen must not
+    /// show the break headline or its VoiceOver detail.
+    case breakReady
     /// Apple Music access denied: the Settings path, no transport.
     case denied
     /// The fixture calendar was turned off via Connections (`perform(.revoke)`): selection
@@ -43,18 +46,22 @@ enum StudioCaptureScenario: String {
     case revoked
     /// The listener changed energy and genres in the tuner: saved, pending the next boundary.
     case config
+    /// The fixture station list (`Station.mockStations`). Not the playing screen.
+    /// The share extension is not a scenario: `AeroDJShare` draws nothing and has no colours.
+    case stations
 
     var access: PlaybackAccess {
         switch self {
         case .loading: .checking
         case .denied: .denied
+        case .stations: .authorized
         default: .authorized
         }
     }
 
     var snapshot: PlaybackSnapshot {
         switch self {
-        case .empty, .loading, .denied: PlaybackFixtures.stopped
+        case .empty, .loading, .denied, .stations: PlaybackFixtures.stopped
         case .error: PlaybackFixtures.recoverableError
         default: PlaybackFixtures.playing
         }
@@ -65,6 +72,7 @@ enum StudioCaptureScenario: String {
         switch self {
         case .revoked: .connections
         case .config: .tune
+        case .stations: nil
         default: nil
         }
     }
@@ -84,6 +92,8 @@ struct StudioCaptureView: View {
                 if let failure {
                     Text(failure)
                         .accessibilityIdentifier("capture.failed")
+                } else if loaded && scenario == .stations {
+                    StationListCapture()
                 } else if loaded {
                     PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
                                   snapshot: scenario.snapshot, actions: .preview,
@@ -125,9 +135,13 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
+            case .breakReady:
+                studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .config:
+                await studio.station.setPlaybackActivity(.holdingSong)
                 await studio.station.setEnergy(0.85)
                 await studio.station.setGenres(["pop", "indie", "synthwave"])
+                await studio.station.saveChanges()
             default:
                 break
             }
@@ -136,6 +150,25 @@ struct StudioCaptureView: View {
             }
             loaded = true
         }
+    }
+}
+
+/// The same fixture rows as `StationListView`, with no live inbox and no playback.
+private struct StationListCapture: View {
+    var body: some View {
+        List(Station.mockStations) { station in
+            NavigationLink {
+                EmptyView()
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(station.name).font(.headline)
+                    Text(station.description ?? "")
+                        .font(.subheadline)
+                        .foregroundStyle(AeroDJPalette.secondaryText)
+                }
+            }
+        }
+        .navigationTitle("AeroDJ")
     }
 }
 

@@ -21,6 +21,7 @@ struct PlaybackActions {
     static func live(_ music: MusicKitService) -> PlaybackActions {
         PlaybackActions(
             pause: { music.pause() },
+            // resume raises a snapshot error before throwing; try? only drops the throw.
             resume: { _ = try? await music.resume() },
             skip: { _ = try? await music.skip() },
             dismissError: { music.dismissError() },
@@ -48,27 +49,30 @@ struct MusicSearch {
 
     /// Same path as #58's search (ebc3042): the DJ session learns the new queue (the tapped
     /// song and the ones after it), then the player loads it one song at a time.
-    static func live(_ music: MusicKitService, station: StationRef, djSession: DJBreakSession) -> MusicSearch {
-        let cache = SearchResultCache()
+    ///
+    /// The MusicKit `Track` cache lives on `music` (`searchResults`), not in this value, so
+    /// `PlayerView` may rebuild `.live(music, …)` on every body without wiping hits (P0 build 7).
+    ///
+    /// `briefing` is read when play starts. There is no default: omitting it does not
+    /// compile, so an unapproved handoff cannot slip back in. `PlayerView` passes
+    /// `LiveQueueBriefing.provider`, which speaks an approved morning row and nothing else.
+    static func live(_ music: MusicKitService, station: StationRef, djSession: DJBreakSession,
+                     briefing: @escaping @MainActor () -> ApprovedShowHandoff) -> MusicSearch {
         return MusicSearch(
             search: { query in
                 let tracks = try await music.search(query)
-                cache.store(tracks)
+                music.searchResults.store(tracks)
                 return tracks.map(\.info)
             },
             play: { results, startIndex in
-                guard results.indices.contains(startIndex) else { return }
-                let tracks = results[startIndex...].compactMap { cache.track(for: $0.id) }
-                await djSession.queueStarted(tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) })
+                // Resolve before touching the DJ session. Out-of-range / expired cache throw a
+                // visible TEMPORARY error; queueStarted never runs with an empty queue.
+                let tracks = try music.searchResults.resolve(results: results, startIndex: startIndex)
+                let handoff = briefing()
+                await djSession.queueStarted(
+                    tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) },
+                    briefing: handoff.forQueue(), sources: handoff.connectionItems)
                 try await music.play(tracks, station: station)
             })
     }
-}
-
-/// Keeps the MusicKit tracks behind the UI-facing `TrackInfo` results. Main actor only.
-@MainActor
-private final class SearchResultCache {
-    private var tracks: [String: Track] = [:]
-    func store(_ list: [Track]) { tracks = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
-    func track(for id: String) -> Track? { tracks[id] }
 }

@@ -17,6 +17,9 @@ struct AppDependencies {
     let station: StationConfigurationModel
     /// The one app-scoped playback session. Layouts receive it; none creates another.
     let playback: MusicKitService
+    /// The one interlude player. Created with the DJ session, not inside PlayerView,
+    /// so a clip can be stopped after that screen is gone.
+    let interlude: InterludePlaybackAdapter
     let dj: DJPresentationStore
     /// The one Studio model (#56). Created here, never in a view.
     let studio: StudioPresentationModel
@@ -61,11 +64,16 @@ struct AppDependencies {
         // One preparer per launch: revoking a source purges prepared breaks as well as cached audio.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence())
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
+        let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared)
+        let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
+        // The same purger handles sources that expire mid-show (checked at each song boundary).
+        djSession.purger = purger
+        precondition(djSession.isWiredForPurge, "purger and stop hook are set before playback")
         let connections = ConnectionsModel(
             station: station,
             sourceReader: composition.sourceReader,
             providers: composition.providers,
-            purger: NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession))
+            purger: purger)
         let recipes = StationRecipeLibrary(store: FileStationRecipeStore(fileURL: supportURL("StationRecipes/recipes.json")))
         return AppDependencies(
             mode: .live,
@@ -75,6 +83,7 @@ struct AppDependencies {
             cadence: DJCadence(),
             station: station,
             playback: MusicKitService.shared,
+            interlude: interlude,
             dj: dj,
             studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
             djSession: djSession,
@@ -98,11 +107,16 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,
                                        cadence: TestStation.cadence)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
+        let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared)
+        let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
+        // The same purger handles sources that expire mid-show (checked at each song boundary).
+        djSession.purger = purger
+        precondition(djSession.isWiredForPurge, "purger and stop hook are set before playback")
         let connections = ConnectionsModel(
             station: station,
             sourceReader: composition.sourceReader,
             providers: composition.providers,
-            purger: NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession))
+            purger: purger)
         let recipes = StationRecipeLibrary(store: InMemoryStationRecipeStore())
         return AppDependencies(
             mode: .testStation,
@@ -111,12 +125,31 @@ struct AppDependencies {
             cadence: TestStation.cadence,
             station: station,
             playback: MusicKitService.shared,
+            interlude: interlude,
             dj: dj,
             studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
             djSession: djSession,
             pickedNotes: nil)
     }
     #endif
+
+    /// The one production assignment of `djSession.onBreakMustStop`.
+    ///
+    /// Armed here, while the session and the interlude player are created, so the
+    /// hook is already non-nil when a clip can play. PlayerView must not assign it again.
+    /// Fry #73 owns the stored property and the `purge` call.
+    private static func makeInterlude(session: DJBreakSession, playback: MusicKitService) -> InterludePlaybackAdapter {
+        let interlude = InterludePlaybackAdapter(music: playback)
+        let speechStop = SpeechStopGate()
+        speechStop.arm { [interlude] reason, afterTrack in
+            interlude.stopCurrentInterlude(reason: reason, afterTrack: afterTrack)
+        }
+        guard speechStop.canPlay, let hook = speechStop.onBreakMustStop else {
+            preconditionFailure("speech stop hook is installed before a clip can play")
+        }
+        session.onBreakMustStop = hook
+        return interlude
+    }
 
     private static func supportURL(_ path: String) -> URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
