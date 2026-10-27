@@ -86,7 +86,9 @@ final class TapPlayBeforeBreakTests: XCTestCase {
                     order.append("breakPrep-done")
                 }
             })
-        await fulfillment(of: [started], timeout: 1.0)
+        // Fresh XCTWaiter: Swift 6.2 on Linux rejects sending main-actor `self` to the nonisolated XCTestCase.fulfillment.
+        let waitResult = await XCTWaiter().fulfillment(of: [started], timeout: 1.0)
+        XCTAssertEqual(waitResult, .completed)
         XCTAssertEqual(order, ["play", "breakPrep-start"],
                        "play must finish before break prep is scheduled; prep must not be awaited")
         XCTAssertFalse(order.contains("breakPrep-done"), "must not await hung prep")

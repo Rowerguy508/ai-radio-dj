@@ -128,6 +128,85 @@ final class SpeechRenderCompletionTests: XCTestCase {
         XCTAssertEqual(completion.winner, .finalBuffer)
         XCTAssertEqual(completion.resumeCount, 1)
     }
+
+    // Interrupted during the 250 ms grace after didFinish (grace timer never fires: injectable clock).
+    // Mirrors SpeechRenderJob: render into a temp file, didFinish arrives, then the render is cancelled or times out.
+    private struct GraceTempFileVoice: VoiceProvider {
+        let temp: SpeechTempFiles
+        let completion: SpeechRenderCompletion
+        let inGrace: XCTestExpectation
+        let unwound: XCTestExpectation
+        func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+            defer { unwound.fulfill() }   // runs after withFile has deleted the file
+            return try await temp.withFile { url in
+                try Data("partial".utf8).write(to: url)
+                try await completion.wait(start: {
+                    XCTAssertTrue(completion.signal(.didFinish), "didFinish starts the grace period")
+                    inGrace.fulfill()
+                })
+                return VoiceArtifact(data: Data("pcm".utf8), durationSeconds: 1.5, billableUnits: 0, provider: "avspeech", cacheKey: nil)
+            }
+        }
+    }
+
+    private func graceFixture(timeout: Duration) -> (VoiceRenderer, SpeechRenderCompletion, ManualGraceClock, SpeechTempFiles,
+                                                     XCTestExpectation, XCTestExpectation) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("grace-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let temp = SpeechTempFiles(directory: root.appendingPathComponent("aerodj-speech", isDirectory: true), legacyDirectory: root)
+        let clock = ManualGraceClock()
+        let completion = SpeechRenderCompletion(didFinishGrace: .milliseconds(250), schedule: clock.schedule)
+        let inGrace = expectation(description: "didFinish received, grace pending")
+        let unwound = expectation(description: "render unwound")
+        let provider = GraceTempFileVoice(temp: temp, completion: completion, inGrace: inGrace, unwound: unwound)
+        let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "avspeech", provider: provider, voice: voice, timeout: timeout, acceptsSSML: true)],
+                                     budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
+        return (renderer, completion, clock, temp, inGrace, unwound)
+    }
+
+    private func leftovers(_ temp: SpeechTempFiles) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: temp.directory.path)) ?? []).sorted()
+    }
+
+    func testCancelDuringDidFinishGraceDeletesTempFileAndSkipsBreak() async throws {
+        let (renderer, completion, clock, temp, inGrace, unwound) = graceFixture(timeout: .seconds(20))
+        let breakCue = cue()
+        let render = Task { await renderer.render(breakCue, userID: "u", stationID: "s") }
+        await fulfillment(of: [inGrace], timeout: 1)
+        XCTAssertEqual(clock.pending, [.milliseconds(250)], "inside the grace window")
+        XCTAssertFalse(completion.isFinished)
+        XCTAssertEqual(leftovers(temp).count, 1, "partial render is on disk while in grace")
+
+        render.cancel()
+        let result = await render.value
+        guard case .failure(let failure) = result else { return XCTFail("a cancelled render must not produce a clip") }
+        XCTAssertEqual(failure.attempts.map(\.result), [.cancelled], "no other speech path is tried")
+        XCTAssertEqual(DJBreakPreparer.skipReason(failure), .renderFailed, "the DJ break is skipped, never spoken live")
+        await fulfillment(of: [unwound], timeout: 2)
+        XCTAssertEqual(leftovers(temp), [], "temp file deleted")
+        XCTAssertEqual(completion.winner, .cancelled)
+        XCTAssertEqual(completion.winner?.rawValue, "cancelled", "the log line reports signal=cancelled")
+        XCTAssertEqual(completion.resumeCount, 1)
+
+        clock.fireAll()   // the grace timer firing late is a no-op
+        XCTAssertEqual(completion.winner, .cancelled)
+        XCTAssertEqual(completion.resumeCount, 1)
+    }
+
+    func testDeadlineDuringDidFinishGraceDeletesTempFileAndSkipsBreak() async throws {
+        // Production deadline is 20 s; scaled down here. The grace timer is never fired, so only the deadline ends it.
+        let (renderer, completion, clock, temp, inGrace, unwound) = graceFixture(timeout: .milliseconds(50))
+        let result = await renderer.render(cue(), userID: "u", stationID: "s")
+        await fulfillment(of: [inGrace, unwound], timeout: 2)
+        guard case .failure(let failure) = result else { return XCTFail("deadline must fail the render") }
+        XCTAssertEqual(failure.attempts.map(\.result), [.timedOut], "only the on-device route; no other speech path is tried")
+        XCTAssertEqual(DJBreakPreparer.skipReason(failure), .timedOut, "the DJ break is skipped, never spoken live")
+        XCTAssertEqual(leftovers(temp), [], "temp file deleted")
+        XCTAssertEqual(completion.winner, .cancelled, "withTimeout cancels the job, so the log line reports signal=cancelled")
+        XCTAssertEqual(completion.resumeCount, 1)
+        clock.fireAll()
+        XCTAssertEqual(completion.resumeCount, 1)
+    }
 }
 
 /// Injectable grace clock: records requested delays and fires them on demand (no real sleeps).
