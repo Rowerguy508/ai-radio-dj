@@ -82,7 +82,10 @@ jobs:
               fail "SHA is not reachable from origin/main or origin/integration/device-duo."
             fi
           else
-            git check-ref-format --branch "$REF" >/dev/null 2>&1 || fail "not a valid branch name."
+            case "$REF" in
+              main|integration/device-duo) ;;
+              *) fail "only the branches main and integration/device-duo, or a full 40-character SHA on one of them, are allowed." ;;
+            esac
             if git show-ref --verify --quiet "refs/tags/$REF"; then
               fail "name matches a tag; tags are not allowed."
             fi
