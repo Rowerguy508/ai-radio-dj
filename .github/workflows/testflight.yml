@@ -1,0 +1,161 @@
+name: TestFlight upload
+
+# Manual only: archives the app, signs it automatically through an App Store
+# Connect API key, and uploads the build to TestFlight. No push or
+# pull_request trigger, so nothing here runs on untrusted code.
+#
+# Required repository secrets:
+#   ASC_KEY_ID      App Store Connect API key ID
+#   ASC_ISSUER_ID   App Store Connect issuer ID
+#   ASC_KEY_P8      Contents of the AuthKey_<KEY_ID>.p8 file
+#   APPLE_TEAM_ID   Apple Developer Team ID that owns com.aerodj.app
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or SHA to archive and upload
+        required: false
+        default: integration/device-duo
+        type: string
+
+permissions:
+  contents: read
+
+# One upload at a time; a second dispatch waits instead of cancelling an
+# upload that is already talking to App Store Connect.
+concurrency:
+  group: testflight-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Archive and upload to TestFlight
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      # Unique, monotonically increasing build number per upload.
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - name: Set working paths
+        run: |
+          {
+            echo "ARCHIVE_PATH=$RUNNER_TEMP/AeroDJ.xcarchive"
+            echo "EXPORT_PATH=$RUNNER_TEMP/export"
+            echo "LOG_DIR=$RUNNER_TEMP/testflight-logs"
+          } >> "$GITHUB_ENV"
+
+      - name: Check required secrets
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=0
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is empty or not set."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Set the missing secrets under Settings > Secrets and variables > Actions, then rerun."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || 'integration/device-duo' }}
+          persist-credentials: false
+
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          ( umask 077; printf '%s\n' "$ASC_KEY_P8" > "$KEY_PATH" )
+          chmod 600 "$KEY_PATH"
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+          mkdir -p "$LOG_DIR"
+
+      - name: Archive (Release, automatic signing)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            2>&1 | tee "$LOG_DIR/archive.log"
+
+      - name: Export and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -o pipefail
+          PLIST="$RUNNER_TEMP/ExportOptions.plist"
+          /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :destination string upload" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :signingStyle string automatic" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :manageAppVersionAndBuildNumber bool false" "$PLIST"
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$PLIST" \
+            -exportPath "$EXPORT_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            2>&1 | tee "$LOG_DIR/export.log"
+          echo "Uploaded com.aerodj.app build $BUILD_NUMBER to App Store Connect; it appears in TestFlight after processing." >> "$GITHUB_STEP_SUMMARY"
+
+      # Only the xcodebuild logs, and only on failure. Never the .p8, the
+      # archive or a signed .ipa.
+      - name: Upload xcodebuild logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: testflight-xcodebuild-logs
+          path: ${{ runner.temp }}/testflight-logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove API key and signing outputs
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP"/AuthKey_*.p8 "$RUNNER_TEMP/ExportOptions.plist"
+          if [ -n "${ARCHIVE_PATH:-}" ]; then rm -rf "$ARCHIVE_PATH"; fi
+          if [ -n "${EXPORT_PATH:-}" ]; then rm -rf "$EXPORT_PATH"; fi
