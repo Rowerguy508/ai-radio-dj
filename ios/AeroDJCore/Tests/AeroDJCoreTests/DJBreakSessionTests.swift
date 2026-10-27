@@ -198,7 +198,7 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertEqual(r.dj.studioState, .idle)
     }
 
-    func testRevokeStopsThePlayingBreakWithinOneTick() {
+    func testRevokeStopsThePlayingBreakWithinOneTick() async {
         let clip = ActiveBreakController()
         clip.play()
         let player = clip.currentPlayer

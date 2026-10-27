@@ -41,7 +41,8 @@ private func loadedStation(_ consent: [StationIntegration: ConsentState] = [.cal
 
 @MainActor
 final class StationTunerPresentationTests: XCTestCase {
-    func testEveryTimingHasExactUserFacingCopy() {
+    // async: @MainActor XCTestCase must not mix sync and async (Linux Swift 6.2 manifest).
+    func testEveryTimingHasExactUserFacingCopy() async {
         XCTAssertEqual(StationChangeTiming.nextSongBoundary.appliesCopy, "Applies after this song")
         XCTAssertEqual(StationChangeTiming.nextDJBreak.appliesCopy, "Applies at the next DJ break")
         XCTAssertEqual(StationChangeTiming.nextBriefing.appliesCopy, "Applies to the next briefing")
@@ -66,7 +67,7 @@ final class StationTunerPresentationTests: XCTestCase {
         XCTAssertNil(applied.appliesCopy)
     }
 
-    func testPersonalityCopyIsHonestThatOnlyBreakLengthChanges() {
+    func testPersonalityCopyIsHonestThatOnlyBreakLengthChanges() async {
         for p in DJPersonality.allCases {
             XCTAssertTrue(p.honestDescription.contains("\(p.maxTransitionSeconds) seconds"), "\(p)")
             XCTAssertTrue(p.honestDescription.contains("Same voice"), "\(p) must not promise a different voice")
@@ -175,7 +176,7 @@ final class StationRecipeTests: XCTestCase {
 // MARK: - Connections
 
 final class ConnectionStateTests: XCTestCase {
-    func testCalendarDescriptionAndActionsForEveryAccessState() {
+    func testCalendarDescriptionAndActionsForEveryAccessState() async {
         let cals = [CalendarDescriptor(id: "a", title: "A"), CalendarDescriptor(id: "b", title: "B")]
         let expect: [(CalendarAccess, [ConnectionAction], String)] = [
             (.notDetermined, [.allowAccess], "hasn't asked"),
@@ -198,7 +199,7 @@ final class ConnectionStateTests: XCTestCase {
         XCTAssertTrue(CalendarConnectionState(access: .writeOnly, calendars: cals, selectedCalendarIDs: ["a"]).readableSelection.isEmpty)
     }
 
-    func testObsidianBookmarkStates() {
+    func testObsidianBookmarkStates() async {
         XCTAssertEqual(ObsidianSelectionState(readError: .bookmarkStale), .stale)
         XCTAssertEqual(ObsidianSelectionState(readError: .notFound), .missing)
         XCTAssertEqual(ObsidianSelectionState(readError: .accessDenied), .missing)
@@ -210,7 +211,7 @@ final class ConnectionStateTests: XCTestCase {
         XCTAssertTrue(ObsidianSelectionState.valid(fileCount: 1).description.contains("Nothing else in your vault"))
     }
 
-    func testItemStatePrecedenceAndOnlyApprovedIsNarratable() {
+    func testItemStatePrecedenceAndOnlyApprovedIsNarratable() async {
         let r = { (c: ConsentState, exp: Date?, f: Bool, rc: Bool, u: ConnectionUnavailableReason?) in
             ConnectionItemState.resolve(consent: c, expiresAt: exp, now: t0, flagged: f, reconfirmed: rc, unavailable: u)
         }
@@ -229,7 +230,7 @@ final class ConnectionStateTests: XCTestCase {
         for s in all { XCTAssertFalse(s.description.isEmpty) }
     }
 
-    func testActionsPerSourceNeverOfferMailboxOrPerEventControls() {
+    func testActionsPerSourceNeverOfferMailboxOrPerEventControls() async {
         XCTAssertEqual(ConnectionItemState.flaggedForReview.actions(for: .shareInbox), [.review, .readAnyway, .delete])
         XCTAssertEqual(ConnectionItemState.pendingApproval.actions(for: .shareInbox), [.approve, .review, .delete])
         XCTAssertEqual(ConnectionItemState.approved.actions(for: .obsidian), [.review, .revoke])
@@ -388,7 +389,8 @@ final class ConnectionsModelTests: XCTestCase {
 
 @MainActor
 final class DJStudioStateTests: XCTestCase {
-    func testMapsEveryPresentationStateAndOnlySpeakingIsOnAir() {
+    // async: @MainActor XCTestCase must not mix sync and async tests (Linux Swift 6.2 manifest).
+    func testMapsEveryPresentationStateAndOnlySpeakingIsOnAir() async {
         let cases: [(DJPresentationState, DJStudioState)] = [
             (.idle, .idle),
             (.preparing(afterTrack: 1, includesBriefing: false), .preparing(includesBriefing: false)),
@@ -405,10 +407,15 @@ final class DJStudioStateTests: XCTestCase {
             XCTAssertEqual(mapped.onAirLabel != nil, mapped.isOnAir)
             XCTAssertEqual(mapped.title == "On Air", mapped.isOnAir, "only speaking may say On Air")
             if !mapped.isOnAir { XCTAssertFalse(mapped.detail.localizedCaseInsensitiveContains("speaking now")) }
+            if case .ready = mapped {
+                XCTAssertEqual(mapped.detail, "", "ready VoiceOver detail stays empty")
+                XCTAssertFalse(mapped.detail.localizedCaseInsensitiveContains("break"))
+                XCTAssertFalse(mapped.detail.localizedCaseInsensitiveContains("after this song"))
+            }
         }
     }
 
-    func testOnAirOnlyAfterThePlayerConfirmsAudioAndEndsWithIt() {
+    func testOnAirOnlyAfterThePlayerConfirmsAudioAndEndsWithIt() async {
         let store = DJPresentationStore()
         store.send(.breakPreparing(afterTrack: 2, includesBriefing: false))
         XCTAssertFalse(store.studioState.isOnAir)

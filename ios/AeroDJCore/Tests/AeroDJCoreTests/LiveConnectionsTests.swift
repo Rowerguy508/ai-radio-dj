@@ -239,7 +239,7 @@ final class LiveConnectionsTests: XCTestCase {
     }
     #endif
 
-    func testLiveCompositionOnlyAddsAvailableSources() {
+    func testLiveCompositionOnlyAddsAvailableSources() async {
         let now = self.now
         let live = ConnectionsComposition.make(
             mode: .live,

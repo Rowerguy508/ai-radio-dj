@@ -51,9 +51,10 @@ public enum DJStudioState: Equatable, Sendable {
         case .preparing(let briefing):
             return briefing ? "Getting your briefing ready. The DJ isn't speaking yet."
                 : "Getting the next DJ break ready. The DJ isn't speaking yet."
-        case .ready(let briefing, let seconds):
-            let length = "about \(max(1, Int(seconds.rounded()))) seconds"
-            return briefing ? "Briefing ready for after this song (\(length))." : "DJ break ready for after this song (\(length))."
+        case .ready:
+            // Empty: no break / "after this song" VoiceOver text while waiting (pairs with
+            // DJStatusPresentation.headline == nil for `.ready`).
+            return ""
         case .speaking(let briefing):
             return briefing ? "The DJ is reading your briefing now." : "The DJ is speaking now."
         case .failed(.consentReviewRequired(let n)):
