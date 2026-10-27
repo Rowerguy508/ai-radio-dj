@@ -32,10 +32,9 @@ concurrency:
 jobs:
   upload:
     name: Archive and upload to TestFlight
-    # Pinned image with the iOS 27 SDK. macos-26 tops out at Xcode 26.6 /
-    # iphoneos26.5, and iOS letterboxes a binary linked against a pre-27 SDK on the
-    # Duo (TestFlight run 40437725131). xcode-27 is GitHub's Xcode 27 preview image
-    # (actions/runner-images#14404).
+    # xcode-27 image (actions/runner-images#14404): Xcode 27.0, 27.1 and 27.2 RC
+    # with iphoneos27.2. macos-26 tops out at iphoneos26.5, which letterboxes on
+    # the Duo (TestFlight run 40437725131).
     runs-on: xcode-27
     timeout-minutes: 60
     # Signing and ASC secrets live in this GitHub Environment. The owner limits
@@ -139,28 +138,30 @@ jobs:
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
 
-      # Newest installed Xcode 27 (betas included). Fails unless its iOS SDK is 27+,
-      # so a build can't silently fall back to an SDK that letterboxes on the Duo.
-      - name: Select Xcode
+      # Owner requirement: build on the iOS 27.2 SDK. Pinned to Xcode 27.2
+      # (27B48, an RC on the xcode-27 image). Fails fast, with no fallback, if that
+      # Xcode or SDK isn't on the runner.
+      - name: Select Xcode 27.2
+        env:
+          XCODE_PATH: /Applications/Xcode_27.2.app
+          REQUIRED_SDK: "27.2"
         run: |
           set -euo pipefail
-          ls -d /Applications/Xcode*.app
-          XCODE=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
-          if [ -z "$XCODE" ]; then
-            echo "::error::No Xcode 27 found on this runner"
+          if [ ! -d "$XCODE_PATH" ]; then
+            echo "::error::$XCODE_PATH not found on this runner. Installed: $(ls -d /Applications/Xcode*.app | tr '\n' ' ')"
             exit 1
           fi
-          sudo xcode-select -s "$XCODE"
+          sudo xcode-select -s "$XCODE_PATH"
           xcodebuild -version
           SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
-          case "$SDK_VERSION" in
-            2[7-9]*|[3-9][0-9]*) ;;
-            *) echo "::error::iOS SDK $SDK_VERSION is older than 27"; exit 1 ;;
-          esac
+          if [ "$SDK_VERSION" != "$REQUIRED_SDK" ]; then
+            echo "::error::iOS SDK is $SDK_VERSION; this workflow requires $REQUIRED_SDK"
+            exit 1
+          fi
           {
             echo "### Toolchain"
-            echo "- Xcode: \`$XCODE\` ($(xcodebuild -version | tr '\n' ' '))"
-            echo "- iOS SDK: \`$SDK_VERSION\`"
+            echo "- Xcode: \`$XCODE_PATH\` ($(xcodebuild -version | tr '\n' ' '))"
+            echo "- iOS SDK: \`iphoneos$SDK_VERSION\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install distribution certificate and profiles
