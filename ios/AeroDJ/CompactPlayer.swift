@@ -1,8 +1,9 @@
 import AeroDJCore
 import SwiftUI
 
-/// Closed Duo: bleed artwork on top, type and transport on the slab below.
-/// Used whenever the container is narrower than `StudioLayoutMetrics.studioMinWidth`.
+/// Closed Duo: bleed artwork fills the window; transport and the DJ line sit in a material inset.
+/// Used whenever the container is narrower than `StudioLayoutMetrics.studioMinWidth`, or the
+/// width class is compact.
 struct CompactPlayer: View {
     let station: StationRef?
     let content: NowPlayingContent
@@ -11,23 +12,26 @@ struct CompactPlayer: View {
     let dj: DJStatusPresentation
     let soundTags: [String]
     let search: MusicSearch?
-    @Binding var searchQuery: String
+    @ObservedObject var studioSearch: StudioSearchModel
+    var timeSource: PlaybackTimeSource? = nil
     var artworkNamespace: Namespace.ID? = nil
+    var extendsUnderSafeArea = true
     let onOpenWorkspace: () -> Void
     let onTune: () -> Void
     let onReview: () -> Void
 
     var body: some View {
         BleedNowPlaying(station: station, content: content, snapshot: snapshot, actions: actions,
-                        dj: dj, soundTags: soundTags, search: search, searchQuery: $searchQuery,
-                        artworkNamespace: artworkNamespace,
+                        dj: dj, soundTags: soundTags, search: search, studioSearch: studioSearch,
+                        timeSource: timeSource,
+                        artworkNamespace: artworkNamespace, extendsUnderSafeArea: extendsUnderSafeArea,
                         onQueue: onOpenWorkspace, onTune: onTune, onReview: onReview)
     }
 }
 
-/// Listen and Studio share this column. Artwork is full-bleed and square-cornered.
-/// Title, artist, and station sit on an opaque slab that grows as type grows; the art shrinks
-/// to make room. Transport stays pinned, so it remains on screen at accessibility sizes.
+/// Listen and Studio share this column. Artwork fills the column edge to edge.
+/// Title and artist sit on the art. Transport and the DJ status line sit in a system-material
+/// inset, so they stay on screen at accessibility sizes.
 struct BleedNowPlaying: View {
     let station: StationRef?
     let content: NowPlayingContent
@@ -36,60 +40,70 @@ struct BleedNowPlaying: View {
     let dj: DJStatusPresentation
     let soundTags: [String]
     var search: MusicSearch? = nil
-    @Binding var searchQuery: String
+    @ObservedObject var studioSearch: StudioSearchModel
+    var timeSource: PlaybackTimeSource? = nil
     var showsUpNext = true
     var artworkNamespace: Namespace.ID? = nil
-    /// Set when the parent is a scroll view and cannot offer a height.
-    var lockedHeight: CGFloat? = nil
+    /// Closed Listen only. Zone A does not extend past its column.
+    var extendsUnderSafeArea = false
+    /// The parent scroll pins the transport. This view is then the title, metadata, and art.
+    var usesParentScroll = false
     let onQueue: () -> Void
     let onTune: () -> Void
     let onReview: () -> Void
-
-    private static let minimumArt: CGFloat = 64
-    @State private var textHeight: CGFloat = 220
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        GeometryReader { geo in
-            column(width: geo.size.width, height: geo.size.height)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if content.showsTransport {
-                transportBar
+        if typeSize.isAccessibilitySize {
+            if usesParentScroll {
+                accessibilityContent
+            } else {
+                ScrollView { accessibilityContent }
+                    .safeAreaInset(edge: .bottom, spacing: 0) { chrome }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        }
-        .background(AeroDJPalette.slab)
-        .environment(\.onSlab, true)
-        .frame(height: lockedHeight)
-        .frame(maxWidth: .infinity, maxHeight: lockedHeight == nil ? .infinity : nil)
-        .onPreferenceChange(BleedTextHeightKey.self) { new in
-            let next = new.rounded()
-            guard next > 0, abs(next - textHeight) >= 2 else { return }
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { textHeight = next }
+        } else {
+            bleed
         }
     }
 
-    private func column(width: CGFloat, height: CGFloat) -> some View {
-        let overflow = textHeight + Self.minimumArt > height
-        let artHeight = overflow ? Self.minimumArt : max(Self.minimumArt, height - textHeight)
-        return VStack(spacing: 0) {
-            BleedArtwork(track: heroTrack, station: station)
-                .frame(width: width, height: artHeight, alignment: .top)
-                .clipped()
-                .modifier(BleedArtFrame(namespace: artworkNamespace))
-            if overflow {
-                ScrollView(showsIndicators: false) {
-                    measuredText
+    /// Title and chrome own the layout frame. Artwork is only a background so its
+    /// bleed cannot widen the accessibility union that `studio.zoneA` reports.
+    private var bleed: some View {
+        GeometryReader { geo in
+            titleBlock
+                .environment(\.onSlab, true)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                .background {
+                    BleedArtwork(track: heroTrack, station: station)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                        .modifier(BleedArtFrame(namespace: artworkNamespace))
+                        // Compact Listen only: expand the *background*, not the layout frame.
+                        .ignoresSafeArea(edges: extendsUnderSafeArea ? .all : [])
+                        .accessibilityHidden(true)
                 }
-                .frame(width: width, height: max(0, height - artHeight))
-            } else {
-                measuredText
-                Spacer(minLength: 0)
-            }
+                .clipped()
         }
-        .frame(width: width, height: height, alignment: .top)
+        .safeAreaInset(edge: .bottom, spacing: 0) { chrome }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
+    }
+
+    /// Title and metadata first, then the art. No fixed height: the art is a square of the
+    /// column width, and the scroll's inset keeps that title above the transport.
+    private var accessibilityContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            slabText
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            BleedArtwork(track: heroTrack, station: station)
+                .aspectRatio(1, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .modifier(BleedArtFrame(namespace: artworkNamespace))
+        }
+        .environment(\.onSlab, false)
     }
 
     private var heroTrack: TrackInfo? {
@@ -97,17 +111,15 @@ struct BleedNowPlaying: View {
         return nil
     }
 
-    private var measuredText: some View {
-        slabText
-            .padding(.horizontal, 20)
-            .padding(.top, 18)
-            .padding(.bottom, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(key: BleedTextHeightKey.self, value: proxy.size.height)
-                }
-            }
+    private var titleBlock: some View {
+        ScrollView(showsIndicators: false) {
+            slabText
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .scrollContentBackground(.hidden)
     }
 
     @ViewBuilder
@@ -115,45 +127,93 @@ struct BleedNowPlaying: View {
         VStack(alignment: .leading, spacing: 12) {
             switch content {
             case .track(let track):
-                TrackBlock(track: track, stationName: station?.name, dj: dj, onReview: onReview)
+                TrackBlock(track: track, stationName: station?.name)
                 if !soundTags.isEmpty {
                     StationSoundRow(tags: soundTags, action: onTune)
                 }
             case .nothingPlaying:
-                NowPlayingPlaceholder(content: content)
+                NowPlayingPlaceholder(content: content, actions: actions)
                 if let search {
-                    StartListeningView(search: search, query: $searchQuery)
+                    StartListeningView(search: search, model: studioSearch)
                 }
             default:
-                NowPlayingPlaceholder(content: content)
+                NowPlayingPlaceholder(content: content, actions: actions)
             }
-            PlaybackErrorBanner(error: snapshot.error, actions: actions)
         }
     }
 
-    private var transportBar: some View {
-        VStack(spacing: 8) {
-            if showsUpNext {
-                QueueAffordance(upNext: snapshot.upNext, action: onQueue)
-                Rectangle()
-                    .fill(AeroDJPalette.slabSecondary.opacity(0.4))
-                    .frame(height: 1)
-                    .accessibilityHidden(true)
+    private var chrome: some View {
+        PlaybackChromeBar(content: content, snapshot: snapshot, actions: actions, dj: dj,
+                          timeSource: timeSource, showsUpNext: showsUpNext,
+                          onQueue: onQueue, onTune: onTune, onReview: onReview)
+    }
+}
+
+/// Transport, DJ line, and error. Pinned with `safeAreaInset` so the scrolling title
+/// clears it. Draws nothing when there is no status and no transport.
+struct PlaybackChromeBar: View {
+    let content: NowPlayingContent
+    let snapshot: PlaybackSnapshot
+    let actions: PlaybackActions
+    let dj: DJStatusPresentation
+    var timeSource: PlaybackTimeSource? = nil
+    var showsUpNext = true
+    let onQueue: () -> Void
+    let onTune: () -> Void
+    let onReview: () -> Void
+
+    private var showsChrome: Bool {
+        content.showsTransport || snapshot.error != nil || showsStatus || showsProgress
+    }
+
+    private var showsProgress: Bool {
+        guard content.showsTransport, let timeSource else { return false }
+        return timeSource.duration().map { $0 > 0 } ?? false
+    }
+
+    private var showsStatus: Bool {
+        switch dj.state {
+        case .idle, .ready: false
+        default: true
+        }
+    }
+
+    var body: some View {
+        if showsChrome {
+            ViewThatFits(in: .vertical) {
+                chromeStack
+                if content.showsTransport {
+                    TransportRow(transport: snapshot.transport, actions: actions, onTune: onTune)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity)
+                }
             }
-            TransportRow(transport: snapshot.transport, actions: actions, onTune: onTune)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .systemMaterialBackground()
+            .environment(\.onSlab, false)
+        }
+    }
+
+    private var chromeStack: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if showsStatus {
+                DJStatusLine(presentation: dj, onReview: onReview)
+            }
+            PlaybackErrorBanner(error: snapshot.error, actions: actions)
+            if content.showsTransport, showsUpNext {
+                QueueAffordance(upNext: snapshot.upNext, action: onQueue)
+            }
+            if showsProgress, let timeSource {
+                PlaybackProgressBar(time: timeSource)
+            }
+            if content.showsTransport {
+                TransportRow(transport: snapshot.transport, actions: actions, onTune: onTune)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 10)
-        .frame(maxWidth: .infinity)
-        .background(AeroDJPalette.slab)
-    }
-}
-
-private struct BleedTextHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 
@@ -161,19 +221,22 @@ private struct BleedTextHeightKey: PreferenceKey {
 struct StationSoundRow: View {
     let tags: [String]
     let action: () -> Void
+    @Environment(\.onSlab) private var onSlab
+
+    private var ink: Color { onSlab ? AeroDJPalette.slabSecondary : AeroDJPalette.secondaryText }
 
     var body: some View {
         Button(action: action) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: "dial.medium")
-                    .foregroundStyle(AeroDJPalette.slabSecondary)
+                    .foregroundStyle(ink)
                     .accessibilityHidden(true)
                 Text(tags.prefix(4).joined(separator: " · "))
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
             .font(.footnote.weight(.medium))
-            .foregroundStyle(AeroDJPalette.slabSecondary)
+            .foregroundStyle(ink)
             .frame(minHeight: 32)
             .contentShape(Rectangle())
         }
@@ -200,32 +263,30 @@ private struct ColumnLabel: ViewModifier {
 struct TrackBlock: View {
     let track: TrackInfo
     let stationName: String?
-    let dj: DJStatusPresentation
-    let onReview: () -> Void
+    @Environment(\.onSlab) private var onSlab
+
+    private var titleInk: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
+    private var secondaryInk: Color { onSlab ? AeroDJPalette.slabSecondary : Color.secondary }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(track.title)
-                    .font(.system(.largeTitle, design: .serif))
-                    .foregroundStyle(AeroDJPalette.onMediaLight)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(track.title)
+                .font(.system(.largeTitle, design: .serif))
+                .foregroundStyle(titleInk)
+                .modifier(ColumnLabel())
+            Text(track.artistName)
+                .font(.body)
+                .foregroundStyle(secondaryInk)
+                .modifier(ColumnLabel())
+            if let stationName, !stationName.isEmpty {
+                Text(stationName)
+                    .font(.subheadline)
+                    .foregroundStyle(secondaryInk)
                     .modifier(ColumnLabel())
-                Text(track.artistName)
-                    .font(.body)
-                    .foregroundStyle(AeroDJPalette.slabSecondary)
-                    .modifier(ColumnLabel())
-                if let stationName, !stationName.isEmpty {
-                    Text(stationName)
-                        .font(.subheadline)
-                        .foregroundStyle(AeroDJPalette.slabSecondary)
-                        .modifier(ColumnLabel())
-                }
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(spokenTitle)
-            DJStatusLine(presentation: dj, onReview: onReview)
-                .padding(.top, 6)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spokenTitle)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -239,7 +300,15 @@ struct TrackBlock: View {
                   content: .track(PlaybackFixtures.songs[0]),
                   snapshot: PlaybackFixtures.playing, actions: .preview,
                   dj: .init(state: .idle), soundTags: ["indie", "bright"],
-                  search: nil, searchQuery: .constant(""), onOpenWorkspace: {}, onTune: {}, onReview: {})
+                  search: nil, studioSearch: StudioSearchModel(query: ""),
+                  timeSource: {
+                      #if DEBUG
+                      return .fixture
+                      #else
+                      return nil
+                      #endif
+                  }(),
+                  onOpenWorkspace: {}, onTune: {}, onReview: {})
 }
 
 #Preview("Compact speaking") {
@@ -247,6 +316,6 @@ struct TrackBlock: View {
                   content: .track(PlaybackFixtures.songs[1]),
                   snapshot: PlaybackFixtures.djSpeaking, actions: .preview,
                   dj: .init(state: .speaking(includesBriefing: false)),
-                  soundTags: [], search: nil, searchQuery: .constant(""),
+                  soundTags: [], search: nil, studioSearch: StudioSearchModel(query: ""),
                   onOpenWorkspace: {}, onTune: {}, onReview: {})
 }

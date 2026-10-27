@@ -44,6 +44,23 @@ extension View {
     func studioSurface(cornerRadius: CGFloat = 24) -> some View {
         modifier(StudioSurface(cornerRadius: cornerRadius))
     }
+
+    /// System material for the transport inset and Zone B. Opaque when Reduce Transparency is on.
+    func systemMaterialBackground() -> some View {
+        modifier(SystemMaterialBackground())
+    }
+}
+
+private struct SystemMaterialBackground: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content.background(Color(.secondarySystemBackground))
+        } else {
+            content.background(.regularMaterial)
+        }
+    }
 }
 
 /// The station whose colours the fallback art and backdrop use. Set once by `PlayingScreen`
@@ -177,41 +194,48 @@ struct StationArtwork: View {
 
 /// Hero artwork for Listen and Studio. Edge to edge, corner radius 0. Album art when the
 /// current track has it; otherwise the station ident. Dark mode does not tint, dim, or blur it.
+///
+/// The layout frame is `Color.clear`. `scaledToFill` lives in an overlay, so its larger
+/// ideal size cannot widen the zone. The title already names the song, so the image is hidden.
 struct BleedArtwork: View {
     static let morphID = "bleed-art"
     let track: TrackInfo?
     let station: StationRef?
 
     var body: some View {
-        GeometryReader { geo in
-            let column = geo.size.width
-            ZStack {
-                if let track, let url = track.artworkURL {
-                    AsyncImage(url: url) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().scaledToFill()
-                                .frame(width: geo.size.width, height: geo.size.height)
-                        } else {
-                            fittedIdent(.track(track, on: station), width: column)
-                        }
-                    }
-                } else if let track {
-                    fittedIdent(.track(track, on: station), width: column)
-                } else {
-                    fittedIdent(.station(station), width: column)
-                }
-            }
-            .frame(width: column, height: geo.size.height, alignment: .top)
+        Color.clear
+            .overlay { canvas }
             .clipped()
-        }
-        .accessibilityHidden(true)
+            .accessibilityHidden(true)
     }
 
-    /// The ident is a square. Fit it to the column width so its frame cannot cross the gutter.
-    private func fittedIdent(_ style: StationArtStyle, width: CGFloat) -> some View {
-        StationArtwork(style: style, size: width)
-            .aspectRatio(1, contentMode: .fit)
-            .frame(width: width)
+    @ViewBuilder
+    private var canvas: some View {
+        if let track, let url = track.artworkURL {
+            AsyncImage(url: url) { phase in
+                if case .success(let image) = phase {
+                    image.resizable().scaledToFill()
+                        .accessibilityHidden(true)
+                } else {
+                    fittedIdent(.track(track, on: station))
+                }
+            }
+        } else if let track {
+            fittedIdent(.track(track, on: station))
+        } else {
+            fittedIdent(.station(station))
+        }
+    }
+
+    /// The ident is a square. It is sized from the overlay's own bounds, so it cannot
+    /// push the zone past the gutter.
+    private func fittedIdent(_ style: StationArtStyle) -> some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            StationArtwork(style: style, size: max(side, 1))
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -284,6 +308,10 @@ extension View {
 struct DJStatusLine: View {
     let presentation: DJStatusPresentation
     var onReview: (() -> Void)?
+    @Environment(\.onSlab) private var onSlab
+
+    private var ink: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
+    private var secondaryInk: Color { onSlab ? AeroDJPalette.slabSecondary : Color.secondary }
 
     var body: some View {
         if isReady {
@@ -297,16 +325,16 @@ struct DJStatusLine: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .buttonStyle(.bordered)
-            .tint(AeroDJPalette.onMediaLight)
+            .tint(ink)
             .accessibilityHint("Opens Connections to review shared items. Music continues.")
         } else if let headline = presentation.headline, presentation.onAirBadge == nil {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: icon)
-                    .foregroundStyle(AeroDJPalette.slabSecondary)
+                    .foregroundStyle(secondaryInk)
                     .accessibilityHidden(true)
                 Text(headline)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(AeroDJPalette.slabSecondary)
+                    .foregroundStyle(secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .ignore)
@@ -340,7 +368,18 @@ struct TransportRow: View {
     let actions: PlaybackActions
     var onTune: (() -> Void)?
     @State private var taps = 0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+
+    private var reduceMotion: Bool {
+        #if DEBUG
+        systemReduceMotion || UserDefaults.standard.bool(forKey: StudioCapture.reduceMotionKey)
+        #else
+        systemReduceMotion
+        #endif
+    }
+    @Environment(\.onSlab) private var onSlab
+
+    private var ink: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -356,7 +395,7 @@ struct TransportRow: View {
                             .frame(width: 52, height: 52)
                             .contentShape(Circle())
                     }
-                    .foregroundStyle(AeroDJPalette.onMediaLight)
+                    .foregroundStyle(ink)
                     .accessibilityHint("Opens the tuner. Music continues.")
                     .accessibilityIdentifier("transport.tune")
                 }
@@ -406,7 +445,7 @@ struct TransportRow: View {
                         .frame(width: 52, height: 52)
                         .contentShape(Circle())
                 }
-                .foregroundStyle(AeroDJPalette.onMediaLight)
+                .foregroundStyle(ink)
                 .accessibilityIdentifier("transport.skip")
             }
         }
@@ -426,6 +465,10 @@ struct TransportRow: View {
 struct QueueAffordance: View {
     let upNext: [TrackInfo]
     let action: () -> Void
+    @Environment(\.onSlab) private var onSlab
+
+    private var ink: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
+    private var secondaryInk: Color { onSlab ? AeroDJPalette.slabSecondary : Color.secondary }
 
     var body: some View {
         Button(action: action) {
@@ -435,27 +478,27 @@ struct QueueAffordance: View {
                 } else {
                     Image(systemName: "list.bullet")
                         .frame(width: 36, height: 36)
-                        .foregroundStyle(AeroDJPalette.slabSecondary)
+                        .foregroundStyle(secondaryInk)
                         .accessibilityHidden(true)
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text("UP NEXT")
                         .font(.caption2.weight(.bold))
                         .tracking(0.8)
-                        .foregroundStyle(AeroDJPalette.slabSecondary)
+                        .foregroundStyle(secondaryInk)
                     Text(upNext.first.map { "\($0.title) · \($0.artistName)" } ?? "Nothing queued")
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(AeroDJPalette.onMediaLight)
+                        .foregroundStyle(ink)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
                 if upNext.count > 1 {
                     Text("+\(upNext.count - 1)")
                         .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(AeroDJPalette.slabSecondary)
+                        .foregroundStyle(secondaryInk)
                 }
                 Image(systemName: "chevron.up").font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AeroDJPalette.onMediaLight)
+                    .foregroundStyle(ink)
                     .accessibilityHidden(true)
             }
             .frame(minHeight: 44)
@@ -477,6 +520,7 @@ struct QueueAffordance: View {
 struct PlaybackErrorBanner: View {
     let error: PlaybackError?
     let actions: PlaybackActions
+    @Environment(\.onSlab) private var onSlab
 
     var body: some View {
         if let p = PlaybackErrorPresentation(error) {
@@ -484,7 +528,7 @@ struct PlaybackErrorBanner: View {
             case .caption:
                 Label(p.title, systemImage: "speaker.slash")
                     .font(.caption)
-                    .foregroundStyle(AeroDJPalette.slabSecondary)
+                    .foregroundStyle(onSlab ? AeroDJPalette.slabSecondary : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             case .banner:
                 VStack(alignment: .leading, spacing: 10) {
@@ -529,26 +573,40 @@ struct PlaybackErrorBanner: View {
 /// Shown instead of a track when there is nothing the transport could control.
 struct NowPlayingPlaceholder: View {
     let content: NowPlayingContent
+    /// Required for `.needsAuthorization` so Allow calls `authorize()`, never a no-op.
+    var actions: PlaybackActions? = nil
     @Environment(\.openURL) private var openURL
+
+    @Environment(\.onSlab) private var onSlab
+
+    private var ink: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
+    private var secondaryInk: Color { onSlab ? AeroDJPalette.slabSecondary : Color.secondary }
 
     var body: some View {
         VStack(spacing: 10) {
             if content == .connecting {
                 ProgressView()
-                    .tint(AeroDJPalette.onMediaLight)
+                    .tint(ink)
                     .accessibilityHidden(true)
             }
             Text(content.title)
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(AeroDJPalette.onMediaLight)
+                .foregroundStyle(ink)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             if let detail = content.detail {
                 Text(detail)
                     .font(.subheadline)
-                    .foregroundStyle(AeroDJPalette.slabSecondary)
+                    .foregroundStyle(secondaryInk)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            if content == .needsAuthorization, let actions {
+                Button("Allow Apple Music") {
+                    Task { await actions.authorize() }
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("playback.allowMusic")
             }
             if content == .accessDenied, let url = URL(string: UIApplication.openSettingsURLString) {
                 Button("Open Settings") { openURL(url) }
@@ -556,7 +614,8 @@ struct NowPlayingPlaceholder: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
+        // Keep Allow / Settings as their own elements so UI tests can find them.
+        .accessibilityElement(children: (content == .needsAuthorization || content == .accessDenied) ? .contain : .combine)
     }
 }
 
@@ -564,48 +623,51 @@ struct NowPlayingPlaceholder: View {
 
 /// Search Apple Music and play a result. Playing replaces the current queue with the
 /// chosen song and the results after it, so the station has more than one song.
+/// Query and results live in `StudioSearchModel` so Listen and Studio share one path.
 struct StartListeningView: View {
     let search: MusicSearch
-    @Binding var query: String
+    @ObservedObject var model: StudioSearchModel
     @Environment(\.onSlab) private var onSlab
-    @State private var results: [TrackInfo] = []
-    @State private var phase: Phase = .idle
 
     private var ink: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
     private var secondaryInk: Color { onSlab ? AeroDJPalette.slabSecondary : AeroDJPalette.secondaryText }
 
-    enum Phase: Equatable { case idle, searching, failed(String), empty }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
-                TextField("Search Apple Music", text: $query)
+                TextField("Search Apple Music", text: queryBinding)
                     .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                     .submitLabel(.search)
-                    .onSubmit(runSearch)
+                    .onSubmit { model.run(using: search) }
                     .accessibilityIdentifier("search.field")
+                    .accessibilityValue(model.query)
+                Button("Search") { model.run(using: search) }
+                    .disabled(model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || model.phase == .searching)
+                    .accessibilityIdentifier("search.submit")
             }
             .padding(12)
             .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-            switch phase {
+            switch model.phase {
             case .idle: EmptyView()
             case .searching: ProgressView("Searching Apple Music")
             case .failed(let message): Text(message).font(.caption).foregroundStyle(secondaryInk).fixedSize(horizontal: false, vertical: true)
             case .empty: Text("No songs found.").font(.caption).foregroundStyle(secondaryInk).fixedSize(horizontal: false, vertical: true)
             }
 
-            if !results.isEmpty {
+            if !model.results.isEmpty {
                 Text("Playing a song replaces the queue with it and the songs after it.")
                     .font(.caption)
                     .foregroundStyle(secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)
-                ForEach(Array(results.enumerated()), id: \.element.id) { index, track in
+                ForEach(Array(model.results.enumerated()), id: \.element.id) { index, track in
                     Button {
                         Task {
-                            do { try await search.play(results, index) } catch {
-                                phase = .failed(Self.playFailureMessage(error))
+                            do { try await search.play(model.results, index) } catch {
+                                model.phase = .failed(Self.playFailureMessage(error))
                             }
                         }
                     } label: {
@@ -620,29 +682,24 @@ struct StartListeningView: View {
                         }
                         .frame(minHeight: 44)
                         .contentShape(Rectangle())
+                        .accessibilityIdentifier("search.result.\(track.id)")
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Play \(track.title) by \(track.artistName)")
                 }
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("search.results")
     }
 
-    /// TEMPORARY diagnostic for device builds (remove once the search failure's cause is
-    /// known): shows the error's type, code and localizedDescription instead of a generic line.
-    /// Never debugDescription, the underlying-error chain, a request URL or the query, which
-    /// can carry storefront or token details.
-    static func searchFailureMessage(_ error: Error) -> String {
-        let typeName = String(describing: type(of: error))
-        let code = (error as NSError).code
-        let text = error.localizedDescription
-        searchLog.error("Apple Music search failed: \(typeName, privacy: .public) code \(code, privacy: .public): \(text, privacy: .public)")
-        return "Apple Music search failed: \(typeName) code \(code). \(text)"
+    private var queryBinding: Binding<String> {
+        Binding(get: { model.query }, set: { model.updateQuery($0) })
     }
 
     /// TEMPORARY diagnostic for device builds (remove once the playback failure's cause is
     /// known): type, NSError code and localizedDescription only. Never debugDescription,
-    /// the underlying-error chain, request URLs, titles or search terms.
+    /// the underlying-error chain, request URLs, titles or search terms. From Atlas #109.
     static func playFailureMessage(_ error: Error) -> String {
         let typeName = String(describing: type(of: error))
         let code = (error as NSError).code
@@ -651,22 +708,94 @@ struct StartListeningView: View {
         return "TEMPORARY: couldn't start playback: \(typeName) code \(code). \(text)"
     }
 
-    private static let searchLog = Logger(subsystem: "com.aerodj.app", category: "search")
     private static let playLog = Logger(subsystem: "com.aerodj.app", category: "playback")
+}
 
-    private func runSearch() {
-        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !term.isEmpty else { return }
-        phase = .searching
-        Task {
-            do {
-                results = try await search.search(term)
-                phase = results.isEmpty ? .empty : .idle
-            } catch {
-                results = []
-                phase = .failed(Self.searchFailureMessage(error))
+// MARK: - Playback progress (display-only)
+
+/// Read-only elapsed/duration for the scrubber. Closures so live can poll without publishing.
+/// Seeking is not wired: `PlaybackActions` has no seek path yet.
+/// `@MainActor` because live closures read `MusicKitService` (also main-actor).
+@MainActor
+struct PlaybackTimeSource {
+    let elapsed: () -> TimeInterval
+    let duration: () -> TimeInterval?
+    /// Advance the tick only while this is true. Compare to `.playing` only; a future
+    /// `.preparing` transport must not move the bar.
+    let isPlaying: () -> Bool
+
+#if DEBUG
+    /// Capture/UI-test fixture: fixed 1:12 of 3:45. Debug/capture only — not in Release.
+    static let fixture = PlaybackTimeSource(
+        elapsed: { 72 },
+        duration: { 225 },
+        isPlaying: { true }
+    )
+#endif
+
+    /// Live playhead from MusicKitService (read-only). TimelineView polls; no seek.
+    static var live: PlaybackTimeSource {
+        PlaybackTimeSource(
+            elapsed: { MusicKitService.shared.playbackTime },
+            duration: { MusicKitService.shared.currentDuration },
+            isPlaying: { MusicKitService.shared.snapshot.transport == .playing }
+        )
+    }
+}
+
+/// Elapsed, remaining, and a display-only bar. Hidden when duration is nil.
+struct PlaybackProgressBar: View {
+    let time: PlaybackTimeSource
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: time.isPlaying() && !reduceMotion ? 1 : 3600)) { context in
+            let _ = context.date
+            let elapsed = max(0, time.elapsed())
+            let duration = time.duration()
+            if let duration, duration > 0 {
+                let remaining = max(0, duration - elapsed)
+                let fraction = min(1, elapsed / duration)
+                VStack(spacing: 4) {
+                    progress(fraction: fraction)
+                    HStack {
+                        Text(Self.format(elapsed))
+                            .font(.caption.monospacedDigit())
+                        Spacer(minLength: 0)
+                        Text(Self.format(remaining))
+                            .font(.caption.monospacedDigit())
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Playback position")
+                .accessibilityValue("\(Self.format(elapsed)) of \(Self.format(duration))")
+                .accessibilityIdentifier("playback.progress")
             }
         }
+    }
+
+    @ViewBuilder
+    private func progress(fraction: Double) -> some View {
+        // Display-only: no seek binding. A Slider would imply dragging.
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.25))
+                Capsule()
+                    .fill(Color.primary.opacity(0.85))
+                    .frame(width: max(4, geo.size.width * fraction))
+                    .animation(reduceMotion ? nil : .linear(duration: 0.25), value: fraction)
+            }
+        }
+        .frame(height: 4)
+        .accessibilityHidden(true)
+    }
+
+    static func format(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded(.down))
+        let m = total / 60
+        let s = abs(total % 60)
+        return "\(m):\(String(format: "%02d", s))"
     }
 }
 

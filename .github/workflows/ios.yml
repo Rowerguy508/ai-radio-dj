@@ -268,7 +268,8 @@ jobs:
                       closed-state-denied-dark closed-state-playbackFailed-dark \
                       open-state-empty-dark open-state-loading-dark open-state-error-dark \
                       open-state-denied-dark open-state-playbackFailed-dark \
-                      closed-ax5-dark open-ax5-dark; do
+                      closed-ax5-dark open-ax5-dark \
+                      iphone-landscape iphone-landscape-dark ipad-landscape ipad-landscape-dark; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
@@ -280,4 +281,18 @@ jobs:
           path: |
             studio-screenshots/*.png
             studio-screenshots/*.mp4
+          if-no-files-found: warn
+      - name: Upload iPhone UI result
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone-xcresult
+          path: ${{ runner.temp }}/phone.xcresult
+          if-no-files-found: warn
+      - name: Upload iPad UI result
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pad-xcresult
+          path: ${{ runner.temp }}/pad.xcresult
           if-no-files-found: warn

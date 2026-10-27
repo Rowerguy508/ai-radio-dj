@@ -14,8 +14,13 @@ final class MusicKitService: ObservableObject {
     /// One app-scoped instance; avoid multiple players fighting over state.
     static let shared = MusicKitService()
 
+    /// The type is not constructed anywhere else. Layouts observe `shared`.
+    private init() {}
+
     enum AuthState: Equatable {
         case unknown
+        /// `MusicAuthorization.currentStatus` / request was `.notDetermined`. Shows Allow, not Connecting.
+        case notDetermined
         case authorized
         case denied
         case notSubscribed
@@ -80,9 +85,26 @@ final class MusicKitService: ObservableObject {
     var currentDuration: TimeInterval? { currentTrack?.duration }
 
     /// Request MusicKit authorization. Explicit degraded state on denial.
+    /// Call only after a tap that names Apple Music (Allow) or an explicit station open — never at launch.
     func authorize() async {
+#if DEBUG
+        PlaybackCallLog.shared.recordAuthorize()
+#endif
         // Category and observers only. setActive(true) runs in playIfStillAllowed, immediately before play().
         let status = await MusicAuthorization.request()
+        await apply(status)
+    }
+
+    /// Non-prompting status refresh for launch/restore. Never calls `request()`.
+    /// Routes through the same `apply` path as `authorize()` so an already-granted
+    /// user still gets `configureAudioSession` / `startObserving`.
+    func refreshAuthorizationStatus() async {
+        await apply(resolvedCurrentStatus())
+    }
+
+    /// Shared authorized / denied / notDetermined handling for `authorize()` and
+    /// `refreshAuthorizationStatus()`. Does not call `request()`.
+    private func apply(_ status: MusicAuthorization.Status) async {
         switch status {
         case .authorized:
             authState = .authorized
@@ -92,14 +114,43 @@ final class MusicKitService: ObservableObject {
         case .denied, .restricted:
             authState = .denied
         case .notDetermined:
-            authState = .unknown
+            authState = .notDetermined
         @unknown default:
             authState = .unknown
         }
     }
 
+#if DEBUG
+    /// `-AeroDJMusicAuthStatus notDetermined|authorized|denied|restricted`.
+    /// Capture with the key unset defaults to `.notDetermined` so restore shows Allow.
+    private static let musicAuthStatusKey = "AeroDJMusicAuthStatus"
+
+    private func resolvedCurrentStatus() -> MusicAuthorization.Status {
+        if let raw = UserDefaults.standard.string(forKey: Self.musicAuthStatusKey), !raw.isEmpty {
+            switch raw {
+            case "authorized": return .authorized
+            case "denied": return .denied
+            case "restricted": return .restricted
+            case "notDetermined": return .notDetermined
+            default: break
+            }
+        }
+        if UserDefaults.standard.bool(forKey: "AeroDJStudioCapture") {
+            return .notDetermined
+        }
+        return MusicAuthorization.currentStatus
+    }
+#else
+    private func resolvedCurrentStatus() -> MusicAuthorization.Status {
+        MusicAuthorization.currentStatus
+    }
+#endif
+
     /// Search the Apple Music catalog.
     func search(_ query: String) async throws -> [Track] {
+        #if DEBUG
+        PlaybackCallLog.shared.recordSearch()
+        #endif
         var request = MusicCatalogSearchRequest(term: query, types: [Song.self])
         request.limit = 20
         let response = try await request.response()
@@ -108,6 +159,9 @@ final class MusicKitService: ObservableObject {
 
     /// Start playing a queue of tracks.
     func play(_ tracks: [Track], station: StationRef? = nil) async throws {
+        #if DEBUG
+        PlaybackCallLog.shared.recordPlay()
+        #endif
         sessionPolicy.userPlay()
         logPlayGate("play.begin", index: 0)
         guard authState == .authorized else {

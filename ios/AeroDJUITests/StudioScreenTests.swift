@@ -15,7 +15,9 @@ final class StudioScreenTests: XCTestCase {
 
     @MainActor
     private func launch(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
-                        dark: Bool = false, contentSize: String? = nil) -> XCUIApplication {
+                        dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
+                        restoreStationID: String? = nil,
+                        musicAuthStatus: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
@@ -26,14 +28,31 @@ final class StudioScreenTests: XCTestCase {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"]
         }
         if dark { app.launchArguments += ["-AeroDJStudioCaptureDark", "YES"] }
+        if reduceMotion { app.launchArguments += ["-AeroDJReduceMotion", "YES"] }
+        if let restoreStationID {
+            app.launchArguments += ["-AeroDJRestoreStationID", restoreStationID]
+        }
+        // DEBUG capture override for MusicAuthorization.currentStatus (default notDetermined).
+        if let musicAuthStatus {
+            app.launchArguments += ["-AeroDJMusicAuthStatus", musicAuthStatus]
+        }
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         // The capture view loads the station before rendering. Never screenshot on a timer:
         // wait for loading to end, and fail by name if the capture could not set up.
-        let loading = app.descendants(matching: .any)["capture.loading"]
-        let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: loading)
-        XCTAssertEqual(XCTWaiter().wait(for: [done], timeout: 20), .completed,
-                       "Studio capture still loading after 20 s (scenario \(scenario ?? "playing"))")
+        let scenarioName = scenario ?? "playing"
+        if scenarioName == "shell" {
+            // Shell replaces capture.loading with capture.shell once auth is settled.
+            // Waiting on the positive ready marker avoids a stale ProgressView match on iPad.
+            let shell = app.descendants(matching: .any)["capture.shell"]
+            XCTAssertTrue(shell.waitForExistence(timeout: 20),
+                          "Studio capture shell did not appear after 20 s (scenario shell)\n\(visibleIdentifiers(app))\n\(app.debugDescription)")
+        } else {
+            let loading = app.descendants(matching: .any)["capture.loading"]
+            let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: loading)
+            XCTAssertEqual(XCTWaiter().wait(for: [done], timeout: 20), .completed,
+                           "Studio capture still loading after 20 s (scenario \(scenarioName))\n\(visibleIdentifiers(app))\n\(app.debugDescription)")
+        }
         let failed = app.descendants(matching: .any)["capture.failed"]
         if failed.exists { XCTFail(failed.label) }
         return app
@@ -69,7 +88,9 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
         let zoneA = app.otherElements["studio.zoneA"], zoneB = app.otherElements["studio.zoneB"]
         XCTAssertTrue(zoneA.exists && zoneB.exists)
-        XCTAssertLessThanOrEqual(zoneA.frame.maxX, zoneB.frame.minX, "Zones do not overlap")
+        XCTAssertLessThanOrEqual(
+            zoneA.frame.maxX, zoneB.frame.minX,
+            "Zones do not overlap (zoneA.maxX=\(zoneA.frame.maxX) zoneB.minX=\(zoneB.frame.minX))\n\(app.debugDescription)")
         XCTAssertGreaterThanOrEqual(zoneA.frame.width, 320)
         XCTAssertGreaterThanOrEqual(zoneB.frame.width, 340)
         XCTAssertTrue(app.buttons["transport.playPause"].isHittable, "Now Playing stays in Zone A")
@@ -154,6 +175,8 @@ final class StudioScreenTests: XCTestCase {
             // Any element type: without a track the container may not surface as "other".
             XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15), c.scenario)
             XCTAssertTrue(shows(app, c.expect), "\(c.scenario) shows \(c.expect)")
+            if c.scenario == "error" { assertReadingOrder(app, title: "Slow Burn", status: "DJ voice unavailable") }
+            if c.scenario == "playbackFailed" { assertReadingOrder(app, title: "Morning Light", status: "couldn't play") }
             // Transport appears only when there is a session it can control.
             XCTAssertEqual(app.buttons["transport.playPause"].exists, c.transport, c.scenario)
             if c.scenario == "denied" { XCTAssertTrue(app.buttons["Open Settings"].exists) }
@@ -300,6 +323,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(shows(app, "Morning Light"))
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX5")
+        assertReadingOrder(app, title: "Morning Light")
         save(app, isOpenLayout ? "open-ax5" : "closed-ax5")
     }
 
@@ -315,7 +339,237 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(shows(app, "Morning Light"))
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX5")
+        assertReadingOrder(app, title: "Morning Light")
         save(app, isOpenLayout ? "open-ax5-dark" : "closed-ax5-dark")
+    }
+
+    // MARK: Duo shell, fold, and rotation
+
+    /// Tapping a station selects it and shows one studio model. It does not search or play.
+    @MainActor
+    func testSelectingAStationNeverStartsPlayback() {
+        let app = launch(scenario: "shell")
+        XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
+        let sidebar = app.descendants(matching: .any)["split.sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertFalse(contains(sidebar, "Morning Light"), "The sidebar keeps no now-playing copy\n\(app.debugDescription)")
+        XCTAssertFalse(contains(sidebar, "On Air"), "The sidebar keeps no DJ state\n\(app.debugDescription)")
+        let calm = stationRow(sidebar, named: "Morning Calm")
+        XCTAssertTrue(calm.waitForExistence(timeout: 5), app.debugDescription)
+        calm.tap()
+        XCTAssertEqual(callLabel(app), "0/0", "Selecting a station must not search or play\n\(app.debugDescription)")
+        let appeared = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.model.")).firstMatch
+        XCTAssertTrue(appeared.waitForExistence(timeout: 5), "The detail holds the one shared studio model\n\(app.debugDescription)")
+        XCTAssertEqual(modelIdentifiers(app).count, 1, "The detail holds the one shared studio model\n\(app.debugDescription)")
+        if sidebar.exists {
+            XCTAssertFalse(contains(sidebar, "Morning Light"), app.debugDescription)
+        }
+        XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
+    }
+
+    /// Launch (and restore) must not request Apple Music. The binder refreshes
+    /// `currentStatus` only; `.notDetermined` shows Allow (never bare Connecting).
+    @MainActor
+    func testLaunchAndRestoreNeverRequestAppleMusicAuthorization() {
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let cold = launch(scenario: "shell")
+        XCTAssertTrue(cold.descendants(matching: .any)["split.sidebar"].waitForExistence(timeout: 15),
+                      cold.debugDescription)
+        XCTAssertEqual(authorizeCount(cold), "0",
+                       "Cold launch must not request Apple Music\n\(cold.debugDescription)")
+        XCTAssertEqual(callLabel(cold), "0/0", cold.debugDescription)
+
+        let app = launch(scenario: "shell", restoreStationID: morningCalm)
+        let appeared = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.model.")).firstMatch
+        XCTAssertTrue(appeared.waitForExistence(timeout: 5),
+                      "Restored detail appears without authorizing\n\(app.debugDescription)")
+        let allow = app.descendants(matching: .any)["playback.allowMusic"]
+        XCTAssertTrue(allow.waitForExistence(timeout: 5),
+                      "Restored notDetermined shows Allow Apple Music, not Connecting\n\(app.debugDescription)")
+        XCTAssertFalse(shows(app, "Connecting to Apple Music"),
+                       "Restore must not show the bare Connecting spinner\n\(app.debugDescription)")
+        XCTAssertEqual(authorizeCount(app), "0",
+                       "Restoring a stored station must not request Apple Music\n\(app.debugDescription)")
+        XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
+
+        // Already-granted restore: ready (track) state, still zero requests.
+        let granted = launch(scenario: "shell", restoreStationID: morningCalm,
+                             musicAuthStatus: "authorized")
+        let grantedModel = granted.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.model.")).firstMatch
+        XCTAssertTrue(grantedModel.waitForExistence(timeout: 5),
+                      "Authorized restore reaches the ready detail\n\(granted.debugDescription)")
+        XCTAssertFalse(granted.descendants(matching: .any)["playback.allowMusic"].exists,
+                       "Authorized restore does not show Allow\n\(granted.debugDescription)")
+        XCTAssertFalse(shows(granted, "Connecting to Apple Music"),
+                       "Authorized restore is not Connecting\n\(granted.debugDescription)")
+        XCTAssertTrue(shows(granted, "Morning Light") || granted.buttons["transport.playPause"].exists,
+                      "Authorized restore reaches a ready playing state\n\(granted.debugDescription)")
+        XCTAssertEqual(authorizeCount(granted), "0",
+                       "Authorized restore must not call request()\n\(granted.debugDescription)")
+        XCTAssertEqual(callLabel(granted), "0/0", granted.debugDescription)
+    }
+
+    /// A stored station id selects Morning Calm and shows its detail. It does not search or play.
+    /// The id arrives as `-AeroDJRestoreStationID`, the same value `@SceneStorage` would hold.
+    @MainActor
+    func testSelectionRestoreNeverStartsPlayback() {
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let app = launch(scenario: "shell", restoreStationID: morningCalm)
+        XCTAssertEqual(callLabel(app), "0/0", "Restoring a selection must not search or play\n\(app.debugDescription)")
+        let appeared = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.model.")).firstMatch
+        XCTAssertTrue(appeared.waitForExistence(timeout: 5), "The restored detail holds the one shared studio model\n\(app.debugDescription)")
+        XCTAssertEqual(modelIdentifiers(app).count, 1, "The restored detail holds the one shared studio model\n\(app.debugDescription)")
+        XCTAssertFalse(app.descendants(matching: .any)["split.placeholder"].exists,
+                       "A restored station replaces the placeholder\n\(app.debugDescription)")
+        let title = app.descendants(matching: .any)["station.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5), "The restored detail names its station\n\(app.debugDescription)")
+        XCTAssertTrue(title.label.contains("Morning Calm"), "Morning Calm is the restored station\n\(app.debugDescription)")
+        if isOpenLayout {
+            let sidebar = app.descendants(matching: .any)["split.sidebar"]
+            XCTAssertTrue(sidebar.waitForExistence(timeout: 5), app.debugDescription)
+            let row = stationRow(sidebar, named: "Morning Calm")
+            XCTAssertTrue(row.waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertTrue(row.isSelected, "Morning Calm is selected\n\(app.debugDescription)")
+            XCTAssertFalse(contains(sidebar, "Morning Light"), "The sidebar keeps no now-playing copy\n\(app.debugDescription)")
+        } else {
+            XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 5),
+                          "Compact shows the restored detail\n\(app.debugDescription)")
+        }
+        XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
+    }
+
+    /// Widening from compact to regular keeps the search text and the studio identity, and counts no calls.
+    @MainActor
+    func testCompactToRegularDoesNotSearchOrPlay() {
+        let app = launch(scenario: "resize")
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15))
+        XCTAssertEqual(callLabel(app), "0/0")
+        let before = modelIdentifiers(app)
+        XCTAssertEqual(before.count, 1)
+        let field = app.textFields["search.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        replaceText(field, with: "violet")
+        dismissKeyboard(app)
+        app.buttons["probe.widen"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["layout.studio"].waitForExistence(timeout: 10),
+                      "Regular width above the studio minimum opens the two panes")
+        let again = app.textFields["search.field"]
+        XCTAssertTrue(again.waitForExistence(timeout: 5))
+        XCTAssertEqual(again.value as? String, "violet", "Search text survives the fold")
+        XCTAssertTrue(app.segmentedControls["workspace.segment"].buttons["Queue"].isSelected)
+        XCTAssertEqual(modelIdentifiers(app), before, "Folding reuses the same studio model")
+        assertCallsStayZero(app, "A compact-to-regular change must not search or play")
+        save(app, isOpenLayout ? "ipad-resize-regular" : "iphone-resize-regular")
+    }
+
+    /// A pending tune change is still pending after the same compact-to-regular change.
+    @MainActor
+    func testPendingTuneSurvivesFold() {
+        let app = launch(scenario: "resizeTune")
+        XCTAssertTrue(app.scrollViews["tune.form"].waitForExistence(timeout: 15))
+        let before = indicatorLabels(app)
+        XCTAssertTrue(before.contains { $0.localizedCaseInsensitiveContains("pending") || $0.localizedCaseInsensitiveContains("next") },
+                      "The change starts pending: \(before)")
+        if app.buttons["Done"].exists { app.buttons["Done"].tap() }
+        app.buttons["probe.widen"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["layout.studio"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.scrollViews["tune.form"].waitForExistence(timeout: 10))
+        XCTAssertEqual(indicatorLabels(app), before, "Folding must not re-apply or drop the pending change")
+        XCTAssertEqual(callLabel(app), "0/0")
+    }
+
+    @MainActor
+    func testRotationKeepsSegmentSearchAndPlayback() {
+        let app = launch()
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
+        if !isOpenLayout {
+            app.buttons["queue.affordance"].tap()
+        }
+        let field = app.textFields["search.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        replaceText(field, with: "violet")
+        let landed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "violet"), object: field)
+        XCTAssertEqual(XCTWaiter().wait(for: [landed], timeout: 5), .completed,
+                       "Search text must land in the field before rotation")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        // A compact sheet can close when the window rotates. The text lives above that sheet.
+        if !isOpenLayout, !app.textFields["search.field"].waitForExistence(timeout: 3) {
+            app.buttons["queue.affordance"].tap()
+        }
+        let rotated = app.textFields["search.field"]
+        XCTAssertTrue(rotated.waitForExistence(timeout: 10))
+        XCTAssertEqual(rotated.value as? String, "violet")
+        XCTAssertTrue(app.buttons["transport.playPause"].exists, "Playback stays up across rotation")
+        XCTAssertTrue(shows(app, "Morning Light"))
+        let segments = app.segmentedControls["workspace.segment"]
+        if segments.exists {
+            XCTAssertTrue(segments.buttons["Queue"].isSelected)
+        }
+        save(app, isOpenLayout ? "ipad-landscape" : "iphone-landscape")
+    }
+
+    @MainActor
+    func testLandscapeDark() {
+        let app = launch(dark: true)
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(shows(app, "Morning Light"))
+        XCTAssertTrue(app.buttons["transport.playPause"].waitForExistence(timeout: 10))
+        save(app, isOpenLayout ? "ipad-landscape-dark" : "iphone-landscape-dark")
+    }
+
+    @MainActor
+    func testReduceMotionIsRespected() {
+        let app = launch(reduceMotion: true)
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["motion.reduced"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        assertReadingOrder(app, title: "Morning Light")
+    }
+
+    /// Compact empty state: submit search shows fixture results and does not play.
+    @MainActor
+    func testCompactSearchShowsFixtureResults() throws {
+        try XCTSkipIf(isOpenLayout, "Compact search is checked on an iPhone-width simulator")
+        let app = launch(scenario: "empty")
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15))
+        let field = app.textFields["search.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10), app.debugDescription)
+        replaceText(field, with: "jazz")
+        let submit = app.buttons["search.submit"]
+        XCTAssertTrue(submit.waitForExistence(timeout: 5), app.debugDescription)
+        submit.tap()
+        let result = app.descendants(matching: .any)["search.result.1"]
+        XCTAssertTrue(result.waitForExistence(timeout: 10),
+                      "Fixture search results appear after submit\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Morning Light"), app.debugDescription)
+        let calls = callLabel(app)
+        XCTAssertTrue(calls.hasPrefix("0/"), "Search must not play: \(calls)\n\(app.debugDescription)")
+        XCTAssertNotEqual(calls, "0/0", "Submit records a search: \(calls)")
+    }
+
+    /// Shared Items sheet always has Done and dismisses without force-quit.
+    @MainActor
+    func testShareSheetDismissesViaDone() throws {
+        let app = launch(scenario: "shell")
+        let shared = app.buttons["Shared Items"]
+        XCTAssertTrue(shared.waitForExistence(timeout: 15), app.debugDescription)
+        shared.tap()
+        let done = app.buttons["share.done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 10),
+                      "Share sheet exposes Done\n\(app.debugDescription)")
+        done.tap()
+        XCTAssertFalse(done.waitForExistence(timeout: 3),
+                       "Done dismisses the share sheet\n\(app.debugDescription)")
     }
 
     // MARK: Recorded walkthrough (CI records the simulator screen while this runs)
@@ -345,6 +599,129 @@ final class StudioScreenTests: XCTestCase {
             if name == "Tune" { app.scrollViews["tune.form"].swipeUp(); pause(); app.scrollViews["tune.form"].swipeDown(); pause() }
         }
         if !isOpenLayout, app.buttons["Done"].exists { app.buttons["Done"].tap(); pause() }
+    }
+
+    /// Title, then status, then transport. The smallest matching element is the spoken node,
+    /// not a container that happens to include the same words.
+    @MainActor
+    private func assertReadingOrder(_ app: XCUIApplication, title: String, status: String? = nil) {
+        let titleEl = tightest(app, title)
+        let play = app.buttons["transport.playPause"]
+        XCTAssertTrue(titleEl.exists, title)
+        XCTAssertTrue(play.exists)
+        XCTAssertLessThan(titleEl.frame.minY, play.frame.minY, "\(title) is read before the transport")
+        if let status {
+            let statusEl = tightest(app, status)
+            XCTAssertTrue(statusEl.exists, status)
+            XCTAssertLessThanOrEqual(titleEl.frame.minY, statusEl.frame.minY, "\(title) is read before \(status)")
+            XCTAssertLessThanOrEqual(statusEl.frame.minY, play.frame.minY, "\(status) is read before the transport")
+        }
+    }
+
+    @MainActor
+    private func tightest(_ app: XCUIApplication, _ text: String) -> XCUIElement {
+        let matches = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", text))
+            .allElementsBoundByIndex
+        return matches.min(by: { $0.frame.height < $1.frame.height }) ?? app.descendants(matching: .any).firstMatch
+    }
+
+    /// Compact dump of on-screen accessibility identifiers for launch timeouts.
+    @MainActor
+    private func visibleIdentifiers(_ app: XCUIApplication) -> String {
+        let nodes = app.descendants(matching: .any).allElementsBoundByIndex
+        let ids = nodes.compactMap { el -> String? in
+            let id = el.identifier
+            return id.isEmpty ? nil : id
+        }
+        let unique = Array(Set(ids)).sorted()
+        return "visible identifiers (\(unique.count)): \(unique.joined(separator: ", "))"
+    }
+
+    @MainActor
+    private func authorizeCount(_ app: XCUIApplication) -> String {
+        let badge = app.descendants(matching: .any)["playback.authorize"]
+        XCTAssertTrue(badge.waitForExistence(timeout: 5), app.debugDescription)
+        return badge.label
+    }
+
+    private func callLabel(_ app: XCUIApplication) -> String {
+        let badge = app.descendants(matching: .any)["playback.calls"]
+        XCTAssertTrue(badge.waitForExistence(timeout: 10), "playback call counter")
+        return badge.label
+    }
+
+    /// A layout change can schedule search or play after the next frame. Wait long enough
+    /// for that call to show up, and fail if the counter moves off `0/0`.
+    @MainActor
+    private func assertCallsStayZero(_ app: XCUIApplication, _ message: String) {
+        let badge = app.descendants(matching: .any)["playback.calls"]
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", "0/0"), object: badge)
+        let result = XCTWaiter().wait(for: [changed], timeout: 1)
+        XCTAssertEqual(result, .timedOut, "\(message): \(badge.label)")
+    }
+
+    /// The selectable list row, not the title text inside it.
+    @MainActor
+    private func stationRow(_ sidebar: XCUIElement, named name: String) -> XCUIElement {
+        let label = NSPredicate(format: "label CONTAINS %@", name)
+        let button = sidebar.buttons.matching(label).firstMatch
+        if button.exists { return button }
+        let cell = sidebar.cells.matching(label).firstMatch
+        if cell.exists { return cell }
+        return sidebar.descendants(matching: .any).matching(label).firstMatch
+    }
+
+    @MainActor
+    private func modelIdentifiers(_ app: XCUIApplication) -> [String] {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.model."))
+            .allElementsBoundByIndex
+            .map(\.identifier)
+            .sorted()
+    }
+
+    @MainActor
+    private func indicatorLabels(_ app: XCUIApplication) -> [String] {
+        app.descendants(matching: .any)
+            .matching(identifier: "tune.indicator")
+            .allElementsBoundByIndex
+            .map(\.label)
+            .sorted()
+    }
+
+    @MainActor
+    private func replaceText(_ field: XCUIElement, with text: String) {
+        field.tap()
+        let current = typedText(field)
+        if !current.isEmpty, current != text {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+        }
+        if typedText(field) != text {
+            field.typeText(text)
+        }
+    }
+
+    /// The empty field reports its placeholder. That string is not stored text.
+    private func typedText(_ field: XCUIElement) -> String {
+        guard let value = field.value as? String, value != "Search Apple Music" else { return "" }
+        return value
+    }
+
+    /// Hides the keyboard without pressing Return, which would submit a search.
+    @MainActor
+    private func dismissKeyboard(_ app: XCUIApplication) {
+        let hide = app.keyboards.buttons["Hide keyboard"]
+        if hide.waitForExistence(timeout: 2) {
+            hide.tap()
+        }
+    }
+
+    @MainActor
+    private func contains(_ root: XCUIElement, _ text: String) -> Bool {
+        root.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", text))
+            .firstMatch.exists
     }
 
     /// Any element whose label contains `text` (SwiftUI combines some texts into one element).
