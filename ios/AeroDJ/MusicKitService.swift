@@ -62,6 +62,9 @@ final class MusicKitService: ObservableObject {
     private var sessionMonitor: AudioSessionMonitor?
     /// TEMPORARY: waits for MusicKit `.playing` after a start; cancelled on confirm or pause.
     private var playbackConfirmTask: Task<Void, Never>?
+    /// App-scoped catalog hits for `MusicSearch.live`. Survives every `PlayerView` body
+    /// rebuild so a song-row tap after a re-render still resolves MusicKit `Track`s.
+    let searchResults = SearchResultCache()
 
     var audioState: AudioState { stateMachine.state }
     var mayAutoResume: Bool { sessionPolicy.mayAutoResume }
@@ -110,7 +113,12 @@ final class MusicKitService: ObservableObject {
             send(.errorRaised(PlaybackError(kind: .notAuthorized, message: lastError ?? "", isRecoverable: false)))
             throw MusicKitError.notAuthorized
         }
-        guard !tracks.isEmpty else { return }
+        guard !tracks.isEmpty else {
+            let message = "TEMPORARY: couldn't play this song (empty queue)."
+            lastError = message
+            send(.errorRaised(PlaybackError(kind: .playbackFailed, message: message, isRecoverable: true)))
+            throw MusicKitError.playbackFailed(message: message)
+        }
         // A new queue replaces whatever was on air. A DJ line that is speaking, or a break
         // handed out but not yet audible, belongs to the old queue and stops before the queue
         // is replaced, the same as `skip()`. Nil routes to `interlude.stop()`, which cancels
@@ -162,6 +170,12 @@ final class MusicKitService: ObservableObject {
 
     /// The user pressed play.
     func resume() async throws {
+        guard !queue.isEmpty else {
+            let message = "TEMPORARY: nothing queued to resume."
+            lastError = message
+            send(.errorRaised(PlaybackError(kind: .resumeFailed, message: message, isRecoverable: true)))
+            throw MusicKitError.playbackFailed(message: message)
+        }
         sessionPolicy.userPlay()
         armPlaybackConfirmTimeout()
         do {
@@ -726,6 +740,48 @@ private final class AudioSessionMonitor: NSObject {
         guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
         eventsStream.yield(.routeChange(deviceRemoved: reason == .oldDeviceUnavailable))
+    }
+}
+
+
+/// App-scoped bridge from UI `TrackInfo` rows back to MusicKit `Track`s. Owned by
+/// `MusicKitService` so `MusicSearch.live` may be rebuilt on every body without wiping hits.
+@MainActor
+final class SearchResultCache {
+    private var byID: [String: Track] = [:]
+    private var ordered: [Track] = []
+
+    func store(_ list: [Track]) {
+        ordered = list
+        byID = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Prefer the ordered slice captured at search time when the UI still shows that search;
+    /// otherwise look up by id. Never returns an empty list — throws a TEMPORARY play error.
+    func resolve(results: [TrackInfo], startIndex: Int) throws -> [Track] {
+        switch PlayTapResolver.resolveIDs(
+            allResultIDs: results.map(\.id),
+            startIndex: startIndex,
+            orderedIDs: ordered.map(\.id),
+            available: Set(byID.keys)
+        ) {
+        case .failure(.startIndexOutOfRange):
+            throw MusicKitError.playbackFailed(
+                message: "TEMPORARY: couldn't play this song (start index out of range).")
+        case .failure(.tracksUnavailable):
+            throw MusicKitError.playbackFailed(
+                message: "TEMPORARY: couldn't play this song (search results expired).")
+        case .success(let ids):
+            if ordered.map(\.id) == results.map(\.id), results.indices.contains(startIndex) {
+                return Array(ordered[startIndex...])
+            }
+            let tracks = ids.compactMap { byID[$0] }
+            guard !tracks.isEmpty else {
+                throw MusicKitError.playbackFailed(
+                    message: "TEMPORARY: couldn't play this song (search results expired).")
+            }
+            return tracks
+        }
     }
 }
 
