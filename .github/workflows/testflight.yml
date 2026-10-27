@@ -1,21 +1,23 @@
 name: TestFlight upload
 
-# Manual only: archives the app, signs it automatically through an App Store
-# Connect API key, and uploads the build to TestFlight. No push or
-# pull_request trigger, so nothing here runs on untrusted code.
+# Manual only: archives the app with a local Apple Distribution certificate and
+# App Store profiles, exports a signed .ipa, and uploads it to TestFlight with
+# the App Store Connect API key. No push or pull_request trigger.
 #
-# Required repository secrets:
-#   ASC_KEY_ID      App Store Connect API key ID
-#   ASC_ISSUER_ID   App Store Connect issuer ID
-#   ASC_KEY_P8      Contents of the AuthKey_<KEY_ID>.p8 file
+# Required secrets (GitHub Environment `testflight`):
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8   upload credentials (p8 raw contents)
+#   DIST_CERT_P12                            Apple Distribution .p12, base64
+#   DIST_CERT_PASSWORD                       .p12 password: base64 if it
+#                                            round-trips, otherwise plain text
+#   PROFILE_APP                              App Store profile for com.aerodj.app, base64
+#   PROFILE_SHARE                            App Store profile for com.aerodj.app.share, base64
 #
-# The Apple Developer Team ID is not a secret: it comes from the repository
-# variable APPLE_TEAM_ID when set, otherwise the default S85APB73YV.
+# The Apple Developer Team ID is not a secret: vars.APPLE_TEAM_ID, else S85APB73YV.
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch, tag or SHA to archive and upload
+        description: Branch or SHA to archive and upload
         required: false
         default: integration/device-duo
         type: string
@@ -23,8 +25,6 @@ on:
 permissions:
   contents: read
 
-# One upload at a time; a second dispatch waits instead of cancelling an
-# upload that is already talking to App Store Connect.
 concurrency:
   group: testflight-upload
   cancel-in-progress: false
@@ -36,17 +36,17 @@ jobs:
     # (Xcode 26.6 as /Applications/Xcode.app, seen in iOS run 40417697194).
     runs-on: macos-26
     timeout-minutes: 60
-    # ASC secrets live in this GitHub Environment. The owner limits its
-    # deployment branches to main and integration/device-duo.
+    # Signing and ASC secrets live in this GitHub Environment. The owner limits
+    # its deployment branches to main and integration/device-duo.
     environment: testflight
     env:
       XCODEGEN_VERSION: 2.46.0
       # sha256 of XcodeGen 2.46.0 xcodegen.zip (matches the release asset digest).
       XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
-      # Unique, monotonically increasing build number per upload.
       BUILD_NUMBER: ${{ github.run_number }}
-      # Not a secret. Override with the repository variable APPLE_TEAM_ID.
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || 'S85APB73YV' }}
+      BUNDLE_APP: com.aerodj.app
+      BUNDLE_SHARE: com.aerodj.app.share
     steps:
       - name: Set working paths
         run: |
@@ -54,11 +54,12 @@ jobs:
             echo "ARCHIVE_PATH=$RUNNER_TEMP/AeroDJ.xcarchive"
             echo "EXPORT_PATH=$RUNNER_TEMP/export"
             echo "LOG_DIR=$RUNNER_TEMP/testflight-logs"
+            echo "KEYCHAIN_PATH=$RUNNER_TEMP/aerodj-signing.keychain-db"
+            echo "PRIVATE_KEYS_DIR=$RUNNER_TEMP/private_keys"
+            echo "SIGNING_DIR=$RUNNER_TEMP/signing"
           } >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/testflight-logs" "$RUNNER_TEMP/signing"
 
-      # Check out the dispatching commit with full history, then validate the
-      # requested ref against this repository's branches before any secret is
-      # touched.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
@@ -107,11 +108,15 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          DIST_CERT_P12: ${{ secrets.DIST_CERT_P12 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+          PROFILE_APP: ${{ secrets.PROFILE_APP }}
+          PROFILE_SHARE: ${{ secrets.PROFILE_SHARE }}
         run: |
           missing=0
-          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8; do
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 DIST_CERT_P12 DIST_CERT_PASSWORD PROFILE_APP PROFILE_SHARE; do
             if [ -z "${!name}" ]; then
-              echo "::error::Repository secret $name is empty or not set."
+              echo "::error::Environment secret $name is empty or not set."
               missing=1
             fi
           done
@@ -120,10 +125,9 @@ jobs:
             missing=1
           fi
           if [ "$missing" -ne 0 ]; then
-            echo "::error::Fix the values above under Settings > Secrets and variables > Actions, then rerun."
+            echo "::error::Fix the values above under Settings > Environments > testflight, then rerun."
             exit 1
           fi
-
 
       - name: Install pinned XcodeGen
         run: |
@@ -133,30 +137,154 @@ jobs:
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
 
-      - name: Generate Xcode project
-        run: xcodegen generate
-        working-directory: ios
-
       - name: Select Xcode
         run: |
           sudo xcode-select -s /Applications/Xcode.app
           xcodebuild -version
 
-      - name: Write App Store Connect API key
+      - name: Install distribution certificate and profiles
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          DIST_CERT_P12: ${{ secrets.DIST_CERT_P12 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+          PROFILE_APP: ${{ secrets.PROFILE_APP }}
+          PROFILE_SHARE: ${{ secrets.PROFILE_SHARE }}
         run: |
-          KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
-          ( umask 077; printf '%s\n' "$ASC_KEY_P8" > "$KEY_PATH" )
-          chmod 600 "$KEY_PATH"
-          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
-          mkdir -p "$LOG_DIR"
+          set -euo pipefail
+          # DIST_CERT_PASSWORD: treat as base64 when it round-trips as valid
+          # base64 producing a non-empty payload; otherwise use the raw value.
+          # Documented choice so Orion can store either form.
+          if printf '%s' "$DIST_CERT_PASSWORD" | grep -Eq '^[A-Za-z0-9+/]+={0,2}$' \
+            && decoded=$(printf '%s' "$DIST_CERT_PASSWORD" | base64 --decode 2>/dev/null) \
+            && [ -n "$decoded" ] \
+            && [ "$(printf '%s' "$decoded" | base64 | tr -d '\n')" = "$(printf '%s' "$DIST_CERT_PASSWORD" | tr -d '\n')" ]; then
+            P12_PASSWORD="$decoded"
+          else
+            P12_PASSWORD="$DIST_CERT_PASSWORD"
+          fi
+          echo "::add-mask::$P12_PASSWORD"
+          echo "::add-mask::$DIST_CERT_PASSWORD"
 
-      - name: Archive (Release, automatic signing)
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          KC_PASS=$(openssl rand -base64 32)
+          echo "::add-mask::$KC_PASS"
+          echo "KEYCHAIN_PASSWORD=$KC_PASS" >> "$GITHUB_ENV"
+
+          # Capture the runner's user keychain search list before we change it.
+          ORIGINAL_KEYCHAINS=$(security list-keychains -d user | sed 's/"//g' | xargs echo)
+
+          security create-keychain -p "$KC_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KC_PASS" "$KEYCHAIN_PATH"
+          # Prepend our keychain; keep the originals so the system still works.
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $ORIGINAL_KEYCHAINS
+
+          ( umask 077; printf '%s' "$DIST_CERT_P12" | base64 --decode > "$SIGNING_DIR/dist.p12" )
+          # -T /usr/bin/codesign only (no -T security, no -A). Partition list
+          # lets codesign use the key non-interactively. Do not convert the
+          # legacy 3DES PKCS#12 with OpenSSL 3; security import accepts it.
+          security import "$SIGNING_DIR/dist.p12" -k "$KEYCHAIN_PATH" -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KEYCHAIN_PATH"
+          rm -f "$SIGNING_DIR/dist.p12"
+          unset P12_PASSWORD DIST_CERT_PASSWORD DIST_CERT_P12
+
+          install_profile() {
+            local b64="$1" expected_bundle="$2" out_uuid_var="$3" out_name_var="$4"
+            local mp="$SIGNING_DIR/${expected_bundle}.mobileprovision"
+            local plist="$SIGNING_DIR/${expected_bundle}.plist"
+            ( umask 077; printf '%s' "$b64" | base64 --decode > "$mp" )
+            security cms -D -i "$mp" > "$plist"
+            local uuid name team app_id
+            uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$plist")
+            name=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$plist")
+            team=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$plist")
+            app_id=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$plist")
+            if [ "$team" != "$APPLE_TEAM_ID" ]; then
+              echo "::error::Profile '$name' TeamIdentifier is '$team', expected '$APPLE_TEAM_ID'."
+              exit 1
+            fi
+            if [ "$app_id" != "${APPLE_TEAM_ID}.${expected_bundle}" ]; then
+              echo "::error::Profile '$name' application-identifier is '$app_id', expected '${APPLE_TEAM_ID}.${expected_bundle}'."
+              exit 1
+            fi
+            mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+            cp "$mp" "$HOME/Library/MobileDevice/Provisioning Profiles/${uuid}.mobileprovision"
+            rm -f "$mp" "$plist"
+            printf -v "$out_uuid_var" '%s' "$uuid"
+            printf -v "$out_name_var" '%s' "$name"
+            echo "Installed profile for $expected_bundle (UUID $uuid)."
+          }
+
+          install_profile "$PROFILE_APP" "$BUNDLE_APP" PROFILE_APP_UUID PROFILE_APP_NAME
+          install_profile "$PROFILE_SHARE" "$BUNDLE_SHARE" PROFILE_SHARE_UUID PROFILE_SHARE_NAME
+          {
+            echo "PROFILE_APP_UUID=$PROFILE_APP_UUID"
+            echo "PROFILE_SHARE_UUID=$PROFILE_SHARE_UUID"
+            echo "PROFILE_APP_NAME=$PROFILE_APP_NAME"
+            echo "PROFILE_SHARE_NAME=$PROFILE_SHARE_NAME"
+          } >> "$GITHUB_ENV"
+          unset PROFILE_APP PROFILE_SHARE
+
+      - name: Patch project.yml for per-target manual signing
+        # CI-workspace only: never committed. A single command-line
+        # PROVISIONING_PROFILE_SPECIFIER would apply to both targets, so each
+        # target gets its own profile UUID here before xcodegen generate.
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+          p = Path("ios/project.yml")
+          text = p.read_text()
+          team = os.environ["APPLE_TEAM_ID"]
+          app_uuid = os.environ["PROFILE_APP_UUID"]
+          share_uuid = os.environ["PROFILE_SHARE_UUID"]
+
+          def inject(target: str, uuid: str, src: str) -> str:
+              # Find "  <target>:" then its "    settings:" / "      base:" block and
+              # append the manual-signing keys. Fail loudly if the shape changes.
+              m = re.search(
+                  rf"(^  {re.escape(target)}:\n(?:.*\n)*?    settings:\n      base:\n)",
+                  src,
+                  re.M,
+              )
+              if not m:
+                  raise SystemExit(f"could not find {target}.settings.base in project.yml")
+              block = m.group(1)
+              if "CODE_SIGN_STYLE" in src[m.start(): m.end() + 400]:
+                  raise SystemExit(f"{target} already has CODE_SIGN_STYLE; refusing to double-patch")
+              addition = (
+                  f"        CODE_SIGN_STYLE: Manual\n"
+                  f"        CODE_SIGN_IDENTITY: Apple Distribution\n"
+                  f"        DEVELOPMENT_TEAM: {team}\n"
+                  f"        PROVISIONING_PROFILE_SPECIFIER: {uuid}\n"
+              )
+              return src[: m.end()] + addition + src[m.end() :]
+
+          text = inject("AeroDJ", app_uuid, text)
+          text = inject("AeroDJShare", share_uuid, text)
+          p.write_text(text)
+          print(f"Patched AeroDJ -> {app_uuid}")
+          print(f"Patched AeroDJShare -> {share_uuid}")
+          # Signing.xcconfig sets CODE_SIGN_STYLE=Automatic at project level.
+          # Flip it in this workspace so it cannot fight the per-target Manual.
+          xc = Path("ios/Config/Signing.xcconfig")
+          xc.write_text(xc.read_text().replace(
+              "CODE_SIGN_STYLE = Automatic",
+              "CODE_SIGN_STYLE = Manual",
+              1,
+          ))
+          if "CODE_SIGN_STYLE = Manual" not in xc.read_text():
+              raise SystemExit("failed to flip CODE_SIGN_STYLE in Signing.xcconfig")
+          print("Flipped ios/Config/Signing.xcconfig to Manual")
+          PY
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+
+      - name: Archive (Release, manual signing)
+        # No -allowProvisioningUpdates and no ASC auth-key flags: the App
+        # Manager key cannot cloud-sign, and the profiles are already installed.
         run: |
           set -o pipefail
           xcodebuild archive \
@@ -165,41 +293,72 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$ARCHIVE_PATH" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$ASC_KEY_PATH" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             2>&1 | tee "$LOG_DIR/archive.log"
 
-      - name: Export and upload to TestFlight
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      - name: Export signed IPA (manual, local)
         run: |
           set -o pipefail
+          # PlistBuddy treats '.' as a path separator, so bundle-ID keys are
+          # written with a short Python snippet instead.
           PLIST="$RUNNER_TEMP/ExportOptions.plist"
-          /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :destination string upload" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :signingStyle string automatic" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :manageAppVersionAndBuildNumber bool false" "$PLIST"
+          python3 - "$PLIST" "$APPLE_TEAM_ID" "$BUNDLE_APP" "$PROFILE_APP_UUID" "$BUNDLE_SHARE" "$PROFILE_SHARE_UUID" <<'PY'
+          import plistlib, sys
+          path, team, app, app_uuid, share, share_uuid = sys.argv[1:]
+          data = {
+              "method": "app-store-connect",
+              "destination": "export",
+              "teamID": team,
+              "signingStyle": "manual",
+              "signingCertificate": "Apple Distribution",
+              "manageAppVersionAndBuildNumber": False,
+              "provisioningProfiles": {app: app_uuid, share: share_uuid},
+          }
+          with open(path, "wb") as f:
+              plistlib.dump(data, f)
+          PY
           xcodebuild -exportArchive \
             -archivePath "$ARCHIVE_PATH" \
             -exportOptionsPlist "$PLIST" \
             -exportPath "$EXPORT_PATH" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$ASC_KEY_PATH" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             2>&1 | tee "$LOG_DIR/export.log"
-          echo "Uploaded com.aerodj.app build $BUILD_NUMBER ($RESOLVED_SHA) to App Store Connect; it appears in TestFlight after processing." >> "$GITHUB_STEP_SUMMARY"
+          IPA=$(find "$EXPORT_PATH" -maxdepth 1 -name '*.ipa' | head -n 1)
+          test -n "$IPA" && test -s "$IPA" || { echo "::error::No .ipa produced by export."; exit 1; }
+          echo "IPA_PATH=$IPA" >> "$GITHUB_ENV"
+          echo "Exported $(basename "$IPA") ($(wc -c < "$IPA") bytes)."
 
-      # Only the xcodebuild logs, and only on failure. Never the .p8, the
-      # archive or a signed .ipa.
-      - name: Upload xcodebuild logs on failure
+      - name: Upload IPA to App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          # Write the p8 only for this step. altool --upload-app is deprecated
+          # on current Xcode; --upload-package needs --apple-id and version
+          # metadata. iTMSTransporter -m upload -assetFile is the supported
+          # replacement and finds AuthKey_<id>.p8 via API_PRIVATE_KEYS_DIR.
+          mkdir -p "$PRIVATE_KEYS_DIR"
+          ( umask 077; printf '%s\n' "$ASC_KEY_P8" > "$PRIVATE_KEYS_DIR/AuthKey_${ASC_KEY_ID}.p8" )
+          chmod 600 "$PRIVATE_KEYS_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          export API_PRIVATE_KEYS_DIR="$PRIVATE_KEYS_DIR"
+          xcrun iTMSTransporter -m upload \
+            -assetFile "$IPA_PATH" \
+            -apiKey "$ASC_KEY_ID" \
+            -apiIssuer "$ASC_ISSUER_ID" \
+            -v informational \
+            2>&1 | tee "$LOG_DIR/upload.log"
+          rm -f "$PRIVATE_KEYS_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          {
+            echo "### Upload"
+            echo "- Build number: \`$BUILD_NUMBER\`"
+            echo "- Resolved SHA: \`$RESOLVED_SHA\`"
+            echo "- Uploaded via iTMSTransporter; the build appears in TestFlight after processing."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Only the xcodebuild / transporter logs, and only on failure. Never the
+      # .p8, the .p12, the profiles, the archive or a signed .ipa.
+      - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -208,9 +367,27 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Remove API key and signing outputs
+      - name: Remove signing material and build outputs
         if: always()
         run: |
+          set +e
+          # Profiles installed by UUID.
+          if [ -n "${PROFILE_APP_UUID:-}" ]; then
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_APP_UUID}.mobileprovision"
+          fi
+          if [ -n "${PROFILE_SHARE_UUID:-}" ]; then
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_SHARE_UUID}.mobileprovision"
+          fi
+          # Temp keychain and search-list restore.
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null
+          fi
+          if [ -n "${ORIGINAL_KEYCHAINS:-}" ]; then
+            # shellcheck disable=SC2086
+            security list-keychains -d user -s $ORIGINAL_KEYCHAINS
+          fi
+          rm -rf "${PRIVATE_KEYS_DIR:-}" "${SIGNING_DIR:-}"
           rm -f "$RUNNER_TEMP"/AuthKey_*.p8 "$RUNNER_TEMP/ExportOptions.plist"
           if [ -n "${ARCHIVE_PATH:-}" ]; then rm -rf "$ARCHIVE_PATH"; fi
           if [ -n "${EXPORT_PATH:-}" ]; then rm -rf "$EXPORT_PATH"; fi
+          if [ -n "${IPA_PATH:-}" ]; then rm -f "$IPA_PATH"; fi
