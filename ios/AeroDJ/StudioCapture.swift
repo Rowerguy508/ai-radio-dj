@@ -187,15 +187,14 @@ struct StudioCaptureView: View {
                 studio.dj.send(.playbackFailed(afterTrack: 0))
             case .breakReady:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
-            case .config:
-                // Fry #110: pending tuner state while a song is held.
+            case .config, .resizeTune:
+                // Fry #110: Save while holding schedules pending until a safe boundary.
+                // Idle Save would apply immediately ("Saved…"), which breaks
+                // testStationConfigChangeIsPendingNotActive / testPendingTuneSurvivesFold.
                 await studio.station.setPlaybackActivity(.holdingSong)
                 await studio.station.setEnergy(0.85)
                 await studio.station.setGenres(["pop", "indie", "synthwave"])
                 await studio.station.saveChanges()
-            case .resizeTune:
-                await studio.station.setEnergy(0.85)
-                await studio.station.setGenres(["pop", "indie", "synthwave"])
             default:
                 break
             }
