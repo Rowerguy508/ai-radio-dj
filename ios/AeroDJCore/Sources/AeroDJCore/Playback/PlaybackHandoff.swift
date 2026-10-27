@@ -127,3 +127,88 @@ public enum BreakHandoffPolicy {
         return .continueMusic
     }
 }
+
+/// Why a prepared break was handed to the player and never started audio.
+public enum HandedOutBreakSkip: Equatable, Sendable {
+    /// PlayerView refused an empty line or empty clips.
+    case emptyLine
+    /// The adapter refused to start: already speaking, an empty line, or no clips.
+    case notPlayable
+    /// The clips did not decode.
+    case decodeFailed
+}
+
+/// `.playbackFailed` for that break, plus the transition back to music.
+/// The song has ended and voice never started, so the phase is `.transition`.
+public struct HandedOutBreakEffect: Equatable, Sendable {
+    public var event: DJPresentationEvent
+    public var resume: NarrationResumeDecision
+
+    public init(event: DJPresentationEvent, resume: NarrationResumeDecision) {
+        self.event = event
+        self.resume = resume
+    }
+}
+
+public enum HandedOutBreakReport {
+    /// Every path reports the same failure. DJ state leaves `.ready`. Music resumes
+    /// from the boundary when auto-resume is allowed.
+    public static func skipped(
+        _ reason: HandedOutBreakSkip,
+        afterTrack: Int,
+        mayAutoResume: Bool
+    ) -> HandedOutBreakEffect {
+        switch reason {
+        case .emptyLine, .notPlayable, .decodeFailed:
+            return HandedOutBreakEffect(
+                event: .playbackFailed(afterTrack: afterTrack),
+                resume: NarrationResumePolicy.decide(.failed, mayAutoResume: mayAutoResume, phase: .transition)
+            )
+        }
+    }
+}
+
+/// Extra guard for `play`, used only when no stop is held.
+///
+/// The refusal itself is the stop `PendingPlayStop` held from the boundary hand-out.
+/// This flag catches a missed stop while route removal or an interruption is still
+/// holding playback. `mayAutoResume` and `phase` are the player's existing flags.
+/// A refusal never asks music to resume, including when `mayAutoResume` is still true.
+public struct BreakPlayAdmission: Equatable, Sendable {
+    public var startAudio: Bool
+    public var unplayed: HandedOutBreakEffect?
+
+    public init(startAudio: Bool, unplayed: HandedOutBreakEffect?) {
+        self.startAudio = startAudio
+        self.unplayed = unplayed
+    }
+}
+
+public enum BreakPlayAdmissionPolicy {
+    public static func decide(
+        pausedBySystem: Bool,
+        mayAutoResume: Bool,
+        phase: AudioState,
+        afterTrack: Int
+    ) -> BreakPlayAdmission {
+        guard pausedBySystem else {
+            return BreakPlayAdmission(startAudio: true, unplayed: nil)
+        }
+        let skipped = HandedOutBreakReport.skipped(
+            .notPlayable, afterTrack: afterTrack, mayAutoResume: false)
+        let live = NarrationResumePolicy.decide(
+            .failed,
+            mayAutoResume: mayAutoResume && !pausedBySystem,
+            phase: phase
+        )
+        let effect = HandedOutBreakEffect(
+            event: skipped.event,
+            resume: NarrationResumeDecision(
+                resumeMusic: false,
+                audioEvent: live.audioEvent,
+                playbackEvent: live.playbackEvent
+            )
+        )
+        return BreakPlayAdmission(startAudio: false, unplayed: effect)
+    }
+}

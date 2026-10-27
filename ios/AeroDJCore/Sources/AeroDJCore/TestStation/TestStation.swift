@@ -135,7 +135,8 @@ public actor TestStationFixtures {
         items.filter { StationIntegration(source: $0.source) == integration }.compactMap { item in
             guard let state = states[item.id] else { return nil }
             let shown = item.expiresAt.map { $0 <= now } == true ? ConnectionItemState.expired : state
-            return ConnectionItem(id: item.id, integration: integration, title: item.title, state: shown, expiresAt: item.expiresAt)
+            return ConnectionItem(id: item.id, integration: integration, title: item.title, state: shown,
+                                  expiresAt: item.expiresAt, sensitivity: item.sensitivity)
         }
     }
 

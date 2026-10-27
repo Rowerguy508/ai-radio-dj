@@ -51,9 +51,16 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     /// Marks `afterTrack` as handed out, before `play` calls `begin`.
     /// A stop that arrives in that gap is kept for this break only when it is untagged
-    /// or tagged with `afterTrack`.
+    /// or tagged with `afterTrack`. The natural-end boundary calls this once, synchronously,
+    /// before it awaits break preparation. `play` must not call it again.
     func handOut(afterTrack: Int) {
         pendingPlay.handOut(afterTrack: afterTrack)
+    }
+
+    /// The boundary handed a break out and then found nothing to say.
+    /// Drops that hand-out, including a stop that arrived during preparation.
+    func abandonHandOut() {
+        pendingPlay.abandonHandOut()
     }
 
     /// Plays one prepared clip. A clip that won't decode skips the break.
@@ -66,15 +73,34 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     func play(clips: [Data], line: String, afterTrack: Int) async {
         breakTrack = afterTrack
         guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
-            music.logBreakSkipped(after: afterTrack, reason: .notPlanned)
-            music.skipInterlude()
+            // Handed out, but this break will not start. `.failed` clears `.ready`.
+            abandonUnplayedBreak(.notPlayable, afterTrack: afterTrack, skip: .notPlanned)
             return
         }
-        // A nil tag, or a tag for this afterTrack, that landed after hand-out and before
-        // begin cancels this break. A tag for a different afterTrack does not.
+        // The refusal is the stop held from the synchronous boundary hand-out.
+        // An interruption that begins and ends during `naturalBoundary` clears the
+        // live pause flag and still cancels here. Resume follows that held stop's policy.
+        // A nil tag, or a tag for this afterTrack, cancels this break. A different tag
+        // is ignored and not stored.
         let opened = pendingPlay.begin(afterTrack: afterTrack, mayAutoResume: music.mayAutoResume)
         guard opened.startAudio else {
             await cancelledPendingPlay(resumeMusic: opened.resumeMusic)
+            return
+        }
+        // Extra guard only: the system is still holding playback and no stop was held.
+        // Do not start a clip and do not resume onto the speaker.
+        let admission = BreakPlayAdmissionPolicy.decide(
+            pausedBySystem: music.pausedBySystem,
+            mayAutoResume: music.mayAutoResume,
+            phase: music.audioState,
+            afterTrack: afterTrack
+        )
+        guard admission.startAudio else {
+            _ = pendingPlay.stop(reason: .interruption, afterTrack: nil, mayAutoResume: false)
+            _ = pendingPlay.admit(mayAutoResume: false)
+            if let unplayed = admission.unplayed {
+                applyUnplayed(unplayed, afterTrack: afterTrack, skip: .notPlanned)
+            }
             return
         }
         // Decode while the play is pending. A revoke blocked on the main actor runs at the
@@ -88,9 +114,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
         // A clip that won't decode skips the whole break; nothing is spoken partially.
         guard players.count == clips.count, players.allSatisfy({ $0.duration > 0 }) else {
-            music.logBreakSkipped(after: afterTrack, reason: .renderFailed)
+            abandonUnplayedBreak(.decodeFailed, afterTrack: afterTrack, skip: .renderFailed)
             music.reportSpeechError("A DJ line could not be played and was skipped.")
-            music.skipInterlude()
             return
         }
         queue = players
@@ -98,6 +123,31 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         await runBreak(line: line, timeout: total) { self.startNextClip() }
         queue = []
         clipPlayer = nil
+    }
+
+    /// The break was handed out and audio will not start. Reports `.failed` for `afterTrack`
+    /// and returns the boundary transition to music. Does not resume the player.
+    private func abandonUnplayedBreak(_ reason: HandedOutBreakSkip, afterTrack: Int, skip: DJBreakSkipReason) {
+        pendingPlay.abandonHandOut()
+        let report = HandedOutBreakReport.skipped(reason, afterTrack: afterTrack, mayAutoResume: music.mayAutoResume)
+        applyUnplayed(report, afterTrack: afterTrack, skip: skip)
+    }
+
+    /// Applies an unplayed report. Moves the state machine back toward music when the
+    /// report names that transition. Never calls `resumeIfAllowed`.
+    private func applyUnplayed(_ report: HandedOutBreakEffect, afterTrack: Int, skip: DJBreakSkipReason) {
+        if case .playbackFailed(let k) = report.event {
+            onPlayback?(.failed(afterTrack: k))
+        }
+        music.logBreakSkipped(after: afterTrack, reason: skip)
+        switch report.resume.audioEvent {
+        case .noInterlude?:
+            music.skipInterlude()
+        case .interludeEnded?:
+            music.endInterlude()
+        default:
+            break
+        }
     }
 
     /// Starts the next queued clip. False if it could not start.
@@ -161,31 +211,39 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// Consent and deletion pass `.sourceRevoked`. The instance is the app-scoped
     /// interlude adapter.
     ///
-    /// A `.sourceRevoked` that arrives while a play is pending, before the clip player
-    /// exists, is kept by `PendingPlayStop`. `admit` then starts no audio and resumes
-    /// music once when that is still allowed. A nil tag, and a tag for the handed-out
-    /// `afterTrack`, cancel that break before `begin`. A tag for a different `afterTrack`
-    /// does not. A revoke while idle, with nothing handed out, does not cancel the next
-    /// break. A stop that never reaches this method, because the session hook was nil,
-    /// is outside this guarantee.
+    /// A stop that arrives while a play is handed out or pending, before the clip player
+    /// exists, is kept by `PendingPlayStop`. That includes a revoke, an interruption, and
+    /// a route removal, so the break cannot start on the speaker at the boundary. `begin`
+    /// or `admit` then starts no audio and resumes music once when that is still allowed.
+    /// A nil tag, and a tag for the handed-out `afterTrack`, cancel that break. A tag for
+    /// a different `afterTrack` is ignored and not stored. A stop while idle, with nothing
+    /// handed out, does not cancel the next break. A stop that never reaches this method,
+    /// because the session hook was nil, is outside this guarantee.
     nonisolated func stopCurrentInterlude(reason: InterludeStopReason, afterTrack: Int? = nil) {
         MainActorImmediate.run {
-            // Consent revoke records a revoke and resumes once. Other reasons keep the
-            // existing halt, which ends the break as cancelled. A tag scopes the stop
-            // to that afterTrack. Nil fails closed for whatever is pending or playing.
-            if reason == .sourceRevoked {
-                if self.stopState.isPlaying {
-                    if let afterTrack, afterTrack != self.breakTrack { return }
+            // A tag scopes a playing stop to that afterTrack. Nil fails closed. An
+            // interruption or a route removal also cancels a handed-out or pending break.
+            // Revoke of a playing clip ends as `.revoked`. Other playing stops keep the
+            // existing halt, which ends the break as cancelled.
+            switch InterludeBoundaryStop.action(
+                reason: reason,
+                afterTrack: afterTrack,
+                isPlaying: self.stopState.isPlaying,
+                playingTrack: self.breakTrack
+            ) {
+            case .ignore:
+                return
+            case .cancelPending(let tag):
+                _ = self.pendingPlay.stop(reason: reason, afterTrack: tag, mayAutoResume: self.music.mayAutoResume)
+            case .stopPlaying:
+                if reason == .sourceRevoked {
                     self.stopActiveBreak(reason: reason)
                 } else {
-                    _ = self.pendingPlay.stop(reason: reason, afterTrack: afterTrack, mayAutoResume: self.music.mayAutoResume)
+                    guard self.stopState.stop(reason: reason) else { return }
+                    self.log.notice("\(PlaybackLog.interludeStop(reason: reason), privacy: .public)")
+                    self.haltAudio()
                 }
-                return
             }
-            if let afterTrack, self.stopState.isPlaying, afterTrack != self.breakTrack { return }
-            guard self.stopState.stop(reason: reason) else { return }
-            self.log.notice("\(PlaybackLog.interludeStop(reason: reason), privacy: .public)")
-            self.haltAudio()
         }
     }
 

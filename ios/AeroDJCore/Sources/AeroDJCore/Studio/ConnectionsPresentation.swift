@@ -215,9 +215,13 @@ public struct ConnectionSourceRow: Equatable, Sendable, Identifiable {
 public enum ConnectionUnavailableReason: Equatable, Sendable {
     case calendarAccess(CalendarAccess)
     case file(ObsidianSkipReason)
+    /// The source marks it never to be read (`aerodj-sensitivity: blocked` in an Obsidian note).
+    /// Not approvable and never narrated, whatever consent says.
+    case markedPrivate
 
     public var description: String {
         switch self {
+        case .markedPrivate: return "Not used: marked private in Obsidian (aerodj-sensitivity: blocked)."
         case .calendarAccess(let a): return "Unavailable: \(CalendarConnectionState(access: a).description)"
         case .file(let r):
             switch r {
@@ -247,8 +251,11 @@ public enum ConnectionItemState: Equatable, Sendable {
 
     /// One precedence for every source: unavailable > expired > revoked > flagged > pending > approved.
     public static func resolve(consent: ConsentState, expiresAt: Date?, now: Date, flagged: Bool,
-                               reconfirmed: Bool, unavailable: ConnectionUnavailableReason? = nil) -> ConnectionItemState {
+                               reconfirmed: Bool, unavailable: ConnectionUnavailableReason? = nil,
+                               sensitivity: Sensitivity? = nil) -> ConnectionItemState {
         if let unavailable { return .unavailable(unavailable) }
+        // Blocked sensitivity outranks consent: re-approval can never make it narratable.
+        if sensitivity == .blocked { return .unavailable(.markedPrivate) }
         if let expiresAt, expiresAt <= now { return .expired }
         switch consent {
         case .denied, .revoked: return .revoked
@@ -310,17 +317,33 @@ public struct ConnectionItem: Equatable, Sendable, Identifiable {
     public let title: String
     public let state: ConnectionItemState
     public let expiresAt: Date?
+    /// The source's real sensitivity (nil when the source has none, e.g. a skipped file).
+    /// Downstream adapters pass this on instead of inventing a value.
+    public let sensitivity: Sensitivity?
 
-    public init(id: UUID, integration: StationIntegration, title: String, state: ConnectionItemState, expiresAt: Date? = nil) {
+    public init(id: UUID, integration: StationIntegration, title: String, state: ConnectionItemState,
+                expiresAt: Date? = nil, sensitivity: Sensitivity? = nil) {
         self.id = id
         self.integration = integration
         self.title = title
         self.state = state
         self.expiresAt = expiresAt
+        self.sensitivity = sensitivity
     }
 
     public var description: String { state.description }
     public var actions: [ConnectionAction] { state.actions(for: integration) }
+
+    /// Whether the DJ may narrate it at `now`: its last known state is `.approved` and it has
+    /// not expired since, by the same rule as `ConnectionItemState.resolve` (`expiresAt <= now`
+    /// is expired). Used at song boundaries, where no `refresh()` has re-resolved the state.
+    /// A missing sensitivity counts as blocked (as #75's adapter does): unknown is never narrated.
+    public func mayBeNarrated(at now: Date) -> Bool {
+        guard let sensitivity, sensitivity != .blocked else { return false }
+        return state.mayBeNarrated
+            && ConnectionItemState.resolve(consent: .granted, expiresAt: expiresAt, now: now,
+                                           flagged: false, reconfirmed: false, sensitivity: sensitivity).mayBeNarrated
+    }
 }
 
 // MARK: - Boundaries the app implements
@@ -355,24 +378,74 @@ public protocol NarrationPurging: Sendable {
 public struct NarrationPurger: NarrationPurging {
     public let cache: any AudioCache
     public let preparer: DJBreakPreparer?
-    public let session: DJBreakSession?
+    /// Weak: the session holds this purger too (`DJBreakSession.purger`, boundary expiry).
+    public private(set) weak var session: DJBreakSession?
     public let revocations: NarrationRevocations
+    /// Every completed purge is published here (for example, to stop on-air speech elsewhere).
+    public let feed: NarrationPurgeFeed
 
     public init(cache: any AudioCache, preparer: DJBreakPreparer?, session: DJBreakSession? = nil,
-                revocations: NarrationRevocations = .shared) {
+                revocations: NarrationRevocations = .shared, feed: NarrationPurgeFeed = .shared) {
         self.cache = cache
         self.preparer = preparer
         self.session = session
         self.revocations = revocations
+        self.feed = feed
     }
 
     public func purge(sourceItemIDs: Set<UUID>) async {
         guard !sourceItemIDs.isEmpty else { return }
         // First: an in-flight render for these items must not cache its result (VoiceRenderer).
         revocations.revoke(sourceItemIDs)
+        // The session first: it stops a break that is on air for these items right away.
         if let session { await session.purge(sourceItemIDs: sourceItemIDs) }
         await preparer?.purge(sourceItemIDs: sourceItemIDs)
         await cache.purge(sourceItemIDs: sourceItemIDs)
+        revocations.purgeCompleted(sourceItemIDs)
+        await AudioCacheFileLog.record(cache, after: .purge)
+        feed.publish(.items(sourceItemIDs))
+    }
+
+    /// Removes all personal narration without knowing item ids: renders in flight, planned and
+    /// on-air breaks that mention any personal item, and every personal clip in the cache.
+    /// Works in live mode, where consent is not persisted across launches.
+    public func purgeAllPersonalNarration() async {
+        revocations.revokeAll()
+        let known = await session?.purgeAllPersonal() ?? []
+        if !known.isEmpty { await preparer?.purge(sourceItemIDs: known) }
+        await cache.purgeAllPersonal()
+        revocations.purgeAllCompleted()
+        await AudioCacheFileLog.record(cache, after: .purge)
+        feed.publish(.all)
+    }
+}
+
+/// What a completed purge removed.
+public enum NarrationPurge: Equatable, Sendable {
+    case items(Set<UUID>)
+    /// Every personal item (`purgeAllPersonalNarration`).
+    case all
+}
+
+/// Broadcasts completed purges. Each `updates()` stream gets every purge published after it
+/// was created. Process-wide by default, like `NarrationRevocations`.
+public final class NarrationPurgeFeed: @unchecked Sendable {
+    public static let shared = NarrationPurgeFeed()
+    private let lock = NSLock()
+    private var continuations: [UUID: AsyncStream<NarrationPurge>.Continuation] = [:]
+
+    public init() {}
+
+    public func updates() -> AsyncStream<NarrationPurge> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<NarrationPurge>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        continuation.onTermination = { [weak self] _ in self?.lock.withLock { self?.continuations[id] = nil } }
+        lock.withLock { continuations[id] = continuation }
+        return stream
+    }
+
+    public func publish(_ purge: NarrationPurge) {
+        for continuation in lock.withLock({ Array(continuations.values) }) { continuation.yield(purge) }
     }
 }
 
@@ -393,7 +466,7 @@ public struct SharedInboxConnectionProvider: ConnectionItemProvider {
                 consent: context.consent, expiresAt: entry.item.expiresAt, now: now,
                 flagged: sanitizer.isSuspicious(entry.displayText), reconfirmed: entry.isReconfirmed)
             return ConnectionItem(id: entry.id, integration: .shareInbox, title: context.title,
-                                  state: state, expiresAt: entry.item.expiresAt)
+                                  state: state, expiresAt: entry.item.expiresAt, sensitivity: context.sensitivity)
         }
     }
 
@@ -428,7 +501,8 @@ public actor InMemoryConnectionItemProvider: ConnectionItemProvider {
         guard let i = stored.firstIndex(where: { $0.id == id }) else { return }
         let item = stored[i]
         func with(_ s: ConnectionItemState) -> ConnectionItem {
-            ConnectionItem(id: item.id, integration: item.integration, title: item.title, state: s, expiresAt: item.expiresAt)
+            ConnectionItem(id: item.id, integration: item.integration, title: item.title, state: s,
+                           expiresAt: item.expiresAt, sensitivity: item.sensitivity)
         }
         switch action {
         case .approve, .readAnyway: stored[i] = with(.approved)
@@ -519,6 +593,12 @@ public final class ConnectionsModel {
 
     public func items(for integration: StationIntegration) -> [ConnectionItem] {
         items.filter { $0.integration == integration }
+    }
+
+    /// Each row's own source sensitivity, keyed by row id (the same id briefing adapters use).
+    /// Rows without a value are left out, never defaulted (#75's adapter treats missing as blocked).
+    public var sensitivityByItemID: [UUID: Sensitivity] {
+        Dictionary(items.compactMap { row in row.sensitivity.map { (row.id, $0) } }, uniquingKeysWith: { a, _ in a })
     }
 
     // MARK: Intents

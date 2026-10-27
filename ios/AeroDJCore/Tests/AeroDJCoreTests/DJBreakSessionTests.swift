@@ -19,6 +19,7 @@ private actor RecordingCache: AudioCache {
     func store(_ audio: CachedAudio, for key: String) async { keys.append(key); await inner.store(audio, for: key) }
     func purge(sourceItemIDs: Set<UUID>) async { await inner.purge(sourceItemIDs: sourceItemIDs) }
     func purgeExpired() async { await inner.purgeExpired() }
+    func purgeAllPersonal() async { await inner.purgeAllPersonal() }
     func remaining() async -> [CachedAudio] {
         var out: [CachedAudio] = []
         for key in keys { if let a = await inner.audio(for: key) { out.append(a) } }
@@ -55,6 +56,44 @@ final class DJBreakSessionTests: XCTestCase {
     private func until(_ condition: @MainActor () -> Bool, _ message: String = "") async {
         for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(condition(), message)
+    }
+
+    func testEmptyLineAfterHandoffLeavesReadyAndResumesMusic() async {
+        await assertUnplayedBreakLeavesReady(.emptyLine, afterTrack: 4)
+    }
+
+    func testAdapterRefusesAnUnplayableBreakAndResumesMusic() async {
+        await assertUnplayedBreakLeavesReady(.notPlayable, afterTrack: 4)
+    }
+
+    func testClipThatFailsToDecodeLeavesReadyAndResumesMusic() async {
+        await assertUnplayedBreakLeavesReady(.decodeFailed, afterTrack: 4)
+    }
+
+    /// A handed-out break that never starts audio reports `.failed` through the session.
+    /// The boundary returns to music. No polling.
+    private func assertUnplayedBreakLeavesReady(_ reason: HandedOutBreakSkip, afterTrack: Int) async {
+        let r = await rig()
+        r.dj.send(.breakReady(afterTrack: afterTrack, includesBriefing: false, seconds: 6))
+        XCTAssertEqual(r.dj.studioState, .ready(includesBriefing: false, seconds: 6))
+
+        let effect = HandedOutBreakReport.skipped(reason, afterTrack: afterTrack, mayAutoResume: true)
+        XCTAssertEqual(effect.event, .playbackFailed(afterTrack: afterTrack))
+        XCTAssertTrue(effect.resume.resumeMusic)
+        XCTAssertEqual(effect.resume.audioEvent, .noInterlude)
+
+        r.session.playbackFailed(afterTrack: afterTrack)
+        if case .ready = r.dj.studioState {
+            XCTFail("\(reason) leaves the handed-out break ready")
+        }
+        XCTAssertEqual(r.dj.studioState, .failed(.voiceFailed))
+
+        var audio = AudioStateMachine(state: .transition)
+        guard let back = effect.resume.audioEvent else {
+            XCTFail("\(reason) returns to music")
+            return
+        }
+        XCTAssertEqual(audio.apply(back), .music)
     }
 
     func testBreakIsPreparedDuringTheSongAndHandedOverAtTheBoundary() async throws {
@@ -111,7 +150,8 @@ final class DJBreakSessionTests: XCTestCase {
             return NarrationHandoff(cues: [cue], maxSpokenSeconds: 60, experienceSeconds: 600)
         }
         let ok = await rig(voice: PacedVoice(secondsPerWord: 0.8))
-        await ok.session.queueStarted(djTracks(8), briefing: handoff(UUID()))
+        let okBriefing = handoff(UUID())
+        await ok.session.queueStarted(djTracks(8), briefing: okBriefing, sources: approvedSources(okBriefing))
         await ok.session.songStarted(index: 0, remaining: .seconds(180))
         await until { if case .ready = ok.dj.studioState { true } else { false } }
         let handed = await ok.session.naturalBoundary(afterTrack: 0)
@@ -121,7 +161,8 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertLessThanOrEqual(briefing.measuredSeconds, 45)
 
         let long = await rig(voice: PacedVoice(secondsPerWord: 2.5))
-        await long.session.queueStarted(djTracks(8), briefing: handoff(UUID()))
+        let longBriefing = handoff(UUID())
+        await long.session.queueStarted(djTracks(8), briefing: longBriefing, sources: approvedSources(longBriefing))
         await long.session.songStarted(index: 0, remaining: .seconds(180))
         await until { if case .failed = long.dj.studioState { true } else { false } }
         let skipped = await long.session.naturalBoundary(afterTrack: 0)
@@ -177,18 +218,26 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertEqual(clip.naturalEnds, 0)
     }
 
-    /// `purge` calling the hook is Fry's call site in #73. The player behavior above is what that call runs.
-    /// Expected-pending until that line exists. Linux XCTest has no XCTExpectFailure, so this stays skipped.
+    /// `purge` calling the hook is Fry's call site (#73, now fry/consent-purge-v2). The player
+    /// behavior above is what that call runs. Unskipped: the call site exists. The setup puts a
+    /// break about one item on air, with the hook routed to the player as AppDependencies does;
+    /// the assertion is unchanged.
     func testPurgeCallsOnBreakMustStopForThePlayingBreak() async throws {
-        let fryWiresPurge = false
-        try XCTSkipIf(
-            !fryWiresPurge,
-            "expected-pending. Dependency on Fry #73: DJBreakSession.purge must call onBreakMustStop?(.sourceRevoked)"
-        )
         let r = await rig()
         let clip = ActiveBreakController()
+        r.session.onBreakMustStop = { reason, _ in clip.stopActiveBreak(reason: reason, mayAutoResume: true) }
+        let item = UUID()
+        let cue = NarrationCue(id: UUID(), order: 1, group: 0, kind: .note, text: "From your notes: water the plants.",
+                               estimatedSeconds: 3, maxSeconds: 20, sourceItemID: item, source: .obsidian, provenance: "fixture:n1")
+        let briefing = NarrationHandoff(cues: [cue], maxSpokenSeconds: 60, experienceSeconds: 600)
+        await r.session.queueStarted(djTracks(8), briefing: briefing, sources: approvedSources(briefing))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ if case .ready(true, _) = r.dj.studioState { true } else { false } }, "the item is in the prepared break")
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertNotNil(handed)
         clip.play()
-        r.session.purge(sourceItemIDs: [UUID()])
+        r.session.playbackStarted(afterTrack: 0)
+        r.session.purge(sourceItemIDs: [item])
         XCTAssertEqual(clip.playerStops, 1, "purge stops the playing break once Fry wires onBreakMustStop")
     }
 
@@ -197,7 +246,8 @@ final class DJBreakSessionTests: XCTestCase {
         let cue = NarrationCue(id: UUID(), order: 1, group: 0, kind: .note, text: "From your notes: water the plants.",
                                estimatedSeconds: 3, maxSeconds: 20, sourceItemID: item, source: .obsidian, provenance: "fixture:n1")
         let r = await rig()
-        await r.session.queueStarted(djTracks(12), briefing: NarrationHandoff(cues: [cue], maxSpokenSeconds: 60, experienceSeconds: 600))
+        let briefing = NarrationHandoff(cues: [cue], maxSpokenSeconds: 60, experienceSeconds: 600)
+        await r.session.queueStarted(djTracks(12), briefing: briefing, sources: approvedSources(briefing))
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await until({ if case .ready(true, _) = r.dj.studioState { true } else { false } }, "the item is in the prepared break")
 
@@ -240,8 +290,8 @@ final class DJBreakSessionTests: XCTestCase {
                                 source: .obsidian, provenance: "note:groceries")
         let morning = NarrationHandoff(cues: [review, note], maxSpokenSeconds: 60, experienceSeconds: 300)
         let rows = [
-            ConnectionItem(id: reviewID, integration: .calendar, title: "Design review", state: .approved),
-            ConnectionItem(id: noteID, integration: .obsidian, title: "Grocery list", state: .approved),
+            ConnectionItem(id: reviewID, integration: .calendar, title: "Design review", state: .approved, sensitivity: .low),
+            ConnectionItem(id: noteID, integration: .obsidian, title: "Grocery list", state: .approved, sensitivity: .low),
         ]
         let carry = EditorialCarryForward(report: NarrationScheduleReport(entries: [
             NarrationScheduleEntry(cue: review, outcome: .dropped(.notCarriedForward)),
@@ -266,7 +316,7 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertFalse(laterHandoff.cues.contains { $0.id == review.id })
 
         let show = await rig()
-        await show.session.queueStarted(djTracks(8), briefing: approved.forQueue())
+        await show.session.queueStarted(djTracks(8), briefing: approved.forQueue(), sources: approved.connectionItems)
         XCTAssertEqual(show.session.plannedBoundaries.first, 0, "first eligible boundary")
         let firstIDs = try await airedContentIDs(show, after: 0)
         XCTAssertEqual(firstIDs.filter { $0 == review.id }.count, 1)
@@ -280,7 +330,7 @@ final class DJBreakSessionTests: XCTestCase {
 
         for blocked in [revoked.forQueue(), unapproved.forQueue()] {
             let quiet = await rig()
-            await quiet.session.queueStarted(djTracks(8), briefing: blocked)
+            await quiet.session.queueStarted(djTracks(8), briefing: blocked, sources: rows)
             await quiet.session.songStarted(index: 0, remaining: .seconds(180))
             await until { quiet.dj.studioState != .idle }
             let handed = await quiet.session.naturalBoundary(afterTrack: 0)
@@ -291,7 +341,7 @@ final class DJBreakSessionTests: XCTestCase {
         }
 
         let nextShow = await rig()
-        await nextShow.session.queueStarted(djTracks(8), briefing: later.forQueue())
+        await nextShow.session.queueStarted(djTracks(8), briefing: later.forQueue(), sources: later.connectionItems)
         let nextIDs = try await airedContentIDs(nextShow, after: 0)
         XCTAssertEqual(nextIDs, [note.id])
         XCTAssertFalse(nextIDs.contains(review.id))
@@ -315,7 +365,7 @@ final class DJBreakSessionTests: XCTestCase {
         let rows = [
             ConnectionItem(id: pendingID, integration: .calendar, title: "Pending sync", state: .pendingApproval),
             ConnectionItem(id: flaggedID, integration: .obsidian, title: "Flagged memo", state: .flaggedForReview),
-            ConnectionItem(id: approvedID, integration: .calendar, title: "Design review", state: .approved),
+            ConnectionItem(id: approvedID, integration: .calendar, title: "Design review", state: .approved, sensitivity: .low),
             ConnectionItem(id: expiredID, integration: .shareInbox, title: "Expired reminder", state: .expired),
             ConnectionItem(id: revokedID, integration: .obsidian, title: "Revoked note", state: .revoked),
             ConnectionItem(id: unavailableID, integration: .calendar, title: "Unavailable calendar",
@@ -349,7 +399,7 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertEqual(queued.cues.compactMap(\.sourceItemID), [approvedID])
 
         let session = await rig()
-        await session.session.queueStarted(djTracks(8), briefing: queued)
+        await session.session.queueStarted(djTracks(8), briefing: queued, sources: show.connectionItems)
         await session.session.songStarted(index: 0, remaining: .seconds(180))
         await until { if case .ready = session.dj.studioState { true } else { false } }
         let handedBreak = await session.session.naturalBoundary(afterTrack: 0)

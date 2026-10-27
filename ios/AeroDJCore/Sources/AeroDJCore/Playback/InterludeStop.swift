@@ -46,7 +46,11 @@ public final class SpeechStopGate {
 /// reaches it while a play is pending, before the clip player is set:
 /// - while idle, with nothing handed out, the stop is ignored. The next break is unrelated;
 /// - after `handOut` and before `begin`, a nil tag or a tag for that `afterTrack` cancels
-///   that break. A tag for a different `afterTrack` does not;
+///   that break. A tag for a different `afterTrack` is ignored and not stored. `handOut`
+///   and a `begin` that starts audio clear any held stop, so it cannot cancel a later break.
+///   The natural-end boundary calls `handOut` before it awaits break preparation. A stop
+///   during that await is held. `abandonHandOut` drops the hand-out when nothing will be
+///   spoken, including a stop held for it, and does not resume music;
 /// - after `begin` and before `admit` (decode, or stop state begun with no clip player),
 ///   a nil tag or a matching tag makes `admit` cancel that play. A different tag does not.
 /// A nil tag is the untagged stop `skip()` sends. It fails closed for a handed-out, pending,
@@ -88,18 +92,32 @@ public struct PendingPlayStop: Equatable, Sendable {
     public init() {}
 
     /// The break for `afterTrack` has been handed out and has not called `begin` yet.
+    /// A new hand-out drops any stop held for the previous break, so the natural-end
+    /// boundary must hand out once, before any await, and must not hand out again.
     public mutating func handOut(afterTrack: Int) {
         guard phase != .pending else { return }
         phase = .handedOut
         track = afterTrack
+        heldStop = nil
+    }
+
+    /// Nothing will be spoken for the hand-out (nothing prepared, or music continues).
+    /// Drops the hand-out and any stop held for it, so that stop cannot cancel a later
+    /// break. A pending play is left for `admit`. This does not start or resume audio.
+    public mutating func abandonHandOut() {
+        guard phase == .handedOut else { return }
+        phase = .idle
+        track = nil
+        heldStop = nil
     }
 
     /// Records a revoke for the handed-out or pending play.
     ///
     /// `afterTrack == nil` is untagged and fails closed: it cancels whatever was handed
-    /// out or is pending. A tag cancels only the break with that index. An idle revoke,
-    /// with nothing handed out, is ignored, so the next unrelated break still starts.
-    /// Resume is decided by the following `begin` or `admit`, once.
+    /// out or is pending. A tag cancels only the break with that index. A tag for a
+    /// different handed-out break is ignored and not stored. An idle revoke, with nothing
+    /// handed out, is ignored, so the next unrelated break still starts. Resume is decided
+    /// by the following `begin` or `admit`, once.
     public mutating func stop(reason: InterludeStopReason, afterTrack: Int? = nil, mayAutoResume: Bool) -> PendingPlayEffect {
         _ = reason
         _ = mayAutoResume
@@ -108,7 +126,6 @@ public struct PendingPlayStop: Equatable, Sendable {
             return PendingPlayEffect(startAudio: false, resumeMusic: false)
         case .handedOut:
             if let afterTrack, afterTrack != track {
-                if heldStop == nil { heldStop = .track(afterTrack) }
                 return PendingPlayEffect(startAudio: false, resumeMusic: false)
             }
             heldStop = afterTrack.map(HeldStop.track) ?? .any
@@ -125,7 +142,8 @@ public struct PendingPlayStop: Equatable, Sendable {
     /// Opens the pending play, before decode.
     ///
     /// A nil-tagged or matching stop recorded after `handOut` cancels this break.
-    /// A stop tagged for a different `afterTrack` does not.
+    /// A stop tagged for a different `afterTrack` does not. A begin that starts audio
+    /// clears any held stop.
     public mutating func begin(afterTrack: Int? = nil, mayAutoResume: Bool) -> PendingPlayEffect {
         if let afterTrack { track = afterTrack }
         if revoked || stopAppliesToBegin() {
@@ -134,6 +152,7 @@ public struct PendingPlayStop: Equatable, Sendable {
             phase = .idle
             return PendingPlayEffect(startAudio: false, resumeMusic: mayResume(mayAutoResume))
         }
+        heldStop = nil
         phase = .pending
         return PendingPlayEffect(startAudio: true, resumeMusic: false)
     }
@@ -163,6 +182,30 @@ public struct PendingPlayStop: Equatable, Sendable {
 
     private func mayResume(_ mayAutoResume: Bool) -> Bool {
         NarrationResumePolicy.decide(.revoked, mayAutoResume: mayAutoResume, phase: .music).resumeMusic
+    }
+}
+
+/// How a stop held across `naturalBoundary` is reported when `begin` cancels the break.
+///
+/// The adapter emits `.revoked`. The session records `playbackFinished`, so DJ state
+/// leaves `.ready` without a voice failure. `resumeMusic` is the same `.revoked` policy
+/// `PendingPlayStop.begin` uses.
+public struct HeldBoundaryStopCancellation: Equatable, Sendable {
+    public var event: DJPresentationEvent
+    public var resumeMusic: Bool
+
+    public init(event: DJPresentationEvent, resumeMusic: Bool) {
+        self.event = event
+        self.resumeMusic = resumeMusic
+    }
+}
+
+public enum HeldBoundaryStopReport {
+    public static func cancellation(afterTrack: Int, mayAutoResume: Bool) -> HeldBoundaryStopCancellation {
+        HeldBoundaryStopCancellation(
+            event: .playbackFinished(afterTrack: afterTrack),
+            resumeMusic: NarrationResumePolicy.decide(.revoked, mayAutoResume: mayAutoResume, phase: .music).resumeMusic
+        )
     }
 }
 
@@ -210,6 +253,33 @@ public struct InterludeStopState: Equatable, Sendable {
 
     public func acceptsDelegate(player: ObjectIdentifier) -> Bool {
         isPlaying && self.player == player
+    }
+}
+
+/// Where `stopCurrentInterlude` applies a stop that is not an untagged `stop()`.
+///
+/// Idle, handed-out, and pending are not playing. An interruption or a route removal
+/// cancels that break the same way a revoke does, so it cannot start on the speaker
+/// at the boundary. A nil tag fails closed. A tag for a different playing break is ignored.
+public enum InterludeBoundaryStop: Equatable, Sendable {
+    case ignore
+    case cancelPending(afterTrack: Int?)
+    case stopPlaying
+
+    public static func action(
+        reason: InterludeStopReason,
+        afterTrack: Int?,
+        isPlaying: Bool,
+        playingTrack: Int
+    ) -> InterludeBoundaryStop {
+        switch reason {
+        case .sourceRevoked, .interruption, .routeRemoved:
+            if isPlaying {
+                if let afterTrack, afterTrack != playingTrack { return .ignore }
+                return .stopPlaying
+            }
+            return .cancelPending(afterTrack: afterTrack)
+        }
     }
 }
 

@@ -45,6 +45,7 @@ private actor BlockingStoreCache: AudioCache {
     }
     func purge(sourceItemIDs: Set<UUID>) async { await inner.purge(sourceItemIDs: sourceItemIDs) }
     func purgeExpired() async { await inner.purgeExpired() }
+    func purgeAllPersonal() async { await inner.purgeAllPersonal() }
     func clips() async -> Int { await inner.count }
 }
 
@@ -97,7 +98,8 @@ final class InFlightRenderRevocationTests: XCTestCase {
         let open = Barrier(); await open.open()
         let cache = InMemoryAudioCache()
         let revocations = NarrationRevocations()
-        revocations.revoke([item])                         // purged earlier, then re-approved
+        revocations.revoke([item])                         // purged earlier (as NarrationPurger does:
+        revocations.purgeCompleted([item])                 // revoke, purge, complete), then re-approved
         let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: BlockingVoice(barrier: open), voice: djVoice)],
                                      budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, revocations: revocations)
         let result = await renderer.render(cue(item), userID: "u", stationID: "s")

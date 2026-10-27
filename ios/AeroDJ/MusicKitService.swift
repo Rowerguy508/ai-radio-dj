@@ -63,6 +63,8 @@ final class MusicKitService: ObservableObject {
 
     var audioState: AudioState { stateMachine.state }
     var mayAutoResume: Bool { sessionPolicy.mayAutoResume }
+    /// Route removal or a system interruption is holding playback. A user pause is not this flag.
+    var pausedBySystem: Bool { sessionPolicy.pausedBySystem }
 
     /// Request MusicKit authorization. Explicit degraded state on denial.
     func authorize() async {
@@ -100,6 +102,11 @@ final class MusicKitService: ObservableObject {
             throw MusicKitError.notAuthorized
         }
         guard !tracks.isEmpty else { return }
+        // A new queue replaces whatever was on air. A DJ line that is speaking, or a break
+        // handed out but not yet audible, belongs to the old queue and stops before the queue
+        // is replaced, the same as `skip()`. Nil routes to `interlude.stop()`, which cancels
+        // a pending play and halts a playing clip.
+        onBreakMustStop?(nil)
         queue = tracks
         currentTrack = tracks.first
         boundaries.userRequestedChange()
