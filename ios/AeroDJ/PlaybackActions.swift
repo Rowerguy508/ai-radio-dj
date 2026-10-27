@@ -17,6 +17,11 @@ struct PlaybackActions {
     /// controls rather than show them and change nothing. Live stays `nil` until the
     /// app applies the same edit to MusicKit's queue, which needs SDK verification.
     var editUpNext: ((UpNextEdit) -> Void)? = nil
+    /// Build 9 P0 (-Atlas; Sentinel): Stop on a start past its 8 s deadline. A user pause that also
+    /// cancels the attempt, so a late `.playing` cannot start audio the user turned down.
+    var cancelStart: () -> Void = {}
+    /// A transport tap ignored while the start is preparing (TEMPORARY diagnostics ring only).
+    var transportTapIgnored: () -> Void = {}
 
     /// Bound to the one app-wide `MusicKitService`.
     static func live(_ music: MusicKitService) -> PlaybackActions {
@@ -26,7 +31,9 @@ struct PlaybackActions {
             resume: { _ = try? await music.resume() },
             skip: { _ = try? await music.skip() },
             dismissError: { music.dismissError() },
-            authorize: { await music.authorize() }
+            authorize: { await music.authorize() },
+            cancelStart: { music.cancelTimedOutStart() },
+            transportTapIgnored: { music.noteTransportTapIgnored() }
         )
     }
 

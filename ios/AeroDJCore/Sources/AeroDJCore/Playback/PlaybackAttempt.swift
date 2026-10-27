@@ -31,6 +31,12 @@ public struct PlaybackAttempts: Equatable, Sendable {
 
     public func isCurrent(_ id: PlaybackAttemptID) -> Bool { current == id }
 
+    /// The user cancelled the current start (Stop after its deadline, Sentinel). No attempt is
+    /// current until the next start, so a late `.playing`, throw or refusal for it changes nothing.
+    public mutating func userCancelledCurrent() {
+        current = nil
+    }
+
     /// The user replaced the queue or skipped. Boundaries captured before this are stale.
     @discardableResult
     public mutating func userChangedQueue() -> Int {
@@ -188,11 +194,12 @@ public enum StartFailurePolicy {
             // `.playing`), and the watchdog keeps watching for a late `.playing`.
             let message = "TEMPORARY: MusicKit status \(last.rawValue) 8 s after start; not playing yet. attempt=\(attempt.number)"
             return StartFailureEffect(pausesPlayer: false, cancelsConfirm: false,
-                                      events: raised(message), message: message)
+                                      events: raised(message) + [.startConfirmTimedOut], message: message)
         case .confirmInterrupted:
             let message = "TEMPORARY: MusicKit status interrupted after start; not playing. attempt=\(attempt.number)"
+            // Also reported, so the user gets a working Stop instead of a spinner that ignores taps.
             return StartFailureEffect(pausesPlayer: false, cancelsConfirm: false,
-                                      events: raised(message), message: message)
+                                      events: raised(message) + [.startConfirmTimedOut], message: message)
         case let .threw(code):
             let message = "TEMPORARY: playback failed: \(code). attempt=\(attempt.number)"
             return StartFailureEffect(pausesPlayer: false, cancelsConfirm: true,

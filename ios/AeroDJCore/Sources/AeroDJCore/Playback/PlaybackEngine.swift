@@ -22,6 +22,9 @@ public enum PlaybackEvent: Equatable, Sendable {
     /// A start/resume gate refused after transport moved to `.preparing`. Restore `.paused`
     /// without clearing a system hold (unplug / interruption).
     case playbackStartRefused
+    /// Build 9 P0 (-Atlas, Sentinel): the current start passed its 8 s confirm deadline (or MusicKit
+    /// said `.interrupted`) and is still `.preparing`. From here a transport tap may cancel it.
+    case startConfirmTimedOut
     case djStarted(line: String)
     case djFinished
     /// The speech was cancelled or timed out. Music has already been resumed by the adapter.
@@ -56,6 +59,7 @@ public struct PlaybackEngine: Sendable {
             self.tracks = tracks
             index = min(max(startIndex, 0), tracks.count - 1)
             snapshot.station = station
+            snapshot.startTimedOut = false
             // Preparing until MusicKit confirms playback; do not claim .playing early.
             publishPosition(transport: .preparing)
 
@@ -66,6 +70,7 @@ public struct PlaybackEngine: Sendable {
                 return apply(.queueFinished)
             }
             index = nextIndex
+            if case .userSkipped = event { snapshot.startTimedOut = false }
             // Keep preparing if we were still waiting on MusicKit; otherwise preserve transport.
             // A stopped show that advances (shouldn't) goes to preparing, not optimistic playing.
             let nextTransport: TransportState
@@ -95,6 +100,7 @@ public struct PlaybackEngine: Sendable {
             // Do not clear a system hold here — only playbackConfirmed clears it, and only
             // from .preparing. A refused gate uses playbackStartRefused to keep the hold.
             if snapshot.transport == .paused { snapshot.transport = .preparing }
+            snapshot.startTimedOut = false
 
         case .playbackConfirmed:
             // Only .preparing may become .playing. A late confirm must not override a
@@ -108,6 +114,10 @@ public struct PlaybackEngine: Sendable {
                 snapshot.transport = .paused
             }
             // hold unchanged (including .routeRemoved / .interruption captions)
+
+        case .startConfirmTimedOut:
+            // Only a start still waiting on MusicKit can be timed out.
+            if snapshot.transport == .preparing { snapshot.startTimedOut = true }
 
         case let .djStarted(line):
             snapshot.dj = line.isEmpty ? .idle : .speaking(line: line)
@@ -136,6 +146,8 @@ public struct PlaybackEngine: Sendable {
         case .errorCleared:
             snapshot.error = nil
         }
+        // The flag belongs to one `.preparing` start; it never outlives it.
+        if snapshot.transport != .preparing { snapshot.startTimedOut = false }
         return snapshot
     }
 

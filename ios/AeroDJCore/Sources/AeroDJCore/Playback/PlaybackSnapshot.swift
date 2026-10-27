@@ -95,6 +95,9 @@ public struct PlaybackSnapshot: Equatable, Sendable {
     public var error: PlaybackError?
     /// Set while transport is paused for a reason the Play/Pause button cannot say.
     public var hold: PlaybackHold?
+    /// Build 9 P0 (-Atlas, Sentinel): the `.preparing` start passed its 8 s confirm deadline.
+    /// Before that a transport tap is ignored; after it the button is "Stop" and cancels the start.
+    public var startTimedOut: Bool
 
     public init(
         station: StationRef? = nil,
@@ -103,7 +106,8 @@ public struct PlaybackSnapshot: Equatable, Sendable {
         transport: TransportState = .stopped,
         dj: DJActivity = .idle,
         error: PlaybackError? = nil,
-        hold: PlaybackHold? = nil
+        hold: PlaybackHold? = nil,
+        startTimedOut: Bool = false
     ) {
         self.station = station
         self.nowPlaying = nowPlaying
@@ -112,5 +116,6 @@ public struct PlaybackSnapshot: Equatable, Sendable {
         self.dj = dj
         self.error = error
         self.hold = hold
+        self.startTimedOut = startTimedOut
     }
 }

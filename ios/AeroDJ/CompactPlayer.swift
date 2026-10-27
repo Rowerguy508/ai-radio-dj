@@ -183,7 +183,8 @@ struct PlaybackChromeBar: View {
             ViewThatFits(in: .vertical) {
                 chromeStack
                 if content.showsTransport {
-                    TransportRow(transport: snapshot.transport, actions: actions, onTune: onTune)
+                    TransportRow(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                             actions: actions, onTune: onTune)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .frame(maxWidth: .infinity)
@@ -208,7 +209,8 @@ struct PlaybackChromeBar: View {
                 PlaybackProgressBar(time: timeSource)
             }
             if content.showsTransport {
-                TransportRow(transport: snapshot.transport, actions: actions, onTune: onTune)
+                TransportRow(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                             actions: actions, onTune: onTune)
             }
         }
         .padding(.horizontal, 16)

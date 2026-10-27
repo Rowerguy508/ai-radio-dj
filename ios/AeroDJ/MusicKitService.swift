@@ -277,6 +277,39 @@ final class MusicKitService: ObservableObject {
         }
     }
 
+    /// Build 9 P0 (-Atlas; Sentinel): Stop on a start past its 8 s confirm deadline. Re-decided here
+    /// with `TransportTapPolicy` on the service's own snapshot. A user pause (`userWantsPlayback`
+    /// false, watchdog cancelled) that also ends the attempt: a late `.playing` for it does not
+    /// confirm, and the poll / `playIfStillAllowed` gates pause MusicKit if it starts anyway.
+    func cancelTimedOutStart() {
+        switch TransportTapPolicy.decide(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut) {
+        case .ignore:
+            noteTransportTapIgnored()
+            return
+        case .play:
+            return
+        case .pause:
+            // Confirmed between render and tap: Stop still means stop.
+            pause()
+            return
+        case .cancelStart:
+            break
+        }
+        P0TapDiagnostics.shared.record("transport.cancelTimedOutStart", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+        attempts.userCancelledCurrent()
+        confirmReportedAttempt = nil
+        pause()
+        // The deadline banner described the start the user just stopped.
+        lastError = nil
+        send(.errorCleared)
+    }
+
+    /// Orion: a second in-app transport tap while a start is preparing (before its deadline) does
+    /// nothing: no pause, no new attempt. Recorded for the TEMPORARY ring only.
+    func noteTransportTapIgnored() {
+        P0TapDiagnostics.shared.record("transport.tapIgnored.preparing", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+    }
+
     /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
     func pausePlayerForBreak() {
         boundaries.pausedByApp()
