@@ -51,6 +51,18 @@ public struct PlaybackBoundaryDetector: Sendable {
     private var userChangePending = false
     /// The entry whose end was already reported by position, so it is not reported twice.
     private var endedEntryID: String?
+    /// Furthest reported position for `entryID`. A playhead reset at the real end
+    /// must not hide a song that already played.
+    private var lastPosition: TimeInterval?
+    /// Catalog duration last seen with `lastPosition`, so a short song that reached
+    /// its own end is still a finish.
+    private var lastDuration: TimeInterval?
+    /// An entry that changed or cleared before it played this far, and was not near
+    /// its own end, is a failed or replaced start. Not a natural end.
+    public static let minimumProgressForNaturalEnd: TimeInterval = 2
+    /// Set when a change or clear was refused for lack of progress. Read once with
+    /// `takeNoProgressEnd()`.
+    private var noProgressEndPending = false
 
     public init() {}
 
@@ -80,14 +92,44 @@ public struct PlaybackBoundaryDetector: Sendable {
         }
     }
 
+    /// True once after a change or clear was refused because the entry never progressed.
+    /// The app shows that as a failed start and does not advance the queue.
+    public mutating func takeNoProgressEnd() -> Bool {
+        defer { noProgressEndPending = false }
+        return noProgressEndPending
+    }
+
+    /// The entry that is going away never got far enough to be a real end.
+    /// No reported position keeps the previous rule (an entry change can still be an end).
+    private var finishingEntryNeverProgressed: Bool {
+        guard let furthest = lastPosition else { return false }
+        if let duration = lastDuration, duration > 0, furthest >= duration - 1.5 {
+            return false
+        }
+        return furthest < Self.minimumProgressForNaturalEnd
+    }
+
+    private mutating func rememberProgress(_ observation: PlaybackObservation) {
+        guard let position = observation.position else { return }
+        lastPosition = max(lastPosition ?? position, position)
+        if let duration = observation.duration { lastDuration = duration }
+    }
+
     public mutating func consume(_ observation: PlaybackObservation) -> PlaybackBoundary? {
         defer { wasPlaying = observation.isPlaying }
         guard let current = observation.entryID else {
             // Queue emptied. A natural finish of the last item is a boundary.
             let finished = entryID
+            let neverProgressed = finishingEntryNeverProgressed
             entryID = nil
+            lastPosition = nil
+            lastDuration = nil
             defer { userChangePending = false }
             if let finished, wasPlaying, !userChangePending {
+                guard !neverProgressed else {
+                    noProgressEndPending = true
+                    return nil
+                }
                 return .queueFinished(lastEntryID: finished)
             }
             return nil
@@ -95,19 +137,29 @@ public struct PlaybackBoundaryDetector: Sendable {
         guard let previous = entryID else {
             // First entry of a queue: nothing finished yet.
             entryID = current
+            lastPosition = observation.position
+            lastDuration = observation.duration
             userChangePending = false
             return nil
         }
         guard current == previous else {
             // Entry changed. Consume the app's pending request whether or not it was ours.
             let appRequested = userChangePending
+            let neverProgressed = finishingEntryNeverProgressed
             userChangePending = false
             entryID = current
+            lastPosition = observation.position
+            lastDuration = observation.duration
             endedEntryID = nil
             // A change while paused cannot be a natural advance, so it is not reported.
             guard wasPlaying, !appRequested else { return nil }
+            guard !neverProgressed else {
+                noProgressEndPending = true
+                return nil
+            }
             return .naturalEnd(finishedEntryID: previous)
         }
+        rememberProgress(observation)
         // Same entry: playback stopped at its end, and the queue kept the entry.
         guard wasPlaying, !observation.isPlaying, observation.isNearEnd(),
               endedEntryID != current, !userChangePending else { return nil }

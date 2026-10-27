@@ -34,6 +34,8 @@ struct PlayerView: View {
                       search: .live(music, station: stationRef, djSession: djSession, briefing: LiveQueueBriefing.provider(studio: studio)),
                       studio: studio,
                       isTestStation: isTestStation)
+        // TEMPORARY build 9 diagnostics. Read-only, ignores touches, no buttons.
+        .overlay(alignment: .bottomLeading) { P0TapDiagnosticsOverlay() }
         .navigationTitle(station.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)

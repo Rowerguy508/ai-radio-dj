@@ -42,6 +42,12 @@ public struct BoundaryInterpreter: Sendable {
         detector.pausedByApp(cause)
     }
 
+    /// True once after the detector refused a change or clear because the entry never
+    /// progressed. The caller shows `FailedStartReport.message` and does not advance.
+    public mutating func takeNoProgressEnd() -> Bool {
+        detector.takeNoProgressEnd()
+    }
+
     public mutating func interpret(
         _ observation: PlaybackObservation,
         queueIndex: Int,
@@ -63,5 +69,15 @@ public struct BoundaryInterpreter: Sendable {
                 return .stopped(finishedIndex: queueIndex, boundary: boundary)
             }
         }
+    }
+}
+
+/// What the player shows when a start changes or clears before it has played.
+/// The queue index stays put.
+public enum FailedStartReport {
+    public static let message = "TEMPORARY: playback moved before it started; not skipping ahead."
+
+    public static func shouldReport(step: BoundaryStep?, noProgress: Bool) -> Bool {
+        step == nil && noProgress
     }
 }

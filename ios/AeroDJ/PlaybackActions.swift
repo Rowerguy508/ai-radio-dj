@@ -68,6 +68,10 @@ struct MusicSearch {
                 return tracks.map(\.info)
             },
             play: { results, startIndex in
+                // TEMPORARY build 9 diagnostics. Read-only. Does not change playback.
+                P0TapDiagnostics.shared.markTap(
+                    transport: { String(describing: music.snapshot.transport) },
+                    playerStatus: { music.currentPlaybackStatusName })
                 // Resolve before touching the DJ session. Out-of-range / expired cache throw a
                 // visible TEMPORARY error; queueStarted never runs with an empty queue.
                 let tracks = try music.searchResults.resolve(results: results, startIndex: startIndex)

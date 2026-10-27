@@ -7,6 +7,9 @@ struct StationListView: View {
     let dependencies: AppDependencies
     @State private var stations: [Station] = Station.mockStations
     @State private var showSharedInbox = false
+    /// Only a station-row tap writes this. A song tap reads it and must not change it.
+    @State private var opened = OpenedStation()
+    @State private var path = NavigationPath()
 
     var body: some View {
         #if DEBUG
@@ -21,14 +24,19 @@ struct StationListView: View {
     }
 
     private var stationList: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List(stations) { station in
-                NavigationLink(value: station) {
+                Button {
+                    opened.open(StationRef(id: station.id.uuidString, name: station.name))
+                    path.append(station)
+                } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(station.name).font(.headline)
                         Text(station.description ?? "").font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .buttonStyle(.plain)
             }
             .navigationTitle("AeroDJ")
             .toolbar {
@@ -44,10 +52,12 @@ struct StationListView: View {
                     }
                 }
             }
-            .navigationDestination(for: Station.self) { station in
-                PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
-                           djSession: dependencies.djSession, studio: dependencies.studio,
-                           isTestStation: dependencies.mode == .testStation)
+            .navigationDestination(for: Station.self) { linked in
+                // Song taps must not move the selection. Ignore a destination value that
+                // is not the station the row tap opened.
+                PlayerView(station: stationForPlayback(fallback: linked), music: dependencies.playback,
+                           interlude: dependencies.interlude, djSession: dependencies.djSession,
+                           studio: dependencies.studio, isTestStation: dependencies.mode == .testStation)
             }
             .sheet(isPresented: $showSharedInbox) {
                 if dependencies.mode == .live, let review = SharedInboxReview.appGroupInbox() {
@@ -57,6 +67,13 @@ struct StationListView: View {
         }
         // Live only: lets Connections offer the .md file picker (nil in the test station).
         .environment(\.pickedNotes, dependencies.pickedNotes)
+    }
+
+    /// The opened station, when it is still in the list. Otherwise the linked row.
+    private func stationForPlayback(fallback: Station) -> Station {
+        guard let id = opened.stationForSongTap()?.id,
+              let match = stations.first(where: { $0.id.uuidString == id }) else { return fallback }
+        return match
     }
 }
 

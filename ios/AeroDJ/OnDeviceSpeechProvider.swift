@@ -50,6 +50,10 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
         utterance.voice = AVSpeechSynthesisVoice(identifier: voiceID) ?? AVSpeechSynthesisVoice(language: "en-US")
         self.url = url
         super.init()
+        // Buffer-only write. False keeps this synthesizer off the shared session
+        // that ApplicationMusicPlayer uses. No setCategory or setActive here.
+        // Single resume, 20 s deadline, and temp-file cleanup are unchanged.
+        synthesizer.usesApplicationAudioSession = SpeechPrepSession.usesApplicationAudioSession
         synthesizer.delegate = self
     }
 

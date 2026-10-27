@@ -122,6 +122,24 @@ final class MusicKitService: ObservableObject {
             send(.errorRaised(PlaybackError(kind: .playbackFailed, message: message, isRecoverable: true)))
             throw MusicKitError.playbackFailed(message: message)
         }
+        // Boolean only. No storefront, product, or subscription details.
+        let canPlayCatalog: Bool
+        do {
+            canPlayCatalog = try await MusicSubscription.current.canPlayCatalogContent
+        } catch {
+            let message = Self.playbackFailureMessage(error)
+            lastError = message
+            P0TapDiagnostics.shared.noteThrown(error) // TEMPORARY build 9 diagnostics
+            send(.errorRaised(PlaybackError(kind: .playbackFailed, message: message, isRecoverable: true)))
+            throw error
+        }
+        P0TapDiagnostics.shared.setCanPlayCatalog(canPlayCatalog) // TEMPORARY build 9 diagnostics
+        guard canPlayCatalog else {
+            let message = "TEMPORARY: canPlayCatalogContent=false"
+            lastError = message
+            send(.errorRaised(PlaybackError(kind: .playbackFailed, message: message, isRecoverable: true)))
+            throw MusicKitError.playbackFailed(message: message)
+        }
         // A new queue replaces whatever was on air. A DJ line that is speaking, or a break
         // handed out but not yet audible, belongs to the old queue and stops before the queue
         // is replaced, the same as `skip()`. Nil routes to `interlude.stop()`, which cancels
@@ -144,6 +162,7 @@ final class MusicKitService: ObservableObject {
             cancelPlaybackConfirmTimeout()
             let message = Self.playbackFailureMessage(error)
             lastError = message
+            P0TapDiagnostics.shared.noteThrown(error) // TEMPORARY build 9 diagnostics
             send(.errorRaised(PlaybackError(kind: .playbackFailed, message: message, isRecoverable: true)))
             // Leave the track visible but stop claiming playback.
             send(.userPaused)
@@ -156,6 +175,7 @@ final class MusicKitService: ObservableObject {
         cancelPlaybackConfirmTimeout()
         _ = sessionPolicy.userPause()
         boundaries.pausedByApp(.userPause)
+        P0TapDiagnostics.shared.noteStop(.userPause) // TEMPORARY build 9 diagnostics
         player.pause()
         isPlaying = false
         send(.userPaused)
@@ -199,13 +219,15 @@ final class MusicKitService: ObservableObject {
             let message = Self.playbackFailureMessage(error)
             lastError = message
             send(.errorRaised(PlaybackError(kind: .resumeFailed, message: message, isRecoverable: true)))
+            P0TapDiagnostics.shared.noteThrown(error) // TEMPORARY build 9 diagnostics
             throw error
         }
     }
 
     /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
-    func pausePlayerForBreak() {
+    func pausePlayerForBreak(caller: PlaybackStopCaller = .breakPause) {
         boundaries.pausedByApp()
+        P0TapDiagnostics.shared.noteStop(caller) // TEMPORARY build 9 diagnostics
         player.pause()
         isPlaying = false
     }
@@ -234,6 +256,7 @@ final class MusicKitService: ObservableObject {
         } catch {
             cancelPlaybackConfirmTimeout()
             send(.playbackStartRefused)
+            P0TapDiagnostics.shared.noteThrown(error) // TEMPORARY build 9 diagnostics
             reportError(Self.playbackFailureMessage(error))
         }
     }
@@ -247,6 +270,7 @@ final class MusicKitService: ObservableObject {
         onSongSkipped?(queueIndex)
         let next = queueIndex + 1
         guard queue.indices.contains(next) else {
+            P0TapDiagnostics.shared.noteStop(.skipAtEnd) // TEMPORARY build 9 diagnostics
             player.stop()
             send(.queueFinished)
             stateMachine.apply(.stop)
@@ -270,6 +294,9 @@ final class MusicKitService: ObservableObject {
         }
         queueIndex = index
         currentTrack = queue[index]
+        // Our own load is not a natural end. Without this, a replace while MusicKit
+        // still reads `.playing` chains into the next song.
+        boundaries.userRequestedChange()
         player.queue = ApplicationMusicPlayer.Queue(for: [song])
         finishedEntryID = nil
         logPlayGate("startTrack.queued", index: index, autoplay: autoplay)
@@ -411,6 +438,9 @@ final class MusicKitService: ObservableObject {
                 mayAutoResume: sessionPolicy.mayAutoResume,
                 userWantsPlayback: sessionPolicy.userWantsPlayback)
             if remote == .pauseBecauseHeld {
+                // A tap called userPlay(), so this pause is a real hold (call or unplug),
+                // not the tap itself.
+                P0TapDiagnostics.shared.noteStop(.pollHeld) // TEMPORARY build 9 diagnostics
                 player.pause()
                 isPlaying = false
                 logPlayGate("remoteOrPoll.pausedBecauseHeld", index: queueIndex)
@@ -424,7 +454,12 @@ final class MusicKitService: ObservableObject {
                 cancelPlaybackConfirmTimeout()
             }
         }
-        guard let step = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count) else {
+        let step = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count)
+        if FailedStartReport.shouldReport(step: step, noProgress: boundaries.takeNoProgressEnd()) {
+            // Stay on this track. Do not call onBoundary or advance queueIndex.
+            reportError(FailedStartReport.message)
+        }
+        guard let step else {
             isPlaying = observation.isPlaying
             return
         }
@@ -459,6 +494,7 @@ final class MusicKitService: ObservableObject {
 
     /// Phone call or route change. The policy decides; this only performs the directive.
     private func applySession(_ notice: AudioSessionNotice) async {
+        P0TapDiagnostics.shared.noteSession(SessionNoticeKind(notice)) // TEMPORARY build 9 diagnostics
         let breakActive = isBreakActive
         let stopReason: InterludeStopReason?
         switch notice {
@@ -478,7 +514,7 @@ final class MusicKitService: ObservableObject {
         }
         switch sessionPolicy.handle(notice, breakIsActive: breakActive) {
         case .suspendPlayback:
-            pausePlayerForBreak()
+            pausePlayerForBreak(caller: .sessionSuspend)
             switch notice {
             case .interruptionBegan:
                 send(.interruptionPaused)
@@ -555,6 +591,7 @@ final class MusicKitService: ObservableObject {
             logPlayGate("playIfStillAllowed.prepared", index: queueIndex)
         } catch {
             logPlaybackError("prepareToPlay", error)
+            P0TapDiagnostics.shared.noteThrown(error) // TEMPORARY build 9 diagnostics
             throw error
         }
         do {
@@ -562,6 +599,7 @@ final class MusicKitService: ObservableObject {
             logPlayGate("playIfStillAllowed.playReturned", index: queueIndex)
         } catch {
             logPlaybackError("player.play", error)
+            P0TapDiagnostics.shared.noteThrown(error) // TEMPORARY build 9 diagnostics
             throw error
         }
         let decision = PlaybackStartGuard.afterPlay(
@@ -569,6 +607,7 @@ final class MusicKitService: ObservableObject {
             userWantsPlayback: sessionPolicy.userWantsPlayback
         )
         guard decision == .keepPlaying else {
+            P0TapDiagnostics.shared.noteStop(.afterPlayHeld) // TEMPORARY build 9 diagnostics
             player.pause()
             isPlaying = false
             logPlayGate("playIfStillAllowed.pausedBecauseHeld", index: queueIndex)
@@ -641,12 +680,16 @@ final class MusicKitService: ObservableObject {
         log.error("TEMPORARY \(gate, privacy: .public) failed: \(typeName, privacy: .public) code \(code, privacy: .public): \(text, privacy: .public)")
     }
 
-    /// TEMPORARY diagnostic message for the UI and banner (same rule as searchFailureMessage).
+    /// TEMPORARY diagnostic message for the UI and banner. Domain, code, and
+    /// localizedDescription only. Never debugDescription, userInfo, or a title.
     static func playbackFailureMessage(_ error: Error) -> String {
-        let typeName = String(describing: type(of: error))
-        let code = (error as NSError).code
-        let text = error.localizedDescription
-        return "TEMPORARY: playback failed: \(typeName) code \(code). \(text)"
+        let ns = error as NSError
+        return "TEMPORARY: playback failed: \(ns.domain) code \(ns.code). \(ns.localizedDescription)"
+    }
+
+    /// Enum name of MusicKit's playback status. TEMPORARY build 9 diagnostics.
+    var currentPlaybackStatusName: String {
+        P0TapDiagnostics.statusName(player.state.playbackStatus)
     }
 
     /// Route lock-screen / Control Center play through `resume()` (userPlay + playIfStillAllowed)
@@ -736,6 +779,7 @@ final class MusicKitService: ObservableObject {
         let message = "TEMPORARY: MusicKit status \(statusName) after start; never reached playing."
         lastError = message
         isPlaying = false
+        P0TapDiagnostics.shared.noteStop(.confirmFailed) // TEMPORARY build 9 diagnostics
         player.pause()
         send(.errorRaised(PlaybackError(kind: .playbackFailed, message: message, isRecoverable: true)))
         send(.userPaused)
