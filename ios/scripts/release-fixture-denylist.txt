@@ -12,9 +12,8 @@
 #
 # Positive controls, so a broken scan cannot pass vacuously:
 # - Debug AeroDJCore objects must contain FixtureContextSource.
-# - The Debug AeroDJ executable must contain PlayingScreenPreviewLoader and mockStations.
-# Those two stay in a Debug build when the preview and the mock list are wrapped
-# in #if DEBUG. Release must contain none of the tokens below.
+# - The Debug AeroDJ executable must contain PlayingScreenPreviewLoader and PlaybackFixtures.
+# Both are wrapped in #if DEBUG, so they stay in a Debug build only. Release must contain none of the tokens below.
 
 # Debug-only synthetic context source (TestStation.swift, inside #if DEBUG).
 FixtureContextSource
@@ -28,5 +27,6 @@ AeroDJTestStation
 PlaybackFixtures
 # SwiftUI preview host in the app target. It builds PlayingScreen as the test station.
 PlayingScreenPreviewLoader
-# Hard-coded Morning Calm / Late Night list used as the shipping station list.
+# Old name of the shipping station list (#83 renamed it defaultStations). Kept so
+# the fixture name cannot come back. It is no longer a Debug control.
 mockStations

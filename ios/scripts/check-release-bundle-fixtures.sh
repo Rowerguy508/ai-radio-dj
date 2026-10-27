@@ -153,7 +153,7 @@ control_visible() {
   return 1
 }
 missing=
-for required in PlayingScreenPreviewLoader mockStations; do
+for required in PlayingScreenPreviewLoader PlaybackFixtures; do
   if ! control_visible "$required"; then
     missing="$missing $required"
   fi

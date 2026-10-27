@@ -40,7 +40,7 @@ make_app() {
   printf 'share' > "$dest/PlugIns/AeroDJShare.appex/AeroDJShare"
 }
 
-make_app "$tmp/debug/AeroDJ.app" 'PlayingScreenPreviewLoader mockStations'
+make_app "$tmp/debug/AeroDJ.app" 'PlayingScreenPreviewLoader PlaybackFixtures'
 make_app "$tmp/release-path/AeroDJ.app" '/src/AeroDJCore/Playback/PlaybackFixtures.swift'
 "$BUNDLE" "$tmp/debug/AeroDJ.app" "$tmp/release-path/AeroDJ.app" >/dev/null || fail "bundle scan should pass when Release has only the path form"
 
