@@ -55,6 +55,9 @@ public final class DJBreakSession {
     private var queueSetupPending = false
     /// Bumped on every begin/cancel so a cancelled setup cannot clear a newer one.
     private var queueSetupGeneration = 0
+    /// Integrations withdrawn while background tap setup was still applying the new queue.
+    /// `queueStarted` strips tap-time sources/briefing for these so snapshots cannot re-introduce them.
+    private var pendingWithdrawnIntegrations: Set<StationIntegration> = []
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -117,6 +120,8 @@ public final class DJBreakSession {
                                        sources: [ConnectionItem] = []) -> Task<Void, Never> {
         queueSetupTask?.cancel()
         pendingSongStart = nil
+        // A newer tap captures fresh sources; prior mid-setup withdrawals do not apply to it.
+        pendingWithdrawnIntegrations = []
         queueSetupGeneration += 1
         let generation = queueSetupGeneration
         queueSetupPending = true
@@ -143,6 +148,8 @@ public final class DJBreakSession {
         pendingSongStart = nil
         queueSetupGeneration += 1
         queueSetupPending = false
+        // Cancelled setup never applies tap-time sources; do not poison a later tap.
+        pendingWithdrawnIntegrations = []
     }
 
     /// A new queue: everything prepared for the old one is dropped, then the queue is planned
@@ -170,11 +177,27 @@ public final class DJBreakSession {
         pendingStop = nil
         onAir = nil
         self.sources = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // Integrations withdrawn while this setup was in flight: drop their tap-time
+        // ConnectionItem snapshots so mayBeNarrated fails closed (sources are snapshots,
+        // not live consent — see ConnectionsPresentation.ConnectionItem.mayBeNarrated).
+        let withdrawn = pendingWithdrawnIntegrations
+        if !withdrawn.isEmpty {
+            for (id, item) in self.sources where withdrawn.contains(item.integration) {
+                self.sources[id] = nil
+            }
+            pendingWithdrawnIntegrations = []
+        }
         let at = now()
-        self.briefing = station.active.briefing.enabled ? briefing.map { b in
-            NarrationHandoff(cues: b.cues.filter { mayBeNarrated($0, at: at) },
-                             maxSpokenSeconds: b.maxSpokenSeconds, experienceSeconds: b.experienceSeconds)
-        } : nil
+        // Withdrawal during pending setup cleared briefing and recorded integrations;
+        // never re-introduce the tap-time briefing after a withdrawal.
+        if !withdrawn.isEmpty || !station.active.briefing.enabled {
+            self.briefing = nil
+        } else {
+            self.briefing = briefing.map { b in
+                NarrationHandoff(cues: b.cues.filter { mayBeNarrated($0, at: at) },
+                                 maxSpokenSeconds: b.maxSpokenSeconds, experienceSeconds: b.experienceSeconds)
+            }
+        }
         deliveredBriefing = []
         playing = nil
         breaks = [:]
@@ -320,11 +343,29 @@ public final class DJBreakSession {
         if change.invalidatesPreparedBreaks {
             // Always cancel in-flight VOICE renders (no spend after commentary/briefing off).
             await preparer.cancelAll()
+            // Withdrawal / briefing-off handling must run even while tap setup is pending
+            // (Sentinel P1). The early return below only skips replan on the previous queue.
+            if !change.withdrawnIntegrations.isEmpty {
+                pendingWithdrawnIntegrations.formUnion(change.withdrawnIntegrations)
+                briefing = nil
+                // Same immediate purge ConnectionsModel does via NarrationPurger: drop known
+                // sources for the withdrawn integrations (stops an on-air break that mentions them).
+                let ids = Set(sources.values
+                    .filter { change.withdrawnIntegrations.contains($0.integration) }
+                    .map(\.id))
+                if !ids.isEmpty {
+                    if let purger { await purger.purge(sourceItemIDs: ids) }
+                    else {
+                        purge(sourceItemIDs: ids)
+                        await preparer.purge(sourceItemIDs: ids)
+                    }
+                }
+            } else if !change.active.briefing.enabled {
+                briefing = nil
+            }
             if queueSetupPending {
-                // Tap setup is still applying the new queue. Let it finish: queueStarted /
-                // replan read station.active, so the planned queue is the new tracks with
-                // current settings (no speech when commentary is off). Do not cancel setup
-                // or replan on the previous queue's tracks (Sentinel P2).
+                // Let setup finish with the new tracks + current settings (P2). Withdrawal
+                // was recorded above; queueStarted strips tap-time snapshots before planning.
                 return
             }
             // Commentary or briefing off, or an integration withdrawn: drop everything prepared,
@@ -371,6 +412,14 @@ public final class DJBreakSession {
     var testQueueSetupPending: Bool { queueSetupPending }
     /// Test hook: ids of the queue `queueStarted` last applied.
     var testQueueTrackIDs: [String] { tracks.map(\.id) }
+    /// Test hook: briefing is absent after withdrawal / briefing-off.
+    var testBriefingIsNil: Bool { briefing == nil }
+    /// Test hook: personal source item ids still present in the briefing or planned breaks.
+    var testPlannedSourceItemIDs: Set<UUID> {
+        var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
+        for b in breaks.values { ids.formUnion(b.cues.compactMap(\.sourceItemID)) }
+        return ids
+    }
     /// Test hook: runs at the start of `queueStarted` so cancel races can be asserted.
     var testBeforeQueueStarted: (@MainActor () async -> Void)?
 }

@@ -54,8 +54,11 @@ final class TapPlayBeforeBreakTests: XCTestCase {
         (0..<n).map { DJTrack(id: "t\($0)", title: "T\($0)", artist: "A\($0)") }
     }
 
-    private func session(voice: any VoiceProvider) async -> (DJBreakSession, DJPresentationStore, StationConfigurationModel) {
-        let config = StationConfiguration(commentary: .frequent)
+    private func session(voice: any VoiceProvider,
+                         requestedIntegrations: Set<StationIntegration> = []) async
+    -> (DJBreakSession, DJPresentationStore, StationConfigurationModel) {
+        let config = StationConfiguration(commentary: .frequent,
+                                          requestedIntegrations: requestedIntegrations)
         let station = StationConfigurationModel(
             store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
             consent: StaticIntegrationConsent([:]))
@@ -244,6 +247,49 @@ final class TapPlayBeforeBreakTests: XCTestCase {
         XCTAssertEqual(session.testQueueTrackIDs, newTracks.map(\.id))
         XCTAssertTrue(session.plannedBoundaries.isEmpty,
                       "commentary off after setup replans with no speech")
+        await session.stop()
+    }
+
+
+    /// Sentinel P1: withdrawing an integration while tap setup is pending must not let
+    /// tap-time ConnectionItem snapshots plan or speak that source. Early return skips
+    /// replan only — withdrawal still clears briefing and is applied when setup finishes.
+    func testWithdrawnIntegrationMidSetupDropsBriefingAndSourceCues() async throws {
+        let itemID = UUID()
+        let cue = NarrationCue(
+            id: UUID(), order: 0, group: 0, kind: .upcomingEvent, text: "Standup at 10",
+            estimatedSeconds: 2, maxSeconds: 4, sourceItemID: itemID, source: .calendar,
+            provenance: "cal")
+        let handoff = NarrationHandoff(cues: [cue], maxSpokenSeconds: 150, experienceSeconds: 300)
+        let item = ConnectionItem(id: itemID, integration: .calendar, title: "Standup",
+                                  state: .approved, sensitivity: .medium)
+
+        let (session, _, station) = await session(voice: PacedVoice(),
+                                                  requestedIntegrations: [.calendar])
+        let gate = Gate()
+        session.testBeforeQueueStarted = { await gate.wait() }
+        let setup = session.beginQueueInBackground(tracks(8), briefing: handoff, sources: [item])
+        for _ in 0..<100 where !session.queueSetupIsPendingForTests {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(session.queueSetupIsPendingForTests)
+
+        await station.setIntegration(.calendar, requested: false)
+        for _ in 0..<50 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(session.queueSetupIsPendingForTests,
+                      "withdrawal must not cancel in-flight tap queue setup")
+        XCTAssertTrue(session.testBriefingIsNil,
+                      "withdrawal must clear briefing immediately, even while setup is pending")
+
+        gate.open()
+        await setup.value
+        XCTAssertFalse(session.queueSetupIsPendingForTests)
+        XCTAssertTrue(session.testBriefingIsNil,
+                      "deferred setup must not re-introduce the tap-time briefing after withdrawal")
+        XCTAssertFalse(session.testPlannedSourceItemIDs.contains(itemID),
+                       "no cue from the withdrawn integration may be planned")
         await session.stop()
     }
 
