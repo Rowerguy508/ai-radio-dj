@@ -276,10 +276,9 @@ extension View {
 // MARK: - DJ status
 
 /// The DJ line. Renders `DJStatusPresentation` headlines for preparing and failed.
-/// Every `.ready` draws nothing, the same as idle: the core still has a headline
-/// ("DJ break after this song" / "Briefing after this song") and a VoiceOver detail
-/// ("… ready for after this song"), and either can stay up when no break plays.
-/// Speaking draws no badge.
+/// Every `.ready` draws nothing, the same as idle: Core keeps `.ready` headline and
+/// VoiceOver detail empty so no break / "after this song" text can surface. Speaking
+/// draws no badge.
 struct DJStatusLine: View {
     let presentation: DJStatusPresentation
     var onReview: (() -> Void)?

@@ -211,8 +211,10 @@ public struct DJStatusPresentation: Equatable, Sendable {
         case .preparing(let briefing):
             headline = briefing ? "Preparing your briefing" : "Preparing a DJ break"
             reviewCount = nil
-        case .ready(let briefing, _):
-            headline = briefing ? "Briefing after this song" : "DJ break after this song"
+        case .ready:
+            // No "after this song" / break headline: Nova's DJStatusLine already hides `.ready`,
+            // and VoiceOver must not hear break text either when no break plays (#89 / stale-ready).
+            headline = nil
             reviewCount = nil
         case .speaking(let briefing):
             headline = briefing ? "Briefing" : "DJ"

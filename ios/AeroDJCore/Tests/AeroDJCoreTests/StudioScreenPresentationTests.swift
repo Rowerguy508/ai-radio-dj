@@ -100,6 +100,11 @@ final class StudioScreenPresentationTests: XCTestCase {
                 XCTAssertFalse(p.animatesActivity, "\(s)")
                 XCTAssertFalse(p.accessibilityLabel.contains("On Air"), "\(s)")
             }
+            if case .ready = s {
+                XCTAssertNil(p.headline, "ready must not print a break headline")
+                XCTAssertFalse(p.accessibilityLabel.localizedCaseInsensitiveContains("break"), "\(s)")
+                XCTAssertFalse(p.accessibilityLabel.localizedCaseInsensitiveContains("after this song"), "\(s)")
+            }
         }
     }
 
@@ -107,6 +112,14 @@ final class StudioScreenPresentationTests: XCTestCase {
         let idle = DJStatusPresentation(state: .idle)
         XCTAssertNil(idle.headline)
         XCTAssertEqual(idle.accessibilityLabel, "")
+        for ready in [DJStudioState.ready(includesBriefing: false, seconds: 8),
+                      .ready(includesBriefing: true, seconds: 40)] {
+            let p = DJStatusPresentation(state: ready)
+            XCTAssertNil(p.headline, "ready draws nothing, same as idle")
+            XCTAssertEqual(p.accessibilityLabel, "")
+            XCTAssertFalse(p.accessibilityLabel.localizedCaseInsensitiveContains("break"))
+            XCTAssertFalse(p.accessibilityLabel.localizedCaseInsensitiveContains("after this song"))
+        }
         let review = DJStatusPresentation(state: .failed(.consentReviewRequired(pendingCount: 3)))
         XCTAssertEqual(review.reviewCount, 3)
         XCTAssertEqual(review.headline, "3 to review")
