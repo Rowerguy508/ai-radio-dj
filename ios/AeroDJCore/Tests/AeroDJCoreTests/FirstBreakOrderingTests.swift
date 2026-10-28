@@ -162,4 +162,36 @@ final class FirstBreakOrderingTests: XCTestCase {
         XCTAssertNil(session.testHeldSongStartIndex)
         await session.stop()
     }
+
+    /// Sentinel (#128 review): consent withdrawn during `play`, then `play` throws. The old
+    /// queue stays active and must never narrate the withdrawn item.
+    func testConsentWithdrawnDuringPlayThenPlayThrowsOldQueueNeverNarratesTheItem() async throws {
+        let itemID = UUID()
+        let cue = NarrationCue(
+            id: UUID(), order: 0, group: 0, kind: .upcomingEvent, text: "Standup at 10",
+            estimatedSeconds: 2, maxSeconds: 4, sourceItemID: itemID, source: .calendar, provenance: "cal")
+        let handoff = NarrationHandoff(cues: [cue], maxSpokenSeconds: 150, experienceSeconds: 300)
+        let item = ConnectionItem(id: itemID, integration: .calendar, title: "Standup",
+                                  state: .approved, sensitivity: .medium)
+        let (session, station) = await session(requestedIntegrations: [.calendar])
+        let old = tracks("old", 8)
+        await session.queueStarted(old, briefing: handoff, sources: [item])
+        XCTAssertFalse(session.testBriefingIsNil, "precondition: the old queue carries the briefing")
+        do {
+            _ = try await tap(session, tracks("new", 6), briefing: handoff, sources: [item]) {
+                await station.setIntegration(.calendar, requested: false)
+                for _ in 0..<30 { try? await Task.sleep(for: .milliseconds(10)) }   // change stream hop
+                throw PlayFailed()
+            }
+            XCTFail("play error must propagate")
+        } catch is PlayFailed {}
+        XCTAssertEqual(session.testQueueTrackIDs, old.map(\.id), "the old queue stays active")
+        XCTAssertFalse(session.testQueueSetupPending)
+        XCTAssertTrue(session.testBriefingIsNil, "the withdrawal still applies after the failed play")
+        XCTAssertFalse(session.testPlannedSourceItemIDs.contains(itemID),
+                       "the old queue never plans the withdrawn item")
+        await session.songStarted(index: 0, remaining: .seconds(180))
+        XCTAssertFalse(session.testPlannedSourceItemIDs.contains(itemID))
+        await session.stop()
+    }
 }
