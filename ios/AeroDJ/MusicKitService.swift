@@ -1,6 +1,7 @@
 import Foundation
 @preconcurrency import MusicKit
 import AVFoundation
+import CallKit
 import MediaPlayer
 import AeroDJCore
 import OSLog
@@ -40,6 +41,11 @@ final class MusicKitService: ObservableObject {
     private var audioSessionConfigured = false
     private var boundaries = BoundaryInterpreter()
     private var sessionPolicy = AudioSessionPolicy()
+    /// Build 10 P0: ignores only the interruption our own start causes (see the type's doc).
+    private var selfStartGate = SelfStartInterruptionGate()
+    /// Read-only: whether any call is ringing or connected. Gates `selfStartGate`.
+    private let callObserver = CXCallObserver()
+    private let callRelay = CallChangeRelay()
     private var deferredStart = DeferredSongStart()
     /// True after the first observer install, including a retry that follows a failed `setActive`.
     private var sessionRegistration = SessionRegistrationGate()
@@ -95,7 +101,7 @@ final class MusicKitService: ObservableObject {
 #if DEBUG
         PlaybackCallLog.shared.recordAuthorize()
 #endif
-        // Category and observers only. setActive(true) runs in playIfStillAllowed, immediately before play().
+        // Category and observers only. The app never calls setActive(true); MusicKit activates on play().
         let status = await MusicAuthorization.request()
         await apply(status)
     }
@@ -634,6 +640,7 @@ final class MusicKitService: ObservableObject {
             P0TapDiagnostics.shared.record("startFailure.stale", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             return
         }
+        applyDeferredInterruptions(selfStartGate.startFailed(attempt))
         if effect.cancelsConfirm { cancelPlaybackConfirmTimeout() }
         if let message = effect.message { lastError = message }
         isPlaying = false
@@ -643,6 +650,10 @@ final class MusicKitService: ObservableObject {
     /// The current attempt reached `.playing` (watchdog or poll). Clears a reported timeout.
     private func confirmStart(_ attempt: PlaybackAttemptID) {
         guard attempts.isCurrent(attempt) else { return }
+        if selfStartGate.startConfirmed(attempt) {
+            // MusicKit is playing: the deferred .began was our own start's. -Atlas
+            P0TapDiagnostics.shared.record("interruption.discarded.musicPlaying", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+        }
         send(.playbackConfirmed)
         isPlaying = true
         cancelPlaybackConfirmTimeout()
@@ -657,6 +668,10 @@ final class MusicKitService: ObservableObject {
     private func beginAttempt(userChangedQueue: Bool) -> PlaybackAttemptID {
         if userChangedQueue { attempts.userChangedQueue() }
         let attempt = attempts.beginStart()
+        if selfStartGate.hasDeferred {
+            P0TapDiagnostics.shared.record("interruption.deferred.droppedByNewStart", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+        }
+        selfStartGate.startBegan(attempt)
         confirmReportedAttempt = nil
         P0TapDiagnostics.shared.record("attempt.begin", detail: "queueChange=\(userChangedQueue)", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         return attempt
@@ -666,6 +681,48 @@ final class MusicKitService: ObservableObject {
 
     /// Phone call or route change. The policy decides; this only performs the directive.
     private func applySession(_ notice: AudioSessionNotice) async {
+        let breakActive = isBreakActive
+        let callActive = callActiveNow
+        let gate = selfStartGate.decide(notice, at: ProcessInfo.processInfo.systemUptime,
+                                        current: attempts.current, callActive: callActive,
+                                        breakActive: breakActive)
+        switch gate {
+        case .deferSelfStart:
+            // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            P0TapDiagnostics.shared.record("interruption.deferred.selfStart", detail: "call=\(callActive) break=\(breakActive)", attempt: attempts.current)
+            return
+        case .ignorePairedEnd:
+            P0TapDiagnostics.shared.record("interruption.ignored.pairedEnd", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            return
+        case .apply:
+            break
+        }
+        if notice == .interruptionBegan {
+            // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            P0TapDiagnostics.shared.record("interruption.applied", detail: "call=\(callActive) break=\(breakActive)", attempt: attempts.current)
+        }
+        await applySessionUngated(notice)
+    }
+
+    private var callActiveNow: Bool { callObserver.calls.contains { !$0.hasEnded } }
+
+    /// Deferred interruptions that the start's failure, its 8 s report or a call now applies,
+    /// in arrival order, exactly as they would have applied when they arrived.
+    private func applyDeferredInterruptions(_ notices: [AudioSessionNotice]) {
+        guard !notices.isEmpty else { return }
+        P0TapDiagnostics.shared.record("interruption.deferred.applied", detail: "count=\(notices.count) call=\(callActiveNow)", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+        Task { @MainActor [weak self] in
+            for notice in notices { await self?.applySessionUngated(notice) }
+        }
+    }
+
+    /// A call started or changed while a `.began` is deferred: apply it now.
+    private func callsChanged() {
+        guard selfStartGate.hasDeferred, callActiveNow else { return }
+        applyDeferredInterruptions(selfStartGate.flush())
+    }
+
+    private func applySessionUngated(_ notice: AudioSessionNotice) async {
         let breakActive = isBreakActive
         let stopReason: InterludeStopReason?
         switch notice {
@@ -705,6 +762,7 @@ final class MusicKitService: ObservableObject {
     /// Applies the state-machine and playback events for a break that just ended.
     /// The caller starts music only when `decision.resumeMusic` is true.
     func completeNarration(_ decision: NarrationResumeDecision) {
+        releaseSessionAfterBreak()
         if let event = decision.audioEvent {
             stateMachine.apply(event)
         }
@@ -741,10 +799,11 @@ final class MusicKitService: ObservableObject {
         if !audioSessionConfigured {
             // Category only. Setting it does not stop other audio; activation waits for playback.
             do {
-                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+                let options: AVAudioSession.CategoryOptions = AppAudioSessionConfig.mixesWithOthers ? [.mixWithOthers] : []
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: options)
                 audioSessionConfigured = true
                 // TEMPORARY P0 diagnostics (remove: #121) -Atlas
-                P0TapDiagnostics.shared.record("session.setCategory", detail: "playback/default options=[]")
+                P0TapDiagnostics.shared.record("session.setCategory", detail: "playback/default mix=\(AppAudioSessionConfig.mixesWithOthers)")
             } catch {
                 // Non-fatal: retried on the next call. TEMPORARY diagnostic only.
                 logPlaybackError("setCategory", error)
@@ -755,9 +814,11 @@ final class MusicKitService: ObservableObject {
         guard sessionRegistration.registerIfNeeded() else { return }
         installSessionMonitor()
         installRemoteCommands()
+        callRelay.onChange = { [weak self] in self?.callsChanged() }
+        callObserver.setDelegate(callRelay, queue: nil)
     }
 
-    /// `setActive(true)`, `prepareToPlay()`, then `play()`. After `play()` returns, a hold that
+    /// `prepareToPlay()`, then `play()` (MusicKit activates the session). After `play()` returns, a hold that
     /// landed during the await pauses again and does not count as a resume.
     private func playIfStillAllowed() async throws -> Bool {
         logPlayGate("playIfStillAllowed.begin", index: queueIndex)
@@ -770,8 +831,11 @@ final class MusicKitService: ObservableObject {
             P0TapDiagnostics.shared.recordPlayError("prepareToPlay.threw", error, attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             throw error
         }
+        let playAttempt = attempts.current
+        if let playAttempt { selfStartGate.playCalled(playAttempt, at: ProcessInfo.processInfo.systemUptime) }
         do {
             try await player.play()
+            if let playAttempt { selfStartGate.playReturned(playAttempt, at: ProcessInfo.processInfo.systemUptime) }
             logPlayGate("playIfStillAllowed.playReturned", index: queueIndex)
             // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             P0TapDiagnostics.shared.record("play.returned", detail: "status=\(P0TapDiagnostics.statusName(player.state.playbackStatus))", attempt: attempts.current)
@@ -798,7 +862,11 @@ final class MusicKitService: ObservableObject {
     /// Activates the session right before playback starts, so launching the app does not stop
     /// the user's other audio. Runs on every play, because the system can deactivate the session.
     private func activateAudioSessionForPlayback() throws {
-        guard AudioSessionActivation.shouldActivate(during: .playback) else { return }
+        guard AudioSessionActivation.shouldActivate(during: .playback) else {
+            // Build 10 P0: ApplicationMusicPlayer activates the session; ours stays inactive.
+            P0TapDiagnostics.shared.record("session.setActive.skipped", detail: "owner=musicKit", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            return
+        }
         do {
             try AVAudioSession.sharedInstance().setActive(true)
             logPlayGate("audioSession.active", index: queueIndex)
@@ -807,6 +875,18 @@ final class MusicKitService: ObservableObject {
             logPlaybackError("setActive", error)
             P0TapDiagnostics.shared.recordPlayError("session.setActive.threw", error, attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             throw error
+        }
+    }
+
+    /// The DJ clip's `AVAudioPlayer.play()` activated the app session. Release it before music
+    /// resumes or the next song loads, so it never competes with `ApplicationMusicPlayer`.
+    private func releaseSessionAfterBreak() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            P0TapDiagnostics.shared.record("session.releasedAfterBreak", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+        } catch {
+            logPlaybackError("setActiveFalse", error)
+            P0TapDiagnostics.shared.recordPlayError("session.release.threw", error, attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         }
     }
 
@@ -968,6 +1048,7 @@ final class MusicKitService: ObservableObject {
     /// boundary, no advance. Transport stays `.preparing`, so the UI never claims `.playing`.
     private func reportConfirmProblem(_ failure: StartFailure, attempt: PlaybackAttemptID) {
         guard attempts.isCurrent(attempt) else { return }
+        applyDeferredInterruptions(selfStartGate.startFailed(attempt))
         let attemptNumber = attempt.number
         log.notice("TEMPORARY confirm.report attempt=\(attemptNumber, privacy: .public) index=\(self.queueIndex, privacy: .public)")
         P0TapDiagnostics.shared.recordRefusal("confirm.reportedNoPause", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
@@ -1137,5 +1218,15 @@ extension Track {
     /// The UI-facing view of a track. The UI never sees `Song`.
     var info: TrackInfo {
         TrackInfo(id: id, title: title, artistName: artistName, artworkURL: artworkURL)
+    }
+}
+
+/// Forwards CallKit call changes (read-only) to `MusicKitService` on the main actor. -Atlas
+final class CallChangeRelay: NSObject, CXCallObserverDelegate {
+    var onChange: (@MainActor @Sendable () -> Void)?
+
+    func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
+        let handler = onChange
+        Task { @MainActor in handler?() }
     }
 }

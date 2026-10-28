@@ -64,14 +64,30 @@ extension BreakPlayerOutcome {
     }
 }
 
-/// `setActive(true)` belongs to playback, never to authorization.
+/// Where the app could call `setActive(true)`.
 public enum AudioActivationPoint: Equatable, Sendable {
     case authorization
     case playback
 }
 
+/// Build 10 P0 (-Atlas): the app never activates its own `AVAudioSession`.
+/// Music plays through `ApplicationMusicPlayer`, and MusicKit activates the session it plays
+/// through. On the Duo, our `setActive(true)` (category `.playback`, options `[]`, not mixable)
+/// was interrupted 1 ms later (`shouldResume=false`), the interruption set a system hold, and the
+/// hold refused the tapped start. The app still sets the category (that activates nothing).
 public enum AudioSessionActivation {
     public static func shouldActivate(during point: AudioActivationPoint) -> Bool {
-        point == .playback
+        switch point {
+        case .authorization, .playback: false
+        }
     }
+}
+
+/// Build 10 P0 (-Atlas, Fry's review): `ApplicationMusicPlayer` plays outside the app's session,
+/// so any activation of a non-mixable app session interrupts it. The DJ clip's `AVAudioPlayer.play()`
+/// activates the app session implicitly, so the category mixes with others and the session is
+/// released (notifying others) when each break ends, before the next song starts.
+public enum AppAudioSessionConfig {
+    /// `AVAudioSession.CategoryOptions.mixWithOthers` on the `.playback` category.
+    public static let mixesWithOthers = true
 }
