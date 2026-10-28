@@ -22,6 +22,27 @@ final class PlaybackFailureCopyTests: XCTestCase {
         XCTAssertEqual(PlaybackFailureCopy.fallback, "Apple Music couldn't start this song. Try again.")
     }
 
+    func testThrownSupersededGetsItsOwnCopy() {
+        XCTAssertEqual(PlaybackFailureCopy.bannerMessage(for: ThrownPlaybackFailure.superseded),
+                       "Switched to your newer pick.")
+        XCTAssertEqual(PlaybackFailureCopy.bannerMessage(for: ThrownPlaybackFailure.superseded),
+                       PlaybackFailureCopy.message(for: .superseded))
+        XCTAssertNotEqual(PlaybackFailureCopy.bannerMessage(for: ThrownPlaybackFailure.superseded),
+                          PlaybackFailureCopy.fallback)
+    }
+
+    func testThrownCarriedCopyIsKept() {
+        for kind in PlaybackFailureKind.allCases {
+            let copy = PlaybackFailureCopy.message(for: kind)
+            XCTAssertEqual(PlaybackFailureCopy.bannerMessage(for: ThrownPlaybackFailure.carriesCopy(copy)), copy, "\(kind)")
+        }
+    }
+
+    func testThrownUnrecognizedGetsTheFallback() {
+        XCTAssertEqual(PlaybackFailureCopy.bannerMessage(for: ThrownPlaybackFailure.unrecognized),
+                       PlaybackFailureCopy.fallback)
+    }
+
     func testExpiredResultsMatchTheSearchBanner() {
         XCTAssertEqual(PlaybackFailureCopy.message(for: .resultsExpired),
                        SearchFailureCopy.message(for: .resultsExpired))

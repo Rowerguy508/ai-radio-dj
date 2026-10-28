@@ -56,4 +56,28 @@ public enum PlaybackFailureCopy {
             "Switched to your newer pick."
         }
     }
+
+    /// The banner for an error a play, resume or start threw (#136 follow-up). The app maps its
+    /// own error to `ThrownPlaybackFailure`; the words are decided here so they're testable.
+    /// A superseded start gets its own copy instead of falling through to the fallback.
+    public static func bannerMessage(for thrown: ThrownPlaybackFailure) -> String {
+        switch thrown {
+        case let .carriesCopy(message):
+            message
+        case .superseded:
+            message(for: PlaybackFailureKind.superseded)
+        case .unrecognized:
+            fallback
+        }
+    }
+}
+
+/// What a thrown playback error means for the banner, without its type, text or code.
+public enum ThrownPlaybackFailure: Equatable, Sendable {
+    /// The error already carries fixed `PlaybackFailureCopy` (`MusicKitError.playbackFailed`).
+    case carriesCopy(String)
+    /// A newer tap, resume or skip replaced this start (`MusicKitError.superseded`).
+    case superseded
+    /// Any other error. Its own text is never shown.
+    case unrecognized
 }

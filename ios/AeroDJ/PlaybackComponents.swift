@@ -720,14 +720,10 @@ struct StartListeningView: View {
     static func playFailureMessage(_ error: Error) -> String {
         let code = PlaybackErrorCode(error)
         playLog.error("Apple Music play failed: domain=\(code.domain, privacy: .public) code=\(code.code, privacy: .public)")
-        switch error {
-        case let MusicKitError.playbackFailed(message):
-            return message
-        case MusicKitError.notAuthorized:
+        if case MusicKitError.notAuthorized = error {
             return MusicKitError.notAuthorized.errorDescription ?? PlaybackFailureCopy.fallback
-        default:
-            return PlaybackFailureCopy.message(for: .couldNotStart)
         }
+        return PlaybackFailureCopy.bannerMessage(for: ThrownPlaybackFailure(error))
     }
 
     private static let playLog = Logger(subsystem: "com.aerodj.app", category: "playback")
