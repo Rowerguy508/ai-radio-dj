@@ -258,20 +258,67 @@ final class SongEndInterruptionTests: XCTestCase {
         XCTAssertEqual(h.startNext(), .plays)
     }
 
-    func testEndedWithoutShouldResumeStartsSong2() {
+    /// Orion: the OS said do not resume, so song 2 holds until the user presses play.
+    func testEndedWithoutShouldResumeHoldsSong2UntilUserPlay() {
         var h = Harness()
         h.play(through: 199)
         h.notice(.interruptionBegan)
         h.notice(.interruptionEnded(shouldResume: false))
         h.poll("s1", playing: false, at: 0)
-        XCTAssertEqual(h.startNext(), .plays)
+        assertOneHandoff(h)
+        XCTAssertEqual(h.startNext(), .held(.deferSilently))
+        XCTAssertTrue(h.policy.pausedBySystem)
+        h.policy.userPlay()
+        XCTAssertTrue(h.policy.mayAutoResume, "the user's play is the only release")
+    }
+
+    /// Siri (or another system interruption) begins at the end, never ends, and other audio plays.
+    func testSiriNeverEndsWithOtherAudioHoldsSong2() {
+        var h = Harness()
+        h.world.otherAudioPlaying = true
+        h.world.secondaryHint = true
+        h.play(through: 199)
+        h.notice(.interruptionBegan)
+        h.poll("s1", playing: false, at: 199.4)
+        h.poll("s1", playing: false, at: 0)
+        h.poll("s1", playing: false, at: 0)
+        assertOneHandoff(h)
+        XCTAssertEqual(h.startNext(), .held(.deferSilently))
+        XCTAssertTrue(h.policy.interruptionOngoing)
+    }
+
+    /// Same, but only `isOtherAudioPlaying` is set (no secondary hint): still held.
+    func testSystemInterruptionNeverEndsOtherAudioOnlyHoldsSong2() {
+        var h = Harness()
+        h.world.otherAudioPlaying = true
+        h.play(through: 199)
+        h.notice(.interruptionBegan)
+        h.poll(nil, playing: false, at: nil)
+        XCTAssertEqual(h.startNext(), .held(.deferSilently))
+    }
+
+    /// A new interruption after an end without shouldResume starts from a clean slate.
+    func testNewInterruptionResetsShouldResume() {
+        var p = AudioSessionPolicy()
+        p.userPlay()
+        _ = p.handle(.interruptionBegan, breakIsActive: false)
+        _ = p.handle(.interruptionEnded(shouldResume: false), breakIsActive: false)
+        XCTAssertFalse(p.lastEndShouldResume)
+        _ = p.handle(.interruptionBegan, breakIsActive: false)
+        XCTAssertTrue(p.lastEndShouldResume)
+        XCTAssertTrue(p.naturalEndReached(interruptionBeganNearEnd: true, otherAudioPlaying: false,
+                                          secondaryHint: false, callActive: false),
+                      "never ended + nothing else playing still releases (Sentinel's gate)")
     }
 
     func testDecisionTable() {
-        func r(_ ended: Bool, _ other: Bool, _ hint: Bool, _ call: Bool, _ near: Bool) -> Bool {
-            SongEndHold.releases(interruptionEnded: ended, otherAudioPlaying: other, secondaryHint: hint,
-                                 callActive: call, beganNearEnd: near)
+        func r(_ ended: Bool, _ other: Bool, _ hint: Bool, _ call: Bool, _ near: Bool,
+               resume: Bool = true) -> Bool {
+            SongEndHold.releases(interruptionEnded: ended, shouldResume: resume, otherAudioPlaying: other,
+                                 secondaryHint: hint, callActive: call, beganNearEnd: near)
         }
+        XCTAssertFalse(r(true, false, false, false, true, resume: false), "ended without shouldResume holds")
+        XCTAssertTrue(r(false, false, false, false, true, resume: false), "shouldResume only matters once ended")
         XCTAssertTrue(r(false, false, false, false, true))
         XCTAssertFalse(r(false, true, false, false, true))
         XCTAssertFalse(r(false, false, true, false, true))

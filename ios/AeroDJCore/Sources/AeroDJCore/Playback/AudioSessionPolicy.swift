@@ -36,6 +36,9 @@ public struct AudioSessionPolicy: Equatable, Sendable {
     private var intent = PlaybackIntent()
     /// A `.interruptionBegan` has not been followed by `.interruptionEnded` yet.
     public private(set) var interruptionOngoing = false
+    /// The last `.interruptionEnded` carried `shouldResume`. False after an end that told us not to
+    /// resume; reset when a new interruption begins.
+    public private(set) var lastEndShouldResume = true
 
     public init() {}
 
@@ -61,10 +64,12 @@ public struct AudioSessionPolicy: Equatable, Sendable {
         switch notice {
         case .interruptionBegan:
             interruptionOngoing = true
+            lastEndShouldResume = true
             intent.systemInterruptionBegan()
             return .suspendPlayback
         case .interruptionEnded(let shouldResume):
             interruptionOngoing = false
+            lastEndShouldResume = shouldResume
             intent.systemInterruptionEnded(shouldResume: shouldResume)
             guard !breakIsActive, intent.mayAutoResume else { return .none }
             return .resumeIfPermitted
@@ -87,6 +92,7 @@ extension AudioSessionPolicy {
                                            secondaryHint: Bool, callActive: Bool) -> Bool {
         guard intent.pausedBySystem else { return false }
         guard SongEndHold.releases(interruptionEnded: !interruptionOngoing,
+                                   shouldResume: lastEndShouldResume,
                                    otherAudioPlaying: otherAudioPlaying,
                                    secondaryHint: secondaryHint,
                                    callActive: callActive,
@@ -103,14 +109,15 @@ extension AudioSessionPolicy {
 /// The theory (unconfirmed on device): as `ApplicationMusicPlayer`'s one-song queue finishes, the
 /// shared session gets `interruptionBegan` with no matching end, and song 2 is held forever.
 /// The hold is released only when the interruption began in the end window AND no call is
-/// active AND either the interruption has ended, or nothing else is playing
-/// (`isOtherAudioPlaying == false` and `secondaryAudioShouldBeSilencedHint == false`).
-/// A real call, or another app's audio, keeps song 2 held.
+/// active AND either the interruption has ended with `shouldResume`, or it never ended and nothing
+/// else is playing (`isOtherAudioPlaying == false` and `secondaryAudioShouldBeSilencedHint == false`).
+/// An end without `shouldResume` holds until the user presses play (Orion). A real call, or
+/// another app's audio (Siri included), keeps song 2 held.
 public enum SongEndHold {
-    public static func releases(interruptionEnded: Bool, otherAudioPlaying: Bool, secondaryHint: Bool,
-                                callActive: Bool, beganNearEnd: Bool) -> Bool {
+    public static func releases(interruptionEnded: Bool, shouldResume: Bool, otherAudioPlaying: Bool,
+                                secondaryHint: Bool, callActive: Bool, beganNearEnd: Bool) -> Bool {
         guard beganNearEnd, !callActive else { return false }
-        if interruptionEnded { return true }
+        if interruptionEnded { return shouldResume }
         return !otherAudioPlaying && !secondaryHint
     }
 }
