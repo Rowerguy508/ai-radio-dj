@@ -71,6 +71,7 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence())
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared)
+        wireSongSeek(session: djSession, playback: MusicKitService.shared)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
         djSession.purger = purger
@@ -114,6 +115,7 @@ struct AppDependencies {
                                        cadence: TestStation.cadence)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared)
+        wireSongSeek(session: djSession, playback: MusicKitService.shared)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
         djSession.purger = purger
@@ -155,6 +157,16 @@ struct AppDependencies {
         }
         session.onBreakMustStop = hook
         return interlude
+    }
+
+    /// Song scrubbing (-Atlas): the one production assignment of `onSongSeeked`. A committed
+    /// seek tells the DJ session the playing song's new time left, so its break is kept,
+    /// re-armed or started (`DJBreakSession.songSeeked`). The boundary still comes only from
+    /// the player.
+    private static func wireSongSeek(session: DJBreakSession, playback: MusicKitService) {
+        playback.onSongSeeked = { [session] index, remaining in
+            Task { await session.songSeeked(index: index, remaining: .seconds(remaining)) }
+        }
     }
 
     private static func supportURL(_ path: String) -> URL {
