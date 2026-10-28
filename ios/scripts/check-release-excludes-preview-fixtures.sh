@@ -4,7 +4,10 @@
 # Station.mockStations is intentionally still in Release and is not scanned.
 #
 # Asset scan: loose *FixtureAlbum* paths, plus that name inside Assets.car.
-# Symbol scan: `strings -a` and `nm -a` on the app Mach-O.
+# Symbol scan: `strings -a` on the configuration's .o files, plus `strings -a`
+# and `nm -a` on the linked Mach-O. The preview loader is unused by the running
+# app, so the linker can drop it from AeroDJ while the Debug object file still
+# has the name. Release must have it in neither place.
 #
 # Usage: check-release-excludes-preview-fixtures.sh <Debug AeroDJ.app> <Release AeroDJ.app>
 set -euo pipefail
@@ -26,11 +29,20 @@ contains_fixture_asset() {
   return 1
 }
 
+# Object files for the same configuration as the .app, plus the linked binary.
 symbol_hits() {
-  local bin="$1" name="$2" from_strings from_nm
-  from_strings="$(strings -a "$bin" | grep -F "$name" || true)"
-  from_nm="$(nm -a "$bin" 2>/dev/null | grep -F "$name" || true)"
-  printf '%s\n%s\n' "$from_strings" "$from_nm" | grep -F "$name" || true
+  local app="$1" name="$2"
+  local app_dir config build from_objects from_strings from_nm
+  app_dir="$(dirname "$app")"
+  config="$(basename "$app_dir")"
+  build="$(dirname "$(dirname "$app_dir")")"
+  from_objects=""
+  if [ -d "$build/Intermediates.noindex" ]; then
+    from_objects="$(find "$build/Intermediates.noindex" -path "*${config}*" -name '*.o' -exec strings -a {} + 2>/dev/null | grep -F "$name" || true)"
+  fi
+  from_strings="$(strings -a "$app/AeroDJ" | grep -F "$name" || true)"
+  from_nm="$(nm -a "$app/AeroDJ" 2>/dev/null | grep -F "$name" || true)"
+  printf '%s\n%s\n%s\n' "$from_objects" "$from_strings" "$from_nm" | grep -F "$name" || true
   return 0
 }
 
@@ -54,7 +66,7 @@ fi
 echo "OK: Release app has no FixtureAlbum asset."
 
 if [ -z "$(symbol_hits "$(binary "$DEBUG_APP")" "$LOADER")" ]; then
-  echo "FAIL: $LOADER not found in Debug binary via strings -a or nm -a."
+  echo "FAIL: $LOADER not found in Debug object files or the Debug binary (strings -a / nm -a)."
   echo "The Release symbol check would be vacuous without this control."
   exit 1
 fi
@@ -64,4 +76,4 @@ if [ -n "$hits" ]; then
   echo "$hits"
   exit 1
 fi
-echo "OK: $LOADER is in the Debug binary and absent from the Release binary."
+echo "OK: $LOADER is in the Debug build and absent from the Release build."
