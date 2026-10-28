@@ -22,6 +22,28 @@ public enum TapPlaySequence {
         try await play()
         return scheduleBreakPrep()
     }
+
+    /// #116 (-Atlas): the live order. `reserve` runs synchronously before `play`, so a song
+    /// start reported during `play` belongs to the new queue. Then `play`; then break prep is
+    /// scheduled without being awaited. If `play` throws, the reservation is released and the
+    /// error rethrown. Music still never waits on narration.
+    @MainActor
+    @discardableResult
+    public static func run<Reservation>(
+        reserve: @MainActor () -> Reservation,
+        play: @MainActor () async throws -> Void,
+        scheduleBreakPrep: @MainActor (Reservation) -> Task<Void, Never>,
+        release: @MainActor (Reservation) -> Void
+    ) async throws -> Task<Void, Never> {
+        let reservation = reserve()
+        do {
+            try await play()
+        } catch {
+            release(reservation)
+            throw error
+        }
+        return scheduleBreakPrep(reservation)
+    }
 }
 
 /// Whether a remote / lock-screen play command may start audio.

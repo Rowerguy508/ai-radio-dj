@@ -135,12 +135,16 @@ struct MusicSearch {
                 // Play first (P0 build 8). TapPlaySequence is the live order: play, then
                 // schedule cancellable break prep. Consent already ran via `briefing()` /
                 // `forQueue()` above.
+                // #116: the new queue is reserved before play, so a song start MusicKit reports
+                // during play is held for it instead of reading the old queue's breaks.
                 _ = try await TapPlaySequence.run(
+                    reserve: { djSession.reserveQueueSetup() },
                     play: { try await music.play(tracks, station: station) },
-                    scheduleBreakPrep: {
+                    scheduleBreakPrep: { reservation in
                         djSession.beginQueueInBackground(
-                            djTracks, briefing: briefingForQueue, sources: sources)
-                    })
+                            reservation, djTracks, briefing: briefingForQueue, sources: sources)
+                    },
+                    release: { djSession.releaseQueueSetup($0) })
             })
     }
 
