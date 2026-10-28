@@ -263,6 +263,13 @@ jobs:
           exit ${STATUS:-0}
       - name: UI tests on iPad (open, two-zone Studio)
         run: |
+          # One simulator at a time: the iPhone stays booted after its steps, and a cold iPad
+          # booted by xcodebuild mid-run made launches, terminations and accessibility
+          # snapshots stall (flaky iPad failures across PRs). Shut the iPhone down and wait
+          # for the iPad to finish booting before the suite starts.
+          xcrun simctl shutdown "$PHONE_UDID" 2>/dev/null || true
+          xcrun simctl boot "$PAD_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$PAD_UDID" -b
           TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJStudioUI \
