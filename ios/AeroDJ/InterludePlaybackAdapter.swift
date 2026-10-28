@@ -282,7 +282,9 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             stopState.begin()
             timeout = Task { @MainActor [weak self] in
                 do { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } catch { return }
-                self?.finishBreak(.cancelled)
+                // Echo (#125): stop the clip first, so it can't mix over the next song and the
+                // session release in completeNarration doesn't throw "busy". -Atlas
+                self?.endBreakSilencingClip(.timeout, result: .cancelled)
             }
             // The line is reported as started only once audio is really playing.
             if start() {
@@ -327,6 +329,26 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
     }
 
+    /// Timeout and decode-error ends. Follows `BreakEndSequence`: the clip is silenced and its
+    /// delegate cleared before `finishBreak`, which lets `completeNarration` release the session.
+    private func endBreakSilencingClip(_ trigger: BreakEndTrigger, result: BreakPlayerOutcome) {
+        for step in BreakEndSequence.appSteps(for: trigger) {
+            switch step {
+            case .stopClip:
+                queue = []
+                let player = clipPlayer
+                clipPlayer = nil
+                player?.delegate = nil
+                P0TapDiagnostics.shared.record("djClip.stop.beforeRelease") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+                player?.stop()
+            case .finishBreak:
+                finishBreak(result)
+            case .releaseSession:
+                break // completeNarration, after the continuation resumes.
+            }
+        }
+    }
+
     private func finishBreak(_ result: BreakPlayerOutcome) {
         stopState.end()
         timeout?.cancel()
@@ -351,7 +373,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         let id = ObjectIdentifier(player)
         Task { @MainActor [weak self] in
             guard let self, self.stopState.acceptsDelegate(player: id) else { return }
-            self.finishBreak(.failed)
+            self.endBreakSilencingClip(.decodeError, result: .failed)
         }
     }
 }
