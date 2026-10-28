@@ -55,16 +55,18 @@ targets:
         CODE_SIGN_ENTITLEMENTS: AeroDJ/AeroDJ.entitlements
   AeroDJPhonon:
     # iOS 18 wrapper around ptts 0.5.0. The app target stays iOS 17 and does not link this.
+    # XcodeGen reads a single-platform target's deploymentTarget as a string. A map is ignored,
+    # which left this target on the project iOS 17.0 and unable to import PhononTTS.
     type: framework
     platform: iOS
-    deploymentTarget:
-      iOS: "18.0"
+    deploymentTarget: "18.0"
     sources: [AeroDJPhonon]
     dependencies:
       - package: xn-ptts
         product: ptts
     settings:
       base:
+        IPHONEOS_DEPLOYMENT_TARGET: "18.0"
         PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app.phonon
         GENERATE_INFOPLIST_FILE: YES
         DEFINES_MODULE: YES
