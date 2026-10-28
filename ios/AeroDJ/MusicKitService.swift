@@ -665,6 +665,7 @@ final class MusicKitService: ObservableObject {
     /// Applies the state-machine and playback events for a break that just ended.
     /// The caller starts music only when `decision.resumeMusic` is true.
     func completeNarration(_ decision: NarrationResumeDecision) {
+        releaseSessionAfterBreak()
         if let event = decision.audioEvent {
             stateMachine.apply(event)
         }
@@ -699,7 +700,8 @@ final class MusicKitService: ObservableObject {
         if !audioSessionConfigured {
             // Category only. Setting it does not stop other audio; activation waits for playback.
             do {
-                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+                let options: AVAudioSession.CategoryOptions = AppAudioSessionConfig.mixesWithOthers ? [.mixWithOthers] : []
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: options)
                 audioSessionConfigured = true
             } catch {
                 // Non-fatal: retried on the next call.
@@ -753,6 +755,16 @@ final class MusicKitService: ObservableObject {
         } catch {
             logPlaybackError("setActive", error)
             throw error
+        }
+    }
+
+    /// The DJ clip's `AVAudioPlayer.play()` activated the app session. Release it before music
+    /// resumes or the next song loads, so it never competes with `ApplicationMusicPlayer`.
+    private func releaseSessionAfterBreak() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            logPlaybackError("setActiveFalse", error)
         }
     }
 

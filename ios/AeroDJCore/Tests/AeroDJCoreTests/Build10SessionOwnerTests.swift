@@ -10,9 +10,12 @@ final class Build10SessionOwnerTests: XCTestCase {
         TrackInfo(id: "s1", title: "One", artistName: "A", artworkURL: nil),
     ]
 
-    /// The app no longer activates its own session before or around `play()`.
-    func testPlaybackDoesNotActivateTheAppSession() {
+    /// Config only (Linux cannot exercise AVAudioSession): the app never activates its session
+    /// for playback, and the category mixes, so the DJ clip's implicit activation cannot
+    /// interrupt `ApplicationMusicPlayer`.
+    func testSessionConfigCannotInterruptTheMusicPlayer() {
         XCTAssertFalse(AudioSessionActivation.shouldActivate(during: .playback))
+        XCTAssertTrue(AppAudioSessionConfig.mixesWithOthers)
     }
 
     /// Race: an interruption lands after the tap and before `play()` returns. This is why the
