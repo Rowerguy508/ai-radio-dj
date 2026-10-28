@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Release AeroDJ must not contain PlayingScreenPreviewLoader or a FixtureAlbum
 # asset. Debug must contain the loader symbol, so a missing binary cannot pass.
-# Station.mockStations is intentionally still in Release and is not scanned.
+# Station.defaultStations is intentionally still in Release and is not scanned.
 #
 # Asset scan: loose *FixtureAlbum* paths, plus that name inside Assets.car.
 # Symbol scan: `strings -a` on the configuration's .o files, plus `strings -a`
