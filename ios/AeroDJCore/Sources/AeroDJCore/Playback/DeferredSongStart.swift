@@ -37,3 +37,13 @@ public enum HeldStartPolicy {
         userInitiated ? .deferAndReport : .deferSilently
     }
 }
+
+/// Build 18 P0 (Atlas): song 2's start was allowed and `play()` (or `prepareToPlay()`) threw.
+/// `startNextTrack` must show this banner for the current attempt, never stop silently.
+/// A superseded attempt shows nothing (the caller checks `MusicKitError.superseded` first).
+public enum NextSongStartFailure {
+    public static func banner(code: PlaybackErrorCode, attempt: Int, attemptIsCurrent: Bool) -> String? {
+        guard attemptIsCurrent else { return nil }
+        return "Could not start the next song: \(code). attempt=\(attempt)"
+    }
+}

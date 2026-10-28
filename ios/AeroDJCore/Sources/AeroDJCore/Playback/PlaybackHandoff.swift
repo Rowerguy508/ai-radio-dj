@@ -182,6 +182,11 @@ public struct BreakPlayAdmission: Equatable, Sendable {
         self.startAudio = startAudio
         self.unplayed = unplayed
     }
+
+    /// Build 18 P0 (Echo): a refused admission is a system hold, logged as `.interrupted`.
+    public var skipReason: DJBreakSkipReason? {
+        startAudio ? nil : .interrupted
+    }
 }
 
 public enum BreakPlayAdmissionPolicy {

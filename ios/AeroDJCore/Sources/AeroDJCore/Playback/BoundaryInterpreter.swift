@@ -42,6 +42,10 @@ public struct BoundaryInterpreter: Sendable {
         detector.pausedByApp(cause)
     }
 
+    /// Build 18 P0 (-Fry): a system interruption began in the finishing song's end window,
+    /// or after its end was reported. Read once at the boundary by the song-end hold decision.
+    public var interruptionBeganNearEnd: Bool { detector.interruptionBeganNearEnd }
+
     /// True once after the detector refused a change or clear because the entry never
     /// progressed (build 9 P0). The caller must surface a failed start and must not advance.
     public mutating func takeNoProgressEnd() -> Bool {

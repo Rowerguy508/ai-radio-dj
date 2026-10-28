@@ -42,6 +42,12 @@ public struct PlaybackIntent: Equatable, Sendable {
         interruptionHeld = !shouldResume
     }
 
+    /// Build 18 P0 (-Fry): the interruption hold is released because the song it began at has
+    /// ended naturally and `SongEndHold` allowed it. A route hold is never released here.
+    public mutating func releaseInterruptionHoldAtSongEnd() {
+        interruptionHeld = false
+    }
+
     /// Headphones or the output route went away. Holds until the user presses play.
     public mutating func routeRemoved() {
         routeHeld = true

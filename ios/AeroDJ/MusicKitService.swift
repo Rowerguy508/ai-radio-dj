@@ -432,6 +432,7 @@ final class MusicKitService: ObservableObject {
         guard attempts.takeNext(after: index) else {
             return
         }
+        releaseSongEndHoldIfAllowed(finished: index)
         let next = index + 1
         guard queue.indices.contains(next) else { return }
         let attempt = beginAttempt(userChangedQueue: false)
@@ -440,8 +441,9 @@ final class MusicKitService: ObservableObject {
         } catch MusicKitError.superseded {
             return
         } catch {
-            guard attempts.isCurrent(attempt) else { return }
-            reportError("Could not start the next song: \(PlaybackErrorCode(error)). attempt=\(attempt.number)")
+            guard let banner = NextSongStartFailure.banner(code: PlaybackErrorCode(error), attempt: attempt.number,
+                                                           attemptIsCurrent: attempts.isCurrent(attempt)) else { return }
+            reportError(banner)
         }
     }
 
@@ -505,6 +507,7 @@ final class MusicKitService: ObservableObject {
     }
 
     private func noteFinishedEntry(_ step: BoundaryStep) {
+        releaseSongEndHoldIfAllowed(finished: step.finishedIndex)
         let boundary: PlaybackBoundary
         switch step {
         case let .advancedEntry(_, value), let .plannedHandoff(_, _, value), let .stopped(_, value):
@@ -523,7 +526,8 @@ final class MusicKitService: ObservableObject {
             entryID: player.queue.currentEntry?.id,
             isPlaying: player.state.playbackStatus == .playing,
             position: player.playbackTime,
-            duration: currentDuration
+            duration: currentDuration,
+            uptime: ProcessInfo.processInfo.systemUptime
         )
         if observation.isPlaying {
             // Lock-screen / Control Center can start ApplicationMusicPlayer without our
@@ -653,6 +657,19 @@ final class MusicKitService: ObservableObject {
     }
 
     private var callActiveNow: Bool { callObserver.calls.contains { !$0.hasEnded } }
+
+    /// Build 18 P0 (-Fry): at a natural end (before the break and song 2) and again in
+    /// `startNextTrack`, Core's `SongEndHold` decides whether an interruption that began at the
+    /// song's end may keep holding playback. A call or another app's audio keeps the hold.
+    private func releaseSongEndHoldIfAllowed(finished: Int) {
+        let session = AVAudioSession.sharedInstance()
+        guard sessionPolicy.naturalEndReached(
+            interruptionBeganNearEnd: boundaries.interruptionBeganNearEnd,
+            otherAudioPlaying: session.isOtherAudioPlaying,
+            secondaryHint: session.secondaryAudioShouldBeSilencedHint,
+            callActive: callActiveNow) else { return }
+        logPlayback(PlaybackLog.songEndHoldReleased(index: finished))
+    }
 
     /// Deferred interruptions that the start's failure, its 8 s report or a call now applies,
     /// in arrival order. Orion P1 (-Atlas): no unstructured replay. Every notice updates the
@@ -994,6 +1011,7 @@ final class MusicKitService: ObservableObject {
 /// main-actor tokens without a data race. This object is not actor-isolated: its own deinit
 /// removes the observers and finishes the stream, which ends the consumer loop.
 private final class AudioSessionMonitor: NSObject {
+    private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
     private let eventsStream = FinishingStream<AudioSessionNotice>()
     var events: AsyncStream<AudioSessionNotice> { eventsStream.stream }
 
@@ -1025,6 +1043,11 @@ private final class AudioSessionMonitor: NSObject {
               type == .began || type == .ended else { return }
         let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
         let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
+        if type == .began {
+            // Build 18 P0 (Atlas): the reason key as an enum token only.
+            let reason = AudioInterruptionReason(rawReason: note.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt)
+            log.notice("\(PlaybackLog.interruptionBegan(reason: reason), privacy: .public)")
+        }
         eventsStream.yield(.interruption(began: type == .began, shouldResume: shouldResume))
     }
 

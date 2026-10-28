@@ -26,6 +26,9 @@ public enum DJBreakSkipReason: String, Codable, Equatable, Sendable {
     case cancelled
     /// A personal item the break was built from was deleted or its consent revoked.
     case sourceRevoked
+    /// Build 18 P0: the system was still holding playback (a call, another app's audio) when
+    /// the break would have started, so it was skipped.
+    case interrupted
 }
 
 /// Audio ready to play at a boundary, in order, with measured durations.
