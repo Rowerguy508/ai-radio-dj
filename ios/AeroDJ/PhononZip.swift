@@ -1,3 +1,4 @@
+import AeroDJCore
 import Foundation
 
 /// Extracts the pinned Phonon 31m zip after its SHA-256 has already matched.
