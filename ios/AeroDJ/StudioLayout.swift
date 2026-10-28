@@ -15,30 +15,35 @@ struct StudioLayout: View {
     let workspace: WorkspaceView
 
     var body: some View {
-        let edge = CGFloat(StudioLayoutMetrics.edgeInset)
-        let gutter = CGFloat(StudioLayoutMetrics.gutter)
+        // The margin and gutter `widths` was allocated with (`allocatePanes`: 8 and 12 pt),
+        // so the drawn geometry always adds up to the container. The compact/Studio switch
+        // still uses `StudioLayoutMetrics.studioMinWidth`.
+        let edge = CGFloat(widths.edgeInset)
+        let gutter = CGFloat(widths.gutter)
+        let panel = RoundedRectangle(cornerRadius: CGFloat(StudioCornerRadius.panel), style: .continuous)
         // Exact column widths. Edge is outer padding only — never folded into zoneA/zoneB,
         // which previously made Zone A’s container report past the gutter (430 > 422).
         HStack(alignment: .top, spacing: gutter) {
             zoneA
                 .frame(width: CGFloat(widths.zoneA))
                 .frame(maxHeight: .infinity, alignment: .top)
-                .clipped()
+                .clipShape(panel)
                 .contentShape(Rectangle())
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneA")
             workspace
-                .padding(16)
+                .environment(\.studioPanes, true)
+                .padding(CGFloat(StudioCornerRadius.panelPadding))
                 .frame(width: CGFloat(widths.zoneB), alignment: .topLeading)
                 .frame(maxHeight: .infinity, alignment: .topLeading)
                 .systemMaterialBackground()
-                .clipped()
+                .clipShape(panel)
                 .contentShape(Rectangle())
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneB")
         }
         .padding(.horizontal, edge)
-        .padding(.bottom, 12)
+        // No extra bottom padding: the container already stops at the bottom safe area.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .frame(height: containerHeight, alignment: .top)
         .background(Color(.systemBackground))
@@ -127,6 +132,7 @@ struct WorkspaceView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .workspaceSegmentShape()
             .accessibilityIdentifier("workspace.segment")
 
             switch segment {

@@ -20,7 +20,7 @@ struct TuneForm: View {
                         .foregroundStyle(AeroDJPalette.secondaryText)
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .workspaceCardBackground(Color(.tertiarySystemFill), compactRadius: 12)
                 }
                 if model.hasUnsavedChanges { UnsavedChangesCard(model: model) }
                 if model.hasPendingChanges { PendingChangesCard(model: model) }
@@ -148,7 +148,7 @@ struct ControlCard<Content: View>: View {
             }
         }
         .padding(14)
-        .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .workspaceCardBackground(Color(.tertiarySystemFill).opacity(0.6))
     }
 }
 
@@ -247,7 +247,7 @@ struct TagControl: View {
                     .onSubmit(addCustom)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
-                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .workspaceFieldBackground(Color(.tertiarySystemFill), compactRadius: 8)
                     .accessibilityLabel("Add your own")
                 Button("Add", action: addCustom)
                     .disabled(custom.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -323,7 +323,7 @@ struct UnsavedChangesCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .workspaceCardBackground(Color.accentColor.opacity(0.12))
         .accessibilityElement(children: .contain)
     }
 }
@@ -348,7 +348,7 @@ struct PendingChangesCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .workspaceCardBackground(Color.accentColor.opacity(0.12))
         .accessibilityElement(children: .contain)
     }
 }
@@ -411,7 +411,7 @@ struct RecipesSection: View {
             }
         }
         .padding(14)
-        .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .workspaceCardBackground(Color(.tertiarySystemFill).opacity(0.6))
         .alert("Rename recipe", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newName)
             Button("Save") {

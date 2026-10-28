@@ -20,6 +20,27 @@ public enum StudioLayoutMetrics {
     public static var studioMinWidth: Double { zoneAMinWidth + gutter + zoneBMinWidth + edgeInset * 2 }
     /// Below this container height Zone A drops artwork to 120 pt and keeps transport.
     public static let lowHeight: Double = 480
+
+    /// Visual only: the outer margin the unfolded Studio actually draws. Smaller than
+    /// `edgeInset`, so the two panes run close to edge to edge. `edgeInset` and `gutter`
+    /// still define `studioMinWidth`, so the compact/Studio switch does not move.
+    public static let paneEdgeInset: Double = 8
+    /// Visual only: the space the unfolded Studio draws between the panes, centred on the hinge.
+    public static let paneGutter: Double = 12
+}
+
+/// Continuous corner radii for the unfolded Studio (owner request, 2026-10-28). One token,
+/// so the panes, the cards inside them and the field nest evenly. The compact layout keeps
+/// its own radii.
+public enum StudioCornerRadius {
+    /// Zone A (art and player card) and Zone B (the workspace panel).
+    public static let panel: Double = 30
+    /// Cards inside the workspace (Genres, Mood, Connections sources, recipes).
+    public static let card: Double = 22
+    /// Text fields inside those cards ("Add your own").
+    public static let field: Double = 14
+    /// Padding between the panel edge and its cards.
+    public static let panelPadding: Double = 16
 }
 
 /// Which layout a container gets. Width is the only input besides text size: no device
@@ -44,14 +65,38 @@ public enum StudioLayoutMode: Equatable, Sendable {
 public struct StudioZoneWidths: Equatable, Sendable {
     public let zoneA: Double
     public let zoneB: Double
+    /// The outer margin and gutter these widths were allocated with. The view draws exactly
+    /// these, so `edgeInset * 2 + gutter + zoneA + zoneB` is always the container width.
+    public let edgeInset: Double
+    public let gutter: Double
+
+    public init(zoneA: Double, zoneB: Double,
+                edgeInset: Double = StudioLayoutMetrics.edgeInset,
+                gutter: Double = StudioLayoutMetrics.gutter) {
+        self.zoneA = zoneA
+        self.zoneB = zoneB
+        self.edgeInset = edgeInset
+        self.gutter = gutter
+    }
 
     /// `nil` when the container is too narrow for Studio (the compact layout applies).
-    public static func allocate(containerWidth: Double) -> StudioZoneWidths? {
+    /// The switch always uses `studioMinWidth`. `edgeInset` and `gutter` only change how
+    /// the width is drawn: any width they free up goes to the zones.
+    public static func allocate(containerWidth: Double,
+                                edgeInset: Double = StudioLayoutMetrics.edgeInset,
+                                gutter: Double = StudioLayoutMetrics.gutter) -> StudioZoneWidths? {
         let m = StudioLayoutMetrics.self
         guard containerWidth >= m.studioMinWidth else { return nil }
-        let content = containerWidth - m.edgeInset * 2 - m.gutter
+        let content = containerWidth - edgeInset * 2 - gutter
         let a = max(m.zoneAMinWidth, min((content / 2).rounded(.down), content - m.zoneBMinWidth))
-        return StudioZoneWidths(zoneA: a, zoneB: content - a)
+        return StudioZoneWidths(zoneA: a, zoneB: content - a, edgeInset: edgeInset, gutter: gutter)
+    }
+
+    /// The unfolded Studio as drawn: `paneEdgeInset` and `paneGutter`, same switch.
+    public static func allocatePanes(containerWidth: Double) -> StudioZoneWidths? {
+        allocate(containerWidth: containerWidth,
+                 edgeInset: StudioLayoutMetrics.paneEdgeInset,
+                 gutter: StudioLayoutMetrics.paneGutter)
     }
 
     /// Artwork side in Zone A: min(zone width − 16, 360, 44% of the height). Zone A is not a

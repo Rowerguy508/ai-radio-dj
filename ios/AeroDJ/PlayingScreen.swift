@@ -138,7 +138,7 @@ struct PlayingScreen: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
         case .studio:
-            if let widths = StudioZoneWidths.allocate(containerWidth: width) {
+            if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,
                              zoneA: zoneA(),
                              workspace: workspace)
