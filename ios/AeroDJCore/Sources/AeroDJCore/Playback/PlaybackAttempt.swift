@@ -216,7 +216,7 @@ public enum StartFailurePolicy {
             }
             // Build 10 P0: a system interruption landed while the tapped start was preparing.
             // Before this, the button went back to Play with no message, so the tap looked ignored.
-            let message = "TEMPORARY: a system audio interruption stopped the start before it played. attempt=\(attempt.number)"
+            let message = PlaybackFailureCopy.message(for: .onHold)
             return StartFailureEffect(pausesPlayer: false, cancelsConfirm: true,
                                       events: raised(message) + [.interruptionPaused], message: message)
         }
