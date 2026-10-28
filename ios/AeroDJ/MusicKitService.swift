@@ -170,9 +170,7 @@ final class MusicKitService: ObservableObject {
         sessionPolicy.userPlay()
         // Build 9 P0 (-Atlas): every older start, watchdog and boundary is stale from here.
         let attempt = beginAttempt(userChangedQueue: true)
-        logPlayGate("play.begin", index: 0)
         guard authState == .authorized else {
-            logPlayGate("play.blocked.auth", index: 0)
             lastError = MusicKitError.notAuthorized.errorDescription ?? "Apple Music authorization required."
             send(.errorRaised(PlaybackError(kind: .notAuthorized, message: lastError ?? "", isRecoverable: false)))
             throw MusicKitError.notAuthorized
@@ -371,11 +369,9 @@ final class MusicKitService: ObservableObject {
     func startTrack(at index: Int, autoplay: Bool, userInitiated: Bool = false,
                     attempt: PlaybackAttemptID) async throws {
         guard queue.indices.contains(index) else {
-            logPlayGate("startTrack.outOfRange", index: index)
             return
         }
         guard let song = queue[index].song else {
-            logPlayGate("startTrack.missingSong", index: index)
             throw MusicKitError.playbackFailed(message: "TEMPORARY: queue entry has no MusicKit Song at index \(index).")
         }
         queueIndex = index
@@ -386,11 +382,9 @@ final class MusicKitService: ObservableObject {
         boundaries.userRequestedChange()
         player.queue = ApplicationMusicPlayer.Queue(for: [song])
         finishedEntryID = nil
-        logPlayGate("startTrack.queued", index: index, autoplay: autoplay)
         guard autoplay else {
             isPlaying = false
             armDeferredStart(index)
-            logPlayGate("startTrack.deferred.noAutoplay", index: index)
             return
         }
         guard sessionPolicy.mayAutoResume else {
@@ -398,7 +392,6 @@ final class MusicKitService: ObservableObject {
             // starts (search play, skip, explicit resume path) raise an error.
             isPlaying = false
             armDeferredStart(index)
-            logPlayGate("startTrack.deferred.held", index: index)
             switch HeldStartPolicy.action(userInitiated: userInitiated) {
             case .deferSilently:
                 return
@@ -411,7 +404,6 @@ final class MusicKitService: ObservableObject {
             guard attempts.isCurrent(attempt) else { throw MusicKitError.superseded }
             guard started else {
                 armDeferredStart(index)
-                logPlayGate("startTrack.deferred.afterPlayHeld", index: index)
                 // Honest UI: not playing. The queue does not advance.
                 applyStartFailure(.refused(pausedBySystem: sessionPolicy.pausedBySystem), attempt: attempt)
                 return
@@ -419,7 +411,6 @@ final class MusicKitService: ObservableObject {
         } catch MusicKitError.superseded {
             throw MusicKitError.superseded
         } catch {
-            logPlayGate("startTrack.playError", index: index)
             throw error
         }
         deferredStart.clear()
@@ -537,7 +528,6 @@ final class MusicKitService: ObservableObject {
             if remote == .pauseBecauseHeld {
                 player.pause()
                 isPlaying = false
-                logPlayGate("remoteOrPoll.pausedBecauseHeld", index: queueIndex)
                 if snapshot.transport == .preparing {
                     send(.playbackStartRefused)
                 }
@@ -725,18 +715,15 @@ final class MusicKitService: ObservableObject {
     /// `setActive(true)`, `prepareToPlay()`, then `play()`. After `play()` returns, a hold that
     /// landed during the await pauses again and does not count as a resume.
     private func playIfStillAllowed() async throws -> Bool {
-        logPlayGate("playIfStillAllowed.begin", index: queueIndex)
         try activateAudioSessionForPlayback()
         do {
             try await player.prepareToPlay()
-            logPlayGate("playIfStillAllowed.prepared", index: queueIndex)
         } catch {
             logPlaybackError("prepareToPlay", error)
             throw error
         }
         do {
             try await player.play()
-            logPlayGate("playIfStillAllowed.playReturned", index: queueIndex)
         } catch {
             logPlaybackError("player.play", error)
             throw error
@@ -748,7 +735,6 @@ final class MusicKitService: ObservableObject {
         guard decision == .keepPlaying else {
             player.pause()
             isPlaying = false
-            logPlayGate("playIfStillAllowed.pausedBecauseHeld", index: queueIndex)
             return false
         }
         isPlaying = true
@@ -761,7 +747,6 @@ final class MusicKitService: ObservableObject {
         guard AudioSessionActivation.shouldActivate(during: .playback) else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(true)
-            logPlayGate("audioSession.active", index: queueIndex)
         } catch {
             logPlaybackError("setActive", error)
             throw error
@@ -795,20 +780,6 @@ final class MusicKitService: ObservableObject {
     private func armDeferredStart(_ index: Int) {
         deferredStart.arm(index)
         logPlayback(PlaybackLog.songDeferred(index: index))
-    }
-
-    /// TEMPORARY play-path gate log. authState as case name, audio state, queue count, index;
-    /// booleans at privacy .private. No titles, song ids, storefront or subscription details as public.
-    private func logPlayGate(_ gate: String, index: Int, autoplay: Bool? = nil) {
-        let auth = String(describing: authState)
-        let audio = String(describing: audioState)
-        let count = queue.count
-        let auto = autoplay.map { $0 ? "true" : "false" } ?? "n/a"
-        let may = mayAutoResume
-        let wants = sessionPolicy.userWantsPlayback
-        let held = sessionPolicy.pausedBySystem
-        let attempt = attempts.current?.number ?? 0
-        log.notice("TEMPORARY gate=\(gate, privacy: .public) attempt=\(attempt, privacy: .public) auth=\(auth, privacy: .public) audio=\(audio, privacy: .public) queueCount=\(count, privacy: .public) index=\(index, privacy: .public) autoplay=\(auto, privacy: .public) mayAutoResume=\(may, privacy: .private) userWants=\(wants, privacy: .private) pausedBySystem=\(held, privacy: .private)")
     }
 
     /// TEMPORARY: error type, NSError domain and code only (`PlaybackErrorCode`). No
@@ -915,7 +886,6 @@ final class MusicKitService: ObservableObject {
             return
         }
         // Timeout task already armed by the caller; nothing more to do here.
-        logPlayGate("confirm.wait", index: queueIndex)
     }
 
     /// The confirm deadline passed, or MusicKit said `.interrupted`. Report only: no
