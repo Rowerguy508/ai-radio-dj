@@ -762,12 +762,24 @@ struct PlaybackTimeSource {
 }
 
 /// Elapsed, remaining, and a display-only bar. Hidden when duration is nil.
+///
+/// `transport` and `trackID` are plain values from the snapshot so SwiftUI reruns this body
+/// when either changes. The timeline is keyed on them (`PlaybackProgressClock.Key`): the
+/// period is fixed when a TimelineView is built, so a bar first drawn while paused would
+/// otherwise keep its idle period after Play (frozen at 0:00, first song's duration).
+/// Reduce Motion removes the fill animation only; the clock still updates every second.
 struct PlaybackProgressBar: View {
     let time: PlaybackTimeSource
+    let transport: TransportState
+    let trackID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var key: PlaybackProgressClock.Key {
+        PlaybackProgressClock.Key(transport: transport, trackID: trackID)
+    }
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: time.isPlaying() && !reduceMotion ? 1 : 3600)) { context in
+        TimelineView(.periodic(from: .now, by: PlaybackProgressClock.interval(for: key, reduceMotion: reduceMotion))) { context in
             let _ = context.date
             let elapsed = max(0, time.elapsed())
             let duration = time.duration()
@@ -791,6 +803,7 @@ struct PlaybackProgressBar: View {
                 .accessibilityIdentifier("playback.progress")
             }
         }
+        .id(key)
     }
 
     @ViewBuilder
@@ -802,7 +815,7 @@ struct PlaybackProgressBar: View {
                 Capsule()
                     .fill(Color.primary.opacity(0.85))
                     .frame(width: max(4, geo.size.width * fraction))
-                    .animation(reduceMotion ? nil : .linear(duration: 0.25), value: fraction)
+                    .animation(PlaybackProgressClock.animatesFill(reduceMotion: reduceMotion) ? .linear(duration: 0.25) : nil, value: fraction)
             }
         }
         .frame(height: 4)
