@@ -21,10 +21,20 @@ public struct OnDeviceSpeechProvider: VoiceProvider {
     /// Per `voice.id` render health, shared by every route that uses this provider.
     static let health = VoiceHealthLedger()
 
+    /// A Premium or Enhanced voice that is still downloading can hang with no audio. Give it
+    /// this long to produce its first frames, so the standard-voice route still has time.
+    /// Standard voices ship with iOS and get no limit beyond the route timeout.
+    static let firstAudioLimitForHigherTier: Duration = .seconds(4)
+
+    private static func firstAudioLimit(_ voiceID: String) -> Duration? {
+        guard let voice = AVSpeechSynthesisVoice(identifier: voiceID), voice.quality != .default else { return nil }
+        return firstAudioLimitForHigherTier
+    }
+
     private static func render(_ text: String, voiceID: String) async throws -> (Data, Double) {
         // The temp file is deleted on success, error and cancellation.
         try await SpeechTempFiles.shared.withFile { url in
-            try await SpeechRenderJob(text: text, voiceID: voiceID, url: url).run()
+            try await SpeechRenderJob(text: text, voiceID: voiceID, url: url).run(firstAudioWithin: firstAudioLimit(voiceID))
         }
     }
 
@@ -55,6 +65,7 @@ enum OnDeviceSpeechError: Error {
     case unexpectedBuffer
     case emptyAudio
     case voiceRecentlyFailed
+    case noAudioInTime
 }
 
 private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
@@ -85,7 +96,17 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
 
     private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
 
-    func run() async throws -> (Data, Double) {
+    func run(firstAudioWithin limit: Duration? = nil) async throws -> (Data, Double) {
+        let watchdog = limit.map { limit in
+            Task { [self] in
+                try? await Task.sleep(for: limit)
+                if !Task.isCancelled, !hasFrames() {
+                    finish(.failed, OnDeviceSpeechError.noAudioInTime)
+                    synthesizer.stopSpeaking(at: .immediate)
+                }
+            }
+        }
+        defer { watchdog?.cancel() }
         defer {
             // every path: no write can (re)create the file after deletion
             let (frames, _) = closeFile()
