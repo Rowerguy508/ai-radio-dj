@@ -55,8 +55,10 @@ public enum LiveQueueBriefing {
     /// Morning window plus an approved row: the engine's handoff. Briefing off, or
     /// nothing approved: `revokedOrUnapproved`, which `forQueue()` turns into nil.
     /// Outside the window: a later show with no carry-forward.
-    /// `prepared` is used as-is when the caller already has a script. It is not
-    /// filtered by briefing section; that check is a follow-up.
+    /// `prepared` keeps the caller's script, then applies the same section check
+    /// as `approvedRows`. An approved cue whose section is off is reported on
+    /// `omittedDisabledSection` and is not offered to a later show. Consent
+    /// stays in `forQueue()`.
     public static func handoff(
         items: [ConnectionItem],
         preferences: BriefingPreferences,
@@ -75,11 +77,46 @@ public enum LiveQueueBriefing {
             return ApprovedShowHandoff(isMorningShow: false, approved: nil, revokedOrUnapproved: false,
                                        carryForward: nil, connectionItems: items)
         }
-        let script = prepared ?? narration(from: speakable, now: now, calendar: calendar,
-                                           targetSeconds: preferences.targetSeconds,
-                                           sensitivityByItemID: sensitivityByItemID)
+        let script: NarrationHandoff?
+        let omitted: [NarrationCue]
+        if let prepared {
+            let checked = preparedKeepingEnabledSections(prepared, items: items, preferences: preferences)
+            script = checked.handoff
+            omitted = checked.omitted
+        } else {
+            script = narration(from: speakable, now: now, calendar: calendar,
+                               targetSeconds: preferences.targetSeconds,
+                               sensitivityByItemID: sensitivityByItemID)
+            omitted = []
+        }
         return ApprovedShowHandoff(isMorningShow: true, approved: script, revokedOrUnapproved: false,
-                                   connectionItems: items)
+                                   connectionItems: items, omittedDisabledSection: omitted)
+    }
+
+    /// Section check for a script the caller already built. A content cue whose
+    /// row may be narrated, and whose integration is not an enabled section, is
+    /// omitted. Cues with no matching row stay in the script so `forQueue()` can
+    /// still apply consent. Omitted cues are not deferred.
+    private static func preparedKeepingEnabledSections(
+        _ prepared: NarrationHandoff,
+        items: [ConnectionItem],
+        preferences: BriefingPreferences
+    ) -> (handoff: NarrationHandoff, omitted: [NarrationCue]) {
+        var kept: [NarrationCue] = []
+        var omitted: [NarrationCue] = []
+        for cue in prepared.cues {
+            guard let id = cue.sourceItemID, let item = items.first(where: { $0.id == id }) else {
+                kept.append(cue)
+                continue
+            }
+            if item.state.mayBeNarrated && !preferences.sections.contains(section(for: item.integration)) {
+                omitted.append(cue)
+            } else {
+                kept.append(cue)
+            }
+        }
+        return (NarrationHandoff(cues: kept, maxSpokenSeconds: prepared.maxSpokenSeconds,
+                                 experienceSeconds: prepared.experienceSeconds), omitted)
     }
 
     /// Consent and section selection only. Sentence composition stays in the engine.
