@@ -151,7 +151,7 @@ jobs:
           MARKER=AERODJ_P0_DIAG_DIRECT_MODE_BUILD
           RELEASE_BIN="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
           test -f "$RELEASE_BIN"
-          for NEEDLE in "$MARKER" DirectModeController DirectModeView DirectModeLaunch DirectModeMachine DirectModeEntrySighting CompositionRootProbe; do
+          for NEEDLE in "$MARKER" DirectModeController DirectModeView DirectModeLaunch DirectModeMachine DirectModeEntrySighting CompositionRootProbe P0EventTrace P0TraceRow P0PollSampler P0DetectorState P0TraceView P0ScenePhaseTrace p0trace p0_diag; do
             if LC_ALL=C grep -a -q "$NEEDLE" "$RELEASE_BIN"; then
               echo "::error::Direct Mode code ($NEEDLE) found in a Release build without AERODJ_P0_DIAG"
               exit 1
@@ -172,7 +172,9 @@ jobs:
           LC_ALL=C grep -a -q "$MARKER" "$DIAG_BIN"
           # DirectModeMachine lives in the AeroDJCore package, so finding it proves the
           # flag reaches the package too.
-          for NEEDLE in DirectModeController DirectModeMachine CompositionRootProbe; do
+          # P0EventTrace / P0PollSampler are Core too; P0EventTraceHost and p0trace.panel are the
+          # app's on-screen trace (TEMPORARY with #121 / #133, -Fry).
+          for NEEDLE in DirectModeController DirectModeMachine CompositionRootProbe P0EventTraceHost P0EventTrace P0PollSampler P0TraceView p0trace.panel; do
             LC_ALL=C grep -a -q "$NEEDLE" "$DIAG_BIN" || { echo "::error::$NEEDLE missing from the AERODJ_P0_DIAG build"; exit 1; }
           done
       - name: Device app embeds no AeroDJPhonon and has no private AMX instructions (ITMS-90755)

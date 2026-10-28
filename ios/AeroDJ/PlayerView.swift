@@ -39,6 +39,9 @@ struct PlayerView: View {
                       studio: studio,
                       isTestStation: isTestStation,
                       timeSource: .live)
+        #if AERODJ_P0_DIAG
+        .safeAreaInset(edge: .bottom) { P0EventTracePanel().frame(height: 450).padding(.horizontal, 8) }
+        #endif
         .navigationTitle(station.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -87,6 +90,9 @@ enum PlaybackSessionBinder {
         let interlude = dependencies.interlude
         let djSession = dependencies.djSession
         music.onBoundary = { @MainActor [interlude, music, djSession] boundary, finishedIndex in
+            #if AERODJ_P0_DIAG
+            P0EventTraceHost.shared.onBoundary(boundary, finishedIndex: finishedIndex)
+            #endif
             guard case .naturalEnd = boundary else { return }
             // Hand the break out before this closure awaits anything. The window was the
             // `Task` below awaiting `naturalBoundary` while `PendingPlayStop` was still idle:
@@ -111,9 +117,15 @@ enum PlaybackSessionBinder {
                 }
                 // The break (or its skip) comes first; the next song is loaded only after it.
                 if interlude.isSpeaking {
+                    #if AERODJ_P0_DIAG
+                    P0EventTraceHost.shared.naturalBoundary(.interludeSpeaking, afterTrack: finishedIndex)
+                    #endif
                     interlude.abandonHandOut()
                     music.skipInterlude()
                 } else if let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex) {
+                    #if AERODJ_P0_DIAG
+                    P0EventTraceHost.shared.naturalBoundary(.breakPrepared, afterTrack: finishedIndex)
+                    #endif
                     switch BreakHandoffPolicy.decide(prepared: prepared) {
                     case let .play(breakToPlay):
                         let line = breakToPlay.cues.map(\.text).joined(separator: " ")
@@ -132,6 +144,9 @@ enum PlaybackSessionBinder {
                         reportUnplayed(.emptyLine)
                     }
                 } else {
+                    #if AERODJ_P0_DIAG
+                    P0EventTraceHost.shared.naturalBoundary(.noBreak, afterTrack: finishedIndex)
+                    #endif
                     // No prepared break. Same close-out: the hand-out is over.
                     interlude.abandonHandOut()
                     music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
