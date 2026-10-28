@@ -1,3 +1,4 @@
+#if DEBUG || AERODJ_P0_DIAG
 import XCTest
 @testable import AeroDJCore
 
@@ -147,4 +148,30 @@ final class DirectModeMachineTests: XCTestCase {
         }
         XCTAssertEqual(m.log.count, DirectModeMachine.logCapacity)
     }
+
+    func testATransientNilItemNeverLatchesUnexpectedQueue() {
+        var m = loaded()
+        m.observe(status: .playing, position: 0.2,
+                  entryIndex: DirectModeEntrySighting.song(loadedIndex: 0).entryIndex(keeping: m.entryIndex), at: 1)
+        XCTAssertEqual(m.entryIndex, 0)
+        for sighting in [DirectModeEntrySighting.itemPending, .noEntry, .itemPending] {
+            m.observe(status: .playing, position: 0.4, entryIndex: sighting.entryIndex(keeping: m.entryIndex), at: 1.2)
+        }
+        XCTAssertEqual(m.entryIndex, 0)
+        XCTAssertFalse(m.unexpectedQueueSeen)
+        m.observe(status: .playing, position: 0.1,
+                  entryIndex: DirectModeEntrySighting.song(loadedIndex: 1).entryIndex(keeping: m.entryIndex), at: 2)
+        XCTAssertEqual(m.entryIndex, 1)
+        XCTAssertFalse(m.unexpectedQueueSeen)
+    }
+
+    func testAForeignSongOrNonSongItemStillLatchesUnexpectedQueue() {
+        for sighting in [DirectModeEntrySighting.song(loadedIndex: nil), .notSong] {
+            var m = loaded()
+            m.observe(status: .playing, position: 0.2, entryIndex: 0, at: 1)
+            m.observe(status: .playing, position: 0.3, entryIndex: sighting.entryIndex(keeping: m.entryIndex), at: 1.2)
+            XCTAssertTrue(m.unexpectedQueueSeen, "\(sighting)")
+        }
+    }
 }
+#endif

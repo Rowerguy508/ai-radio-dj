@@ -36,7 +36,9 @@ struct AppDependencies {
     }
 
     static func make(defaults: UserDefaults = .standard) -> AppDependencies {
+        #if AERODJ_P0_DIAG
         CompositionRootProbe.markDependenciesBuilt()
+        #endif
         #if DEBUG
         // Release builds do not compile this branch, so the flag is never read there.
         if AppRuntimeMode.resolve(testStationFlag: TestStation.isEnabled(defaults: defaults),
@@ -162,6 +164,7 @@ struct AppDependencies {
     }
 }
 
+#if AERODJ_P0_DIAG
 /// Records whether the normal app's dependency graph (and so `MusicKitService.shared`, which
 /// only `AppDependencies` and the normal app's views reach) was built this launch. The P0
 /// Direct Mode screen shows it to prove the old service never started. TEMPORARY with
@@ -172,3 +175,4 @@ enum CompositionRootProbe {
 
     static func markDependenciesBuilt() { dependenciesBuilt = true }
 }
+#endif

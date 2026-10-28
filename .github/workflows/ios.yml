@@ -134,7 +134,7 @@ jobs:
           MARKER=AERODJ_P0_DIAG_DIRECT_MODE_BUILD
           RELEASE_BIN="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
           test -f "$RELEASE_BIN"
-          for NEEDLE in "$MARKER" DirectModeController DirectModeView DirectModeLaunch; do
+          for NEEDLE in "$MARKER" DirectModeController DirectModeView DirectModeLaunch DirectModeMachine DirectModeEntrySighting CompositionRootProbe; do
             if LC_ALL=C grep -a -q "$NEEDLE" "$RELEASE_BIN"; then
               echo "::error::Direct Mode code ($NEEDLE) found in a Release build without AERODJ_P0_DIAG"
               exit 1
@@ -153,7 +153,11 @@ jobs:
           # Positive control: the same checks do find it when the flag is set.
           DIAG_BIN="$DIAG_DD/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
           LC_ALL=C grep -a -q "$MARKER" "$DIAG_BIN"
-          LC_ALL=C grep -a -q DirectModeController "$DIAG_BIN"
+          # DirectModeMachine lives in the AeroDJCore package, so finding it proves the
+          # flag reaches the package too.
+          for NEEDLE in DirectModeController DirectModeMachine CompositionRootProbe; do
+            LC_ALL=C grep -a -q "$NEEDLE" "$DIAG_BIN" || { echo "::error::$NEEDLE missing from the AERODJ_P0_DIAG build"; exit 1; }
+          done
 
   runtime-mode:
     name: Runtime mode on simulator (Debug vs Release)

@@ -1,3 +1,6 @@
+// Compiled only in Debug (so `swift test` and Debug CI run its tests) and in AERODJ_P0_DIAG
+// builds. A plain Release, which is what the App Store gets, carries none of it. -Atlas
+#if DEBUG || AERODJ_P0_DIAG
 import Foundation
 
 // P0 Playback Recovery, Experiment A (-Atlas). Pure state for MusicKit Direct Mode: one
@@ -190,3 +193,27 @@ public struct DirectModeMachine: Equatable, Sendable {
         if log.count > Self.logCapacity { log.removeFirst(log.count - Self.logCapacity) }
     }
 }
+
+/// What one read of `ApplicationMusicPlayer.queue.currentEntry` showed, before it is turned
+/// into an entry index. Keeps the "is this an unexpected queue?" decision in tested Core code.
+public enum DirectModeEntrySighting: Equatable, Sendable {
+    /// No current entry at all (before the first play).
+    case noEntry
+    /// An entry whose `item` is still nil (transient while MusicKit resolves it).
+    case itemPending
+    /// A song; `loadedIndex` is its position among the loaded IDs, nil when it is none of them.
+    case song(loadedIndex: Int?)
+    /// A non-nil item that is not a song.
+    case notSong
+
+    /// The entry index to report. A missing or still-resolving entry keeps `current`, so only
+    /// a real foreign item can latch `unexpectedQueueSeen` (Orion, #134 review B2).
+    public func entryIndex(keeping current: Int?) -> Int? {
+        switch self {
+        case .noEntry, .itemPending: return current
+        case let .song(loadedIndex): return loadedIndex
+        case .notSong: return nil
+        }
+    }
+}
+#endif

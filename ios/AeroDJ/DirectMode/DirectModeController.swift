@@ -50,7 +50,8 @@ final class DirectModeController: ObservableObject {
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.observe()
+                guard let self else { return }
+                await self.observe()
                 try? await Task.sleep(for: .milliseconds(250))
             }
         }
@@ -71,6 +72,9 @@ final class DirectModeController: ObservableObject {
                     _ = await MusicAuthorization.request()
                 }
                 machine.observeAuthorization(Self.authorization(MusicAuthorization.currentStatus), at: now)
+                guard MusicAuthorization.currentStatus == .authorized else {
+                    throw DirectModeError.notAuthorized
+                }
                 var request = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: DirectModeSongs.ids)
                 request.limit = DirectModeSongs.ids.count
                 let response = try await request.response()
@@ -130,10 +134,17 @@ final class DirectModeController: ObservableObject {
     /// Index of the current entry among the loaded songs; nil when it is anything else.
     private func currentEntryIndex() -> Int? {
         guard !loadedIDs.isEmpty else { return nil }
-        // No current entry yet (before the first play): nothing changed.
-        guard let entry = player.queue.currentEntry else { return machine.entryIndex }
-        guard case let .song(song)? = entry.item else { return nil }
-        return loadedIDs.firstIndex(of: song.id)
+        let sighting: DirectModeEntrySighting
+        if let entry = player.queue.currentEntry {
+            switch entry.item {
+            case nil: sighting = .itemPending
+            case let .song(song)?: sighting = .song(loadedIndex: loadedIDs.firstIndex(of: song.id))
+            case .some: sighting = .notSong
+            }
+        } else {
+            sighting = .noEntry
+        }
+        return sighting.entryIndex(keeping: machine.entryIndex)
     }
 
     // MARK: - Sanitizing maps (enums only)
@@ -181,5 +192,6 @@ final class DirectModeController: ObservableObject {
 
 enum DirectModeError: Error {
     case catalogLookupIncomplete
+    case notAuthorized
 }
 #endif
