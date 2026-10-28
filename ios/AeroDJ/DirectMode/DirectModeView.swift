@@ -67,6 +67,8 @@ struct DirectModeView: View {
                     .disabled(m.playRequestedAt == nil)
                     .accessibilityIdentifier("directMode.heard")
 
+                DirectModeLayerPanel(host: controller.layers)
+
                 Toggle("Next launch: normal app (once)", isOn: $normalNextLaunch)
                     .onChange(of: normalNextLaunch) { _, on in
                         UserDefaults.standard.set(on, forKey: DirectModeLaunch.normalOnceKey)
@@ -77,11 +79,11 @@ struct DirectModeView: View {
                     Spacer()
                     Button("Copy log") {
                         UIPasteboard.general.string = (["oldMusicKitService=\(CompositionRootProbe.dependenciesBuilt ? "started" : "neverStarted")"]
-                            + m.log.map(\.description)).joined(separator: "\n")
+                            + DirectModeLayerStack.mergedLog(m.log, controller.layers.stack.trace)).joined(separator: "\n")
                     }
                 }
-                ForEach(Array(m.log.enumerated().reversed()), id: \.offset) { _, entry in
-                    Text(entry.description).font(.caption.monospaced())
+                ForEach(Array(DirectModeLayerStack.mergedLog(m.log, controller.layers.stack.trace).enumerated().reversed()), id: \.offset) { _, line in
+                    Text(line).font(.caption.monospaced())
                 }
             }
             .padding()
