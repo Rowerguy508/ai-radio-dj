@@ -147,14 +147,21 @@ public struct ApprovedShowHandoff: Equatable, Sendable {
     /// Rows still shown in Connections. A cue is spoken only when the row with the
     /// same id has `state.mayBeNarrated` (that state is `.approved`).
     public var connectionItems: [ConnectionItem]
+    /// Prepared cues whose row is approved and whose briefing section is off.
+    /// `forQueue()` does not speak them. They are not copied into
+    /// `carryForward.eligibleNextShow`, so a calendar event or due task omitted
+    /// here cannot roll into a later show.
+    public var omittedDisabledSection: [NarrationCue]
 
     public init(isMorningShow: Bool, approved: NarrationHandoff?, revokedOrUnapproved: Bool,
-                carryForward: EditorialCarryForward? = nil, connectionItems: [ConnectionItem] = []) {
+                carryForward: EditorialCarryForward? = nil, connectionItems: [ConnectionItem] = [],
+                omittedDisabledSection: [NarrationCue] = []) {
         self.isMorningShow = isMorningShow
         self.approved = approved
         self.revokedOrUnapproved = revokedOrUnapproved
         self.carryForward = carryForward
         self.connectionItems = connectionItems
+        self.omittedDisabledSection = omittedDisabledSection
     }
 
     /// No briefing. `queueStarted` receives nil.

@@ -194,4 +194,45 @@ final class LiveQueueBriefingTests: XCTestCase {
                                                calendar: calendar, prepared: prepared).forQueue()
         XCTAssertEqual(passed?.cues.map(\.id), [approvedCue.id])
     }
+
+    /// A prepared cue whose row is approved still has to pass the section check.
+    /// The calendar line is time-sensitive: turning the section off omits it.
+    /// It must not air, and it must not sit in `eligibleNextShow`.
+    func testPreparedCueFromATurnedOffSectionDoesNotAir() async throws {
+        let calendarID = UUID()
+        let noteID = UUID()
+        let items = [
+            ConnectionItem(id: calendarID, integration: .calendar, title: "Design review", state: .approved),
+            ConnectionItem(id: noteID, integration: .obsidian, title: "Grocery list", state: .approved),
+        ]
+        let calendarCue = NarrationCue(id: UUID(), order: 1, group: 0, kind: .upcomingEvent,
+                                       text: "You've got Design review.",
+                                       estimatedSeconds: 3, maxSeconds: 16, sourceItemID: calendarID,
+                                       source: .calendar, provenance: "prepared:design")
+        let noteCue = NarrationCue(id: UUID(), order: 2, group: 1, kind: .note,
+                                   text: "You've also got Grocery list.",
+                                   estimatedSeconds: 3, maxSeconds: 16, sourceItemID: noteID,
+                                   source: .obsidian, provenance: "prepared:grocery")
+        let prepared = NarrationHandoff(cues: [calendarCue, noteCue], maxSpokenSeconds: 60, experienceSeconds: 300)
+        let handed = LiveQueueBriefing.handoff(items: items, preferences: preferences(sections: [.notes]),
+                                               now: morning, calendar: calendar, prepared: prepared)
+        let content = handed.forQueue()?.cues.filter(\.isContent) ?? []
+        XCTAssertEqual(content.map(\.id), [noteCue.id])
+        XCTAssertEqual(content.map(\.text), [noteCue.text])
+        let spoken = handed.forQueue()?.cues.map(\.text).joined(separator: " ") ?? ""
+        XCTAssertFalse(spoken.contains("Design review"), spoken)
+        XCTAssertEqual(handed.omittedDisabledSection.map(\.id), [calendarCue.id])
+        XCTAssertEqual(handed.omittedDisabledSection.map(\.text), [calendarCue.text])
+        XCTAssertEqual(handed.omittedDisabledSection.map(\.kind), [.upcomingEvent])
+        XCTAssertNil(handed.carryForward)
+        XCTAssertFalse(handed.carryForward?.eligibleNextShow.contains { $0.id == calendarCue.id } ?? false)
+        XCTAssertFalse(handed.approved?.cues.contains { $0.id == calendarCue.id } ?? false)
+
+        let notesOff = LiveQueueBriefing.handoff(items: items, preferences: preferences(sections: [.calendar]),
+                                                 now: morning, calendar: calendar, prepared: prepared)
+        XCTAssertEqual(notesOff.forQueue()?.cues.filter(\.isContent).map(\.id), [calendarCue.id])
+        XCTAssertEqual(notesOff.omittedDisabledSection.map(\.id), [noteCue.id])
+        XCTAssertNil(notesOff.carryForward)
+        XCTAssertFalse(notesOff.carryForward?.eligibleNextShow.contains { $0.id == noteCue.id } ?? false)
+    }
 }
