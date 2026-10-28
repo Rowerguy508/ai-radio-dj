@@ -7,7 +7,7 @@
 // ApplicationMusicPlayer owns its session. The poll below only reads state; it issues nothing.
 import AVFoundation
 import AeroDJCore
-import MusicKit
+@preconcurrency import MusicKit
 import SwiftUI
 
 enum DirectModeLaunch {
