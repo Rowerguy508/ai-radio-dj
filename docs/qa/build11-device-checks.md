@@ -1,5 +1,10 @@
 # Build 11 device checks (physical Duo)
 
+> **On hold until Experiment A/B.** Per the owner's P0 Playback Recovery Directive, #125 is on
+> hold. Run [p0-direct-mode-experiments.md](p0-direct-mode-experiments.md) first: Experiment A
+> (MusicKit Direct Mode) and then the layer matrix B. This script runs only after both pass, and
+> its strings will be re-verified on #125's final head before then. -Fry
+
 Scope: [#125](https://github.com/Rowerguy508/ai-radio-dj/pull/125) at `cbd9fa2`, the build 10 no-audio P0 fix.
 Every log string below was grepped from the code at `cbd9fa2` (see the appendix). The overlay
 is TEMPORARY (`P0TapDiagnostics`, removal tracked by #121). "Fixed" is decided only by this run
