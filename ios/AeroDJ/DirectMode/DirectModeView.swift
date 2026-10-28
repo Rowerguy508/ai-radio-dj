@@ -80,10 +80,10 @@ struct DirectModeView: View {
                     Spacer()
                     Button("Copy log") {
                         UIPasteboard.general.string = (["oldMusicKitService=\(CompositionRootProbe.dependenciesBuilt ? "started" : "neverStarted")"]
-                            + DirectModeSessionLayer.mergedLog(m.log, controller.layers.stack.trace, controller.session.layer.trace)).joined(separator: "\n")
+                            + DirectModePlayPathTrace.mergedLog(m.log, controller.layers.stack.trace, controller.session.layer.trace, controller.servicePath.trace.entries)).joined(separator: "\n")
                     }
                 }
-                ForEach(Array(DirectModeSessionLayer.mergedLog(m.log, controller.layers.stack.trace, controller.session.layer.trace).enumerated().reversed()), id: \.offset) { _, line in
+                ForEach(Array(DirectModePlayPathTrace.mergedLog(m.log, controller.layers.stack.trace, controller.session.layer.trace, controller.servicePath.trace.entries).enumerated().reversed()), id: \.offset) { _, line in
                     Text(line).font(.caption.monospaced())
                 }
             }

@@ -50,7 +50,11 @@ final class DirectModeController: ObservableObject {
     /// Experiment B (-Atlas): the layers this launch runs with. Level 0 changes nothing.
     let layers = DirectModeLayerHost(level: DirectModeLayerSettings.levelAtLaunch, songCount: DirectModeSongs.ids.count)
     /// Experiment B "S" (-Fry): build 14's app-owned session path. Off changes nothing.
-    let session = DirectModeSessionLayerHost(enabled: DirectModeSessionLayerSettings.enabledAtLaunch)
+    /// Forced off at level 8 (-Atlas): there MusicKitService owns the session and the player.
+    let session = DirectModeSessionLayerHost(enabled: DirectModeSessionLayerSettings.enabledAtLaunch
+                                             && !DirectModeLayerSettings.levelAtLaunch.routesThroughMusicKitService)
+    /// Experiment B level 8 (-Atlas): commands through MusicKitService.shared, its play path traced.
+    let servicePath = DirectModeServicePathHost(level: DirectModeLayerSettings.levelAtLaunch)
 
     private let player = ApplicationMusicPlayer.shared
     private let openedAt = ProcessInfo.processInfo.systemUptime
@@ -64,6 +68,7 @@ final class DirectModeController: ObservableObject {
     func start() {
         guard pollTask == nil else { return }
         layers.start(clock: { [weak self] in self?.now ?? 0 }, issue: { [weak self] in self?.issue($0) })
+        servicePath.start(openedAt: openedAt)
         session.start(clock: { [weak self] in self?.now ?? 0 }, pause: { [weak self] in self?.player.pause() })
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -78,6 +83,7 @@ final class DirectModeController: ObservableObject {
         pollTask?.cancel()
         pollTask = nil
         layers.stop()
+        servicePath.stop()
         session.stop()
     }
 
@@ -115,7 +121,12 @@ final class DirectModeController: ObservableObject {
                 loadedSongs = ordered
                 layers.loaded(durations: ordered.map(\.duration))
                 // B2+ loads one song at a time, like the normal app.
-                player.queue = ApplicationMusicPlayer.Queue(for: layers.stack.usesOneSongQueue ? [ordered[0]] : ordered)
+                if servicePath.isOn {
+                    // Level 8: the service's launch path now; it sets its own one-song queue on Play.
+                    await servicePath.engage()
+                } else {
+                    player.queue = ApplicationMusicPlayer.Queue(for: layers.stack.usesOneSongQueue ? [ordered[0]] : ordered)
+                }
                 machine.finished(.load, error: nil, at: now)
             } catch {
                 machine.finished(.load, error: PlaybackErrorCode(error), at: now)
@@ -131,13 +142,14 @@ final class DirectModeController: ObservableObject {
         guard machine.request(.pause, at: now) else { return }
         layers.userCommand(.pause, at: now)
         session.userPause(at: now)
-        player.pause()
+        if servicePath.isOn { servicePath.pause() } else { player.pause() }
         machine.finished(.pause, error: nil, at: now)
     }
 
     private func run(_ command: DirectModeCommand) {
         guard machine.request(command, at: now) else { return }
         layers.userCommand(command, at: now)
+        servicePath.tapped(at: now)
         Task {
             do {
                 try await perform(command)
@@ -151,6 +163,7 @@ final class DirectModeController: ObservableObject {
     /// Main-actor method (same pattern as MusicKitService) so the player is never sent
     /// across isolation inside a closure.
     private func perform(_ command: DirectModeCommand) async throws {
+        if servicePath.isOn { return try await servicePath.perform(command, songs: loadedSongs) }
         switch command {
         case .play, .resume: try await startPlayer()
         case .next:
