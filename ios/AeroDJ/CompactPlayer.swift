@@ -206,7 +206,8 @@ struct PlaybackChromeBar: View {
                 QueueAffordance(upNext: snapshot.upNext, action: onQueue)
             }
             if showsProgress, let timeSource {
-                PlaybackProgressBar(time: timeSource)
+                PlaybackProgressBar(time: timeSource, transport: snapshot.transport,
+                                    trackID: snapshot.nowPlaying?.id)
             }
             if content.showsTransport {
                 TransportRow(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
