@@ -62,7 +62,7 @@ struct AppDependencies {
         )
         let station = StationConfigurationModel(store: FileStationConfigurationStore(fileURL: stationFileURL()),
                                                 consent: composition.consent)
-        let voice = VoiceRenderer.onDeviceDefault()
+        let voice = VoiceRenderer.liveDefault()
         if voice.routes.contains(where: { $0.providerID == PhononModelPin.providerID }) {
             Task { await PhononModelCoordinator.shared.start() }
         }

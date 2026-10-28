@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
-# Release needle: fails if a Release build of AeroDJCore can enable paid (ElevenLabs) voices.
-# 1. Runs the core tests in Release, where PremiumVoicePickerTests.testReleaseNeverEnablesPaidProviders
-#    asserts OwnerVoiceTrial is off even with the owner default set.
-# 2. Positive control: the DEBUG-only defaults key must be in Debug objects and absent from Release.
+# Paid-voice needle: the owner A/B gate (ElevenLabs picker) exists only with AERODJ_OWNER_AB.
+# 1. Release without the flag: no gate marker in AeroDJCore objects, and the Release-config
+#    test asserts OwnerVoiceTrial.paidProvidersEnabled == false.
+# 2. Positive control, Release with -DAERODJ_OWNER_AB (separate scratch dir): marker present
+#    and the flagged test asserts the gate is on, so step 1 cannot pass vacuously.
 set -euo pipefail
 cd "$(dirname "$0")/../AeroDJCore"
-pattern='AeroDJPaidProvidersEnabled'
-objects() { find .build -name '*.o' -ipath "*/$1*" -path '*AeroDJCore*' ! -path '*Tests*'; }
-
-swift build -c debug
-objects debug | xargs grep -laE "$pattern" >/dev/null || { echo "FAIL: control: pattern not found in Debug objects"; exit 1; }
+marker='AERODJ_OWNER_AB_VOICE_TRIAL_BUILD'
+flagged=.build/owner-ab  # inside the ignored .build/, excluded from the plain scan
+# -ipath: SwiftPM's layout varies (.build/release vs .build/out/Products/Release-*).
+objects() { find "$1" -name '*.o' -ipath '*release*' -path '*AeroDJCore*' ! -path '*Tests*' "${@:2}"; }
 
 swift build -c release
-if objects release | xargs grep -laE "$pattern"; then
-  echo "FAIL: paid-voice owner gate found in Release build"; exit 1
+[ -n "$(objects .build ! -path "*/owner-ab/*")" ] || { echo "FAIL: no Release AeroDJCore objects to scan"; exit 1; }
+if objects .build ! -path "*/owner-ab/*" | xargs grep -la "$marker"; then
+  echo "FAIL: owner A/B gate found in a Release build without AERODJ_OWNER_AB"; exit 1
 fi
 swift test -c release -Xswiftc -enable-testing --filter PremiumVoicePickerTests
-echo "OK: Release build cannot enable paid voices"
+
+swift build -c release --scratch-path "$flagged" -Xswiftc -DAERODJ_OWNER_AB
+objects "$flagged" | xargs grep -la "$marker" >/dev/null \
+  || { echo "FAIL: control: marker missing from the AERODJ_OWNER_AB build"; exit 1; }
+swift test -c release --scratch-path "$flagged" -Xswiftc -enable-testing -Xswiftc -DAERODJ_OWNER_AB \
+  --filter PremiumVoicePickerTests.testOwnerABBuildEnablesGate
+echo "OK: paid voices are off without AERODJ_OWNER_AB and on only with it"

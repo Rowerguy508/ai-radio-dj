@@ -19,23 +19,25 @@ public struct PremiumVoiceOption: Equatable, Sendable, Identifiable {
     }
 }
 
-/// The owner-approved starting lineup (2026-10-28): four ElevenLabs default ("premade") voices.
+/// The owner-approved lineup (2026-10-28): four ElevenLabs replacement voices.
 ///
-/// IDs are from ElevenLabs' public docs,
+/// IDs and descriptions are from ElevenLabs' public docs (replacement table),
 /// https://elevenlabs.io/docs/help-center/product/voices/my-voices/what-are-default-voices
-/// That page says default voices expire on 2026-12-31 and are only available to
-/// accounts created before March 2026. The proxy's `AERODJ_TTS_VOICE_IDS` must list
-/// exactly `allowlistCSV`.
+/// That page says the old Default voices expire 2026-12-31 and that these new voices
+/// "you will be able to use forever"; it states no account-age limit for them.
+/// The proxy's `AERODJ_TTS_VOICE_IDS` must list exactly `allowlistCSV`.
 public enum PremiumVoiceCatalog {
+    /// The one place the lineup is defined (keep `PremiumVoicePickerTests` in step, and
+    /// update the proxy's AERODJ_TTS_VOICE_IDS to the new `allowlistCSV`).
     public static let voices: [PremiumVoiceOption] = [
-        PremiumVoiceOption(id: "nPczCjzI2devNBz1zQrb", displayName: "Brian",
-                           description: "Deep, Resonant and Comforting", upstream: .elevenlabs),
-        PremiumVoiceOption(id: "TX3LPaxmHKxFdv7VOQHJ", displayName: "Liam",
-                           description: "Energetic, Social Media Creator", upstream: .elevenlabs),
-        PremiumVoiceOption(id: "EXAVITQu4vr4xnSDxMaL", displayName: "Sarah",
-                           description: "Mature, Reassuring, Confident", upstream: .elevenlabs),
-        PremiumVoiceOption(id: "cgSgspJ2msm6clMCkdW9", displayName: "Jessica",
-                           description: "Playful, Bright, Warm", upstream: .elevenlabs),
+        PremiumVoiceOption(id: "8dEUmyPMdDdK91vboYih", displayName: "Sawyer",
+                           description: "Midnight Storyteller", upstream: .elevenlabs),
+        PremiumVoiceOption(id: "ktkP7Nsj67dw2zcplQYt", displayName: "Lawrence",
+                           description: "Bright and Informative", upstream: .elevenlabs),
+        PremiumVoiceOption(id: "OZ0L6eISlOejga3XjDFt", displayName: "Talia",
+                           description: "Warm Soft Guide", upstream: .elevenlabs),
+        PremiumVoiceOption(id: "g7LVvkPWALzPxOQbF6OE", displayName: "Jade",
+                           description: "Upbeat and Natural", upstream: .elevenlabs),
     ]
 
     /// The value for the proxy's `AERODJ_TTS_VOICE_IDS`.
@@ -47,25 +49,22 @@ public enum PremiumVoiceCatalog {
 
 /// Owner-only A/B gate for paid voices.
 ///
-/// `BetaVoicePolicy.paidProvidersEnabled` stays `false` (the beta default). This gate
-/// can only turn on in a DEBUG build, and only when the owner sets the launch
-/// argument / default `-AeroDJPaidProvidersEnabled YES`. Release compiles the
-/// `#else` branch, so the key is never read there (`check-release-disables-paid-voice.sh`).
+/// `BetaVoicePolicy.paidProvidersEnabled` stays `false` (the beta default). This gate is
+/// compiled in only when the Swift condition `AERODJ_OWNER_AB` is set, which happens only
+/// in a TestFlight archive dispatched with `owner_ab: true` (testflight.yml). Debug, Release
+/// and every other build compile the `#else` branch (`check-release-disables-paid-voice.sh`).
+/// Even with the flag, the ElevenLabs route needs a selected voice and a Keychain token.
+///
+/// Spend (owner, 2026-10-28): ElevenLabs Free plan, no pay-as-you-go, so $0, plus the
+/// proxy's daily character cap. The app-side route is priced at 0 for that reason.
 public enum OwnerVoiceTrial {
-    #if DEBUG
-    public static let paidProvidersDefaultsKey = "AeroDJPaidProvidersEnabled"
-    public static let buildAllowsPaidProviders = true
+    #if AERODJ_OWNER_AB
+    /// Found in the binary only when the flag is set (needle positive control).
+    public static let buildMarker = "AERODJ_OWNER_AB_VOICE_TRIAL_BUILD"
+    public static let paidProvidersEnabled = !buildMarker.isEmpty
     #else
-    public static let buildAllowsPaidProviders = false
+    public static let paidProvidersEnabled = false
     #endif
-
-    public static func paidProvidersEnabled(defaults: UserDefaults = .standard) -> Bool {
-        #if DEBUG
-        return buildAllowsPaidProviders && defaults.bool(forKey: paidProvidersDefaultsKey)
-        #else
-        return false
-        #endif
-    }
 }
 
 /// Persists only the selected voice ID. Unknown IDs read back as `nil`.
@@ -149,8 +148,8 @@ public enum PremiumVoiceRoutes {
                   endpoint: credentials.endpoint, allowedHosts: [host], upstream: .elevenlabs,
                   sessionToken: { token }) else { return omit(.endpointNotAllowed) }
         let option = PremiumVoiceCatalog.voices[index]
-        // App-side price is 0: spend is metered and capped server-side (proxy daily character
-        // cap, restricted key credit limit), so the app's $0 VoiceBudget does not block it.
+        // App-side price is 0: Free plan, no pay-as-you-go ($0), capped server-side by the
+        // proxy's daily character cap, so the app's $0 VoiceBudget does not block it.
         let route = VoiceRoute(providerID: providerID,
                                provider: ProxyVoiceProvider(configuration: configuration, transport: transport),
                                voice: VoiceProfile(id: option.id, name: option.displayName),
