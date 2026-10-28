@@ -210,8 +210,15 @@ public enum StartFailurePolicy {
                                       events: raised(message) + [.userPaused], message: message)
         case let .refused(pausedBySystem):
             // The gate already paused the player. Honest UI: not playing, keep a system hold.
+            guard pausedBySystem else {
+                return StartFailureEffect(pausesPlayer: false, cancelsConfirm: true,
+                                          events: [.userPaused], message: nil)
+            }
+            // Build 10 P0: a system interruption landed while the tapped start was preparing.
+            // Before this, the button went back to Play with no message, so the tap looked ignored.
+            let message = "TEMPORARY: a system audio interruption stopped the start before it played. attempt=\(attempt.number)"
             return StartFailureEffect(pausesPlayer: false, cancelsConfirm: true,
-                                      events: [pausedBySystem ? .interruptionPaused : .userPaused], message: nil)
+                                      events: raised(message) + [.interruptionPaused], message: message)
         }
     }
 
