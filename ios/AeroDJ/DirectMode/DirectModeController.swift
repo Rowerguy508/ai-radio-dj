@@ -30,6 +30,16 @@ enum DirectModeSongs {
     /// Public Apple Music catalog song IDs (US storefront), checked against the iTunes lookup
     /// API on 2026-10-27. Song A plays first; "Next song" skips to song B. Not shown or logged.
     static let ids: [MusicItemID] = ["1488408568", "1544494392"]
+    /// Loud from 0:00 (-Fry): public US catalog song ID, checked against the iTunes lookup API
+    /// on 2026-10-28. Not shown or logged.
+    static let loudIntroID: MusicItemID = "726416473"
+
+    static func ids(for set: DirectModeSongSet) -> [MusicItemID] {
+        switch set {
+        case .standard: return ids
+        case .loudFirst: return [loudIntroID, ids[0]]
+        }
+    }
 }
 
 @MainActor
@@ -62,6 +72,12 @@ final class DirectModeController: ObservableObject {
         pollTask = nil
     }
 
+    /// Before Load only; the queue is set once.
+    func selectSongSet(_ set: DirectModeSongSet) { machine.selectSongSet(set, at: now) }
+
+    /// The tester heard the song.
+    func markHeard() { machine.markHeard(at: now) }
+
     // MARK: - Commands (the only callers of ApplicationMusicPlayer commands)
 
     func load() {
@@ -75,13 +91,14 @@ final class DirectModeController: ObservableObject {
                 guard MusicAuthorization.currentStatus == .authorized else {
                     throw DirectModeError.notAuthorized
                 }
-                var request = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: DirectModeSongs.ids)
-                request.limit = DirectModeSongs.ids.count
+                let ids = DirectModeSongs.ids(for: machine.songSet)
+                var request = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: ids)
+                request.limit = ids.count
                 let response = try await request.response()
                 let byID = Dictionary(response.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-                let ordered = DirectModeSongs.ids.compactMap { byID[$0] }
+                let ordered = ids.compactMap { byID[$0] }
                 lookupFound = ordered.count
-                guard ordered.count == DirectModeSongs.ids.count else {
+                guard ordered.count == ids.count else {
                     throw DirectModeError.catalogLookupIncomplete
                 }
                 loadedIDs = ordered.map(\.id)
