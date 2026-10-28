@@ -471,6 +471,44 @@ final class SongEndInterruptionTests: XCTestCase {
         }
     }
 
+    /// Echo + Orion: the interruption ended with shouldResume=false at a break boundary. The break
+    /// does not air, it is skipped with `.interrupted` (logged, not lost), song 2 is loaded held,
+    /// and the user's next Play starts song 2 once, not a stale break.
+    func testWithBreakAndEndedWithoutShouldResumeSkipsBreakAndHoldsSong2() {
+        var h = Harness()
+        h.play(through: 199)
+        h.notice(.interruptionBegan)
+        h.notice(.interruptionEnded(shouldResume: false))
+        h.poll("s1", playing: false, at: 0)
+        assertOneHandoff(h)
+
+        var pending = PendingPlayStop()
+        pending.handOut(afterTrack: 0)
+        let admission = BreakPlayAdmissionPolicy.decide(pausedBySystem: h.policy.pausedBySystem,
+                                                        mayAutoResume: h.policy.mayAutoResume,
+                                                        phase: .transition, afterTrack: 0)
+        XCTAssertFalse(admission.startAudio, "the break must not air while held")
+        XCTAssertEqual(admission.skipReason, .interrupted)
+        XCTAssertEqual(PlaybackLog.breakSkipped(after: 0, reason: admission.skipReason!),
+                       "break skipped after=0 reason=interrupted")
+        pending.abandonHandOut()
+        XCTAssertEqual(NarrationResumePolicy.musicAfterBreak(entryAlreadyFinished: true,
+                                                             mayAutoResume: h.policy.mayAutoResume,
+                                                             queueHasEntry: true), .hold)
+
+        // startTrack's hold gate arms song 2 as the deferred start.
+        XCTAssertEqual(h.startNext(), .held(.deferSilently))
+        var deferred = DeferredSongStart()
+        deferred.arm(1)
+
+        // The user presses Play: the resume path reports song 2 (index 1), once.
+        h.policy.userPlay()
+        XCTAssertTrue(h.policy.mayAutoResume)
+        XCTAssertEqual(deferred.take(), 1, "Play starts song 2")
+        XCTAssertNil(deferred.take(), "song 2 is reported once")
+        XCTAssertNil(h.startNext(), "song 2 is not loaded again, and no break is re-queued")
+    }
+
     // MARK: - Atlas
 
     /// (b) the start was allowed and `play()` threw: the visible banner, not a silent stop.
