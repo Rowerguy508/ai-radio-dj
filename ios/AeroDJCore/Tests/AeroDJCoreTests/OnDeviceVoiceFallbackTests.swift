@@ -72,6 +72,36 @@ final class OnDeviceVoiceFallbackTests: XCTestCase {
     }
 }
 
+private actor RecordingCache: AudioCache {
+    private(set) var stored: [String: CachedAudio] = [:]
+    func audio(for key: String) async -> CachedAudio? { stored[key] }
+    func store(_ audio: CachedAudio, for key: String) async { stored[key] = audio }
+    func purge(sourceItemIDs: Set<UUID>) async {}
+    func purgeExpired() async {}
+    func purgeAllPersonal() async {}
+}
+
+final class OnDeviceVoiceFallbackCacheTests: XCTestCase {
+    /// Fallback audio is stored under the standard route's own key, never the Premium one,
+    /// so a repeated line goes back to Premium as soon as Premium renders again.
+    func testFallbackClipIsCachedUnderTheStandardVoiceOnly() async throws {
+        let cache = RecordingCache()
+        let line = cue()
+        let premium = route("premium", .fails), standard = route("standard", .ok)
+        let failing = VoiceRenderer(routes: [premium, standard], budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache)
+        let clip = try await failing.render(line, userID: "u", stationID: "s").get()
+        let stored = await cache.stored
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored[clip.cacheKey]?.voiceID, "standard")
+
+        // Premium healthy again: the same line renders fresh in Premium, not from the fallback clip.
+        let healthy = VoiceRenderer(routes: [route("premium", .ok), standard], budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache)
+        let again = try await healthy.render(line, userID: "u", stationID: "s").get()
+        XCTAssertEqual(again.audio.voiceID, "premium")
+        XCTAssertEqual(again.attempts.map(\.result), [.rendered])
+    }
+}
+
 private final class TestClock: @unchecked Sendable { var now = Date(timeIntervalSince1970: 1_800_000_000) }
 
 final class VoiceHealthLedgerTests: XCTestCase {
