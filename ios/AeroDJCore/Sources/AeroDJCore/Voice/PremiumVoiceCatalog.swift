@@ -104,9 +104,9 @@ public enum PremiumVoiceRoutes {
     public static let providerID = "elevenlabs"
     /// Above the proxy's own 15 s upstream abort, so its 504 arrives before we give up.
     public static let timeout: Duration = .seconds(16)
-    /// Exact hosts, once the proxy is deployed. Until then a `*.vercel.app` host is allowed.
+    /// Exact deployed proxy hosts only; no suffix or wildcard rule. Empty until the proxy is
+    /// deployed and its host is pinned here, so until then the ElevenLabs route is omitted.
     public static let allowedHosts: Set<String> = []
-    public static let allowedHostSuffixes = [".vercel.app"]
 
     public enum OmitReason: String, Equatable, Sendable {
         case paidDisabled, noSelection, unknownVoice, noCredentials, emptyToken, endpointNotAllowed
@@ -126,15 +126,14 @@ public enum PremiumVoiceRoutes {
     /// The proxy returns no timestamps, so ElevenLabs captions show the whole line.
     public static func hasWordTimings(providerID: String) -> Bool { false }
 
-    public static func isAllowed(host: String) -> Bool {
-        let host = host.lowercased()
-        return allowedHosts.contains(host)
-            || allowedHostSuffixes.contains { host.hasSuffix($0) && host.count > $0.count }
+    public static func isAllowed(host: String, pinned: Set<String> = allowedHosts) -> Bool {
+        pinned.contains(host.lowercased())
     }
 
     /// `[ElevenLabs(selected voice)] + onDevice` when every gate passes, else `onDevice` unchanged.
     public static func compose(onDevice: [VoiceRoute], paidProvidersEnabled: Bool, selectedVoiceID: String?,
                                credentials: PremiumProxyCredentials?,
+                               pinnedHosts: Set<String> = allowedHosts,
                                transport: any HTTPTransport = URLSessionTransport()) -> Composition {
         func omit(_ reason: OmitReason) -> Composition { Composition(routes: onDevice, decision: .omitted(reason)) }
         guard paidProvidersEnabled else { return omit(.paidDisabled) }
@@ -143,7 +142,7 @@ public enum PremiumVoiceRoutes {
         guard let credentials else { return omit(.noCredentials) }
         let token = credentials.token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { return omit(.emptyToken) }
-        guard let host = credentials.endpoint.host?.lowercased(), isAllowed(host: host),
+        guard let host = credentials.endpoint.host?.lowercased(), isAllowed(host: host, pinned: pinnedHosts),
               let configuration = try? ProxyVoiceProvider.Configuration(
                   endpoint: credentials.endpoint, allowedHosts: [host], upstream: .elevenlabs,
                   sessionToken: { token }) else { return omit(.endpointNotAllowed) }

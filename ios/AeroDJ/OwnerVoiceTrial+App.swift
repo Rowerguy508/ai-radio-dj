@@ -142,7 +142,7 @@ private struct OwnerVoicePickerSheet: View {
                     Text("ElevenLabs first, on-device voice as fallback. Captions show whole lines. Applies on next launch.")
                 }
                 Section("Proxy (owner only)") {
-                    TextField("https://…vercel.app/api/tts", text: $endpoint)
+                    TextField("Proxy URL (exact pinned host)", text: $endpoint)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()

@@ -36,6 +36,7 @@ private actor CallCount {
 final class PremiumVoicePickerTests: XCTestCase {
     private let sawyer = "8dEUmyPMdDdK91vboYih"
     private let jade = "g7LVvkPWALzPxOQbF6OE"
+    private let pinned: Set<String> = ["aerodj-tts.vercel.app"]
     private let creds = PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!,
                                                 token: "owner-test-token")
 
@@ -101,7 +102,7 @@ final class PremiumVoicePickerTests: XCTestCase {
     func testGateOffWithoutOwnerABFlag() {
         XCTAssertFalse(OwnerVoiceTrial.paidProvidersEnabled)
         let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled,
-                                           selectedVoiceID: jade, credentials: creds)
+                                           selectedVoiceID: jade, credentials: creds, pinnedHosts: pinned)
         XCTAssertEqual(c.routes.map(\.providerID), ["device"])
         XCTAssertEqual(c.decision, .omitted(.paidDisabled))
     }
@@ -111,7 +112,7 @@ final class PremiumVoicePickerTests: XCTestCase {
 
     func testEnabledWithSelectionPutsElevenLabsFirstThenOnDevice() {
         let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: jade,
-                                           credentials: creds)
+                                           credentials: creds, pinnedHosts: pinned)
         XCTAssertEqual(c.routes.map(\.providerID), ["elevenlabs", "device"])
         XCTAssertEqual(c.routes.first?.voice.id, jade)
         XCTAssertEqual(c.routes.first?.acceptsSSML, false)
@@ -135,10 +136,26 @@ final class PremiumVoicePickerTests: XCTestCase {
         ]
         for (enabled, voice, credentials, reason) in cases {
             let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: enabled,
-                                               selectedVoiceID: voice, credentials: credentials)
+                                               selectedVoiceID: voice, credentials: credentials, pinnedHosts: pinned)
             XCTAssertEqual(c.routes.map(\.providerID), ["device"], "\(reason)")
             XCTAssertEqual(c.decision, .omitted(reason))
         }
+    }
+
+    /// Fail-closed host pinning: exact hosts only, no suffix rule, empty pins omit the route.
+    func testHostPinningIsExactAndFailsClosed() {
+        XCTAssertTrue(PremiumVoiceRoutes.allowedHosts.isEmpty, "pin the deployed host explicitly")
+        let lookalike = PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts-x.vercel.app/api/tts")!, token: "t")
+        XCTAssertFalse(PremiumVoiceRoutes.isAllowed(host: "aerodj-tts-x.vercel.app", pinned: pinned))
+        XCTAssertEqual(PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: jade,
+                                                  credentials: lookalike, pinnedHosts: pinned).decision,
+                       .omitted(.endpointNotAllowed))
+        XCTAssertEqual(PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: jade,
+                                                  credentials: creds).decision,
+                       .omitted(.endpointNotAllowed), "default (empty) pins omit the route")
+        XCTAssertEqual(PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: jade,
+                                                  credentials: creds, pinnedHosts: pinned).decision,
+                       .included(catalogIndex: 3))
     }
 
     // MARK: Cache key per voice
@@ -146,7 +163,7 @@ final class PremiumVoicePickerTests: XCTestCase {
     func testCacheKeyDiffersPerVoiceID() {
         let routes = PremiumVoiceCatalog.voices.map {
             PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: $0.id,
-                                       credentials: creds).routes[0]
+                                       credentials: creds, pinnedHosts: pinned).routes[0]
         }
         let keys = routes.map { VoiceRenderer.cacheKey(text: "Same line.", route: $0) }
         XCTAssertEqual(Set(keys).count, 4)
@@ -158,7 +175,7 @@ final class PremiumVoicePickerTests: XCTestCase {
     func testProxySuccessRendersSelectedVoiceThroughExistingRenderer() async {
         let transport = StubProxyTransport(status: 200, headers: StubProxyTransport.ok)
         let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: sawyer,
-                                           credentials: creds, transport: transport)
+                                           credentials: creds, pinnedHosts: pinned, transport: transport)
         let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
                                      cache: InMemoryAudioCache())
         guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s") else {
@@ -176,7 +193,7 @@ final class PremiumVoicePickerTests: XCTestCase {
                                   (200, ["Content-Type": "audio/wav"])] {  // missing duration
             let transport = StubProxyTransport(status: status, headers: headers)
             let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: sawyer,
-                                               credentials: creds, transport: transport)
+                                               credentials: creds, pinnedHosts: pinned, transport: transport)
             let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
                                          cache: InMemoryAudioCache())
             guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s") else {
@@ -194,7 +211,7 @@ final class PremiumVoicePickerTests: XCTestCase {
         headers["X-Audio-Duration"] = "30"
         let transport = StubProxyTransport(status: 200, headers: headers)
         let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: sawyer,
-                                           credentials: creds, transport: transport)
+                                           credentials: creds, pinnedHosts: pinned, transport: transport)
         let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
                                      cache: InMemoryAudioCache())
         guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s") else {
