@@ -303,9 +303,6 @@ final class MusicKitService: ObservableObject {
 
     /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
     func pausePlayerForBreak() {
-        #if AERODJ_P0_DIAG
-        DirectModePlayPathProbe.mark(.pausePlayerForBreak)
-        #endif
         boundaries.pausedByApp()
         player.pause()
         isPlaying = false
@@ -535,9 +532,6 @@ final class MusicKitService: ObservableObject {
                 mayAutoResume: sessionPolicy.mayAutoResume,
                 userWantsPlayback: sessionPolicy.userWantsPlayback)
             if remote == .pauseBecauseHeld {
-                #if AERODJ_P0_DIAG
-                DirectModePlayPathProbe.mark(.remotePlayGatePause)
-                #endif
                 player.pause()
                 isPlaying = false
                 if snapshot.transport == .preparing {
@@ -647,9 +641,6 @@ final class MusicKitService: ObservableObject {
         let gate = selfStartGate.decide(notice, at: ProcessInfo.processInfo.systemUptime,
                                         current: attempts.current, callActive: callActive,
                                         breakActive: breakActive)
-        #if AERODJ_P0_DIAG
-        DirectModePlayPathProbe.mark(.selfStartGate(gate))
-        #endif
         switch gate {
         case .deferSelfStart:
             return
@@ -700,9 +691,6 @@ final class MusicKitService: ObservableObject {
     /// The synchronous part of one notice: logging, boundary bookkeeping and any suspend.
     /// `.resumeIfPermitted` is left to the caller (live path awaits it; replay uses a ticket).
     private func performSessionStep(_ notice: AudioSessionNotice, _ directive: AudioSessionDirective) {
-        #if AERODJ_P0_DIAG
-        DirectModePlayPathProbe.mark(.sessionPolicy(DirectModeSessionNoticeKind(notice), directive))
-        #endif
         let breakActive = isBreakActive
         let stopReason: InterludeStopReason?
         switch notice {
@@ -791,36 +779,18 @@ final class MusicKitService: ObservableObject {
     /// landed during the await pauses again and does not count as a resume.
     private func playIfStillAllowed() async throws -> Bool {
         try activateAudioSessionForPlayback()
-        #if AERODJ_P0_DIAG
-        DirectModePlayPathProbe.mark(.prepareStart)
-        #endif
         do {
             try await player.prepareToPlay()
-            #if AERODJ_P0_DIAG
-            DirectModePlayPathProbe.mark(.prepareOK)
-            #endif
         } catch {
-            #if AERODJ_P0_DIAG
-            DirectModePlayPathProbe.mark(.prepareThrew(DirectModeErrorTag(error)))
-            #endif
             logPlaybackError("prepareToPlay", error)
             throw error
         }
         let playAttempt = attempts.current
         if let playAttempt { selfStartGate.playCalled(playAttempt, at: ProcessInfo.processInfo.systemUptime) }
-        #if AERODJ_P0_DIAG
-        DirectModePlayPathProbe.mark(.playStart)
-        #endif
         do {
             try await player.play()
-            #if AERODJ_P0_DIAG
-            DirectModePlayPathProbe.mark(.playOK)
-            #endif
             if let playAttempt { selfStartGate.playReturned(playAttempt, at: ProcessInfo.processInfo.systemUptime) }
         } catch {
-            #if AERODJ_P0_DIAG
-            DirectModePlayPathProbe.mark(.playThrew(DirectModeErrorTag(error)))
-            #endif
             logPlaybackError("player.play", error)
             throw error
         }
@@ -828,9 +798,6 @@ final class MusicKitService: ObservableObject {
             mayAutoResume: sessionPolicy.mayAutoResume,
             userWantsPlayback: sessionPolicy.userWantsPlayback
         )
-        #if AERODJ_P0_DIAG
-        DirectModePlayPathProbe.mark(.afterPlay(decision))
-        #endif
         guard decision == .keepPlaying else {
             player.pause()
             isPlaying = false
@@ -845,23 +812,11 @@ final class MusicKitService: ObservableObject {
     private func activateAudioSessionForPlayback() throws {
         guard AudioSessionActivation.shouldActivate(during: .playback) else {
             // Build 10 P0: ApplicationMusicPlayer activates the session; ours stays inactive.
-            #if AERODJ_P0_DIAG
-            DirectModePlayPathProbe.mark(.setActiveSkipped)
-            #endif
             return
         }
-        #if AERODJ_P0_DIAG
-        DirectModePlayPathProbe.mark(.setActiveStart)
-        #endif
         do {
             try AVAudioSession.sharedInstance().setActive(true)
-            #if AERODJ_P0_DIAG
-            DirectModePlayPathProbe.mark(.setActiveOK)
-            #endif
         } catch {
-            #if AERODJ_P0_DIAG
-            DirectModePlayPathProbe.mark(.setActiveThrew(DirectModeErrorTag(error)))
-            #endif
             logPlaybackError("setActive", error)
             throw error
         }
@@ -1068,9 +1023,6 @@ private final class AudioSessionMonitor: NSObject {
         guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: raw),
               type == .began || type == .ended else { return }
-        #if AERODJ_P0_DIAG
-        DirectModePlayPathProbe.markInterruption(note)
-        #endif
         let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
         let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
         eventsStream.yield(.interruption(began: type == .began, shouldResume: shouldResume))

@@ -7,8 +7,7 @@ import Foundation
 // one at a time, cumulatively: level N turns on B1...BN. Level 0 is plain Direct Mode (build 13).
 // Every layer here drives the REAL Core types the normal app uses (`PlaybackEngine`,
 // `BoundaryInterpreter`, `PlaybackAttempts`, `PlaybackConfirmWatchdog` / `PlaybackConfirmPolicy`,
-// `AudioSessionPolicy`); nothing is reimplemented. Levels 1-4 do not involve `MusicKitService`;
-// level 8 hands every command to it instead (see DirectModePlayPath.swift) and this stack drives nothing.
+// `AudioSessionPolicy`); nothing is reimplemented. `MusicKitService` is not involved.
 // The trace is sanitized: layer id, state enums and t. No titles, IDs, tokens or route names.
 
 /// The seven layers from docs/qa/p0-direct-mode-experiments.md, Experiment B.
@@ -39,48 +38,25 @@ public struct DirectModeLayerLevel: Equatable, Sendable, CustomStringConvertible
     public static let maxDefined = DirectModeLayer.allCases.count
     /// Highest level this build wires (B4). Raise when B5-B7 land.
     public static let maxWired = 4
-    /// Level 8: B1-B4 as the REAL `MusicKitService` runs them. Play, Resume, Pause and Next go
-    /// through `MusicKitService.shared`, and its play path is traced (observe-only). Not a layer:
-    /// the service owns its own engine, boundary, confirm and session policy.
-    public static let servicePath = 8
-    /// Every value the selector can reach, in stepper order. 5-7 (B5-B7) are TODO, unreachable.
-    public static let selectable = Array(0...maxWired) + [servicePath]
     /// Level 0: plain Direct Mode, exactly build 13.
     public static let off = DirectModeLayerLevel(stored: 0)
 
     public let value: Int
 
-    /// From the stored default. Missing reads as 0; 8 is level 8; anything else outside
-    /// 0...maxWired is clamped, so a stale or hand-edited value can never turn on an unwired layer.
+    /// From the stored default. Missing reads as 0; anything outside 0...maxWired is clamped, so a
+    /// stale or hand-edited value can never turn on an unwired layer.
     public init(stored: Int) {
-        value = stored == Self.servicePath ? Self.servicePath : min(max(stored, 0), Self.maxWired)
+        value = min(max(stored, 0), Self.maxWired)
     }
 
-    /// Unwired layers (B5-B7) are never enabled, at any level, including 8.
-    public func enables(_ layer: DirectModeLayer) -> Bool { layer.isWired && layer.rawValue <= value }
+    public func enables(_ layer: DirectModeLayer) -> Bool { layer.rawValue <= value }
 
     public var enabledLayers: [DirectModeLayer] { DirectModeLayer.allCases.filter(enables) }
 
     public var isOff: Bool { value == 0 }
 
-    /// Level 8: commands go through `MusicKitService.shared`; Direct Mode's own layer stack only
-    /// records the level line and drives nothing, so there is exactly one owner of the player.
-    public var routesThroughMusicKitService: Bool { value == Self.servicePath }
-
-    /// The selector's next and previous reachable values (0...4, then 8).
-    public var next: DirectModeLayerLevel {
-        let i = Self.selectable.firstIndex(of: value) ?? 0
-        return DirectModeLayerLevel(stored: Self.selectable[min(i + 1, Self.selectable.count - 1)])
-    }
-
-    public var previous: DirectModeLayerLevel {
-        let i = Self.selectable.firstIndex(of: value) ?? 0
-        return DirectModeLayerLevel(stored: Self.selectable[max(i - 1, 0)])
-    }
-
     public var description: String {
-        if routesThroughMusicKitService { return "8 (B1-B4 via MusicKitService)" }
-        return value == 0 ? "0 (plain Direct Mode)" : "\(value) (B1-B\(value))"
+        value == 0 ? "0 (plain Direct Mode)" : "\(value) (B1-B\(value))"
     }
 }
 
@@ -215,33 +191,27 @@ public struct DirectModeLayerStack: Sendable {
         record(nil, .level(level.value), at: t)
     }
 
-    /// True when Direct Mode's own copy of `layer` runs. At level 8 none does: MusicKitService
-    /// runs the real B1-B4 itself, and a second driver would double every pause and handoff.
-    private func drives(_ layer: DirectModeLayer) -> Bool {
-        level.enables(layer) && !level.routesThroughMusicKitService
-    }
-
     /// B1's transport (`PlaybackEngine.snapshot.transport`).
     public var transport: TransportState { engine.snapshot.transport }
     public var startTimedOut: Bool { engine.snapshot.startTimedOut }
     /// B2: Load sets a one-song queue and Next / a boundary loads the next song.
-    public var usesOneSongQueue: Bool { drives(.queueBoundary) }
+    public var usesOneSongQueue: Bool { level.enables(.queueBoundary) }
     /// B4: the controller installs interruption and route-change observers (observe only).
-    public var observesSessionNotifications: Bool { drives(.interruption) }
+    public var observesSessionNotifications: Bool { level.enables(.interruption) }
     public var mayAutoResume: Bool { sessionPolicy.mayAutoResume }
 
     /// The machine accepted a user command and the controller is about to issue it.
     public mutating func userCommand(_ command: DirectModeCommand, at t: Double) {
-        guard drives(.coordinator) else { return }
+        guard level.enables(.coordinator) else { return }
         // B4 first, as MusicKitService records intent before it touches the player.
-        if drives(.interruption) {
+        if level.enables(.interruption) {
             switch command {
             case .play, .resume: sessionPolicy.userPlay()
             case .pause: sessionPolicy.userPause()
             case .load, .next: break
             }
         }
-        if drives(.queueBoundary) {
+        if level.enables(.queueBoundary) {
             switch command {
             case .next:
                 boundaries.userRequestedChange()
@@ -277,17 +247,17 @@ public struct DirectModeLayerStack: Sendable {
     /// B3 never asks for anything: the confirm deadline only reports).
     public mutating func observe(status: DirectModeStatus, position: Double, duration: Double?,
                                  entryIndex: Int?, at t: Double) -> [DirectModeLayerAction] {
-        guard drives(.coordinator) else { return [] }
+        guard level.enables(.coordinator) else { return [] }
         var actions: [DirectModeLayerAction] = []
         let before = engine.snapshot.transport
 
-        if drives(.confirm) {
+        if level.enables(.confirm) {
             pollConfirm(status: status, at: t)
         } else if status == .playing, engine.snapshot.transport == .preparing {
             engine.apply(.playbackConfirmed)
         }
 
-        if drives(.queueBoundary), engineHasQueue {
+        if level.enables(.queueBoundary), engineHasQueue {
             let observation = PlaybackObservation(entryID: entryIndex.map(String.init),
                                                   isPlaying: status == .playing,
                                                   position: position, duration: duration)
@@ -306,7 +276,7 @@ public struct DirectModeLayerStack: Sendable {
 
     /// B4: one interruption or route-change notification, in arrival order.
     public mutating func handle(_ notice: AudioSessionNotice, at t: Double) -> [DirectModeLayerAction] {
-        guard drives(.interruption) else { return [] }
+        guard level.enables(.interruption) else { return [] }
         let directive = sessionPolicy.handle(notice, breakIsActive: false)
         record(.interruption, .notice(DirectModeSessionNoticeKind(notice), directive), at: t)
         switch directive {
@@ -388,7 +358,7 @@ public struct DirectModeLayerStack: Sendable {
 
     private mutating func beginAttempt(at t: Double) {
         let attempt = attempts.beginStart()
-        guard drives(.confirm) else { return }
+        guard level.enables(.confirm) else { return }
         watchdog = PlaybackConfirmWatchdog(attempt: attempt)
         lastConfirmPoll = t
         record(.confirm, .confirm(.armed), at: t)

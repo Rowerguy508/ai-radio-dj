@@ -128,14 +128,9 @@ struct DirectModeLayerPanel: View {
             Text("This launch: \(host.level.description)")
                 .font(.body.monospaced())
                 .accessibilityIdentifier("directMode.layers.current")
-            // 0...4, then 8 (B1-B4 via MusicKitService). 5-7 are not reachable.
-            Stepper {
+            Stepper(value: $next, in: 0...DirectModeLayerLevel.maxWired) {
                 Text("Next cold launch: \(DirectModeLayerLevel(stored: next).description)")
                     .font(.body.monospaced())
-            } onIncrement: {
-                next = DirectModeLayerLevel(stored: next).next.value
-            } onDecrement: {
-                next = DirectModeLayerLevel(stored: next).previous.value
             }
             .onChange(of: next) { _, value in
                 DirectModeLayerSettings.nextLevel = DirectModeLayerLevel(stored: value)
@@ -144,9 +139,9 @@ struct DirectModeLayerPanel: View {
             if next != host.level.value {
                 Text("Force-quit and relaunch to apply.").font(.caption).foregroundStyle(.orange)
             }
-            Text("B5-B7 (break, speech, narration) are not wired in this build. Level 8 runs B1-B4 inside MusicKitService (S is off at 8).")
+            Text("B5-B7 (break, speech, narration) are not wired in this build.")
                 .font(.caption).foregroundStyle(.secondary)
-            if !host.level.isOff, !host.level.routesThroughMusicKitService {
+            if !host.level.isOff {
                 Text("Transport (B1): \(host.stack.transport.rawValue)").font(.caption.monospaced())
             }
         }
