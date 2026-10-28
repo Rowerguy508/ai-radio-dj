@@ -99,6 +99,40 @@ public actor DJBreakPreparer {
         }
     }
 
+    /// Song scrubbing (-Atlas): a user seek changed the time left before boundary `k`.
+    /// A render in flight or a ready break is kept (no second render, no extra spend; a render
+    /// that cannot finish before the new boundary is skipped there as `.notReadyAtBoundary`, so
+    /// music never waits). A render starts when nothing was started for `k`, or when the last
+    /// one only ran out of time (`.timedOut`) and the seek gave it time again. Every other skip
+    /// (revoked, cost cap, failure, cut, cancelled) is final. Returns whether a render started.
+    @discardableResult
+    public func rearm(_ djBreak: DJBreak, deadline: Duration) -> Bool {
+        let k = djBreak.afterTrack
+        guard mayRearm(afterTrack: k) else { return false }
+        results[k] = nil
+        prepare(djBreak, deadline: deadline)
+        return true
+    }
+
+    /// True when `rearm` would start a render for boundary `k`.
+    public func mayRearm(afterTrack k: Int) -> Bool {
+        guard tasks[k] == nil else { return false }
+        switch results[k] {
+        case nil, .skipped(.timedOut)?: return true
+        default: return false
+        }
+    }
+
+    /// Test hook: boundaries with a render in flight.
+    var testInFlight: Set<Int> { Set(tasks.keys) }
+    /// Test hook: the recorded outcome for boundary `k`.
+    func testResult(afterTrack k: Int) -> DJBreakOutcome? { results[k] }
+    /// Test hook: records an outcome as if a render for `k` had finished with it.
+    func testRecord(_ outcome: DJBreakOutcome, afterTrack k: Int) {
+        tasks.removeValue(forKey: k)?.cancel()
+        results[k] = outcome
+    }
+
     /// Called at the boundary. Never waits: returns what is ready or an explicit skip.
     /// `natural` is false when the song was cut (skip, queue change); the break is then dropped.
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {

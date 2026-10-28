@@ -42,6 +42,12 @@ public struct BoundaryInterpreter: Sendable {
         detector.pausedByApp(cause)
     }
 
+    /// Song scrubbing (-Atlas): the user committed a seek within the current entry. The only
+    /// call that re-baselines the entry's played-through facts (see the detector's rules).
+    public mutating func userSeeked(to target: TimeInterval, uptime: TimeInterval?) {
+        detector.userSeeked(to: target, uptime: uptime)
+    }
+
     /// Build 18 P0 (-Fry): a system interruption began in the finishing song's end window,
     /// or after its end was reported. Read once at the boundary by the song-end hold decision.
     public var interruptionBeganNearEnd: Bool { detector.interruptionBeganNearEnd }

@@ -255,6 +255,30 @@ public final class DJBreakSession {
         await preparer.prepare(djBreak, deadline: deadline)
     }
 
+    /// Song scrubbing (-Atlas): the user seeked within song `index`, which now has `remaining`
+    /// left. The boundary itself is never moved here: it still comes only from the player's
+    /// natural end, so a seek back never fires the break early and never drops it.
+    /// - Seek back: a ready or rendering break is kept. One whose render timed out is re-armed
+    ///   with the new deadline.
+    /// - Seek forward: a ready break is kept; a render in flight is kept and, if it cannot
+    ///   finish, is skipped at the boundary. A planned break that never started rendering
+    ///   starts now if `remaining` is still outside the render margin.
+    /// While background queue setup is pending, the held song start takes the new `remaining`.
+    public func songSeeked(index: Int, remaining: Duration) async {
+        if queueSetupPending {
+            if pendingSongStart?.index == index { pendingSongStart = (index, remaining) }
+            return
+        }
+        guard playing == index, breaks[index] != nil,
+              let deadline = DJBreakPreparer.deadline(remainingInSong: remaining),
+              await preparer.mayRearm(afterTrack: index) else { return }
+        // Same order as `songStarted`: personality edits apply when a break starts preparing.
+        await station.handle(.djBreakWillPrepare(afterTrack: index))
+        replanIfCadenceChanged(after: index - 1)
+        guard playing == index, let djBreak = breaks[index] else { return }
+        await preparer.rearm(djBreak, deadline: deadline)
+    }
+
     /// Song `k` ended on its own. Applies pending station edits at this safe boundary, then
     /// returns the prepared break, or nil when there is none (the player plays music at once).
     public func naturalBoundary(afterTrack k: Int) async -> PreparedDJBreak? {
