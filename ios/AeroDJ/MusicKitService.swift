@@ -655,11 +655,24 @@ final class MusicKitService: ObservableObject {
     private var callActiveNow: Bool { callObserver.calls.contains { !$0.hasEnded } }
 
     /// Deferred interruptions that the start's failure, its 8 s report or a call now applies,
-    /// in arrival order, exactly as they would have applied when they arrived.
+    /// in arrival order. Orion P1 (-Atlas): no unstructured replay. Every notice updates the
+    /// policy and performs its suspend here, synchronously, while the origin attempt is still
+    /// current. Only a resume awaits, and its ticket re-checks the attempt, calls and the policy
+    /// when it runs, so attempt A's notices can never pause or resume attempt B.
     private func applyDeferredInterruptions(_ notices: [AudioSessionNotice]) {
         guard !notices.isEmpty else { return }
+        let replay = DeferredInterruptionReplay.run(notices, origin: attempts.current,
+                                                    policy: &sessionPolicy, breakIsActive: isBreakActive)
+        for step in replay.steps { performSessionStep(step.notice, step.directive) }
+        guard let ticket = replay.resume else { return }
         Task { @MainActor [weak self] in
-            for notice in notices { await self?.applySessionUngated(notice) }
+            guard let self else { return }
+            guard ticket.mayResume(current: self.attempts.current, callActive: self.callActiveNow,
+                                   policy: self.sessionPolicy) else {
+                return
+            }
+            // No await between the check above and the new attempt inside resumeIfAllowed.
+            await self.resumeIfAllowed()
         }
     }
 
@@ -670,6 +683,14 @@ final class MusicKitService: ObservableObject {
     }
 
     private func applySessionUngated(_ notice: AudioSessionNotice) async {
+        let directive = sessionPolicy.handle(notice, breakIsActive: isBreakActive)
+        performSessionStep(notice, directive)
+        if directive == .resumeIfPermitted { await resumeIfAllowed() }
+    }
+
+    /// The synchronous part of one notice: logging, boundary bookkeeping and any suspend.
+    /// `.resumeIfPermitted` is left to the caller (live path awaits it; replay uses a ticket).
+    private func performSessionStep(_ notice: AudioSessionNotice, _ directive: AudioSessionDirective) {
         let breakActive = isBreakActive
         let stopReason: InterludeStopReason?
         switch notice {
@@ -687,23 +708,17 @@ final class MusicKitService: ObservableObject {
         case .routeChanged(.other):
             stopReason = nil
         }
-        switch sessionPolicy.handle(notice, breakIsActive: breakActive) {
-        case .suspendPlayback:
-            pausePlayerForBreak()
-            switch notice {
-            case .interruptionBegan:
-                send(.interruptionPaused)
-            case .routeChanged(.oldDeviceUnavailable):
-                send(.routePaused)
-            case .interruptionEnded, .routeChanged(.other):
-                send(.userPaused)
-            }
-            onBreakMustStop?(stopReason)
-        case .resumeIfPermitted:
-            await resumeIfAllowed()
-        case .none:
-            break
+        guard directive == .suspendPlayback else { return }
+        pausePlayerForBreak()
+        switch notice {
+        case .interruptionBegan:
+            send(.interruptionPaused)
+        case .routeChanged(.oldDeviceUnavailable):
+            send(.routePaused)
+        case .interruptionEnded, .routeChanged(.other):
+            send(.userPaused)
         }
+        onBreakMustStop?(stopReason)
     }
 
     /// Applies the state-machine and playback events for a break that just ended.
