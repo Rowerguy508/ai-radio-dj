@@ -413,7 +413,7 @@ struct TransportRow: View {
                 // after that the button is Stop and cancels the start as a user pause.
                 switch TransportTapPolicy.decide(transport: transport, startTimedOut: startTimedOut) {
                 case .ignore:
-                    actions.transportTapIgnored()
+                    break
                 case .cancelStart:
                     taps += 1
                     actions.cancelStart()
@@ -714,7 +714,7 @@ struct StartListeningView: View {
         Binding(get: { model.query }, set: { model.updateQuery($0) })
     }
 
-    /// TEMPORARY diagnostic for device builds (remove: #121): error type, NSError domain and
+    /// TEMPORARY user-facing error copy (Atlas #109): error type, NSError domain and
     /// code only (`PlaybackErrorCode`). Never localizedDescription, debugDescription, the
     /// underlying-error chain, request URLs, titles or search terms. From Atlas #109.
     static func playFailureMessage(_ error: Error) -> String {

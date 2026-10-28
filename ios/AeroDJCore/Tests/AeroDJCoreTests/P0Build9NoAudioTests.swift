@@ -125,30 +125,4 @@ final class P0Build9NoAudioTests: XCTestCase {
         _ = d.consume(PlaybackObservation(entryID: "a", isPlaying: true, position: 0, duration: 200))
         XCTAssertEqual(d.consume(PlaybackObservation(entryID: nil, isPlaying: false)), .queueFinished(lastEntryID: "a"))
     }
-
-    // MARK: TEMPORARY diagnostics ring
-
-    func testRingKeepsTheLastTenWithOffsetsFromTheTap() {
-        var log = TapDiagnosticsLog(capacity: 10)
-        log.record("pre", at: 1)
-        XCTAssertNil(log.entries.last?.offsetMs)
-        log.markTap(at: 10)
-        for i in 0..<12 {
-            log.record("pause.user", detail: "n=\(i)", at: 10 + Double(i) / 10)
-        }
-        XCTAssertEqual(log.entries.count, 10)
-        XCTAssertEqual(log.entries.first?.detail, "n=2")
-        XCTAssertEqual(log.entries.last?.offsetMs, 1100)
-        XCTAssertEqual(log.entries.last?.tag, "pause.user")
-    }
-
-    /// Orion/Sentinel: every record says which attempt it belongs to.
-    func testRingRecordsCarryTheAttemptNumber() {
-        var log = TapDiagnosticsLog(capacity: 4)
-        log.record("pre", at: 0)
-        log.record("queue.loaded", detail: "index=0 autoplay=true", attempt: 1, at: 1)
-        log.record("tapPlay.superseded", attempt: 1, at: 2)
-        log.record("queue.loaded", detail: "index=0 autoplay=true", attempt: 2, at: 2)
-        XCTAssertEqual(log.entries.map(\.attempt), [nil, 1, 1, 2])
-    }
 }
