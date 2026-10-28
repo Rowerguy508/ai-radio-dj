@@ -33,11 +33,9 @@ targets:
     dependencies:
       - package: AeroDJCore
       - target: AeroDJShare # embedded into AeroDJ.app/PlugIns
-      # Embedded, not linked. The iOS 17 app dlopens it only on iOS 18.
-      - target: AeroDJPhonon
-        embed: true
-        link: false
-        codeSign: true
+      # AeroDJPhonon is not embedded: build 12 failed App Store processing with ITMS-90755
+      # (prohibited instructions) in AeroDJPhonon.framework. With no framework, dlopen returns nil
+      # and speech falls back to AVSpeech, the same as AeroDJPhononEnabled off. Re-embed after the fix.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app

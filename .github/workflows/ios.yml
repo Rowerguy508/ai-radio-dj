@@ -227,6 +227,16 @@ jobs:
           ios/scripts/check-release-excludes-preview-fixtures.sh \
             "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
             "$DERIVED_DATA/Build/Products/Release-iphonesimulator/AeroDJ.app"
+      - name: App does not embed AeroDJPhonon (ITMS-90755 hold)
+        run: |
+          for cfg in Debug Release; do
+            app="$DERIVED_DATA/Build/Products/$cfg-iphonesimulator/AeroDJ.app"
+            test -x "$app/AeroDJ" || { echo "::error::$app/AeroDJ missing"; exit 1; }
+            if find "$app" -iname '*Phonon*' -print | grep .; then
+              echo "::error::$cfg AeroDJ.app contains Phonon content"; exit 1
+            fi
+            echo "OK: $cfg AeroDJ.app has no Phonon content."
+          done
 
   studio-screenshots:
     name: Studio UI tests and screenshots (closed + open)
