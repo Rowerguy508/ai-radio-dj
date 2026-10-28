@@ -40,6 +40,23 @@ jobs:
       - name: Release build excludes the debug test station
         run: ios/scripts/check-release-excludes-test-station.sh
 
+  # Linux SwiftPM discovery. swift test here is the official Swift 6.2 image.
+  # It does not replace the macOS AeroDJCore job or the iOS simulator gates.
+  linux-core-tests:
+    name: AeroDJCore tests (Linux)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: ubuntu-latest
+    container: swift:6.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tests
+        run: swift build --build-tests
+        working-directory: ios/AeroDJCore
+      - name: Run core tests
+        run: swift test
+        working-directory: ios/AeroDJCore
+
   simulator-build:
     name: iOS simulator build
     needs: changes
