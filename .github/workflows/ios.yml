@@ -222,6 +222,11 @@ jobs:
             "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
             "$DERIVED_DATA/Build/Products/Release-iphonesimulator/AeroDJ.app" \
             "$SIM_UDID"
+      - name: Release app excludes fixture art and preview loader
+        run: |
+          ios/scripts/check-release-excludes-preview-fixtures.sh \
+            "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
+            "$DERIVED_DATA/Build/Products/Release-iphonesimulator/AeroDJ.app"
 
   studio-screenshots:
     name: Studio UI tests and screenshots (closed + open)

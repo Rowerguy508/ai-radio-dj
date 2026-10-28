@@ -63,6 +63,8 @@ struct PlayingScreen: View {
                     // Queue stays on the closed player. Tune and Connections open the sheet.
                     if mode == .compact, initial != .queue { showWorkspace = true }
                 }
+                // Keep the preview type in the Debug binary. Nothing reads it.
+                _ = PlayingScreenPreviewLoader.self
             }
             #endif
             .onChange(of: mode) { _, newMode in
@@ -197,10 +199,6 @@ struct PlayingScreen: View {
     }
 }
 
-#Preview("Playing screen") {
-    PlayingScreenPreviewLoader()
-}
-
 /// The search field's only stored value. Not `@SceneStorage`, which pushes a stale
 /// string back into the field while the next characters are still being typed.
 enum SearchText {
@@ -209,6 +207,11 @@ enum SearchText {
         get { UserDefaults.standard.string(forKey: key) ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: key) }
     }
+}
+
+#if DEBUG
+#Preview("Playing screen") {
+    PlayingScreenPreviewLoader()
 }
 
 struct PlayingScreenPreviewLoader: View {
@@ -227,3 +230,4 @@ struct PlayingScreenPreviewLoader: View {
         .task { studio = await StudioPresentationModel.preview() }
     }
 }
+#endif

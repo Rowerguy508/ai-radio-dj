@@ -48,7 +48,7 @@ enum StudioCaptureScenario: String {
     case revoked
     /// The listener changed energy and genres in the tuner: saved, pending the next boundary.
     case config
-    /// The fixture station list (`Station.mockStations`). Not the playing screen.
+    /// The fixture station list (`Station.defaultStations`). Not the playing screen.
     /// The share extension is not a scenario: `AeroDJShare` draws nothing and has no colours.
     case stations
     /// Empty player inside a width probe: compact, then regular, without searching or playing.
@@ -221,7 +221,7 @@ private struct StationListCapture: View {
 
     var body: some View {
         NavigationSplitView(preferredCompactColumn: $compactColumn) {
-            List(Station.mockStations) { station in
+            List(Station.defaultStations) { station in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(station.name).font(.headline)
                     Text(station.description ?? "")
@@ -278,7 +278,7 @@ private struct CaptureStationSplit: View {
     var body: some View {
         // Same once-only binder as the live split. Refresh is non-prompting; request()
         // waits for Allow or an explicit station open.
-        StationSplitRoot(stations: Station.mockStations, showsSharedInbox: true,
+        StationSplitRoot(stations: Station.defaultStations, showsSharedInbox: true,
                          showSharedInbox: $showSharedInbox) { station in
             PlayingScreen(station: StationRef(id: station.id.uuidString, name: station.name),
                           access: access,
