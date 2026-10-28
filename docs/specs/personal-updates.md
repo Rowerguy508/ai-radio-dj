@@ -107,8 +107,21 @@ gate (`isNarratable`, `ConnectionItemState.resolve`, `NarrationPurger`) applies 
   - Add a DST case for the today window **[C5]**.
   - Read only, unchanged **[C1]**. Per-calendar opt-in, unchanged **[C3]**. Private-event redaction, unchanged
     **[C4]**.
-- **Sensitivity:** private events are already `.high` (`CalendarContextSource.swift:167`). With **[P8]**, `.high`
-  needs per-item approval, but calendar rows have no per-event actions today. *Q2.*
+- **Sensitivity:** private events are already `.high` (`CalendarContextSource.swift:167`). How those are
+  handled is settled in §3.1.1 (Q2, resolved by Sentinel).
+
+#### 3.1.1 P8 for private `.high` calendar events (MUST, resolved Q2, per Sentinel on #130)
+
+Calendar rows have no per-event actions today. Sentinel's ruling: private `.high` events are **excluded**, and
+an explicit, single-occurrence Approve is the only way one gets narrated. Each part below is a MUST with its own
+named test (proposed names, owner Fry unless noted).
+
+| ID | MUST | Named test |
+|---|---|---|
+| **P8-a: Excluded by default** | A calendar `ContextItem` with `sensitivity == .high` (private event, or an event on a calendar in `privateCalendarIDs`) is never plannable or narratable unless it has a valid approval. That includes no redacted "Private event at 3" line. There's no setting, recipe, onboarding step or restored config that pre-approves. A missing approval means excluded. **[P2] [P8]** | `testPrivateHighCalendarEventExcludedByDefault`. A `.high` event with no approval yields zero `NarrationCue`s and zero `BriefingScriptSegment`s, and `ConnectionItemState` is `.pendingApproval` (existing case). Covers fresh, restored and recipe-applied configs. |
+| **P8-b: Single occurrence, today only** | Approve is an explicit named tap ("Approve for today") on that item in Connections. The approval (**proposed** `CalendarOccurrenceApproval { occurrenceID, calendarDayStart }`) covers exactly one occurrence ID on the current local calendar day. It's never applied to other occurrences of a recurring series, never carried to the next day, and expires at local midnight (including the DST case, **[C5]**). It's stored only alongside the item, with the same protection and backup exclusion as other personal state **[P7]**. Approvals aren't remembered for the series, the calendar, or the next day. | `testCalendarApprovalCoversSingleOccurrenceTodayOnly`. Approving occurrence A today narrates A only. Sibling occurrence B in the same series stays excluded, A is excluded again after local midnight (DST-transition day included), and a relaunch on the next day restores no approval. |
+| **P8-c: Revoke purges before the next spoken word** | Unapprove (the named tap "Remove approval"), turning Calendar off, or deleting the item calls `NarrationPurger.purge(sourceItemIDs:)` for that item **before** the approval is cleared. That strips any prepared break (`DJBreakSession.purge`, `DJBreakPreparer.purge`) and cached clip (`AudioCache.purge`), and stops an on-air break within 1 s via `onBreakMustStop` **[P4]**. Midnight expiry runs the same purge. | `testRevokingCalendarApprovalPurgesBeforeNextSpokenWord`. With a prepared break that contains the approved event, revoking leaves `naturalBoundary` returning nil or a break without that cue, and the audio cache holds no clip for that item ID. A companion test with a break in `speaking` asserts `onBreakMustStop` fires. (Fry state, Echo voice, Atlas stop path.) |
+| **P8-d: Never on Lock Screen or Now Playing** | Even an approved event's title, time or calendar name never appears in `MPNowPlayingInfoCenter`, on the Lock Screen, or in notifications, Live Activities, widgets, Spotlight, Handoff, captions or logs. The most anything shows is the generic "Briefing" (§6). **[P5] [P6]** | `testApprovedPrivateEventNeverInNowPlayingOrLockScreen`. With an approved private event speaking, the presentation state, Now Playing info and caption output contain no item text; plus a Duo device check of the Lock Screen during that break (M7). (Nova UI, Atlas Now Playing.) |
 
 ### 3.2 Weather (WeatherKit): new
 
@@ -116,8 +129,9 @@ gate (`isNarratable`, `ConnectionItemState.resolve`, `NarrationPurger`) applies 
   includes 500,000 calls a month. Paid tiers start at US$49.99 for 1M a month
   ([Apple](https://developer.apple.com/weatherkit/get-started/)). At one call per user per 30 min while listening
   **[L1]**, the included quota covers roughly 500k listening-half-hours a month, which is $0 for the beta. It
-  needs the WeatherKit capability on the App ID (owner action in the developer portal), plus Apple Weather
-  attribution (the logo and legal link) in the app **[W1]**.
+  needs the WeatherKit capability on the `com.aerodj.app` App ID, which Orion enables after build 11 clears the
+  P0 and the owner gives the go-ahead (Q10, gates M3), plus Apple Weather attribution (the logo and legal link)
+  in the app **[W1]**. Weather stays behind the off flag until then.
 - **Alternatives considered:** Open-Meteo, NWS (US only), and OpenWeather. Each one receives the user's IP and
   coordinates and needs a separate privacy review and an owner cost decision **[W1]**. Rejected for v1. No AeroDJ
   server goes in the location path **[W2]**.
@@ -209,7 +223,9 @@ step.
   A toggle can only be on when its integration status is `.on` (`mayShowConnected`).
 - **Calendar row:** unchanged (`CalendarConnectionState` table in the studio contract), plus:
   - A "Shared calendar, private by default" badge in `CalendarPickerSheet` **[C3]**.
-  - Once Q2 is decided, an item-level "Approve" for `.high` items **[P8]**.
+  - A private `.high` item shows "Private event, not narrated" plus a named **Approve for today** action. Once
+    approved, it shows "Approved for today only" plus **Remove approval** (§3.1.1, P8-a to P8-d). Approval text
+    never leaves the app (P8-d).
 - **Notifications:** not needed for v1. If a later phase adds them, they get their own Connections row and named
   tap, and never carry personal text **[P5]**.
 - **Revoke:** `Turn off` calls `NarrationPurger.purge(sourceItemIDs:)` before clearing the choice (the existing
@@ -265,10 +281,10 @@ Nothing starts until the playback P0 (build 11 on the Duo) clears. Every phase s
 | Phase | Scope | Owners | Exit criteria (#126 IDs) |
 |---|---|---|---|
 | **M0: Spec sign-off** | This doc plus #126 agreed. Q1–Q8 answered. | Nova (doc), Sentinel (privacy), Orion (scope) | Sentinel, Fry, Echo and Atlas sign off on the doc |
-| **M1: Calendar hardening** | C2 mirror test, C3 shared-calendar default, C5 DST, C6 contact redaction, P8 decision for `.high`, P6 log-builder tests | Fry (state, source), Sentinel (review) | C1–C6, P2, P6, P8 tests green |
+| **M1: Calendar hardening** | C2 mirror test, C3 shared-calendar default, C5 DST, C6 contact redaction, P6 log-builder tests. **P8 Approve state:** proposed `CalendarOccurrenceApproval` (single occurrence, today only, midnight expiry), exclusion of `.high` by default, and purge on revoke or expiry (§3.1.1) | Fry (state, source), Sentinel (review) | C1–C6, P2, P6 tests green; P8-a `testPrivateHighCalendarEventExcludedByDefault`, P8-b `testCalendarApprovalCoversSingleOccurrenceTodayOnly`, P8-c `testRevokingCalendarApprovalPurgesBeforeNextSpokenWord` green |
 | **M2: Weather core** | Proposed enums, `WeatherReading`, `WeatherSnapshot`, `WeatherContextSource`, L4 rounding and expiry helper, templates, T1 renderer refusal | Fry (state, source), Echo (copy, T1), Sentinel | L4, L5, T1, P2, P6 unit tests, Linux green |
-| **M3: Location and WeatherKit wiring** | `CLLocationManager` one-shot, `CLGeocoder` manual entry, WeatherKit capability, entitlement, attribution, `NSLocationDefaultAccuracyReduced`, purpose string, `PrivacyInfo.xcprivacy` | Atlas (app wiring, entitlements), Fry, Sentinel. Owner action: enable WeatherKit on the App ID | L1, L2, L3, L6, W1, W2, W4, T2, T3 |
-| **M4: Connections and briefing UI** | Weather row and choice sheet, Tune section toggles, the "Briefing" label, captions suppressed for personal cues, empty and failure states | Nova (UI), Fry (model), Sentinel | P1 UI test (no prompt at launch), P3 screenshots, P5 metadata test |
+| **M3: Location and WeatherKit wiring** | `CLLocationManager` one-shot, `CLGeocoder` manual entry, WeatherKit capability, entitlement, attribution, `NSLocationDefaultAccuracyReduced`, purpose string, `PrivacyInfo.xcprivacy`. **Blocked on:** Orion enabling WeatherKit on the `com.aerodj.app` App ID plus the matching App Store Connect step, which happens only after build 11 clears the P0 on the Duo and only with the owner's go-ahead, because it regenerates provisioning profiles (Q10). No WeatherKit entitlement lands before that. | Atlas (app wiring, entitlements), Fry, Sentinel. Orion (portal and App Store Connect, after owner go-ahead). | L1, L2, L3, L6, W1, W2, W4, T2, T3 |
+| **M4: Connections and briefing UI** | Weather row and choice sheet, Tune section toggles, the "Briefing" label, captions suppressed for personal cues, empty and failure states. **P8 Approve UI:** "Approve for today" and "Remove approval" named taps on private `.high` calendar items, with the copy "Private event, not narrated" / "Approved for today only" (§3.1.1, §5) | Nova (UI), Fry (model), Sentinel | P1 UI test (no prompt at launch), P3 screenshots, P5 metadata test, P8-d `testApprovedPrivateEventNeverInNowPlayingOrLockScreen` |
 | **M5: Alerts** | `WeatherAlertContextSource`, alert template, copy review | Echo (copy), Fry, Sentinel | W3 unit test and copy review |
 | **M6: Placement and route** | Kind priority, the optional out-of-window update break (Q1), `PersonalRoutePolicy` (P9), revoke-before-next-word wiring for weather (P4) | Echo (narration placement), Atlas (route, stop path), Fry (purge) | P4 unit test, P9 test |
 | **M7: Device gate** | Duo checks: no prompt at launch (P1), revoke mid-break (P4), Lock Screen shows no personal text (P5), approximate-only location (L2), AirPlay route (P9) | Owner on the Duo, Atlas (script), Sentinel (sign-off) | #126 §6. Only then may the flag turn on for TestFlight. |
@@ -278,9 +294,10 @@ Nothing starts until the playback P0 (build 11 on the Duo) clears. Every phase s
 - **Q1 (Orion, Echo):** Outside the morning window, should there be one short "update" break per session
   (alert, or a meeting within 60 min), or nothing personal at all? Today `LiveQueueBriefing` gives no personal
   speech outside the window.
-- **Q2 (Sentinel, Fry):** Calendar private events are `.high` today. [P8] needs per-item approval, but calendar
-  rows have no per-event actions. Should private events be **excluded** by default instead of redacted, or should
-  we add an "Approve" action to calendar items?
+- **Q2: Resolved (Sentinel, on #130).** Private `.high` calendar events are excluded by default. An explicit
+  Approve is the only way one gets narrated. It covers one occurrence, today only, and isn't remembered for the
+  series or the next day. Revoking purges it before the next spoken word (P4). Even approved, it never shows on
+  the Lock Screen or in Now Playing (P5). Specced as MUSTs P8-a to P8-d in §3.1.1.
 - **Q3 (Fry):** `BriefingPreferences.enabled` defaults to `true` and `sections` to `allCases`. That's safe
   because consent gates it, but does [P2] want new sections (`.weather`, `.weatherAlerts`) to default off
   explicitly?
@@ -296,7 +313,10 @@ Nothing starts until the playback P0 (build 11 on the Duo) clears. Every phase s
   does reveal calendar state on a shared route.
 - **Q9 (Orion):** Should a manual city also cover users who never grant location (the default for privacy-minded
   users), and should it be the first option in the sheet?
-- **Q10 (owner):** Enabling WeatherKit on the App ID needs the Apple Developer account holder. When?
+- **Q10: Resolved (Orion).** Orion will enable WeatherKit on the `com.aerodj.app` App ID in the Apple developer
+  portal, plus the matching App Store Connect step, but only after build 11 clears the P0 on the Duo and only
+  with the owner's go-ahead, because it regenerates provisioning profiles. M3 depends on this. Until then, weather
+  stays behind the off `PersonalUpdatesFlag` and no WeatherKit entitlement is added.
 
 ## 10. Privacy requirements
 
