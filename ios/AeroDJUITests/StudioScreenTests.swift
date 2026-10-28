@@ -18,6 +18,19 @@ final class StudioScreenTests: XCTestCase {
                         dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                         restoreStationID: String? = nil,
                         musicAuthStatus: String? = nil) -> XCUIApplication {
+        // Probe the layout before this test's own launch: the probe launches and terminates
+        // its own app, so it must never run while the test's app is up.
+        _ = isOpenLayout
+        return startApp(segment: segment, scenario: scenario, largeText: largeText, dark: dark,
+                        contentSize: contentSize, reduceMotion: reduceMotion,
+                        restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus)
+    }
+
+    @MainActor
+    private func startApp(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
+                          dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
+                          restoreStationID: String? = nil,
+                          musicAuthStatus: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
@@ -68,7 +81,7 @@ final class StudioScreenTests: XCTestCase {
     @MainActor
     private var isOpenLayout: Bool {
         if let probed = Self.probedOpenLayout { return probed }
-        let app = launch()
+        let app = startApp()
         let any = app.descendants(matching: .any)
         let either = any.matching(NSPredicate(format: "identifier IN %@", ["layout.studio", "layout.compact"])).firstMatch
         XCTAssertTrue(either.waitForExistence(timeout: 15),
