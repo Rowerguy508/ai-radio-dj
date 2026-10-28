@@ -45,6 +45,7 @@ final class MusicKitService: ObservableObject {
     private var selfStartGate = SelfStartInterruptionGate()
     /// Read-only: whether any call is ringing or connected. Gates `selfStartGate`.
     private let callObserver = CXCallObserver()
+    private let callRelay = CallChangeRelay()
     private var deferredStart = DeferredSongStart()
     /// True after the first observer install, including a retry that follows a failed `setActive`.
     private var sessionRegistration = SessionRegistrationGate()
@@ -601,7 +602,7 @@ final class MusicKitService: ObservableObject {
         guard effect != .none else {
             return
         }
-        selfStartGate.startSettled(attempt)
+        applyDeferredInterruptions(selfStartGate.startFailed(attempt))
         if effect.cancelsConfirm { cancelPlaybackConfirmTimeout() }
         if let message = effect.message { lastError = message }
         isPlaying = false
@@ -611,7 +612,8 @@ final class MusicKitService: ObservableObject {
     /// The current attempt reached `.playing` (watchdog or poll). Clears a reported timeout.
     private func confirmStart(_ attempt: PlaybackAttemptID) {
         guard attempts.isCurrent(attempt) else { return }
-        selfStartGate.startSettled(attempt)
+        // MusicKit is playing: a deferred .began was our own start's, so it is discarded. -Atlas
+        selfStartGate.startConfirmed(attempt)
         send(.playbackConfirmed)
         isPlaying = true
         cancelPlaybackConfirmTimeout()
@@ -635,13 +637,40 @@ final class MusicKitService: ObservableObject {
     /// Phone call or route change. The policy decides; this only performs the directive.
     private func applySession(_ notice: AudioSessionNotice) async {
         let breakActive = isBreakActive
-        let callActive = callObserver.calls.contains { !$0.hasEnded }
+        let callActive = callActiveNow
         let gate = selfStartGate.decide(notice, at: ProcessInfo.processInfo.systemUptime,
                                         current: attempts.current, callActive: callActive,
                                         breakActive: breakActive)
-        if gate == .ignoreSelfStart {
+        switch gate {
+        case .deferSelfStart:
             return
+        case .ignorePairedEnd:
+            return
+        case .apply:
+            break
         }
+        await applySessionUngated(notice)
+    }
+
+    private var callActiveNow: Bool { callObserver.calls.contains { !$0.hasEnded } }
+
+    /// Deferred interruptions that the start's failure, its 8 s report or a call now applies,
+    /// in arrival order, exactly as they would have applied when they arrived.
+    private func applyDeferredInterruptions(_ notices: [AudioSessionNotice]) {
+        guard !notices.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            for notice in notices { await self?.applySessionUngated(notice) }
+        }
+    }
+
+    /// A call started or changed while a `.began` is deferred: apply it now.
+    private func callsChanged() {
+        guard selfStartGate.hasDeferred, callActiveNow else { return }
+        applyDeferredInterruptions(selfStartGate.flush())
+    }
+
+    private func applySessionUngated(_ notice: AudioSessionNotice) async {
+        let breakActive = isBreakActive
         let stopReason: InterludeStopReason?
         switch notice {
         case .interruptionBegan:
@@ -727,6 +756,8 @@ final class MusicKitService: ObservableObject {
         guard sessionRegistration.registerIfNeeded() else { return }
         installSessionMonitor()
         installRemoteCommands()
+        callRelay.onChange = { [weak self] in self?.callsChanged() }
+        callObserver.setDelegate(callRelay, queue: nil)
     }
 
     /// `prepareToPlay()`, then `play()` (MusicKit activates the session). After `play()` returns, a hold that
@@ -927,7 +958,7 @@ final class MusicKitService: ObservableObject {
     /// boundary, no advance. Transport stays `.preparing`, so the UI never claims `.playing`.
     private func reportConfirmProblem(_ failure: StartFailure, attempt: PlaybackAttemptID) {
         guard attempts.isCurrent(attempt) else { return }
-        selfStartGate.startSettled(attempt)
+        applyDeferredInterruptions(selfStartGate.startFailed(attempt))
         confirmReportedAttempt = attempt
         applyStartFailure(failure, attempt: attempt)
     }
@@ -1072,5 +1103,15 @@ extension Track {
     /// The UI-facing view of a track. The UI never sees `Song`.
     var info: TrackInfo {
         TrackInfo(id: id, title: title, artistName: artistName, artworkURL: artworkURL)
+    }
+}
+
+/// Forwards CallKit call changes (read-only) to `MusicKitService` on the main actor. -Atlas
+final class CallChangeRelay: NSObject, CXCallObserverDelegate {
+    var onChange: (@MainActor @Sendable () -> Void)?
+
+    func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
+        let handler = onChange
+        Task { @MainActor in handler?() }
     }
 }
