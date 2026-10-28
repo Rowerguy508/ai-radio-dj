@@ -30,14 +30,6 @@ public enum DirectModeRouteChangeReason: String, Equatable, Sendable {
          wakeFromSleep, noSuitableRouteForCategory, routeConfigurationChange, other
 }
 
-/// Which pair of songs the queue is loaded with. Chosen before Load; the queue loads once.
-public enum DirectModeSongSet: String, Equatable, Sendable, CaseIterable {
-    /// Song A then song B (build 13's queue).
-    case standard
-    /// A track that is loud from 0:00 first, then song A.
-    case loudFirst
-}
-
 /// One read of the app's shared audio session.
 public struct DirectModeAudioSample: Equatable, Sendable, CustomStringConvertible {
     /// `outputVolume`, rounded to the nearest 0.05.
@@ -77,8 +69,6 @@ public enum DirectModeAudioEvent: Equatable, Sendable, CustomStringConvertible {
     case interruptionEnded(shouldResume: Bool)
     case routeChange(DirectModeRouteChangeReason)
     case silenceSecondaryAudioHint(begin: Bool)
-    case mediaServicesLost
-    case mediaServicesReset
 
     public var description: String {
         switch self {
@@ -86,8 +76,6 @@ public enum DirectModeAudioEvent: Equatable, Sendable, CustomStringConvertible {
         case .interruptionEnded(let resume): return "interruption.ended shouldResume=\(resume)"
         case .routeChange(let r): return "routeChange reason=\(r.rawValue)"
         case .silenceSecondaryAudioHint(let begin): return "silenceHint.\(begin ? "begin" : "end")"
-        case .mediaServicesLost: return "mediaServices.lost"
-        case .mediaServicesReset: return "mediaServices.reset"
         }
     }
 }

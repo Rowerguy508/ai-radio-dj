@@ -86,17 +86,5 @@ final class DirectModeAudioProbeTests: XCTestCase {
         XCTAssertTrue(lines[1].hasSuffix("audio.event routeChange reason=categoryChange"))
         XCTAssertTrue(lines[2].hasSuffix("audio.event silenceHint.begin"))
     }
-
-    func testSongSetCanOnlyChangeBeforeLoad() {
-        var m = DirectModeMachine(songCount: 2)
-        XCTAssertTrue(m.selectSongSet(.loudFirst, at: 0))
-        XCTAssertEqual(m.songSet, .loudFirst)
-        XCTAssertTrue(m.log.last?.description.hasSuffix("songSet=loudFirst") ?? false)
-        m.request(.load, at: 1)
-        XCTAssertFalse(m.selectSongSet(.standard, at: 1.1), "not while Load is in flight")
-        m.finished(.load, error: nil, at: 2)
-        XCTAssertFalse(m.selectSongSet(.standard, at: 3), "the queue is set exactly once")
-        XCTAssertEqual(m.songSet, .loudFirst)
-    }
 }
 #endif

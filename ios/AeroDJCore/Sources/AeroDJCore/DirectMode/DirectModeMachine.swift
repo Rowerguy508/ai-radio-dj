@@ -49,7 +49,6 @@ public struct DirectModeLogEntry: Equatable, Sendable, CustomStringConvertible {
         case audioEvent(DirectModeAudioEvent)
         /// The tester tapped "I hear it".
         case heard
-        case songSet(DirectModeSongSet)
     }
 
     /// Seconds since Direct Mode opened.
@@ -78,7 +77,6 @@ public struct DirectModeLogEntry: Equatable, Sendable, CustomStringConvertible {
             return head + "audio " + since + sample.description
         case .audioEvent(let e): return head + "audio.event " + e.description
         case .heard: return head + "HEARD"
-        case .songSet(let set): return head + "songSet=\(set.rawValue)"
         }
     }
 }
@@ -112,7 +110,6 @@ public struct DirectModeMachine: Equatable, Sendable {
     private var lastAudioSampleAt: Double = -.infinity
     /// Seconds after the play/resume request when the tester first tapped "I hear it".
     public private(set) var heardAfterPlay: Double?
-    public private(set) var songSet: DirectModeSongSet = .standard
 
     public let songCount: Int
 
@@ -214,16 +211,6 @@ public struct DirectModeMachine: Equatable, Sendable {
         guard value != route else { return }
         route = value
         append(.route(value), at: t)
-    }
-
-    /// Choose the queue's songs. Only before Load: the queue is set exactly once.
-    @discardableResult
-    public mutating func selectSongSet(_ set: DirectModeSongSet, at t: Double) -> Bool {
-        guard !queueLoaded, inFlight != .load else { return false }
-        guard set != songSet else { return true }
-        songSet = set
-        append(.songSet(set), at: t)
-        return true
     }
 
     /// True while a 1 s sample is due inside the window after the last play/resume request.
