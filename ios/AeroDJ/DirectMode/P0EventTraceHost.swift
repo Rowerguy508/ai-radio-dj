@@ -92,7 +92,7 @@ final class P0EventTraceHost: ObservableObject {
     }
 
     func endPoll(_ step: BoundaryStep?, after: P0DetectorState) {
-        apply { _ = $0.endPoll(step, after: after) }
+        apply { trace, _ in _ = trace.endPoll(step, after: after) }
     }
 
     func sessionNotice(_ notice: AudioSessionNotice, gate: SelfStartInterruptionGate.Decision) {
