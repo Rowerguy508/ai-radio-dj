@@ -238,9 +238,11 @@ final class AudioReliabilityTests: XCTestCase {
         XCTAssertTrue(finished, "releasing the monitor must finish its AsyncStream")
     }
 
-    func testAuthorizationAloneDoesNotActivateTheSession() {
+    /// Build 10 P0 (-Atlas): deliberate behavior change, not a CI fix. Playback no longer
+    /// activates the app's session either; `ApplicationMusicPlayer` owns activation.
+    func testTheAppNeverActivatesTheSession() {
         XCTAssertFalse(AudioSessionActivation.shouldActivate(during: .authorization))
-        XCTAssertTrue(AudioSessionActivation.shouldActivate(during: .playback))
+        XCTAssertFalse(AudioSessionActivation.shouldActivate(during: .playback))
     }
 
     func testObserverRegistrationIsOnceEvenIfActivationFailed() {

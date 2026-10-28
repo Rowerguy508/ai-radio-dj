@@ -64,14 +64,21 @@ extension BreakPlayerOutcome {
     }
 }
 
-/// `setActive(true)` belongs to playback, never to authorization.
+/// Where the app could call `setActive(true)`.
 public enum AudioActivationPoint: Equatable, Sendable {
     case authorization
     case playback
 }
 
+/// Build 10 P0 (-Atlas): the app never activates its own `AVAudioSession`.
+/// Music plays through `ApplicationMusicPlayer`, and MusicKit activates the session it plays
+/// through. On the Duo, our `setActive(true)` (category `.playback`, options `[]`, not mixable)
+/// was interrupted 1 ms later (`shouldResume=false`), the interruption set a system hold, and the
+/// hold refused the tapped start. The app still sets the category (that activates nothing).
 public enum AudioSessionActivation {
     public static func shouldActivate(during point: AudioActivationPoint) -> Bool {
-        point == .playback
+        switch point {
+        case .authorization, .playback: false
+        }
     }
 }

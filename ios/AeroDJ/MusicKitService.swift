@@ -95,7 +95,7 @@ final class MusicKitService: ObservableObject {
 #if DEBUG
         PlaybackCallLog.shared.recordAuthorize()
 #endif
-        // Category and observers only. setActive(true) runs in playIfStillAllowed, immediately before play().
+        // Category and observers only. The app never calls setActive(true); MusicKit activates on play().
         let status = await MusicAuthorization.request()
         await apply(status)
     }
@@ -757,7 +757,7 @@ final class MusicKitService: ObservableObject {
         installRemoteCommands()
     }
 
-    /// `setActive(true)`, `prepareToPlay()`, then `play()`. After `play()` returns, a hold that
+    /// `prepareToPlay()`, then `play()` (MusicKit activates the session). After `play()` returns, a hold that
     /// landed during the await pauses again and does not count as a resume.
     private func playIfStillAllowed() async throws -> Bool {
         logPlayGate("playIfStillAllowed.begin", index: queueIndex)
@@ -798,7 +798,11 @@ final class MusicKitService: ObservableObject {
     /// Activates the session right before playback starts, so launching the app does not stop
     /// the user's other audio. Runs on every play, because the system can deactivate the session.
     private func activateAudioSessionForPlayback() throws {
-        guard AudioSessionActivation.shouldActivate(during: .playback) else { return }
+        guard AudioSessionActivation.shouldActivate(during: .playback) else {
+            // Build 10 P0: ApplicationMusicPlayer activates the session; ours stays inactive.
+            P0TapDiagnostics.shared.record("session.setActive.skipped", detail: "owner=musicKit", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            return
+        }
         do {
             try AVAudioSession.sharedInstance().setActive(true)
             logPlayGate("audioSession.active", index: queueIndex)
