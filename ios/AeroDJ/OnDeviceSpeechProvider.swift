@@ -18,7 +18,8 @@ public struct OnDeviceSpeechProvider: VoiceProvider {
 
     public init() { _ = Self.launchSweep }
 
-    private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
+    /// Per `voice.id` render health, shared by every route that uses this provider.
+    static let health = VoiceHealthLedger()
 
     private static func render(_ text: String, voiceID: String) async throws -> (Data, Double) {
         // The temp file is deleted on success, error and cancellation.
@@ -28,18 +29,23 @@ public struct OnDeviceSpeechProvider: VoiceProvider {
     }
 
     public func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+        // A voice that just rendered nothing (a Premium voice still downloading, say) is skipped
+        // for a while, so the renderer goes straight to the standard-voice route instead of
+        // waiting out another timeout. Cancellation is never held against a voice.
+        if Self.health.isSuspect(voice.id) { throw OnDeviceSpeechError.voiceRecentlyFailed }
         let (data, seconds): (Data, Double)
         do {
             (data, seconds) = try await Self.render(text, voiceID: voice.id)
         } catch {
-            // A Premium or Enhanced voice that is still downloading or loading can render
-            // nothing. Retry once, inside the same deadline, with a standard voice, which
-            // ships with iOS. Cancellation (deadline or caller) is never retried.
-            try Task.checkCancellation()
-            guard let fallback = OnDeviceVoiceChoice.fallbackVoice(replacing: voice.id) else { throw error }
-            Self.log.info("speech render retry tier=standard")
-            (data, seconds) = try await Self.render(text, voiceID: fallback.identifier)
+            // Only a higher-tier voice is held off: the standard voice is the last route, and one
+            // bad render must not silence the DJ for the whole hold-off.
+            if !(error is CancellationError), !Task.isCancelled,
+               let used = AVSpeechSynthesisVoice(identifier: voice.id), used.quality != .default {
+                Self.health.recordFailure(voice.id)
+            }
+            throw error
         }
+        Self.health.recordSuccess(voice.id)
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: 0,
                              provider: Self.providerID, cacheKey: nil)
     }
@@ -48,6 +54,7 @@ public struct OnDeviceSpeechProvider: VoiceProvider {
 enum OnDeviceSpeechError: Error {
     case unexpectedBuffer
     case emptyAudio
+    case voiceRecentlyFailed
 }
 
 private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
@@ -153,9 +160,23 @@ extension VoiceRoute {
     /// The one on-device voice route (AVSpeechSynthesizer). Shared by the live app
     /// and the test station so voice settings have a single source.
     static func onDevice() -> VoiceRoute {
-        let voice = VoiceProfile(id: OnDeviceVoiceChoice.bestVoice()?.identifier ?? "", name: "Host")
-        return VoiceRoute(providerID: OnDeviceSpeechProvider.providerID, provider: OnDeviceSpeechProvider(),
-                          voice: voice, timeout: .seconds(20), acceptsSSML: true)
+        onDevice(voiceID: OnDeviceVoiceChoice.bestVoice()?.identifier ?? "")
+    }
+
+    /// The best voice first, then a standard voice that ships with iOS. If the best voice
+    /// fails, times out, or reads past the cue's cap, `VoiceRenderer` falls through to the
+    /// standard route, as it does for any route, before the break is skipped.
+    static func onDeviceRoutes() -> [VoiceRoute] {
+        let primary = onDevice()
+        guard let standard = OnDeviceVoiceChoice.standardVoice(), standard.identifier != primary.voice.id else {
+            return [primary]
+        }
+        return [primary, onDevice(voiceID: standard.identifier)]
+    }
+
+    private static func onDevice(voiceID: String) -> VoiceRoute {
+        VoiceRoute(providerID: OnDeviceSpeechProvider.providerID, provider: OnDeviceSpeechProvider(),
+                   voice: VoiceProfile(id: voiceID, name: "Host"), timeout: .seconds(20), acceptsSSML: true)
     }
 }
 
@@ -202,17 +223,15 @@ enum OnDeviceVoiceChoice {
         return voice
     }
 
-    /// The standard voice to retry with when `failedID` is a higher-tier voice. Nil when
-    /// `failedID` is already standard (retrying the same voice won't help) or none is installed.
-    static func fallbackVoice(replacing failedID: String) -> AVSpeechSynthesisVoice? {
+    /// The best standard-tier English voice, the fallback route's voice. Nil when none is installed.
+    static func standardVoice() -> AVSpeechSynthesisVoice? {
         let installed = AVSpeechSynthesisVoice.speechVoices()
-        if let failed = AVSpeechSynthesisVoice(identifier: failedID), tier(failed.quality) == .standard { return nil }
         let candidates = installed.map { voice in
             VoiceCandidate(identifier: voice.identifier, language: voice.language, tier: tier(voice.quality),
                            isNovelty: voice.voiceTraits.contains(.isNoveltyVoice),
                            isPersonalVoice: voice.voiceTraits.contains(.isPersonalVoice))
         }
-        guard let pick = VoiceQualitySelector.fallback(from: candidates), pick.identifier != failedID else { return nil }
+        guard let pick = VoiceQualitySelector.fallback(from: candidates) else { return nil }
         return installed.first { $0.identifier == pick.identifier }
     }
 
