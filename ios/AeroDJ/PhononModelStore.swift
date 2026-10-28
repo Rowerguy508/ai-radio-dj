@@ -65,6 +65,7 @@ enum PhononModelStore {
             try? fm.removeItem(at: PhononModelPaths.bundle())
             switch await download() {
             case .match: break
+            case .deferred: return .deferred
             case .missing: return .downloadFailed
             case .mismatch:
                 try? fm.removeItem(at: PhononModelPaths.archive())
@@ -104,7 +105,22 @@ enum PhononModelStore {
         return PhononBundleDigest.verdict(byteCount: count, sha256: digest)
     }
 
-    private static func download() async -> PhononBundleDigest.Verdict {
+    private static func fetch(_ verdict: PhononBundleDigest.Verdict) -> Fetch {
+        switch verdict {
+        case .match: return .match
+        case .missing: return .missing
+        case .mismatch: return .mismatch
+        }
+    }
+
+    private enum Fetch: Equatable {
+        case match
+        case missing
+        case mismatch
+        case deferred
+    }
+
+    private static func download() async -> Fetch {
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
@@ -112,6 +128,10 @@ enum PhononModelStore {
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.httpAdditionalHeaders = [:]
+        // Wi-Fi only. Cellular and Low Data Mode (constrained) wait for a later launch.
+        config.allowsCellularAccess = PhononModelDownloadPolicy.allowsCellularAccess
+        config.allowsExpensiveNetworkAccess = PhononModelDownloadPolicy.allowsExpensiveNetworkAccess
+        config.allowsConstrainedNetworkAccess = PhononModelDownloadPolicy.allowsConstrainedNetworkAccess
         var request = URLRequest(url: PhononModelPin.bundleURL)
         request.httpMethod = "GET"
         request.httpBody = nil
@@ -128,17 +148,20 @@ enum PhononModelStore {
             let checked = verdict(of: temp)
             guard checked == .match else {
                 try? FileManager.default.removeItem(at: temp)
-                return checked
+                return fetch(checked)
             }
             let destination = PhononModelPaths.archive()
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.moveItem(at: temp, to: destination)
-            return verdict(of: destination)
+            return fetch(verdict(of: destination))
         } catch let error as URLError {
-            log.info("phonon download urlError=\(error.code.rawValue, privacy: .public)")
-            return .missing
+            let code = error.code.rawValue
+            let deferred = PhononModelDownloadPolicy.shouldDefer(urlErrorCode: code)
+            let status: PhononModelStatus = deferred ? .deferred : .downloadFailed
+            log.info("phonon model status=\(status.rawValue, privacy: .public) urlError=\(code, privacy: .public)")
+            return deferred ? .deferred : .missing
         } catch {
-            log.info("phonon download urlError=\(-1, privacy: .public)")
+            log.info("phonon model status=downloadFailed urlError=\(-1, privacy: .public)")
             return .missing
         }
     }

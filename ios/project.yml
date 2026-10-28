@@ -20,10 +20,11 @@ packages:
   # Single source of truth for domain code and its unit tests.
   AeroDJCore:
     path: AeroDJCore
-  # Exact tag. iOS 18 / arm64. Linked only by the AeroDJPhonon framework, not by AeroDJCore.
+  # iOS 18 / arm64. Linked only by the AeroDJPhonon framework, not by AeroDJCore.
+  # Revision, not the v0.5.0 tag: the tag pointed at this commit on 2026-10-28.
   xn-ptts:
     url: https://github.com/gradium-ai/xn-ptts.git
-    exactVersion: 0.5.0
+    revision: e851445158f07061f063e3edff0080f9426c0da2
 targets:
   AeroDJ:
     type: application

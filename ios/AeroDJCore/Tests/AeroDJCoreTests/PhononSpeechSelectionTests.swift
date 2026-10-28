@@ -5,6 +5,36 @@ final class PhononSpeechSelectionTests: XCTestCase {
     private let cueToken = "ZEBRA-CUE-TOKEN"
     private let voice = VoiceProfile(id: PhononModelPin.voiceID, name: PhononModelPin.voiceID)
 
+    func testModelDownloadWaitsForWiFiAndDefersWithoutAPaidRoute() {
+        XCTAssertFalse(PhononModelDownloadPolicy.allowsCellularAccess)
+        XCTAssertFalse(PhononModelDownloadPolicy.allowsExpensiveNetworkAccess)
+        XCTAssertFalse(PhononModelDownloadPolicy.allowsConstrainedNetworkAccess)
+        XCTAssertEqual(PhononModelPin.runtimeCommit, "e851445158f07061f063e3edff0080f9426c0da2")
+        XCTAssertEqual(PhononModelPin.runtimeCommit.count, 40)
+        XCTAssertTrue(PhononModelDownloadPolicy.shouldDefer(cellular: true, expensive: false, constrained: false))
+        XCTAssertTrue(PhononModelDownloadPolicy.shouldDefer(cellular: false, expensive: true, constrained: false))
+        XCTAssertTrue(PhononModelDownloadPolicy.shouldDefer(cellular: false, expensive: false, constrained: true))
+        XCTAssertFalse(PhononModelDownloadPolicy.shouldDefer(cellular: false, expensive: false, constrained: false))
+        for code in PhononModelDownloadPolicy.deferralURLErrorCodes {
+            XCTAssertEqual(
+                PhononModelDownloadPolicy.status(cellular: false, expensive: false, constrained: false, urlErrorCode: code),
+                .deferred)
+        }
+        XCTAssertEqual(
+            PhononModelDownloadPolicy.status(cellular: true, expensive: false, constrained: false, urlErrorCode: nil),
+            .deferred)
+        XCTAssertEqual(
+            PhononModelDownloadPolicy.status(cellular: false, expensive: false, constrained: false, urlErrorCode: -1),
+            .downloadFailed)
+        let deferred = PhononSpeechSelection.decide(flagEnabled: true, runtimeAvailable: true, model: .deferred)
+        XCTAssertEqual(deferred.status, .deferred)
+        XCTAssertEqual(deferred.providerIDs, [PhononModelPin.providerID, "avspeech"])
+        XCTAssertTrue(deferred.providerIDs.allSatisfy { !PhononSpeechSelection.isPaidProvider($0) })
+        let again = PhononSpeechSelection.decide(flagEnabled: true, runtimeAvailable: true, model: .missing)
+        XCTAssertEqual(again.providerIDs, deferred.providerIDs, "a later launch still tries Phonon, then AVSpeech")
+        XCTAssertTrue(again.providerIDs.allSatisfy { !PhononSpeechSelection.isPaidProvider($0) })
+    }
+
     func testFlagDefaultsOffAndStaysOnAVSpeechEvenWhenTheModelIsReady() {
         let suite = "phonon-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -19,7 +49,7 @@ final class PhononSpeechSelectionTests: XCTestCase {
 
     func testRuntimeAndModelFailuresNeverSelectAPaidProvider() {
         let statuses: [PhononModelStatus] = [
-            .disabled, .unsupportedRuntime, .missing, .downloadFailed, .hashMismatch,
+            .disabled, .unsupportedRuntime, .missing, .downloadFailed, .deferred, .hashMismatch,
             .rejectedBundle, .loadFailed, .voiceMissing, .ready,
         ]
         XCTAssertEqual(PhononModelPin.paidProviderIDs, BetaVoicePolicy.disabledProviderIDs)
@@ -159,7 +189,7 @@ final class PhononSpeechSelectionTests: XCTestCase {
     }
 
     func testUnreadyModelFallsBackToAVSpeechWithZeroPaidSpend() async {
-        let failures: [PhononModelStatus] = [.missing, .hashMismatch, .downloadFailed, .rejectedBundle, .loadFailed, .voiceMissing]
+        let failures: [PhononModelStatus] = [.missing, .hashMismatch, .downloadFailed, .deferred, .rejectedBundle, .loadFailed, .voiceMissing]
         for status in failures {
             let decision = PhononSpeechSelection.decide(flagEnabled: true, runtimeAvailable: true, model: status)
             let paid = PhononCallCount(id: "cartesia")

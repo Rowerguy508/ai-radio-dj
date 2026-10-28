@@ -113,6 +113,8 @@ public enum PhononModelStatus: String, Equatable, Sendable {
     case unsupportedRuntime
     case missing
     case downloadFailed
+    /// Cellular, Low Data Mode, or an expensive network. Retry on a later launch.
+    case deferred
     case hashMismatch
     case rejectedBundle
     case loadFailed
@@ -130,6 +132,36 @@ public struct PhononSpeechDecision: Equatable, Sendable {
     public init(status: PhononModelStatus, providerIDs: [String]) {
         self.status = status
         self.providerIDs = providerIDs
+    }
+}
+
+/// The model zip is about 137 MB. It waits for Wi-Fi that is not Low Data Mode
+/// and not an expensive network. A blocked attempt is `.deferred`: AVSpeech plays
+/// the break, nothing is shown as an error, and the next launch tries again.
+public enum PhononModelDownloadPolicy {
+    public static let allowsCellularAccess = false
+    public static let allowsExpensiveNetworkAccess = false
+    public static let allowsConstrainedNetworkAccess = false
+
+    /// `URLError` codes that mean the system refused the transfer.
+    /// -1009 not connected (also cellular / expensive / constrained when those are disallowed),
+    /// -1018 roaming off, -1019 call active, -1020 data not allowed.
+    public static let deferralURLErrorCodes: Set<Int> = [-1009, -1018, -1019, -1020]
+
+    public static func shouldDefer(cellular: Bool, expensive: Bool, constrained: Bool) -> Bool {
+        cellular || expensive || constrained
+    }
+
+    public static func shouldDefer(urlErrorCode: Int) -> Bool {
+        deferralURLErrorCodes.contains(urlErrorCode)
+    }
+
+    /// Status after a fetch that did not produce a verified zip. Deferred attempts
+    /// are not failures and never select a paid provider.
+    public static func status(cellular: Bool, expensive: Bool, constrained: Bool, urlErrorCode: Int?) -> PhononModelStatus {
+        if shouldDefer(cellular: cellular, expensive: expensive, constrained: constrained) { return .deferred }
+        if let urlErrorCode, shouldDefer(urlErrorCode: urlErrorCode) { return .deferred }
+        return .downloadFailed
     }
 }
 
