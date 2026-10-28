@@ -63,6 +63,8 @@ struct PlayingScreen: View {
                     // Queue stays on the closed player. Tune and Connections open the sheet.
                     if mode == .compact, initial != .queue { showWorkspace = true }
                 }
+                // Keep the preview type in the Debug binary. Nothing reads it.
+                _ = PlayingScreenPreviewLoader.self
             }
             #endif
             .onChange(of: mode) { _, newMode in
