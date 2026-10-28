@@ -171,8 +171,9 @@ If Siri didn't actually interrupt playback and the song played, you'll see
 
 For each step, A through F:
 1. Pass, fail, inconclusive or not exercised, plus a one-line note on what you heard.
-2. The **raw overlay screenshots**, every frame you took, uncropped and in order. Don't
-   retype the lines.
+2. The **raw overlay screenshots**, every frame you took, in order. Don't retype the lines.
+   Crop each one to the AeroDJ screen first, so no caller ID, notification, Siri text or status
+   bar is shared. Keep the overlay lines and the attempt numbers whole.
 3. The attempt numbers (`a<N>`) for the tap you're reporting. If you repeated a step, give the
    attempt number of each try.
 4. The 3 s reading block for A, and the `play error:` row if it isn't `none`.
