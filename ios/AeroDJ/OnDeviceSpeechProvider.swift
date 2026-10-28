@@ -47,7 +47,7 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
     init(text: String, voiceID: String, url: URL) {
         let ssml = text.hasPrefix("<speak>") ? AVSpeechUtterance(ssmlRepresentation: text) : nil
         utterance = ssml ?? AVSpeechUtterance(string: SpeechDelivery.plainText(fromSSML: text))
-        utterance.voice = AVSpeechSynthesisVoice(identifier: voiceID) ?? AVSpeechSynthesisVoice(language: "en-US")
+        utterance.voice = AVSpeechSynthesisVoice(identifier: voiceID) ?? OnDeviceVoiceChoice.bestVoice()
         self.url = url
         super.init()
         // Build 9 P0 (-Atlas): this synthesizer only renders to a buffer, in the background,
@@ -124,7 +124,7 @@ extension VoiceRoute {
     /// The one on-device voice route (AVSpeechSynthesizer). Shared by the live app
     /// and the test station so voice settings have a single source.
     static func onDevice() -> VoiceRoute {
-        let voice = VoiceProfile(id: AVSpeechSynthesisVoice(language: "en-US")?.identifier ?? "", name: "Host")
+        let voice = VoiceProfile(id: OnDeviceVoiceChoice.bestVoice()?.identifier ?? "", name: "Host")
         return VoiceRoute(providerID: OnDeviceSpeechProvider.providerID, provider: OnDeviceSpeechProvider(),
                           voice: voice, timeout: .seconds(20), acceptsSSML: true)
     }
@@ -147,5 +147,37 @@ extension VoiceRenderer {
             routes: PhononSpeechRoutes.make(),
             budget: VoiceBudget(dailyCapMicrodollars: VoiceBetaDefaults.paidDailyCapMicrodollars, file: support.appendingPathComponent("Voice/budget.json")),
             cache: cache)
+    }
+}
+
+/// The DJ's on-device voice: the best installed English voice (premium, then enhanced),
+/// not the compact default, which sounds robotic. Falls back to the default en-US voice.
+/// Premium and enhanced voices are downloaded by the user in Settings; an app cannot fetch them.
+enum OnDeviceVoiceChoice {
+    private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
+
+    static func bestVoice() -> AVSpeechSynthesisVoice? {
+        let installed = AVSpeechSynthesisVoice.speechVoices()
+        let candidates = installed.map { voice in
+            VoiceCandidate(identifier: voice.identifier, language: voice.language, tier: tier(voice.quality),
+                           isNovelty: voice.voiceTraits.contains(.isNoveltyVoice),
+                           isPersonalVoice: voice.voiceTraits.contains(.isPersonalVoice))
+        }
+        guard let pick = VoiceQualitySelector.best(from: candidates),
+              let voice = installed.first(where: { $0.identifier == pick.identifier }) else {
+            log.info("voice selected tier=fallback")
+            return AVSpeechSynthesisVoice(language: "en-US")
+        }
+        // Sanitized: the tier enum only, never the voice name, identifier or language.
+        log.info("voice selected tier=\(pick.tier.rawValue, privacy: .public)")
+        return voice
+    }
+
+    private static func tier(_ quality: AVSpeechSynthesisVoiceQuality) -> VoiceQualityTier {
+        switch quality {
+        case .premium: .premium
+        case .enhanced: .enhanced
+        default: .standard
+        }
     }
 }
