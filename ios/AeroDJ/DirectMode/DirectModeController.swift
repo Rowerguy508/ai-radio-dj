@@ -49,6 +49,8 @@ final class DirectModeController: ObservableObject {
     @Published private(set) var lookupFound: Int?
     /// Experiment B (-Atlas): the layers this launch runs with. Level 0 changes nothing.
     let layers = DirectModeLayerHost(level: DirectModeLayerSettings.levelAtLaunch, songCount: DirectModeSongs.ids.count)
+    /// Experiment B "S" (-Fry): build 14's app-owned session path. Off changes nothing.
+    let session = DirectModeSessionLayerHost(enabled: DirectModeSessionLayerSettings.enabledAtLaunch)
 
     private let player = ApplicationMusicPlayer.shared
     private let openedAt = ProcessInfo.processInfo.systemUptime
@@ -62,6 +64,7 @@ final class DirectModeController: ObservableObject {
     func start() {
         guard pollTask == nil else { return }
         layers.start(clock: { [weak self] in self?.now ?? 0 }, issue: { [weak self] in self?.issue($0) })
+        session.start(clock: { [weak self] in self?.now ?? 0 }, pause: { [weak self] in self?.player.pause() })
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -75,6 +78,7 @@ final class DirectModeController: ObservableObject {
         pollTask?.cancel()
         pollTask = nil
         layers.stop()
+        session.stop()
     }
 
     /// Before Load only; the queue is set once.
@@ -126,6 +130,7 @@ final class DirectModeController: ObservableObject {
     func pause() {
         guard machine.request(.pause, at: now) else { return }
         layers.userCommand(.pause, at: now)
+        session.userPause(at: now)
         player.pause()
         machine.finished(.pause, error: nil, at: now)
     }
@@ -147,7 +152,7 @@ final class DirectModeController: ObservableObject {
     /// across isolation inside a closure.
     private func perform(_ command: DirectModeCommand) async throws {
         switch command {
-        case .play, .resume: try await player.play()
+        case .play, .resume: try await startPlayer()
         case .next:
             if layers.stack.usesOneSongQueue {
                 try await loadAndPlay(layers.stack.queueIndex)
@@ -167,6 +172,7 @@ final class DirectModeController: ObservableObject {
                         entryIndex: currentEntryIndex(), at: t)
         issue(layers.observe(status: machine.status, position: machine.position,
                              entryIndex: machine.entryIndex, at: t))
+        if machine.status == .playing, session.observePlaying(at: t) { player.pause() }
         machine.observeAuthorization(Self.authorization(MusicAuthorization.currentStatus), at: t)
         machine.observeRoute(Self.route(AVAudioSession.sharedInstance().currentRoute), at: t)
         if t - lastSubscriptionRead >= 5 {
@@ -194,7 +200,7 @@ final class DirectModeController: ObservableObject {
     private func performLayer(_ action: DirectModeLayerAction) async throws {
         switch action {
         case .pause: player.pause()
-        case .resume: try await player.play()
+        case .resume: try await startPlayer()
         case .loadAndPlay(let index): try await loadAndPlay(index)
         }
     }
@@ -203,7 +209,14 @@ final class DirectModeController: ObservableObject {
     private func loadAndPlay(_ index: Int) async throws {
         guard loadedSongs.indices.contains(index) else { return }
         player.queue = ApplicationMusicPlayer.Queue(for: [loadedSongs[index]])
+        try await startPlayer()
+    }
+
+    /// Every play() goes through here. With S off this is exactly `player.play()`.
+    private func startPlayer() async throws {
+        try session.beforePlay(at: now)
         try await player.play()
+        if session.afterPlay(at: now) { player.pause() }
     }
 
     /// Index of the current entry among the loaded songs; nil when it is anything else.

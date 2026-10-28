@@ -83,7 +83,7 @@ final class DirectModeLayerHost: ObservableObject {
 /// Owns the B4 observers off the main actor; its deinit removes them and finishes the stream.
 /// Maps notifications exactly as MusicKitService's (private) AudioSessionMonitor does, onto the
 /// same Core `AudioSessionNotice`. Reads userInfo only: never the route's port names.
-private final class DirectModeSessionNoticeMonitor: NSObject {
+final class DirectModeSessionNoticeMonitor: NSObject {
     private let eventsStream = FinishingStream<AudioSessionNotice>()
     var events: AsyncStream<AudioSessionNotice> { eventsStream.stream }
 
