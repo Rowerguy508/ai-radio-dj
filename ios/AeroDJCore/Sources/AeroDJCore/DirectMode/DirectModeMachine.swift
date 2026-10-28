@@ -44,6 +44,9 @@ public struct DirectModeLogEntry: Equatable, Sendable, CustomStringConvertible {
         case authorization(DirectModeAuthorization)
         case canPlayCatalog(Bool?)
         case route(DirectModeRoute)
+        /// The tester tapped "I hear it".
+        case heard
+        case songSet(DirectModeSongSet)
     }
 
     /// Seconds since Direct Mode opened.
@@ -67,8 +70,18 @@ public struct DirectModeLogEntry: Equatable, Sendable, CustomStringConvertible {
         case .authorization(let a): return head + "auth=\(a.rawValue)"
         case .canPlayCatalog(let b): return head + "canPlayCatalogContent=\(b.map(String.init) ?? "nil")"
         case .route(let r): return head + "route=\(r.rawValue)"
+        case .heard: return head + "HEARD"
+        case .songSet(let set): return head + "songSet=\(set.rawValue)"
         }
     }
+}
+
+/// Which pair of songs the queue is loaded with (-Fry). Chosen before Load; the queue loads once.
+public enum DirectModeSongSet: String, Equatable, Sendable, CaseIterable {
+    /// Song A then song B (build 13's queue).
+    case standard
+    /// A track that is loud from 0:00 first, then song A.
+    case loudFirst
 }
 
 public struct DirectModeMachine: Equatable, Sendable {
@@ -90,6 +103,12 @@ public struct DirectModeMachine: Equatable, Sendable {
     public private(set) var route: DirectModeRoute = .none
     public private(set) var lastError: PlaybackErrorCode?
     public private(set) var log: [DirectModeLogEntry] = []
+
+    /// When the last play/resume was requested (-Fry), for the "I hear it" mark.
+    public private(set) var playRequestedAt: Double?
+    /// Seconds after the play/resume request when the tester first tapped "I hear it".
+    public private(set) var heardAfterPlay: Double?
+    public private(set) var songSet: DirectModeSongSet = .standard
 
     public let songCount: Int
 
@@ -127,6 +146,10 @@ public struct DirectModeMachine: Equatable, Sendable {
         }
         inFlight = command
         append(.requested(command), at: t)
+        if command == .play || command == .resume {
+            playRequestedAt = t
+            heardAfterPlay = nil
+        }
         return true
     }
 
@@ -186,6 +209,22 @@ public struct DirectModeMachine: Equatable, Sendable {
         guard value != route else { return }
         route = value
         append(.route(value), at: t)
+    }
+
+    /// Choose the queue's songs. Only before Load: the queue is set exactly once.
+    @discardableResult
+    public mutating func selectSongSet(_ set: DirectModeSongSet, at t: Double) -> Bool {
+        guard !queueLoaded, inFlight != .load else { return false }
+        guard set != songSet else { return true }
+        songSet = set
+        append(.songSet(set), at: t)
+        return true
+    }
+
+    /// The tester heard the song. Only the first tap after each play/resume is latched.
+    public mutating func markHeard(at t: Double) {
+        if heardAfterPlay == nil, let start = playRequestedAt { heardAfterPlay = t - start }
+        append(.heard, at: t)
     }
 
     private mutating func append(_ kind: DirectModeLogEntry.Kind, at t: Double) {
