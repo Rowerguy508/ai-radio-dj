@@ -53,15 +53,26 @@ struct PhononSpeechProvider: VoiceProvider {
 enum PhononSpeechRoutes {
     private static let log = Logger(subsystem: "com.aerodj.app", category: "phonon")
 
+    /// The engine framework is not embedded. Without it, dlopen cannot succeed,
+    /// so the route list stays AVSpeech only.
+    private static var frameworkBinaryExists: Bool {
+        guard let base = Bundle.main.privateFrameworksURL else { return false }
+        let binary = base.appendingPathComponent("AeroDJPhonon.framework/AeroDJPhonon")
+        return FileManager.default.fileExists(atPath: binary.path)
+    }
+
     static func make() -> [VoiceRoute] {
         let decision = PhononSpeechSelection.decide(
             flagEnabled: PhononSpeechSelection.isFlagEnabled(),
             runtimeAvailable: PhononSpeechRuntime.isAvailable,
             model: .missing)
-        if decision.attemptsPhonon {
-            log.info("phonon enabled=true providers=\(decision.providerIDs.count, privacy: .public)")
+        let ids = decision.providerIDs.filter { id in
+            id != PhononModelPin.providerID || frameworkBinaryExists
         }
-        return decision.providerIDs.map { id in
+        if ids.contains(PhononModelPin.providerID) {
+            log.info("phonon enabled=true providers=\(ids.count, privacy: .public)")
+        }
+        return ids.map { id in
             if id == PhononModelPin.providerID {
                 return VoiceRoute(providerID: id, provider: PhononSpeechProvider(),
                                   voice: VoiceProfile(id: PhononModelPin.voiceID, name: PhononModelPin.voiceID),

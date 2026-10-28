@@ -3,16 +3,8 @@
 .swiftpm/
 DerivedData/
 
-# Xcode (project is generated from project.yml by XcodeGen).
-# Keep the SwiftPM pin; everything else in the generated project stays ignored.
-AeroDJ.xcodeproj/*
-!AeroDJ.xcodeproj/project.xcworkspace/
-AeroDJ.xcodeproj/project.xcworkspace/*
-!AeroDJ.xcodeproj/project.xcworkspace/xcshareddata/
-AeroDJ.xcodeproj/project.xcworkspace/xcshareddata/*
-!AeroDJ.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
-AeroDJ.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
-!AeroDJ.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+# Xcode (project is generated from project.yml by XcodeGen)
+AeroDJ.xcodeproj/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 xcuserdata/

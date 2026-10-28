@@ -144,6 +144,14 @@ jobs:
               -derivedDataPath "$DERIVED_DATA" \
               CODE_SIGNING_ALLOWED=NO
           done
+      - name: Reject prohibited AMX instructions in the device app
+        env:
+          AMX_PIN: d91096a18650d4ffd23f211e2ea534c3bc251a7b66859497b56e1c89f3e92ca9
+          AMX_URL: https://github.com/gradium-ai/xn-ptts/releases/download/v0.5.0/PhononCore.xcframework.zip
+        run: |
+          ios/scripts/check-device-amx.sh \
+            "$DERIVED_DATA/Build/Products/Debug-iphoneos/AeroDJ.app" \
+            "$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app"
       - name: P0 Direct Mode is absent from Release and present only with AERODJ_P0_DIAG
         # TEMPORARY with #121 / #133. Proves the diag build compiles, and that a plain Release
         # (what App Store builds use) carries no Direct Mode code. -Atlas
