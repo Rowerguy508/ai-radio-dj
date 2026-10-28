@@ -149,7 +149,7 @@ final class DirectModeController: ObservableObject {
 
     // MARK: - Sanitizing maps (enums only)
 
-    static func status(_ status: MusicPlayer.PlaybackStatus) -> DirectModeStatus {
+    static func status(_ status: MusicKit.MusicPlayer.PlaybackStatus) -> DirectModeStatus {
         switch status {
         case .stopped: return .stopped
         case .playing: return .playing
