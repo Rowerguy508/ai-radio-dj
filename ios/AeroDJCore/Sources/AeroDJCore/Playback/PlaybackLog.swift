@@ -82,3 +82,12 @@ public enum AudioSessionActivation {
         }
     }
 }
+
+/// Build 10 P0 (-Atlas, Fry's review): `ApplicationMusicPlayer` plays outside the app's session,
+/// so any activation of a non-mixable app session interrupts it. The DJ clip's `AVAudioPlayer.play()`
+/// activates the app session implicitly, so the category mixes with others and the session is
+/// released (notifying others) when each break ends, before the next song starts.
+public enum AppAudioSessionConfig {
+    /// `AVAudioSession.CategoryOptions.mixWithOthers` on the `.playback` category.
+    public static let mixesWithOthers = true
+}

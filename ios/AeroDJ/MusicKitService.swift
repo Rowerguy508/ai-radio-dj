@@ -705,6 +705,7 @@ final class MusicKitService: ObservableObject {
     /// Applies the state-machine and playback events for a break that just ended.
     /// The caller starts music only when `decision.resumeMusic` is true.
     func completeNarration(_ decision: NarrationResumeDecision) {
+        releaseSessionAfterBreak()
         if let event = decision.audioEvent {
             stateMachine.apply(event)
         }
@@ -741,10 +742,11 @@ final class MusicKitService: ObservableObject {
         if !audioSessionConfigured {
             // Category only. Setting it does not stop other audio; activation waits for playback.
             do {
-                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+                let options: AVAudioSession.CategoryOptions = AppAudioSessionConfig.mixesWithOthers ? [.mixWithOthers] : []
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: options)
                 audioSessionConfigured = true
                 // TEMPORARY P0 diagnostics (remove: #121) -Atlas
-                P0TapDiagnostics.shared.record("session.setCategory", detail: "playback/default options=[]")
+                P0TapDiagnostics.shared.record("session.setCategory", detail: "playback/default mix=\(AppAudioSessionConfig.mixesWithOthers)")
             } catch {
                 // Non-fatal: retried on the next call. TEMPORARY diagnostic only.
                 logPlaybackError("setCategory", error)
@@ -811,6 +813,18 @@ final class MusicKitService: ObservableObject {
             logPlaybackError("setActive", error)
             P0TapDiagnostics.shared.recordPlayError("session.setActive.threw", error, attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             throw error
+        }
+    }
+
+    /// The DJ clip's `AVAudioPlayer.play()` activated the app session. Release it before music
+    /// resumes or the next song loads, so it never competes with `ApplicationMusicPlayer`.
+    private func releaseSessionAfterBreak() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            P0TapDiagnostics.shared.record("session.releasedAfterBreak", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+        } catch {
+            logPlaybackError("setActiveFalse", error)
+            P0TapDiagnostics.shared.recordPlayError("session.release.threw", error, attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         }
     }
 
