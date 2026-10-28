@@ -197,6 +197,7 @@ struct PlayingScreen: View {
     }
 }
 
+#if DEBUG
 #Preview("Playing screen") {
     PlayingScreenPreviewLoader()
 }
@@ -227,3 +228,4 @@ struct PlayingScreenPreviewLoader: View {
         .task { studio = await StudioPresentationModel.preview() }
     }
 }
+#endif
