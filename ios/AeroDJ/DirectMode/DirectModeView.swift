@@ -29,16 +29,29 @@ struct DirectModeView: View {
                     row("Position", Self.clock(m.position))
                     row("Moved past 0:00", m.positionEverAdvanced ? "yes" : "no")
                     row("Status", m.status.rawValue)
-                    row("Song", m.entryIndex.map { $0 == 0 ? "A" : "B" } ?? (m.queueLoaded ? "OTHER" : "none"))
+                    row("Song", m.entryIndex.map { Self.songLabel($0, m.songSet) } ?? (m.queueLoaded ? "OTHER" : "none"))
+                    row("Song set", m.songSet.rawValue)
+                    row("Session", m.lastAudioSample.map { "\($0.category.rawValue)/\($0.mode.rawValue)" } ?? "unread")
+                    row("Output volume", m.lastAudioSample.map { String(format: "%.2f", $0.outputVolume) } ?? "unread")
+                    row("Other audio / silence hint", m.lastAudioSample.map { "\($0.otherAudioPlaying) / \($0.secondaryAudioShouldBeSilenced)" } ?? "unread")
+                    row("Heard after play", m.heardAfterPlay.map { String(format: "%.1f s", $0) } ?? "not yet")
                     row("Unexpected queue", m.unexpectedQueueSeen ? "YES" : "no")
                     row("Authorization", m.authorization.rawValue)
                     row("canPlayCatalogContent", m.canPlayCatalogContent.map { $0 ? "true" : "false" } ?? "unknown")
                     row("Route", m.route.rawValue)
-                    row("Catalog lookup", controller.lookupFound.map { "\($0) of \(DirectModeSongs.ids.count)" } ?? "not loaded")
+                    row("Catalog lookup", controller.lookupFound.map { "\($0) of \(DirectModeSongs.ids(for: m.songSet).count)" } ?? "not loaded")
                     row("Command in flight", m.inFlight?.rawValue ?? "none")
                     row("Last error", m.lastError?.description ?? "none")
                 }
                 .font(.body.monospaced())
+
+                Picker("Songs", selection: Binding(get: { m.songSet }, set: { controller.selectSongSet($0) })) {
+                    Text("A then B").tag(DirectModeSongSet.standard)
+                    Text("Loud from 0:00, then A").tag(DirectModeSongSet.loudFirst)
+                }
+                .pickerStyle(.segmented)
+                .disabled(m.queueLoaded || m.inFlight == .load)
+                .accessibilityIdentifier("directMode.songSet")
 
                 HStack {
                     button("Load", .load, controller.load)
@@ -49,6 +62,13 @@ struct DirectModeView: View {
                     button("Resume", .resume, controller.resume)
                     button("Next song", .next, controller.next)
                 }
+
+                Button("I hear it", action: controller.markHeard)
+                    .font(.title2.bold())
+                    .frame(maxWidth: .infinity, minHeight: 60)
+                    .buttonStyle(.borderedProminent).tint(.orange)
+                    .disabled(m.audioWindowStart == nil)
+                    .accessibilityIdentifier("directMode.heard")
 
                 Toggle("Next launch: normal app (once)", isOn: $normalNextLaunch)
                     .onChange(of: normalNextLaunch) { _, on in
@@ -85,6 +105,13 @@ struct DirectModeView: View {
             .buttonStyle(.borderedProminent)
             .disabled(m.refusal(command) != nil)
             .accessibilityIdentifier("directMode.\(command.rawValue)")
+    }
+
+    private static func songLabel(_ index: Int, _ set: DirectModeSongSet) -> String {
+        switch set {
+        case .standard: return index == 0 ? "A" : "B"
+        case .loudFirst: return index == 0 ? "LOUD" : "A"
+        }
     }
 
     private static func clock(_ seconds: Double) -> String {

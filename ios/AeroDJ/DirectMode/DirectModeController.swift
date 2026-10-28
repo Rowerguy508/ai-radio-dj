@@ -30,6 +30,16 @@ enum DirectModeSongs {
     /// Public Apple Music catalog song IDs (US storefront), checked against the iTunes lookup
     /// API on 2026-10-27. Song A plays first; "Next song" skips to song B. Not shown or logged.
     static let ids: [MusicItemID] = ["1488408568", "1544494392"]
+    /// Loud from 0:00 (-Fry): public US catalog song ID, checked against the iTunes lookup API
+    /// on 2026-10-28. Not shown or logged.
+    static let loudIntroID: MusicItemID = "726416473"
+
+    static func ids(for set: DirectModeSongSet) -> [MusicItemID] {
+        switch set {
+        case .standard: return ids
+        case .loudFirst: return [loudIntroID, ids[0]]
+        }
+    }
 }
 
 @MainActor
@@ -43,11 +53,13 @@ final class DirectModeController: ObservableObject {
     private var loadedIDs: [MusicItemID] = []
     private var pollTask: Task<Void, Never>?
     private var lastSubscriptionRead: Double = -.infinity
+    private var audioObservers: [NSObjectProtocol] = []
 
     private var now: Double { ProcessInfo.processInfo.systemUptime - openedAt }
 
     func start() {
         guard pollTask == nil else { return }
+        observeAudioSessionNotifications()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -60,7 +72,15 @@ final class DirectModeController: ObservableObject {
     func stop() {
         pollTask?.cancel()
         pollTask = nil
+        audioObservers.forEach(NotificationCenter.default.removeObserver)
+        audioObservers = []
     }
+
+    /// Before Load only; the queue is set once.
+    func selectSongSet(_ set: DirectModeSongSet) { machine.selectSongSet(set, at: now) }
+
+    /// The tester heard the song.
+    func markHeard() { machine.markHeard(at: now) }
 
     // MARK: - Commands (the only callers of ApplicationMusicPlayer commands)
 
@@ -75,13 +95,14 @@ final class DirectModeController: ObservableObject {
                 guard MusicAuthorization.currentStatus == .authorized else {
                     throw DirectModeError.notAuthorized
                 }
-                var request = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: DirectModeSongs.ids)
-                request.limit = DirectModeSongs.ids.count
+                let ids = DirectModeSongs.ids(for: machine.songSet)
+                var request = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: ids)
+                request.limit = ids.count
                 let response = try await request.response()
                 let byID = Dictionary(response.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-                let ordered = DirectModeSongs.ids.compactMap { byID[$0] }
+                let ordered = ids.compactMap { byID[$0] }
                 lookupFound = ordered.count
-                guard ordered.count == DirectModeSongs.ids.count else {
+                guard ordered.count == ids.count else {
                     throw DirectModeError.catalogLookupIncomplete
                 }
                 loadedIDs = ordered.map(\.id)
@@ -134,6 +155,7 @@ final class DirectModeController: ObservableObject {
                         entryIndex: currentEntryIndex(), at: t)
         machine.observeAuthorization(Self.authorization(MusicAuthorization.currentStatus), at: t)
         machine.observeRoute(Self.route(AVAudioSession.sharedInstance().currentRoute), at: t)
+        machine.observeAudio(Self.audioSample(AVAudioSession.sharedInstance()), at: t)
         if t - lastSubscriptionRead >= 5 {
             lastSubscriptionRead = t
             let subscription = try? await MusicSubscription.current
@@ -155,6 +177,103 @@ final class DirectModeController: ObservableObject {
             sighting = .noEntry
         }
         return sighting.entryIndex(keeping: machine.entryIndex)
+    }
+
+    // MARK: - Audio-session probe (-Fry). Reads and notifications only; never a session call.
+
+    private func observeAudioSessionNotifications() {
+        guard audioObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        func on(_ name: Notification.Name, _ map: @escaping @Sendable ([AnyHashable: Any]?) -> DirectModeAudioEvent?) {
+            audioObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let event = map(note.userInfo) else { return }
+                MainActor.assumeIsolated { self?.machine.observeAudioEvent(event, at: self?.now ?? 0) }
+            })
+        }
+        on(AVAudioSession.interruptionNotification) { info in
+            guard let raw = info?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return nil }
+            switch type {
+            case .began:
+                return .interruptionBegan(Self.interruptionReason(info?[AVAudioSessionInterruptionReasonKey] as? UInt))
+            case .ended:
+                let options = AVAudioSession.InterruptionOptions(rawValue: info?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
+                return .interruptionEnded(shouldResume: options.contains(.shouldResume))
+            @unknown default:
+                return nil
+            }
+        }
+        on(AVAudioSession.routeChangeNotification) { info in
+            .routeChange(Self.routeChangeReason(info?[AVAudioSessionRouteChangeReasonKey] as? UInt))
+        }
+        on(AVAudioSession.silenceSecondaryAudioHintNotification) { info in
+            let raw = info?[AVAudioSessionSilenceSecondaryAudioHintTypeKey] as? UInt ?? 0
+            return .silenceSecondaryAudioHint(begin: AVAudioSession.SilenceSecondaryAudioHintType(rawValue: raw) == .begin)
+        }
+        on(AVAudioSession.mediaServicesWereLostNotification) { _ in .mediaServicesLost }
+        on(AVAudioSession.mediaServicesWereResetNotification) { _ in .mediaServicesReset }
+    }
+
+    static func audioSample(_ session: AVAudioSession) -> DirectModeAudioSample {
+        DirectModeAudioSample(outputVolume: Double(session.outputVolume),
+                              route: route(session.currentRoute),
+                              category: category(session.category),
+                              mode: mode(session.mode),
+                              otherAudioPlaying: session.isOtherAudioPlaying,
+                              secondaryAudioShouldBeSilenced: session.secondaryAudioShouldBeSilencedHint,
+                              outputLatencySeconds: session.outputLatency)
+    }
+
+    static func category(_ category: AVAudioSession.Category) -> DirectModeSessionCategory {
+        switch category {
+        case .soloAmbient: return .soloAmbient
+        case .ambient: return .ambient
+        case .playback: return .playback
+        case .playAndRecord: return .playAndRecord
+        case .record: return .record
+        case .multiRoute: return .multiRoute
+        default: return .other
+        }
+    }
+
+    static func mode(_ mode: AVAudioSession.Mode) -> DirectModeSessionMode {
+        switch mode {
+        case .default: return .default
+        case .moviePlayback: return .moviePlayback
+        case .spokenAudio: return .spokenAudio
+        case .voiceChat: return .voiceChat
+        case .videoChat: return .videoChat
+        case .gameChat: return .gameChat
+        case .videoRecording: return .videoRecording
+        case .measurement: return .measurement
+        case .voicePrompt: return .voicePrompt
+        default: return .other
+        }
+    }
+
+    nonisolated static func interruptionReason(_ raw: UInt?) -> DirectModeInterruptionReason {
+        guard let raw else { return .none }
+        switch AVAudioSession.InterruptionReason(rawValue: raw) {
+        case .default?: return .default
+        case .appWasSuspended?: return .appWasSuspended
+        case .builtInMicMuted?: return .builtInMicMuted
+        case .routeDisconnected?: return .routeDisconnected
+        default: return .other
+        }
+    }
+
+    nonisolated static func routeChangeReason(_ raw: UInt?) -> DirectModeRouteChangeReason {
+        switch raw.flatMap(AVAudioSession.RouteChangeReason.init(rawValue:)) {
+        case .unknown?, nil: return .unknown
+        case .newDeviceAvailable?: return .newDeviceAvailable
+        case .oldDeviceUnavailable?: return .oldDeviceUnavailable
+        case .categoryChange?: return .categoryChange
+        case .override?: return .override
+        case .wakeFromSleep?: return .wakeFromSleep
+        case .noSuitableRouteForCategory?: return .noSuitableRouteForCategory
+        case .routeConfigurationChange?: return .routeConfigurationChange
+        default: return .other
+        }
     }
 
     // MARK: - Sanitizing maps (enums only)

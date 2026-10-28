@@ -44,6 +44,12 @@ public struct DirectModeLogEntry: Equatable, Sendable, CustomStringConvertible {
         case authorization(DirectModeAuthorization)
         case canPlayCatalog(Bool?)
         case route(DirectModeRoute)
+        /// A 1 s audio-session sample; `sincePlay` is seconds since the play/resume request.
+        case audio(DirectModeAudioSample, sincePlay: Double?)
+        case audioEvent(DirectModeAudioEvent)
+        /// The tester tapped "I hear it".
+        case heard
+        case songSet(DirectModeSongSet)
     }
 
     /// Seconds since Direct Mode opened.
@@ -67,6 +73,12 @@ public struct DirectModeLogEntry: Equatable, Sendable, CustomStringConvertible {
         case .authorization(let a): return head + "auth=\(a.rawValue)"
         case .canPlayCatalog(let b): return head + "canPlayCatalogContent=\(b.map(String.init) ?? "nil")"
         case .route(let r): return head + "route=\(r.rawValue)"
+        case let .audio(sample, sincePlay):
+            let since = sincePlay.map { "play+" + String(format: "%.0f", $0) + "s " } ?? ""
+            return head + "audio " + since + sample.description
+        case .audioEvent(let e): return head + "audio.event " + e.description
+        case .heard: return head + "HEARD"
+        case .songSet(let set): return head + "songSet=\(set.rawValue)"
         }
     }
 }
@@ -90,6 +102,17 @@ public struct DirectModeMachine: Equatable, Sendable {
     public private(set) var route: DirectModeRoute = .none
     public private(set) var lastError: PlaybackErrorCode?
     public private(set) var log: [DirectModeLogEntry] = []
+
+    /// Audio-session probe (-Fry): sample every `audioSampleInterval` for `audioWindow` seconds
+    /// after each play/resume request; outside that window, log a sample only when it changes.
+    public static let audioWindow: Double = 40
+    public static let audioSampleInterval: Double = 1
+    public private(set) var audioWindowStart: Double?
+    public private(set) var lastAudioSample: DirectModeAudioSample?
+    private var lastAudioSampleAt: Double = -.infinity
+    /// Seconds after the play/resume request when the tester first tapped "I hear it".
+    public private(set) var heardAfterPlay: Double?
+    public private(set) var songSet: DirectModeSongSet = .standard
 
     public let songCount: Int
 
@@ -127,6 +150,11 @@ public struct DirectModeMachine: Equatable, Sendable {
         }
         inFlight = command
         append(.requested(command), at: t)
+        if command == .play || command == .resume {
+            audioWindowStart = t
+            lastAudioSampleAt = -.infinity
+            heardAfterPlay = nil
+        }
         return true
     }
 
@@ -186,6 +214,42 @@ public struct DirectModeMachine: Equatable, Sendable {
         guard value != route else { return }
         route = value
         append(.route(value), at: t)
+    }
+
+    /// Choose the queue's songs. Only before Load: the queue is set exactly once.
+    @discardableResult
+    public mutating func selectSongSet(_ set: DirectModeSongSet, at t: Double) -> Bool {
+        guard !queueLoaded, inFlight != .load else { return false }
+        guard set != songSet else { return true }
+        songSet = set
+        append(.songSet(set), at: t)
+        return true
+    }
+
+    /// True while a 1 s sample is due inside the window after the last play/resume request.
+    public func audioSampleDue(at t: Double) -> Bool {
+        guard let start = audioWindowStart, t - start <= Self.audioWindow else { return false }
+        // The poll runs every 250 ms; allow a little jitter so samples land about 1 s apart.
+        return t - lastAudioSampleAt >= Self.audioSampleInterval - 0.1
+    }
+
+    /// A read of the app's audio session (observation only).
+    public mutating func observeAudio(_ sample: DirectModeAudioSample, at t: Double) {
+        let due = audioSampleDue(at: t)
+        guard due || sample != lastAudioSample else { return }
+        if due { lastAudioSampleAt = t }
+        lastAudioSample = sample
+        append(.audio(sample, sincePlay: due ? audioWindowStart.map { t - $0 } : nil), at: t)
+    }
+
+    public mutating func observeAudioEvent(_ event: DirectModeAudioEvent, at t: Double) {
+        append(.audioEvent(event), at: t)
+    }
+
+    /// The tester heard the song. Only the first tap after each play/resume is latched.
+    public mutating func markHeard(at t: Double) {
+        if heardAfterPlay == nil, let start = audioWindowStart { heardAfterPlay = t - start }
+        append(.heard, at: t)
     }
 
     private mutating func append(_ kind: DirectModeLogEntry.Kind, at t: Double) {

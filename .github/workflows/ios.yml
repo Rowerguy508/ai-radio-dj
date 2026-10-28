@@ -151,7 +151,7 @@ jobs:
           MARKER=AERODJ_P0_DIAG_DIRECT_MODE_BUILD
           RELEASE_BIN="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
           test -f "$RELEASE_BIN"
-          for NEEDLE in "$MARKER" DirectModeController DirectModeView DirectModeLaunch DirectModeMachine DirectModeEntrySighting CompositionRootProbe; do
+          for NEEDLE in "$MARKER" DirectModeController DirectModeView DirectModeLaunch DirectModeMachine DirectModeEntrySighting CompositionRootProbe DirectModeAudioSample DirectModeAudioEvent DirectModeSongSet; do
             if LC_ALL=C grep -a -q "$NEEDLE" "$RELEASE_BIN"; then
               echo "::error::Direct Mode code ($NEEDLE) found in a Release build without AERODJ_P0_DIAG"
               exit 1
