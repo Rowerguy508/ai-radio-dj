@@ -118,13 +118,34 @@ public final class DJBreakSession {
     @discardableResult
     public func beginQueueInBackground(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
                                        sources: [ConnectionItem] = []) -> Task<Void, Never> {
+        beginQueueInBackground(reserveQueueSetup(), tracks, briefing: briefing, sources: sources)
+    }
+
+    /// #116 (-Atlas): marks a new queue as pending *before* `music.play` is called, so a
+    /// `songStarted` that MusicKit reports during `play` is held for the new queue instead of
+    /// consulting the old queue's breaks. Cancels a prior tap's setup. Synchronous: no await
+    /// separates the tap from this, so nothing can slip in between. Music never waits on it.
+    public func reserveQueueSetup() -> QueueSetupReservation {
         queueSetupTask?.cancel()
+        queueSetupTask = nil
         pendingSongStart = nil
         // A newer tap captures fresh sources; prior mid-setup withdrawals do not apply to it.
+        // Withdrawals from here on (including during `play`) do apply.
         pendingWithdrawnIntegrations = []
         queueSetupGeneration += 1
-        let generation = queueSetupGeneration
         queueSetupPending = true
+        return QueueSetupReservation(generation: queueSetupGeneration)
+    }
+
+    /// Schedules `queueStarted` for a reservation. A reservation that a newer tap, `stop`,
+    /// `detach` or `cancelBackgroundQueueSetup` replaced schedules nothing. A `songStarted`
+    /// held since the reservation is replayed once the new queue is planned.
+    @discardableResult
+    public func beginQueueInBackground(_ reservation: QueueSetupReservation, _ tracks: [DJTrack],
+                                       briefing: NarrationHandoff? = nil,
+                                       sources: [ConnectionItem] = []) -> Task<Void, Never> {
+        let generation = reservation.generation
+        guard generation == queueSetupGeneration, queueSetupPending else { return Task {} }
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
@@ -138,6 +159,17 @@ public final class DJBreakSession {
         }
         queueSetupTask = task
         return task
+    }
+
+    /// `play` threw for this reservation: no new queue. Releases the hold so the old queue's
+    /// song starts are handled again. A held start (from the failed play) is dropped.
+    /// A replaced reservation does nothing.
+    public func releaseQueueSetup(_ reservation: QueueSetupReservation) {
+        guard reservation.generation == queueSetupGeneration, queueSetupTask == nil else { return }
+        queueSetupGeneration += 1
+        queueSetupPending = false
+        pendingSongStart = nil
+        pendingWithdrawnIntegrations = []
     }
 
     /// Cancels in-flight background queue setup (and any pending songStarted replay).
@@ -436,6 +468,8 @@ public final class DJBreakSession {
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: background tap setup has not finished planning.
     var testQueueSetupPending: Bool { queueSetupPending }
+    /// Test hook (#116): the song start held until the new queue is planned.
+    var testHeldSongStartIndex: Int? { pendingSongStart?.index }
     /// Test hook: ids of the queue `queueStarted` last applied.
     var testQueueTrackIDs: [String] { tracks.map(\.id) }
     /// Test hook: briefing is absent after withdrawal / briefing-off.
@@ -448,4 +482,9 @@ public final class DJBreakSession {
     }
     /// Test hook: runs at the start of `queueStarted` so cancel races can be asserted.
     var testBeforeQueueStarted: (@MainActor () async -> Void)?
+}
+
+/// #116: a queue setup reserved before `play`. Only the newest one can schedule setup.
+public struct QueueSetupReservation: Equatable, Sendable {
+    public let generation: Int
 }
