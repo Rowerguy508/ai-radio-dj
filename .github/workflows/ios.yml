@@ -127,6 +127,28 @@ jobs:
               -derivedDataPath "$DERIVED_DATA" \
               CODE_SIGNING_ALLOWED=NO
           done
+      - name: P0 Direct Mode is absent from Release and present only with AERODJ_P0_DIAG
+        # TEMPORARY with #121 / #133. Proves the diag build compiles, and that a plain Release
+        # (what App Store builds use) carries no Direct Mode code. -Atlas
+        run: |
+          MARKER=AERODJ_P0_DIAG_DIRECT_MODE_BUILD
+          RELEASE_BIN="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
+          test -f "$RELEASE_BIN"
+          if LC_ALL=C grep -a -q "$MARKER" "$RELEASE_BIN"; then
+            echo "::error::Direct Mode marker found in a Release build without AERODJ_P0_DIAG"
+            exit 1
+          fi
+          DIAG_DD="$RUNNER_TEMP/DerivedDataP0Diag"
+          xcodebuild build \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DIAG_DD" \
+            CODE_SIGNING_ALLOWED=NO \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) AERODJ_P0_DIAG'
+          LC_ALL=C grep -a -q "$MARKER" "$DIAG_DD/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
 
   runtime-mode:
     name: Runtime mode on simulator (Debug vs Release)
