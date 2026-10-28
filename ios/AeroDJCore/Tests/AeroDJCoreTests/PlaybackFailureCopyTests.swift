@@ -61,7 +61,8 @@ final class PlaybackFailureCopyTests: XCTestCase {
             let effect = StartFailurePolicy.effect(failure, attempt: a, current: attempts.current)
             XCTAssertEqual(effect.message, PlaybackFailureCopy.message(for: kind), "\(failure)")
         }
-        XCTAssertNil(StartFailurePolicy.effect(.refused(pausedBySystem: true), attempt: a,
-                                               current: attempts.current).message)
+        XCTAssertEqual(StartFailurePolicy.effect(.refused(pausedBySystem: true), attempt: a,
+                                                 current: attempts.current).message,
+                       PlaybackFailureCopy.message(for: .onHold))
     }
 }
