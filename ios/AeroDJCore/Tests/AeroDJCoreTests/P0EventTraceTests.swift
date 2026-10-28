@@ -76,13 +76,13 @@ final class P0EventTraceTests: XCTestCase {
         XCTAssertEqual(trace.lastPolls.count, P0EventTrace.lastPollCount)
         XCTAssertEqual(trace.lastPolls.map(\.t), [7, 8, 9])
         XCTAssertEqual(trace.lastPolls.last?.rendered,
-                       "    9.0 lastPoll q=0/3 wasPlaying=1 playing=1 pos=120.0 dur=214.0 furthest=120.0 reachedEnd=0 userChangePending=0 result=none intReason=- intAge=- sincePoll=1.0 played=9")
+                       "    9.0 lastPoll q=0/3 wasPlaying=1 playing=1 pos=120.0 dur=214.0 furthest=120.0 reachedEnd=0 userChangePending=0 playedThrough=0 held=0 intNearEnd=0 endReported=0 result=none intReason=- intAge=- sincePoll=1.0 played=9")
         trace.interruption(began: true, shouldResume: nil, reason: .appWasSuspended,
                            audio: .init(otherAudio: true, secondaryHint: false), at: 9.5)
         feed(&trace, &interpreter, obs("e1", playing: true, pos: 120), at: 13.2)
         XCTAssertEqual(trace.lastPolls.map(\.t), [8, 9, 13.2])
         XCTAssertEqual(trace.lastPolls.last?.detail,
-                       "wasPlaying=1 playing=1 pos=120.0 dur=214.0 furthest=120.0 reachedEnd=0 userChangePending=0 result=none intReason=appWasSuspended intAge=4 sincePoll=4.2 played=13")
+                       "wasPlaying=1 playing=1 pos=120.0 dur=214.0 furthest=120.0 reachedEnd=0 userChangePending=0 playedThrough=0 held=0 intNearEnd=0 endReported=0 result=none intReason=appWasSuspended intAge=4 sincePoll=4.2 played=13")
         // Played time restarts for a new entry.
         feed(&trace, &interpreter, obs("e2", playing: true, pos: 0.4), at: 14.2)
         XCTAssertTrue(trace.lastPolls.last?.detail.hasSuffix("sincePoll=1.0 played=0") ?? false)
@@ -117,6 +117,26 @@ final class P0EventTraceTests: XCTestCase {
         let rows = feed(&trace, &again, obs(nil, playing: false, pos: nil), at: 1)
         XCTAssertEqual(rows.last?.detail,
                        "playing=0 entry=0 entryChanged=1 pos=- dur=214.0 furthest=- wasPlaying=1 userChangePending=0 reachedEnd=0 result=noProgressEnd")
+    }
+
+    /// #148's sticky facts are readable too, so the trace shows why an end did or did not fire.
+    func testStickyDetectorFactsAreReadable() {
+        var interpreter = BoundaryInterpreter()
+        _ = interpreter.interpret(obs("e1", playing: true, pos: 100), queueIndex: 0, queueCount: 3)
+        XCTAssertFalse(P0DetectorState(interpreter).playedThrough)
+        _ = interpreter.interpret(obs("e1", playing: true, pos: 200), queueIndex: 0, queueCount: 3)
+        XCTAssertTrue(P0DetectorState(interpreter).playedThrough, "furthest 200 of 214 is past 90%")
+        XCTAssertFalse(P0DetectorState(interpreter).held)
+        interpreter.pausedByApp(.userPause)
+        XCTAssertTrue(P0DetectorState(interpreter).held)
+
+        var ended = BoundaryInterpreter()
+        _ = ended.interpret(obs("e1", playing: true, pos: 200), queueIndex: 0, queueCount: 3)
+        _ = ended.interpret(obs("e1", playing: true, pos: 213.5), queueIndex: 0, queueCount: 3)
+        ended.pausedByApp(.systemInterruption)
+        XCTAssertTrue(P0DetectorState(ended).intNearEnd)
+        _ = ended.interpret(obs("e1", playing: false, pos: 0), queueIndex: 0, queueCount: 3)
+        XCTAssertTrue(P0DetectorState(ended).endReported)
     }
 
     func testLast5SecondsAreAlwaysLogged() {

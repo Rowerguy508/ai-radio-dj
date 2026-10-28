@@ -46,6 +46,7 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     case takeNext, indexOK, outcome, code, userInitiated
     case mayAutoResume, pausedBySystem, userWantsPlayback
     case began, shouldResume, reason, phase
+    case playedThrough, held, intNearEnd, endReported
 }
 
 /// Every word a row's value can be. Reason codes only.
@@ -341,6 +342,10 @@ public struct P0EventTrace: Sendable {
             (.furthest, .tenths(furthest)),
             (.reachedEnd, .bool(P0DetectorState.reachedEnd(o, furthest: furthest))),
             (.userChangePending, .bool(poll.before.userChangePending)),
+            (.playedThrough, .bool(poll.before.playedThrough)),
+            (.held, .bool(poll.before.held)),
+            (.intNearEnd, .bool(poll.before.intNearEnd)),
+            (.endReported, .bool(poll.before.endReported)),
             (.result, .code(result)),
             (.intReason, lastInterruption.map { .code($0.reason.code) } ?? .missing),
             (.intAge, lastInterruption.map { .seconds(poll.t - $0.t) } ?? .missing),

@@ -3,7 +3,7 @@
 //
 // A read-only view of the boundary detector's private state for the on-screen trace. It is
 // read by reflection so `PlaybackBoundaryDetector.swift` and `BoundaryInterpreter.swift` are not
-// edited at all (a parallel PR changes the end check there). A renamed field reads as nil/false;
+// edited at all (#148 owns the end check there). A renamed field reads as nil/false;
 // `P0EventTraceTests.testDetectorStateIsReadable` fails then, so the rename cannot go unnoticed.
 #if DEBUG || AERODJ_P0_DIAG
 import Foundation
@@ -14,12 +14,26 @@ public struct P0DetectorState: Equatable, Sendable {
     public let wasPlaying: Bool
     public let userChangePending: Bool
     public let noProgressEndPending: Bool
+    /// #148's sticky per-entry fact: observed playing, and furthest or play time past 90%.
+    public let playedThrough: Bool
+    /// #148: a user pause or route loss holds the entry (never an end).
+    public let held: Bool
+    /// #148: a system interruption began inside the end window.
+    public let intNearEnd: Bool
+    /// #148: the end was already reported for this load (reported once).
+    public let endReported: Bool
 
-    public init(furthest: TimeInterval?, wasPlaying: Bool, userChangePending: Bool, noProgressEndPending: Bool) {
+    public init(furthest: TimeInterval?, wasPlaying: Bool, userChangePending: Bool, noProgressEndPending: Bool,
+                playedThrough: Bool = false, held: Bool = false, intNearEnd: Bool = false,
+                endReported: Bool = false) {
         self.furthest = furthest
         self.wasPlaying = wasPlaying
         self.userChangePending = userChangePending
         self.noProgressEndPending = noProgressEndPending
+        self.playedThrough = playedThrough
+        self.held = held
+        self.intNearEnd = intNearEnd
+        self.endReported = endReported
     }
 
     public init(_ detector: PlaybackBoundaryDetector) {
@@ -30,7 +44,11 @@ public struct P0DetectorState: Equatable, Sendable {
         self.init(furthest: (fields["lastPosition"] as? TimeInterval?) ?? nil,
                   wasPlaying: fields["wasPlaying"] as? Bool ?? false,
                   userChangePending: fields["userChangePending"] as? Bool ?? false,
-                  noProgressEndPending: fields["noProgressEndPending"] as? Bool ?? false)
+                  noProgressEndPending: fields["noProgressEndPending"] as? Bool ?? false,
+                  playedThrough: detector.playedThrough,
+                  held: fields["heldByUserOrRoute"] as? Bool ?? false,
+                  intNearEnd: detector.interruptionBeganNearEnd,
+                  endReported: fields["endReportedSinceLoad"] as? Bool ?? false)
     }
 
     public init(_ interpreter: BoundaryInterpreter) {
