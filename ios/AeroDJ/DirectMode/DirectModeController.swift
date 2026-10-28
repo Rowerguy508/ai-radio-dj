@@ -30,6 +30,16 @@ enum DirectModeSongs {
     /// Public Apple Music catalog song IDs (US storefront), checked against the iTunes lookup
     /// API on 2026-10-27. Song A plays first; "Next song" skips to song B. Not shown or logged.
     static let ids: [MusicItemID] = ["1488408568", "1544494392"]
+    /// Loud from 0:00 (-Fry): public US catalog song ID, checked against the iTunes lookup API
+    /// on 2026-10-28. Not shown or logged.
+    static let loudIntroID: MusicItemID = "726416473"
+
+    static func ids(for set: DirectModeSongSet) -> [MusicItemID] {
+        switch set {
+        case .standard: return ids
+        case .loudFirst: return [loudIntroID, ids[0]]
+        }
+    }
 }
 
 @MainActor
@@ -37,10 +47,15 @@ final class DirectModeController: ObservableObject {
     @Published private(set) var machine = DirectModeMachine(songCount: DirectModeSongs.ids.count)
     /// How many of the hard-coded IDs the catalog lookup returned (nil before load).
     @Published private(set) var lookupFound: Int?
+    /// Experiment B (-Atlas): the layers this launch runs with. Level 0 changes nothing.
+    let layers = DirectModeLayerHost(level: DirectModeLayerSettings.levelAtLaunch, songCount: DirectModeSongs.ids.count)
+    /// Experiment B "S" (-Fry): build 14's app-owned session path. Off changes nothing.
+    let session = DirectModeSessionLayerHost(enabled: DirectModeSessionLayerSettings.enabledAtLaunch)
 
     private let player = ApplicationMusicPlayer.shared
     private let openedAt = ProcessInfo.processInfo.systemUptime
     private var loadedIDs: [MusicItemID] = []
+    private var loadedSongs: [Song] = []
     private var pollTask: Task<Void, Never>?
     private var lastSubscriptionRead: Double = -.infinity
 
@@ -48,6 +63,8 @@ final class DirectModeController: ObservableObject {
 
     func start() {
         guard pollTask == nil else { return }
+        layers.start(clock: { [weak self] in self?.now ?? 0 }, issue: { [weak self] in self?.issue($0) })
+        session.start(clock: { [weak self] in self?.now ?? 0 }, pause: { [weak self] in self?.player.pause() })
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -60,12 +77,21 @@ final class DirectModeController: ObservableObject {
     func stop() {
         pollTask?.cancel()
         pollTask = nil
+        layers.stop()
+        session.stop()
     }
+
+    /// Before Load only; the queue is set once.
+    func selectSongSet(_ set: DirectModeSongSet) { machine.selectSongSet(set, at: now) }
+
+    /// The tester heard the song.
+    func markHeard() { machine.markHeard(at: now) }
 
     // MARK: - Commands (the only callers of ApplicationMusicPlayer commands)
 
     func load() {
         guard machine.request(.load, at: now) else { return }
+        layers.userCommand(.load, at: now)
         Task {
             do {
                 if MusicAuthorization.currentStatus == .notDetermined {
@@ -75,17 +101,21 @@ final class DirectModeController: ObservableObject {
                 guard MusicAuthorization.currentStatus == .authorized else {
                     throw DirectModeError.notAuthorized
                 }
-                var request = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: DirectModeSongs.ids)
-                request.limit = DirectModeSongs.ids.count
+                let ids = DirectModeSongs.ids(for: machine.songSet)
+                var request = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: ids)
+                request.limit = ids.count
                 let response = try await request.response()
                 let byID = Dictionary(response.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-                let ordered = DirectModeSongs.ids.compactMap { byID[$0] }
+                let ordered = ids.compactMap { byID[$0] }
                 lookupFound = ordered.count
-                guard ordered.count == DirectModeSongs.ids.count else {
+                guard ordered.count == ids.count else {
                     throw DirectModeError.catalogLookupIncomplete
                 }
                 loadedIDs = ordered.map(\.id)
-                player.queue = ApplicationMusicPlayer.Queue(for: ordered)
+                loadedSongs = ordered
+                layers.loaded(durations: ordered.map(\.duration))
+                // B2+ loads one song at a time, like the normal app.
+                player.queue = ApplicationMusicPlayer.Queue(for: layers.stack.usesOneSongQueue ? [ordered[0]] : ordered)
                 machine.finished(.load, error: nil, at: now)
             } catch {
                 machine.finished(.load, error: PlaybackErrorCode(error), at: now)
@@ -99,12 +129,15 @@ final class DirectModeController: ObservableObject {
 
     func pause() {
         guard machine.request(.pause, at: now) else { return }
+        layers.userCommand(.pause, at: now)
+        session.userPause(at: now)
         player.pause()
         machine.finished(.pause, error: nil, at: now)
     }
 
     private func run(_ command: DirectModeCommand) {
         guard machine.request(command, at: now) else { return }
+        layers.userCommand(command, at: now)
         Task {
             do {
                 try await perform(command)
@@ -119,8 +152,13 @@ final class DirectModeController: ObservableObject {
     /// across isolation inside a closure.
     private func perform(_ command: DirectModeCommand) async throws {
         switch command {
-        case .play, .resume: try await player.play()
-        case .next: try await player.skipToNextEntry()
+        case .play, .resume: try await startPlayer()
+        case .next:
+            if layers.stack.usesOneSongQueue {
+                try await loadAndPlay(layers.stack.queueIndex)
+            } else {
+                try await player.skipToNextEntry()
+            }
         case .load, .pause: break  // handled by load() and pause()
         }
     }
@@ -132,6 +170,9 @@ final class DirectModeController: ObservableObject {
         machine.observe(status: Self.status(player.state.playbackStatus),
                         position: player.playbackTime,
                         entryIndex: currentEntryIndex(), at: t)
+        issue(layers.observe(status: machine.status, position: machine.position,
+                             entryIndex: machine.entryIndex, at: t))
+        if machine.status == .playing, session.observePlaying(at: t) { player.pause() }
         machine.observeAuthorization(Self.authorization(MusicAuthorization.currentStatus), at: t)
         machine.observeRoute(Self.route(AVAudioSession.sharedInstance().currentRoute), at: t)
         if t - lastSubscriptionRead >= 5 {
@@ -139,6 +180,43 @@ final class DirectModeController: ObservableObject {
             let subscription = try? await MusicSubscription.current
             machine.observeCanPlayCatalog(subscription?.canPlayCatalogContent, at: now)
         }
+    }
+
+    // MARK: - Experiment B layer actions (-Atlas). Only B2 and B4 ever ask; level 0 never does.
+
+    private func issue(_ actions: [DirectModeLayerAction]) {
+        for action in actions {
+            switch action {
+            case .pause:
+                player.pause()
+            case .resume, .loadAndPlay:
+                Task {
+                    do { try await performLayer(action) } catch { layers.actionFailed(action, at: now) }
+                }
+            }
+        }
+    }
+
+    private func performLayer(_ action: DirectModeLayerAction) async throws {
+        switch action {
+        case .pause: player.pause()
+        case .resume: try await startPlayer()
+        case .loadAndPlay(let index): try await loadAndPlay(index)
+        }
+    }
+
+    /// B2: one queue change (the song at `index` alone), then play.
+    private func loadAndPlay(_ index: Int) async throws {
+        guard loadedSongs.indices.contains(index) else { return }
+        player.queue = ApplicationMusicPlayer.Queue(for: [loadedSongs[index]])
+        try await startPlayer()
+    }
+
+    /// Every play() goes through here. With S off this is exactly `player.play()`.
+    private func startPlayer() async throws {
+        try session.beforePlay(at: now)
+        try await player.play()
+        if session.afterPlay(at: now) { player.pause() }
     }
 
     /// Index of the current entry among the loaded songs; nil when it is anything else.
