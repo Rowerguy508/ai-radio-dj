@@ -60,6 +60,9 @@ struct AppDependencies {
         let station = StationConfigurationModel(store: FileStationConfigurationStore(fileURL: stationFileURL()),
                                                 consent: composition.consent)
         let voice = VoiceRenderer.onDeviceDefault()
+        if voice.routes.contains(where: { $0.providerID == PhononModelPin.providerID }) {
+            Task { await PhononModelCoordinator.shared.start() }
+        }
         let dj = DJPresentationStore()
         // One preparer per launch: revoking a source purges prepared breaks as well as cached audio.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence())

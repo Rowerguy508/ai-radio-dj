@@ -134,6 +134,9 @@ extension VoiceRenderer {
     /// Final beta default (owner-approved): on-device voice only, $0 paid spend,
     /// no network, narration cache retained at most 7 days. Cloud routes
     /// (`ProxyVoiceProvider`) need a deployed proxy and a new owner approval.
+    ///
+    /// Phonon is absent unless `AeroDJPhononEnabled` is true on an iOS 18 arm64
+    /// device. AVSpeech stays the last route either way.
     static func onDeviceDefault() -> VoiceRenderer {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let cache = FileAudioCache(directory: support.appendingPathComponent("Voice/Cache"))
@@ -141,7 +144,7 @@ extension VoiceRenderer {
         // the 7-day cap is swept hourly, not only when a clip is read.
         AudioCacheSweeper(cache: cache).start(purgingPersonalFirst: true)
         return VoiceRenderer(
-            routes: [VoiceRoute.onDevice()],
+            routes: PhononSpeechRoutes.make(),
             budget: VoiceBudget(dailyCapMicrodollars: VoiceBetaDefaults.paidDailyCapMicrodollars, file: support.appendingPathComponent("Voice/budget.json")),
             cache: cache)
     }

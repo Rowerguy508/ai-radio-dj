@@ -14,10 +14,17 @@ settings:
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # PhononCore.xcframework is arm64 only (xn-ptts v0.5.0). Simulator builds stay arm64.
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
 packages:
   # Single source of truth for domain code and its unit tests.
   AeroDJCore:
     path: AeroDJCore
+  # iOS 18 / arm64. Linked only by the AeroDJPhonon framework, not by AeroDJCore.
+  # Revision, not the v0.5.0 tag: the tag pointed at this commit on 2026-10-28.
+  xn-ptts:
+    url: https://github.com/gradium-ai/xn-ptts.git
+    revision: e851445158f07061f063e3edff0080f9426c0da2
 targets:
   AeroDJ:
     type: application
@@ -26,10 +33,17 @@ targets:
     dependencies:
       - package: AeroDJCore
       - target: AeroDJShare # embedded into AeroDJ.app/PlugIns
+      # Embedded, not linked. The iOS 17 app dlopens it only on iOS 18.
+      - target: AeroDJPhonon
+        embed: true
+        link: false
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app
         GENERATE_INFOPLIST_FILE: YES
+        SWIFT_OBJC_BRIDGING_HEADER: AeroDJ/AeroDJ-Bridging-Header.h
+        OTHER_LDFLAGS: "$(inherited) -lz"
         INFOPLIST_KEY_NSAppleMusicUsageDescription: AeroDJ uses Apple Music to play your station.
         INFOPLIST_KEY_UIBackgroundModes: audio
         INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: AeroDJ reads today's events, read-only, to mention them in your briefing.
@@ -39,6 +53,26 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         CODE_SIGN_ENTITLEMENTS: AeroDJ/AeroDJ.entitlements
+  AeroDJPhonon:
+    # iOS 18 wrapper around ptts 0.5.0. The app target stays iOS 17 and does not link this.
+    # XcodeGen reads a single-platform target's deploymentTarget as a string. A map is ignored,
+    # which left this target on the project iOS 17.0 and unable to import PhononTTS.
+    type: framework
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources: [AeroDJPhonon]
+    dependencies:
+      - package: xn-ptts
+        product: ptts
+    settings:
+      base:
+        IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app.phonon
+        GENERATE_INFOPLIST_FILE: YES
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+        DEAD_CODE_STRIPPING: NO
+        OTHER_LDFLAGS: "$(inherited) -Wl,-exported_symbol,_aerodj_phonon_prepare -Wl,-exported_symbol,_aerodj_phonon_synthesize"
   AeroDJShare:
     type: app-extension
     platform: iOS
