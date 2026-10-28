@@ -293,6 +293,8 @@ final class P0TransportAttemptTests: XCTestCase {
         XCTAssertEqual(ns.description, "NSError MPErrorDomain code 6")
         let (attempts, a) = onlyAttempt()
         let message = StartFailurePolicy.effect(.threw(ns), attempt: a, current: attempts.current).message ?? ""
-        XCTAssertEqual(message, "TEMPORARY: playback failed: NSError MPErrorDomain code 6. attempt=1")
+        XCTAssertEqual(message, "Apple Music couldn't start this song. Try again.")
+        XCTAssertFalse(message.contains("MPErrorDomain"))
+        XCTAssertFalse(message.contains("Kiss"))
     }
 }

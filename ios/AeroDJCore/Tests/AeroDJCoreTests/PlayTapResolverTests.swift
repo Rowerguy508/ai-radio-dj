@@ -55,10 +55,10 @@ final class PlayTapResolverTests: XCTestCase {
         XCTAssertNil(e.snapshot.nowPlaying)
         e.apply(.errorRaised(PlaybackError(
             kind: .playbackFailed,
-            message: "TEMPORARY: couldn't play this song (empty queue).",
+            message: PlaybackFailureCopy.message(for: .nothingToPlay),
             isRecoverable: true)))
         XCTAssertEqual(e.snapshot.error?.kind, .playbackFailed)
-        XCTAssertTrue(e.snapshot.error?.message.contains("TEMPORARY:") == true)
+        XCTAssertEqual(e.snapshot.error?.message, "There's nothing to play yet. Pick a song to start listening.")
     }
 
     func testResumeWithNothingQueuedSurfacesRecoverableError() {
@@ -67,10 +67,10 @@ final class PlayTapResolverTests: XCTestCase {
         XCTAssertEqual(e.snapshot.transport, .stopped)
         e.apply(.errorRaised(PlaybackError(
             kind: .resumeFailed,
-            message: "TEMPORARY: nothing queued to resume.",
+            message: PlaybackFailureCopy.message(for: .nothingToResume),
             isRecoverable: true)))
         XCTAssertEqual(e.snapshot.error?.kind, .resumeFailed)
         XCTAssertEqual(e.snapshot.transport, .stopped, "resume must not leave a preparing spinner")
-        XCTAssertTrue(e.snapshot.error?.message.contains("TEMPORARY:") == true)
+        XCTAssertEqual(e.snapshot.error?.message, "Nothing is queued. Pick a song to start listening.")
     }
 }

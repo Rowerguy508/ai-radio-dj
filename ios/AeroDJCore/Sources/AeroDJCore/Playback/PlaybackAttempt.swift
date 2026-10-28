@@ -125,8 +125,8 @@ public struct PlaybackConfirmWatchdog: Equatable, Sendable {
 }
 
 /// Error type name, NSError domain and code. Nothing else: no `localizedDescription`, no
-/// `userInfo`, no underlying error. This is the only error detail the TEMPORARY P0 banner, log
-/// and overlay may show (Sentinel, Orion).
+/// `userInfo`, no underlying error. Logs only (domain and code); user-facing copy comes from
+/// `PlaybackFailureCopy` and never shows it (Sentinel, Orion, #133).
 public struct PlaybackErrorCode: Equatable, Sendable, CustomStringConvertible {
     public let typeName: String
     public let domain: String
@@ -189,23 +189,23 @@ public enum StartFailurePolicy {
                               current: PlaybackAttemptID?) -> StartFailureEffect {
         guard current == attempt else { return .none }
         switch failure {
-        case let .confirmDeadline(last):
+        case .confirmDeadline:
             // Report only. The player keeps buffering, transport stays `.preparing` (never a false
             // `.playing`), and the watchdog keeps watching for a late `.playing`.
-            let message = "TEMPORARY: MusicKit status \(last.rawValue) 8 s after start; not playing yet. attempt=\(attempt.number)"
+            let message = PlaybackFailureCopy.message(for: .slowStart)
             return StartFailureEffect(pausesPlayer: false, cancelsConfirm: false,
                                       events: raised(message) + [.startConfirmTimedOut], message: message)
         case .confirmInterrupted:
-            let message = "TEMPORARY: MusicKit status interrupted after start; not playing. attempt=\(attempt.number)"
+            let message = PlaybackFailureCopy.message(for: .interrupted)
             // Also reported, so the user gets a working Stop instead of a spinner that ignores taps.
             return StartFailureEffect(pausesPlayer: false, cancelsConfirm: false,
                                       events: raised(message) + [.startConfirmTimedOut], message: message)
-        case let .threw(code):
-            let message = "TEMPORARY: playback failed: \(code). attempt=\(attempt.number)"
+        case .threw:
+            let message = PlaybackFailureCopy.message(for: .couldNotStart)
             return StartFailureEffect(pausesPlayer: false, cancelsConfirm: true,
                                       events: raised(message) + [.userPaused], message: message)
         case .noProgressEnd:
-            let message = "TEMPORARY: the song stopped before it played; not advancing. attempt=\(attempt.number)"
+            let message = PlaybackFailureCopy.message(for: .stoppedEarly)
             return StartFailureEffect(pausesPlayer: false, cancelsConfirm: true,
                                       events: raised(message) + [.userPaused], message: message)
         case let .refused(pausedBySystem):

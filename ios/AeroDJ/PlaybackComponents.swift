@@ -714,13 +714,20 @@ struct StartListeningView: View {
         Binding(get: { model.query }, set: { model.updateQuery($0) })
     }
 
-    /// TEMPORARY user-facing error copy (Atlas #109): error type, NSError domain and
-    /// code only (`PlaybackErrorCode`). Never localizedDescription, debugDescription, the
-    /// underlying-error chain, request URLs, titles or search terms. From Atlas #109.
+    /// The search banner after a play tap failed (#109, #133). Fixed `PlaybackFailureCopy`:
+    /// never localizedDescription, debugDescription, the underlying-error chain, request URLs,
+    /// titles or search terms. The log keeps the NSError domain and code only.
     static func playFailureMessage(_ error: Error) -> String {
         let code = PlaybackErrorCode(error)
-        playLog.error("TEMPORARY Apple Music play failed: \(code.typeName, privacy: .public) \(code.domain, privacy: .public) code \(code.code, privacy: .public)")
-        return "TEMPORARY: couldn't start playback: \(code)."
+        playLog.error("Apple Music play failed: domain=\(code.domain, privacy: .public) code=\(code.code, privacy: .public)")
+        switch error {
+        case let MusicKitError.playbackFailed(message):
+            return message
+        case MusicKitError.notAuthorized:
+            return MusicKitError.notAuthorized.errorDescription ?? PlaybackFailureCopy.fallback
+        default:
+            return PlaybackFailureCopy.message(for: .couldNotStart)
+        }
     }
 
     private static let playLog = Logger(subsystem: "com.aerodj.app", category: "playback")
