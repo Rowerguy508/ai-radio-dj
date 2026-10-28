@@ -176,7 +176,7 @@ final class MusicKitService: ObservableObject {
             throw MusicKitError.notAuthorized
         }
         guard !tracks.isEmpty else {
-            let message = "TEMPORARY: couldn't play this song (empty queue)."
+            let message = PlaybackFailureCopy.message(for: .nothingToPlay)
             lastError = message
             send(.errorRaised(PlaybackError(kind: .playbackFailed, message: message, isRecoverable: true)))
             throw MusicKitError.playbackFailed(message: message)
@@ -235,7 +235,7 @@ final class MusicKitService: ObservableObject {
     /// The user pressed play.
     func resume() async throws {
         guard !queue.isEmpty else {
-            let message = "TEMPORARY: nothing queued to resume."
+            let message = PlaybackFailureCopy.message(for: .nothingToResume)
             lastError = message
             send(.errorRaised(PlaybackError(kind: .resumeFailed, message: message, isRecoverable: true)))
             throw MusicKitError.playbackFailed(message: message)
@@ -372,7 +372,7 @@ final class MusicKitService: ObservableObject {
             return
         }
         guard let song = queue[index].song else {
-            throw MusicKitError.playbackFailed(message: "TEMPORARY: queue entry has no MusicKit Song at index \(index).")
+            throw MusicKitError.playbackFailed(message: PlaybackFailureCopy.message(for: .songUnavailable))
         }
         queueIndex = index
         currentTrack = queue[index]
@@ -396,7 +396,7 @@ final class MusicKitService: ObservableObject {
             case .deferSilently:
                 return
             case .deferAndReport:
-                throw MusicKitError.playbackFailed(message: "TEMPORARY: playback held before play (mayAutoResume=false).")
+                throw MusicKitError.playbackFailed(message: PlaybackFailureCopy.message(for: .onHold))
             }
         }
         do {
@@ -782,17 +782,19 @@ final class MusicKitService: ObservableObject {
         logPlayback(PlaybackLog.songDeferred(index: index))
     }
 
-    /// TEMPORARY: error type, NSError domain and code only (`PlaybackErrorCode`). No
-    /// localizedDescription, debugDescription, userInfo or underlying chain.
-    private func logPlaybackError(_ gate: String, _ error: Error) {
+    /// `gate` is a fixed call-site name. Logs the attempt count and the NSError domain and code
+    /// only: no type name, localizedDescription, debugDescription, userInfo or underlying chain.
+    private func logPlaybackError(_ gate: StaticString, _ error: Error) {
         let code = PlaybackErrorCode(error)
         let attempt = attempts.current?.number ?? 0
-        log.error("TEMPORARY \(gate, privacy: .public) failed attempt=\(attempt, privacy: .public): \(code.typeName, privacy: .public) \(code.domain, privacy: .public) code \(code.code, privacy: .public)")
+        log.error("\(String(describing: gate), privacy: .public) failed attempt=\(attempt, privacy: .public) domain=\(code.domain, privacy: .public) code=\(code.code, privacy: .public)")
     }
 
-    /// TEMPORARY diagnostic message for the UI and banner: type, domain, code and attempt only.
+    /// The banner for a start that threw (#133). A `playbackFailed` error already carries
+    /// `PlaybackFailureCopy`; anything else gets the fixed fallback, never its own text.
     static func playbackFailureMessage(_ error: Error, attempt: PlaybackAttemptID) -> String {
-        "TEMPORARY: playback failed: \(PlaybackErrorCode(error)). attempt=\(attempt.number)"
+        if case let MusicKitError.playbackFailed(message) = error { return message }
+        return PlaybackFailureCopy.message(for: .couldNotStart)
     }
 
     /// Route lock-screen / Control Center play through `resume()` (userPlay + playIfStillAllowed)
@@ -969,7 +971,7 @@ final class SearchResultCache {
     }
 
     /// Prefer the ordered slice captured at search time when the UI still shows that search;
-    /// otherwise look up by id. Never returns an empty list — throws a TEMPORARY play error.
+    /// otherwise look up by id. Never returns an empty list — throws a play error.
     func resolve(results: [TrackInfo], startIndex: Int) throws -> [Track] {
         switch PlayTapResolver.resolveIDs(
             allResultIDs: results.map(\.id),
@@ -979,10 +981,10 @@ final class SearchResultCache {
         ) {
         case .failure(.startIndexOutOfRange):
             throw MusicKitError.playbackFailed(
-                message: "TEMPORARY: couldn't play this song (start index out of range).")
+                message: PlaybackFailureCopy.message(for: .resultsExpired))
         case .failure(.tracksUnavailable):
             throw MusicKitError.playbackFailed(
-                message: "TEMPORARY: couldn't play this song (search results expired).")
+                message: PlaybackFailureCopy.message(for: .resultsExpired))
         case .success(let ids):
             if ordered.map(\.id) == results.map(\.id), results.indices.contains(startIndex) {
                 return Array(ordered[startIndex...])
@@ -990,7 +992,7 @@ final class SearchResultCache {
             let tracks = ids.compactMap { byID[$0] }
             guard !tracks.isEmpty else {
                 throw MusicKitError.playbackFailed(
-                    message: "TEMPORARY: couldn't play this song (search results expired).")
+                    message: PlaybackFailureCopy.message(for: .resultsExpired))
             }
             return tracks
         }
@@ -1009,7 +1011,7 @@ enum MusicKitError: LocalizedError {
         case let .playbackFailed(message):
             message
         case .superseded:
-            "TEMPORARY: replaced by a newer start."
+            PlaybackFailureCopy.message(for: .superseded)
         }
     }
 }
