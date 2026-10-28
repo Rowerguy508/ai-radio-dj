@@ -5,7 +5,7 @@ import Foundation
 // waiting: if it is not ready, or rendering failed, timed out or hit the cost
 // cap with no fallback, the break is skipped and the next song starts on time.
 
-public enum DJBreakSkipReason: String, Codable, Equatable, Sendable {
+public enum DJBreakSkipReason: String, Codable, Equatable, Sendable, CaseIterable {
     /// Every route failed.
     case renderFailed
     /// A clip was longer than its cue allows.

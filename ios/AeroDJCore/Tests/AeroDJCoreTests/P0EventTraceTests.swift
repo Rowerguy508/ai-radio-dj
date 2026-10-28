@@ -205,7 +205,10 @@ final class P0EventTraceTests: XCTestCase {
                        "index=1 outcome=deferredSilently userInitiated=0 mayAutoResume=0 pausedBySystem=1 userWantsPlayback=1")
         XCTAssertEqual(trace.onBoundary(.naturalEnd(finishedEntryID: "e1"), finishedIndex: 0, at: 3).detail,
                        "result=naturalEnd finished=0")
-        XCTAssertEqual(trace.naturalBoundary(.noBreak, afterTrack: 0, at: 3).detail, "result=noBreak after=0")
+        XCTAssertEqual(trace.naturalBoundary(.noBreak(.notPlanned, cadencePlanned: false), afterTrack: 0, at: 3).detail,
+                       "result=noBreak reason=notPlanned plan=0 after=0")
+        XCTAssertEqual(trace.naturalBoundary(.noBreak(nil, cadencePlanned: true), afterTrack: 0, at: 3).detail,
+                       "result=noBreak reason=- plan=1 after=0")
         let audio = P0EventTrace.SessionAudio(otherAudio: false, secondaryHint: true)
         XCTAssertEqual(trace.interruption(began: true, shouldResume: nil, reason: .default, audio: audio, at: 5).detail,
                        "began=1 shouldResume=- reason=default otherAudio=0 secondaryHint=1")
@@ -287,7 +290,7 @@ final class P0EventTraceTests: XCTestCase {
         trace.beginPoll(obs("x", playing: true, pos: 3), before: P0DetectorState(interpreter), queueIndex: 0, queueCount: 1, at: 20)
         trace.remoteGatePause(queueIndex: 0, queueCount: 1, gates: gates, at: 20)
         trace.onBoundary(.queueFinished(lastEntryID: "x"), finishedIndex: 0, at: 9)
-        for r in [P0EventTrace.BreakResult.breakPrepared, .noBreak, .interludeSpeaking] {
+        for r in [P0EventTrace.BreakResult.breakPrepared, .noBreak(.notReadyAtBoundary, cadencePlanned: true), .interludeSpeaking] {
             trace.naturalBoundary(r, afterTrack: 0, at: 9)
         }
         for s in [P0EventTrace.NextStage.called, .takeNext(true), .indexOK(false)] {
@@ -326,6 +329,12 @@ final class P0EventTraceTests: XCTestCase {
                 let number = v.range(of: #"^-?[0-9]+(\.[0-9])?$"#, options: .regularExpression) != nil
                 XCTAssertTrue(v == "-" || number || codes.contains(v), "value \(v) in \(row.rendered)")
             }
+        }
+    }
+
+    func testEverySkipReasonHasItsOwnTraceCode() {
+        for reason in DJBreakSkipReason.allCases {
+            XCTAssertEqual(P0TraceCode(skip: reason).rawValue, reason.rawValue)
         }
     }
 }

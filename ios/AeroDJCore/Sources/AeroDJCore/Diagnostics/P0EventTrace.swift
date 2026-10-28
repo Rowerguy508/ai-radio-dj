@@ -47,6 +47,11 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     case mayAutoResume, pausedBySystem, userWantsPlayback
     case began, shouldResume, reason, phase
     case playedThrough, held, intNearEnd, endReported
+    case plan
+}
+
+extension P0TraceCode {
+    init(skip: DJBreakSkipReason) { self = P0TraceCode(rawValue: skip.rawValue) ?? .unknown }
 }
 
 /// Every word a row's value can be. Reason codes only.
@@ -58,6 +63,9 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case advancedEntry, plannedHandoff, stopped
     // naturalBoundary
     case breakPrepared, noBreak, interludeSpeaking
+    // DJBreakSkipReason, same raw values (a noBreak row's reason)
+    case renderFailed, overDuration, costCap, timedOut, notReadyAtBoundary, overBreakBudget
+    case notPlanned, notNaturalBoundary, cancelled, sourceRevoked, interrupted
     // startNextTrack / startTrack
     case called, started, deferredSilently, deferAndReport, refused, superseded, error
     case notQueued, autoplayOff, songUnavailable
@@ -391,17 +399,24 @@ public struct P0EventTrace: Sendable {
         return record(.onBoundary, at: t, [(.result, .code(kind)), (.finished, .int(finishedIndex))])
     }
 
-    public enum BreakResult: Sendable { case breakPrepared, noBreak, interludeSpeaking }
+    public enum BreakResult: Sendable {
+        case breakPrepared, interludeSpeaking
+        /// `reason` nil: the session reported none. `cadencePlanned`: the cadence had a break here.
+        case noBreak(DJBreakSkipReason?, cadencePlanned: Bool)
+    }
 
     @discardableResult
     public mutating func naturalBoundary(_ result: BreakResult, afterTrack: Int, at t: TimeInterval) -> P0TraceRow {
-        let code: P0TraceCode
         switch result {
-        case .breakPrepared: code = .breakPrepared
-        case .noBreak: code = .noBreak
-        case .interludeSpeaking: code = .interludeSpeaking
+        case .breakPrepared:
+            return record(.naturalBoundary, at: t, [(.result, .code(.breakPrepared)), (.after, .int(afterTrack))])
+        case .interludeSpeaking:
+            return record(.naturalBoundary, at: t, [(.result, .code(.interludeSpeaking)), (.after, .int(afterTrack))])
+        case let .noBreak(reason, planned):
+            let why: P0TraceValue = reason.map { .code(P0TraceCode(skip: $0)) } ?? .missing
+            return record(.naturalBoundary, at: t, [(.result, .code(.noBreak)), (.reason, why),
+                                                     (.plan, .bool(planned)), (.after, .int(afterTrack))])
         }
-        return record(.naturalBoundary, at: t, [(.result, .code(code)), (.after, .int(afterTrack))])
     }
 
     /// The service's hold state, read where a start is decided.

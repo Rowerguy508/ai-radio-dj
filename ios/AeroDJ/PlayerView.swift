@@ -145,7 +145,9 @@ enum PlaybackSessionBinder {
                     }
                 } else {
                     #if AERODJ_P0_DIAG
-                    P0EventTraceHost.shared.naturalBoundary(.noBreak, afterTrack: finishedIndex)
+                    let skip = djSession.lastNoBreak
+                    P0EventTraceHost.shared.naturalBoundary(.noBreak(skip?.reason, cadencePlanned: skip?.cadencePlanned ?? false),
+                                                            afterTrack: finishedIndex)
                     #endif
                     // No prepared break. Same close-out: the hand-out is over.
                     interlude.abandonHandOut()
