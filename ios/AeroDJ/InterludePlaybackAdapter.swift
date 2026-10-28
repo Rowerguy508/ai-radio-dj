@@ -196,6 +196,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         let player = clipPlayer
         clipPlayer = nil
         player?.delegate = nil
+        P0TapDiagnostics.shared.record("djClip.stop.activeBreak") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         player?.stop()
         outcome = .revoked
         finishBreak(.revoked)
@@ -264,6 +265,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         let player = clipPlayer
         clipPlayer = nil
         player?.delegate = nil
+        P0TapDiagnostics.shared.record("djClip.stop.halt") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         player?.stop()
         finishBreak(.cancelled)
     }
@@ -286,6 +288,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             if start() {
                 self.log.notice("\(PlaybackLog.breakStart(after: self.breakTrack), privacy: .public)")
                 music.djStarted(line)
+                P0TapDiagnostics.shared.noteBreakStarted() // TEMPORARY P0 diagnostics (remove: #121) -Atlas
                 onPlayback?(.started(afterTrack: breakTrack))
             } else {
                 finishBreak(.failed)

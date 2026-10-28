@@ -365,6 +365,8 @@ struct DJStatusLine: View {
 /// actions, never on a snapshot or DJ change.
 struct TransportRow: View {
     let transport: TransportState
+    /// `PlaybackSnapshot.startTimedOut`: the `.preparing` start passed its 8 s deadline.
+    var startTimedOut: Bool = false
     let actions: PlaybackActions
     var onTune: (() -> Void)?
     @State private var taps = 0
@@ -380,6 +382,10 @@ struct TransportRow: View {
     @Environment(\.onSlab) private var onSlab
 
     private var ink: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
+
+    private var face: TransportButtonFace {
+        TransportTapPolicy.face(transport: transport, startTimedOut: startTimedOut)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -402,27 +408,32 @@ struct TransportRow: View {
             }
 
             Button {
-                taps += 1
-                switch transport {
-                case .playing:
+                // Build 9 P0 (-Atlas; Orion, Nova, Sentinel): `TransportTapPolicy` decides. A second
+                // tap while a start is preparing does nothing until its 8 s deadline is reported;
+                // after that the button is Stop and cancels the start as a user pause.
+                switch TransportTapPolicy.decide(transport: transport, startTimedOut: startTimedOut) {
+                case .ignore:
+                    actions.transportTapIgnored()
+                case .cancelStart:
+                    taps += 1
+                    actions.cancelStart()
+                case .pause:
+                    taps += 1
                     actions.pause()
-                case .preparing:
-                    // Cancel a start that has not confirmed yet.
-                    actions.pause()
-                case .paused, .stopped:
+                case .play:
+                    taps += 1
                     Task { await actions.resume() }
                 }
             } label: {
                 Group {
-                    if transport == .preparing {
+                    if let systemImage = face.systemImage {
+                        Label(face.accessibilityLabel, systemImage: systemImage)
+                            .labelStyle(.iconOnly)
+                    } else {
                         ProgressView()
                             .progressViewStyle(.circular)
                             .tint(AeroDJPalette.onMediaInk)
-                            .accessibilityLabel("Starting playback")
-                    } else {
-                        Label(transport == .playing ? "Pause" : "Play",
-                              systemImage: transport == .playing ? "pause.fill" : "play.fill")
-                            .labelStyle(.iconOnly)
+                            .accessibilityLabel(face.accessibilityLabel)
                     }
                 }
                 .font(.system(size: 28, weight: .bold))
@@ -432,6 +443,10 @@ struct TransportRow: View {
                 .contentShape(Circle())
                 .modifier(SymbolReplace(enabled: !reduceMotion))
             }
+            // Nova: while starting, VoiceOver reads "Starting playback" with no button trait.
+            // Not `.disabled`, so nothing dims; a tap that still arrives is ignored above.
+            .accessibilityLabel(face.accessibilityLabel)
+            .accessibilityRemoveTraits(face.isActionable ? [] : .isButton)
             .accessibilityIdentifier("transport.playPause")
 
             side {
@@ -666,7 +681,9 @@ struct StartListeningView: View {
                 ForEach(Array(model.results.enumerated()), id: \.element.id) { index, track in
                     Button {
                         Task {
-                            do { try await search.play(model.results, index) } catch {
+                            do { try await search.play(model.results, index) } catch MusicKitError.superseded {
+                                // Build 9 P0 (-Atlas): a newer tap owns the screen; nothing to show.
+                            } catch {
                                 model.phase = .failed(Self.playFailureMessage(error))
                             }
                         }
@@ -697,15 +714,13 @@ struct StartListeningView: View {
         Binding(get: { model.query }, set: { model.updateQuery($0) })
     }
 
-    /// TEMPORARY diagnostic for device builds (remove once the playback failure's cause is
-    /// known): type, NSError code and localizedDescription only. Never debugDescription,
-    /// the underlying-error chain, request URLs, titles or search terms. From Atlas #109.
+    /// TEMPORARY diagnostic for device builds (remove: #121): error type, NSError domain and
+    /// code only (`PlaybackErrorCode`). Never localizedDescription, debugDescription, the
+    /// underlying-error chain, request URLs, titles or search terms. From Atlas #109.
     static func playFailureMessage(_ error: Error) -> String {
-        let typeName = String(describing: type(of: error))
-        let code = (error as NSError).code
-        let text = error.localizedDescription
-        playLog.error("TEMPORARY Apple Music play failed: \(typeName, privacy: .public) code \(code, privacy: .public): \(text, privacy: .public)")
-        return "TEMPORARY: couldn't start playback: \(typeName) code \(code). \(text)"
+        let code = PlaybackErrorCode(error)
+        playLog.error("TEMPORARY Apple Music play failed: \(code.typeName, privacy: .public) \(code.domain, privacy: .public) code \(code.code, privacy: .public)")
+        return "TEMPORARY: couldn't start playback: \(code)."
     }
 
     private static let playLog = Logger(subsystem: "com.aerodj.app", category: "playback")

@@ -17,6 +17,11 @@ struct PlaybackActions {
     /// controls rather than show them and change nothing. Live stays `nil` until the
     /// app applies the same edit to MusicKit's queue, which needs SDK verification.
     var editUpNext: ((UpNextEdit) -> Void)? = nil
+    /// Build 9 P0 (-Atlas; Sentinel): Stop on a start past its 8 s deadline. A user pause that also
+    /// cancels the attempt, so a late `.playing` cannot start audio the user turned down.
+    var cancelStart: () -> Void = {}
+    /// A transport tap ignored while the start is preparing (TEMPORARY diagnostics ring only).
+    var transportTapIgnored: () -> Void = {}
 
     /// Bound to the one app-wide `MusicKitService`.
     static func live(_ music: MusicKitService) -> PlaybackActions {
@@ -26,7 +31,9 @@ struct PlaybackActions {
             resume: { _ = try? await music.resume() },
             skip: { _ = try? await music.skip() },
             dismissError: { music.dismissError() },
-            authorize: { await music.authorize() }
+            authorize: { await music.authorize() },
+            cancelStart: { music.cancelTimedOutStart() },
+            transportTapIgnored: { music.noteTransportTapIgnored() }
         )
     }
 
@@ -119,9 +126,21 @@ struct MusicSearch {
                 return tracks.map(\.info)
             },
             play: { results, startIndex in
+                // TEMPORARY P0 diagnostics (remove: #121) -Atlas: offsets are measured from this tap; the
+                // overlay freezes a reading 3 s later.
+                P0TapDiagnostics.shared.markTap(transport: { music.snapshot.transport.rawValue })
+                // Station jump check: does the on-screen station match the view that took the tap?
+                let shown = music.snapshot.station.map { $0 == station ? "same" : "other" } ?? "none"
+                P0TapDiagnostics.shared.record("tap.station", detail: "snapshotStation=\(shown)")
                 // Resolve before touching the DJ session. Out-of-range / expired cache throw a
                 // visible TEMPORARY error; queueStarted never runs with an empty queue.
-                let tracks = try music.searchResults.resolve(results: results, startIndex: startIndex)
+                let tracks: [Track]
+                do {
+                    tracks = try music.searchResults.resolve(results: results, startIndex: startIndex)
+                } catch {
+                    P0TapDiagnostics.shared.recordPlayError("tapResolve.threw", error) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+                    throw error
+                }
                 // Consent / approved-handoff check runs here, before personal cues reach the session.
                 let handoff = briefing()
                 let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) }

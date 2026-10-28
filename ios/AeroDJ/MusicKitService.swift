@@ -68,6 +68,11 @@ final class MusicKitService: ObservableObject {
     private var sessionMonitor: AudioSessionMonitor?
     /// TEMPORARY: waits for MusicKit `.playing` after a start; cancelled on confirm or pause.
     private var playbackConfirmTask: Task<Void, Never>?
+    /// Build 9 P0 (-Atlas): attempt and queue generations. A late result of an older start
+    /// (watchdog, throw, refusal) and a stale boundary's `startNextTrack` do nothing.
+    private var attempts = PlaybackAttempts()
+    /// The attempt whose confirm reported a timeout or interruption; a late `.playing` clears it.
+    private var confirmReportedAttempt: PlaybackAttemptID?
     /// Lock-screen / Control Center commands routed through `resume` / `pause`.
     private var remoteCommandsInstalled = false
     /// App-scoped catalog hits for `MusicSearch.live`. Survives every `PlayerView` body
@@ -163,6 +168,8 @@ final class MusicKitService: ObservableObject {
         PlaybackCallLog.shared.recordPlay()
         #endif
         sessionPolicy.userPlay()
+        // Build 9 P0 (-Atlas): every older start, watchdog and boundary is stale from here.
+        let attempt = beginAttempt(userChangedQueue: true)
         logPlayGate("play.begin", index: 0)
         guard authState == .authorized else {
             logPlayGate("play.blocked.auth", index: 0)
@@ -188,19 +195,23 @@ final class MusicKitService: ObservableObject {
         // Snapshot goes to `.preparing` here; `.playing` only after MusicKit confirms.
         send(.queueStarted(tracks: tracks.map(\.info), startIndex: 0, station: station))
         stateMachine.apply(.startMusic)
-        armPlaybackConfirmTimeout()
+        armPlaybackConfirmTimeout(for: attempt)
         do {
-            try await startTrack(at: 0, autoplay: true, userInitiated: true)
+            try await startTrack(at: 0, autoplay: true, userInitiated: true, attempt: attempt)
+            // A newer tap replaced this queue during the await: it owns the screen and the player.
+            guard attempts.isCurrent(attempt) else { throw MusicKitError.superseded }
             lastError = nil
             send(.errorCleared)
-            await confirmPlaybackAfterStart()
+            await confirmPlaybackAfterStart(attempt)
+        } catch MusicKitError.superseded {
+            P0TapDiagnostics.shared.record("tapPlay.superseded", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            throw MusicKitError.superseded
         } catch {
-            cancelPlaybackConfirmTimeout()
-            let message = Self.playbackFailureMessage(error)
-            lastError = message
-            send(.errorRaised(PlaybackError(kind: .playbackFailed, message: message, isRecoverable: true)))
-            // Leave the track visible but stop claiming playback.
-            send(.userPaused)
+            P0TapDiagnostics.shared.recordPlayError("tapPlay.threw", error, attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            // A stale attempt's throw must not cancel, pause or fail the newer one.
+            guard attempts.isCurrent(attempt) else { throw MusicKitError.superseded }
+            // Leave the track visible but stop claiming playback. The queue does not advance.
+            applyStartFailure(.threw(PlaybackErrorCode(error)), attempt: attempt)
             throw error
         }
     }
@@ -210,6 +221,7 @@ final class MusicKitService: ObservableObject {
         cancelPlaybackConfirmTimeout()
         _ = sessionPolicy.userPause()
         boundaries.pausedByApp(.userPause)
+        P0TapDiagnostics.shared.record("pause.user") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         player.pause()
         isPlaying = false
         send(.userPaused)
@@ -234,32 +246,74 @@ final class MusicKitService: ObservableObject {
             throw MusicKitError.playbackFailed(message: message)
         }
         sessionPolicy.userPlay()
-        armPlaybackConfirmTimeout()
+        // Re-arms the confirm for a new attempt; the rule is the same as for a tap: the deadline
+        // reports and never pauses, and a late `.playing` confirms this attempt.
+        let attempt = beginAttempt(userChangedQueue: false)
+        armPlaybackConfirmTimeout(for: attempt)
         do {
             guard try await playIfStillAllowed() else {
+                guard attempts.isCurrent(attempt) else { return }
                 cancelPlaybackConfirmTimeout()
+                P0TapDiagnostics.shared.recordRefusal("resume.refused", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
                 // Never left a preparing state without a hold: we only send userResumed after
                 // the gate passes. If a prior prepare left us preparing, restore the hold.
                 send(.playbackStartRefused)
                 return
             }
+            guard attempts.isCurrent(attempt) else { return }
             send(.userResumed)
             stateMachine.apply(.resume)
             reportDeferredSongStart()
-            await confirmPlaybackAfterStart()
+            await confirmPlaybackAfterStart(attempt)
         } catch {
+            P0TapDiagnostics.shared.recordPlayError("resume.threw", error, attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            guard attempts.isCurrent(attempt) else { return }
             cancelPlaybackConfirmTimeout()
             send(.playbackStartRefused)
-            let message = Self.playbackFailureMessage(error)
+            let message = Self.playbackFailureMessage(error, attempt: attempt)
             lastError = message
             send(.errorRaised(PlaybackError(kind: .resumeFailed, message: message, isRecoverable: true)))
             throw error
         }
     }
 
+    /// Build 9 P0 (-Atlas; Sentinel): Stop on a start past its 8 s confirm deadline. Re-decided here
+    /// with `TransportTapPolicy` on the service's own snapshot. A user pause (`userWantsPlayback`
+    /// false, watchdog cancelled) that also ends the attempt: a late `.playing` for it does not
+    /// confirm, and the poll / `playIfStillAllowed` gates pause MusicKit if it starts anyway.
+    func cancelTimedOutStart() {
+        switch TransportTapPolicy.decide(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut) {
+        case .ignore:
+            noteTransportTapIgnored()
+            return
+        case .play:
+            return
+        case .pause:
+            // Confirmed between render and tap: Stop still means stop.
+            pause()
+            return
+        case .cancelStart:
+            break
+        }
+        P0TapDiagnostics.shared.record("transport.cancelTimedOutStart", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+        attempts.userCancelledCurrent()
+        confirmReportedAttempt = nil
+        pause()
+        // The deadline banner described the start the user just stopped.
+        lastError = nil
+        send(.errorCleared)
+    }
+
+    /// Orion: a second in-app transport tap while a start is preparing (before its deadline) does
+    /// nothing: no pause, no new attempt. Recorded for the TEMPORARY ring only.
+    func noteTransportTapIgnored() {
+        P0TapDiagnostics.shared.record("transport.tapIgnored.preparing", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+    }
+
     /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
     func pausePlayerForBreak() {
         boundaries.pausedByApp()
+        P0TapDiagnostics.shared.record("pause.forBreakOrSystem") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         player.pause()
         isPlaying = false
     }
@@ -273,22 +327,37 @@ final class MusicKitService: ObservableObject {
             mayAutoResume: sessionPolicy.mayAutoResume,
             queueHasEntry: currentID != nil
         )
-        guard action == .resumeCurrentEntry else { return }
+        guard action == .resumeCurrentEntry else {
+            P0TapDiagnostics.shared.record("resumeIfAllowed.notResuming", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            return
+        }
+        // Build 9 P0 (-Atlas): a break's follow-up resume while a tap's start is preparing belongs
+        // to the old show. The start in flight owns the player; superseding it would re-run play().
+        guard PlaybackAttempts.breakResumeMayStart(transport: snapshot.transport) else {
+            P0TapDiagnostics.shared.record("resumeIfAllowed.startInFlight", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            return
+        }
+        let attempt = beginAttempt(userChangedQueue: false)
         do {
-            armPlaybackConfirmTimeout()
+            armPlaybackConfirmTimeout(for: attempt)
             guard try await playIfStillAllowed() else {
+                guard attempts.isCurrent(attempt) else { return }
                 cancelPlaybackConfirmTimeout()
+                P0TapDiagnostics.shared.recordRefusal("resumeIfAllowed.refused", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
                 send(.playbackStartRefused)
                 return
             }
+            guard attempts.isCurrent(attempt) else { return }
             send(.userResumed)
             // A song loaded during the break (paused) starts now; its break is planned here.
             reportDeferredSongStart()
-            await confirmPlaybackAfterStart()
+            await confirmPlaybackAfterStart(attempt)
         } catch {
+            P0TapDiagnostics.shared.recordPlayError("resumeIfAllowed.threw", error, attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            guard attempts.isCurrent(attempt) else { return }
             cancelPlaybackConfirmTimeout()
             send(.playbackStartRefused)
-            reportError(Self.playbackFailureMessage(error))
+            reportError(Self.playbackFailureMessage(error, attempt: attempt))
         }
     }
 
@@ -296,24 +365,30 @@ final class MusicKitService: ObservableObject {
     func skip() async throws {
         boundaries.userRequestedChange()
         sessionPolicy.userPlay()
+        // A skip replaces what plays: an older start or a pending boundary's next song is stale.
+        let attempt = beginAttempt(userChangedQueue: true)
         // The skipped song's break, speaking or prepared, belongs to that song and must not play.
         onBreakMustStop?(nil)
         onSongSkipped?(queueIndex)
         let next = queueIndex + 1
         guard queue.indices.contains(next) else {
+            P0TapDiagnostics.shared.record("stop.skipPastEnd", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             player.stop()
             send(.queueFinished)
             stateMachine.apply(.stop)
             return
         }
         send(.userSkipped(nextIndex: next))
-        try await startTrack(at: next, autoplay: true, userInitiated: true)
+        try await startTrack(at: next, autoplay: true, userInitiated: true, attempt: attempt)
     }
 
     /// Loads one song into the player. Only the current song is ever queued, so it ends on
     /// its own and the next one starts only through `startNextTrack` or a user action.
     /// With `autoplay` false (the user paused during a break) the song waits, loaded and paused.
-    func startTrack(at index: Int, autoplay: Bool, userInitiated: Bool = false) async throws {
+    /// `attempt` is the start this load belongs to. After the await, a superseded attempt throws
+    /// `MusicKitError.superseded` and changes nothing: no UI event, no song-start report.
+    func startTrack(at index: Int, autoplay: Bool, userInitiated: Bool = false,
+                    attempt: PlaybackAttemptID) async throws {
         guard queue.indices.contains(index) else {
             logPlayGate("startTrack.outOfRange", index: index)
             return
@@ -324,7 +399,12 @@ final class MusicKitService: ObservableObject {
         }
         queueIndex = index
         currentTrack = queue[index]
+        // Build 9 P0: every queue load is the app's own change. Without this, loading the
+        // next song (`startNextTrack`) while MusicKit still reported `.playing` could read as
+        // a natural end of the entry just replaced, and advance again: the auto-skip chain.
+        boundaries.userRequestedChange()
         player.queue = ApplicationMusicPlayer.Queue(for: [song])
+        P0TapDiagnostics.shared.record("queue.loaded", detail: "index=\(index) autoplay=\(autoplay)", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         finishedEntryID = nil
         logPlayGate("startTrack.queued", index: index, autoplay: autoplay)
         guard autoplay else {
@@ -339,6 +419,7 @@ final class MusicKitService: ObservableObject {
             isPlaying = false
             armDeferredStart(index)
             logPlayGate("startTrack.deferred.held", index: index)
+            P0TapDiagnostics.shared.recordRefusal("startTrack.heldStart", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             switch HeldStartPolicy.action(userInitiated: userInitiated) {
             case .deferSilently:
                 return
@@ -348,17 +429,16 @@ final class MusicKitService: ObservableObject {
         }
         do {
             let started = try await playIfStillAllowed()
+            guard attempts.isCurrent(attempt) else { throw MusicKitError.superseded }
             guard started else {
                 armDeferredStart(index)
                 logPlayGate("startTrack.deferred.afterPlayHeld", index: index)
-                // Honest UI: not playing.
-                if sessionPolicy.pausedBySystem {
-                    send(.interruptionPaused)
-                } else {
-                    send(.userPaused)
-                }
+                // Honest UI: not playing. The queue does not advance.
+                applyStartFailure(.refused(pausedBySystem: sessionPolicy.pausedBySystem), attempt: attempt)
                 return
             }
+        } catch MusicKitError.superseded {
+            throw MusicKitError.superseded
         } catch {
             logPlayGate("startTrack.playError", index: index)
             throw error
@@ -368,13 +448,26 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Starts the song after `index` when the break for `index` is over.
+    /// Build 9 P0 (-Atlas, race found by Fry's review too): the boundary task in `PlayerView`
+    /// calls this after awaiting the break. The poll armed it with the queue generation before
+    /// that await; a tap or skip since then makes it stale, and it loads nothing. Without this,
+    /// a tap during the break (or during `naturalBoundary`) was replaced by song 2 of the new queue.
     func startNextTrack(after index: Int) async {
+        guard attempts.takeNext(after: index) else {
+            P0TapDiagnostics.shared.record("startNextTrack.staleBoundary", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            return
+        }
         let next = index + 1
         guard queue.indices.contains(next) else { return }
+        let attempt = beginAttempt(userChangedQueue: false)
         do {
-            try await startTrack(at: next, autoplay: true)
+            try await startTrack(at: next, autoplay: true, attempt: attempt)
+        } catch MusicKitError.superseded {
+            return
         } catch {
-            reportError("Could not start the next song: \(error.localizedDescription)")
+            P0TapDiagnostics.shared.recordPlayError("startNextTrack.threw", error, attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            guard attempts.isCurrent(attempt) else { return }
+            reportError("Could not start the next song: \(PlaybackErrorCode(error)). attempt=\(attempt.number)")
         }
     }
 
@@ -465,6 +558,7 @@ final class MusicKitService: ObservableObject {
                 mayAutoResume: sessionPolicy.mayAutoResume,
                 userWantsPlayback: sessionPolicy.userWantsPlayback)
             if remote == .pauseBecauseHeld {
+                P0TapDiagnostics.shared.recordRefusal("pause.pollRemoteGate.held", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
                 player.pause()
                 isPlaying = false
                 logPlayGate("remoteOrPoll.pausedBecauseHeld", index: queueIndex)
@@ -473,17 +567,28 @@ final class MusicKitService: ObservableObject {
                 }
                 return
             }
-            if snapshot.transport == .preparing {
-                send(.playbackConfirmed)
-                cancelPlaybackConfirmTimeout()
+            if snapshot.transport == .preparing, let attempt = attempts.current {
+                // `.preparing` belongs to the current attempt; a late `.playing` after a reported
+                // timeout confirms it and clears that error.
+                confirmStart(attempt)
             }
         }
         guard let step = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count) else {
             isPlaying = observation.isPlaying
+            if boundaries.takeNoProgressEnd() {
+                surfaceNoProgressEnd(stillPlaying: observation.isPlaying)
+            }
             return
         }
         isPlaying = observation.isPlaying
         noteFinishedEntry(step)
+        switch step {
+        case let .advancedEntry(finishedIndex, _), let .plannedHandoff(finishedIndex, _, _):
+            // Captured before PlayerView's boundary task awaits the break. Re-checked in startNextTrack.
+            attempts.armNext(after: finishedIndex)
+        case .stopped:
+            break
+        }
         switch step {
         case let .advancedEntry(finishedIndex, boundary):
             log.notice("boundary naturalEnd finished=\(finishedIndex, privacy: .public)")
@@ -507,6 +612,54 @@ final class MusicKitService: ObservableObject {
             send(.queueFinished)
             onBoundary?(boundary, finishedIndex)
         }
+    }
+
+    /// Build 9 P0: the entry changed or cleared before it played 2 s. That is a failed or
+    /// replaced start, never a natural end: no break runs and the queue does not advance.
+    /// When MusicKit is still playing (it re-identified the entry), nothing is shown.
+    private func surfaceNoProgressEnd(stillPlaying: Bool) {
+        let attemptNumber = attempts.current?.number ?? 0
+        log.notice("TEMPORARY boundary.noProgressEnd attempt=\(attemptNumber, privacy: .public) index=\(self.queueIndex, privacy: .public) playing=\(stillPlaying, privacy: .public)")
+        P0TapDiagnostics.shared.recordRefusal("boundary.noProgressEnd", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+        guard !stillPlaying, let attempt = attempts.current else { return }
+        applyStartFailure(.noProgressEnd, attempt: attempt)
+    }
+
+    /// Build 9 P0 (-Atlas): the one place a failed start changes state, via `StartFailurePolicy`.
+    /// It never pauses the player, never advances `queueIndex`, never sends a boundary, and does
+    /// nothing at all for a superseded attempt.
+    private func applyStartFailure(_ failure: StartFailure, attempt: PlaybackAttemptID) {
+        let effect = StartFailurePolicy.effect(failure, attempt: attempt, current: attempts.current)
+        guard effect != .none else {
+            P0TapDiagnostics.shared.record("startFailure.stale", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            return
+        }
+        if effect.cancelsConfirm { cancelPlaybackConfirmTimeout() }
+        if let message = effect.message { lastError = message }
+        isPlaying = false
+        for event in effect.events { send(event) }
+    }
+
+    /// The current attempt reached `.playing` (watchdog or poll). Clears a reported timeout.
+    private func confirmStart(_ attempt: PlaybackAttemptID) {
+        guard attempts.isCurrent(attempt) else { return }
+        send(.playbackConfirmed)
+        isPlaying = true
+        cancelPlaybackConfirmTimeout()
+        if confirmReportedAttempt == attempt {
+            confirmReportedAttempt = nil
+            P0TapDiagnostics.shared.record("confirm.latePlaying", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            lastError = nil
+            send(.errorCleared)
+        }
+    }
+
+    private func beginAttempt(userChangedQueue: Bool) -> PlaybackAttemptID {
+        if userChangedQueue { attempts.userChangedQueue() }
+        let attempt = attempts.beginStart()
+        confirmReportedAttempt = nil
+        P0TapDiagnostics.shared.record("attempt.begin", detail: "queueChange=\(userChangedQueue)", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+        return attempt
     }
 
     // MARK: - Interruptions & route changes
@@ -572,6 +725,8 @@ final class MusicKitService: ObservableObject {
     /// Detect whether the user has an active Apple Music subscription.
     private func refreshSubscription() async {
         let subscription = try? await MusicSubscription.current
+        // TEMPORARY P0 diagnostics (remove: #121) -Atlas: one Bool only, no other subscription detail.
+        P0TapDiagnostics.shared.setCanPlayCatalog(subscription?.canPlayCatalogContent)
         if let canPlayCatalog = subscription?.canPlayCatalogContent, !canPlayCatalog {
             authState = .notSubscribed
         }
@@ -588,9 +743,12 @@ final class MusicKitService: ObservableObject {
             do {
                 try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
                 audioSessionConfigured = true
+                // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+                P0TapDiagnostics.shared.record("session.setCategory", detail: "playback/default options=[]")
             } catch {
                 // Non-fatal: retried on the next call. TEMPORARY diagnostic only.
                 logPlaybackError("setCategory", error)
+                P0TapDiagnostics.shared.recordPlayError("session.setCategory.threw", error) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             }
         }
         // Observers are registered once, whether or not the category was set.
@@ -609,13 +767,17 @@ final class MusicKitService: ObservableObject {
             logPlayGate("playIfStillAllowed.prepared", index: queueIndex)
         } catch {
             logPlaybackError("prepareToPlay", error)
+            P0TapDiagnostics.shared.recordPlayError("prepareToPlay.threw", error, attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             throw error
         }
         do {
             try await player.play()
             logPlayGate("playIfStillAllowed.playReturned", index: queueIndex)
+            // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+            P0TapDiagnostics.shared.record("play.returned", detail: "status=\(P0TapDiagnostics.statusName(player.state.playbackStatus))", attempt: attempts.current)
         } catch {
             logPlaybackError("player.play", error)
+            P0TapDiagnostics.shared.recordPlayError("play.threw", error, attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             throw error
         }
         let decision = PlaybackStartGuard.afterPlay(
@@ -623,6 +785,7 @@ final class MusicKitService: ObservableObject {
             userWantsPlayback: sessionPolicy.userWantsPlayback
         )
         guard decision == .keepPlaying else {
+            P0TapDiagnostics.shared.recordRefusal("pause.playIfStillAllowed.held", attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             player.pause()
             isPlaying = false
             logPlayGate("playIfStillAllowed.pausedBecauseHeld", index: queueIndex)
@@ -639,8 +802,10 @@ final class MusicKitService: ObservableObject {
         do {
             try AVAudioSession.sharedInstance().setActive(true)
             logPlayGate("audioSession.active", index: queueIndex)
+            P0TapDiagnostics.shared.record("session.setActive", detail: "active=true") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         } catch {
             logPlaybackError("setActive", error)
+            P0TapDiagnostics.shared.recordPlayError("session.setActive.threw", error, attempt: attempts.current) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
             throw error
         }
     }
@@ -684,23 +849,21 @@ final class MusicKitService: ObservableObject {
         let may = mayAutoResume
         let wants = sessionPolicy.userWantsPlayback
         let held = sessionPolicy.pausedBySystem
-        log.notice("TEMPORARY gate=\(gate, privacy: .public) auth=\(auth, privacy: .public) audio=\(audio, privacy: .public) queueCount=\(count, privacy: .public) index=\(index, privacy: .public) autoplay=\(auto, privacy: .public) mayAutoResume=\(may, privacy: .private) userWants=\(wants, privacy: .private) pausedBySystem=\(held, privacy: .private)")
+        let attempt = attempts.current?.number ?? 0
+        log.notice("TEMPORARY gate=\(gate, privacy: .public) attempt=\(attempt, privacy: .public) auth=\(auth, privacy: .public) audio=\(audio, privacy: .public) queueCount=\(count, privacy: .public) index=\(index, privacy: .public) autoplay=\(auto, privacy: .public) mayAutoResume=\(may, privacy: .private) userWants=\(wants, privacy: .private) pausedBySystem=\(held, privacy: .private)")
     }
 
-    /// TEMPORARY: type, code, localizedDescription only. Never debugDescription or underlying chain.
+    /// TEMPORARY: error type, NSError domain and code only (`PlaybackErrorCode`). No
+    /// localizedDescription, debugDescription, userInfo or underlying chain.
     private func logPlaybackError(_ gate: String, _ error: Error) {
-        let typeName = String(describing: type(of: error))
-        let code = (error as NSError).code
-        let text = error.localizedDescription
-        log.error("TEMPORARY \(gate, privacy: .public) failed: \(typeName, privacy: .public) code \(code, privacy: .public): \(text, privacy: .public)")
+        let code = PlaybackErrorCode(error)
+        let attempt = attempts.current?.number ?? 0
+        log.error("TEMPORARY \(gate, privacy: .public) failed attempt=\(attempt, privacy: .public): \(code.typeName, privacy: .public) \(code.domain, privacy: .public) code \(code.code, privacy: .public)")
     }
 
-    /// TEMPORARY diagnostic message for the UI and banner (same rule as searchFailureMessage).
-    static func playbackFailureMessage(_ error: Error) -> String {
-        let typeName = String(describing: type(of: error))
-        let code = (error as NSError).code
-        let text = error.localizedDescription
-        return "TEMPORARY: playback failed: \(typeName) code \(code). \(text)"
+    /// TEMPORARY diagnostic message for the UI and banner: type, domain, code and attempt only.
+    static func playbackFailureMessage(_ error: Error, attempt: PlaybackAttemptID) -> String {
+        "TEMPORARY: playback failed: \(PlaybackErrorCode(error)). attempt=\(attempt.number)"
     }
 
     /// Route lock-screen / Control Center play through `resume()` (userPlay + playIfStillAllowed)
@@ -715,6 +878,7 @@ final class MusicKitService: ObservableObject {
         center.playCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
             Task { @MainActor in
+                P0TapDiagnostics.shared.record("remote.play") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
                 // Explicit user intent: clears system holds the same way in-app Play does.
                 _ = try? await self.resume()
             }
@@ -722,12 +886,16 @@ final class MusicKitService: ObservableObject {
         }
         center.pauseCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
-            Task { @MainActor in self.pause() }
+            Task { @MainActor in
+                P0TapDiagnostics.shared.record("remote.pause") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+                self.pause()
+            }
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
             Task { @MainActor in
+                P0TapDiagnostics.shared.record("remote.toggle") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
                 if self.isPlaying || self.snapshot.transport == .playing
                     || self.snapshot.transport == .preparing {
                     self.pause()
@@ -739,32 +907,45 @@ final class MusicKitService: ObservableObject {
         }
     }
 
-    private func armPlaybackConfirmTimeout() {
+    /// #109's confirm for one attempt, fully through `PlaybackConfirmWatchdog` /
+    /// `PlaybackConfirmPolicy` (pure, tested in AeroDJCore). It never pauses the player: the 8 s
+    /// deadline and `.interrupted` only report, and a late `.playing` confirms the same attempt.
+    /// A newer attempt (tap, resume, skip) supersedes it, and it then touches nothing.
+    private func armPlaybackConfirmTimeout(for attempt: PlaybackAttemptID) {
         cancelPlaybackConfirmTimeout()
         playbackConfirmTask = Task { @MainActor [weak self] in
-            // ~8s: 16 × 0.5s polls for MusicKit `.playing`.
-            for _ in 0..<16 {
+            var watchdog = PlaybackConfirmWatchdog(attempt: attempt)
+            while !watchdog.isFinished {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 guard let self, !Task.isCancelled else { return }
-                if self.player.state.playbackStatus == .playing {
-                    self.send(.playbackConfirmed)
-                    self.isPlaying = true
-                    self.cancelPlaybackConfirmTimeout()
+                let status = MusicKitService.confirmStatus(self.player.state.playbackStatus)
+                switch watchdog.observe(status: status,
+                                        transportIsPreparing: self.snapshot.transport == .preparing,
+                                        currentAttempt: self.attempts.current) {
+                case .confirmed:
+                    self.confirmStart(attempt)
                     return
-                }
-                if self.snapshot.transport != .preparing { return }
-                switch self.player.state.playbackStatus {
-                case .paused, .stopped, .interrupted:
-                    self.failPlaybackConfirm(status: self.player.state.playbackStatus)
+                case .stopWaiting, .superseded:
                     return
-                default:
+                case .reportTimeoutKeepPlayer:
+                    self.reportConfirmProblem(.confirmDeadline(last: status), attempt: attempt)
+                case .failInterrupted:
+                    self.reportConfirmProblem(.confirmInterrupted, attempt: attempt)
+                case .keepWaiting:
                     continue
                 }
             }
-            guard let self, !Task.isCancelled else { return }
-            if self.snapshot.transport == .preparing {
-                self.failPlaybackConfirm(status: self.player.state.playbackStatus)
-            }
+        }
+    }
+
+    private static func confirmStatus(_ status: MusicKit.MusicPlayer.PlaybackStatus) -> ConfirmStatus {
+        switch status {
+        case .playing: .playing
+        case .paused: .paused
+        case .stopped: .stopped
+        case .interrupted: .interrupted
+        case .seekingForward, .seekingBackward: .seeking
+        @unknown default: .paused
         }
     }
 
@@ -773,26 +954,25 @@ final class MusicKitService: ObservableObject {
         playbackConfirmTask = nil
     }
 
-    private func confirmPlaybackAfterStart() async {
+    private func confirmPlaybackAfterStart(_ attempt: PlaybackAttemptID) async {
         if player.state.playbackStatus == .playing {
-            send(.playbackConfirmed)
-            cancelPlaybackConfirmTimeout()
+            confirmStart(attempt)
             return
         }
         // Timeout task already armed by the caller; nothing more to do here.
         logPlayGate("confirm.wait", index: queueIndex)
     }
 
-    private func failPlaybackConfirm(status: MusicKit.MusicPlayer.PlaybackStatus) {
-        cancelPlaybackConfirmTimeout()
-        let statusName = String(describing: status)
-        log.notice("TEMPORARY confirm.fail status=\(statusName, privacy: .public) index=\(self.queueIndex, privacy: .public)")
-        let message = "TEMPORARY: MusicKit status \(statusName) after start; never reached playing."
-        lastError = message
-        isPlaying = false
-        player.pause()
-        send(.errorRaised(PlaybackError(kind: .playbackFailed, message: message, isRecoverable: true)))
-        send(.userPaused)
+    /// The confirm deadline passed, or MusicKit said `.interrupted`. Report only: no
+    /// `player.pause()` (Fry: a stream buffering past 8 s on cellular must not be killed), no
+    /// boundary, no advance. Transport stays `.preparing`, so the UI never claims `.playing`.
+    private func reportConfirmProblem(_ failure: StartFailure, attempt: PlaybackAttemptID) {
+        guard attempts.isCurrent(attempt) else { return }
+        let attemptNumber = attempt.number
+        log.notice("TEMPORARY confirm.report attempt=\(attemptNumber, privacy: .public) index=\(self.queueIndex, privacy: .public)")
+        P0TapDiagnostics.shared.recordRefusal("confirm.reportedNoPause", attempt: attempt) // TEMPORARY P0 diagnostics (remove: #121) -Atlas
+        confirmReportedAttempt = attempt
+        applyStartFailure(failure, attempt: attempt)
     }
 
     private func logPlayback(_ line: String) {
@@ -828,6 +1008,18 @@ private final class AudioSessionMonitor: NSObject {
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+        // TEMPORARY P0 diagnostics (remove: #121) -Atlas: observe only. No behavior change on a reset.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMediaServicesReset(_:)),
+            name: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil
+        )
+    }
+
+    @objc
+    private func handleMediaServicesReset(_ note: Notification) {
+        P0TapDiagnosticsBridge.record("session.mediaServicesWereReset") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
     }
 
     deinit {
@@ -842,6 +1034,15 @@ private final class AudioSessionMonitor: NSObject {
               type == .began || type == .ended else { return }
         let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
         let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
+        // TEMPORARY P0 diagnostics (remove: #121) -Atlas: began/ended, shouldResume, and the reason raw value
+        // (the iOS 17 replacement for wasSuspended; 1 = appWasSuspended).
+        let reasonRaw = note.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt ?? 0
+        let detail = "shouldResume=\(shouldResume) reason=\(reasonRaw)"
+        if type == .began {
+            P0TapDiagnosticsBridge.record("session.interruption.began", detail: detail)
+        } else {
+            P0TapDiagnosticsBridge.record("session.interruption.ended", detail: detail)
+        }
         eventsStream.yield(.interruption(began: type == .began, shouldResume: shouldResume))
     }
 
@@ -849,6 +1050,7 @@ private final class AudioSessionMonitor: NSObject {
     private func handleRouteChange(_ note: Notification) {
         guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+        P0TapDiagnosticsBridge.record("session.routeChange", detail: "reason=\(raw)") // TEMPORARY P0 diagnostics (remove: #121) -Atlas
         eventsStream.yield(.routeChange(deviceRemoved: reason == .oldDeviceUnavailable))
     }
 }
@@ -898,12 +1100,16 @@ final class SearchResultCache {
 enum MusicKitError: LocalizedError {
     case notAuthorized
     case playbackFailed(message: String)
+    /// A newer tap, resume or skip replaced this start. Not an error to show.
+    case superseded
     var errorDescription: String? {
         switch self {
         case .notAuthorized:
             "Apple Music authorization required."
         case let .playbackFailed(message):
             message
+        case .superseded:
+            "TEMPORARY: replaced by a newer start."
         }
     }
 }
