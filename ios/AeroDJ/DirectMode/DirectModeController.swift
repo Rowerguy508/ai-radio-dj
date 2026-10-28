@@ -93,9 +93,9 @@ final class DirectModeController: ObservableObject {
         }
     }
 
-    func play() { run(.play) { try await self.player.play() } }
-    func resume() { run(.resume) { try await self.player.play() } }
-    func next() { run(.next) { try await self.player.skipToNextEntry() } }
+    func play() { run(.play) }
+    func resume() { run(.resume) }
+    func next() { run(.next) }
 
     func pause() {
         guard machine.request(.pause, at: now) else { return }
@@ -103,15 +103,25 @@ final class DirectModeController: ObservableObject {
         machine.finished(.pause, error: nil, at: now)
     }
 
-    private func run(_ command: DirectModeCommand, _ body: @escaping @MainActor () async throws -> Void) {
+    private func run(_ command: DirectModeCommand) {
         guard machine.request(command, at: now) else { return }
         Task {
             do {
-                try await body()
+                try await perform(command)
                 machine.finished(command, error: nil, at: now)
             } catch {
                 machine.finished(command, error: PlaybackErrorCode(error), at: now)
             }
+        }
+    }
+
+    /// Main-actor method (same pattern as MusicKitService) so the player is never sent
+    /// across isolation inside a closure.
+    private func perform(_ command: DirectModeCommand) async throws {
+        switch command {
+        case .play, .resume: try await player.play()
+        case .next: try await player.skipToNextEntry()
+        case .load, .pause: break  // handled by load() and pause()
         }
     }
 
