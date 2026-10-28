@@ -1,7 +1,7 @@
 import Foundation
 
-/// Minimal SHA-256 (FIPS 180-4) so cache keys work on Linux CI without
-/// CryptoKit or a package dependency. Used for cache keys only, not secrets.
+/// Minimal SHA-256 (FIPS 180-4) so cache keys and the Phonon bundle check work
+/// on Linux CI without CryptoKit or a package dependency. Not used for secrets.
 enum SHA256Digest {
     private static let k: [UInt32] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -15,22 +15,68 @@ enum SHA256Digest {
     ]
 
     static func hex(_ string: String) -> String {
-        hash(Array(string.utf8)).map { String(format: "%02x", $0) }.joined()
+        hex(hash(Array(string.utf8)))
     }
 
     static func hash(_ message: [UInt8]) -> [UInt8] {
+        var stream = Stream()
+        stream.update(message)
+        return stream.finalize()
+    }
+
+    /// Streaming hash so a 137 MB model zip is not held as one array.
+    static func hex(contentsOf url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var stream = Stream()
+        while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+            stream.update([UInt8](chunk))
+        }
+        return hex(stream.finalize())
+    }
+
+    private static func hex(_ bytes: [UInt8]) -> String {
+        bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private struct Stream {
         var h: [UInt32] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
-        var data = message
-        let bitLength = UInt64(message.count) * 8
-        data.append(0x80)
-        while data.count % 64 != 56 { data.append(0) }
-        for shift in stride(from: 56, through: 0, by: -8) { data.append(UInt8(truncatingIfNeeded: bitLength >> UInt64(shift))) }
-        func rotr(_ x: UInt32, _ n: UInt32) -> UInt32 { (x >> n) | (x << (32 - n)) }
-        var w = [UInt32](repeating: 0, count: 64)
-        for chunk in stride(from: 0, to: data.count, by: 64) {
+        var buffer: [UInt8] = []
+        var total: UInt64 = 0
+
+        mutating func update(_ bytes: [UInt8]) {
+            guard !bytes.isEmpty else { return }
+            total += UInt64(bytes.count)
+            buffer.append(contentsOf: bytes)
+            var index = 0
+            while buffer.count - index >= 64 {
+                compress(Array(buffer[index..<(index + 64)]))
+                index += 64
+            }
+            if index > 0 { buffer.removeFirst(index) }
+        }
+
+        mutating func finalize() -> [UInt8] {
+            let bitLength = total * 8
+            buffer.append(0x80)
+            while buffer.count % 64 != 56 { buffer.append(0) }
+            for shift in stride(from: 56, through: 0, by: -8) {
+                buffer.append(UInt8(truncatingIfNeeded: bitLength >> UInt64(shift)))
+            }
+            var index = 0
+            while index < buffer.count {
+                compress(Array(buffer[index..<(index + 64)]))
+                index += 64
+            }
+            return h.flatMap { v in (0..<4).map { UInt8(truncatingIfNeeded: v >> (24 - 8 * $0)) } }
+        }
+
+        private mutating func compress(_ chunk: [UInt8]) {
+            func rotr(_ x: UInt32, _ n: UInt32) -> UInt32 { (x >> n) | (x << (32 - n)) }
+            var w = [UInt32](repeating: 0, count: 64)
             for i in 0..<16 {
-                let j = chunk + i * 4
-                w[i] = UInt32(data[j]) << 24 | UInt32(data[j + 1]) << 16 | UInt32(data[j + 2]) << 8 | UInt32(data[j + 3])
+                let j = i * 4
+                w[i] = UInt32(chunk[j]) << 24 | UInt32(chunk[j + 1]) << 16 | UInt32(chunk[j + 2]) << 8 | UInt32(chunk[j + 3])
             }
             for i in 16..<64 {
                 let s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3)
@@ -45,6 +91,5 @@ enum SHA256Digest {
             }
             h = [h[0] &+ a, h[1] &+ b, h[2] &+ c, h[3] &+ d, h[4] &+ e, h[5] &+ f, h[6] &+ g, h[7] &+ hh]
         }
-        return h.flatMap { v in (0..<4).map { UInt8(truncatingIfNeeded: v >> (24 - 8 * $0)) } }
     }
 }
