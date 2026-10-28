@@ -25,6 +25,7 @@ struct DirectModeView: View {
                     .accessibilityIdentifier("directMode.everPlaying")
 
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                    row("Old MusicKitService", CompositionRootProbe.dependenciesBuilt ? "STARTED" : "never started")
                     row("Position", Self.clock(m.position))
                     row("Moved past 0:00", m.positionEverAdvanced ? "yes" : "no")
                     row("Status", m.status.rawValue)
@@ -58,7 +59,8 @@ struct DirectModeView: View {
                     Text("Log (newest first)").font(.headline)
                     Spacer()
                     Button("Copy log") {
-                        UIPasteboard.general.string = m.log.map(\.description).joined(separator: "\n")
+                        UIPasteboard.general.string = (["oldMusicKitService=\(CompositionRootProbe.dependenciesBuilt ? "started" : "neverStarted")"]
+                            + m.log.map(\.description)).joined(separator: "\n")
                     }
                 }
                 ForEach(Array(m.log.enumerated().reversed()), id: \.offset) { _, entry in

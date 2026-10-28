@@ -134,10 +134,12 @@ jobs:
           MARKER=AERODJ_P0_DIAG_DIRECT_MODE_BUILD
           RELEASE_BIN="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
           test -f "$RELEASE_BIN"
-          if LC_ALL=C grep -a -q "$MARKER" "$RELEASE_BIN"; then
-            echo "::error::Direct Mode marker found in a Release build without AERODJ_P0_DIAG"
-            exit 1
-          fi
+          for NEEDLE in "$MARKER" DirectModeController DirectModeView DirectModeLaunch; do
+            if LC_ALL=C grep -a -q "$NEEDLE" "$RELEASE_BIN"; then
+              echo "::error::Direct Mode code ($NEEDLE) found in a Release build without AERODJ_P0_DIAG"
+              exit 1
+            fi
+          done
           DIAG_DD="$RUNNER_TEMP/DerivedDataP0Diag"
           xcodebuild build \
             -project ios/AeroDJ.xcodeproj \
@@ -148,7 +150,10 @@ jobs:
             -derivedDataPath "$DIAG_DD" \
             CODE_SIGNING_ALLOWED=NO \
             SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) AERODJ_P0_DIAG'
-          LC_ALL=C grep -a -q "$MARKER" "$DIAG_DD/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
+          # Positive control: the same checks do find it when the flag is set.
+          DIAG_BIN="$DIAG_DD/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
+          LC_ALL=C grep -a -q "$MARKER" "$DIAG_BIN"
+          LC_ALL=C grep -a -q DirectModeController "$DIAG_BIN"
 
   runtime-mode:
     name: Runtime mode on simulator (Debug vs Release)
