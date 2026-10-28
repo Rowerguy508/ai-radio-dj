@@ -142,9 +142,22 @@ public struct PlaybackBoundaryDetector: Sendable {
             }
             return .naturalEnd(finishedEntryID: previous)
         }
-        if let position = observation.position { lastPosition = max(lastPosition ?? position, position) }
+        if let position = observation.position {
+            if observation.isPlaying, let furthest = lastPosition, position < furthest,
+               position >= Self.minimumProgressForNaturalEnd {
+                // Still playing well past a rewind: a real restart, so the old furthest is gone.
+                lastPosition = position
+            } else {
+                lastPosition = max(lastPosition ?? position, position)
+            }
+        }
         // Same entry: playback stopped at its end, and the queue kept the entry.
-        guard wasPlaying, !observation.isPlaying, observation.isNearEnd(),
+        // Build 16 P0 (-Fry): MusicKit can rewind the playhead to 0 as a one-song queue ends,
+        // so the end is judged by the furthest position reached, not the last sample.
+        let reachedEnd = observation.isNearEnd() || PlaybackObservation(
+            entryID: current, isPlaying: false, position: lastPosition,
+            duration: observation.duration).isNearEnd()
+        guard wasPlaying, !observation.isPlaying, reachedEnd,
               endedEntryID != current, !userChangePending else { return nil }
         endedEntryID = current
         return .queueFinished(lastEntryID: current)
