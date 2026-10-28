@@ -147,8 +147,16 @@ final class PlaybackBoundaryDetectorTests: XCTestCase {
         assertNoBreak(for: .userPause)
     }
 
-    func testInterruptionInsideTheLastSecondProducesNoBreak() {
-        assertNoBreak(for: .systemInterruption)
+    /// Build 18 P0 (-Fry): changed from "no break". A system interruption is not a user
+    /// decision, and one that begins inside the last 1.5 s does not cancel the end: the stop is
+    /// reported once (SongEndInterruptionTests has the full matrix and the hold rules).
+    func testInterruptionInsideTheLastSecondIsStillTheEndOnce() {
+        var d = PlaybackBoundaryDetector()
+        XCTAssertNil(d.consume(timed("A", playing: true, at: 199)))
+        d.pausedByApp(.systemInterruption)
+        XCTAssertEqual(d.consume(timed("A", playing: false, at: 199.2)), .queueFinished(lastEntryID: "A"))
+        XCTAssertNil(d.consume(timed("A", playing: false, at: 199.2)))
+        XCTAssertTrue(d.interruptionBeganNearEnd)
     }
 
     func testRouteLossInsideTheLastSecondProducesNoBreak() {

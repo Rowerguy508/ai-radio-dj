@@ -37,6 +37,16 @@ public enum PlaybackLog {
         "session interruption began"
     }
 
+    /// Build 18 P0: the interruption's reason key, as an enum token only.
+    public static func interruptionBegan(reason: AudioInterruptionReason) -> String {
+        "session interruption began reason=\(reason.rawValue)"
+    }
+
+    /// Build 18 P0: a song-end interruption hold was released at a natural end.
+    public static func songEndHoldReleased(index: Int) -> String {
+        "song end hold released finished=\(index)"
+    }
+
     public static func interruptionEnded(shouldResume: Bool, breakActive: Bool) -> String {
         "session interruption ended shouldResume=\(shouldResume) breakActive=\(breakActive)"
     }

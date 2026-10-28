@@ -99,7 +99,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             _ = pendingPlay.stop(reason: .interruption, afterTrack: nil, mayAutoResume: false)
             _ = pendingPlay.admit(mayAutoResume: false)
             if let unplayed = admission.unplayed {
-                applyUnplayed(unplayed, afterTrack: afterTrack, skip: .notPlanned)
+                applyUnplayed(unplayed, afterTrack: afterTrack, skip: admission.skipReason ?? .notPlanned)
             }
             return
         }
