@@ -790,11 +790,10 @@ final class MusicKitService: ObservableObject {
         log.error("\(String(describing: gate), privacy: .public) failed attempt=\(attempt, privacy: .public) domain=\(code.domain, privacy: .public) code=\(code.code, privacy: .public)")
     }
 
-    /// The banner for a start that threw (#133). A `playbackFailed` error already carries
-    /// `PlaybackFailureCopy`; anything else gets the fixed fallback, never its own text.
+    /// The banner for a start that threw (#133). Core's `PlaybackFailureCopy.bannerMessage` picks
+    /// it: carried copy, the superseded copy, or the fixed fallback, never the error's own text.
     static func playbackFailureMessage(_ error: Error, attempt: PlaybackAttemptID) -> String {
-        if case let MusicKitError.playbackFailed(message) = error { return message }
-        return PlaybackFailureCopy.message(for: .couldNotStart)
+        PlaybackFailureCopy.bannerMessage(for: ThrownPlaybackFailure(error))
     }
 
     /// Route lock-screen / Control Center play through `resume()` (userPlay + playIfStillAllowed)
