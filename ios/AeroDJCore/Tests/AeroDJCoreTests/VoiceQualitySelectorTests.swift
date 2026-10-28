@@ -51,6 +51,13 @@ final class VoiceQualitySelectorTests: XCTestCase {
         XCTAssertEqual(VoiceQualitySelector.best(from: [b, a])?.identifier, "com.a")
     }
 
+    func testFallbackIsTheBestStandardVoice() {
+        let all = [c("p", "en-US", .premium), c("gb", "en-GB", .standard), c("us", "en-US", .standard),
+                   c("odd", "en-US", .standard, novelty: true)]
+        XCTAssertEqual(VoiceQualitySelector.fallback(from: all)?.identifier, "us")
+        XCTAssertNil(VoiceQualitySelector.fallback(from: [c("p", "en-US", .premium)]))
+    }
+
     func testTierLogTokensAreFixed() {
         XCTAssertEqual(VoiceQualityTier.allCases.map(\.rawValue), ["standard", "enhanced", "premium"])
     }

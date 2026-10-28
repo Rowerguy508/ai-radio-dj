@@ -18,10 +18,27 @@ public struct OnDeviceSpeechProvider: VoiceProvider {
 
     public init() { _ = Self.launchSweep }
 
-    public func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+    private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
+
+    private static func render(_ text: String, voiceID: String) async throws -> (Data, Double) {
         // The temp file is deleted on success, error and cancellation.
-        let (data, seconds) = try await SpeechTempFiles.shared.withFile { url in
-            try await SpeechRenderJob(text: text, voiceID: voice.id, url: url).run()
+        try await SpeechTempFiles.shared.withFile { url in
+            try await SpeechRenderJob(text: text, voiceID: voiceID, url: url).run()
+        }
+    }
+
+    public func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+        let (data, seconds): (Data, Double)
+        do {
+            (data, seconds) = try await Self.render(text, voiceID: voice.id)
+        } catch {
+            // A Premium or Enhanced voice that is still downloading or loading can render
+            // nothing. Retry once, inside the same deadline, with a standard voice, which
+            // ships with iOS. Cancellation (deadline or caller) is never retried.
+            try Task.checkCancellation()
+            guard let fallback = OnDeviceVoiceChoice.fallbackVoice(replacing: voice.id) else { throw error }
+            Self.log.info("speech render retry tier=standard")
+            (data, seconds) = try await Self.render(text, voiceID: fallback.identifier)
         }
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: 0,
                              provider: Self.providerID, cacheKey: nil)
@@ -81,6 +98,12 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
         return (data, Double(rendered) / rate)
     }
 
+    private func hasFrames() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return frames > 0
+    }
+
     /// Synchronous so NSLock is never held across (or called from) an async context.
     private func closeFile() -> (AVAudioFramePosition, Double) {
         lock.lock()
@@ -92,7 +115,13 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
 
     private func handle(_ buffer: AVAudioBuffer) {
         guard let pcm = buffer as? AVAudioPCMBuffer else { return finish(.failed, OnDeviceSpeechError.unexpectedBuffer) }
-        if pcm.frameLength == 0 { return finish(.finalBuffer) }
+        if pcm.frameLength == 0 {
+            // Higher-tier voices can send an empty buffer before any audio. Only an empty
+            // buffer after real audio ends the render; otherwise `didFinish` (or the
+            // deadline) does, and a render with no frames still fails as `emptyAudio`.
+            guard hasFrames() else { return }
+            return finish(.finalBuffer)
+        }
         do {
             lock.lock()
             defer { lock.unlock() }
@@ -171,6 +200,20 @@ enum OnDeviceVoiceChoice {
         // Sanitized: the tier enum only, never the voice name, identifier or language.
         log.info("voice selected tier=\(pick.tier.rawValue, privacy: .public)")
         return voice
+    }
+
+    /// The standard voice to retry with when `failedID` is a higher-tier voice. Nil when
+    /// `failedID` is already standard (retrying the same voice won't help) or none is installed.
+    static func fallbackVoice(replacing failedID: String) -> AVSpeechSynthesisVoice? {
+        let installed = AVSpeechSynthesisVoice.speechVoices()
+        if let failed = AVSpeechSynthesisVoice(identifier: failedID), tier(failed.quality) == .standard { return nil }
+        let candidates = installed.map { voice in
+            VoiceCandidate(identifier: voice.identifier, language: voice.language, tier: tier(voice.quality),
+                           isNovelty: voice.voiceTraits.contains(.isNoveltyVoice),
+                           isPersonalVoice: voice.voiceTraits.contains(.isPersonalVoice))
+        }
+        guard let pick = VoiceQualitySelector.fallback(from: candidates), pick.identifier != failedID else { return nil }
+        return installed.first { $0.identifier == pick.identifier }
     }
 
     private static func tier(_ quality: AVSpeechSynthesisVoiceQuality) -> VoiceQualityTier {

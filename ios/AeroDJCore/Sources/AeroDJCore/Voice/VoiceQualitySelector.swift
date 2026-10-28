@@ -55,6 +55,12 @@ public enum VoiceQualitySelector {
         }
     }
 
+    /// The retry voice when a higher-tier voice renders nothing: the best standard-tier
+    /// voice, which ships with iOS and needs no download. Nil when none is installed.
+    public static func fallback(from candidates: [VoiceCandidate], preferredLanguage: String = "en-US") -> VoiceCandidate? {
+        best(from: candidates.filter { $0.tier == .standard }, preferredLanguage: preferredLanguage)
+    }
+
     private static func languageFamily(_ code: String) -> String {
         String(code.split(whereSeparator: { $0 == "-" || $0 == "_" }).first ?? "").lowercased()
     }
