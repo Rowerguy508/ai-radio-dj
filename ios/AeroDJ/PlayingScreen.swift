@@ -199,11 +199,6 @@ struct PlayingScreen: View {
     }
 }
 
-#if DEBUG
-#Preview("Playing screen") {
-    PlayingScreenPreviewLoader()
-}
-
 /// The search field's only stored value. Not `@SceneStorage`, which pushes a stale
 /// string back into the field while the next characters are still being typed.
 enum SearchText {
@@ -212,6 +207,11 @@ enum SearchText {
         get { UserDefaults.standard.string(forKey: key) ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: key) }
     }
+}
+
+#if DEBUG
+#Preview("Playing screen") {
+    PlayingScreenPreviewLoader()
 }
 
 struct PlayingScreenPreviewLoader: View {
