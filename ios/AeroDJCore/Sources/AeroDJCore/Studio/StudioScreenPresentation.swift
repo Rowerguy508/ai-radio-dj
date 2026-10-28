@@ -25,7 +25,7 @@ public enum StudioLayoutMetrics {
     /// `edgeInset`, so the two panes run close to edge to edge. `edgeInset` and `gutter`
     /// still define `studioMinWidth`, so the compact/Studio switch does not move.
     public static let paneEdgeInset: Double = 8
-    /// Visual only: the space the unfolded Studio draws between the panes, centred on the hinge.
+    /// Visual only: the space the unfolded Studio draws between the panes, centred in the container.
     public static let paneGutter: Double = 12
 }
 
@@ -43,8 +43,9 @@ public enum StudioCornerRadius {
     public static let panelPadding: Double = 16
 }
 
-/// Which layout a container gets. Width is the only input besides text size: no device
-/// model, no size class, no fold sensor. Folding just changes the container width.
+/// Which layout a container gets. Width is the only input besides text size and, in the
+/// screen's rule, whether the width class is regular: no device model, no fold sensor.
+/// Folding just changes the container width.
 public enum StudioLayoutMode: Equatable, Sendable {
     /// Closed Duo, or any container narrower than `studioMinWidth`.
     case compact
@@ -57,11 +58,22 @@ public enum StudioLayoutMode: Equatable, Sendable {
         guard containerWidth >= StudioLayoutMetrics.studioMinWidth else { return .compact }
         return accessibilityTextSize ? .studioStacked : .studio
     }
+
+    /// The screen's full rule: the width class gates the Studio, then the width rule above.
+    /// Pass `horizontalSizeClass == .regular`, never `!= .compact`, so a missing size class
+    /// (nil, UIKit's `unspecified`) takes the compact layout. The 716 pt threshold is unchanged.
+    public static func resolve(hasRegularWidth: Bool, containerWidth: Double,
+                               accessibilityTextSize: Bool) -> StudioLayoutMode {
+        guard hasRegularWidth else { return .compact }
+        return resolve(containerWidth: containerWidth, accessibilityTextSize: accessibilityTextSize)
+    }
 }
 
-/// Widths actually given to the two zones. The split is even whenever both minimums allow
-/// it, so the gutter straddles the middle of the container, where a Duo's hinge sits.
-/// Near the breakpoint each zone gets at least its minimum and Zone B takes the rest.
+/// Widths actually given to the two zones. The split is an even split of the available
+/// width whenever both minimums allow it, so the gutter straddles the middle of the
+/// container. That is not a promise it sits over a Duo's hinge: a vertical bar or a sidebar
+/// can shift or narrow the container. Near the breakpoint each zone gets at least its
+/// minimum and Zone B takes the rest.
 public struct StudioZoneWidths: Equatable, Sendable {
     public let zoneA: Double
     public let zoneB: Double

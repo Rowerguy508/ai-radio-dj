@@ -58,8 +58,26 @@ final class StudioScreenTests: XCTestCase {
         return app
     }
 
+    /// Which layout this simulator's window gets, read from the app itself rather than the
+    /// device idiom: one probe launch of the default capture, then whichever of
+    /// `layout.studio` / `layout.compact` the real `PlayingScreen` shows. A narrow iPad
+    /// window or a wide iPhone window then picks the matching assertions.
     @MainActor
-    private var isOpenLayout: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+    private static var probedOpenLayout: Bool?
+
+    @MainActor
+    private var isOpenLayout: Bool {
+        if let probed = Self.probedOpenLayout { return probed }
+        let app = launch()
+        let any = app.descendants(matching: .any)
+        let either = any.matching(NSPredicate(format: "identifier IN %@", ["layout.studio", "layout.compact"])).firstMatch
+        XCTAssertTrue(either.waitForExistence(timeout: 15),
+                      "Neither layout.studio nor layout.compact appeared\n\(visibleIdentifiers(app))")
+        let open = any["layout.studio"].exists
+        app.terminate()
+        Self.probedOpenLayout = open
+        return open
+    }
 
     @MainActor
     func testClosedDuoIsImmersiveCompactPlayer() throws {

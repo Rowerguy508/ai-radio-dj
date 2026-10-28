@@ -46,6 +46,11 @@ targets:
         INFOPLIST_KEY_UIBackgroundModes: audio
         INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: AeroDJ reads today's events, read-only, to mention them in your briefing.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # Explicit UIApplicationSceneManifest (app-resizability skill, scene lifecycle). One
+        # window only: the app has one app-scoped DJ session, so no multiple scenes.
+        # CI asserts both keys in the built Info.plist.
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsMultipleScenes: NO
         # App Store requires an icon and declared orientations (ITMS 90022/90023/90713/90474).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight

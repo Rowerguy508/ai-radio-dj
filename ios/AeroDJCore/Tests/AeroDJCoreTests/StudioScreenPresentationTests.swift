@@ -22,6 +22,26 @@ final class StudioScreenPresentationTests: XCTestCase {
         XCTAssertEqual(StudioLayoutMode.resolve(containerWidth: 715, accessibilityTextSize: true), .compact)
     }
 
+    /// Skill rule: "there is room" is `horizontalSizeClass == .regular`. A compact or missing
+    /// (nil) size class passes false and gets the compact layout at every width.
+    func testWidthClassGatesStudioAndThresholdIsUnchanged() {
+        for width in [0.0, 715, 716, 800, 1024, 1400] {
+            XCTAssertEqual(StudioLayoutMode.resolve(hasRegularWidth: false, containerWidth: width,
+                                                    accessibilityTextSize: false), .compact, "width \(width)")
+            XCTAssertEqual(StudioLayoutMode.resolve(hasRegularWidth: false, containerWidth: width,
+                                                    accessibilityTextSize: true), .compact, "width \(width)")
+        }
+        for width in [683.0, 715, 716, 800, 1024] {
+            for ax in [false, true] {
+                XCTAssertEqual(StudioLayoutMode.resolve(hasRegularWidth: true, containerWidth: width, accessibilityTextSize: ax),
+                               StudioLayoutMode.resolve(containerWidth: width, accessibilityTextSize: ax), "width \(width)")
+            }
+        }
+        XCTAssertEqual(StudioLayoutMode.resolve(hasRegularWidth: true, containerWidth: 715, accessibilityTextSize: false), .compact)
+        XCTAssertEqual(StudioLayoutMode.resolve(hasRegularWidth: true, containerWidth: 716, accessibilityTextSize: false), .studio)
+        XCTAssertEqual(StudioLayoutMode.resolve(hasRegularWidth: true, containerWidth: 716, accessibilityTextSize: true), .studioStacked)
+    }
+
     func testZonesNeverBelowMinimumAndFillContainer() {
         XCTAssertNil(StudioZoneWidths.allocate(containerWidth: 715))
         for width in stride(from: 716.0, through: 1400, by: 1) {
@@ -30,7 +50,7 @@ final class StudioScreenPresentationTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(z.zoneB, StudioLayoutMetrics.zoneBMinWidth, "width \(width)")
             XCTAssertEqual(z.zoneA + z.zoneB + StudioLayoutMetrics.gutter + 2 * StudioLayoutMetrics.edgeInset, width, accuracy: 0.001)
         }
-        // Even split once both minimums allow it: the gutter is centred on the hinge.
+        // Even split once both minimums allow it: the gutter is centred in the container.
         let even = StudioZoneWidths.allocate(containerWidth: 900)!
         XCTAssertEqual(even.zoneA, even.zoneB)
         let exact = StudioZoneWidths.allocate(containerWidth: 716)!
@@ -66,7 +86,7 @@ final class StudioScreenPresentationTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(z.zoneB, m.zoneBMinWidth)
             // The 28 pt freed by the smaller margins and gutter goes to the zones.
             XCTAssertEqual(z.zoneA + z.zoneB - (old.zoneA + old.zoneB), 28, accuracy: 0.001)
-            // Gutter centred on the hinge: within half a point (odd content widths).
+            // Gutter centred in the container: within half a point (odd content widths).
             let gutterMid = z.edgeInset + z.zoneA + z.gutter / 2
             XCTAssertLessThanOrEqual(abs(gutterMid - width / 2), 0.5, "width \(width)")
         }

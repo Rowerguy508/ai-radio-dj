@@ -94,6 +94,17 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" \
             | grep -qx 'com.apple.share-services'
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" | grep -qx 'com.aerodj.app.share'
+      - name: Verify single-window scene manifest
+        # app-resizability: the app declares UIApplicationSceneManifest, and one window only
+        # (one app-scoped DJ session). No UIRequiresFullScreen opt-out.
+        run: |
+          PLIST="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes' "$PLIST" \
+            | grep -qx 'false' || { echo "UIApplicationSupportsMultipleScenes is not false"; exit 1; }
+          if /usr/libexec/PlistBuddy -c 'Print :UIRequiresFullScreen' "$PLIST" 2>/dev/null; then
+            echo "UIRequiresFullScreen must not be set"; exit 1
+          fi
       - name: Pick an available iPhone simulator
         run: |
           UDID=$(xcrun simctl list devices available -j \

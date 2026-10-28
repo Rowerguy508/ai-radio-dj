@@ -5,7 +5,9 @@ import SwiftUI
 /// Now Playing panel with transport; Zone B is the Queue / Tune / Connections workspace.
 /// Zone widths come from `StudioZoneWidths.allocate`, the same source of truth as the
 /// compact/Studio switch, so the switch and the geometry can never disagree (#60 P1).
-/// The split is even when possible, so the gutter sits over the Duo's hinge.
+/// The split is an even split of the available width when possible, so the gutter sits at
+/// the container's middle. It does not track the Duo's hinge: a vertical bar or a sidebar
+/// can shift or narrow the container.
 ///
 /// Originally written by Claudio (#60); taken over and revised by Fry.
 struct StudioLayout: View {
