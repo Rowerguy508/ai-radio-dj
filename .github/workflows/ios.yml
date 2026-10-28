@@ -39,6 +39,8 @@ jobs:
         working-directory: ios/AeroDJCore
       - name: Release build excludes the debug test station
         run: ios/scripts/check-release-excludes-test-station.sh
+      - name: Release build cannot enable paid voices
+        run: ios/scripts/check-release-disables-paid-voice.sh
 
   # Linux SwiftPM discovery. swift test here is the official Swift 6.2 image.
   # It does not replace the macOS AeroDJCore job or the iOS simulator gates.
