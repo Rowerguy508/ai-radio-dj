@@ -1,4 +1,5 @@
 import Foundation
+import MusicKit
 import OSLog
 import AeroDJCore
 
@@ -205,18 +206,47 @@ final class StudioSearchModel: ObservableObject {
                 phase = found.isEmpty ? .empty : .idle
             } catch {
                 results = []
-                phase = .failed(Self.searchFailureMessage(error))
+                if let message = Self.searchFailureMessage(error) {
+                    phase = .failed(message)
+                } else {
+                    phase = .idle
+                }
             }
         }
     }
 
-    /// TEMPORARY diagnostic (Atlas #104): type, code, localizedDescription only.
-    static func searchFailureMessage(_ error: Error) -> String {
-        let typeName = String(describing: type(of: error))
-        let code = (error as NSError).code
-        let text = error.localizedDescription
-        searchLog.error("Apple Music search failed: \(typeName, privacy: .public) code \(code, privacy: .public): \(text, privacy: .public)")
-        return "Apple Music search failed: \(typeName) code \(code). \(text)"
+    /// The search banner (#104). Fixed, plain-language copy from `SearchFailureCopy` (#124):
+    /// never localizedDescription, debugDescription, userInfo, the query, titles or IDs. The
+    /// log keeps type, domain and code only (`PlaybackErrorCode`). Returns nil when a newer
+    /// start replaced this one and there is nothing to show.
+    static func searchFailureMessage(_ error: Error) -> String? {
+        let code = PlaybackErrorCode(error)
+        let kind = searchFailureKind(error)
+        searchLog.error("Apple Music search failed: \(code.typeName, privacy: .public) \(code.domain, privacy: .public) code \(code.code, privacy: .public) kind \(String(describing: kind), privacy: .public)")
+        return SearchFailureCopy.message(for: kind)
+    }
+
+    /// MusicKit's own error types first, then the platform-neutral mapping in AeroDJCore.
+    static func searchFailureKind(_ error: Error) -> SearchFailureKind {
+        switch error {
+        case MusicKitError.notAuthorized:
+            return .notAuthorized
+        case MusicKitError.superseded:
+            return .superseded
+        case let token as MusicTokenRequestError:
+            switch token {
+            case .permissionDenied: return .notAuthorized
+            case .userNotSignedIn: return .notSignedIn
+            case .privacyAcknowledgementRequired: return .privacyAcknowledgementRequired
+            case .userTokenRevoked, .userTokenRequestFailed: return .notAuthorized
+            case .developerTokenRequestFailed: return .serviceUnavailable
+            @unknown default: return .unknown
+            }
+        case let request as MusicDataRequest.Error:
+            return SearchFailureCopy.kind(httpStatus: request.status)
+        default:
+            return SearchFailureCopy.kind(for: error)
+        }
     }
 
     private static let searchLog = Logger(subsystem: "com.aerodj.app", category: "search")
