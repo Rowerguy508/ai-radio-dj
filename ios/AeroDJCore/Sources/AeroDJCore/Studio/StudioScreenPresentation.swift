@@ -401,13 +401,13 @@ public extension StationTunerRow {
 
 /// The one indicator each tuner control shows: saved, pending or active (plus saving,
 /// consent and error states). "Active" is used only for settings something actually reads
-/// today; settings nothing reads yet (genres, mood, energy, discovery) say "Saved".
+/// today; settings nothing reads yet (genres, mood, energy) say "Saved".
 public enum TunerIndicator: Equatable, Sendable {
     /// Saved, and nothing reads it yet. Honest: song picking doesn't use these settings.
     case saved
     /// Saved, waiting for a safe moment (copy says when).
     case pending(String)
-    /// Saved and in effect for what reads it (DJ breaks, briefings).
+    /// Saved and in effect for what reads it (song picking, DJ breaks, briefings).
     case active
     case saving
     /// Requested but consent isn't granted; nothing is read.
@@ -452,19 +452,22 @@ public enum TunerIndicator: Equatable, Sendable {
 }
 
 public extension StationSetting {
-    /// Whether anything in the app reads this setting today. Tuning for song picking is
-    /// stored and applied at boundaries but no selection engine reads it yet.
+    /// Whether anything in the app reads this setting today. Seeds, reach and discovery drive
+    /// song picking (`StationQueueFeed`); genres, moods and energy are stored but not read yet.
     var isReadToday: Bool {
         switch self {
-        case .genres, .moods, .energy, .discovery, .seeds, .reach: false
-        case .commentary, .personality, .briefing, .integration: true
+        case .genres, .moods, .energy: false
+        case .discovery, .seeds, .reach, .commentary, .personality, .briefing, .integration: true
         }
     }
 
     /// One honest line on what the setting changes today.
     var usageCopy: String {
         switch self {
-        case .genres, .moods, .energy, .discovery, .seeds, .reach: "Saved with your station. Not used for song picking yet."
+        case .genres, .moods, .energy: "Saved with your station. Not used for song picking yet."
+        case .seeds: "Picks the songs this station plays."
+        case .reach: "Sets how far beyond your picks the songs go."
+        case .discovery: "Sets how much new music is mixed in."
         case .commentary: "Changes how often the DJ talks between songs."
         case .personality: "Changes how long a DJ break may be."
         case .briefing: "Lets DJ breaks carry your briefing."
