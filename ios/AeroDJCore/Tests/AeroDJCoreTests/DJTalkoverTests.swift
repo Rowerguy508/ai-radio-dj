@@ -479,3 +479,225 @@ final class DJTalkoverClipsTests: XCTestCase {
                                               voice: v, nextTrackDuration: 200).plan?.mode, .outroAndIntro)
     }
 }
+
+/// `TalkoverBook`: the coordinator's bookkeeping across boundaries (Atlas's #210 review).
+/// Every boundary below follows the coordinator's call order: `mayArm` → `claim` → run →
+/// boundary (`release`) → next song's `songStarted` (latency measured first) → voice end.
+final class DJTalkoverBookTests: XCTestCase {
+    private let voice = TalkoverVoice(totalSeconds: 18.3, talkOverStartSeconds: 15.3, talkOverSeconds: 3)
+
+    private func key(_ i: Int, _ id: String? = nil) -> TalkoverBook.Key {
+        TalkoverBook.Key(index: i, trackID: id ?? "t\(i)")
+    }
+
+    private func newRun(_ k: Int) throws -> TalkoverRun {
+        let d = TalkoverPlanner.decide(flag: true, track: TalkoverTrack(duration: 210, position: 203),
+                                       voice: voice, nextTrackDuration: 200)
+        return TalkoverRun(afterTrack: k, plan: try XCTUnwrap(d.plan))
+    }
+
+    private func startVoice(_ book: inout TalkoverBook, at t: Double, late: Double = 0) {
+        let at = book.run!.plan.voiceStartAt
+        book.run?.voiceStarted(at: t, songPosition: at + late)
+    }
+
+    /// One full talk-over for boundary k at time base t; leaves song k+1 started.
+    private func fullTalkover(_ book: inout TalkoverBook, _ k: Int, t: Double,
+                              file: StaticString = #filePath, line: UInt = #line) throws {
+        XCTAssertTrue(book.mayArm(key(k)), "boundary \(k) arms", file: file, line: line)
+        book.claim(key(k))
+        book.run = try newRun(k)
+        startVoice(&book, at: t)
+        let overlap = book.run!.plan.outroOverlap
+        _ = book.run?.naturalEnd(at: t + overlap)
+        book.run?.nextPlayCalled(at: t + 14.5)
+        book.release(key(k))                       // the boundary returned while still speaking
+        XCTAssertNotNil(book.run, "still speaking over the intro", file: file, line: line)
+        _ = book.run?.nextAudible(at: t + 15.3)    // coordinator measures before songStarted
+        book.songStarted(key(k + 1))
+        XCTAssertNotNil(book.run, "voice still audible", file: file, line: line)
+        XCTAssertFalse(book.mayArm(key(k + 1)), "no second run while one speaks", file: file, line: line)
+        book.run?.voiceFinished(at: t + 18.3)
+        book.retireIfDone()                        // the voice task's last step
+        XCTAssertNil(book.run, "retired after the closing line", file: file, line: line)
+        XCTAssertFalse(book.owns(key(k)), file: file, line: line)
+    }
+
+    func testThreeConsecutiveTalkoversEachArmAndComplete() throws {
+        var book = TalkoverBook()
+        book.songStarted(key(0))
+        try fullTalkover(&book, 0, t: 100)
+        try fullTalkover(&book, 1, t: 400)
+        try fullTalkover(&book, 2, t: 700)
+        XCTAssertTrue(book.owned.isEmpty)
+    }
+
+    func testFallbackToGapBreakThenTheNextBoundaryStillArms() throws {
+        var book = TalkoverBook()
+        book.songStarted(key(0))
+        book.claim(key(0))
+        book.run = try newRun(0)
+        let end = book.run!.naturalEnd(at: 50)          // the song beat the voice
+        XCTAssertTrue(end.abandoned)
+        book.run = nil                                   // boundary: never spoke, gap break
+        book.release(key(0))
+        book.songStarted(key(1))
+        try fullTalkover(&book, 1, t: 300)
+    }
+
+    func testEveryCancelRetiresTheRun() throws {
+        let cancels: [TalkoverCancel] = [.skip, .userStop, .interruption, .routeRemoved, .revoked, .voiceFailed]
+        for (n, reason) in cancels.enumerated() {
+            var book = TalkoverBook()
+            book.songStarted(key(0))
+            book.claim(key(0))
+            book.run = try newRun(0)
+            if n % 2 == 0 { startVoice(&book, at: 10) }
+            _ = book.run?.stopped(reason)
+            book.retireIfDone()
+            XCTAssertNil(book.run, "\(reason) retires")
+            book.release(key(0))
+            book.songStarted(key(1))
+            XCTAssertTrue(book.mayArm(key(1)), "\(reason): the next boundary arms")
+        }
+    }
+
+    func testSeekCancelsRetireAndTheNextBoundaryArms() throws {
+        var book = TalkoverBook()
+        book.songStarted(key(0))
+        book.claim(key(0))
+        book.run = try newRun(0)
+        startVoice(&book, at: 10)
+        XCTAssertEqual(book.run?.userSeeked(to: 30), .stopVoice(fade: true))
+        book.retireIfDone()
+        XCTAssertNil(book.run)
+        // Seek back before the voice: the run is over, the held break plays in the gap.
+        book.claim(key(1))
+        book.run = try newRun(1)
+        XCTAssertEqual(book.run?.userSeeked(to: 10), .abandon(.seekOutOfWindow))
+        XCTAssertFalse(book.mayArm(key(1)), "not re-armed: the held break owns this boundary")
+        book.run = nil
+        book.release(key(1))
+        book.songStarted(key(2))
+        XCTAssertTrue(book.mayArm(key(2)))
+    }
+
+    func testTimingMissStillRetires() throws {
+        var book = TalkoverBook()
+        book.songStarted(key(0))
+        book.claim(key(0))
+        book.run = try newRun(0)
+        startVoice(&book, at: 10, late: 2) // late
+        _ = book.run?.naturalEnd(at: 40)                                                 // after the cue
+        book.run?.nextPlayCalled(at: 40)
+        book.run?.voiceFinished(at: 41)                                                  // before the next song
+        book.release(key(0))
+        XCTAssertNotNil(book.run, "kept for the latency sample")
+        _ = book.run?.nextAudible(at: 43)
+        book.songStarted(key(1))
+        XCTAssertNil(book.run)
+        XCTAssertTrue(book.mayArm(key(1)))
+    }
+
+    func testNextSongThatNeverStartsDoesNotBlockLaterBoundaries() throws {
+        var book = TalkoverBook()
+        book.songStarted(key(0))
+        book.claim(key(0))
+        book.run = try newRun(0)
+        startVoice(&book, at: 10)
+        _ = book.run?.naturalEnd(at: 16)
+        book.run?.nextPlayCalled(at: 24.5)
+        book.run?.voiceFinished(at: 28.3)
+        book.release(key(0))
+        // Song 1's start was refused; later song 2 starts (no latency sample for boundary 0).
+        book.songStarted(key(2))
+        XCTAssertNil(book.run)
+        XCTAssertTrue(book.mayArm(key(2)))
+    }
+
+    func testSkipReleasesTheSkippedBoundary() throws {
+        var book = TalkoverBook()
+        book.songStarted(key(0))
+        book.claim(key(0))
+        book.run = try newRun(0)
+        book.songSkipped(key(0))
+        XCTAssertFalse(book.owns(key(0)), "the skipped index is not left owned")
+        XCTAssertNil(book.run)
+        XCTAssertEqual(book.owned, [])
+    }
+
+    func testQueueReplacementClearsOwnedSoIndexZeroOfTheNewQueueArms() throws {
+        var book = TalkoverBook()
+        book.songStarted(key(0, "a"))
+        book.songStarted(key(1, "b"))
+        book.claim(key(1, "b"))
+        book.run = try newRun(1)
+        // A tap or station change replaces the queue; the old run was stopped as userStop.
+        _ = book.run?.stopped(.userStop)
+        let replaced = book.songStarted(key(0, "x"))
+        XCTAssertTrue(replaced)
+        XCTAssertTrue(book.owned.isEmpty)
+        XCTAssertNil(book.run)
+        XCTAssertTrue(book.mayArm(key(0, "x")))
+        book.claim(key(0, "x"))
+        book.release(key(0, "x"))
+        // A refill that keeps playing (index advances) is not a replacement.
+        XCTAssertFalse(book.songStarted(key(1, "y")))
+        // The old queue's index 1 key never matches the new queue's index 1.
+        XCTAssertTrue(book.mayArm(key(1, "y")))
+    }
+
+    func testSameIndexWithAnotherTrackIsAReplacement() throws {
+        var book = TalkoverBook()
+        book.songStarted(key(0, "a"))
+        book.claim(key(0, "a"))
+        XCTAssertTrue(book.songStarted(key(0, "b")))
+        XCTAssertTrue(book.owned.isEmpty)
+    }
+
+    func testTheSameSongStartingAgainFreshensItsBoundary() throws {
+        var book = TalkoverBook()
+        book.songStarted(key(0, "a"))
+        book.claim(key(0, "a"))
+        book.run = try newRun(0)
+        XCTAssertFalse(book.songStarted(key(0, "a")))
+        XCTAssertFalse(book.owns(key(0, "a")))
+        XCTAssertNil(book.run)
+        XCTAssertTrue(book.mayArm(key(0, "a")))
+    }
+
+    /// Echo's ask: route loss (headphones out) in the intro talk-over window, between the
+    /// next song's play call (S − L) and the end of the closing line. The tagged route stop
+    /// cancels the run as `routeRemoved` with a stop-voice action (the adapter's
+    /// `completeNarration` releases the duck), the run retires (no latency wait), and the
+    /// next boundary arms. The next song itself follows the existing route policy.
+    func testRouteLossDuringTheIntroWindowStopsTheVoiceAndRetires() throws {
+        var book = TalkoverBook()
+        book.songStarted(key(0))
+        book.claim(key(0))
+        book.run = try newRun(0)
+        let plan = book.run!.plan
+        let start = 100.0
+        book.run?.voiceStarted(at: start, songPosition: plan.voiceStartAt)
+        _ = book.run?.naturalEnd(at: start + plan.outroOverlap)
+        let playAt = start + (plan.nextPlayAfterVoice ?? 0)
+        book.run?.nextPlayCalled(at: playAt)
+        book.release(key(0))
+        // Anywhere in [S − L, S + C]: right after play(), mid-gap, mid closing line.
+        for at in [playAt + 0.01, start + plan.voiceSeconds - 1.5, start + plan.voiceSeconds - 0.01] {
+            var r = try XCTUnwrap(book.run)
+            XCTAssertTrue(r.isSpeaking, "speaking at \(at)")
+            XCTAssertEqual(r.stopped(.routeRemoved), .stopVoice(fade: false), "stop now, no fade: the route is gone")
+            XCTAssertEqual(r.cancelled, .routeRemoved)
+            XCTAssertEqual(r.phase, .done)
+            r.voiceFinished(at: at + 0.1) // a late delegate callback changes nothing
+            XCTAssertEqual(r.phase, .done)
+            XCTAssertFalse(r.misses.contains(.voiceEndedFirst))
+        }
+        _ = book.run?.stopped(.routeRemoved)
+        book.retireIfDone()
+        XCTAssertNil(book.run, "a cancelled run does not wait for the latency sample")
+        book.songStarted(key(1))
+        XCTAssertTrue(book.mayArm(key(1)))
+    }
+}

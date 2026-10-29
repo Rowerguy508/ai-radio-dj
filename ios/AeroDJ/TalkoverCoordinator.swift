@@ -18,17 +18,33 @@ enum TalkoverAudioSession {
 
     /// Category with `.duckOthers` (which implies mixing), then activate: ducking starts here.
     /// False: nothing changed that matters; the break falls back to the gap.
-    static func duck() -> Bool {
+    @MainActor static func duck(afterTrack k: Int) -> Bool {
         let session = AVAudioSession.sharedInstance()
+        let otherBefore = session.isOtherAudioPlaying
+        let hintBefore = session.secondaryAudioShouldBeSilencedHint
+        var activated = false
+        defer {
+            probe(TalkoverDuckProbe(otherBefore: otherBefore, hintBefore: hintBefore, activated: activated,
+                                    otherAfter: session.isOtherAudioPlaying,
+                                    hintAfter: session.secondaryAudioShouldBeSilencedHint), afterTrack: k)
+        }
         do {
             try session.setCategory(.playback, mode: .default, options: [.duckOthers])
             try session.setActive(true)
+            activated = true
             return true
         } catch {
             log.error("talkover duck failed code=\((error as NSError).code, privacy: .public)")
             restore()
             return false
         }
+    }
+
+    /// DIAG duck probe (codes only). Release builds log nothing.
+    @MainActor private static func probe(_ p: TalkoverDuckProbe, afterTrack k: Int) {
+        #if AERODJ_P0_DIAG
+        P0EventTraceHost.shared.talkover { trace, t in _ = trace.talkoverDuckProbe(p, afterTrack: k, at: t) }
+        #endif
     }
 
     /// Back to the app's normal category after the session was released.
@@ -90,11 +106,16 @@ final class TalkoverCoordinator {
 
     /// The song on air, from `onSongStarted`. Nil between songs.
     private var song: (index: Int, duration: Double?)?
-    /// Boundaries this coordinator took the break for. The binder skips its own hand-out.
-    private var owned: Set<Int> = []
+    /// Owned boundaries and the run in flight (pure, tested in AeroDJCore). Keys are queue
+    /// index plus track ID, so a new queue's index 0 never collides with the old queue's.
+    private var book = TalkoverBook()
     /// A break taken early that has not been spoken: played in the gap at the natural end.
     private var held: (afterTrack: Int, prepared: PreparedDJBreak)?
-    private var run: TalkoverRun?
+    /// The run in flight; `book` retires it on every terminal path.
+    private var run: TalkoverRun? {
+        get { book.run }
+        set { book.run = newValue }
+    }
     private var taking: Task<Void, Never>?
     private var ticker: Task<Void, Never>?
     private var generation = 0
@@ -139,8 +160,8 @@ final class TalkoverCoordinator {
             run = r
             reportMisses()
         }
-        if let h = held, h.afterTrack != index - 1 || index <= h.afterTrack { drop(h.afterTrack) }
-        owned = owned.filter { $0 >= index }
+        let replaced = book.songStarted(key(index))
+        if let h = held, replaced || h.afterTrack != index - 1 { drop(h.afterTrack) }
         song = (index, duration)
     }
 
@@ -149,6 +170,7 @@ final class TalkoverCoordinator {
         if song?.index == index { song = nil }
         cancelRun(.skip)
         if held?.afterTrack == index { drop(index) }
+        book.songSkipped(key(index))
     }
 
     /// `onSongSeeked` (AppDependencies.wireSongSeek).
@@ -162,7 +184,7 @@ final class TalkoverCoordinator {
     /// The natural end of song k, synchronously from the binder. True: this coordinator owns
     /// the boundary; the binder must not hand out or take a break, and awaits `boundary(k)`.
     func claimsBoundary(_ k: Int) -> Bool {
-        guard owned.contains(k) else { return false }
+        guard book.owns(key(k)) else { return false }
         // The song is over: a take still waiting for the voice start stops waiting.
         song = nil
         // A break not yet spoken may play in the gap through the normal path; hand it out now,
@@ -196,7 +218,7 @@ final class TalkoverCoordinator {
                 } else if run?.cancelled == nil {
                     run?.nextPlayCalled(at: ProcessInfo.processInfo.systemUptime)
                 }
-                owned.remove(k)
+                book.release(key(k))
                 return
             }
             if !end.abandoned {
@@ -204,14 +226,15 @@ final class TalkoverCoordinator {
                 if handedOut == k { interlude.abandonHandOut(); handedOut = nil }
                 reportMisses()
                 music.skipInterlude()
-                owned.remove(k)
+                book.release(key(k))
                 return
             }
             reportMisses()
         }
         // Never spoke (song beat the voice, seek back, voice could not start, hard-break plan):
         // the held break plays in the gap, as today.
-        owned.remove(k)
+        run = nil // never spoke: the run is over, the gap break takes the boundary
+        book.release(key(k))
         if handedOut != k { interlude.handOut(afterTrack: k) }
         handedOut = nil
         guard let h = held, h.afterTrack == k else {
@@ -242,11 +265,12 @@ final class TalkoverCoordinator {
         let position = music.playbackTime
         guard let armAt = TalkoverPlanner.armAt(duration: duration, config: config) else { return 1.0 }
         if position < armAt - 1 { return 1.0 }
-        guard !owned.contains(k), taking == nil, run == nil, held == nil, !interlude.isSpeaking else { return 0.1 }
+        guard book.mayArm(key(k)), taking == nil, held == nil, !interlude.isSpeaking else { return 0.1 }
         guard position >= armAt else { return 0.1 }
         generation += 1
         let token = generation
-        owned.insert(k)
+        run = nil // a finished run for an earlier boundary
+        book.claim(key(k))
         taking = Task { @MainActor [weak self] in
             await self?.take(k, token: token)
             self?.taking = nil
@@ -257,11 +281,11 @@ final class TalkoverCoordinator {
     private func take(_ k: Int, token: Int) async {
         guard await djSession.breakIsReady(afterTrack: k) else {
             // Not rendered yet: leave it to the boundary, exactly as today.
-            owned.remove(k)
+            book.release(key(k))
             trace(.decision(.hardBreak(.tooLateToArm), k))
             return
         }
-        guard token == generation, song?.index == k else { owned.remove(k); return }
+        guard token == generation, song?.index == k else { book.release(key(k)); return }
         guard let prepared = await djSession.naturalBoundary(afterTrack: k) else {
             return // owned: the boundary skips (consent or stale-next dropped everything)
         }
@@ -287,7 +311,11 @@ final class TalkoverCoordinator {
             if left <= 0.02 { break }
             try? await Task.sleep(nanoseconds: UInt64(min(left, 0.25) * 1_000_000_000))
         }
-        guard run?.phase == .armed, run?.afterTrack == k, song?.index == k, music.isPlaying else { return }
+        guard run?.phase == .armed, run?.afterTrack == k, song?.index == k, music.isPlaying else {
+            // Not started (paused, song over or replaced): the boundary or a stop resolves it.
+            if song?.index == k, !music.isPlaying { cancelRun(.userStop) }
+            return
+        }
         let line = prepared.cues.filter { !(resolved.droppedClosing && $0.id == prepared.talkOverCueID) }
             .map(\.text).joined(separator: " ")
         let voiceTask = Task { @MainActor [weak self] in
@@ -306,6 +334,7 @@ final class TalkoverCoordinator {
                 self.trace(.cancel(.voiceFailed, k))
             }
             if self.run?.naturalEndAt != nil || self.run?.cancelled != nil { self.reportMisses() }
+            self.book.retireIfDone()
         }
         _ = voiceTask
     }
@@ -316,6 +345,10 @@ final class TalkoverCoordinator {
         let voices = Set(clips.map { "\($0.audio.providerID)/\($0.audio.voiceID)" })
         guard voices.count > 1 else { return clips.map { _ in 1 } }
         return TalkoverLoudness.gains(rmsDBFS: clips.map { TalkoverClipLoudness.rmsDBFS($0.audio.data) })
+    }
+
+    private func key(_ k: Int) -> TalkoverBook.Key {
+        TalkoverBook.Key(index: k, trackID: music.queue.indices.contains(k) ? music.queue[k].id : "")
     }
 
     private func waitUntil(_ deadline: Double, afterTrack k: Int) async {
@@ -347,6 +380,7 @@ final class TalkoverCoordinator {
         trace(.cancel(reason, r.afterTrack))
         log.notice("\(TalkoverLog.cancel(afterTrack: r.afterTrack, reason), privacy: .public)")
         _ = action // the adapter's own stop already halts a playing clip
+        book.retireIfDone()
     }
 
     private func apply(_ action: TalkoverRun.Action, afterTrack k: Int) {
@@ -366,7 +400,7 @@ final class TalkoverCoordinator {
 
     private func drop(_ k: Int) {
         if held?.afterTrack == k { held = nil }
-        owned.remove(k)
+        book.release(key(k))
         djSession.talkoverDropped(afterTrack: k)
     }
 

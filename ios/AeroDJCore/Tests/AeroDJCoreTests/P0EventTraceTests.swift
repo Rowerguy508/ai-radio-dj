@@ -326,6 +326,8 @@ final class P0EventTraceTests: XCTestCase {
         trace.talkoverMiss(.voiceEndedFirst, afterTrack: 0, seconds: nil, at: 9)
         for c in TalkoverCancel.allCases { trace.talkoverCancel(c, afterTrack: 0, at: 9) }
         trace.talkoverLatency(measured: 0.912, next: 0.83, afterTrack: 0, at: 9)
+        trace.talkoverDuckProbe(TalkoverDuckProbe(otherBefore: true, hintBefore: false, activated: true,
+                                                  otherAfter: true, hintAfter: false), afterTrack: 0, at: 9)
         XCTAssertFalse(trace.rows.contains { $0.detail.contains("=unknown") }, "every talk-over code has a trace code")
         shapes += trace.rows
         XCTAssertEqual(Set(shapes.map(\.event)), Set(P0TraceEvent.allCases), "every event kind is checked")

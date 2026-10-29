@@ -145,6 +145,41 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertFalse(none, "nothing planned there")
     }
 
+    /// Sentinel (#210): the talk-over takes boundary k early, while song k still plays. A
+    /// duplicate `songStarted(k)` after that take must not prepare (render, spend) a second
+    /// break: exactly one prepare for the boundary.
+    func testDuplicateSongStartAfterEarlyTakeNeverPreparesASecondBreak() async throws {
+        final class PrepareSpy: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _count = 0
+            var count: Int { lock.withLock { _count } }
+            func hit() { lock.withLock { _count += 1 } }
+        }
+        let spy = PrepareSpy()
+        let r = await rig()
+        await r.preparer.observe { event in
+            if case .preparing(afterTrack: 0, _) = event { spy.hit() }
+        }
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready before the boundary")
+        let early = await r.session.naturalBoundary(afterTrack: 0)   // the talk-over's early take
+        XCTAssertNotNil(early)
+        await r.session.songStarted(index: 0, remaining: .seconds(8)) // duplicate start report
+        await r.session.songStarted(index: 0, remaining: .seconds(60))
+        await r.session.songSeeked(index: 0, remaining: .seconds(120)) // and no seek re-arm either
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(spy.count, 1, "one prepare for boundary 0, never a second render")
+        let taken = await r.preparer.testTaken(afterTrack: 0)
+        XCTAssertTrue(taken)
+        let ready = await r.session.breakIsReady(afterTrack: 0)
+        XCTAssertFalse(ready)
+        // A new queue starts over: boundary 0 of that queue prepares again.
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ spy.count == 2 }, "the new queue's boundary 0 prepares")
+    }
+
     func testLateOrCutBreaksAreSkippedAndNeverWait() async {
         let r = await rig()
         await r.session.queueStarted(djTracks(8))

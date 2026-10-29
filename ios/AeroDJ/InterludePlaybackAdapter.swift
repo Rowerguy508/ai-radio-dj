@@ -447,7 +447,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         guard !isSpeaking, !players.isEmpty, !line.isEmpty else { return .failed }
         // Same guard as a boundary break: the system is holding playback, or the user paused.
         guard !music.pausedBySystem, music.mayAutoResume else { return .cancelled }
-        guard TalkoverAudioSession.duck() else { return .failed }
+        guard TalkoverAudioSession.duck(afterTrack: afterTrack) else { return .failed }
         breakTrack = afterTrack
         for (player, gain) in zip(players, gains + Array(repeating: 1, count: max(0, players.count - gains.count))) {
             player.volume = gain

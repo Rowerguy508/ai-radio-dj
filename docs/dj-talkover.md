@@ -25,12 +25,66 @@ cancels a voice that has already started (as a skip does today).
 | `ApplicationMusicPlayer` has no volume or gain API. | No custom duck curve on the song. The only lever is the audio session. | [ApplicationMusicPlayer](https://developer.apple.com/documentation/musickit/applicationmusicplayer), [MusicPlayer](https://developer.apple.com/documentation/musickit/musicplayer) |
 | `.duckOthers` lowers *other* audio while our session is active. It implies `.mixWithOthers`. Apple frames ducking as brief ("a few seconds"). | Depth and ramp are system-fixed (about −15 dB, a short ramp, not measured here). Ducking starts on `setActive(true)` and ends on deactivation. | [duckOthers](https://developer.apple.com/documentation/avfaudio/avaudiosession/categoryoptions-swift.struct/duckothers), [mixWithOthers](https://developer.apple.com/documentation/avfaudio/avaudiosession/categoryoptions-swift.struct/mixwithothers) |
 | `setActive(false, options: .notifyOthersOnDeactivation)` unducks others. | The swell is the system's unduck ramp, triggered when the closing line ends (`completeNarration` → `releaseSessionAfterBreak`). | [notifyOthersOnDeactivation](https://developer.apple.com/documentation/avfaudio/avaudiosession/setactiveoptions/notifyothersondeactivation) |
-| `ApplicationMusicPlayer` plays through the system music process, outside our app's session (repo evidence: breaks already pause it and our session deactivates). | `.duckOthers` should duck our own music player. **Unverified; this is the first device check.** | [ApplicationMusicPlayer](https://developer.apple.com/documentation/musickit/applicationmusicplayer) |
+| `ApplicationMusicPlayer` plays through the system music process, outside our app's session (repo evidence: Build 10 P0 on the Duo, where our non-mixable `setActive(true)` was interrupted 1 ms after music started). | `.duckOthers` *may* duck our own music player. **Evidence is mixed; see "Does `.duckOthers` duck our own music?". This is the first device check.** | [ApplicationMusicPlayer](https://developer.apple.com/documentation/musickit/applicationmusicplayer) |
 | `AVAudioPlayer.play(atTime:)` with `deviceCurrentTime` schedules a clip precisely. `setVolume(_:fadeDuration:)` ramps a clip. | The 0.3 s speech gap before the closing line is scheduled by the player. A seek mid-voice fades the voice out over 0.25 s. Per-clip `volume` matches mixed voices. | [play(atTime:)](https://developer.apple.com/documentation/avfaudio/avaudioplayer/play(attime:)), [deviceCurrentTime](https://developer.apple.com/documentation/avfaudio/avaudioplayer/devicecurrenttime), [setVolume(_:fadeDuration:)](https://developer.apple.com/documentation/avfaudio/avaudioplayer/setvolume(_:fadeduration:)) |
 | `MusicPlayer.Transition` (`.crossfade`, iOS 18+) applies between queue entries. | Our queue is one song at a time (MusicKitService), so it does not apply today. It is a possible future lever for Atlas's queue; it is not used here. | [MusicPlayer.Transition](https://developer.apple.com/documentation/musickit/musicplayer/transition) |
 | `play()` start latency is variable. `prepareToPlay()` exists, but the repo's queue swap makes it per-song. | Song k+1's `play()` is called early by a measured latency L. | [prepareToPlay()](https://developer.apple.com/documentation/musickit/musicplayer/preparetoplay()) |
 | Interruptions and route changes arrive as session notifications. | Existing handlers already stop the break with reason tags; talk-over listens to the same stop path. | [Handling audio interruptions](https://developer.apple.com/documentation/avfaudio/handling-audio-interruptions), [Responding to route changes](https://developer.apple.com/documentation/avfaudio/responding-to-audio-route-changes) |
 | `MusicKit.Song` carries `duration` but no intro, outro or cue points. | The outro overlap is capped by a share of the duration. Intro length is unknown, so the closing line is capped at 4 s. | [Song](https://developer.apple.com/documentation/musickit/song) |
+
+## Does `.duckOthers` duck our own music? (evidence, not proof)
+
+**Short answer: unknown until the owner listens. Confidence that it works: about 40% (low to
+medium).** Nothing here has run on a device.
+
+What we found (Oct 2026):
+
+| Source | What it says | Weight |
+|---|---|---|
+| Apple, [`duckOthers`](https://developer.apple.com/documentation/avfaudio/avaudiosession/categoryoptions-swift.struct/duckothers) | Ducking reduces the volume of other audio sessions while our session plays. No word on `ApplicationMusicPlayer`. | Defines the lever, not the case. |
+| Apple, [`ApplicationMusicPlayer`](https://developer.apple.com/documentation/musickit/applicationmusicplayer), [WWDC26 "Integrate MusicKit into your app"](https://developer.apple.com/videos/play/wwdc2026/254/) | App player vs system player. No volume API, no word on ducking. | Neutral. |
+| Apple DTS on [rdar://28431676](https://openradar.appspot.com/28431676) (MPMusicPlayerController.applicationMusicPlayer) | Calls it "remote playback" that interrupts the app's own session unless the session mixes. | **For:** the music is a *separate* session from ours, so "other" can include it. |
+| Repo, Build 10 P0 (`AudioSessionActivation`, -Atlas, Duo) | Our non-mixable `setActive(true)` was interrupted 1 ms after `ApplicationMusicPlayer` started. | **For:** same conclusion, on our own device. |
+| Apple Developer Forums, MusicKit thread "Ducking MusicKit output when playing another sound" ([tag page](https://developer.apple.com/forums/tags/musickit?page=6), May 2025, no answer) | `.playback`/`.spokenAudio` with `[.duckOthers, .mixWithOthers]` then `setActive(true)` and `AVAudioPlayer`: "`.duckOthers` is not ducking the Application Music Player output". | **Against.** |
+| Stack Overflow 78212018 (2024, [mirror](https://devhide.com/how-do-you-control-the-volume-of-ios-applicationmusicplayer-78212018)) | `.duckOthers` "doesn't have any effect on the music player's volume". | **Against.** |
+| [Stack Overflow 76907591](https://stackoverflow.com/questions/76907591) (Aug 2023, the asker's own answer) | `setActive(false)` → `.playback` with `[.duckOthers]` → `setActive(true)`, then `AVSpeechSynthesizer`: "It lowers music played using MusicKit played in the same program." | **For.** The one positive report. |
+| Apple Forums, Mac Catalyst | The audio "plays in com.apple.MediaPlayer.RemotePlayerService, not in our process". | Explains why there is no volume API. |
+
+How to read this:
+- The negative reports change the category and call `setActive(true)` on a session that was most
+  likely **already active**. Ducking starts on an activation, so that may be a no-op.
+- The positive report deactivates first, so its `setActive(true)` really activates.
+- Our path is the positive one: since Build 10 the app never activates its session while music
+  plays, so `TalkoverAudioSession.duck` makes a real activation.
+- That is a plausible explanation, not a proof. iOS versions differ, and there may be no Apple
+  statement either way.
+
+**What CI cannot prove.** The simulator cannot play catalog audio: it needs an Apple Music
+subscription and a signed-in account, and CI has neither. A simulator test with an `AVAudioPlayer`
+stand-in for the music would only show that ducking works between two of our own sessions, which
+is not the question. Ducking depth is also not observable through any API. So there is no CI probe;
+the proof is the owner's ears.
+
+**On-device probe (DIAG `talkover kind=duckProbe`).** Around the duck activation we log the
+session's own report, as codes only:
+- `otherAudio` and `secondaryHint` (`isOtherAudioPlaying` and
+  `secondaryAudioShouldBeSilencedHint`) **before** `setActive(true)`;
+- `activated`;
+- `otherAfter` and `hintAfter` right after.
+
+If `otherAudio=true` while only our music is playing, the system counts `ApplicationMusicPlayer`
+as another session. That is the precondition for `.duckOthers` to reach it. It does not show the
+level. `otherAudio=false` makes a duck very unlikely.
+
+**If it does not duck (fallback, nothing new built).**
+- Detection: the owner's A/B listen (checklist step 2), plus `duckProbe otherAudio=false`.
+- Action 1, today: the owner turns the toggle OFF. That is exactly today's gap break.
+- Action 2, a later PR if wanted: keep only the intro half. Play MAIN in the gap with the music
+  paused, as today, and the closing line over the next intro. With no duck, the closing line
+  competes with the intro at full level, so this needs its own listen. There is no volume API to
+  do better.
+- Auto-detecting "no duck" in code is not possible. The level is not observable, and the probe is
+  a hint, not a measurement. So there is no automatic switch: a flag default stays the decision.
 
 ## Duck depth and curves
 
@@ -135,9 +189,11 @@ the planner inserts the gap with `play(atTime:)` rather than expecting it in the
   `ios/scripts/testflight-swift-conditions.sh`.
 - It is **OFF** everywhere else, including Debug, fixture mode, the test station
   (`buildDefault: false`) and unit tests.
-- The on-device toggle "DJ talk-over" sits in the P0 DIAG panel, which exists only when `p0_diag`
-  is set. **Dispatch the owner A/B build with both `owner_ab: true` and `p0_diag: true`** to get the
-  toggle and the trace.
+- The on-device toggle "DJ talk-over" is a toolbar button on the Player screen (top right, mic
+  icon, id `owner.talkoverToggle`). It exists **only in an `AERODJ_OWNER_AB` build**
+  (`ios/AeroDJ/TalkoverToggle+App.swift`), with or without `p0_diag`. A normal owner build
+  (`owner_ab: true`) has it. Every other build compiles `talkoverToggleEntry()` to a no-op.
+- `p0_diag: true` is optional. It adds only the trace rows below.
 - Flipping it ON for everyone after the device test is a one-line change: make
   `DJTalkoverFlag.buildDefault` return `true`. The owner wants it ON once it is device-tested.
 
@@ -149,16 +205,19 @@ the planner inserts the gap with `play(atTime:)` rather than expecting it in the
 | `miss` | `reason` (voiceStartLate, endedBeforeVoice, nextStartLate, nextStartEarly, endAfterPlayCue, voiceEndedFirst), `ms` |
 | `cancel` | `reason` (seekOutOfWindow, seekWhileSpeaking, skip, userStop, interruption, routeRemoved, revoked, voiceFailed) |
 | `latency` | `measured` (ms), `lat` (new L, ms) |
+| `duckProbe` | `otherAudio`, `secondaryHint` (before activation), `activated`, `otherAfter`, `hintAfter` (booleans) |
 
 The same lines go to the unified log (subsystem AeroDJ, category talkover) as `.public`. They hold
 numbers and codes only.
 
 ## On-device checklist (owner TestFlight A/B; NOT yet run)
 
-Build: workflow_dispatch with `owner_ab: true` and `p0_diag: true`. Use the iPhone, then the Duo.
+Build: workflow_dispatch with `owner_ab: true` (`p0_diag: true` is optional and adds the trace).
+Use the iPhone, then the Duo.
 
 1. **Flag**
-   - Open the DIAG panel. Confirm "DJ talk-over" is ON by default in this build.
+   - On the Player screen, confirm the "DJ talk-over" toolbar button (mic icon, top right) is ON by
+     default in this build.
    - Turn it OFF and play two boundaries: they must sound exactly like today (gap break, music
      stopped).
    - Turn it back ON.
@@ -188,6 +247,16 @@ Build: workflow_dispatch with `owner_ab: true` and `p0_diag: true`. Use the iPho
      interruption`), and the music behaves as today afterwards.
    - Unplug the headphones or turn off Bluetooth during the voice → `cancel routeRemoved`, with no
      voice from the speaker.
+   - **Route loss in the intro window (Echo).** Unplug, or lose the Bluetooth route, between
+     S − L (the next song's `play()`) and the end of the closing line, while song k+1 is starting
+     under the voice. Expected:
+     - the voice stops through the tagged route-change stop (`cancel routeRemoved`);
+     - the duck is released (session deactivated with notify);
+     - song k+1 continues or pauses per the existing route policy, and nothing stays ducked
+       (check for 10 s at full volume);
+     - the next boundary still arms.
+     - Modelled on Linux by `DJTalkoverBookTests.testRouteLossDuringTheIntroWindowStopsTheVoiceAndRetires`
+       (bookkeeping only; the audio is unproven).
 8. **Duo fold** during the voice and during the outro: no stuck duck, and the state is consistent
    on unfold.
 9. **Studio UI**
@@ -197,9 +266,31 @@ Build: workflow_dispatch with `owner_ab: true` and `p0_diag: true`. Use the iPho
       never plays later.
 11. **Export the trace.** Confirm the `talkover` rows contain only codes and numbers.
 
+## Bookkeeping fixes (#210 review)
+
+- **Atlas, blocker:** the run was never reset, so talk-over fired once per launch. `TalkoverBook`
+  (AeroDJCore) now retires the run on every terminal path: done, fallback, cancel, miss, and a next
+  song that never starts.
+  - Tests: `DJTalkoverBookTests.testThreeConsecutiveTalkoversEachArmAndComplete`,
+    `testFallbackToGapBreakThenTheNextBoundaryStillArms`, `testEveryCancelRetiresTheRun`,
+    `testSeekCancelsRetireAndTheNextBoundaryArms`, `testTimingMissStillRetires`,
+    `testNextSongThatNeverStartsDoesNotBlockLaterBoundaries`.
+- **Atlas, should fix:** owned boundaries are keyed by (index, track id). A skip releases its key.
+  A queue replacement (index goes back, or the same index holds another track) clears them all.
+  - Tests: `testSkipReleasesTheSkippedBoundary`,
+    `testQueueReplacementClearsOwnedSoIndexZeroOfTheNewQueueArms`,
+    `testSameIndexWithAnotherTrackIsAReplacement`,
+    `testTheSameSongStartingAgainFreshensItsBoundary`.
+- **Sentinel, spending:** after the early take, a duplicate `onSongStarted(k)` re-ran prepare and
+  rendered a second cloud break. `DJBreakPreparer` now marks k as taken, and only a new queue
+  (`cancelAll()`) clears it.
+  - Test: `DJBreakSessionTests.testDuplicateSongStartAfterEarlyTakeNeverPreparesASecondBreak`
+    (prepare count 1; it fails with 2 without the fix).
+
 ## Risks and unknowns
 
-- Whether `.duckOthers` ducks our own `ApplicationMusicPlayer` (the critical check).
+- Whether `.duckOthers` ducks our own `ApplicationMusicPlayer` (the critical check; about 40%,
+  see the evidence section).
 - Changing the session category while music plays may glitch the music; listen for a click at
   voice start or end.
 - Apple's guidance frames ducking as brief, and our voice can last up to ~19 s.
@@ -211,5 +302,7 @@ Build: workflow_dispatch with `owner_ab: true` and `p0_diag: true`. Use the iPho
 - The interruption policy sees `breakActive` during the intro overlap, which is slightly different
   from today.
 - A fade that finishes naturally reports `.finished` (minor).
+- The owner-only toggle (`#if AERODJ_OWNER_AB`) is compiled only by the TestFlight owner_ab
+  build. CI checks the build settings for that flag, not an app build with it.
 - App-target code is compiled only by iOS CI. Linux `swift test` covers only the AeroDJCore planner,
   state machine, loudness, seam and logs.

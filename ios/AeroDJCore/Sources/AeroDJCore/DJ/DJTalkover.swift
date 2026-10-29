@@ -484,6 +484,118 @@ public struct TalkoverRun: Equatable, Sendable {
     }
 }
 
+// MARK: - Bookkeeping across boundaries
+
+/// Which boundaries the talk-over owns, and the one run in flight. Pure, so "arms once per
+/// launch" and "a stale index after a queue swap suppresses a break" are tested on Linux.
+///
+/// Keys are the song's queue index plus its track ID: a new queue restarts indices at 0, so an
+/// index alone would collide with the old queue's.
+public struct TalkoverBook: Equatable, Sendable {
+    public struct Key: Hashable, Sendable {
+        public let index: Int
+        public let trackID: String
+        public init(index: Int, trackID: String) {
+            self.index = index
+            self.trackID = trackID
+        }
+    }
+
+    /// Boundaries this coordinator took the break for; the binder skips its own hand-out.
+    public private(set) var owned: Set<Key> = []
+    /// The talk-over in flight. Retired on every terminal path (see `retireIfDone`).
+    public var run: TalkoverRun?
+    public private(set) var lastStarted: Key?
+
+    public init() {}
+
+    public func owns(_ key: Key) -> Bool { owned.contains(key) }
+
+    /// A talk-over may arm for `key`: not already owned, and no run in flight.
+    public func mayArm(_ key: Key) -> Bool {
+        guard !owned.contains(key) else { return false }
+        guard let r = run else { return true }
+        // A finished run for an earlier boundary never blocks a later one.
+        return r.phase == .done && r.afterTrack < key.index
+    }
+
+    public mutating func claim(_ key: Key) { owned.insert(key) }
+
+    /// The boundary for `key` resolved (played, fell back, skipped, dropped).
+    public mutating func release(_ key: Key) {
+        owned.remove(key)
+        retireIfDone()
+    }
+
+    /// Retires a finished run. A run stays only while its voice is audible or armed, or while
+    /// its next song's start is still to be measured (`nextPlayCalled` without `nextAudible`).
+    public mutating func retireIfDone() {
+        guard let r = run, r.phase == .done else { return }
+        if r.nextCalledAt != nil, r.nextAudibleAt == nil, r.cancelled == nil { return }
+        run = nil
+    }
+
+    /// Song `key` really started. Returns true when it started a new queue (index went back, or
+    /// the same index holds another track): everything owned belonged to the old queue.
+    @discardableResult
+    public mutating func songStarted(_ key: Key) -> Bool {
+        defer { lastStarted = key }
+        let replaced: Bool
+        if let last = lastStarted {
+            replaced = key.index < last.index || (key.index == last.index && key.trackID != last.trackID)
+        } else {
+            replaced = false
+        }
+        if replaced {
+            owned.removeAll()
+            if let r = run, !r.isSpeaking { run = nil }
+        } else {
+            owned = owned.filter { $0.index >= key.index }
+            // The same song started again (a tap on it, a restart): its boundary is fresh.
+            if key == lastStarted {
+                owned.remove(key)
+                if let r = run, r.afterTrack == key.index, !r.isSpeaking { run = nil }
+            }
+            // Song k+1 started: the latency sample (if any) was taken before this call.
+            if let r = run, r.afterTrack < key.index, r.nextCalledAt != nil, r.nextAudibleAt == nil, !r.isSpeaking {
+                run = nil
+            }
+        }
+        retireIfDone()
+        return replaced
+    }
+
+    /// The user skipped song `key`: its boundary never comes.
+    public mutating func songSkipped(_ key: Key) {
+        owned.remove(key)
+        if let r = run, r.afterTrack == key.index {
+            var copy = r
+            _ = copy.stopped(.skip)
+            run = copy
+        }
+        retireIfDone()
+    }
+}
+
+/// The session's own report around the talk-over duck activation (DIAG only, codes only).
+/// `otherBefore`/`hintBefore`: `isOtherAudioPlaying` / `secondaryAudioShouldBeSilencedHint`
+/// before `setActive(true)`; `otherAfter`/`hintAfter` right after. See docs/dj-talkover.md.
+public struct TalkoverDuckProbe: Equatable, Sendable {
+    public var otherBefore: Bool
+    public var hintBefore: Bool
+    public var activated: Bool
+    public var otherAfter: Bool
+    public var hintAfter: Bool
+
+    public init(otherBefore: Bool, hintBefore: Bool, activated: Bool, otherAfter: Bool, hintAfter: Bool) {
+        self.otherBefore = otherBefore
+        self.hintBefore = hintBefore
+        self.activated = activated
+        self.otherAfter = otherAfter
+        self.hintAfter = hintAfter
+    }
+}
+
 // MARK: - Loudness (mixed voices)
 
 /// MAIN may be a cloud voice and the closing line on-device (Sentinel's per-cue gate), so two

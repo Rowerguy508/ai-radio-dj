@@ -52,6 +52,8 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     case plan
     // talk-over
     case kind, mode, intro, outro, voice, play, unduck, lat, ms, measured
+    // talk-over duck probe (before activation: otherAudio, secondaryHint; after: these two)
+    case otherAfter, hintAfter, activated
 }
 
 extension P0TraceCode {
@@ -84,7 +86,7 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case active, inactive, background
     case willResignActive, didEnterBackground, willEnterForeground, didBecomeActive
     // talk-over (row kind, mode, hard-break and intro-skip reasons, misses, cancels)
-    case decision, miss, cancel, latency, hardBreak, used
+    case decision, miss, cancel, latency, duckProbe, hardBreak, used
     case outroAndIntro, outroOnly
     case flagOff, durationUnknown, trackTooShort, voiceTooLong, voiceInvalid, tooLateToArm, outroTooShort, endedBeforeVoice
     case noClosingLine, closingTooLong, nextTrackTooShort, nextTrackUnknown, introTooShort
@@ -613,6 +615,18 @@ extension P0EventTrace {
     public mutating func talkoverLatency(measured: Double, next: Double, afterTrack: Int, at t: TimeInterval) -> P0TraceRow {
         record(.talkover, at: t, [(.kind, .code(.latency)), (.after, .int(afterTrack)),
                                   (.measured, Self.ms(measured)), (.lat, Self.ms(next))])
+    }
+
+    /// What the session reported around the talk-over duck activation (`TalkoverAudioSession.duck`).
+    /// `otherAudio=true` while only our own music plays means the system counts
+    /// `ApplicationMusicPlayer` as another session, the precondition for `.duckOthers` to reach it.
+    /// It cannot show the ducked level: the owner's ears are the proof.
+    @discardableResult
+    public mutating func talkoverDuckProbe(_ p: TalkoverDuckProbe, afterTrack: Int, at t: TimeInterval) -> P0TraceRow {
+        record(.talkover, at: t, [(.kind, .code(.duckProbe)), (.after, .int(afterTrack)),
+                                  (.otherAudio, .bool(p.otherBefore)), (.secondaryHint, .bool(p.hintBefore)),
+                                  (.activated, .bool(p.activated)),
+                                  (.otherAfter, .bool(p.otherAfter)), (.hintAfter, .bool(p.hintAfter))])
     }
 }
 #endif
