@@ -201,6 +201,8 @@ jobs:
               plutil -lint "$M"
               [ "$(/usr/libexec/PlistBuddy -c 'Print :NSPrivacyTracking' "$M")" = "false" ] \
                 || { echo "::error::$M declares tracking"; exit 1; }
+              plutil -convert json -o - "$M" | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d.get("NSPrivacyTrackingDomains",[])==[] and not any(t.get("NSPrivacyCollectedDataTypeTracking") for t in d.get("NSPrivacyCollectedDataTypes",[]))' \
+                || { echo "::error::$M lists a tracking domain or a tracking data type"; exit 1; }
             done
             /usr/libexec/PlistBuddy -c 'Print :NSPrivacyAccessedAPITypes' "$APP/PrivacyInfo.xcprivacy" \
               | grep -q 'NSPrivacyAccessedAPICategoryUserDefaults' \
