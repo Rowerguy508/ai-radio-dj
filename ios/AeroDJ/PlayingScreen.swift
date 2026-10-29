@@ -129,17 +129,22 @@ struct PlayingScreen: View {
         switch mode {
         case .compact:
             // Folded redesign (wireframe 08): back + ⋯ in the bar, the station chip below.
+            // Wide (open Duo split view): one centred column, ⋯ in the column's header row.
+            let wide = FoldedColumnLayout.isWide(containerWidth: width)
+            let openConnections = { segment = .connections; showWorkspace = true }
             FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
                          content: content, snapshot: snapshot, actions: actions, dj: dj,
                          search: search, studioSearch: studioSearch, timeSource: timeSource,
                          artworkNamespace: morphNamespace, speechLevel: studio.dj,
+                         moreMenu: wide ? FoldedMoreMenuItems(reviewCount: dj.reviewCount,
+                                                              onConnections: openConnections) : nil,
                          onQueue: { segment = .queue; showWorkspace = true },
                          onTune: { segment = .tune; showWorkspace = true },
                          onReview: { segment = .connections; showWorkspace = true })
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
-                .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
-                               onConnections: { segment = .connections; showWorkspace = true })
+                .foldedToolbar(heading.header, reviewCount: dj.reviewCount, showsMore: !wide,
+                               onConnections: openConnections)
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,
