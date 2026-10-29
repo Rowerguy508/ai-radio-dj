@@ -32,22 +32,27 @@ public enum PaywallCopy {
     /// OWNER: placeholder. No Privacy Policy URL yet; App Review requires one before release.
     public static let privacyURL: URL? = nil
 
-    public static func statusTitle(_ status: SubscriptionStatus) -> String {
+    public static func statusTitle(_ status: ProSubscriptionStatus) -> String {
         switch status {
-        case .free, .unavailable: "Free"
-        case .pro(let p, _, _): "Pro (\(p.title.lowercased()))"
-        case .gracePeriod: "Pro: payment issue"
+        case .loading, .free, .unverified, .familyShared: "Free"
+        case .pro(let p?, _, _): "Pro (\(p.title.lowercased()))"
+        case .pro(nil, _, _): "Pro"
         case .expired: "Pro expired"
         case .revoked: "Pro refunded"
         }
     }
 
-    public static func statusDetail(_ status: SubscriptionStatus) -> String {
+    public static func statusDetail(_ status: ProSubscriptionStatus) -> String {
         switch status {
+        case .loading: "On-device voice. Checking your subscription…"
         case .free: "On-device voice."
-        case .unavailable: "On-device voice. Subscription status isn't available right now."
-        case .pro(_, let renews, _): renews ? "Cloud voice. Renews automatically." : "Cloud voice until the period ends. Won't renew."
-        case .gracePeriod: "Apple couldn't renew your subscription. Update your payment method to keep Pro."
+        case .unverified: "On-device voice. This purchase couldn't be verified."
+        case .familyShared: "On-device voice. Pro isn't shared through Family Sharing."
+        case .pro(_, let renews, _):
+            switch renews {
+            case false?: "Cloud voice until the period ends. Won't renew."
+            default: "Cloud voice. Renews automatically."
+            }
         case .expired: "Back to the on-device voice. Subscribe again any time."
         case .revoked: "This purchase was refunded. Back to the on-device voice."
         }

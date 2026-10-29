@@ -3,83 +3,19 @@ import OSLog
 import StoreKit
 import SwiftUI
 
-// StoreKit 2 paywall and subscription status. The entitlement here is ADVISORY: it drives the UI
-// and keeps the app on the on-device voice when not Pro. The server (Atlas) makes the real
-// paid-voice decision from Apple's signed transaction; the app never sends an "isPro" flag.
-// No secrets, no server or proxy calls. Never log transaction IDs, JWS or appAccountToken.
-// Fail-closed: `.unverified`, unknown state or any StoreKit error counts as Free. -Nova
+// StoreKit 2 paywall and subscription status, stacked on Fry's #244. Product IDs come from
+// `ProSubscriptionConfig`; the state is `ProEntitlementMapper`'s; the voice gate is `ProVoiceGate`.
+// ADVISORY: the proxy verifies Apple's signed transaction and decides (Atlas); the app never
+// sends an "isPro" flag. No secrets, no server or proxy calls. Never log transaction IDs, JWS or
+// the appAccountToken. Fail closed: unverified, expired, revoked, family-shared, unknown or any
+// StoreKit error counts as Free. -Nova
 
-/// `EntitlementSource` backed by `Transaction.currentEntitlements` / `Transaction.updates`.
-/// Only verified transactions are mapped as verified; StoreKit's `.unverified` maps to
-/// `.unverified`, which the core resolver ignores.
-struct StoreKitEntitlementSource: EntitlementSource {
-    func currentEntitlements() async throws -> [EntitlementSnapshot] {
-        var result: [EntitlementSnapshot] = []
-        for await entitlement in Transaction.currentEntitlements {
-            result.append(await Self.snapshot(entitlement))
-        }
-        return result
-    }
-
-    func changes() -> AsyncStream<Void> {
-        AsyncStream { continuation in
-            let task = Task.detached {
-                for await update in Transaction.updates {
-                    // Finish only verified transactions; an unverified one grants nothing.
-                    if case .verified(let transaction) = update { await transaction.finish() }
-                    continuation.yield()
-                }
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
-    }
-
-    static func snapshot(_ verification: VerificationResult<Transaction>) async -> EntitlementSnapshot {
-        switch verification {
-        case .unverified(let transaction, _):
-            return EntitlementSnapshot(productID: transaction.productID, verification: .unverified,
-                                       expirationDate: transaction.expirationDate)
-        case .verified(let transaction):
-            var state: SubscriptionRenewalState = .unknown
-            var willAutoRenew = false
-            var grace: Date?
-            if let status = await transaction.subscriptionStatus {
-                state = Self.map(status.state)
-                // Renewal info must verify too; otherwise keep the fail-closed defaults.
-                if case .verified(let renewal) = status.renewalInfo {
-                    willAutoRenew = renewal.willAutoRenew
-                    grace = renewal.gracePeriodExpirationDate
-                }
-            } else if transaction.revocationDate == nil {
-                // No status (e.g. StoreKit couldn't load it): trust only the signed expiry.
-                state = .subscribed
-            }
-            return EntitlementSnapshot(productID: transaction.productID, verification: .verified,
-                                       expirationDate: transaction.expirationDate,
-                                       revocationDate: transaction.revocationDate,
-                                       isUpgraded: transaction.isUpgraded, renewalState: state,
-                                       willAutoRenew: willAutoRenew, gracePeriodExpirationDate: grace)
-        }
-    }
-
-    static func map(_ state: Product.SubscriptionInfo.RenewalState) -> SubscriptionRenewalState {
-        switch state {
-        case .subscribed: .subscribed
-        case .inGracePeriod: .inGracePeriod
-        case .inBillingRetryPeriod: .inBillingRetryPeriod
-        case .expired: .expired
-        case .revoked: .revoked
-        default: .unknown
-        }
-    }
-}
-
-/// App-wide subscription state for the paywall and the status card. Updates
-/// `VoiceEntitlement.shared`, which the live `VoiceRenderer` reads before every cloud render.
+/// The StoreKit entitlement type: reads verified `Transaction.currentEntitlements` (plus the latest
+/// transaction per product, so expired and refunded show as such), listens to
+/// `Transaction.updates`, and is the app's `ProEntitlementProviding`.
 @MainActor @Observable
-final class SubscriptionModel {
-    static let shared = SubscriptionModel(source: StoreKitEntitlementSource())
+final class SubscriptionModel: ProEntitlementProviding {
+    static let shared = SubscriptionModel()
 
     enum Prices: Equatable {
         case loading
@@ -87,69 +23,122 @@ final class SubscriptionModel {
         case unavailable
     }
 
-    private(set) var status: SubscriptionStatus = .unavailable
+    private(set) var status: ProSubscriptionStatus = .loading
     private(set) var products: [Product] = []
     private(set) var prices: Prices = .loading
     private(set) var message: String?
     private(set) var isBusy = false
     var isPaywallPresented = false
 
-    private let checker: EntitlementChecker
-    private let source: any EntitlementSource
+    /// What `ProVoiceAccess.live` reads; written only here.
+    nonisolated let entitlement: ProEntitlementCache
+    private let tokens: AppAccountTokenProvider
     private var listener: Task<Void, Never>?
     // SEAM (Atlas): `ServerEntitlementHandoff` takes a verified transaction's JWS once the server
     // design (#233) lands. Not wired: no proxy calls here.
     private let log = Logger(subsystem: "com.aerodj.app", category: "subscription")
 
-    init(source: any EntitlementSource) {
-        self.source = source
-        self.checker = EntitlementChecker(source: source)
+    init(entitlement: ProEntitlementCache = .shared,
+         tokens: AppAccountTokenProvider = AppAccountTokenProvider(store: KeychainAppAccountTokenStore())) {
+        self.entitlement = entitlement
+        self.tokens = tokens
+    }
+
+    nonisolated func currentProEntitlement() async -> ProEntitlementState {
+        await entitlement.currentProEntitlement()
     }
 
     /// Starts listening for purchases, renewals, refunds and restores, then reads the current state.
     func start() {
         guard listener == nil else { return }
-        let changes = source.changes()
         listener = Task { [weak self] in
-            for await _ in changes { await self?.refreshStatus() }
+            for await update in Transaction.updates {
+                // Finish only verified transactions; an unverified one grants nothing.
+                if case .verified(let transaction) = update { await transaction.finish() }
+                await self?.refreshStatus()
+            }
         }
         Task { await refreshStatus() }
     }
 
     func refreshStatus() async {
-        let status = await checker.status()
-        self.status = status
-        VoiceEntitlement.shared.set(status.tier)
+        var transactions: [ProStoreTransaction] = []
+        var willAutoRenew: Bool?
+        for id in ProSubscriptionConfig.productIDs.sorted() {
+            guard let result = await Transaction.latest(for: id) else { continue }
+            transactions.append(Self.storeTransaction(result))
+            if case .verified(let transaction) = result, transaction.revocationDate == nil,
+               let status = await transaction.subscriptionStatus,
+               case .verified(let renewal) = status.renewalInfo {
+                willAutoRenew = (willAutoRenew ?? false) || renewal.willAutoRenew
+            }
+        }
+        // Plus the current entitlements (active, verified-or-not, possibly family-shared), so an
+        // active Pro is never missed. The mapper filters and fails closed either way.
+        for await result in Transaction.currentEntitlements {
+            if case .verified(let t) = result, !ProSubscriptionConfig.productIDs.contains(t.productID) { continue }
+            transactions.append(Self.storeTransaction(result))
+        }
+        let state = ProStoreEntitlement.state(for: transactions, now: Date())
+        entitlement.set(state)
+        status = ProSubscriptionStatus(state: state, willAutoRenew: willAutoRenew,
+                                       onlyFamilyShared: ProStoreEntitlement.onlyFamilyShared(transactions))
         // Status category only; never IDs, JWS or tokens.
-        log.notice("subscription tier=\(status.tier.rawValue, privacy: .public)")
+        log.notice("subscription pro=\(self.status.isPro, privacy: .public)")
+    }
+
+    static func storeTransaction(_ result: VerificationResult<Transaction>) -> ProStoreTransaction {
+        let (t, verified): (Transaction, Bool) = switch result {
+        case .verified(let t): (t, true)
+        case .unverified(let t, _): (t, false)
+        }
+        let ownership: ProTransactionOwnership = switch t.ownershipType {
+        case .purchased: .purchased
+        case .familyShared: .familyShared
+        default: .other
+        }
+        return ProStoreTransaction(
+            snapshot: ProTransactionSnapshot(productID: t.productID, purchaseDate: t.purchaseDate,
+                                             expirationDate: t.expirationDate, revocationDate: t.revocationDate,
+                                             isUpgraded: t.isUpgraded, isVerified: verified),
+            ownership: ownership)
     }
 
     func loadProducts() async {
         guard products.isEmpty else { return }
         prices = .loading
         do {
-            let loaded = try await Product.products(for: SubscriptionProducts.all)
-            products = SubscriptionProducts.all.compactMap { id in loaded.first { $0.id == id } }
+            let loaded = try await Product.products(for: SubscriptionPeriod.paywallOrder)
+            products = SubscriptionPeriod.paywallOrder.compactMap { id in loaded.first { $0.id == id } }
             prices = products.isEmpty ? .unavailable : .loaded
         } catch {
             prices = .unavailable
         }
     }
 
+    /// `ProPurchasePlan` mapped to StoreKit: always the install's appAccountToken (#233 §5.4).
+    func purchaseOptions() -> Set<Product.PurchaseOption> {
+        Set(ProPurchasePlan.options(token: tokens.token()).map { option in
+            switch option {
+            case .appAccountToken(let uuid): Product.PurchaseOption.appAccountToken(uuid)
+            }
+        })
+    }
+
     func purchase(_ product: Product) async {
         // Privacy first: no purchase path without stored consent.
-        guard CloudVoiceAccess.mayOfferPaywall(consent: CloudVoiceConsentModel.shared.state,
-                                               cloudVoiceOffered: CloudVoiceConsentModel.shared.isCloudVoiceOffered,
-                                               tier: status.tier) else { return }
+        guard PaywallOffer.mayOffer(consent: CloudVoiceConsentModel.shared.state,
+                                    cloudVoiceOffered: CloudVoiceConsentModel.shared.isCloudVoiceOffered,
+                                    status: status) else { return }
         isBusy = true
         defer { isBusy = false }
         message = nil
         do {
-            switch try await product.purchase() {
+            switch try await product.purchase(options: purchaseOptions()) {
             case .success(let verification):
                 if case .verified(let transaction) = verification { await transaction.finish() }
                 await refreshStatus()
-                if status.tier == .pro { isPaywallPresented = false } else { message = PaywallCopy.purchaseFailed }
+                if status.isPro { isPaywallPresented = false } else { message = PaywallCopy.purchaseFailed }
             case .pending:
                 message = PaywallCopy.purchasePending
             case .userCancelled:
@@ -169,19 +158,18 @@ final class SubscriptionModel {
         message = nil
         try? await AppStore.sync()
         await refreshStatus()
-        if status.tier == .pro { isPaywallPresented = false } else { message = PaywallCopy.restoreNothing }
+        if status.isPro { isPaywallPresented = false } else { message = PaywallCopy.restoreNothing }
     }
 
-    /// Offers the paywall only after consent, where a cloud voice exists, to a Free listener.
+    /// Offers the paywall only after consent, where a cloud voice exists, to someone not Pro.
     func offerIfAllowed() {
         let consent = CloudVoiceConsentModel.shared
-        if CloudVoiceAccess.mayOfferPaywall(consent: consent.state, cloudVoiceOffered: consent.isCloudVoiceOffered,
-                                            tier: status.tier) {
+        if PaywallOffer.mayOffer(consent: consent.state, cloudVoiceOffered: consent.isCloudVoiceOffered, status: status) {
             isPaywallPresented = true
         }
     }
 
-    func plan(for product: Product) -> SubscriptionPeriod? { SubscriptionProducts.period(for: product.id) }
+    func plan(for product: Product) -> SubscriptionPeriod? { SubscriptionPeriod(productID: product.id) }
 }
 
 extension View {
@@ -194,7 +182,13 @@ private struct SubscriptionPaywallHost: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .task { model.start() }
+            .task {
+                model.start()
+                #if DEBUG
+                // UI tests only: show the sheet without a cloud voice. Buying still needs consent.
+                if ProcessInfo.processInfo.arguments.contains("-AeroDJShowPaywall") { model.isPaywallPresented = true }
+                #endif
+            }
             .sheet(isPresented: $model.isPaywallPresented) { PaywallView() }
     }
 }
@@ -325,11 +319,11 @@ struct SubscriptionStatusCard: View {
                 Text(PaywallCopy.statusDetail(model.status))
                     .font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
-                if CloudVoiceAccess.mayOfferPaywall(consent: consent.state, cloudVoiceOffered: true, tier: model.status.tier) {
+                if PaywallOffer.mayOffer(consent: consent.state, cloudVoiceOffered: true, status: model.status) {
                     Button("See \(PaywallCopy.title)") { model.isPaywallPresented = true }
                         .accessibilityIdentifier("tune.seePro")
                 }
-                if model.status.tier == .pro || isLapsed {
+                if model.status.isPro || isLapsed {
                     Button(PaywallCopy.manage) { isManaging = true }
                         .accessibilityIdentifier("tune.manageSubscription")
                 }

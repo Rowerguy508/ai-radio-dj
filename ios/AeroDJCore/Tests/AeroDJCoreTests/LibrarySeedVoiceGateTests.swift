@@ -40,7 +40,7 @@ final class LibrarySeedVoiceGateTests: XCTestCase {
 
     private func renderer(_ routes: [VoiceRoute]) -> VoiceRenderer {
         VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),
-                      revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
+                      revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
     }
 
     private func composed(onDevice: [VoiceRoute], transport: RecordingTransport) -> VoiceRenderer {

@@ -44,7 +44,7 @@ final class CloudVoiceConsentGateTests: XCTestCase {
     private func renderer(_ spy: CloudSpy, consent: CloudVoiceConsentStore,
                           cache: any AudioCache = InMemoryAudioCache(),
                           budget: VoiceBudget = VoiceBudget(dailyCapMicrodollars: 1_000_000)) -> VoiceRenderer {
-        VoiceRenderer(routes: routes(spy), budget: budget, cache: cache, cloudConsent: consent, entitlement: .fixed(.pro))
+        VoiceRenderer(routes: routes(spy), budget: budget, cache: cache, cloudConsent: consent)
     }
 
     // 1. No consent: no remote render. The text never reaches the cloud route, its cache keys or
@@ -73,7 +73,7 @@ final class CloudVoiceConsentGateTests: XCTestCase {
                                                   microdollarsPerThousandCharacters: 30_000),
                                        VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
                               budget: VoiceBudget(dailyCapMicrodollars: 1_000_000), cache: InMemoryAudioCache(),
-                              cloudConsent: .inMemory(), entitlement: .fixed(.pro))
+                              cloudConsent: .inMemory())
         let clip = try await r.render(transitionCue(), userID: "u", stationID: "s", attribution: .presenter).get()
         XCTAssertEqual(clip.audio.providerID, "device")
         XCTAssertTrue(spy.received.isEmpty)
@@ -150,8 +150,7 @@ final class CloudVoiceConsentGateTests: XCTestCase {
         let spy = CloudSpy()
         let unnamed = VoiceRenderer(routes: routes(spy), budget: VoiceBudget(dailyCapMicrodollars: 1_000_000),
                                     cache: InMemoryAudioCache(),
-                                    cloudConsent: CloudVoiceConsentStore(defaults: try XCTUnwrap(UserDefaults(suiteName: suite + ".empty"))),
-                                    entitlement: .fixed(.pro))
+                                    cloudConsent: CloudVoiceConsentStore(defaults: try XCTUnwrap(UserDefaults(suiteName: suite + ".empty"))))
         let clip = try await unnamed.render(transitionCue(), userID: "u", stationID: "s", attribution: .presenter).get()
         XCTAssertEqual(clip.audio.providerID, "device")
         XCTAssertTrue(spy.received.isEmpty)

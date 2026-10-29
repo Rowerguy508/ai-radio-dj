@@ -33,7 +33,7 @@ func djRenderer(paid: DJFakeVoice? = nil, paidTimeout: Duration = .seconds(2), f
                                  microdollarsPerThousandCharacters: 30_000, timeout: paidTimeout))
     }
     if let free { routes.append(VoiceRoute(providerID: "device", provider: free, voice: djVoice)) }
-    return VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: capMicrodollars), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
+    return VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: capMicrodollars), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
 }
 
 func djTracks(_ n: Int, origin: TrackOrigin = .unknown) -> [DJTrack] {
@@ -326,7 +326,7 @@ final class DJNarrationTests: XCTestCase {
         let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000)
         let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "cloud", provider: DJFakeVoice(id: "cloud", delay: .milliseconds(300)),
                                                          voice: djVoice, microdollarsPerThousandCharacters: 30_000)],
-                                     budget: budget, cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
+                                     budget: budget, cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s")
         let log = DJEventLog()
         await preparer.observe { log.add($0) }
@@ -367,7 +367,7 @@ final class DJNarrationTests: XCTestCase {
         let other = try XCTUnwrap(plan.breaks.first { b in !b.cues.contains { $0.sourceItemID == revoked } })
         let cache = InMemoryAudioCache()
         let preparer = DJBreakPreparer(renderer: VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
-                                                               budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro)),
+                                                               budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, cloudConsent: .inMemory(.accepted)),
                                        userID: "u", stationID: "s")
         let log = DJEventLog()
         await preparer.observe { log.add($0) }

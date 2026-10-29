@@ -30,9 +30,7 @@ extension VoiceRenderer {
         // first: until "Use cloud voice" is stored, and from the moment it is turned off, the
         // on-device route speaks every line. Accepting applies without a relaunch.
         return VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
-                             revocations: base.revocations, cloudConsent: CloudVoiceConsentStore(),
-                             // Advisory client tier from StoreKit (SubscriptionModel); starts Free.
-                             entitlement: .shared)
+                             revocations: base.revocations, cloudConsent: CloudVoiceConsentStore())
         #else
         return base
         #endif
@@ -41,14 +39,15 @@ extension VoiceRenderer {
 
 extension ProVoiceAccess {
     /// The Pro + consent gate the live app runs with. Owner A/B builds: the owner trial, matching
-    /// the route above. Every other build: `.none` (free, no consent), so nothing paid resolves
-    /// until the paywall (Nova) and the consent sheet provide real `ProEntitlementProviding` and
-    /// `PaidVoiceConsentProviding` conformers.
+    /// the route above. Every other build: the paywall's verified client Pro state and the consent
+    /// sheet's store, so a paid voice needs Pro AND consent (both fail closed).
     static var live: ProVoiceAccess {
         #if AERODJ_OWNER_AB
         return .ownerTrial
         #else
-        return .none
+        // The paywall's client Pro state (written by SubscriptionModel from verified App Store
+        // transactions, Free until then) and the consent sheet's store, asked per use.
+        return ProVoiceAccess(entitlement: ProEntitlementCache.shared, consent: CloudVoiceConsentStore())
         #endif
     }
 }

@@ -35,7 +35,7 @@ final class BundledClipPlaybackTests: XCTestCase {
     private func renderer(_ spy: ProxySpy, voice: String? = nil) -> VoiceRenderer {
         VoiceRenderer(routes: [proxyRoute(spy, voice: voice), VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
                       budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),
-                      revocations: NarrationRevocations())
+                      revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
     }
 
     private func entry(_ text: String, id: String = "warm.continuation.0", hash: String? = nil,

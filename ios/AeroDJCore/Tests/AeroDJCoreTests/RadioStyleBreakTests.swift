@@ -294,7 +294,7 @@ final class RadioStyleBreakTests: XCTestCase {
         await station.load()
         await station.setPlaybackActivity(.holdingSong)
         let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: voice, voice: djVoice)],
-                                     budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
+                                     budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence())
         let dj = DJPresentationStore()
         let s = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 14 })
@@ -388,7 +388,7 @@ final class RadioStyleBreakTests: XCTestCase {
         }
         func outcome(_ b: DJBreak) async -> DJBreakOutcome {
             let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: WordVoice(secondsPerWord: 0.6), voice: djVoice)],
-                                         budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
+                                         budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
             let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s")
             let done = AsyncStream<Void>.makeStream()
             await preparer.observe { event in
@@ -423,7 +423,7 @@ final class RadioStyleBreakTests: XCTestCase {
     }
 
     private func outcome(_ b: DJBreak, routes: [VoiceRoute]) async -> DJBreakOutcome {
-        let renderer = VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
+        let renderer = VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s")
         let done = AsyncStream<Void>.makeStream()
         await preparer.observe { event in
@@ -509,7 +509,7 @@ final class RadioStyleBreakTests: XCTestCase {
             credentials: PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!, token: "owner-test-token"),
             pinnedHosts: ["aerodj-tts.vercel.app"], transport: transport)
         return VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),
-                             revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
+                             revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
     }
 
     private func prepare(_ djBreak: DJBreak, _ r: VoiceRenderer, onDeviceOnly: Bool) async -> DJBreakOutcome {

@@ -567,29 +567,15 @@ public struct VoiceRenderer: Sendable {
     /// render time). Not granted: those routes are skipped as if absent. Fail-closed default:
     /// the persisted store, which reads `.undecided` until the listener accepts.
     public let cloudConsent: CloudVoiceConsentStore
-    /// True only when this renderer may use its cloud/paid routes right now: stored consent AND a
-    /// Pro tier. Read per use (both can change at any moment). Consumers that bypass `render`,
-    /// such as bundled pre-rendered cloud clips (#237), check this first. Advisory client gate;
-    /// the server makes the real paid-voice decision.
-    public var paidVoiceAllowed: Bool {
-        cloudConsent.isGranted && entitlement.tier == .pro
-    }
-
-    /// Client-side subscription tier (advisory; the server makes the real paid-voice decision).
-    /// Free: cloud and paid routes are skipped even with consent. Default: the app-wide value,
-    /// which starts Free (fail-closed) until StoreKit reports a verified Pro entitlement.
-    public let entitlement: VoiceEntitlement
 
     public init(routes: [VoiceRoute], budget: VoiceBudget, cache: any AudioCache,
                 revocations: NarrationRevocations = .shared,
-                cloudConsent: CloudVoiceConsentStore = CloudVoiceConsentStore(),
-                entitlement: VoiceEntitlement = .shared) {
+                cloudConsent: CloudVoiceConsentStore = CloudVoiceConsentStore()) {
         self.routes = routes
         self.budget = budget
         self.cache = cache
         self.revocations = revocations
         self.cloudConsent = cloudConsent
-        self.entitlement = entitlement
     }
 
     /// The last route alone (the on-device standard voice), sharing this renderer's budget,
@@ -599,7 +585,7 @@ public struct VoiceRenderer: Sendable {
     public var lastRouteOnly: VoiceRenderer? {
         guard routes.count > 1, let last = routes.last, last.isLocalAndFree else { return nil }
         return VoiceRenderer(routes: [last], budget: budget, cache: cache, revocations: revocations,
-                             cloudConsent: cloudConsent, entitlement: entitlement)
+                             cloudConsent: cloudConsent)
     }
 
     /// Only the on-device, free routes, in order, sharing this renderer's budget, cache and
@@ -610,7 +596,7 @@ public struct VoiceRenderer: Sendable {
         let local = routes.filter(\.isLocalAndFree)
         guard !local.isEmpty else { return nil }
         return VoiceRenderer(routes: local, budget: budget, cache: cache, revocations: revocations,
-                             cloudConsent: cloudConsent, entitlement: entitlement)
+                             cloudConsent: cloudConsent)
     }
 
     /// Attempt detail for an off-device or paid route skipped for a local-only cue. Fixed text, no cue text.
@@ -620,8 +606,6 @@ public struct VoiceRenderer: Sendable {
     public static let noConsentSkip = "no cloud-voice consent: off-device route skipped"
     /// Consent was turned off while this route was rendering: its audio is dropped, never cached
     /// or played, and the next (on-device) route speaks the line.
-    /// Attempt detail for a cloud or paid route skipped because the tier is Free (consent given).
-    public static let notProSkip = "free tier: off-device route skipped"
     public static let consentRevokedDiscard = "cloud-voice consent revoked mid-render: clip dropped"
 
     public static func cacheKey(text: String, route: VoiceRoute) -> String {
@@ -707,11 +691,6 @@ public struct VoiceRenderer: Sendable {
                 attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.noConsentSkip)))
                 continue
             }
-            if !route.isLocalAndFree && entitlement.tier != .pro {
-                // Free tier: on-device only, even with consent.
-                attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.notProSkip)))
-                continue
-            }
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
             let text = route.acceptsSSML ? SpeechDelivery.ssml(cue.text) : SpeechDelivery.speakable(cue.text)
             let key = Self.cacheKey(text: text, route: route)
@@ -749,8 +728,8 @@ public struct VoiceRenderer: Sendable {
                     attempts.append(VoiceAttempt(providerID: route.providerID, result: .overDuration(artifact.durationSeconds)))
                     continue
                 }
-                if !route.isLocalAndFree && (!cloudConsent.isGranted || entitlement.tier != .pro) {
-                    // Consent turned off (or Pro lost) while this request was in flight: drop the clip.
+                if !route.isLocalAndFree && !cloudConsent.isGranted {
+                    // Turned off while this request was in flight: drop the cloud clip.
                     attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.consentRevokedDiscard)))
                     continue
                 }
