@@ -17,6 +17,8 @@ struct StationListView: View {
     @State private var showSharedInbox = false
     /// One add-station flow per presentation (nil when closed). Never created in the Test Station.
     @State private var stationCreation: StationCreationModel?
+    /// "Couldn't start that station" (core decides; `StationStartToast` draws it). Row taps only.
+    @State private var startNotice = StationStartNotice()
 
     var body: some View {
         #if DEBUG
@@ -38,12 +40,16 @@ struct StationListView: View {
                          onUserOpenedStation: { id in
                              // Row tap only, never restore. A created station starts now when nothing
                              // is queued, otherwise takes over at the song boundary (CreatedStationStarter).
+                             // Any tap clears the start toast; only this tap's idle-start failure shows it.
+                             let tap = startNotice.beginTap()
                              guard let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes) else {
                                  await dependencies.playback.authorize()
                                  return
                              }
                              if let stationQueue = dependencies.stationQueue {
-                                 await stationQueue.openCreatedStation(.userTap, recipeID: recipeID, studio: dependencies.studio)
+                                 let outcome = await stationQueue.openCreatedStation(.userTap, recipeID: recipeID,
+                                                                                     studio: dependencies.studio)
+                                 startNotice.finish(tap: tap, outcome: outcome)
                              } else {
                                  await dependencies.playback.authorize()
                                  _ = await dependencies.studio.applyRecipe(recipeID)
@@ -54,6 +60,8 @@ struct StationListView: View {
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation)
         }
+        // Above both columns, so it shows whichever one is on screen. Never takes a tap.
+        .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
         .sheet(isPresented: $showSharedInbox) {
             // Always a NavigationStack with Done. An empty `if` body left an undismissable sheet.
