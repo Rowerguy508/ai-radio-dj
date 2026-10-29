@@ -187,6 +187,20 @@ jobs:
             echo "- iOS SDK: \`iphoneos$SDK_VERSION\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading component"
+            xcodebuild -downloadComponent MetalToolchain
+            if ! xcrun metal --version; then
+              echo "::error::Metal toolchain still unavailable after xcodebuild -downloadComponent MetalToolchain"
+              exit 1
+            fi
+          fi
+
       - name: Install distribution certificate and profiles
         env:
           DIST_CERT_P12: ${{ secrets.DIST_CERT_P12 }}
