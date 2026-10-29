@@ -83,9 +83,12 @@ A created station is an ordinary recipe whose seeds, reach and discovery come fr
 
 - **One entry point:** `studio.saveRecipe(named:from:applying:) -> Result<StationRecipe, StationRecipeError>`.
   - Same name rules and errors as `saveRecipe(named:)`, plus `.invalidStation(StationCreationError)`. Every error has `userMessage`.
-  - Keeps the tuning the controls show (energy, personality, talk, briefing); never carries connections.
+  - Keeps the tuning the controls show (energy, personality, talk, briefing) unless the request sets talk or personality; never carries connections.
   - `applying: false` (default) leaves the live station alone. `applying: true` then applies it with the recipe rules above.
-- **Request:** `StationCreationRequest(source:level:)`.
+- **Request:** `StationCreationRequest(source:level:commentary:personality:)`.
+  - `commentary: CommentaryFrequency?` (talk level) and `personality: DJPersonality?` (presenter preset) are optional; `nil` (the default) keeps the on-screen tuning. Saved in the recipe's existing `commentary` and `personality` keys; no new keys.
+  - The voice is not part of a recipe (it is chosen in the voice settings), so a walkthrough voice step cannot be saved per station yet.
+  - `StationCreationModel.commentary` / `.personality` (both `nil` by default) feed the request.
   - `source`: `.artists([StationSeed])` (1–5), `.genre(StationSeed)` (catalog, numeric ID), or `.playlist(StationSeed)` (catalog or library).
   - `suggestedName` prefills the name field. `reachRestriction` is set for a library pick.
 - **Discovery level** (`StationDiscoveryLevel`): presets over `discovery` and `reach`.

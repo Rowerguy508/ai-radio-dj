@@ -173,3 +173,79 @@ final class StudioSaveRecipeFromRequestTests: XCTestCase {
         XCTAssertEqual(reread.recipes.first { $0.name == "Morning" }, loaded, "the old recipe round-trips unchanged")
     }
 }
+
+// Walkthrough talk and DJ steps (-Atlas, for Nova): optional, nil keeps the on-screen tuning.
+@MainActor
+final class StationCreationTuningStepTests: XCTestCase {
+    private let rock = StationCreationSource.genre(StationSeed(kind: .genre, catalogID: "21", name: "Rock"))
+
+    func testNilKeepsTheBaseTalkAndPersonality() throws {
+        var base = StationConfiguration.default
+        base.commentary = .rare
+        base.personality = .laidBack
+        let config = try StationCreationRequest(source: rock).configuration(base: base).get()
+        XCTAssertEqual(config.commentary, .rare)
+        XCTAssertEqual(config.personality, .laidBack)
+        XCTAssertNil(StationCreationRequest(source: rock).commentary)
+        XCTAssertNil(StationCreationRequest(source: rock).personality)
+    }
+
+    func testSetValuesReplaceOnlyTheirOwnField() throws {
+        var base = StationConfiguration.default
+        base.commentary = .rare
+        base.personality = .laidBack
+        base.energy = 0.9
+        let talkOnly = try StationCreationRequest(source: rock, commentary: .chatty).configuration(base: base).get()
+        XCTAssertEqual(talkOnly.commentary, .chatty)
+        XCTAssertEqual(talkOnly.personality, .laidBack)
+        let both = try StationCreationRequest(source: rock, level: .familiar, commentary: .off, personality: .minimal)
+            .configuration(base: base).get()
+        XCTAssertEqual(both.commentary, .off)
+        XCTAssertEqual(both.personality, .minimal)
+        XCTAssertEqual(both.energy, 0.9, "other tuning is kept")
+        XCTAssertEqual(both.reach, .only)
+        XCTAssertEqual(both, both.validated(), "validated with the existing rules")
+    }
+
+    func testInvalidPicksStillFailWhateverTheTuning() {
+        let request = StationCreationRequest(source: .artists([]), commentary: .chatty, personality: .upbeat)
+        XCTAssertEqual(request.configuration(), .failure(.noSeeds))
+    }
+
+    func testSavedRecipeCarriesTheStepsWithTheSameKeys() async throws {
+        let studio = await makeCreationStudio(active: .sampleMorningMix)
+        let request = StationCreationRequest(source: rock, commentary: .frequent, personality: .upbeat)
+        let recipe = try await studio.saveRecipe(named: "Rock Radio", from: request).get()
+        XCTAssertEqual(recipe.configuration.commentary, .frequent)
+        XCTAssertEqual(recipe.configuration.personality, .upbeat)
+        let plain = try await studio.saveRecipe(named: "Rock Two", from: StationCreationRequest(source: rock)).get()
+        XCTAssertEqual(plain.configuration.commentary, StationConfiguration.sampleMorningMix.commentary)
+        let keys = { (c: StationConfiguration) throws -> Set<String> in
+            let data = try JSONEncoder().encode(c)
+            return Set((try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]).keys)
+        }
+        XCTAssertEqual(try keys(recipe.configuration), try keys(plain.configuration), "no new saved keys")
+    }
+
+    func testModelPassesTheStepsThrough() async throws {
+        let studio = await makeCreationStudio(seedSearch: NoSeedResults())
+        let model = try XCTUnwrap(studio.makeStationCreation(kind: .genre))
+        XCTAssertNil(model.commentary)
+        XCTAssertNil(model.personality)
+        model.toggle(StationSeed(kind: .genre, catalogID: "21", name: "Rock"))
+        XCTAssertEqual(model.request?.commentary, nil)
+        model.commentary = .rare
+        model.personality = .minimal
+        XCTAssertEqual(model.request?.commentary, .rare)
+        XCTAssertEqual(model.request?.personality, .minimal)
+        let recipe = try await model.save().get()
+        XCTAssertEqual(studio.station.active.commentary, recipe.configuration.commentary)
+        XCTAssertEqual(recipe.configuration.personality, .minimal)
+    }
+}
+
+private struct NoSeedResults: StationSeedSearching {
+    func searchSeeds(_ term: String, kinds: Set<StationSeedKind>, limit: Int) async throws -> [StationSeedSearchResult] { [] }
+    func genreSeeds(matching query: String) async throws -> [StationSeedSearchResult] { [] }
+    func libraryPlaylistSeeds(limit: Int) async throws -> [StationSeedSearchResult] { [] }
+}

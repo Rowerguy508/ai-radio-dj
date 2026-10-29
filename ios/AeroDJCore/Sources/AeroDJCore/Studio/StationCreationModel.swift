@@ -40,6 +40,10 @@ public final class StationCreationModel {
     public private(set) var kind: StationCreationKind
     /// Defaults to the level closest to the station the controls show.
     public var level: StationDiscoveryLevel
+    /// Talk-level step. `nil` (the default) keeps the on-screen tuning.
+    public var commentary: CommentaryFrequency?
+    /// DJ presenter step. `nil` (the default) keeps the on-screen tuning.
+    public var personality: DJPersonality?
     /// Picks in order. At most `kind.maxSeeds`.
     public private(set) var selected: [StationSeed] = []
     public private(set) var results: [StationSeedSearchResult] = []
@@ -82,7 +86,7 @@ public final class StationCreationModel {
         case .genre: .genre(selected[0])
         case .playlist: .playlist(selected[0])
         }
-        return StationCreationRequest(source: source, level: level)
+        return StationCreationRequest(source: source, level: level, commentary: commentary, personality: personality)
     }
 
     /// Why the picks can't be saved yet (`.noSeeds` with nothing picked).

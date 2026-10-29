@@ -95,10 +95,18 @@ public struct StationCreationRequest: Equatable, Sendable {
 
     public var source: StationCreationSource
     public var level: StationDiscoveryLevel
+    /// How often the DJ talks on the new station. `nil` keeps the base (on-screen) tuning.
+    public var commentary: CommentaryFrequency?
+    /// The DJ presenter preset for the new station. `nil` keeps the base (on-screen) tuning.
+    /// Today a preset only bounds transition length (see `DJPersonality`); it is not a voice.
+    public var personality: DJPersonality?
 
-    public init(source: StationCreationSource, level: StationDiscoveryLevel = .default) {
+    public init(source: StationCreationSource, level: StationDiscoveryLevel = .default,
+                commentary: CommentaryFrequency? = nil, personality: DJPersonality? = nil) {
         self.source = source
         self.level = level
+        self.commentary = commentary
+        self.personality = personality
     }
 
     /// The seeds this request would save, normalized (trimmed, de-duplicated, order kept), or why not.
@@ -117,14 +125,17 @@ public struct StationCreationRequest: Equatable, Sendable {
         return .success(seeds)
     }
 
-    /// A station configuration for this request. Keeps `base`'s tuning (energy, tags, DJ
-    /// personality, talk, briefing), replaces seeds, reach and discovery with the request's, and
-    /// never carries connections (`requestedIntegrations` is emptied, as in a recipe).
+    /// A station configuration for this request. Keeps `base`'s tuning (energy, tags, briefing,
+    /// and DJ personality and talk unless the request sets them), replaces seeds, reach and
+    /// discovery with the request's, and never carries connections (`requestedIntegrations` is
+    /// emptied, as in a recipe). The result is `validated()`.
     public func configuration(base: StationConfiguration = .default) -> Result<StationConfiguration, StationCreationError> {
         validatedSeeds().map { seeds in
             var config = base
             config.seeds = seeds
             config.requestedIntegrations = []
+            if let commentary { config.commentary = commentary }
+            if let personality { config.personality = personality }
             return level.applied(to: config)
         }
     }
