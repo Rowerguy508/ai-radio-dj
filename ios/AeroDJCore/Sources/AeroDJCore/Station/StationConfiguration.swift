@@ -193,12 +193,14 @@ public enum DJPersonality: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// How often the DJ talks between songs. Bounded: even `frequent` leaves most boundaries music-only.
+/// How often the DJ talks between songs. Raw values are persisted in recipes: never rename one.
+/// What a preset actually delivers is bounded by `DJCadence`'s spacing rule (`expectedTalkShare`).
 public enum CommentaryFrequency: String, Codable, Sendable, CaseIterable {
-    case off, rare, occasional, frequent
+    case off, rare, occasional, frequent, chatty
 
-    /// Upper bound for any preset: music first.
-    public static let maxTalkFraction = 0.5
+    /// Upper bound for any preset's requested `talkFraction`. `chatty` asks for every boundary;
+    /// the never-back-to-back spacing rule in `DJCadence` still limits what is delivered.
+    public static let maxTalkFraction = 1.0
 
     /// Maps onto `DJCadence.talkFraction`. Briefing content is governed by `BriefingPreferences`, not this.
     public var talkFraction: Double {
@@ -207,6 +209,7 @@ public enum CommentaryFrequency: String, Codable, Sendable, CaseIterable {
         case .rare: 0.15
         case .occasional: 0.3
         case .frequent: 0.45
+        case .chatty: 1.0
         }
     }
 }
