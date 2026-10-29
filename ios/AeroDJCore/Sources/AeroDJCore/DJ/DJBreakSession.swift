@@ -12,7 +12,8 @@ import Foundation
 ///
 /// Rules this enforces (see `docs/studio-presentation-contract.md`):
 /// - speech renders during the song, before its boundary (`DJBreakPreparer.deadline`),
-/// - routine breaks are capped at `maxTransitionSeconds` (12 s), briefing breaks at 45 s,
+/// - routine breaks cap the main segment at `maxTransitionSeconds` (15 s) and the talk-over
+///   closing line at `maxClosingSeconds` (4 s); briefing breaks at 45 s in total,
 /// - late, failed, over-cap or revoked breaks are skipped: music never waits,
 /// - tuner changes apply at the next boundary to *future* breaks; the playing song and the
 ///   break already preparing for it are untouched unless the change requires dropping them.
@@ -404,10 +405,26 @@ public final class DJBreakSession {
         let kept = Set(cues.map(\.id))
         let prepared = cues.count == ready.cues.count ? ready : PreparedDJBreak(
             afterTrack: k, cues: cues, clips: ready.clips.filter { kept.contains($0.cueID) },
-            attributions: ready.attributions.filter { kept.contains($0.key) })
+            attributions: ready.attributions.filter { kept.contains($0.key) },
+            // Kept only if the closing cue survived; the hooks recompute from the kept clips.
+            talkOverCueID: ready.talkOverCueID.flatMap { kept.contains($0) ? $0 : nil })
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
         onAir = (k, Set(prepared.cues.compactMap(\.sourceItemID)), ready.includesBriefing)
         return prepared
+    }
+
+    /// DJ talk-over (-Fry): whether boundary `k`'s break is rendered, without taking it. The
+    /// talk-over takes the break early (through `naturalBoundary`, so every consent re-check
+    /// still runs) only when this is true; otherwise the boundary hands it out as today.
+    public func breakIsReady(afterTrack k: Int) async -> Bool {
+        await preparer.isReady(afterTrack: k)
+    }
+
+    /// DJ talk-over (-Fry): a break the talk-over took early and will not play (seek back out
+    /// of the outro, skip, pause, new queue). Not a voice failure: the Studio goes idle.
+    public func talkoverDropped(afterTrack k: Int) {
+        endOnAir(k)
+        dj.send(.breakSkipped(afterTrack: k, .cancelled))
     }
 
     /// Song `k` was cut (skip, queue change): its break is dropped, never played after a cut song.
@@ -590,7 +607,9 @@ public final class DJBreakSession {
         for b in plan.breaks {
             let k = b.afterTrack + offset
             if let lastBreak, k - lastBreak <= cadence.minSongsBetweenBreaks { continue }
-            breaks[k] = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
+            var shifted = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
+            shifted.talkOverCueID = b.talkOverCueID
+            breaks[k] = shifted
         }
     }
 
@@ -606,11 +625,10 @@ public final class DJBreakSession {
     var testQueueTrackIDs: [String] { tracks.map(\.id) }
     /// Test hook: briefing is absent after withdrawal / briefing-off.
     var testBriefingIsNil: Bool { briefing == nil }
-    /// Test hook: personal source item ids still present in the briefing or planned breaks.
     /// Test hook (-Atlas): runs where `songSeeked` resumes after its suspension on the station,
     /// so a test can end the song or drop the queue at exactly that point.
     var testSeekResumed: (@MainActor () async -> Void)?
-
+    /// Test hook: personal source item ids still present in the briefing or planned breaks.
     var testPlannedSourceItemIDs: Set<UUID> {
         var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
         for b in breaks.values { ids.formUnion(b.cues.compactMap(\.sourceItemID)) }

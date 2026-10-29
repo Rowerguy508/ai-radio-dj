@@ -31,6 +31,9 @@ struct AppDependencies {
     /// Station queue (-Atlas; flagged for Claude): live only. Feeds the built station into the
     /// player at natural boundaries and on an idle Play. `nil` in the test station.
     let stationQueue: StationQueuePlayer?
+    /// DJ talk-over (-Fry, flagged; docs/dj-talkover.md). App-scoped like the interlude, so a
+    /// fold or a view change never touches a voice in flight.
+    let talkover: TalkoverCoordinator
 
     /// Starts the Studio and the DJ session once per launch.
     func start() async {
@@ -72,7 +75,8 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence())
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
-        wireSongSeek(session: djSession, playback: MusicKitService.shared)
+        let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
+        wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
         djSession.purger = purger
@@ -83,6 +87,7 @@ struct AppDependencies {
             providers: composition.providers,
             purger: purger)
         let recipes = StationRecipeLibrary(store: FileStationRecipeStore(fileURL: supportURL("StationRecipes/recipes.json")))
+        let catalogSource = MusicCatalogSeedSource()   // one actor: seed search and genres (-Atlas)
         return AppDependencies(
             mode: .live,
             // Calendar: only calendars the listener chose. Notes: only approved picked notes.
@@ -95,11 +100,15 @@ struct AppDependencies {
             dj: dj,
             studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
                                             // Add-station search (Atlas): catalog + on-device library playlists.
-                                            seedSearch: MusicCatalogSeedSource(),
+                                            seedSearch: catalogSource,
+                                            // Genres from Apple Music: the same actor and cache as seedSearch (-Atlas).
+                                            // Feeds Tune > Genres chips and the add-station genre step.
+                                            genreProvider: catalogSource,
                                             seedSearchFailureKind: StudioSearchModel.searchFailureKind),
             djSession: djSession,
             pickedNotes: composition.notes,
-            stationQueue: StationQueuePlayer(music: MusicKitService.shared, station: station, djSession: djSession))
+            stationQueue: StationQueuePlayer(music: MusicKitService.shared, station: station, djSession: djSession),
+            talkover: talkover)
     }
 
     #if DEBUG
@@ -120,7 +129,10 @@ struct AppDependencies {
                                        cadence: TestStation.cadence)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
-        wireSongSeek(session: djSession, playback: MusicKitService.shared)
+        // Fixture mode: talk-over is OFF regardless of the build (an explicit override still wins).
+        let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession,
+                                           buildDefault: false)
+        wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
         djSession.purger = purger
@@ -140,10 +152,13 @@ struct AppDependencies {
             playback: MusicKitService.shared,
             interlude: interlude,
             dj: dj,
-            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
+            // Test Station: fixed genre fixture (no network, stable screenshots).
+            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
+                                            genreProvider: StaticGenreProvider.fixture),
             djSession: djSession,
             pickedNotes: nil,
-            stationQueue: nil)
+            stationQueue: nil,
+            talkover: talkover)
     }
     #endif
 
@@ -172,8 +187,9 @@ struct AppDependencies {
     /// seek tells the DJ session the playing song's new time left, so its break is kept,
     /// re-armed or started (`DJBreakSession.songSeeked`). The boundary still comes only from
     /// the player.
-    private static func wireSongSeek(session: DJBreakSession, playback: MusicKitService) {
-        playback.onSongSeeked = { [session] index, remaining in
+    private static func wireSongSeek(session: DJBreakSession, playback: MusicKitService, talkover: TalkoverCoordinator) {
+        playback.onSongSeeked = { [session, talkover] index, remaining in
+            talkover.songSeeked(index: index)  // DJ talk-over (-Fry): a seek cancels or re-plans it
             Task { await session.songSeeked(index: index, remaining: .seconds(remaining)) }
         }
     }

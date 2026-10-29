@@ -59,7 +59,7 @@ A failure reason clears on the next successful `ready` or `finished`. `sessionSt
 |---|---|---|
 | Voice | On-device only (`AVSpeechSynthesizer`); no paid provider enabled | `VoiceRenderer.onDeviceDefault()` |
 | Talk cadence | ~30% of all song boundaries over a session (`expectedTalkShare`); at least 2 whole songs between breaks | `DJCadence(talkFraction: 0.3, minSongsBetweenBreaks: 2)` |
-| Break caps | 12 s for a transition, 45 s for a break with the briefing | `DJCadence.maxTransitionSeconds` / `maxBriefingBreakSeconds` |
+| Break caps | 15 s for a transition's main segment plus 4 s for its talk-over closing line; 45 s in total for a break with the briefing | `DJCadence.maxTransitionSeconds` / `maxClosingSeconds` / `maxBriefingBreakSeconds` |
 | Audio cache | On-device, protected files, at most 7 days (longer values are clamped); purged by source on delete/revoke | `FileAudioCache(maxAge:)`, `AudioCacheRetention.maximum` |
 | Paid voice daily cap | $0 (paid routes off) | `VoiceBudget(dailyCapMicrodollars:)` |
 

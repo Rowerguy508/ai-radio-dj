@@ -199,7 +199,26 @@ public struct PlaybackBoundaryDetector: Sendable {
     private var finishingEntryNeverProgressed: Bool {
         // A seek is only offered for a song that started and was confirmed playing.
         guard seekBaseline == nil, let furthest = lastPosition else { return false }
-        return furthest < Self.minimumProgressForNaturalEnd
+        return furthest < Self.minimumProgress(duration: lastDuration)
+    }
+
+    /// Build 21 P0 (-Atlas): the progress that separates a failed or replaced start from a real
+    /// one, and a rewound playhead from a stop mid-song. 2 s, but never past the start of the
+    /// end window: a 2.4 s track polled once a second can end with its furthest sample at 1.6 s,
+    /// which is already inside its end window, so a fixed 2 s called that real play a failed
+    /// start. Unchanged (2 s) for any entry of 3.5 s or more, or with no known duration.
+    static func minimumProgress(duration: TimeInterval?) -> TimeInterval {
+        guard let duration, duration > 0 else { return minimumProgressForNaturalEnd }
+        return min(minimumProgressForNaturalEnd, max(0, duration - endWindowSeconds))
+    }
+
+    /// Build 21 P0 (-Atlas): this entry was observed playing and its furthest reported position
+    /// reached the end window, with no user seek on it. For an entry of 15 s or more that already
+    /// implies `playedThrough` (the window is under 10% of it); it only matters for a short entry
+    /// whose 1 s polls cannot land past 90%. After a seek the furthest position is never trusted
+    /// (#156: only real play since the seek counts), so this is false then.
+    private var reachedEndWithoutSeek: Bool {
+        seekBaseline == nil && observedPlaying && furthestIsNearEnd
     }
 
     /// Sticky: this entry was observed playing, and either its furthest position or its
@@ -368,8 +387,11 @@ public struct PlaybackBoundaryDetector: Sendable {
         guard firstStopAfterPlaying, !heldByUserOrRoute, !userChangePending,
               endedEntryID != current else { return nil }
         let stoppedAtEnd = observation.isNearEnd()
-        let rewoundAfterPlayingThrough = playedThrough
-            && (observation.position ?? 0) < Self.minimumProgressForNaturalEnd
+        // Build 21 P0 (-Atlas): a short entry (2.4 s, polled at 1 s) reaches its end window but
+        // not 90% before MusicKit rewinds it, so the furthest position in the end window counts
+        // too (never after a seek, and never on a user pause or route loss: the guard above).
+        let rewoundAfterPlayingThrough = (playedThrough || reachedEndWithoutSeek)
+            && (observation.position ?? 0) < Self.minimumProgress(duration: lastDuration)
         guard stoppedAtEnd || rewoundAfterPlayingThrough else { return nil }
         endedEntryID = current
         noteEndReported()

@@ -4,49 +4,128 @@ import Foundation
 // playback. `DJScriptWriter` speaks from these pools; `VoiceRenderer` and
 // `DJBreakPreparer` are unchanged.
 
-/// Fixed host lines. Placeholders are filled only from track metadata or the
-/// station name. Nothing here claims a genre, a year, a chart position, or weather.
+/// One host voice's phrase bank: every pool a break draws from. Placeholders are filled
+/// only from track metadata (`{title}`/`{artist}` of the song that just played,
+/// `{nextTitle}`/`{nextArtist}` of the next one) or the station display name (`{station}`).
+/// Nothing here claims a genre, a year, a chart position, or weather.
+/// A tone can be swapped by handing `DJScriptWriter` another bank; the engine does not change.
+/// Lines use contractions and em dashes for pacing. No SSML: cloud voices get plain text.
+public struct EditorialTone: Equatable, Sendable {
+    /// Names the song that just played. Opens an ordinary break.
+    public var backAnnounce: [String]
+    /// The closing line: one short sentence naming the next song. It is the last cue of every
+    /// break and is the line Fry's player may let land over the next song's intro.
+    public var closing: [String]
+    /// Occasional opener instead of a plain back-announce. Artist and title only.
+    public var artistFocus: [String]
+    /// Uses the station's display name only.
+    public var stationID: [String]
+    /// Time-of-day color. No facts.
+    public var atmosphere: [DayPart: [String]]
+    /// Presenter connectors with no facts and no names: they never mention a track.
+    public var continuation: [String]
+    /// Before approved briefing cues.
+    public var briefingLead: [String]
+    /// After approved briefing cues, before the closing line.
+    public var briefingOutro: [String]
+    /// The first break of a session.
+    public var greetings: [DayPart: [String]]
+
+    public init(backAnnounce: [String], closing: [String], artistFocus: [String], stationID: [String],
+                atmosphere: [DayPart: [String]], continuation: [String], briefingLead: [String],
+                briefingOutro: [String], greetings: [DayPart: [String]]) {
+        self.backAnnounce = backAnnounce
+        self.closing = closing
+        self.artistFocus = artistFocus
+        self.stationID = stationID
+        self.atmosphere = atmosphere
+        self.continuation = continuation
+        self.briefingLead = briefingLead
+        self.briefingOutro = briefingOutro
+        self.greetings = greetings
+    }
+
+    /// Default: warm and conversational.
+    public static let warm = EditorialTone(
+        backAnnounce: [
+            "That was {title}, from {artist}.",
+            "{artist} there, with {title}.",
+            "You just heard {title} from {artist}.",
+            "That one was {title} by {artist}.",
+            "{title}, from {artist}.",
+            "Just had {title} there.",
+        ],
+        // Kept at five lines, in this order. `DJNarrationTests` cycles this pool.
+        // One sentence of at most seven words, so it fits `DJCadence.maxClosingSeconds`.
+        closing: [
+            "Here's {nextArtist}, with {nextTitle}.",
+            "Here's {nextTitle}, from {nextArtist}.",
+            "Next up — {nextArtist}, {nextTitle}.",
+            "Here's {nextTitle}.",
+            "This is {nextTitle}.",
+        ],
+        artistFocus: [
+            "That was {artist}.",
+            "{artist}, with {title}.",
+            "From {artist}: {title}.",
+            "One from {artist}.",
+        ],
+        stationID: [
+            "You're listening to {station} — just you, me, and the music.",
+            "This is {station}.",
+            "You're tuned to {station}.",
+            "{station} — thanks for listening.",
+        ],
+        atmosphere: [
+            .earlyMorning: ["Quiet start — the day's just getting going.", "Early one. Take it slow."],
+            .morning: ["Hope the morning's going easy.", "A little while before midday."],
+            .afternoon: ["Middle of the afternoon — hope it's going okay.", "The afternoon's moving along."],
+            .evening: ["Evening's settling in.", "Winding the day down — no rush."],
+            .lateNight: ["Late hours — a quiet stretch of the night.", "Still up this late? Glad you're here."],
+        ],
+        continuation: [
+            "Wherever you're listening, thanks for spending a little time here.",
+            "Plenty more on the way.",
+            "Stay right where you are.",
+            "We'll keep it rolling.",
+            "Thanks for keeping me company.",
+        ],
+        briefingLead: [
+            "Let me catch you up.",
+            "A couple of things before the next song.",
+            "While we're between songs.",
+            "Quick one before the next song.",
+        ],
+        briefingOutro: [
+            "That's it from me for now.",
+            "Okay — back to the music.",
+            "That's all for now.",
+        ],
+        greetings: [
+            .earlyMorning: ["Early start today.", "Good morning, early riser."],
+            .morning: ["Good morning.", "Morning."],
+            .afternoon: ["Good afternoon.", "Afternoon."],
+            .evening: ["Good evening.", "Evening."],
+            .lateNight: ["Late one tonight.", "Still up? Good."],
+        ]
+    )
+
+    /// Every line in every pool (for scans in tests).
+    public var allLines: [String] {
+        backAnnounce + closing + artistFocus + stationID + continuation + briefingLead + briefingOutro
+            + atmosphere.values.flatMap { $0 } + greetings.values.flatMap { $0 }
+    }
+}
+
+/// The default tone's pools, by their historical names.
 public enum EditorialPhrasing {
-    public static let backAnnounce = [
-        "That was {title} by {artist}.",
-        "{artist} there, with {title}.",
-        "You just heard {title} from {artist}.",
-        "{title}, from {artist}.",
-        "{title} by {artist}.",
-        "Just had {title}.",
-    ]
-
-    /// Kept at five lines, in this order. `DJNarrationTests` cycles this pool.
-    public static let songIntro = [
-        "Up next, {nextTitle} by {nextArtist}.",
-        "Here's {nextArtist} with {nextTitle}.",
-        "Coming up: {nextArtist}, {nextTitle}.",
-        "Next, {nextTitle}.",
-        "Here's {nextTitle}.",
-    ]
-
-    /// Occasional, instead of a plain back-announce. Artist and title only.
-    public static let artistFocus = [
-        "That was {artist}.",
-        "{artist}, with {title}.",
-        "From {artist}: {title}.",
-        "One from {artist}.",
-    ]
-
-    public static let stationID = [
-        "You're listening to {station}.",
-        "This is {station}.",
-        "{station}.",
-    ]
-
-    public static let atmosphere: [DayPart: [String]] = [
-        .earlyMorning: ["Quiet start.", "The day's just getting going."],
-        .morning: ["Hope the morning's going easy.", "A little while before midday."],
-        .afternoon: ["Middle of the afternoon.", "The afternoon's moving along."],
-        .evening: ["Evening's settling in.", "Winding the day down."],
-        .lateNight: ["Late hours.", "Quiet stretch of the night."],
-    ]
-
+    public static var backAnnounce: [String] { EditorialTone.warm.backAnnounce }
+    /// The closing pool (the next song's intro).
+    public static var songIntro: [String] { EditorialTone.warm.closing }
+    public static var artistFocus: [String] { EditorialTone.warm.artistFocus }
+    public static var stationID: [String] { EditorialTone.warm.stationID }
+    public static var continuation: [String] { EditorialTone.warm.continuation }
+    public static var atmosphere: [DayPart: [String]] { EditorialTone.warm.atmosphere }
     public static var atmosphereLines: [String] { atmosphere.values.flatMap { $0 } }
 
     /// Copy the host does not use. Tests scan scripts and these pools for them.

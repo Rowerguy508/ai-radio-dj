@@ -19,7 +19,7 @@ import AeroDJCore
 ///
 /// Playing a pool: `tracks(for:)` returns the `Track`s for a built list, for the queue hook
 /// (see the PR: queueing them live is a `MusicKitService` dependency for Claude).
-actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationSeedSearching {
+actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationSeedSearching, GenreProviding {
     /// Songs returned by the last lookups, so a built list can become playable `Track`s.
     private var songsByID: [String: Song] = [:]
     private static let maxCachedSongs = 2000
@@ -113,14 +113,45 @@ actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationS
     }
 
     /// The storefront's top-level genres, optionally filtered by name. Genres have no artwork.
+    /// Reads the same cached list as `genres()`.
     func genreSeeds(matching query: String = "") async throws -> [StationSeedSearchResult] {
-        try Task.checkCancellation()
-        let genres = try await catalogGenres(path: "genres")
-        try Task.checkCancellation()
+        let genres = try await self.genres()
         let q = StationSeedSearch.normalizedTerm(query)
         return genres
             .filter { q == nil || $0.name.localizedCaseInsensitiveContains(q ?? "") }
-            .map { StationSeedSearchResult(seed: StationSeed(kind: .genre, catalogID: $0.id.rawValue, name: $0.name)) }
+            .map { StationSeedSearchResult(seed: StationSeed(kind: .genre, catalogID: $0.id, name: $0.name)) }
+    }
+
+    // MARK: GenreProviding (Tune > Genres chips and the add-station genre step)
+
+    /// The last successful top-level list, per storefront. Failures are never cached.
+    private var genreCache: (country: String, genres: [CatalogGenre])?
+
+    /// The storefront's top-level catalog genres (`/v1/catalog/{storefront}/genres`, storefront
+    /// from `MusicDataRequest.currentCountryCode`), in Apple's order, de-duplicated, without the
+    /// root "Music" genre (34). Throws on failure, `CancellationError` when cancelled
+    /// (`CatalogGenreResponse.fetch`, tested in AeroDJCore). Nothing is logged.
+    /// Without Apple Music access it throws `MusicKitError.notAuthorized` before any MusicKit
+    /// call (status read only; access is never requested here, e.g. when a relaunch reopens Tune).
+    func genres() async throws -> [CatalogGenre] {
+        try await CatalogGenreResponse.whenAuthorized({ MusicAuthorization.currentStatus == .authorized },
+                                                      notAuthorized: { MusicKitError.notAuthorized }) {
+            try await self.authorizedGenres()
+        }
+    }
+
+    /// `genres()` once access is known to be granted: storefront, cache, request.
+    private func authorizedGenres() async throws -> [CatalogGenre] {
+        let country = try await MusicDataRequest.currentCountryCode
+        if let genreCache, genreCache.country == country { return genreCache.genres }
+        guard let url = URL(string: "https://api.music.apple.com/v1/catalog/\(country)/genres") else {
+            throw URLError(.badURL)
+        }
+        let genres = try await CatalogGenreResponse.fetch {
+            try await MusicDataRequest(urlRequest: URLRequest(url: url)).response().data
+        }
+        genreCache = (country, genres)
+        return genres
     }
 
     /// Playable tracks for a built station list, in order. Songs not looked up here are skipped.

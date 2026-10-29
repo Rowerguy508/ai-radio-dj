@@ -45,6 +45,7 @@ struct PlayerView: View {
         .navigationTitle(station.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .talkoverToggleEntry() // DJ talk-over switch: AERODJ_OWNER_AB only; a no-op otherwise (-Fry)
         // Fry #110: Tune Save/Discard waits on real transport. Callbacks + auth refresh stay
         // on PlaybackSessionBinder (once-only); do not authorize() here.
         .task { await reportPlaybackActivity(music.snapshot) }
@@ -89,11 +90,22 @@ enum PlaybackSessionBinder {
         precondition(music === MusicKitService.shared, "MusicKitService.shared is the only player")
         let interlude = dependencies.interlude
         let djSession = dependencies.djSession
-        music.onBoundary = { @MainActor [interlude, music, djSession] boundary, finishedIndex in
+        let talkover = dependencies.talkover
+        music.onBoundary = { @MainActor [interlude, music, djSession, talkover] boundary, finishedIndex in
             #if AERODJ_P0_DIAG
             P0EventTraceHost.shared.onBoundary(boundary, finishedIndex: finishedIndex)
             #endif
             guard case .naturalEnd = boundary else { return }
+            // DJ talk-over (-Fry, flagged; docs/dj-talkover.md): the talk-over already took this
+            // boundary's break (and handed out a gap fallback synchronously). It returns at the
+            // plan's play cue; the next song starts exactly as below.
+            if talkover.claimsBoundary(finishedIndex) {
+                Task { @MainActor in
+                    await talkover.boundary(finishedIndex)
+                    await music.startNextTrack(after: finishedIndex)
+                }
+                return
+            }
             // Hand the break out before this closure awaits anything. The window was the
             // `Task` below awaiting `naturalBoundary` while `PendingPlayStop` was still idle:
             // an unplug or interruption in that await was ignored, then `handOut` plus `play`
@@ -160,7 +172,8 @@ enum PlaybackSessionBinder {
         }
         // A song really started: the DJ session plans its break with the catalog duration.
         // Without a duration nothing is planned, so the DJ stays quiet rather than guessing.
-        music.onSongStarted = { [djSession] index, duration in
+        music.onSongStarted = { [djSession, talkover] index, duration in
+            talkover.songStarted(index: index, duration: duration)
             guard let duration else { return }
             Task { await djSession.songStarted(index: index, remaining: .seconds(duration)) }
         }
@@ -172,7 +185,8 @@ enum PlaybackSessionBinder {
             }
         }
         // A skip cuts the skipped song's break, so a prepared break for it is never played.
-        music.onSongSkipped = { [djSession] index in
+        music.onSongSkipped = { [djSession, talkover] index in
+            talkover.songSkipped(index: index)
             Task { await djSession.songCut(afterTrack: index) }
         }
         // Only real audio events reach the DJ session; nothing is synthesized from the plan.
@@ -185,6 +199,7 @@ enum PlaybackSessionBinder {
             case .failed(let k): djSession.playbackFailed(afterTrack: k)
             }
         }
+        talkover.start()
         // Non-prompting status only. Launch and selection restore must not call request().
         await music.refreshAuthorizationStatus()
     }
