@@ -791,7 +791,7 @@ struct StartListeningView: View {
 // MARK: - Playback progress (display-only)
 
 /// Read-only elapsed/duration for the scrubber. Closures so live can poll without publishing.
-/// Seeking is not wired: `PlaybackActions` has no seek path yet.
+/// Seeking goes through `PlaybackScrubber.onSeek`, never through this type.
 /// `@MainActor` because live closures read `MusicKitService` (also main-actor).
 @MainActor
 struct PlaybackTimeSource {
@@ -820,72 +820,279 @@ struct PlaybackTimeSource {
     }
 }
 
-/// Elapsed, remaining, and a display-only bar. Hidden when duration is nil.
+/// Elapsed, remaining, and the song scrubber. Hidden when duration is nil.
 ///
 /// `transport` and `trackID` are plain values from the snapshot so SwiftUI reruns this body
 /// when either changes. The timeline is keyed on them (`PlaybackProgressClock.Key`): the
 /// period is fixed when a TimelineView is built, so a bar first drawn while paused would
 /// otherwise keep its idle period after Play (frozen at 0:00, first song's duration).
-/// Reduce Motion removes the fill animation only; the clock still updates every second.
-struct PlaybackProgressBar: View {
+/// Reduce Motion removes the fill and grow animations only; the clock still updates every second.
+///
+/// Scrubbing (owner, 7:40 PM). The rules live in AeroDJCore's `ScrubberState`: the bar shows
+/// the finger's target while dragging (the clock fill is paused), `onSeek` runs once on
+/// release and never during a drag, and the bar holds the target until playback catches up.
+/// This view never touches playback state.
+///
+/// Wired to `PlaybackActions.seek(to:trackID:)` (#156 + #171) and `PlaybackSnapshot.canSeek`.
+/// `onSeek` gets the target and the track the bar was showing at release, so a release that
+/// lands after the song changed is a no-op upstream (stale scrub) and the bar snaps back.
+/// With `onSeek == nil` (previews only) it is the display-only bar (no thumb, no gesture, no
+/// adjustable action, not dimmed). With `canSeek == false` (DJ break, loading, non-seekable)
+/// it is dimmed, the gesture is off and nothing is sent. Its VoiceOver hint names the DJ
+/// break only while `isDJSpeaking` (the same On Air truth as the ON AIR pill); otherwise it
+/// stays neutral.
+struct PlaybackScrubber: View {
+    typealias Seek = (_ seconds: TimeInterval, _ trackID: String?) async -> Bool
+
     let time: PlaybackTimeSource
     let transport: TransportState
     let trackID: String?
+    let canSeek: Bool
+    let onSeek: Seek?
+    /// True only while the DJ is actually speaking (`DJStudioState.isOnAir`). Wording only.
+    var isDJSpeaking: Bool = false
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var scrub = ScrubberState()
+    @State private var trackWidth: CGFloat = 0
+    @State private var dragStarts = 0
+    @State private var commits = 0
+    @GestureState private var isTouching = false
+
+    static let trackHeight: CGFloat = 4
+    static let draggingTrackHeight: CGFloat = 10
+    static let thumbSize: CGFloat = 12
+    static let draggingThumbSize: CGFloat = 22
+    static let djBreakHint = "Seeking is paused during the DJ break"
+    static let neutralHint = "Seeking isn't available right now"
+
+    /// Why the bar is inert: the DJ break only while the DJ is on air, neutral otherwise.
+    static func unavailableHint(isDJSpeaking: Bool) -> String {
+        isDJSpeaking ? djBreakHint : neutralHint
+    }
+
+    private var isWired: Bool { onSeek != nil }
+    private var isInteractive: Bool { isWired && canSeek }
 
     private var key: PlaybackProgressClock.Key {
         PlaybackProgressClock.Key(transport: transport, trackID: trackID)
     }
 
     var body: some View {
+        // The gesture sits outside the TimelineView: `.id(key)` rebuilds the timeline on a
+        // transport or track change, and a gesture inside it would be dropped mid-drag.
         TimelineView(.periodic(from: .now, by: PlaybackProgressClock.interval(for: key, reduceMotion: reduceMotion))) { context in
             let _ = context.date
-            let elapsed = max(0, time.elapsed())
+            let snapshotPosition = max(0, time.elapsed())
             let duration = time.duration()
             if let duration, duration > 0 {
-                let remaining = max(0, duration - elapsed)
-                let fraction = min(1, elapsed / duration)
-                VStack(spacing: 4) {
-                    progress(fraction: fraction)
-                    HStack {
-                        Text(Self.format(elapsed))
-                            .font(.caption.monospacedDigit())
-                        Spacer(minLength: 0)
-                        Text(Self.format(remaining))
-                            .font(.caption.monospacedDigit())
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Playback position")
-                .accessibilityValue("\(Self.format(elapsed)) of \(Self.format(duration))")
-                .accessibilityIdentifier("playback.progress")
+                let shown = scrub.displayedPosition(snapshotPosition: snapshotPosition, duration: duration, now: Self.now())
+                bar(position: shown, duration: duration)
             }
         }
         .id(key)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { trackWidth = $0 })
+        .opacity(isWired && !canSeek ? 0.5 : 1)
+        .contentShape(isWired ? AnyShape(ScrubberHitShape()) : AnyShape(Rectangle()))
+        .gesture(scrubGesture, including: isInteractive ? .all : .subviews)
+        .sensoryFeedback(.selection, trigger: dragStarts)
+        .sensoryFeedback(.selection, trigger: commits)
+        .onAppear { scrub.trackChanged(to: trackID) }
+        .onChange(of: trackID) { _, new in scrub.trackChanged(to: new) }
+        .onChange(of: canSeek) { _, new in scrub.canSeekChanged(new) }
+        .onChange(of: isTouching) { _, touching in
+            // A cancelled drag never reaches onEnded. A normal release has already committed,
+            // so this is a no-op then.
+            guard !touching else { return }
+            Task { @MainActor in scrub.cancelDrag() }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("playback.scrubber")
     }
 
     @ViewBuilder
-    private func progress(fraction: Double) -> some View {
-        // Display-only: no seek binding. A Slider would imply dragging.
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.secondary.opacity(0.25))
-                Capsule()
-                    .fill(Color.primary.opacity(0.85))
-                    .frame(width: max(4, geo.size.width * fraction))
-                    .animation(PlaybackProgressClock.animatesFill(reduceMotion: reduceMotion) ? .linear(duration: 0.25) : nil, value: fraction)
+    private func bar(position: TimeInterval, duration: TimeInterval) -> some View {
+        let dragging = scrub.isDragging
+        VStack(spacing: 4) {
+            track(fraction: ScrubberState.fraction(position: position, duration: duration), dragging: dragging)
+            HStack {
+                Text(PlaybackTimeFormat.label(position))
+                    .font(.caption.monospacedDigit())
+                Spacer(minLength: 0)
+                Text(PlaybackTimeFormat.remaining(position: position, duration: duration))
+                    .font(.caption.monospacedDigit())
             }
+            .foregroundStyle(dragging ? .primary : .secondary)
         }
-        .frame(height: 4)
-        .accessibilityHidden(true)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Playback position")
+        .accessibilityValue(PlaybackTimeFormat.accessibilityValue(position: position, duration: duration))
+        .modifier(ScrubberAccessibility(isWired: isWired, canSeek: canSeek,
+                                        unavailableHint: Self.unavailableHint(isDJSpeaking: isDJSpeaking),
+                                        step: { accessibilityStep($0) }))
+        .accessibilityIdentifier("playback.progress")
     }
 
-    static func format(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds.rounded(.down))
-        let m = total / 60
-        let s = abs(total % 60)
-        return "\(m):\(String(format: "%02d", s))"
+    @ViewBuilder
+    private func track(fraction: Double, dragging: Bool) -> some View {
+        let height = dragging ? Self.draggingTrackHeight : Self.trackHeight
+        let thumb = dragging ? Self.draggingThumbSize : Self.thumbSize
+        // The layout height stays the 4 pt of today's bar; the taller drag track and the
+        // thumb draw in an overlay, so the chrome above and below never moves.
+        Color.clear
+            .frame(height: Self.trackHeight)
+            .overlay {
+                GeometryReader { geo in
+                    let width = geo.size.width
+                    ZStack(alignment: .leading) {
+                        trackBackground
+                        Capsule()
+                            .fill(Color.primary.opacity(0.85))
+                            .frame(width: max(height, width * fraction))
+                            .animation(PlaybackProgressClock.animatesFill(reduceMotion: reduceMotion) && !dragging
+                                       ? .linear(duration: 0.25) : nil, value: fraction)
+                    }
+                    .frame(width: width, height: height)
+                    .position(x: width / 2, y: geo.size.height / 2)
+                    .overlay {
+                        if isWired {
+                            Circle()
+                                .fill(Color.white.opacity(dragging ? 0.55 : 0.95))
+                                .scrubberGlass(Circle())
+                                .shadow(color: .black.opacity(0.25), radius: dragging ? 4 : 1.5, y: 1)
+                                .frame(width: thumb, height: thumb)
+                                .position(x: min(max(0, width * fraction), width), y: geo.size.height / 2)
+                        }
+                    }
+                }
+            }
+            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.75), value: dragging)
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var trackBackground: some View {
+        if isWired {
+            Capsule()
+                .fill(Color.secondary.opacity(0.2))
+                .scrubberGlass(Capsule())
+        } else {
+            Capsule().fill(Color.secondary.opacity(0.25))
+        }
+    }
+
+    // MARK: Interaction
+
+    private var scrubGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .updating($isTouching) { _, touching, _ in touching = true }
+            .onChanged { value in
+                guard let duration = time.duration() else { return }
+                let target = ScrubberState.position(atX: value.location.x, width: trackWidth, duration: duration)
+                if scrub.drag(to: target, duration: duration, canSeek: canSeek) {
+                    dragStarts += 1
+                }
+            }
+            .onEnded { _ in
+                // canSeek can turn false between the last move and the lift: drop, never send.
+                guard canSeek else { scrub.cancelDrag(); return }
+                guard let target = scrub.endDrag(now: Self.now()) else { return }
+                send(target, commitID: scrub.commitID)
+            }
+    }
+
+    /// VoiceOver adjustable: ±15 s from what the bar shows, through the same commit path.
+    private func accessibilityStep(_ delta: TimeInterval) {
+        guard isInteractive, let duration = time.duration(), duration > 0 else { return }
+        let now = Self.now()
+        let current = scrub.displayedPosition(snapshotPosition: max(0, time.elapsed()), duration: duration, now: now)
+        let target = scrub.commit(current + delta, duration: duration, now: now)
+        send(target, commitID: scrub.commitID)
+    }
+
+    /// The one seek per release, pinned to the track the bar was showing. A false result
+    /// (blocked, or the song changed first) goes straight back to the snapshot.
+    private func send(_ target: TimeInterval, commitID: Int) {
+        commits += 1
+        guard let onSeek, canSeek else {
+            scrub.seekFinished(commitID: commitID, succeeded: false)
+            return
+        }
+        let pinnedTrackID = scrub.trackID
+        Task { @MainActor in
+            let succeeded = await onSeek(target, pinnedTrackID)
+            scrub.seekFinished(commitID: commitID, succeeded: succeeded)
+            guard succeeded else { return }
+            try? await Task.sleep(for: .seconds(ScrubberState.holdTimeout))
+            scrub.settle(snapshotPosition: max(0, time.elapsed()), now: Self.now())
+        }
+    }
+
+    private static func now() -> TimeInterval {
+        ProcessInfo.processInfo.systemUptime
+    }
+}
+
+/// At least 44 pt tall for touch while the visible track stays thin: reaches 12 pt above the
+/// track and below the time labels.
+private struct ScrubberHitShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let height = max(44, rect.height + 20)
+        return Path(CGRect(x: rect.minX, y: rect.minY - 12, width: rect.width, height: height))
+    }
+}
+
+/// Adjustable action only once seeking is wired; a hint while it is unavailable.
+private struct ScrubberAccessibility: ViewModifier {
+    let isWired: Bool
+    let canSeek: Bool
+    let unavailableHint: String
+    let step: (TimeInterval) -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isWired && canSeek {
+            content.accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: step(ScrubberState.accessibilityStep)
+                case .decrement: step(-ScrubberState.accessibilityStep)
+                @unknown default: break
+                }
+            }
+        } else if isWired {
+            content.accessibilityHint(unavailableHint)
+        } else {
+            content
+        }
+    }
+}
+
+/// Liquid Glass on iOS 26+, a thin material before that, a plain fill with Reduce Transparency.
+private struct ScrubberGlass<S: Shape>: ViewModifier {
+    let shape: S
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content
+        } else {
+            #if compiler(>=6.2)
+            if #available(iOS 26.0, *) {
+                content.glassEffect(.regular, in: shape)
+            } else {
+                content.background(.thinMaterial, in: shape)
+            }
+            #else
+            content.background(.thinMaterial, in: shape)
+            #endif
+        }
+    }
+}
+
+private extension View {
+    func scrubberGlass<S: Shape>(_ shape: S) -> some View {
+        modifier(ScrubberGlass(shape: shape))
     }
 }
 
@@ -913,6 +1120,20 @@ struct PlaybackProgressBar: View {
     .padding()
     .background(AeroDJPalette.slab)
 }
+
+#if DEBUG
+#Preview("Scrubber") {
+    VStack(spacing: 28) {
+        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: nil)
+        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: true, onSeek: { _, _ in true })
+        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: { _, _ in true })
+        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: { _, _ in true },
+                         isDJSpeaking: true)
+    }
+    .padding()
+    .preferredColorScheme(.dark)
+}
+#endif
 
 private struct SymbolReplace: ViewModifier {
     var enabled: Bool

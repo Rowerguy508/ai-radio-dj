@@ -168,6 +168,12 @@ public final class StationConfigurationModel {
             loadState = .failed(.unreadable)
         }
         tuningDraft = nil
+        // A persisted reduction must not wait for the first song boundary (see
+        // `promotePendingReductions`): apply it now, before playback, and persist it.
+        if let change = state.promotePendingReductions() {
+            publish(change)
+            if canSave { _ = await enqueueSave().value }
+        }
         await refreshConsent()
     }
 
