@@ -208,12 +208,20 @@ struct StationSplitRoot<Detail: View>: View {
                 // that row and the split pushes the detail.
                 NavigationLink(value: station.id) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(station.name).font(.headline)
-                        Text(station.description ?? "").font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
+                        // ui-contract §6: station name is one line, truncated. Created names run to 40 characters.
+                        Text(station.name).font(.headline).lineLimit(1)
+                        if let description = station.description {
+                            Text(description).font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
+                                .lineLimit(2)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .tag(station.id)
+                // Same label, hint and identifier scheme as the carousel card (StationCarousel.swift:189-193),
+                // so UI tests and VoiceOver treat a created station like any other row.
+                .accessibilityHint("Opens the station. Music starts only when you press Play.")
+                .accessibilityIdentifier("stations.row.\(station.id.uuidString)")
             }
         }
     }
