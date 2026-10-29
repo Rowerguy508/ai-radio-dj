@@ -14,6 +14,10 @@ entitlement assignment. Apple facts are cited to developer.apple.com pages
 fetched 2026-10-29 (§13). Where Apple's docs did not settle a point, the
 note says **unverified**.
 
+Revision 3 folds in Sentinel's re-review (comment 6509970801): E1 (the 24 h
+re-check does not bound a refund; the Apple status check is now a hard gate),
+E2 (per-link expiry and an owner reset script), and the listed nits.
+
 ## 1. Current state
 
 **Auth.** One shared owner bearer token. The server keeps only its SHA-256
@@ -66,9 +70,10 @@ reads. Fry's #234 (head `31a792f`) adds the backoff of §4.4.
 | Client claims to be Pro (`isPro` flag, patched app) | Server never trusts a client flag. It verifies Apple's signed transaction itself (§5.3). |
 | Forged or tampered transaction JWS | Full x5c chain to the pinned Apple Root CA - G3, ES256 signature, bundle/product/environment checks (§5.3). |
 | One purchase shared across many installs (JWS passed around) | Entitlement bound to attested install keys, capped at 5 active installs per `originalTransactionId` (§5.5). |
-| Pre-refund JWS replayed after a refund | Server-side tombstone from the verified REFUND/REVOKE notification; a stored tombstone beats any older JWS (§5.6). |
+| Pre-refund JWS replayed after a refund | Tombstone from the verified REFUND/REVOKE notification, **plus a required App Store Server API status check on every entitlement post before any public paid voice**, so a lost notification cannot re-grant (§5.6, E1). |
+| Leaked JWS used by other installs (freeloading, locking out the payer) | Each link carries the expiry of the JWS **that install** presented; renewals do not extend it. Owner-run reset script clears a purchase's installs (§5.5, E2). |
 | Sandbox purchases spending production budget | Sandbox refused in Production unless an exact-`true` flag, and then only from a small separate bucket (§5.7). |
-| Leaked owner token | Owner path only on exact `true`, own small cap, never a fallback, removed before any public paid voice (§4.5). |
+| Leaked owner token | Owner path only on exact `true` (from PR 4), own `owner_daily` bucket (unset = the global ceiling as #238 ships; lowered before any public install has paid voice), never a fallback, removed before any public paid voice (§4.5). |
 | Limiter store missing or down | Every verified path requires `limiter.durable === true` in **every** environment, else 503 `store` (§4.3). Never call ElevenLabs. |
 | Apple outage or an unverifiable transaction | Fail closed: no paid render, on-device voice (§5.8). |
 | Jailbroken device relaying signatures | Not fully preventable. Bounded by entitlement, per-install quota, install cap and revocation. |
@@ -140,7 +145,9 @@ Accepts `{ keyId, attestationObject, challenge }`. Order:
 4. One script: `SET key:{aerodj-tts}:<keyId> NX` (atomic set-if-absent; a
    duplicate `keyId` fails, no GET-then-SET) + `INCR enroll:{aerodj-tts}:<UTCday>`
    against `AERODJ_TTS_ENROLL_DAILY_CAP` + consume the challenge. The
-   enrollment counter therefore counts only verified attestations.
+   enrollment counter therefore counts only verified attestations. The
+   script checks the enroll cap **before** incrementing: a refusal (429
+   `enroll`) writes no key record and does not increment the counter.
    Key record: `{ pubKeySpki, counter: 0, env, createdDay, revoked: false }`,
    90-day sliding TTL. Success returns 204.
 
@@ -273,7 +280,9 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
   (PR 4) deploys (§12.6). It never defaults to on. PR 1 (#238) adds no flag.
 - The owner bucket has **its own cap**, `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`,
   and also reserves against the global ceiling. As shipped in #238, unset
-  cap = the global ceiling. Proposal: equal to global while the owner is
+  cap = the global ceiling. From PR 4, the owner path is refused (429
+  `owner_daily`) when `AERODJ_TTS_ATTEST_ENABLED=true` and the owner cap is
+  unset, so attested testers cannot be starved during rollout steps 2-3. Proposal: equal to global while the owner is
   the only paid user; 1,500 once any public install has paid voice.
 - **The owner keeps the paid voice without buying** through this flagged
   token until it is retired. The owner token is **not** subject to the
@@ -397,9 +406,14 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
 The verifier is shared by `/api/entitlement` and the notifications
 endpoint. Every check must pass; any failure → 403 `no_entitlement`
 (entitlement) or 400 (notifications), and nothing is stored.
-1. Compact JWS, three parts; header `alg == "ES256"`; `x5c` present, 3
-   certs (leaf, intermediate, root). Size caps before decoding.
-2. Chain: leaf → intermediate → the **pinned Apple Root CA - G3**
+1. Compact JWS, three base64url parts, 16 KB cap before decoding. Header:
+   `alg` must be exactly `ES256`; `none`, `HS*`, `RS*`, `PS*`, `ES384` and a
+   missing `alg` are refused. `x5c` is required and must be an array of
+   exactly 3 base64 certs (leaf, intermediate, root). `jwk`, `jku`, `kid` and
+   `x5u` are **never read**: the key comes only from the pinned chain.
+2. Chain (intermediate and root must be CAs, the leaf must not; each
+   signature is checked up the chain; issuer/subject names must chain):
+   leaf → intermediate → the **pinned Apple Root CA - G3**
    (`AppleRootCA-G3.cer`, public, from apple.com/certificateauthority,
    committed with its SHA-256 fingerprint in a test). The `x5c` root must be
    byte-equal to the pinned one; the system trust store is never used.
@@ -408,7 +422,7 @@ endpoint. Every check must pass; any failure → 403 `no_entitlement`
    extensions `1.2.840.113635.100.6.11.1` (leaf) and
    `1.2.840.113635.100.6.2.1` (intermediate); we copy that check. Those OIDs
    come from Apple's open-source library (github.com/apple), **not** from a
-   developer.apple.com page: Sentinel to accept the source. The library's
+   developer.apple.com page; Sentinel accepted that source (re-review). The library's
    optional OCSP revocation check is deferred (no network in the verify path).
 3. ES256 signature over `header.payload` with the leaf key (JOSE raw
    `r‖s`, converted for `node:crypto`).
@@ -420,7 +434,9 @@ endpoint. Every check must pass; any failure → 403 `no_entitlement`
    - `environment == "Production"` on Production; `"Sandbox"` only per §5.7;
      anything else (including Xcode StoreKit-testing transactions, which are
      not signed by Apple's chain) refused;
-   - `expiresDate > now` (ms), after grace handling in §5.6;
+   - `expiresDate > now` (ms). Grace extends access only from **verified**
+     renewal info (a notification or the status API), never from anything
+     the client sends;
    - no `revocationDate`;
    - `inAppOwnershipType == "PURCHASED"`; `FAMILY_SHARED` only per §5.5;
      `ASSIGNED` refused;
@@ -452,14 +468,22 @@ made outside the app (offer codes) may lack the token, so absence is allowed.
 
 ### 5.5 Storage, linking and installs per purchase
 
-Keys (hash tag `{aerodj-tts}`; `h(x) = HMAC-SHA256(AERODJ_TTS_ID_HMAC_KEY, x)`):
+Keys (hash tag `{aerodj-tts}`; `h_v(x) = HMAC-SHA256(ID_HMAC_KEY_v, x)`, and
+every key name carries the key version, e.g. `ent:v1:<h_v1(…)>`; rotation
+below):
 - `ent:<h(originalTransactionId)>` = `{ productId, env, expiresMs,
   graceUntilMs, status, lastSignedMs, aatHash, ownership }`; TTL =
   expiry + grace + 60 days (Apple's billing retry window).
 - `tomb:<h(originalTransactionId)>` = `{ revokedMs, reason }`; TTL ≥ the
   revoked transaction's `expiresDate` + max grace + 1 day (an older JWS
   fails the expiry check after that anyway).
-- `link:<keyId>` = `h(originalTransactionId)`, 30-day sliding TTL.
+- `link:<keyId>` = `{ ent: h(originalTransactionId), expiresMs, graceUntilMs }`
+  (E2): `expiresMs` is the `expiresDate` of the JWS **this install**
+  presented (or Apple's status-API expiry for this install's post);
+  `graceUntilMs` only from verified renewal info. It is refreshed **only**
+  when this same install re-presents a valid current transaction; renewals,
+  notifications and other installs' posts never extend it. TTL = its own
+  expiry + 30 days idle.
 - `members:<h(originalTransactionId)>` = sorted set of keyIds by last use.
 
 One `ENTLINK` script, after the assertion and JWS verify: consume challenge
@@ -468,22 +492,51 @@ One `ENTLINK` script, after the assertion and JWS verify: consume challenge
 members idle > 30 days → if this keyId is not a member and members ≥
 **`installsPerPurchase` in the StoreKit config (interim 5)** → 403 `install_limit`;
 also at most 10 new links per purchase per rolling 30 days (reinstall churn
-without unlimited rotation) → add member, set `link`.
+without unlimited rotation) → add member, set `link` with this JWS's expiry.
+
+`/api/tts` (inside `RESERVE2`) requires **both** a current `link` (its own
+`expiresMs`/`graceUntilMs` > now) **and** a current, untombstoned `ent`. So a
+stolen JWS dies at its own expiry even though the purchase renews, unless the
+thief keeps getting fresh JWS from the victim's device (E2).
+
+**Owner-run reset (E2):** `scripts/reset-purchase-installs.ts` reads one
+`originalTransactionId` from stdin (never argv, never committed), computes
+the hash under the current and previous key versions, deletes that
+purchase's `members` and every listed `link`, and prints only counts. The
+payer then re-links from their own device. Tests: clears only the target
+purchase, idempotent, no id in output.
+
+**Residual until a reset** (accepted by Sentinel as bounded): up to 4
+freeloaders per leaked purchase for at most the leaked JWS's remaining
+term, each held to the per-install daily cap, all under the global ceiling.
+No cross-user data is exposed (endpoints return 204 or reason enums only).
+
+**Hash-key rotation:** `AERODJ_TTS_ID_HMAC_KEY` plus
+`AERODJ_TTS_ID_HMAC_KEY_VERSION`, and during a rotation
+`AERODJ_TTS_ID_HMAC_KEY_PREVIOUS` (+ its version). Writes use the current
+version; reads of `ent`/`members` fall back to the previous version and
+migrate on the next verified post. **Tombstones are checked under both
+versions** for at least the longest tombstone TTL (about one year + max
+grace + 1 day, for yearly products); only then is the previous key removed.
+Losing a tombstone would re-grant a refunded JWS, so the previous key is
+never dropped early.
 
 **Why 5:** the typical Pro user has an iPhone, maybe an iPad, plus
 reinstalls (each reinstall is a new keyId); idle links age out in 30 days.
 Five is enough for one person and too few to run a shared-purchase farm.
 Owner decision (§11).
 
-**Family Sharing:** recommendation is **off** for v1, because each paid
-listener costs ElevenLabs credits. Then only `PURCHASED` is accepted.
-If the owner enables it, `allowFamilyShared: true` in the config accepts
+**Family Sharing: off, and it stays off permanently unless the owner
+decides otherwise.** Per Apple (ASC help "Turn on Family Sharing for In-App
+Purchases" and the StoreKit article "Supporting Family Sharing in your app",
+as cited by Sentinel), once enabled for a product it **cannot be turned off**.
+Each paid listener costs ElevenLabs credits. Only `PURCHASED` is accepted.
+If the owner ever enables it, `allowFamilyShared: true` in the config accepts
 `FAMILY_SHARED`; whether a family member's transaction carries its own
 `originalTransactionId` or the purchaser's is **unverified** in Apple's docs,
 so PR 6 tests both and the cap applies per `originalTransactionId` either way
 (at worst a family shares 5 slots). Revoking Family Sharing arrives as
-`REVOKE` (§5.6). Whether the ASC Family Sharing toggle can later be turned
-off is **unverified** here; Orion to check ASC help before the owner enables it.
+`REVOKE` (§5.6). The ASC toggle and `allowFamilyShared` must stay in step.
 
 ### 5.6 Expiry, refund and revocation
 
@@ -496,7 +549,10 @@ and `data.signedRenewalInfo` are verified exactly as §5.3 (chain, ES256,
 `SET notif:<sha256(notificationUUID)> NX EX 30d` inside the script, only
 after verification; a duplicate returns 200 with no change. Out-of-order
 safe: changes apply only if the transaction's `signedDate` is newer than
-`lastSignedMs`, except tombstones, which always apply.
+`lastSignedMs`, except tombstones, which always apply. A notification whose
+`signedDate` is older than the 30-day dedupe window is refused as a verified
+no-op (200, no change), so an old notification cannot be replayed after its
+dedupe mark expires.
 
 | `notificationType` (`subtype`) | Effect |
 | --- | --- |
@@ -506,7 +562,7 @@ safe: changes apply only if the transaction's `signedDate` is newer than
 | `DID_FAIL_TO_RENEW` with no subtype (billing retry, no grace) | Access ends at `expiresDate` |
 | `GRACE_PERIOD_EXPIRED`, `EXPIRED` (any subtype) | End access now |
 | `REFUND`, `REVOKE` | Write tombstone, end access, delete all `members`/`link` for that purchase |
-| `REFUND_REVERSED` | Remove tombstone; access returns on the next verified entitlement post |
+| `REFUND_REVERSED` | Remove the tombstone **only if** this notification's `signedDate` is after `tomb.revokedMs`; access returns on the next verified entitlement post |
 | `TEST`, everything else | 200, no change |
 
 Note: `GRACE_PERIOD` is a **subtype** of `DID_FAIL_TO_RENEW` in Apple's
@@ -516,25 +572,38 @@ attempt) in Production only; Sandbox sends once. So: 200 on success or a
 verified no-op, 400 on an unverifiable payload (not from Apple), 503 on a
 store failure so Apple retries.
 
-**Backstop: short-TTL re-check.** Each `ent` record is valid only until
-`min(expiry or grace end, verifiedAt + AERODJ_TTS_ENTITLEMENT_TTL_HOURS)`
-(proposal 24 h). After that `/api/tts` returns 403 `no_entitlement` and the
-app re-posts its current transaction (§5.2 step 5). Combined with
-tombstones, a refunded or expired purchase stops paid voice within the TTL
-even if a notification is lost. Missed notifications can also be recovered
-with the Get Notification History endpoint (needs the API key below).
+**Status check against Apple: required before any public paid voice (E1).**
+Notifications alone are not enough. If a REFUND notification is lost, a
+refunded user's device can re-post its pre-refund JWS, which has no
+`revocationDate` and an unexpired `expiresDate`, and offline verification
+would re-grant it **until that JWS expires: up to a year for the yearly
+product**. A TTL by itself does not bound this (correcting revision 2's
+"24 h" claim). So, before public paid voice:
 
-**Optional: App Store Server API status lookup** (`AERODJ_TTS_STATUS_API_ENABLED`
-exactly `true`). On each entitlement post the proxy calls
-`GET https://api.storekit.apple.com/inApps/v1/subscriptions/{transactionId}`
-(Get All Subscription Statuses; status 1 active, 2 expired, 3 billing retry,
-4 grace, 5 revoked) and grants only for 1 or 4. Requests carry a per-request
-ES256 JWT (`kid`, `iss`, `iat`, `exp` ≤ 60 min, `aud: appstoreconnect-v1`,
-`bid`) signed with an **owner-created In-App Purchase API key**. The `.p8`,
-key ID and issuer ID live **only in Vercel Production env**, never in the
-app, repo, CI, logs or chat. Apple unreachable or non-2xx → 503 `apple`, no
-grant (fail closed). Without the key, the design still works on
-notifications + TTL.
+- On every `/api/entitlement` post (link or refresh) the proxy calls
+  `GET https://api.storekit.apple.com/inApps/v1/subscriptions/{transactionId}`
+  (Get All Subscription Statuses; sandbox base URL for Sandbox transactions;
+  status 1 active, 2 expired, 3 billing retry, 4 grace, 5 revoked) and grants
+  only for 1, or 4 when grace is honoured. Status 5 writes a tombstone. The
+  grant uses Apple's returned expiry, not the client's JWS.
+- A daily reconciliation job calls **Get Notification History** and replays
+  any missed notification through the same verified path.
+- Each `ent` and `link` is valid only until
+  `min(own expiry or verified grace end, verifiedAt + AERODJ_TTS_ENTITLEMENT_TTL_HOURS)`
+  (proposal 24 h). After that `/api/tts` returns 403 `no_entitlement` and the
+  app re-posts (§5.2 step 5), which triggers the status call again. **With
+  the status check on, a refund stops paid voice within the TTL; without it,
+  the bound is the JWS's own expiry.**
+- Requests to Apple carry a per-request ES256 JWT (`kid`, `iss`, `iat`,
+  `exp` ≤ 60 min, `aud: appstoreconnect-v1`, `bid`) signed with an
+  **owner-created In-App Purchase API key** (on Orion's owner list). The
+  `.p8`, key ID and issuer ID live **only in Vercel Production env**, never in
+  the app, repo, CI, logs or chat. Apple unreachable or non-2xx → 503
+  `apple`, no grant (fail closed).
+- **Hard gate:** on Production, `AERODJ_TTS_ENTITLEMENT_REQUIRED=true` is
+  honoured only when `AERODJ_TTS_STATUS_API_ENABLED=true` and the key is
+  present; otherwise the attested paid path returns 503 `disabled`. Owner A/B
+  testing before the key exists uses the owner token, not entitlements.
 
 **Grace period and billing retry:** if the owner enables Billing Grace
 Period in ASC, access continues until `gracePeriodExpiresDate`; in billing
@@ -565,7 +634,7 @@ back to the owner token.
 The app holds no App Store Server API key, no shared secret and no HMAC key.
 It only forwards Apple-signed JWS and App Attest assertions. Server-only
 secrets: `AERODJ_TTS_CHALLENGE_HMAC_KEY`, `AERODJ_TTS_ID_HMAC_KEY`, and
-optionally the IAP API `.p8`; all owner-created, Vercel Production env only.
+the IAP API `.p8` (required before public paid voice, §5.6); all owner-created, Vercel Production env only.
 
 ### 5.10 Consent and paywall ordering
 
@@ -579,7 +648,7 @@ to a proxy 403.
 - `originalTransactionId` and `appAccountToken` are pseudonymous
   identifiers. Stored only as keyed HMACs, never in plaintext, never logged,
   never in a URL. Raw values exist only in memory during a request (and in
-  the outbound status-API URL when that option is on).
+  the outbound status-API URL, which is required before public paid voice).
 - Retention: `ent` until expiry + grace + 60 days; tombstones per §5.5;
   links 30 days idle; notification UUID marks 30 days.
 - Logs: enums, bools and numbers only (`reason`, `env` enum, `ownership`
@@ -637,9 +706,22 @@ to a proxy 403.
   present, `Sandbox` on Production with the flag off, `Xcode` environment,
   `FAMILY_SHARED` with the flag off, `ASSIGNED`, a pre-refund JWS replayed
   after a REFUND tombstone, the same JWS from a 6th install
-  (`install_limit`), a client `isPro` field ignored.
+  (`install_limit`), a client `isPro` field ignored; `alg` none/HS256/RS256/
+  ES384/missing, x5c missing or not exactly 3 certs, `jwk`/`jku`/`kid`/`x5u`
+  ignored, a lookalike root (same subject, different bytes), a lookalike
+  intermediate under the real root, a cert valid now but not at
+  `signedDate`, swapped chain order.
+- E2: a stolen JWS linked from another keyId is refused after **its own**
+  expiry even though the purchase renewed; the 6th install is refused; the
+  reset script clears only the target purchase.
+- E1: a pre-refund JWS re-posted with the REFUND notification lost is
+  refused once the (faked) status API returns 5; Apple unreachable → 503
+  `apple`, no grant; `ENTITLEMENT_REQUIRED` without the status API → 503.
+- Rotation: a tombstone written under the previous key version still blocks.
 - Notifications: each row of §5.6, duplicate `notificationUUID`
-  idempotent, out-of-order `signedDate`, 503 on store failure.
+  idempotent, out-of-order `signedDate`, out-of-order `REFUND_REVERSED`
+  (before the refund) leaves the tombstone, notifications older than 30 days
+  refused, wrong bundle or env refused, 503 on store failure.
 - Quotas: two concurrent requests at the per-install edge; global
   exhaustion by N installs; `RESERVE2`/`RELEASE2` all-or-nothing against a
   fake EVAL; `durable !== true` → 503 `store` in every environment.
@@ -675,13 +757,23 @@ test that has not happened.
    challenge mark, `mixed_auth`), durable-only limiter on the verified path,
    and the exact-`true` `AERODJ_TTS_OWNER_TOKEN_ENABLED` flag (owner sets it
    before this PR deploys, §12.6). Still disabled by default.
-5. **Proxy: `AppStoreJwsVerifier` with fixtures** (pinned Apple Root CA -
-   G3, test-generated chains, every §8 failure case). No endpoint yet.
+5. **Proxy: StoreKit signed-transaction verifier with fixtures** (pinned
+   Apple Root CA - G3, ES256-only header rules, test-generated chains, every
+   §8 verifier failure case, injected last-seen store). No endpoint yet.
+   Draft PR open.
 6. **Proxy: `POST /api/entitlement` + linking** (`ENTLINK`, install cap,
-   tombstone check, sandbox/family flags, shared product config).
-7. **Proxy: `POST /api/appstore/notifications`** (V2, idempotent,
-   out-of-order safe, tombstones). Optional status-API client behind its flag
-   (no key in CI; HTTP faked).
+   **per-link expiry from the JWS that install presented** (E2), tombstone
+   check, versioned hash keys with previous-key tombstone lookups, config
+   loader that fails closed: missing/non-boolean → refuse to start,
+   `installsPerPurchase` integer 1-10).
+6b. **Owner-run `scripts/reset-purchase-installs.ts`** (E2): stdin only,
+   counts-only output, tests.
+7. **Proxy: `POST /api/appstore/notifications` + Apple status check** (V2,
+   idempotent, out-of-order safe, 30-day age limit, tombstones,
+   `REFUND_REVERSED` ordering) **and the required Get All Subscription
+   Statuses check on every entitlement post plus daily Get Notification
+   History reconciliation** (HTTP faked in CI, no key). **Hard gate (E1):**
+   no public paid voice until this is deployed with the owner's IAP key.
 8. **Proxy: enforcement on `/api/tts` behind `AERODJ_TTS_ENTITLEMENT_REQUIRED`**
    (exact `true`; attested paid path refused otherwise).
 9. **iOS: `AppAttesting` client, entitlement sync, `stationId` dropped**;
@@ -692,7 +784,9 @@ test that has not happened.
    the free tier gets **zero bundled clips and zero proxy calls**. No bundled
    clips ship before this PR lands;
    App Attest capability in `AeroDJ.entitlements` (owner step); wired for
-   A/B builds first. One backoff implementation (Fry #234).
+   A/B builds first. One backoff implementation (Fry #234). Entitlement sync
+   (`/api/entitlement` posts) runs **only while consent is granted** and
+   stops after it is withdrawn.
 10. **Retire the owner bearer** (server and app, Keychain field,
     `AERODJ_OWNER_AB`), release-check extended. **Hard gate before any public
     paid voice.**
@@ -717,11 +811,11 @@ after the consent gate and #176 merge and the owner approves the public spend.
 | Criterion | Where |
 | --- | --- |
 | 1 Full x5c chain to Root G3, bundle, product from config, environment, expires/revocation, no client `isPro` | §5.3 |
-| 2 Bound to attested key, `originalTransactionId` stored, installs-per-purchase cap, per-install cap stays | §5.5, §4.3 |
-| 3 Verified, idempotent ASSN v2 or short-TTL re-check; refund/expiry stops within TTL | §5.6 |
+| 2 Bound to attested key, `originalTransactionId` stored, installs-per-purchase cap, per-link expiry, owner reset, per-install cap stays | §5.5, §4.3 |
+| 3 Verified, idempotent ASSN v2 **and** the required Apple status check (E1). Refund/expiry stops within the TTL only with the status check on; **hard gate (PR 7) before any public paid voice** | §5.6 |
 | 4 No secret in the app; `.p8` only in Vercel Production env | §5.9, §5.6 |
 | 5 Fail closed; paywall never gates privacy; consent first | §5.8, §5.10 |
-| 6 No plaintext ids/JWS/token in logs; label Purchases, App Functionality, Not Linked | §5.11 |
+| 6 No plaintext ids/JWS/token in logs; label Purchases, App Functionality, Not Linked; hash-key rotation keeps tombstones | §5.11, §5.5 |
 | 7 Forged, wrong-bundle, expired, revoked, sandbox-in-prod, replayed must fail, with mutations | §8 |
 
 ## 11. Owner decisions (not ours to make)
@@ -735,12 +829,18 @@ after the consent gate and #176 merge and the owner approves the public spend.
   rejected on Production, no grace period, Family Sharing off.
 - **Installs per subscription:** interim 5 active installs, 10 new links
   per 30 days.
-- **Sandbox policy:** allow Sandbox on Production behind the flag with its
-  own small bucket (recommended, for App Review/TestFlight), or refuse.
+- **Sandbox policy:** interim = refused on Production. Allowing it later
+  means the flag plus its own small bucket, and only while no public
+  TestFlight link exists.
 - **Billing Grace Period:** enable or not, and its length (ASC setting).
-- **Family Sharing** for the Pro products: recommended off for v1.
-- Whether to use the optional App Store Server API status lookup (needs an
-  IAP API key).
+- **Family Sharing:** off, permanently, unless the owner decides otherwise
+  (Apple: it cannot be turned off once enabled).
+- **IAP API key** for the status check: **required before public paid voice**
+  (E1); creating it is on Orion's owner list. Without it, the residual risk
+  is a refunded JWS keeping Pro until its own expiry (up to a year).
+- Accept the E2 residual (up to 4 freeloaders per leaked purchase until an
+  owner reset, each under the per-install cap and the global ceiling).
+- Keep Sandbox-in-prod off while any public TestFlight link exists.
 - Kill switch and global cap in env only (change = redeploy) or also in Redis
   for an instant stop (recommended).
 - Whether public users get paid voice at v1 launch (owner: v1 waits until the
@@ -766,9 +866,10 @@ after the consent gate and #176 merge and the owner approves the public spend.
    `https://<aerodj-tts host>/api/appstore/notifications`, optionally the
    same for Sandbox. Then use Apple's Request a Test Notification endpoint
    (needs the IAP key) or a Sandbox purchase to confirm delivery.
-3. Optional: **ASC → Users and Access → Integrations → In-App Purchase:**
-   create an IAP API key; paste the `.p8`, key ID and issuer ID directly into
-   Vercel **Production** env. Never through chat, the repo, CI or logs.
+3. **Required before public paid voice (E1): ASC → Users and Access →
+   Integrations → In-App Purchase:** create an IAP API key; paste the `.p8`,
+   key ID and issuer ID directly into Vercel **Production** env. Never
+   through chat, the repo, CI or logs.
 4. **Apple Developer → Identifiers → `com.aerodj.app`:** enable **App
    Attest**, regenerate profiles. The bundle ID stays unchanged through the
    OnAirly rename (the rename PR adds a CI guard on
@@ -782,14 +883,17 @@ after the consent gate and #176 merge and the owner approves the public spend.
 6. **Before PR 4's deploy** (the PR that introduces the flag; PR 1 / #238
    adds none): set `AERODJ_TTS_OWNER_TOKEN_ENABLED=true` and
    `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`, or the owner A/B build loses paid voice
-   (fails closed, by design).
+   (fails closed, by design). Until PR 4, as #238 ships, there is no flag and
+   an unset owner cap equals the global ceiling.
 7. When enabling: generate and set `AERODJ_TTS_CHALLENGE_HMAC_KEY` and
    `AERODJ_TTS_ID_HMAC_KEY` (32 random bytes each, Production only); set the
    non-secret vars `AERODJ_TTS_APPLE_APP_ID_PREFIX`,
    `AERODJ_TTS_BUNDLE_ID=com.aerodj.app`, `AERODJ_TTS_APP_ATTEST_ENV=production`,
    the caps,
    `AERODJ_TTS_ENTITLEMENT_TTL_HOURS`, and the exact-`true` flags. Redeploy
-   after each change.
+   after each change. Hash-key rotation: add `AERODJ_TTS_ID_HMAC_KEY_PREVIOUS`
+   and bump the version; remove the previous key only after the longest
+   tombstone TTL (about a year).
 8. Phase 2 only: DeviceCheck key into Vercel Production env.
 9. Keep the ElevenLabs restricted key's own credit limit as the backstop.
 
