@@ -411,6 +411,92 @@ final class RadioStyleBreakTests: XCTestCase {
         XCTAssertEqual(skipped, .skipped(.overBreakBudget), "without the marker it is all main segment: over 15 s")
     }
 
+    /// Fixed measured seconds per cue text, scaled per voice id (a slower premium voice).
+    private struct ScriptedVoice: VoiceProvider {
+        let seconds: [String: Double]
+        var scale: [String: Double] = [:]
+        func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+            let plain = SpeechDelivery.plainText(fromSSML: text)
+            return VoiceArtifact(data: Data(plain.utf8), durationSeconds: (seconds[plain] ?? 1) * (scale[voice.id] ?? 1),
+                                 billableUnits: 0, provider: "device", cacheKey: nil)
+        }
+    }
+
+    private func outcome(_ b: DJBreak, routes: [VoiceRoute]) async -> DJBreakOutcome {
+        let renderer = VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s")
+        let done = AsyncStream<Void>.makeStream()
+        await preparer.observe { event in
+            switch event {
+            case .prepared, .skipped: done.continuation.yield()
+            case .preparing: break
+            }
+        }
+        await preparer.prepare(b, deadline: .seconds(5), onDeviceOnly: false)
+        for await _ in done.stream { break }
+        return await preparer.takeBreak(afterTrack: b.afterTrack)
+    }
+
+    private func talkOverBreak(main: NarrationCue, closing: NarrationCue) -> DJBreak {
+        var b = DJBreak(afterTrack: 0, cues: [main, closing],
+                        attributions: [main.id: .presenter, closing.id: .trackMetadata(trackIDs: ["t1"])])
+        b.talkOverCueID = closing.id
+        return b
+    }
+
+    func testMainAndClosingCapsAreEnforcedSeparatelyNotPooled() async {
+        let main = cue("A long main segment.", maxSeconds: 30), closing = cue("Here's Song one.")
+        func route(_ voice: ScriptedVoice, id: String = "standard") -> VoiceRoute {
+            VoiceRoute(providerID: "device", provider: voice, voice: VoiceProfile(id: id, name: "Host"))
+        }
+        // 18 s main + 1 s closing: 19 s in all, but MAIN is over 15. Single $0 route: no retry, skipped.
+        let over = ScriptedVoice(seconds: [main.text: 18, closing.text: 1])
+        let mainOver = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(over)])
+        XCTAssertEqual(mainOver, .skipped(.overBreakBudget), "18 + 1 must not pass as a pooled 19 s")
+        // 10 s main + 5 s closing: 15 s in all, but the closing line is over 4.
+        let long = ScriptedVoice(seconds: [main.text: 10, closing.text: 5])
+        let closingOver = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(long)])
+        XCTAssertEqual(closingOver, .skipped(.overBreakBudget), "the closing line keeps its own 4 s cap")
+        // 15 s + 4 s: both at their caps, accepted.
+        let edge = ScriptedVoice(seconds: [main.text: 15, closing.text: 4])
+        guard case .ready(let atCaps) = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(edge)]) else {
+            return XCTFail("15 + 4 is within both caps")
+        }
+        XCTAssertEqual(atCaps.talkOverStartSeconds ?? 0, 15.3, accuracy: 1e-9)
+
+        // Existing over-cap path, unchanged: a slower premium voice measures 18 + 1, so the whole
+        // break is re-rendered once on the last $0 on-device route (9 + 0.5), in one voice.
+        let scaled = ScriptedVoice(seconds: [main.text: 18, closing.text: 1], scale: ["standard": 0.5])
+        guard case .ready(let retried) = await outcome(talkOverBreak(main: main, closing: closing),
+                                                       routes: [route(scaled, id: "premium"), route(scaled)]) else {
+            return XCTFail("the $0 retry fits both caps")
+        }
+        XCTAssertEqual(retried.clips.map(\.audio.voiceID), ["standard", "standard"])
+        XCTAssertEqual(retried.talkOverStartSeconds ?? 0, 9.3, accuracy: 1e-9)
+        // Still over on the retry (18 + 1 in both voices): skipped, as before.
+        let stillOver = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(over, id: "premium"), route(over)])
+        XCTAssertEqual(stillOver, .skipped(.overBreakBudget))
+    }
+
+    func testBriefingBreakKeepsTheFortyFiveSecondTotalRule() async {
+        let item = UUID()
+        let content = NarrationCue(id: UUID(), order: 1, group: 0, kind: .note, text: "From your notes: one.",
+                                   estimatedSeconds: 8, maxSeconds: 60, sourceItemID: item, source: .obsidian, provenance: "n:1")
+        let closing = cue("Here's Song one.")
+        // 40 s of briefing + a 5 s closing line: 45 s total passes (the closing is inside the 45 s).
+        var b = DJBreak(afterTrack: 0, cues: [content, closing],
+                        attributions: [content.id: .personalContext(itemID: item, source: .obsidian, provenance: "n:1"),
+                                       closing.id: .trackMetadata(trackIDs: ["t1"])])
+        b.talkOverCueID = closing.id
+        let voice = ScriptedVoice(seconds: [content.text: 40, closing.text: 5])
+        let r = VoiceRoute(providerID: "device", provider: voice, voice: djVoice)
+        let ok = await outcome(b, routes: [r])
+        guard case .ready = ok else { return XCTFail("45 s total is the briefing rule") }
+        let tooLong = ScriptedVoice(seconds: [content.text: 41, closing.text: 5])
+        let over = await outcome(b, routes: [VoiceRoute(providerID: "device", provider: tooLong, voice: djVoice)])
+        XCTAssertEqual(over, .skipped(.overBreakBudget))
+    }
+
     // MARK: Library gate (Sentinel #154/#176): the closing never reaches the off-device route
 
     private let jade = "g7LVvkPWALzPxOQbF6OE"
