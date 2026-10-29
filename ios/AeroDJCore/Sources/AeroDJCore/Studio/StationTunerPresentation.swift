@@ -63,6 +63,7 @@ public extension CommentaryFrequency {
         case .rare: "Rarely"
         case .occasional: "Sometimes"
         case .frequent: "Often"
+        case .chatty: "Chatty"
         }
     }
 
