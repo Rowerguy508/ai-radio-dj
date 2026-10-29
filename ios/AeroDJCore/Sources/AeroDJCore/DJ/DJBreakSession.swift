@@ -36,6 +36,9 @@ public final class DJBreakSession {
     private var deliveredBriefing: Set<UUID> = []
     /// Index of the song playing now; breaks after it may be replanned, its own may not.
     private var playing: Int?
+    /// When the playing song's boundary is due (from `songStarted`/`songSeeked`), so a break
+    /// dropped by a paid-voice access change can be prepared again within the time left.
+    private var playingBoundaryAt: (index: Int, at: Date)?
     private var changeTask: Task<Void, Never>?
     private var observing = false
     /// The break handed to the player at the last natural boundary, until its audio ends.
@@ -299,12 +302,18 @@ public final class DJBreakSession {
             return
         }
         testLastSongStartRemaining = remaining
+        playingBoundaryAt = (index, now().addingTimeInterval(Self.seconds(remaining)))
         await preparer.openBoundary(afterTrack: index)   // seeks may re-arm this boundary once (-Atlas)
         guard breaks[index] != nil, let deadline = DJBreakPreparer.deadline(remainingInSong: remaining) else { return }
         // Personality edits apply when a break starts preparing; re-plan this break if they did.
         await station.handle(.djBreakWillPrepare(afterTrack: index))
         replanIfCadenceChanged(after: index - 1)
         guard let djBreak = breaks[index] else { return }
+        await prepare(djBreak, deadline: deadline)
+    }
+
+    /// The one place a break starts preparing (song start and a paid-voice access change).
+    private func prepare(_ djBreak: DJBreak, deadline: Duration) async {
         // Library-seed gate (#154): a station built from the listener's own library is spoken
         // on-device only, so no seed, song or artist from it reaches a cloud or paid voice.
         await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))
@@ -325,6 +334,7 @@ public final class DJBreakSession {
             if pendingSongStart?.index == index { pendingSongStart = (index, remaining, now()) }
             return
         }
+        if playing == index { playingBoundaryAt = (index, now().addingTimeInterval(Self.seconds(remaining))) }
         guard playing == index, breaks[index] != nil,
               let deadline = DJBreakPreparer.deadline(remainingInSong: remaining),
               await preparer.mayRearm(afterTrack: index) else { return }
@@ -354,7 +364,9 @@ public final class DJBreakSession {
         replanIfCadenceChanged(after: k)
         let cadencePlanned = breaks[k] != nil
         lastNoBreak = nil
-        let taken = await preparer.takeBreak(afterTrack: k)
+        // Paid-voice re-check (E1): a break with paid or bundled audio is skipped as
+        // `.paidVoiceRevoked` if Pro + consent no longer allow it.
+        let taken = await preparer.takeCheckedBreak(afterTrack: k)
         if case .skipped(let reason) = taken { lastNoBreak = (reason, cadencePlanned) }
         guard case .ready(let ready) = taken else { return nil }
         // Consent or expiry may have changed since the break was rendered, with no refresh():
@@ -500,6 +512,32 @@ public final class DJBreakSession {
         cancelBackgroundQueueSetup()
         changeTask?.cancel()
         changeTask = nil
+    }
+
+    // MARK: Paid voice access
+
+    /// Pro or paid-voice consent changed (expiry, refund, revocation, withdrawal, or a grant).
+    /// Call it from the entitlement observer and the consent provider (E1, -Echo). If access is
+    /// now denied, prepared or rendering breaks that used, or may use, the paid voice or a
+    /// bundled clip are dropped (`.paidVoiceRevoked`) and the upcoming breaks go through the
+    /// same re-plan as a personality change (#227); the playing song's break is prepared again
+    /// within its time left, and the per-cue gate keeps it on-device. Never stops a break on air
+    /// or the playing song. A grant changes nothing prepared: the next cue's gate allows it.
+    public func paidVoiceAccessChanged() async {
+        let dropped = await preparer.dropPaidVoiceBreaks()
+        guard !dropped.isEmpty, !queueSetupPending else { return }
+        let current = playing ?? -1
+        replan(from: current + 1, keepingThrough: current)
+        guard let k = playing, dropped.contains(k), let djBreak = breaks[k],
+              let due = playingBoundaryAt, due.index == k,
+              let deadline = DJBreakPreparer.deadline(remainingInSong: .seconds(due.at.timeIntervalSince(now())))
+        else { return }
+        await prepare(djBreak, deadline: deadline)
+    }
+
+    nonisolated private static func seconds(_ d: Duration) -> TimeInterval {
+        let c = d.components
+        return TimeInterval(c.seconds) + TimeInterval(c.attoseconds) / 1e18
     }
 
     // MARK: Station changes

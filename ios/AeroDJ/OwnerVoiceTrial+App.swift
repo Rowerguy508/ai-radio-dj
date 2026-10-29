@@ -2,37 +2,37 @@ import AeroDJCore
 import Foundation
 import SwiftUI
 #if AERODJ_OWNER_AB
-import OSLog
 import Security
 #endif
 
 /// Owner-only ElevenLabs A/B wiring. Compiled only with the Swift condition
-/// `AERODJ_OWNER_AB` (TestFlight `owner_ab: true`). Every other build gets the two
-/// pass-through hooks below and nothing else: `liveDefault()` is the on-device renderer
-/// and `ownerVoiceTrialEntry()` returns the view unchanged.
+/// `AERODJ_OWNER_AB` (TestFlight `owner_ab: true`). Owner-only here: the owner token
+/// (`OwnerProxyKeychain`), the `.ownerTrial` access, the voice picker and the A/B switch.
+/// The paid-voice route and its per-cue Pro + consent gate are build-agnostic
+/// (`PaidVoice+App.swift`, `PaidVoice` in AeroDJCore); every other build gets the public
+/// composition there and `ownerVoiceTrialEntry()` returns the view unchanged (-Echo).
 ///
 /// The proxy URL and owner token come only from a Keychain entry the owner fills in at
 /// runtime; nothing is compiled in or stored in the repo, Info.plist or build settings.
 /// Spend: ElevenLabs Starter, hard 40k-credit ceiling with no usage-based billing, a 9k-credit
 /// key cap and the proxy's 9,000-character daily cap. The route is priced at 0 µ$, so the
 /// app-side VoiceBudget does not apply to it.
-extension VoiceRenderer {
-    static func liveDefault() -> VoiceRenderer {
-        let base = onDeviceDefault()
-        #if AERODJ_OWNER_AB
+#if AERODJ_OWNER_AB
+extension PaidVoice {
+    /// The owner A/B composition: owner token from the Keychain, the owner trial decision at
+    /// setup, and `ProVoiceAccess.live` (the owner trial in this build) as the per-cue gate.
+    static func ownerTrial(base: VoiceRenderer) -> PaidVoice {
         let composition = PremiumVoiceRoutes.compose(
             onDevice: base.routes,
             paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled,
             access: .ownerTrial, selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
             credentials: OwnerProxyKeychain.load())
-        OwnerProxyKeychain.logDecision(composition.decision, routeCount: composition.routes.count)
-        return VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
-                             revocations: base.revocations)
-        #else
-        return base
-        #endif
+        return PaidVoice(renderer: VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
+                                                 revocations: base.revocations),
+                         access: .live, decision: composition.decision)
     }
 }
+#endif
 
 extension ProVoiceAccess {
     /// The Pro + consent gate the live app runs with. Owner A/B builds: the owner trial, matching
@@ -62,8 +62,7 @@ extension View {
 #if AERODJ_OWNER_AB
 /// Keychain entry (this device only, when unlocked) for the proxy endpoint and owner token.
 enum OwnerProxyKeychain {
-    private static let service = "com.aerodj.owner-ab.tts-proxy"
-    private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
+    private static let service = OwnerProxyAuth.keychainService
 
     static func load() -> PremiumProxyCredentials? {
         guard let endpoint = read("endpoint").flatMap(URL.init(string:)), let token = read("token") else { return nil }
@@ -80,16 +79,6 @@ enum OwnerProxyKeychain {
 
     static func clear() {
         for account in ["endpoint", "token"] { SecItemDelete(query(account) as CFDictionary) }
-    }
-
-    /// Type, code, catalog index and counts only: never text, voice names, URLs or tokens.
-    static func logDecision(_ decision: PremiumVoiceRoutes.Decision, routeCount: Int) {
-        switch decision {
-        case .included(let index):
-            log.notice("voice.route premium=included index=\(index, privacy: .public) routes=\(routeCount, privacy: .public)")
-        case .omitted(let reason):
-            log.notice("voice.route premium=omitted code=\(reason.rawValue, privacy: .public) routes=\(routeCount, privacy: .public)")
-        }
     }
 
     private static func query(_ account: String) -> [String: Any] {
