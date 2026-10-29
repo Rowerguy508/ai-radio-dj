@@ -35,10 +35,34 @@ public struct CatalogGenre: Equatable, Hashable, Sendable, Identifiable {
     }
 }
 
-/// The genre list behind the add-station genre step.
+/// The genre list behind Tune > Genres and the add-station genre step.
 public protocol GenreProviding: Sendable {
     /// The storefront's top-level catalog genres. Throws on failure; never a partial list.
+    /// Throws an error the app's `searchFailureKind` maps to `SearchFailureKind.notAuthorized`
+    /// (`MusicKitError.notAuthorized`) when `MusicAuthorization.currentStatus != .authorized`;
+    /// never requests authorization here.
     func genres() async throws -> [CatalogGenre]
+    /// True when `genres()` needs Apple Music authorization (the default). The Tune picker then
+    /// never calls it on appear unless the status is already `.authorized` (launch rule).
+    /// Fixtures that never touch MusicKit return false.
+    var requiresMusicAuthorization: Bool { get }
+}
+
+public extension GenreProviding {
+    var requiresMusicAuthorization: Bool { true }
+}
+
+public enum GenrePickerCopy {
+    /// Chips area / genre step when Apple Music isn't authorized. Never prompts.
+    public static let connectAppleMusic = "Connect Apple Music to see genres."
+
+    /// True when the app's classifier (`searchFailureKind`) maps the error to `.notAuthorized`
+    /// (e.g. `MusicKitError.notAuthorized`). The pickers then show `connectAppleMusic` and never
+    /// fetch again on their own.
+    @MainActor
+    static func isNotAuthorized(_ error: Error, _ classify: @MainActor (Error) -> SearchFailureKind) -> Bool {
+        classify(error) == .notAuthorized
+    }
 }
 
 /// Default provider: the app's existing seed search (`genreSeeds(matching: "")`, which in the
@@ -59,6 +83,8 @@ public struct StaticGenreProvider: GenreProviding {
     public let list: [CatalogGenre]
     public init(_ list: [CatalogGenre]) { self.list = list }
     public func genres() async throws -> [CatalogGenre] { list }
+    /// Fixed data, no MusicKit: loads without authorization.
+    public var requiresMusicAuthorization: Bool { false }
 
     /// Synthetic fixture with real catalog IDs, for previews and the Test Station.
     public static let fixture = StaticGenreProvider([
@@ -93,6 +119,11 @@ public enum GenrePicker {
 /// Tune > Genres suggestion chips from `GenreProviding` (-Nova). Replaces `TuneVocabulary.genres`.
 /// Suggestions are station genre tags (`StationConfiguration` normalization: lowercased,
 /// whitespace collapsed, at most `maxTagLength`), so a chip toggles the same tag a typed one would.
+///
+/// Launch rule (Fry, #214): the Tune form can be restored at launch, so `appear` never calls the
+/// provider unless Apple Music is already `.authorized` (the caller reads the status; nothing here
+/// requests it). After a failure nothing refetches on its own: only `retry` (the "Try again" tap)
+/// does, or an appear once the status has become `.authorized` after `.notAuthorized`.
 @MainActor @Observable
 public final class TuneGenreSuggestions {
     public enum Phase: Equatable, Sendable {
@@ -103,7 +134,9 @@ public final class TuneGenreSuggestions {
         case loaded
         /// The storefront returned no usable genres.
         case empty
-        /// Fixed copy (`SearchFailureCopy`), never the error's own text.
+        /// Apple Music isn't authorized: "Connect Apple Music to see genres." No automatic fetch.
+        case notAuthorized
+        /// Fixed copy (`SearchFailureCopy`), never the error's own text. Retry is a tap only.
         case failed(message: String)
     }
 
@@ -124,16 +157,42 @@ public final class TuneGenreSuggestions {
         self.phase = provider == nil ? .unavailable : .idle
     }
 
-    /// Loads once. After a success it does nothing; after a failure it tries again (the
-    /// "Try again" button calls this too). Concurrent calls share one fetch.
-    public func load() async {
-        guard let provider, !inFlight else { return }
+    /// The Tune form appeared (including a launch restore). `isAuthorized` is the current Apple
+    /// Music status (`MusicAuthorization.currentStatus == .authorized`), read without prompting.
+    /// Fetches only the first time, or after `.notAuthorized` once authorized. Never after a failure.
+    public func appear(isAuthorized: Bool) async {
+        guard let provider else { return }
         switch phase {
-        case .loaded, .empty, .unavailable: return
-        case .idle, .loading, .failed: break
+        case .idle, .notAuthorized: break
+        case .loading, .loaded, .empty, .failed, .unavailable: return
         }
+        guard isAuthorized || !provider.requiresMusicAuthorization else {
+            phase = .notAuthorized
+            return
+        }
+        await fetch(provider)
+    }
+
+    /// "Try again" after a failure: exactly one fetch. Not authorized: shows the connect state
+    /// and makes no call. Does nothing in any other state.
+    public func retry(isAuthorized: Bool) async {
+        guard let provider else { return }
+        switch phase {
+        case .failed, .notAuthorized: break
+        case .idle, .loading, .loaded, .empty, .unavailable: return
+        }
+        guard isAuthorized || !provider.requiresMusicAuthorization else {
+            phase = .notAuthorized
+            return
+        }
+        await fetch(provider)
+    }
+
+    private func fetch(_ provider: any GenreProviding) async {
+        guard !inFlight else { return }
         inFlight = true
         defer { inFlight = false }
+        let before = phase
         phase = .loading
         do {
             let genres = try await provider.genres()
@@ -141,10 +200,14 @@ public final class TuneGenreSuggestions {
             suggestions = Self.tags(from: genres)
             phase = suggestions.isEmpty ? .empty : .loaded
         } catch is CancellationError {
-            phase = .idle
+            phase = before == .notAuthorized ? .notAuthorized : .idle
         } catch {
-            guard !Task.isCancelled else { phase = .idle; return }
-            phase = .failed(message: SearchFailureCopy.message(for: classifyFailure(error)) ?? Self.fallbackFailure)
+            if Task.isCancelled { phase = before == .notAuthorized ? .notAuthorized : .idle; return }
+            if GenrePickerCopy.isNotAuthorized(error, classifyFailure) {
+                phase = .notAuthorized
+            } else {
+                phase = .failed(message: SearchFailureCopy.message(for: classifyFailure(error)) ?? Self.fallbackFailure)
+            }
         }
     }
 

@@ -345,12 +345,25 @@ struct AddStationWalkthroughView: View {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button("Try again") { searchAttempt += 1 }
+                    // Genres: one explicit refetch (typing never refetches after a failure).
+                    Button("Try again") {
+                        if creation.kind == .genre {
+                            Task { await creation.retryGenres(matching: query) }
+                        } else {
+                            searchAttempt += 1
+                        }
+                    }
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
                         .accessibilityIdentifier("addStation.retry")
                 }
             }
+        case .notAuthorized:
+            // Never prompts here: access is granted from a station (Allow) or Settings.
+            Text(GenrePickerCopy.connectAppleMusic)
+                .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("addStation.genres.connect")
         case .searching, .results:
             VStack(spacing: 8) {
                 if creation.resultsSource == .libraryPlaylists {

@@ -1,4 +1,5 @@
 import AeroDJCore
+import MusicKit
 import SwiftUI
 
 /// The Station Tuner (studio-presentation-contract.md, Station Tuner). Every control binds
@@ -50,7 +51,9 @@ struct TuneForm: View {
             .padding(.bottom, 16)
         }
         .accessibilityIdentifier("tune.form")
-        .task { await studio.tuneGenres.load() }
+        // Tune can be restored at launch: this reads the Apple Music status (never prompts) and
+        // fetches genres only when it is already .authorized (Fry, #214). See TuneGenreSuggestions.
+        .task { await studio.tuneGenres.appear(isAuthorized: GenreAccess.isAuthorized) }
     }
 
     private func row(_ setting: StationSetting) -> StationTunerRow { model.tunerRow(for: setting) }
@@ -276,7 +279,13 @@ struct TagControl: View {
     }
 }
 
-/// Loading, empty and error states for the Apple Music genre chips. Custom tags keep working.
+/// Apple Music status for the genre pickers. Reads `currentStatus` only; never calls
+/// `MusicAuthorization.request()` or `authorize()`.
+enum GenreAccess {
+    @MainActor static var isAuthorized: Bool { MusicAuthorization.currentStatus == .authorized }
+}
+
+/// Loading, empty, not-connected and error states for the Apple Music genre chips. Custom tags keep working.
 struct GenreSuggestionStatus: View {
     let model: TuneGenreSuggestions
 
@@ -297,12 +306,18 @@ struct GenreSuggestionStatus: View {
                 .font(.footnote).foregroundStyle(AeroDJPalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("tune.genres.empty")
+        case .notAuthorized:
+            // No button and no prompt: access is granted from a station (Allow) or Settings.
+            Text(GenrePickerCopy.connectAppleMusic)
+                .font(.footnote).foregroundStyle(AeroDJPalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("tune.genres.connect")
         case .failed(let message):
             VStack(alignment: .leading, spacing: 6) {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(.footnote).foregroundStyle(AeroDJPalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Try again") { Task { await model.load() } }
+                Button("Try again") { Task { await model.retry(isAuthorized: GenreAccess.isAuthorized) } }
                     .font(.footnote.weight(.semibold))
                     .accessibilityHint("Loads genre suggestions from Apple Music again")
                     .accessibilityIdentifier("tune.genres.retry")
