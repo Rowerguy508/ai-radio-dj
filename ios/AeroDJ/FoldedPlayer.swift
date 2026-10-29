@@ -354,9 +354,9 @@ private struct FoldedTestStationTag: View {
 
 // MARK: - DJ status slot
 
-/// Only real DJ state draws here. Idle and ready draw nothing. Preparing gets a quiet capsule
+/// Only real DJ state draws here. Idle draws nothing. Preparing and ready get a quiet capsule
 /// with the presentation's headline; its shimmer runs only when
-/// `DJStatusPresentation.animatesActivity` says so (On Air only today, so it is static) and
+/// `DJStatusPresentation.animatesActivity` says so (On Air only today, so both are static) and
 /// never under Reduce Motion. Speaking gets the amber ON AIR pill; voice or budget failures
 /// reuse the shared `DJStatusLine`. Shared items to review live in the ⋯ menu.
 private struct FoldedDJStatus: View {
@@ -376,15 +376,21 @@ private struct FoldedDJStatus: View {
             if dj.reviewCount == nil {
                 DJStatusLine(presentation: dj)
             }
-        case .idle, .ready:
-            // `.ready` stays silent like `DJStatusLine`: its headline and detail can linger when
-            // no break plays (f65ff0d, testReadyStateShowsNoBreakText).
+        case .ready:
+            // Quiet, static line so the owner can see a break is queued ("DJ break after this
+            // song"). Folded only; `DJStatusLine` (Studio) still hides `.ready` per f65ff0d.
+            if let headline = dj.headline {
+                FoldedStatusCapsule(headline: headline, accessibilityLabel: dj.accessibilityLabel,
+                                    systemImage: "clock", animates: dj.animatesActivity,
+                                    identifier: "dj.ready")
+            }
+        case .idle:
             EmptyView()
         }
     }
 }
 
-/// Quiet status capsule (preparing today). The shimmer is drawn only when the caller passes the
+/// Quiet status capsule for preparing and ready. The shimmer is drawn only when the caller passes the
 /// presentation's `animatesActivity` as true and Reduce Motion is off.
 private struct FoldedStatusCapsule: View {
     let headline: String
@@ -664,6 +670,20 @@ private struct LegacyToolbarGlass: ViewModifier {
                      content: .track(PlaybackFixtures.songs[0]),
                      snapshot: PlaybackFixtures.playing, actions: .preview,
                      dj: .init(state: .preparing(includesBriefing: false)), search: nil,
+                     studioSearch: StudioSearchModel(query: ""), timeSource: .fixture,
+                     onQueue: {}, onTune: {}, onReview: {})
+            .foldedToolbar(PlaybackFixtures.station, reviewCount: nil, onConnections: {})
+    }
+}
+
+#Preview("Folded ready") {
+    NavigationStack {
+        FoldedPlayer(station: PlaybackFixtures.station,
+                     heading: StationHeading(opened: PlaybackFixtures.station, playing: PlaybackFixtures.station),
+                     isTestStation: false,
+                     content: .track(PlaybackFixtures.songs[0]),
+                     snapshot: PlaybackFixtures.playing, actions: .preview,
+                     dj: .init(state: .ready(includesBriefing: false, seconds: 24)), search: nil,
                      studioSearch: StudioSearchModel(query: ""), timeSource: .fixture,
                      onQueue: {}, onTune: {}, onReview: {})
             .foldedToolbar(PlaybackFixtures.station, reviewCount: nil, onConnections: {})
