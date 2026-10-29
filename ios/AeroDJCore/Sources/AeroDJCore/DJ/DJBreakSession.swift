@@ -28,6 +28,9 @@ public final class DJBreakSession {
     private var briefing: NarrationHandoff?
     private var breaks: [Int: DJBreak] = [:]
     private var plannedWith: DJCadence?
+    /// Why the last `naturalBoundary` handed out no break, and whether the cadence had planned
+    /// one there. Read-only; nothing decides on it (the P0 trace's boundary row reads it).
+    public private(set) var lastNoBreak: (reason: DJBreakSkipReason, cadencePlanned: Bool)?
     /// Briefing cues already handed to the player: never planned again.
     private var deliveredBriefing: Set<UUID> = []
     /// Index of the song playing now; breaks after it may be replanned, its own may not.
@@ -262,7 +265,11 @@ public final class DJBreakSession {
         // The change stream is async; apply a cadence change here so the next song's break
         // is planned with it before `songStarted(index: k + 1)` arrives.
         replanIfCadenceChanged(after: k)
-        guard case .ready(let ready) = await preparer.takeBreak(afterTrack: k) else { return nil }
+        let cadencePlanned = breaks[k] != nil
+        lastNoBreak = nil
+        let taken = await preparer.takeBreak(afterTrack: k)
+        if case .skipped(let reason) = taken { lastNoBreak = (reason, cadencePlanned) }
+        guard case .ready(let ready) = taken else { return nil }
         // Consent or expiry may have changed since the break was rendered, with no refresh():
         // re-check every source at `now`, purge what may no longer be narrated, drop its cues.
         let at = now()
@@ -285,11 +292,13 @@ public final class DJBreakSession {
         if station.active.commentary == .off
             || (ready.includesBriefing && !station.active.briefing.enabled) {
             dj.send(.breakSkipped(afterTrack: k, .cancelled))
+            lastNoBreak = (.cancelled, cadencePlanned)
             return nil
         }
         if ready.includesBriefing, !cues.contains(where: \.isContent) {
             // Nothing personal left to say: music plays at once.
             dj.send(.breakSkipped(afterTrack: k, .sourceRevoked))
+            lastNoBreak = (.sourceRevoked, cadencePlanned)
             return nil
         }
         let kept = Set(cues.map(\.id))

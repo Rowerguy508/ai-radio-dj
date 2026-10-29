@@ -106,6 +106,7 @@ final class DJBreakSessionTests: XCTestCase {
 
         let handed = await r.session.naturalBoundary(afterTrack: 0)
         let prepared = try XCTUnwrap(handed)
+        XCTAssertNil(r.session.lastNoBreak, "a handed-out break leaves no skip reason")
         XCTAssertFalse(prepared.clips.isEmpty)
         XCTAssertLessThanOrEqual(prepared.measuredSeconds, 12, "routine cap")
         XCTAssertTrue(prepared.clips.allSatisfy { $0.audio.providerID == "device" }, "$0 on-device voice")
@@ -116,6 +117,8 @@ final class DJBreakSessionTests: XCTestCase {
 
         let nothing = await r.session.naturalBoundary(afterTrack: 1)
         XCTAssertNil(nothing, "no break planned: music continues at once")
+        XCTAssertEqual(r.session.lastNoBreak?.reason, .notPlanned)
+        XCTAssertEqual(r.session.lastNoBreak?.cadencePlanned, false, "the cadence chose silence here")
     }
 
     func testLateOrCutBreaksAreSkippedAndNeverWait() async {
@@ -124,12 +127,15 @@ final class DJBreakSessionTests: XCTestCase {
         await r.session.songStarted(index: 0, remaining: .seconds(2))     // inside the 3 s margin
         let late = await r.session.naturalBoundary(afterTrack: 0)
         XCTAssertNil(late, "too late to render: skipped, not delayed")
+        XCTAssertEqual(r.session.lastNoBreak?.reason, .notPlanned)
+        XCTAssertEqual(r.session.lastNoBreak?.cadencePlanned, true, "planned, but never prepared: the trace tells this apart")
 
         await r.session.songStarted(index: 3, remaining: .seconds(180))
         await until { if case .ready = r.dj.studioState { true } else { false } }
         await r.session.songCut(afterTrack: 3)
         let afterCut = await r.session.naturalBoundary(afterTrack: 3)
         XCTAssertNil(afterCut, "never talk after a cut song")
+        XCTAssertEqual(r.session.lastNoBreak?.reason, .notNaturalBoundary)
     }
 
     func testRoutineBreakOverTwelveSecondsIsSkipped() async {

@@ -17,6 +17,9 @@ struct AeroDJApp: App {
             return
         }
         #endif
+        #if AERODJ_P0_DIAG
+        P0EventTraceHost.shared.start()
+        #endif
         let dependencies = AppDependencies.make()
         self.dependencies = dependencies
         // Runtime evidence of the dependency set this launch actually uses. `notice`, not
@@ -32,6 +35,9 @@ struct AeroDJApp: App {
                     // Starts the one studio and the one DJ session. Station selection and the
                     // MusicKit player stay on the split root below this window.
                     .task { await dependencies.start() }
+                    #if AERODJ_P0_DIAG
+                    .modifier(P0ScenePhaseTrace())
+                    #endif
             } else {
                 directModeRoot
             }
