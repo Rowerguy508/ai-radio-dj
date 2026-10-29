@@ -184,7 +184,7 @@ extension VoiceRoute {
         onDevice(voiceID: OnDeviceVoiceChoice.bestVoice()?.identifier ?? "")
     }
 
-    /// The best voice first, then a standard voice that ships with iOS. If the best voice
+    /// The best voice first, then the system default en-US voice. If the best voice
     /// fails, times out, or reads past the cue's cap, `VoiceRenderer` falls through to the
     /// standard route, as it does for any route, before the break is skipped.
     static func onDeviceRoutes() -> [VoiceRoute] {
@@ -244,16 +244,11 @@ enum OnDeviceVoiceChoice {
         return voice
     }
 
-    /// The best standard-tier English voice, the fallback route's voice. Nil when none is installed.
+    /// The fallback route's voice: exactly the system default en-US voice, the one build 19
+    /// rendered every break with. Not re-ranked: a different standard voice (Eloquence, say)
+    /// is unproven through `write()` on device.
     static func standardVoice() -> AVSpeechSynthesisVoice? {
-        let installed = AVSpeechSynthesisVoice.speechVoices()
-        let candidates = installed.map { voice in
-            VoiceCandidate(identifier: voice.identifier, language: voice.language, tier: tier(voice.quality),
-                           isNovelty: voice.voiceTraits.contains(.isNoveltyVoice),
-                           isPersonalVoice: voice.voiceTraits.contains(.isPersonalVoice))
-        }
-        guard let pick = VoiceQualitySelector.fallback(from: candidates) else { return nil }
-        return installed.first { $0.identifier == pick.identifier }
+        AVSpeechSynthesisVoice(language: "en-US")
     }
 
     private static func tier(_ quality: AVSpeechSynthesisVoiceQuality) -> VoiceQualityTier {

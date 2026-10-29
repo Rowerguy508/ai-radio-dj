@@ -533,6 +533,14 @@ public struct VoiceRenderer: Sendable {
         self.revocations = revocations
     }
 
+    /// The last route alone (the on-device standard voice), sharing this renderer's budget,
+    /// cache and revocations. Nil when there is only one route. `DJBreakPreparer` uses it to
+    /// re-render a break that ran over its cap; it is a narrowed view, not a second renderer.
+    public var lastRouteOnly: VoiceRenderer? {
+        guard routes.count > 1, let last = routes.last else { return nil }
+        return VoiceRenderer(routes: [last], budget: budget, cache: cache, revocations: revocations)
+    }
+
     public static func cacheKey(text: String, route: VoiceRoute) -> String {
         SHA256Digest.hex([cacheFormatVersion, route.providerID, route.voice.id, route.acceptsSSML ? "ssml" : "text", text]
             .joined(separator: "\u{1F}"))
