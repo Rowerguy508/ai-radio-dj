@@ -204,6 +204,8 @@ public actor DJBreakPreparer {
             results[k] = nil
             planned[k] = nil
         }
+        openForRearm.formIntersection(kept)   // a dropped boundary can't be re-armed by a seek
+        rearmed.formIntersection(kept)
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
