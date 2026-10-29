@@ -10,6 +10,12 @@ export interface ChallengeStore {
   readonly durable: boolean;
   /** SET key NX EX ttl. True if newly set (first use), false if already used. Throws ChallengeStoreError. */
   markUsed(key: string, ttlSeconds: number): Promise<boolean>;
+  /**
+   * EXISTS key: true if the single-use mark is present. Read-only. Used only to tell a
+   * reused challenge (401 `assertion`) from an expired one (400 `challenge_expired`)
+   * after the MAC and signature have verified. Throws ChallengeStoreError.
+   */
+  isUsed(key: string): Promise<boolean>;
 }
 
 export class ChallengeStoreError extends Error {}
@@ -21,13 +27,14 @@ export class RedisChallengeStore implements ChallengeStore {
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
   ) {}
 
-  async markUsed(key: string, ttlSeconds: number): Promise<boolean> {
+  /** One Upstash REST command; returns `result`. Any transport or store error throws ChallengeStoreError. */
+  private async command(args: string[]): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetchImpl(this.config.url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(['SET', key, '1', 'NX', 'EX', String(ttlSeconds)]),
+        body: JSON.stringify(args),
       });
     } catch {
       throw new ChallengeStoreError('store unreachable');
@@ -40,8 +47,20 @@ export class RedisChallengeStore implements ChallengeStore {
     if (!payload || typeof payload !== 'object' || 'error' in payload || !('result' in payload)) {
       throw new ChallengeStoreError('store error');
     }
-    if (payload.result === 'OK') return true;
-    if (payload.result === null) return false;
+    return payload.result;
+  }
+
+  async markUsed(key: string, ttlSeconds: number): Promise<boolean> {
+    const result = await this.command(['SET', key, '1', 'NX', 'EX', String(ttlSeconds)]);
+    if (result === 'OK') return true;
+    if (result === null) return false;
+    throw new ChallengeStoreError('store error');
+  }
+
+  async isUsed(key: string): Promise<boolean> {
+    const result = await this.command(['EXISTS', key]);
+    if (result === 1) return true;
+    if (result === 0) return false;
     throw new ChallengeStoreError('store error');
   }
 }

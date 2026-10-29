@@ -17,6 +17,7 @@ import {
   RATE_SCRIPT,
   RELEASE2_SCRIPT,
   RESERVE2_SCRIPT,
+  refundMarkerKey,
   subjectBucket,
   type LimiterOptions,
   type Subject,
@@ -82,6 +83,9 @@ function limiters(options: LimiterOptions): [string, UsageLimiter, FakeRedis | n
 const ownerKey = `aerodj-tts:chars:owner:${DAY}`;
 const globalKey = `aerodj-tts:chars:global:${DAY}`;
 const installKey = (s: Subject) => `aerodj-tts:chars:${subjectBucket(s)}:${DAY}`;
+const isRefundMarker = (key: string | undefined) => typeof key === 'string' && key.startsWith('refund:{aerodj-tts}:');
+const counterSets = (redis: FakeRedis) => redis.commands.filter((c) => c[0] === 'SET' && !isRefundMarker(c[1]));
+const markerSets = (redis: FakeRedis) => redis.commands.filter((c) => c[0] === 'SET' && isRefundMarker(c[1]));
 
 // --- Per-install and global buckets ---
 
@@ -250,14 +254,18 @@ test('refund that would go below zero: an absent or zero counter is left untouch
   const store = fakeUpstash();
   const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
   // A reservation for a day whose counters no longer exist (expired, or never written).
-  await limiter.release({ bucket: subjectBucket(A), day: DAY, chars: 500 });
+  await limiter.release({ rid: crypto.randomUUID(), bucket: subjectBucket(A), day: DAY, chars: 500 });
   assert.equal(store.redis.data.has(installKey(A)), false, 'no counter is created');
   assert.equal(store.redis.data.has(globalKey), false, 'no counter is created');
-  assert.equal(store.redis.commands.filter((c) => c[0] === 'SET').length, 0, 'no TTL-less key is written');
+  assert.equal(counterSets(store.redis).length, 0, 'no counter key is written');
+  // The only key written is the per-charge refund marker (PR 3), and it carries a TTL.
+  const markers = markerSets(store.redis);
+  assert.equal(markers.length, 1);
+  assert.ok(store.redis.expiresAt.has(markers[0][1]), 'refund marker has a TTL');
   // Counters at exactly 0 stay 0.
   store.redis.data.set(installKey(A), '0');
   store.redis.data.set(globalKey, '0');
-  await limiter.release({ bucket: subjectBucket(A), day: DAY, chars: 500 });
+  await limiter.release({ rid: crypto.randomUUID(), bucket: subjectBucket(A), day: DAY, chars: 500 });
   assert.equal(store.redis.data.get(installKey(A)), '0');
   assert.equal(store.redis.data.get(globalKey), '0');
 });
@@ -282,7 +290,8 @@ test('double refund: a non-2xx request releases its charge exactly once, so othe
     if (redis) {
       assert.equal(redis.get(ownerKey), 0, name);
       assert.equal(redis.get(globalKey), 300, `${name}: B's 300 is still counted`);
-      assert.equal(redis.commands.filter((c) => c[0] === 'SET').length, 2, `${name}: one RELEASE2 (2 SETs)`);
+      assert.equal(counterSets(redis).length, 2, `${name}: one RELEASE2 (2 counter SETs)`);
+      assert.equal(markerSets(redis).length, 1, `${name}: one refund marker`);
     } else {
       const mem = limiter as InMemoryUsageLimiter;
       assert.equal(mem.used('owner', NOON), 0);
@@ -291,20 +300,74 @@ test('double refund: a non-2xx request releases its charge exactly once, so othe
   }
 });
 
-// Expected failure, documented: release() is NOT idempotent today. The handler calls it at
-// most once per charge (test above) and has no retry path, so nothing undercounts in
-// practice, but releasing the same reservation twice would refund it twice. The per-charge
-// refund marker that fixes this is a PR 3 gate (#233); flip this from todo when it lands.
-test('double refund of the same reservation applies once (needs the per-charge marker, PR 3 gate #233)', { todo: 'per-charge refund marker is a PR 3 gate (#233)' }, async () => {
-  for (const [name, limiter, redis] of limiters({ dailyCharCap: 9_000, requestsPerMinute: 100 })) {
-    assert.ok((await limiter.reserve(B, 300, NOON)).ok);
-    const r = await limiter.reserve(A, 500, NOON);
-    assert.ok(r.ok);
-    await limiter.release(r.reservation);
-    await limiter.release(r.reservation);
-    const global = redis ? redis.get(globalKey) : (limiter as InMemoryUsageLimiter).used('global', NOON);
-    assert.equal(global, 300, `${name}: B's 300 must still be counted`);
+// Per-charge refund marker (Fry D2, note §4.3, PR 3 gate). Replaces #241's `todo`, split into
+// one test per limiter so a failure in one cannot hide the other (the old loop stopped at the
+// in-memory limiter and never reached the Redis script).
+test('double refund of the same reservation applies once: in-memory limiter (per-charge marker, PR 3 gate)', async () => {
+  const limiter = new InMemoryUsageLimiter({ dailyCharCap: 9_000, requestsPerMinute: 100 });
+  assert.ok((await limiter.reserve(B, 300, NOON)).ok);
+  const r = await limiter.reserve(A, 500, NOON);
+  assert.ok(r.ok);
+  assert.equal(await limiter.release(r.reservation), true, 'first release applies');
+  assert.equal(await limiter.release(r.reservation), false, 'second release is a no-op');
+  assert.equal(await limiter.release({ ...r.reservation }), false, 'a copy of the same reservation is still the same charge');
+  assert.equal(limiter.used('global', NOON), 300, "B's 300 must still be counted");
+  assert.equal(limiter.used(subjectBucket(B), NOON), 300);
+  assert.equal(limiter.used(subjectBucket(A), NOON), 0);
+});
+
+test('double refund of the same reservation applies once: Upstash limiter, real RELEASE2 Lua (per-charge marker, PR 3 gate)', async () => {
+  const store = fakeUpstash();
+  const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
+  assert.ok((await limiter.reserve(B, 300, NOON)).ok);
+  const r = await limiter.reserve(A, 500, NOON);
+  assert.ok(r.ok);
+  assert.equal(await limiter.release(r.reservation), true, 'first release applies');
+  assert.equal(await limiter.release(r.reservation), false, 'second release is a no-op');
+  assert.equal(store.redis.get(globalKey), 300, "B's 300 must still be counted");
+  assert.equal(store.redis.get(installKey(B)), 300);
+  assert.equal(store.redis.get(installKey(A)), 0);
+  assert.equal(counterSets(store.redis).length, 2, 'only the first release touched the counters');
+  const marker = `refund:{aerodj-tts}:${r.reservation.rid}`;
+  assert.equal(store.redis.data.get(marker), '1');
+  assert.equal(store.redis.expiresAt.get(marker), NOON + 172_800 * 1000, 'marker lives 2 days, like the day counters');
+});
+
+test('refund marker is per charge: two reservations of the same size each refund once', async () => {
+  for (const make of [
+    () => ({ limiter: new InMemoryUsageLimiter({ dailyCharCap: 9_000, requestsPerMinute: 100 }) as UsageLimiter, read: (l: UsageLimiter) => (l as InMemoryUsageLimiter).used('global', NOON) }),
+    () => {
+      const store = fakeUpstash();
+      return { limiter: new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl) as UsageLimiter, read: () => store.redis.get(globalKey) };
+    },
+  ]) {
+    const { limiter, read } = make();
+    const r1 = await limiter.reserve(A, 500, NOON);
+    const r2 = await limiter.reserve(A, 500, NOON);
+    assert.ok(r1.ok && r2.ok);
+    assert.notEqual(r1.reservation.rid, r2.reservation.rid, 'server-generated rid is unique per charge');
+    assert.equal(await limiter.release(r1.reservation), true);
+    assert.equal(read(limiter), 500);
+    assert.equal(await limiter.release(r2.reservation), true);
+    assert.equal(read(limiter), 0);
   }
+});
+
+test('refund marker key: only a server-generated UUID rid is accepted, so no client value can address another key', async () => {
+  const rid = crypto.randomUUID();
+  assert.equal(refundMarkerKey(rid), `refund:{aerodj-tts}:${rid}`);
+  for (const bad of ['', 'x', `${rid}:x`, `${rid}*`, rid.toUpperCase(), 'refund:{aerodj-tts}:*']) {
+    assert.throws(() => refundMarkerKey(bad), TypeError, bad);
+  }
+  const store = fakeUpstash();
+  const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
+  await assert.rejects(limiter.release({ rid: '*', bucket: subjectBucket(A), day: DAY, chars: 1 }), TypeError);
+  assert.equal(store.calls.length, 0, 'nothing reaches the store');
+});
+
+test('RELEASE2 script runs the SET NX marker before touching any counter', () => {
+  const marker = RELEASE2_SCRIPT.indexOf("'NX'");
+  assert.ok(marker >= 0 && marker < RELEASE2_SCRIPT.indexOf('KEYS[i]'));
 });
 
 test('both buckets reset at 00:00 UTC; day keys carry a 2-day TTL', async () => {

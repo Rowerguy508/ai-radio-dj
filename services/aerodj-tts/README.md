@@ -10,7 +10,8 @@ legacy Next.js app at the repo root, whose `app/` routes (including the
 unauthenticated `app/api/voice`) must not be deployed.
 
 > **Status: not deployed. No key created.** Sentinel must review this function
-> and the app-side wiring before anything is deployed.
+> and the app-side wiring before anything is deployed. Any deploy needs the
+> owner's OK.
 
 ## Contract (matches `ProxyVoiceProvider`)
 
@@ -42,14 +43,14 @@ never echo user input or the upstream response:
 | 401 | missing, malformed or wrong bearer token |
 | 405 | any method other than POST |
 | 429 | per-minute rate limit or a daily character cap reached (`Retry-After` and `reason` set, see below) |
-| 500 | server misconfigured (token hash or ElevenLabs key unset, or Production without a durable limiter store) |
-| 503 | limiter store unreachable or erroring (fails closed; `Retry-After: 60`, `reason: "store"`) |
+| 500 | server misconfigured (token hash or ElevenLabs key unset, or Production without a durable limiter store; `Retry-After: 3600`, `reason: "misconfig"`) |
+| 503 | limiter store unreachable or erroring (fails closed; `Retry-After: 60`, `reason: "store"`), or the master stop `AERODJ_TTS_PAID_STOP` is set (`Retry-After: 3600`, `reason: "disabled"`) |
 | 502 | upstream non-2xx, network error, empty or oversized audio |
 | 504 | upstream took longer than 15 s (AbortController) |
 
-### 429 / 503 refusal contract
+### 429 / 503 / 500 refusal contract
 
-A refusal from the limiter carries `Retry-After` (integer seconds, at least 1) and
+A refusal from the limiter, the master stop or a misconfiguration carries `Retry-After` (integer seconds, at least 1) and
 a body of enums and numbers only:
 
 ```
@@ -63,6 +64,8 @@ a body of enums and numbers only:
 | 429 | `install_daily` | seconds until 00:00 UTC (not reachable until per-install auth lands) |
 | 429 | `global_daily` | seconds until 00:00 UTC |
 | 503 | `store` | 60 |
+| 503 | `disabled` (master stop, below) | 3600 |
+| 500 | `misconfig` | 3600 |
 
 Every other error keeps the `{ error, requestId }` body with no `reason`. Logs add
 only the same `reason` enum to that request's one line.
@@ -146,12 +149,22 @@ reservation is **released (refunded) only when ElevenLabs answers non-2xx**, sin
 then nothing was billed. A network error, timeout, or bad audio after a 2xx keeps
 the reservation, because the render may have been billed.
 
-The handler releases a reservation at most once and never retries a failed
-release. `release()` itself is not idempotent yet: releasing the same reservation
-twice would refund it twice and undercount the global ceiling (a `todo` test in
-`test/quota.test.ts` records this). **Per-charge marker and 503-without-Redis for
-install reservations are PR 3 gates (#233).** No retry of a release may be added
-before the per-charge marker lands.
+**Per-charge refund marker (#233 PR 3, Fry D2).** Every reservation carries a
+server-generated id (`rid`, a random UUID; never from the client). A refund applies
+**at most once per `rid`**: `RELEASE2` first runs
+`SET refund:{aerodj-tts}:<rid> 1 NX EX 172800` and changes nothing if the marker
+already exists; the in-memory limiter keeps the same rule with a per-instance set.
+Releasing the same reservation twice therefore refunds it once, on both limiters
+(one test each in `test/quota.test.ts`). The handler still releases at most once and
+never retries a release. There is no `character-cost` top-up script yet; when one is
+added it must use its own `topup:{aerodj-tts}:<rid>` marker the same way (note §4.3).
+
+**Install reservations require Redis (#233 PR 3, Sentinel B3).** Every per-install
+reservation goes through `reserveForInstall` (`src/install-quota.ts`). Without a
+durable store (`limiter.durable === true`, i.e. Upstash) it refuses with
+**503 `store`, `Retry-After: 30`**, in every environment, and makes no limiter call;
+`AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` does not apply to installs. No request reaches
+an install reservation yet (PR 4 wires it).
 
 ### Which store backs the limits
 
@@ -170,6 +183,42 @@ ElevenLabs.
 Independent of the limiter, the $0 backstop is the ElevenLabs plan itself (Free
 plan: no overage) plus the restricted key's own credit limit. The owner should
 confirm both on the ElevenLabs side; the proxy cannot verify them.
+
+## Master stop: `AERODJ_TTS_PAID_STOP` (#233 PR 3, note §4.7)
+
+One switch that stops **every paid path, the owner included**, and the attest
+endpoints (`/api/attest/*`). It is checked **first**, before the method, auth, any
+limiter or Redis call and any ElevenLabs call. Stopped → `503`, `reason: "disabled"`,
+`Retry-After: 3600`.
+
+It fails closed: **any non-empty value except exactly `false` stops** (`true`, `1`,
+`TRUE`, `False`, `false ` with a space, and typos all stop). Unset, empty, or exactly
+`false` → normal behaviour. Like every env change on Vercel, it takes effect only on
+the next deployment: set it, then redeploy Production.
+
+## Attestation endpoints (off by default; #233 PRs 2-4)
+
+`POST /api/attest/challenge` issues a stateless, HMAC-signed challenge (no Redis call
+at issuance). It is **off unless `AERODJ_TTS_ATTEST_ENABLED` is exactly `true`**
+(`TRUE`, `1`, `true ` with a space are all off); off → 503 `disabled`,
+`Retry-After: 3600`. It reads the raw request body from the Web `Request` stream with
+a **1024-byte cap** (413 `too_large` above it) and never uses Vercel's `req.body`.
+
+The challenge MAC key is `AERODJ_TTS_CHALLENGE_HMAC_KEY`:
+
+- **Dedicated**: used for nothing else (not the token hash, not the ID-hash key).
+- **At least 32 bytes** of randomness, as 64+ hex characters or base64/base64url of
+  32+ bytes. Shorter or malformed → 500 `misconfig`.
+- **Created by the owner**, on his own machine, and pasted directly into the Vercel
+  project's environment (Production scope). Never in chat, the repo, CI, a build or a
+  log. We never create it. For example: `openssl rand -hex 32`.
+- Attestation must not be enabled before this key exists.
+
+An expired challenge (older than 120 s) whose MAC, purpose, key binding and the
+request's signature all verify, and that was never used, is refused with
+**400 `challenge_expired`** (no write); the app fetches a fresh challenge and signs
+again, at most once per cue. A forged, tampered, wrong-purpose, reused or
+badly signed challenge is **401 `assertion`**.
 
 ## Logging and privacy
 
@@ -195,7 +244,10 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP` | no | Per-install cap. Default 1500. Inert until per-install auth lands. |
 | `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. Plain integer 1-600; anything else uses 12. |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | yes in Production | Injected by the Upstash Redis integration (Vercel Marketplace, free tier). `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work. HTTPS only. |
-| `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter. Owner decision only; leave unset. |
+| `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter (owner path only; never install reservations). Owner decision only; leave unset. |
+| `AERODJ_TTS_PAID_STOP` | no | Master stop. Any non-empty value except exactly `false` → every paid path and `/api/attest/*` return 503 `disabled`. Unset in normal operation. |
+| `AERODJ_TTS_ATTEST_ENABLED` | no | Attest kill switch. Only exactly `true` enables `/api/attest/*`; anything else is off. Leave unset until the owner enables attestation. |
+| `AERODJ_TTS_CHALLENGE_HMAC_KEY` | before attest is enabled | Server-only. Dedicated key, at least 32 bytes, **created by the owner** and pasted directly into Vercel (Production). Never in chat, repo, CI or builds. |
 
 ## Deploy (owner only, after Sentinel's review)
 
@@ -221,6 +273,15 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
    must contain exactly that host).
 6. App side (Echo): `paidProvidersEnabled` stays **off in every build except
    the owner's A/B build**, and the on-device voice remains the fallback.
+7. **Before enabling attestation** (owner, not part of any PR): create
+   `AERODJ_TTS_CHALLENGE_HMAC_KEY` (above), and add a **per-IP Vercel Firewall
+   rate-limit rule on `/api/attest/*`** (design note §4.1.1, §12; the function stores
+   no IP, so this limit lives at the edge). Only then set
+   `AERODJ_TTS_ATTEST_ENABLED=true` and redeploy. This README documents the rule; no
+   PR changes Vercel settings.
+8. **Emergency stop:** set `AERODJ_TTS_PAID_STOP=true` (any value but `false`) and
+   redeploy Production. Rotating the ElevenLabs key also stops spend without a
+   redeploy.
 
 ## Development
 

@@ -242,7 +242,9 @@ in-memory limiter keeps the same rule with a per-instance `Set` of spent
 `rid`s. This applies to the existing owner path's `release()` as well, so
 #241's `todo` test ("double refund of the same reservation applies once")
 must pass, **split into one test per limiter** (in-memory, and Redis against
-the fake EVAL), before PR 3 merges. Until it lands, no code path may retry a
+the fake EVAL), before PR 3 merges. *(PR 3: `release()`/`RELEASE2` done with both
+tests. No top-up script exists yet, so the `topup:` marker lands with whichever PR
+adds the top-up, with its own double-top-up test.)* Until it lands, no code path may retry a
 release or add a second release site (Sentinel's #241 gate). #241's README
 already names this a PR 3 gate; this section is the matching design.
 
@@ -277,10 +279,11 @@ Fry's backoff/entitlement follow-up (`fry/tts-backoff-entitlement` at
 | --- | --- | --- | --- | --- |
 | 200 / 204 | – | tts / register, entitlement | – | Play / continue |
 | 200 | – (audio fails validation: content type, size or duration) | tts | – | #242: on-device for that cue, then pause paid calls 5 min, doubling per consecutive failure up to 1 h, persisted across launches; never shortens a longer wait (the call may already be billed). A 200 with valid audio clears the count |
-| 400 | `bad_request`, **no `reason`, or any unknown `reason`** (anything but `mixed_auth`) | all | – | Do not retry that request; on-device for that cue; **paid voice stays on**. A 400 is per-request validation, so #242 treats every 400 except `mixed_auth` like `bad_request`; the proxy as deployed (#238, #241) returns 400 with no `reason` for every validation failure (unlisted voiceId, text too long, bad JSON) |
+| 400 | `bad_request`, **no `reason`, or any unknown `reason`** (anything but `mixed_auth` and `challenge_expired`) | all | – | Do not retry that request; on-device for that cue; **paid voice stays on**. A 400 is per-request validation, so #242 treats every 400 except `mixed_auth` like `bad_request`; the proxy as deployed (#238, #241) returns 400 with no `reason` for every validation failure (unlisted voiceId, text too long, bad JSON) |
 | 400 | `mixed_auth` | tts | – | Treated as a client bug: stop paid calls until next launch. NEW |
+| 400 | `challenge_expired` (PR 3) | tts, ent, register | – | The challenge was genuine but older than 120 s. Returned **only** when the MAC, version, purpose and key binding verify, the request's signature verifies, and the challenge was never used; nothing is written. **Client (Fry's attest client PR):** fetch a **fresh** challenge and sign again (never resend the old assertion), **at most one retry per cue**, and **only while the break is being prepared** (never once it is on air). If the retry fails too, that cue uses the on-device voice and the fallback is reported; paid voice stays on. #242 at `05c5b9f` already treats it as cue-only (no retry), which is safe. NEW |
 | 401 | `reattest` (unknown, revoked or expired key) | tts, ent | – | Stop paid calls until next launch; on next launch delete the key and attest **once** |
-| 401 | `assertion` (bad signature, counter, used/expired/wrong-purpose challenge) | tts, ent, register | – | Stop paid calls until next launch (#234). Out-of-order counters are avoided by serialising proxy calls per key (Sentinel rec. 7) |
+| 401 | `assertion` (bad signature, counter, forged/tampered/used/wrong-purpose challenge; an expired challenge only when it is also bad or reused) | tts, ent, register | – | Stop paid calls until next launch (#234). Out-of-order counters are avoided by serialising proxy calls per key (Sentinel rec. 7) |
 | 401 | `owner_token` (bearer when owner path off, or wrong) | tts | – | Stop paid calls until next launch; never falls back to anything else |
 | 403 | `no_entitlement` (no link, expired, refunded, revoked, stale, TTL lapsed, family/sandbox not allowed) | tts | – | #242 stops paid calls until `entitlementDidChange()`. **PR 9:** if StoreKit shows a current entitlement, re-sync once via `/api/entitlement` (§5.2) and on success call `entitlementDidChange()`; otherwise, or if that fails, no paid calls until `Transaction.updates` emits or next launch. PR 9 also re-posts proactively before `verifiedAt + AERODJ_TTS_ENTITLEMENT_TTL_HOURS`, so the routine daily refresh (§5.6) does not cost a cue. Never opens the paywall by itself |
 | 403 | `install_limit` | ent | – | NEW: no paid calls until next launch; Nova's UI may explain "too many devices" |
@@ -289,10 +292,10 @@ Fry's backoff/entitlement follow-up (`fry/tts-backoff-entitlement` at
 | 429 | `rate` | tts, ent | seconds left in window | Wait `Retry-After`, else 60 s |
 | 429 | `enroll` | register | seconds | Wait `Retry-After`, else 60 s; do not re-attest before then |
 | 429 | `install_daily` / `global_daily` / `owner_daily` / `sandbox_daily` | tts | seconds to 00:00 UTC | Wait `Retry-After`, else next UTC midnight, persisted across launches |
-| 500 | `misconfig` | all | 3600 | Treat as 503 unknown |
+| 500 | `misconfig` | all | 3600 | Treat as 503 unknown. From PR 3 every 500 on `/api/tts` carries this reason and `Retry-After: 3600` (#238/#241 sent none) |
 | 502 | `upstream` | tts | 60 | Treat as 503 unknown. An ElevenLabs 429/quota error surfaces as 502 with `upstreamCode` in logs, **not** as `global_daily` |
 | 503 | `store` | all | 30 | Wait `max(Retry-After, exponential backoff)` (#242), so a long Redis outage is not retried every 30 s |
-| 503 | `disabled` | all | 3600 | Wait `Retry-After` (1 h). **Not produced by any code today** (§4.7); arrives with PR 2 (attest endpoints) and PR 3 (every path) |
+| 503 | `disabled` | all | 3600 | Wait `Retry-After` (1 h). Produced by the attest kill switch (PR 2, attest endpoints) and by the `AERODJ_TTS_PAID_STOP` master stop on every path, owner included (PR 3, §4.7) |
 | 503 | `apple` (status API unreachable, §5.6) | ent | 300 | Wait `Retry-After`; on-device meanwhile |
 | 504 | `upstream_timeout` | tts | 60 | Treat as 503 unknown |
 
@@ -392,7 +395,8 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
   as 503 unknown" in the app, which falls back to on-device; with no
   `Retry-After` #242 backs off 30 s doubling to 15 min, not 1 h, which is
   harmless because nothing is spent). Rotating the
-  key at ElevenLabs stops spend even without a redeploy.
+  key at ElevenLabs stops spend even without a redeploy. **From PR 3** that 500
+  carries `reason: misconfig` and `Retry-After: 3600` (§4.4).
 - **PR 3 adds an explicit master stop for every path, owner included:**
   `AERODJ_TTS_PAID_STOP`. Any non-empty value except exactly `false` stops
   (fail closed: a typo stops rather than runs). Stopped → 503 `disabled`,

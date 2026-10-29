@@ -4,7 +4,7 @@
  * Uses fengari (Lua 5.3 in pure JS); the scripts use only integers and the commands
  * below, which behave the same in Redis' Lua 5.1.
  *
- * Supported commands: GET, SET (with optional KEEPTTL), INCR, INCRBY, EXPIRE, PEXPIRE.
+ * Supported commands: GET, SET (with optional NX, EX and KEEPTTL), INCR, INCRBY, EXPIRE, PEXPIRE.
  * Each EVAL runs to completion synchronously, like a script in single-threaded Redis.
  */
 import { lauxlib, lua, lualib, to_luastring, type LuaState } from 'fengari';
@@ -24,10 +24,17 @@ export class FakeRedis {
     switch (verb.toUpperCase()) {
       case 'GET':
         return this.data.get(key) ?? false;
-      case 'SET':
+      case 'SET': {
+        // SET key value [NX] [EX seconds] [KEEPTTL], as the scripts use them. NX on an
+        // existing key returns nil (false in Lua) and changes nothing, like Redis.
+        const opts = rest.slice(1).map((r) => r.toUpperCase());
+        if (opts.includes('NX') && this.data.has(key)) return false;
         this.data.set(key, rest[0]);
-        if (!rest.map((r) => r.toUpperCase()).includes('KEEPTTL')) this.expiresAt.delete(key);
+        const ex = opts.indexOf('EX');
+        if (ex >= 0) this.expiresAt.set(key, this.now() + Number(rest[1 + ex + 1]) * 1000);
+        else if (!opts.includes('KEEPTTL')) this.expiresAt.delete(key);
         return 'OK';
+      }
       case 'INCR':
       case 'INCRBY': {
         const by = verb.toUpperCase() === 'INCR' ? 1 : Number(rest[0]);

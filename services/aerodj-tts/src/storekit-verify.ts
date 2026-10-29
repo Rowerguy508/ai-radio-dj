@@ -24,6 +24,7 @@ export interface StoreKitConfig {
   proProductIds: readonly string[];
   installsPerPurchase: number;
   allowSandboxInProduction: boolean;
+  /** Parsed and validated here but not read by this verifier: consumed by PR 6 (entitlement) and PR 7 (notifications). */
   honorGracePeriod: boolean;
   allowFamilyShared: boolean;
 }
