@@ -51,6 +51,65 @@ extension View {
     }
 }
 
+// MARK: - Unfolded Studio panes
+
+/// True only inside the unfolded Studio's Zone B. The workspace views are shared with the
+/// compact sheet, so they read this to pick the larger `StudioCornerRadius` values there and
+/// keep their original radii everywhere else (the folded layout is unchanged).
+private struct StudioPanesKey: EnvironmentKey { static let defaultValue = false }
+
+extension EnvironmentValues {
+    var studioPanes: Bool {
+        get { self[StudioPanesKey.self] }
+        set { self[StudioPanesKey.self] = newValue }
+    }
+}
+
+/// A workspace card or field background: `studioRadius` in the unfolded Studio,
+/// `compactRadius` (the radius it always had) elsewhere.
+private struct WorkspaceShapeBackground<S: ShapeStyle>: ViewModifier {
+    let style: S
+    let compactRadius: CGFloat
+    let studioRadius: CGFloat
+    @Environment(\.studioPanes) private var studioPanes
+
+    func body(content: Content) -> some View {
+        content.background(style, in: RoundedRectangle(cornerRadius: studioPanes ? studioRadius : compactRadius,
+                                                       style: .continuous))
+    }
+}
+
+/// The workspace segmented control: a capsule in the unfolded Studio, unchanged elsewhere.
+private struct WorkspaceSegmentShape: ViewModifier {
+    @Environment(\.studioPanes) private var studioPanes
+
+    func body(content: Content) -> some View {
+        if studioPanes {
+            content.clipShape(Capsule())
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    /// Card background (Genres, Mood, sources, recipes). 22 pt in the unfolded Studio.
+    func workspaceCardBackground<S: ShapeStyle>(_ style: S, compactRadius: CGFloat = 16) -> some View {
+        modifier(WorkspaceShapeBackground(style: style, compactRadius: compactRadius,
+                                          studioRadius: CGFloat(StudioCornerRadius.card)))
+    }
+
+    /// Text field background inside a card. 14 pt in the unfolded Studio.
+    func workspaceFieldBackground<S: ShapeStyle>(_ style: S, compactRadius: CGFloat) -> some View {
+        modifier(WorkspaceShapeBackground(style: style, compactRadius: compactRadius,
+                                          studioRadius: CGFloat(StudioCornerRadius.field)))
+    }
+
+    func workspaceSegmentShape() -> some View {
+        modifier(WorkspaceSegmentShape())
+    }
+}
+
 private struct SystemMaterialBackground: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -664,7 +723,7 @@ struct StartListeningView: View {
                     .accessibilityIdentifier("search.submit")
             }
             .padding(12)
-            .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .workspaceFieldBackground(Color(.tertiarySystemFill), compactRadius: 12)
 
             switch model.phase {
             case .idle: EmptyView()

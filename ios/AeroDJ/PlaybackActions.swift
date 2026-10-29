@@ -21,6 +21,18 @@ struct PlaybackActions {
     /// Build 9 P0 (-Atlas; Sentinel): Stop on a start past its 8 s deadline. A user pause that also
     /// cancels the attempt, so a late `.playing` cannot start audio the user turned down.
     var cancelStart: () -> Void = {}
+    /// Song scrubbing (-Atlas): the committed seek. Nil-safe default: previews never seek.
+    var seekAction: (TimeInterval, String?) async -> Bool = { _, _ in false }
+
+    /// Song scrubbing (-Atlas; API agreed with Nova): call once when the scrubber is released,
+    /// never while dragging (the drag position is view state). Returns false and changes
+    /// nothing unless `PlaybackSnapshot.canSeek`: a DJ break, a load or an unknown duration
+    /// blocks it, and the view snaps back to the live position. The target is clamped to
+    /// [0, duration - 1 s]. Pass the `trackID` the scrubber was showing: if the song changed
+    /// before release, the seek is a no-op and returns false (stale scrub).
+    func seek(to seconds: TimeInterval, trackID: String? = nil) async -> Bool {
+        await seekAction(seconds, trackID)
+    }
 
     /// Bound to the one app-wide `MusicKitService`.
     static func live(_ music: MusicKitService) -> PlaybackActions {
@@ -31,7 +43,8 @@ struct PlaybackActions {
             skip: { _ = try? await music.skip() },
             dismissError: { music.dismissError() },
             authorize: { await music.authorize() },
-            cancelStart: { music.cancelTimedOutStart() }
+            cancelStart: { music.cancelTimedOutStart() },
+            seekAction: { music.seek(to: $0, trackID: $1) }
         )
     }
 

@@ -21,6 +21,12 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
     public var briefing: BriefingPreferences
     /// Integrations the listener wants used. A request, not a grant.
     public var requestedIntegrations: Set<StationIntegration>
+    /// What the station is built from (artists, a genre, a playlist, a song). Empty means
+    /// no seeds: the station is built from tags only, as before. Validated: at most
+    /// `Limits.maxSeeds`, unique by kind plus `catalogID`, names trimmed and capped.
+    public var seeds: [StationSeed]
+    /// How far the station may go from `seeds`. `discovery` is the familiar-vs-new mix within it.
+    public var reach: StationReach
 
     public init(
         genres: [String] = [],
@@ -30,7 +36,9 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         personality: DJPersonality = .warm,
         commentary: CommentaryFrequency = .occasional,
         briefing: BriefingPreferences = .init(),
-        requestedIntegrations: Set<StationIntegration> = []
+        requestedIntegrations: Set<StationIntegration> = [],
+        seeds: [StationSeed] = [],
+        reach: StationReach = .default
     ) {
         self.genres = genres
         self.moods = moods
@@ -40,6 +48,8 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         self.commentary = commentary
         self.briefing = briefing
         self.requestedIntegrations = requestedIntegrations
+        self.seeds = seeds
+        self.reach = reach
         self = validated()
     }
 
@@ -51,6 +61,8 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         public static let maxTags = 8
         public static let maxTagLength = 32
         public static let unitRange: ClosedRange<Double> = 0...1
+        public static let maxSeeds = 8
+        public static let maxSeedNameLength = StationSeed.maxNameLength
     }
 
     /// Clamps and normalizes every field. Idempotent.
@@ -61,7 +73,24 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         copy.energy = Self.clampUnit(energy, fallback: 0.5)
         copy.discovery = Self.clampUnit(discovery, fallback: 0.3)
         copy.briefing = briefing.validated()
+        copy.seeds = Self.normalizedSeeds(seeds)
+        // Library seeds stay on the device and are never expanded (Fry's rule (d)), so a station
+        // with any library seed is always `.only`, however it was built, saved or decoded.
+        copy.reach = reach.effective(for: copy.seeds)
         return copy
+    }
+
+    /// Fry's rule (a): drops seeds with an empty ID or name, trims and caps names,
+    /// keeps the first of each kind plus `catalogID` (order kept), and caps the list.
+    static func normalizedSeeds(_ seeds: [StationSeed]) -> [StationSeed] {
+        var seen = Set<StationSeed.Key>()
+        var result: [StationSeed] = []
+        for raw in seeds {
+            guard let seed = raw.normalized(), seen.insert(seed.key).inserted else { continue }
+            result.append(seed)
+            if result.count == Limits.maxSeeds { break }
+        }
+        return result
     }
 
     static func clampUnit(_ value: Double, fallback: Double) -> Double {
@@ -103,6 +132,13 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case genres, moods, energy, discovery, personality, commentary, briefing, requestedIntegrations
+        case seeds, reach
+    }
+
+    /// Decodes one seed, or nothing: an unknown kind drops that seed, not the whole list.
+    private struct LossySeed: Decodable {
+        let seed: StationSeed?
+        init(from decoder: Decoder) throws { seed = try? StationSeed(from: decoder) }
     }
 
     public init(from decoder: Decoder) throws {
@@ -119,6 +155,11 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         self.briefing = (try? c.decodeIfPresent(BriefingPreferences.self, forKey: .briefing)) ?? d.briefing
         let integrations = (try? c.decodeIfPresent([String].self, forKey: .requestedIntegrations)) ?? []
         self.requestedIntegrations = Set(integrations.compactMap(StationIntegration.init(rawValue:)))
+        // Fry's rule (b): a recipe or config saved before seeds existed loads as no seeds, `.related`.
+        let seeds = (try? c.decodeIfPresent([LossySeed].self, forKey: .seeds)) ?? nil
+        self.seeds = seeds?.compactMap(\.seed) ?? d.seeds
+        self.reach = (try? c.decodeIfPresent(String.self, forKey: .reach))
+            .flatMap(StationReach.init(rawValue:)) ?? d.reach
         self = validated()
     }
 
@@ -132,6 +173,8 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         try c.encode(commentary.rawValue, forKey: .commentary)
         try c.encode(briefing, forKey: .briefing)
         try c.encode(requestedIntegrations.map(\.rawValue).sorted(), forKey: .requestedIntegrations)
+        try c.encode(seeds, forKey: .seeds)
+        try c.encode(reach.rawValue, forKey: .reach)
     }
 }
 
@@ -150,12 +193,14 @@ public enum DJPersonality: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// How often the DJ talks between songs. Bounded: even `frequent` leaves most boundaries music-only.
+/// How often the DJ talks between songs. Raw values are persisted in recipes: never rename one.
+/// What a preset actually delivers is bounded by `DJCadence`'s spacing rule (`expectedTalkShare`).
 public enum CommentaryFrequency: String, Codable, Sendable, CaseIterable {
-    case off, rare, occasional, frequent
+    case off, rare, occasional, frequent, chatty
 
-    /// Upper bound for any preset: music first.
-    public static let maxTalkFraction = 0.5
+    /// Upper bound for any preset's requested `talkFraction`. `chatty` asks for every boundary;
+    /// the never-back-to-back spacing rule in `DJCadence` still limits what is delivered.
+    public static let maxTalkFraction = 1.0
 
     /// Maps onto `DJCadence.talkFraction`. Briefing content is governed by `BriefingPreferences`, not this.
     public var talkFraction: Double {
@@ -164,6 +209,7 @@ public enum CommentaryFrequency: String, Codable, Sendable, CaseIterable {
         case .rare: 0.15
         case .occasional: 0.3
         case .frequent: 0.45
+        case .chatty: 1.0
         }
     }
 }

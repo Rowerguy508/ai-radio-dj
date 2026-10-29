@@ -138,7 +138,7 @@ struct PlayingScreen: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
         case .studio:
-            if let widths = StudioZoneWidths.allocate(containerWidth: width) {
+            if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,
                              zoneA: zoneA(),
                              workspace: workspace)
@@ -152,12 +152,13 @@ struct PlayingScreen: View {
         }
     }
 
-    /// Compact width class collapses to Listen. Otherwise the existing width rule decides
-    /// Studio vs the stacked accessibility layout. No device size is named here.
+    /// Only a regular width class can open the Studio; compact or no size class (nil)
+    /// collapses to Listen. Otherwise the existing width rule decides Studio vs the stacked
+    /// accessibility layout. No device size is named here.
     private func resolvedMode(containerWidth: Double) -> StudioLayoutMode {
-        if horizontalSizeClass == .compact { return .compact }
-        return StudioLayoutMode.resolve(containerWidth: containerWidth,
-                                        accessibilityTextSize: typeSize.isAccessibilitySize)
+        StudioLayoutMode.resolve(hasRegularWidth: horizontalSizeClass == .regular,
+                                 containerWidth: containerWidth,
+                                 accessibilityTextSize: typeSize.isAccessibilitySize)
     }
 
     private var studioIdentity: String {

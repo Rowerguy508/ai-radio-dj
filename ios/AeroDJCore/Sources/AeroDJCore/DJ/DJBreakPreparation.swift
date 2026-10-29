@@ -5,7 +5,7 @@ import Foundation
 // waiting: if it is not ready, or rendering failed, timed out or hit the cost
 // cap with no fallback, the break is skipped and the next song starts on time.
 
-public enum DJBreakSkipReason: String, Codable, Equatable, Sendable {
+public enum DJBreakSkipReason: String, Codable, Equatable, Sendable, CaseIterable {
     /// Every route failed.
     case renderFailed
     /// A clip was longer than its cue allows.
@@ -57,6 +57,13 @@ public actor DJBreakPreparer {
     private var tasks: [Int: Task<Void, Never>] = [:]
     private var results: [Int: DJBreakOutcome] = [:]
     private var planned: [Int: DJBreak] = [:]
+    /// Song scrubbing (-Atlas): boundaries a seek may still re-arm. Opened when song `k`
+    /// starts (`openBoundary`); closed when boundary `k` is taken (`takeBreak`) or everything is
+    /// dropped (`cancelAll`), so a seek that resumes after the song already ended (or the queue
+    /// was replaced) cannot start an orphan render for a boundary that went by.
+    private var openForRearm: Set<Int> = []
+    /// Song scrubbing (-Atlas): open boundaries whose one seek re-arm is spent.
+    private var rearmed: Set<Int> = []
     private var observers: [@Sendable (DJBreakEvent) -> Void] = []
 
     public enum DJBreakEvent: Equatable, Sendable {
@@ -80,14 +87,18 @@ public actor DJBreakPreparer {
     }
 
     /// Starts rendering now. `deadline` must end before the boundary (see `deadline(remainingInSong:)`).
-    public func prepare(_ djBreak: DJBreak, deadline: Duration) {
+    /// `onDeviceOnly` (a station with a library seed) renders on the on-device, free routes only;
+    /// with none configured the break is skipped as `.renderFailed`, never sent off the device.
+    public func prepare(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool = false) {
         let k = djBreak.afterTrack
         guard tasks[k] == nil, results[k] == nil else { return }
         planned[k] = djBreak
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
-        let renderer = renderer, userID = userID, stationID = stationID, cap = maxBreakSeconds(djBreak)
+        let renderer = onDeviceOnly ? self.renderer.onDeviceOnly : self.renderer
+        let userID = userID, stationID = stationID, cap = maxBreakSeconds(djBreak)
         tasks[k] = Task {
             let outcome: DJBreakOutcome
+            guard let renderer else { self.finish(k, .skipped(.renderFailed)); return }
             do {
                 outcome = try await VoiceRenderer.withTimeout(deadline) {
                     await Self.render(djBreak, renderer: renderer, userID: userID, stationID: stationID, cap: cap)
@@ -99,10 +110,56 @@ public actor DJBreakPreparer {
         }
     }
 
+    /// Song scrubbing (-Atlas): a user seek changed the time left before boundary `k`.
+    /// A render in flight or a ready break is kept (no second render, no extra spend; a render
+    /// that cannot finish before the new boundary is skipped there as `.notReadyAtBoundary`, so
+    /// music never waits). A render starts when nothing was started for `k`, or when the last
+    /// one only ran out of time (`.timedOut`) and the seek gave it time again. Every other skip
+    /// (revoked, cost cap, failure, cut, cancelled) is final.
+    /// At most ONE re-arm per boundary: scrubbing back and forth must not restart a render (and
+    /// spend voice characters) again and again. Starting a break that never started rendering
+    /// counts as that one re-arm; after it, a second timeout stays a final skip until the
+    /// boundary is taken. Returns whether a render started.
+    @discardableResult
+    public func rearm(_ djBreak: DJBreak, deadline: Duration) -> Bool {
+        let k = djBreak.afterTrack
+        guard mayRearm(afterTrack: k) else { return false }
+        rearmed.insert(k)
+        results[k] = nil
+        prepare(djBreak, deadline: deadline)
+        return true
+    }
+
+    /// Song `k` started: seeks may re-arm boundary `k` (once) until it is taken or cancelled.
+    /// A repeated start report for a song whose boundary is already open keeps the spent re-arm,
+    /// so a duplicate start never buys a second one.
+    public func openBoundary(afterTrack k: Int) {
+        if openForRearm.insert(k).inserted { rearmed.remove(k) }
+    }
+
+    /// True when `rearm` would start a render for boundary `k`.
+    public func mayRearm(afterTrack k: Int) -> Bool {
+        guard openForRearm.contains(k), tasks[k] == nil, !rearmed.contains(k) else { return false }
+        switch results[k] {
+        case nil, .skipped(.timedOut)?: return true
+        default: return false
+        }
+    }
+
+    /// Test hook: boundaries with a render in flight.
+    var testInFlight: Set<Int> { Set(tasks.keys) }
+    /// Test hook: the recorded outcome for boundary `k`.
+    func testResult(afterTrack k: Int) -> DJBreakOutcome? { results[k] }
+    /// Test hook: records an outcome as if a render for `k` had finished with it.
+    func testRecord(_ outcome: DJBreakOutcome, afterTrack k: Int) {
+        tasks.removeValue(forKey: k)?.cancel()
+        results[k] = outcome
+    }
+
     /// Called at the boundary. Never waits: returns what is ready or an explicit skip.
     /// `natural` is false when the song was cut (skip, queue change); the break is then dropped.
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
-        defer { tasks[k] = nil; planned[k] = nil }
+        defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k) }
         guard natural else {
             tasks[k]?.cancel()
             let wasPlanned = tasks[k] != nil || results.removeValue(forKey: k) != nil
@@ -128,6 +185,8 @@ public actor DJBreakPreparer {
         tasks.removeAll()
         results.removeAll()
         planned.removeAll()
+        openForRearm.removeAll()
+        rearmed.removeAll()
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
@@ -155,12 +214,42 @@ public actor DJBreakPreparer {
 
     static func render(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
                        cap: Double) async -> DJBreakOutcome {
+        let first: (cues: [NarrationCue], clips: [RenderedClip])
+        switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID) {
+        case .success(let pass): first = pass
+        case .failure(let skip): return .skipped(skip.reason)
+        }
+        if measured(first.clips) <= cap { return ready(djBreak, first) }
+        // Build 20: each cue can fit its own cap in a slower Enhanced or Premium voice while the
+        // whole break runs past the cadence cap. Re-render the whole break once on the last route
+        // (the standard on-device voice, $0), so every cue is in one voice, before skipping it.
+        guard let fallback = renderer.lastRouteOnly, let last = fallback.routes.first,
+              !first.clips.allSatisfy({ $0.audio.providerID == last.providerID && $0.audio.voiceID == last.voice.id }) else {
+            return .skipped(.overBreakBudget)
+        }
+        switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID) {
+        case .success(let retry) where measured(retry.clips) <= cap: return ready(djBreak, retry)
+        case .success: return .skipped(.overBreakBudget)
+        case .failure(let skip): return .skipped(skip.reason)  // the retry's own reason (Fry, #158)
+        }
+    }
+
+    private struct Skip: Error { let reason: DJBreakSkipReason }
+
+    private static func measured(_ clips: [RenderedClip]) -> Double { clips.reduce(0) { $0 + $1.audio.seconds } }
+
+    private static func ready(_ djBreak: DJBreak, _ pass: (cues: [NarrationCue], clips: [RenderedClip])) -> DJBreakOutcome {
+        .ready(PreparedDJBreak(afterTrack: djBreak.afterTrack, cues: pass.cues, clips: pass.clips, attributions: djBreak.attributions))
+    }
+
+    private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String) async
+        -> Result<(cues: [NarrationCue], clips: [RenderedClip]), Skip> {
         var cues: [NarrationCue] = []
         var clips: [RenderedClip] = []
         for var cue in djBreak.cues {
             // The only cancellation whose result is kept is the preparation deadline: takeBreak,
             // cancelAll and purge record their own outcome first and ignore this one.
-            if Task.isCancelled { return .skipped(.timedOut) }
+            if Task.isCancelled { return .failure(Skip(reason: .timedOut)) }
             switch await renderer.render(cue, userID: userID, stationID: stationID) {
             case .success(let clip):
                 cue.renderedSeconds = clip.audio.seconds
@@ -172,12 +261,10 @@ public actor DJBreakPreparer {
             case .failure(let failure):
                 // A render cut short by the deadline is a timeout, whichever side of the race
                 // (worker or timer) reports first.
-                return .skipped(Task.isCancelled ? .timedOut : skipReason(failure))
+                return .failure(Skip(reason: Task.isCancelled ? .timedOut : skipReason(failure)))
             }
         }
-        let seconds = clips.reduce(0) { $0 + $1.audio.seconds }
-        return seconds > cap ? .skipped(.overBreakBudget) : .ready(PreparedDJBreak(afterTrack: djBreak.afterTrack, cues: cues, clips: clips,
-                                                                                       attributions: djBreak.attributions))
+        return .success((cues, clips))
     }
 
     static func skipReason(_ failure: VoiceRenderer.Failure) -> DJBreakSkipReason {

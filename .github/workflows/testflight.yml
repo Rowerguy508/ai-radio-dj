@@ -22,9 +22,16 @@ on:
         default: integration/device-duo
         type: string
       p0_diag:
-        # TEMPORARY P0 (remove with #121 / #133): compiles MusicKit Direct Mode in via
-        # AERODJ_P0_DIAG. Internal TestFlight only; never submit such a build to the App Store.
-        description: Internal P0 diagnostic build (AERODJ_P0_DIAG, Direct Mode). Not for App Store.
+        # TEMPORARY P0 (remove with #121 / #133): compiles the P0 event trace in via
+        # AERODJ_P0_DIAG. Launches the normal app with the DJ session (Direct Mode is removed).
+        # Internal TestFlight only; never submit such a build to the App Store.
+        description: Internal P0 diagnostic build (AERODJ_P0_DIAG, P0 trace, normal mode). Not for App Store.
+        required: false
+        default: false
+        type: boolean
+      owner_ab:
+        # Owner-only ElevenLabs voice picker (AERODJ_OWNER_AB). Internal TestFlight only.
+        description: Owner A/B build (AERODJ_OWNER_AB, ElevenLabs picker). Not for App Store.
         required: false
         default: false
         type: boolean
@@ -53,6 +60,8 @@ jobs:
       XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
       BUILD_NUMBER: ${{ github.run_number }}
       P0_DIAG: ${{ inputs.p0_diag && 'true' || 'false' }}
+      # Strict: only a workflow_dispatch run with owner_ab exactly true; anything else is 'false'.
+      OWNER_AB: ${{ (github.event_name == 'workflow_dispatch' && inputs.owner_ab == true) && 'true' || 'false' }}
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || 'S85APB73YV' }}
       BUNDLE_APP: com.aerodj.app
       BUNDLE_SHARE: com.aerodj.app.share
@@ -73,6 +82,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Keep the owner A/B flag scripts from the workflow ref
+        # `ref` may predate them; the archive step must still apply the strict owner_ab rule.
+        run: |
+          mkdir -p "$RUNNER_TEMP/owner-ab"
+          cp ios/scripts/testflight-swift-conditions.sh ios/scripts/check-owner-ab-build-settings.sh "$RUNNER_TEMP/owner-ab/"
 
       - name: Validate and resolve the requested ref
         env:
@@ -323,9 +338,15 @@ jobs:
           set -o pipefail
           EXTRA=()
           if [ "$P0_DIAG" = "true" ]; then
-            EXTRA+=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) AERODJ_P0_DIAG")
             echo "::warning::P0 diagnostic build (AERODJ_P0_DIAG). Internal TestFlight only, not for App Store."
           fi
+          # Strict owner_ab rule lives in the script (ios.yml runs the same one).
+          CONDS="$(EVENT_NAME="$GITHUB_EVENT_NAME" "$RUNNER_TEMP/owner-ab/testflight-swift-conditions.sh")"
+          EXPECT=absent
+          case " $CONDS " in *" AERODJ_OWNER_AB "*) EXPECT=present
+            echo "::warning::Owner A/B build (AERODJ_OWNER_AB). Internal TestFlight only, not for App Store." ;; esac
+          if [ -n "$CONDS" ]; then EXTRA+=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited)$CONDS"); fi
+          "$RUNNER_TEMP/owner-ab/check-owner-ab-build-settings.sh" "$EXPECT" "${EXTRA[@]}"
           xcodebuild archive \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJ \
@@ -335,6 +356,9 @@ jobs:
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             "${EXTRA[@]}" \
             2>&1 | tee "$LOG_DIR/archive.log"
+          if [ "$EXPECT" = absent ] && grep -q -- '-DAERODJ_OWNER_AB' "$LOG_DIR/archive.log"; then
+            echo "::error::AERODJ_OWNER_AB reached the archive's compile commands without owner_ab"; exit 1
+          fi
 
       - name: Export signed IPA (manual, local)
         run: |
@@ -354,7 +378,7 @@ jobs:
               "manageAppVersionAndBuildNumber": False,
               "provisioningProfiles": {app: app_uuid, share: share_uuid},
           }
-          if os.environ.get("P0_DIAG") == "true":
+          if os.environ.get("P0_DIAG") == "true" or os.environ.get("OWNER_AB") == "true":
               # App Store Connect then refuses this build for App Store review and for
               # external testers. TEMPORARY P0 (#121 / #133). -Atlas
               data["testFlightInternalTestingOnly"] = True

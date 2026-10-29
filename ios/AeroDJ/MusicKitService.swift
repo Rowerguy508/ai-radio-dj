@@ -63,6 +63,9 @@ final class MusicKitService: ObservableObject {
     }
     /// Called when a song really starts, with its catalog duration if MusicKit reports one.
     var onSongStarted: (@MainActor (Int, TimeInterval?) -> Void)?
+    /// Song scrubbing (-Atlas): a committed seek moved song `index` to a point with this many
+    /// seconds left. The composition root routes it to `DJBreakSession.songSeeked`.
+    var onSongSeeked: (@MainActor (Int, TimeInterval) -> Void)?
     /// Called once per boundary. For a natural end, the index is the song that just finished.
     /// The handler must resolve the transition: play a DJ line, or call `skipInterlude()`.
     var onBoundary: (@MainActor (PlaybackBoundary, Int) -> Void)?
@@ -89,11 +92,33 @@ final class MusicKitService: ObservableObject {
     var mayAutoResume: Bool { sessionPolicy.mayAutoResume }
     /// Route removal or a system interruption is holding playback. A user pause is not this flag.
     var pausedBySystem: Bool { sessionPolicy.pausedBySystem }
+    #if AERODJ_P0_DIAG
+    /// P0 trace only: the hold state at a start decision. -Fry
+    var p0Gates: P0EventTrace.Gates { P0EventTrace.Gates(mayAutoResume: sessionPolicy.mayAutoResume, pausedBySystem: sessionPolicy.pausedBySystem, userWantsPlayback: sessionPolicy.userWantsPlayback) }
+    #endif
 
     /// Read-only playhead for Nova's scrubber. Not published; the view polls.
     var playbackTime: TimeInterval { player.playbackTime }
     /// Catalog duration of the current track, if MusicKit reported one.
     var currentDuration: TimeInterval? { currentTrack?.duration }
+
+    /// Song scrubbing (-Atlas; flagged for Claude, this file's owner): one committed seek within
+    /// the current song, called once when the scrubber is released. Blocked (returns false, no
+    /// player change) unless `snapshot.canSeek`: never during a DJ break or a load. The target is
+    /// clamped to [0, duration - 1 s]. The boundary detector is re-baselined first, so the samples
+    /// around the seek cannot read as an end, then the playhead moves, then the DJ session gets
+    /// the new time left. Main actor: no poll can run between these steps. A `trackID` that is
+    /// no longer the current track makes it a no-op (stale scrub).
+    func seek(to seconds: TimeInterval, trackID: String? = nil) -> Bool {
+        let decision = SongSeekPolicy.decide(seconds: seconds, duration: currentDuration,
+                                             snapshot: snapshot, trackID: trackID)
+        logPlayback(PlaybackLog.songSeek(index: queueIndex, decision: decision))
+        guard case let .seek(target, remaining) = decision else { return false }
+        boundaries.userSeeked(to: target, uptime: ProcessInfo.processInfo.systemUptime)
+        player.playbackTime = target
+        onSongSeeked?(queueIndex, remaining)
+        return true
+    }
 
     /// Request MusicKit authorization. Explicit degraded state on denial.
     /// Call only after a tap that names Apple Music (Allow) or an explicit station open — never at launch.
@@ -375,9 +400,15 @@ final class MusicKitService: ObservableObject {
     func startTrack(at index: Int, autoplay: Bool, userInitiated: Bool = false,
                     attempt: PlaybackAttemptID) async throws {
         guard queue.indices.contains(index) else {
+            #if AERODJ_P0_DIAG
+            P0EventTraceHost.shared.startTrack(.notQueued, index: index, queueCount: queue.count, userInitiated: userInitiated, gates: p0Gates)
+            #endif
             return
         }
         guard let song = queue[index].song else {
+            #if AERODJ_P0_DIAG
+            P0EventTraceHost.shared.startTrack(.songUnavailable, index: index, queueCount: queue.count, userInitiated: userInitiated, gates: p0Gates)
+            #endif
             throw MusicKitError.playbackFailed(message: PlaybackFailureCopy.message(for: .songUnavailable))
         }
         queueIndex = index
@@ -391,6 +422,9 @@ final class MusicKitService: ObservableObject {
         guard autoplay else {
             isPlaying = false
             armDeferredStart(index)
+            #if AERODJ_P0_DIAG
+            P0EventTraceHost.shared.startTrack(.autoplayOff, index: index, queueCount: queue.count, userInitiated: userInitiated, gates: p0Gates)
+            #endif
             return
         }
         guard sessionPolicy.mayAutoResume else {
@@ -400,8 +434,14 @@ final class MusicKitService: ObservableObject {
             armDeferredStart(index)
             switch HeldStartPolicy.action(userInitiated: userInitiated) {
             case .deferSilently:
+                #if AERODJ_P0_DIAG
+                P0EventTraceHost.shared.startTrack(.deferredSilently, index: index, queueCount: queue.count, userInitiated: userInitiated, gates: p0Gates)
+                #endif
                 return
             case .deferAndReport:
+                #if AERODJ_P0_DIAG
+                P0EventTraceHost.shared.startTrack(.deferAndReport, index: index, queueCount: queue.count, userInitiated: userInitiated, gates: p0Gates)
+                #endif
                 throw MusicKitError.playbackFailed(message: PlaybackFailureCopy.message(for: .onHold))
             }
         }
@@ -410,6 +450,9 @@ final class MusicKitService: ObservableObject {
             guard attempts.isCurrent(attempt) else { throw MusicKitError.superseded }
             guard started else {
                 armDeferredStart(index)
+                #if AERODJ_P0_DIAG
+                P0EventTraceHost.shared.startTrack(.refused, index: index, queueCount: queue.count, userInitiated: userInitiated, gates: p0Gates)
+                #endif
                 // Honest UI: not playing. The queue does not advance.
                 applyStartFailure(.refused(pausedBySystem: sessionPolicy.pausedBySystem), attempt: attempt)
                 return
@@ -420,6 +463,9 @@ final class MusicKitService: ObservableObject {
             throw error
         }
         deferredStart.clear()
+        #if AERODJ_P0_DIAG
+        P0EventTraceHost.shared.startTrack(.started, index: index, queueCount: queue.count, userInitiated: userInitiated, gates: p0Gates)
+        #endif
         noteSongStarted(index: index, duration: song.duration)
     }
 
@@ -429,18 +475,33 @@ final class MusicKitService: ObservableObject {
     /// that await; a tap or skip since then makes it stale, and it loads nothing. Without this,
     /// a tap during the break (or during `naturalBoundary`) was replaced by song 2 of the new queue.
     func startNextTrack(after index: Int) async {
+        #if AERODJ_P0_DIAG
+        P0EventTraceHost.shared.startNextTrack(.called, after: index, queueCount: queue.count, gates: p0Gates)
+        #endif
         guard attempts.takeNext(after: index) else {
+            #if AERODJ_P0_DIAG
+            P0EventTraceHost.shared.startNextTrack(.takeNext(false), after: index, queueCount: queue.count, gates: p0Gates)
+            #endif
             return
         }
         releaseSongEndHoldIfAllowed(finished: index)
         let next = index + 1
+        #if AERODJ_P0_DIAG
+        P0EventTraceHost.shared.startNextTrack(.indexOK(queue.indices.contains(next)), after: index, queueCount: queue.count, gates: p0Gates)
+        #endif
         guard queue.indices.contains(next) else { return }
         let attempt = beginAttempt(userChangedQueue: false)
         do {
             try await startTrack(at: next, autoplay: true, attempt: attempt)
         } catch MusicKitError.superseded {
+            #if AERODJ_P0_DIAG
+            P0EventTraceHost.shared.startTrack(.superseded, index: next, queueCount: queue.count, userInitiated: false, gates: p0Gates)
+            #endif
             return
         } catch {
+            #if AERODJ_P0_DIAG
+            P0EventTraceHost.shared.startTrack(.error(PlaybackErrorCode(error)), index: next, queueCount: queue.count, userInitiated: false, gates: p0Gates)
+            #endif
             guard let banner = NextSongStartFailure.banner(code: PlaybackErrorCode(error), attempt: attempt.number,
                                                            attemptIsCurrent: attempts.isCurrent(attempt)) else { return }
             reportError(banner)
@@ -529,6 +590,9 @@ final class MusicKitService: ObservableObject {
             duration: currentDuration,
             uptime: ProcessInfo.processInfo.systemUptime
         )
+        #if AERODJ_P0_DIAG
+        P0EventTraceHost.shared.beginPoll(observation, before: P0DetectorState(boundaries), queueIndex: queueIndex, queueCount: queue.count)
+        #endif
         if observation.isPlaying {
             // Lock-screen / Control Center can start ApplicationMusicPlayer without our
             // playIfStillAllowed gate (build 8 bypass). Re-apply the same hold rule.
@@ -536,6 +600,9 @@ final class MusicKitService: ObservableObject {
                 mayAutoResume: sessionPolicy.mayAutoResume,
                 userWantsPlayback: sessionPolicy.userWantsPlayback)
             if remote == .pauseBecauseHeld {
+                #if AERODJ_P0_DIAG
+                P0EventTraceHost.shared.remoteGatePause(queueIndex: queueIndex, queueCount: queue.count, gates: p0Gates)
+                #endif
                 player.pause()
                 isPlaying = false
                 if snapshot.transport == .preparing {
@@ -549,7 +616,11 @@ final class MusicKitService: ObservableObject {
                 confirmStart(attempt)
             }
         }
-        guard let step = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count) else {
+        let interpreted = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count)
+        #if AERODJ_P0_DIAG
+        P0EventTraceHost.shared.endPoll(interpreted, after: P0DetectorState(boundaries))
+        #endif
+        guard let step = interpreted else {
             isPlaying = observation.isPlaying
             if boundaries.takeNoProgressEnd() {
                 surfaceNoProgressEnd(stillPlaying: observation.isPlaying)
@@ -645,6 +716,9 @@ final class MusicKitService: ObservableObject {
         let gate = selfStartGate.decide(notice, at: ProcessInfo.processInfo.systemUptime,
                                         current: attempts.current, callActive: callActive,
                                         breakActive: breakActive)
+        #if AERODJ_P0_DIAG
+        P0EventTraceHost.shared.sessionNotice(notice, gate: gate)
+        #endif
         switch gate {
         case .deferSelfStart:
             return
@@ -893,7 +967,8 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Route lock-screen / Control Center play through `resume()` (userPlay + playIfStillAllowed)
-    /// and pause through `pause()`, so remote commands cannot bypass the hold gate.
+    /// and pause through `pause()`, so remote commands cannot bypass the hold gate. Scrubbing
+    /// goes through `seek(to:trackID:)` for the same reason.
     private func installRemoteCommands() {
         guard !remoteCommandsInstalled else { return }
         remoteCommandsInstalled = true
@@ -927,6 +1002,26 @@ final class MusicKitService: ObservableObject {
                 }
             }
             return .success
+        }
+        // Seek follow-up (-Atlas; flagged for Claude): a lock-screen / Control Center scrub goes
+        // through the in-app `seek(to:trackID:)`, so it has the same gates (blocked during a DJ
+        // break or a load, clamped, detector re-baselined, DJ session told). On the main thread
+        // the track is pinned when the command arrives, and a blocked seek reports failure.
+        center.changePlaybackPositionCommand.isEnabled = true
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self, let event = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            let position = event.positionTime
+            guard Thread.isMainThread else {
+                // Off-main delivery (not expected): the track cannot be read here, so this
+                // seek is untargeted. Every other gate still applies after the hop.
+                Task { @MainActor in _ = self.seek(to: position) }
+                return .success
+            }
+            return MainActor.assumeIsolated {
+                self.seek(to: position, trackID: self.snapshot.nowPlaying?.id) ? .success : .commandFailed
+            }
         }
     }
 
@@ -1001,6 +1096,9 @@ final class MusicKitService: ObservableObject {
 
     private func noteSongStarted(index: Int, duration: TimeInterval?) {
         log.notice("song started index=\(index, privacy: .public) durationSeconds=\(duration ?? -1, privacy: .public)")
+        // Song scrubbing: the song is on air as music. A catalog song in a one-song
+        // ApplicationMusicPlayer queue is seekable; MusicKit has no per-item flag to read.
+        send(.songStarted(duration: duration, seekable: true))
         onSongStarted?(index, duration)
     }
 }

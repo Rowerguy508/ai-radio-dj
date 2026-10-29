@@ -39,6 +39,8 @@ jobs:
         working-directory: ios/AeroDJCore
       - name: Release build excludes the debug test station
         run: ios/scripts/check-release-excludes-test-station.sh
+      - name: Release build cannot enable paid voices
+        run: ios/scripts/check-release-disables-paid-voice.sh
 
   # Linux SwiftPM discovery. swift test here is the official Swift 6.2 image.
   # It does not replace the macOS AeroDJCore job or the iOS simulator gates.
@@ -94,6 +96,22 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" \
             | grep -qx 'com.apple.share-services'
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" | grep -qx 'com.aerodj.app.share'
+      - name: Verify single-window scene manifest
+        # app-resizability: the app declares UIApplicationSceneManifest, and one window only
+        # (one app-scoped DJ session). No UIRequiresFullScreen opt-out.
+        run: |
+          PLIST="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes' "$PLIST" \
+            | grep -qx 'false' || { echo "UIApplicationSupportsMultipleScenes is not false"; exit 1; }
+          if /usr/libexec/PlistBuddy -c 'Print :UIRequiresFullScreen' "$PLIST" 2>/dev/null; then
+            echo "UIRequiresFullScreen must not be set"; exit 1
+          fi
+          # INFOPLIST_FILE merge must keep the generated keys.
+          /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$PLIST" \
+            | grep -qw 'audio' || { echo "UIBackgroundModes lost audio"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :NSCalendarsFullAccessUsageDescription' "$PLIST" \
+            | grep -q '.' || { echo "NSCalendarsFullAccessUsageDescription missing"; exit 1; }
       - name: Pick an available iPhone simulator
         run: |
           UDID=$(xcrun simctl list devices available -j \
@@ -144,16 +162,16 @@ jobs:
               -derivedDataPath "$DERIVED_DATA" \
               CODE_SIGNING_ALLOWED=NO
           done
-      - name: P0 Direct Mode is absent from Release and present only with AERODJ_P0_DIAG
+      - name: P0 diagnostics are absent from Release and present only with AERODJ_P0_DIAG
         # TEMPORARY with #121 / #133. Proves the diag build compiles, and that a plain Release
-        # (what App Store builds use) carries no Direct Mode code. -Atlas
+        # (what App Store builds use) carries no P0 diagnostics code. Experiment A (Direct Mode)
+        # is removed; diag builds launch the normal app with the DJ session. -Atlas
         run: |
-          MARKER=AERODJ_P0_DIAG_DIRECT_MODE_BUILD
           RELEASE_BIN="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
           test -f "$RELEASE_BIN"
-          for NEEDLE in "$MARKER" DirectModeController DirectModeView DirectModeLaunch DirectModeMachine DirectModeEntrySighting CompositionRootProbe; do
+          for NEEDLE in P0EventTrace P0TraceRow P0PollSampler P0DetectorState P0TraceView P0ScenePhaseTrace p0trace p0_diag; do
             if LC_ALL=C grep -a -q "$NEEDLE" "$RELEASE_BIN"; then
-              echo "::error::Direct Mode code ($NEEDLE) found in a Release build without AERODJ_P0_DIAG"
+              echo "::error::P0 diagnostics code ($NEEDLE) found in a Release build without AERODJ_P0_DIAG"
               exit 1
             fi
           done
@@ -169,11 +187,25 @@ jobs:
             SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) AERODJ_P0_DIAG'
           # Positive control: the same checks do find it when the flag is set.
           DIAG_BIN="$DIAG_DD/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
-          LC_ALL=C grep -a -q "$MARKER" "$DIAG_BIN"
-          # DirectModeMachine lives in the AeroDJCore package, so finding it proves the
-          # flag reaches the package too.
-          for NEEDLE in DirectModeController DirectModeMachine CompositionRootProbe; do
+          # P0EventTrace / P0PollSampler live in the AeroDJCore package, so finding them proves
+          # the flag reaches the package too. P0EventTraceHost and P0EventTracePanel are the
+          # app's on-screen trace (TEMPORARY with #121 / #133, -Fry).
+          for NEEDLE in P0EventTraceHost P0EventTrace P0PollSampler P0TraceView P0EventTracePanel; do
             LC_ALL=C grep -a -q "$NEEDLE" "$DIAG_BIN" || { echo "::error::$NEEDLE missing from the AERODJ_P0_DIAG build"; exit 1; }
+          done
+      - name: Owner A/B (AERODJ_OWNER_AB) is absent from Release build settings unless dispatched with owner_ab
+        # Runs testflight.yml's own composition script, then reads the real Release settings
+        # (xcodebuild -showBuildSettings). Push/other events and empty/missing/false inputs
+        # must not pass the flag; a dispatch with owner_ab=true must (positive control). -Echo
+        run: |
+          for CASE in "push true" "pull_request true" "schedule true" "workflow_dispatch " \
+                      "workflow_dispatch false" "workflow_dispatch TRUE" "workflow_dispatch true"; do
+            read -r EV AB <<< "$CASE" || true
+            CONDS="$(EVENT_NAME="$EV" OWNER_AB="${AB:-}" P0_DIAG=false ios/scripts/testflight-swift-conditions.sh)"
+            EXTRA=(); [ -z "$CONDS" ] || EXTRA+=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited)$CONDS")
+            EXPECT=absent; [ "$CASE" != "workflow_dispatch true" ] || EXPECT=present
+            echo "== event=$EV owner_ab='${AB:-}' expect=$EXPECT"
+            ios/scripts/check-owner-ab-build-settings.sh "$EXPECT" "${EXTRA[@]}"
           done
       - name: Device app embeds no AeroDJPhonon and has no private AMX instructions (ITMS-90755)
         run: |

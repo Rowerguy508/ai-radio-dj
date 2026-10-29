@@ -211,6 +211,9 @@ public final class StationConfigurationModel {
     public func setMoods(_ moods: [String]) async { await draftTune { $0.moods = moods } }
     public func setEnergy(_ energy: Double) async { await draftTune { $0.energy = energy } }
     public func setDiscovery(_ discovery: Double) async { await draftTune { $0.discovery = discovery } }
+    /// Drafts the station's seeds (validated on Save: at most 8, unique, names capped).
+    public func setSeeds(_ seeds: [StationSeed]) async { await draftTune { $0.seeds = seeds } }
+    public func setReach(_ reach: StationReach) async { await draftTune { $0.reach = reach } }
     public func setPersonality(_ p: DJPersonality) async { await draftTune { $0.personality = p } }
     public func setCommentary(_ c: CommentaryFrequency) async { await draftTune { $0.commentary = c } }
     public func setBriefing(_ transform: @escaping (inout BriefingPreferences) -> Void) async {

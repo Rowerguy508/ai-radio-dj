@@ -28,6 +28,9 @@ public final class DJBreakSession {
     private var briefing: NarrationHandoff?
     private var breaks: [Int: DJBreak] = [:]
     private var plannedWith: DJCadence?
+    /// Why the last `naturalBoundary` handed out no break, and whether the cadence had planned
+    /// one there. Read-only; nothing decides on it (the P0 trace's boundary row reads it).
+    public private(set) var lastNoBreak: (reason: DJBreakSkipReason, cadencePlanned: Bool)?
     /// Briefing cues already handed to the player: never planned again.
     private var deliveredBriefing: Set<UUID> = []
     /// Index of the song playing now; breaks after it may be replanned, its own may not.
@@ -236,6 +239,11 @@ public final class DJBreakSession {
         replan(from: 0, keepingThrough: -1)
     }
 
+    /// True when any seed of the station is from the listener's library.
+    nonisolated static func speaksOnDeviceOnly(_ configuration: StationConfiguration) -> Bool {
+        configuration.seeds.contains { $0.source == .library }
+    }
+
     /// Song `index` started with `remaining` time left. Starts rendering its break, if one is
     /// planned and there is time to render before the boundary.
     /// When background queue setup has not finished planning yet, the start is held and
@@ -247,12 +255,43 @@ public final class DJBreakSession {
             pendingSongStart = (index, remaining)
             return
         }
+        await preparer.openBoundary(afterTrack: index)   // seeks may re-arm this boundary once (-Atlas)
         guard breaks[index] != nil, let deadline = DJBreakPreparer.deadline(remainingInSong: remaining) else { return }
         // Personality edits apply when a break starts preparing; re-plan this break if they did.
         await station.handle(.djBreakWillPrepare(afterTrack: index))
         replanIfCadenceChanged(after: index - 1)
         guard let djBreak = breaks[index] else { return }
-        await preparer.prepare(djBreak, deadline: deadline)
+        // Library-seed gate (#154): a station built from the listener's own library is spoken
+        // on-device only, so no seed, song or artist from it reaches a cloud or paid voice.
+        await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))
+    }
+
+    /// Song scrubbing (-Atlas): the user seeked within song `index`, which now has `remaining`
+    /// left. The boundary itself is never moved here: it still comes only from the player's
+    /// natural end, so a seek back never fires the break early and never drops it.
+    /// - Seek back: a ready or rendering break is kept. One whose render timed out is re-armed
+    ///   with the new deadline, at most once per boundary (see `DJBreakPreparer.rearm`).
+    /// - Seek forward: a ready break is kept; a render in flight is kept and, if it cannot
+    ///   finish, is skipped at the boundary. A planned break that never started rendering
+    ///   starts now if `remaining` is still outside the render margin.
+    /// While background queue setup is pending, the held song start takes the new `remaining`.
+    public func songSeeked(index: Int, remaining: Duration) async {
+        if queueSetupPending {
+            if pendingSongStart?.index == index { pendingSongStart = (index, remaining) }
+            return
+        }
+        guard playing == index, breaks[index] != nil,
+              let deadline = DJBreakPreparer.deadline(remainingInSong: remaining),
+              await preparer.mayRearm(afterTrack: index) else { return }
+        // Same order as `songStarted`: personality edits apply when a break starts preparing.
+        await station.handle(.djBreakWillPrepare(afterTrack: index))
+        await testSeekResumed?()
+        replanIfCadenceChanged(after: index - 1)
+        // `playing` still reads `index` until the next song starts, so it cannot tell whether
+        // the boundary went by while this seek was suspended. `rearm` re-checks inside the
+        // preparer: a boundary that `takeBreak` or `cancelAll` closed is never re-armed.
+        guard playing == index, let djBreak = breaks[index] else { return }
+        await preparer.rearm(djBreak, deadline: deadline)
     }
 
     /// Song `k` ended on its own. Applies pending station edits at this safe boundary, then
@@ -262,7 +301,11 @@ public final class DJBreakSession {
         // The change stream is async; apply a cadence change here so the next song's break
         // is planned with it before `songStarted(index: k + 1)` arrives.
         replanIfCadenceChanged(after: k)
-        guard case .ready(let ready) = await preparer.takeBreak(afterTrack: k) else { return nil }
+        let cadencePlanned = breaks[k] != nil
+        lastNoBreak = nil
+        let taken = await preparer.takeBreak(afterTrack: k)
+        if case .skipped(let reason) = taken { lastNoBreak = (reason, cadencePlanned) }
+        guard case .ready(let ready) = taken else { return nil }
         // Consent or expiry may have changed since the break was rendered, with no refresh():
         // re-check every source at `now`, purge what may no longer be narrated, drop its cues.
         let at = now()
@@ -285,11 +328,13 @@ public final class DJBreakSession {
         if station.active.commentary == .off
             || (ready.includesBriefing && !station.active.briefing.enabled) {
             dj.send(.breakSkipped(afterTrack: k, .cancelled))
+            lastNoBreak = (.cancelled, cadencePlanned)
             return nil
         }
         if ready.includesBriefing, !cues.contains(where: \.isContent) {
             // Nothing personal left to say: music plays at once.
             dj.send(.breakSkipped(afterTrack: k, .sourceRevoked))
+            lastNoBreak = (.sourceRevoked, cadencePlanned)
             return nil
         }
         let kept = Set(cues.map(\.id))
@@ -475,6 +520,10 @@ public final class DJBreakSession {
     /// Test hook: briefing is absent after withdrawal / briefing-off.
     var testBriefingIsNil: Bool { briefing == nil }
     /// Test hook: personal source item ids still present in the briefing or planned breaks.
+    /// Test hook (-Atlas): runs where `songSeeked` resumes after its suspension on the station,
+    /// so a test can end the song or drop the queue at exactly that point.
+    var testSeekResumed: (@MainActor () async -> Void)?
+
     var testPlannedSourceItemIDs: Set<UUID> {
         var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
         for b in breaks.values { ids.formUnion(b.cues.compactMap(\.sourceItemID)) }

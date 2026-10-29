@@ -24,8 +24,9 @@ public struct PlaybackObservation: Equatable, Sendable {
         self.uptime = uptime
     }
 
-    /// Playback is within `tolerance` seconds of the entry's end.
-    public func isNearEnd(tolerance: TimeInterval = 1.5) -> Bool {
+    /// Playback is within `tolerance` seconds of the entry's end. The default is the detector's
+    /// end window, so the two cannot drift apart (Fry, #159 review).
+    public func isNearEnd(tolerance: TimeInterval = PlaybackBoundaryDetector.endWindowSeconds) -> Bool {
         guard let position, let duration, duration > 0 else { return false }
         return position >= duration - tolerance
     }
@@ -75,6 +76,11 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// Accumulated play time of this entry, from sample uptimes (covers slow or late polls).
     private var elapsedPlay: TimeInterval = 0
     private var lastSampleUptime: TimeInterval?
+    /// Seek follow-up (-Atlas): play time stopped accruing at a stop or pause inside a seek's
+    /// settle window. `lastSampleWasPlaying` is kept there (so the next stop after the window is
+    /// still judged as the first stop after playing), but the stopped time is not play time.
+    /// Cleared by the next sample that is judged normally.
+    private var playClockStopped = false
     private var lastSamplePosition: TimeInterval?
     /// Last known catalog duration of this entry.
     private var lastDuration: TimeInterval?
@@ -90,7 +96,55 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// the end, the interruption began inside the end window (between that sample and the end).
     private var interruptionSinceLastPlayingSample = false
 
+    // Song scrubbing (-Atlas): a user seek is an explicit event, so only `userSeeked` resets
+    // per-entry facts. No sample-shape heuristic does (build 18 regressed on one).
+    /// Seconds after a seek during which stopped samples, and every reported position, are
+    /// ignored: MusicKit can report the pre-seek position or a transient stop while it seeks.
+    public static let seekSettleSeconds: TimeInterval = 1.5
+    /// The last committed user seek on this entry. Cleared by a new entry or an empty queue.
+    private var seekBaseline: SeekBaseline?
+
+    private struct SeekBaseline: Sendable {
+        let target: TimeInterval
+        /// Uptime when settling ends. Nil when the seek had no uptime: settling then ends at
+        /// the first playing sample after the seek.
+        let settleUntil: TimeInterval?
+        var settled = false
+        /// Real play time accumulated since the seek (sample uptimes, same as `elapsedPlay`).
+        var playSinceSeek: TimeInterval = 0
+
+        func isSettling(at uptime: TimeInterval?) -> Bool {
+            guard !settled else { return false }
+            guard let settleUntil, let uptime else { return true }
+            return uptime < settleUntil
+        }
+    }
+
     public init() {}
+
+    /// The user committed a seek within the current entry to `target` seconds, at monotonic
+    /// `uptime`. Call it right before the player's playhead is set.
+    ///
+    /// Rules (Orion/Nova API, owner ask "We also need scrubbing for songs"):
+    /// - A seek target never counts as played through by itself. From here, `playedThrough`
+    ///   comes only from real play: accumulated play time past 90%, or real play since the seek
+    ///   that carried the playhead into the end window. A forward seek past 90% sets nothing.
+    /// - A seek back is a replay: accumulated play time and the furthest position restart from
+    ///   the target, so a pause after it can never read as the rewound end shape.
+    /// - For `seekSettleSeconds`, stopped samples and positions are ignored (stale or transient).
+    /// - The stopped-at-end shape is untouched, so a song seeked near its end still ends once.
+    public mutating func userSeeked(to target: TimeInterval, uptime: TimeInterval?) {
+        guard entryID != nil else { return }
+        let playhead = lastSamplePosition ?? lastPosition ?? 0
+        if target < playhead {
+            elapsedPlay = 0
+        }
+        lastPosition = target
+        lastSamplePosition = target
+        if let uptime { lastSampleUptime = uptime }
+        interruptionBeganNearEnd = false
+        seekBaseline = SeekBaseline(target: target, settleUntil: uptime.map { $0 + Self.seekSettleSeconds })
+    }
 
     /// Call before the app itself changes what plays (skip, new queue).
     public mutating func userRequestedChange() {
@@ -122,6 +176,10 @@ public struct PlaybackBoundaryDetector: Sendable {
         switch cause {
         case .userPause, .routeLoss:
             heldByUserOrRoute = true
+            // Seek follow-up (-Atlas): a pause inside a seek's settle window stops play time
+            // there. The stopped samples after it are ignored until the window ends, so without
+            // this the first one after the window would count the whole pause as play.
+            if let seek = seekBaseline, !seek.settled { playClockStopped = true }
         case .systemInterruption:
             interruptionSinceLastPlayingSample = true
             if endReportedSinceLoad || playedThrough || furthestIsNearEnd {
@@ -139,7 +197,8 @@ public struct PlaybackBoundaryDetector: Sendable {
 
     /// The entry that is going away played less than the minimum, by a reported position.
     private var finishingEntryNeverProgressed: Bool {
-        guard let furthest = lastPosition else { return false }
+        // A seek is only offered for a song that started and was confirmed playing.
+        guard seekBaseline == nil, let furthest = lastPosition else { return false }
         return furthest < Self.minimumProgressForNaturalEnd
     }
 
@@ -148,8 +207,21 @@ public struct PlaybackBoundaryDetector: Sendable {
     var playedThrough: Bool {
         guard observedPlaying, let duration = lastDuration, duration > 0 else { return false }
         let threshold = duration * Self.playedThroughFraction
+        if let seek = seekBaseline {
+            // After a seek: real play only. Never the seek target or the furthest position.
+            if elapsedPlay >= threshold { return true }
+            return seek.playSinceSeek > 0
+                && seek.target + seek.playSinceSeek >= duration - Self.endWindowSeconds
+        }
         return (lastPosition ?? 0) >= threshold || elapsedPlay >= threshold
     }
+
+    /// Test hook (seek follow-up): accumulated play time of the current entry.
+    var testElapsedPlay: TimeInterval { elapsedPlay }
+
+    /// The end window: a stop this close to the end is at the end. `PlaybackObservation.isNearEnd()`
+    /// defaults to it.
+    public static let endWindowSeconds: TimeInterval = 1.5
 
     private var furthestIsNearEnd: Bool {
         PlaybackObservation(entryID: entryID, isPlaying: false, position: lastPosition,
@@ -172,6 +244,8 @@ public struct PlaybackBoundaryDetector: Sendable {
         heldByUserOrRoute = false
         interruptionBeganNearEnd = false
         interruptionSinceLastPlayingSample = false
+        seekBaseline = nil
+        playClockStopped = false
     }
 
     /// An end is being reported. An interruption since the last playing sample began at the end.
@@ -182,23 +256,26 @@ public struct PlaybackBoundaryDetector: Sendable {
 
     /// Adds the play time between the previous sample and this one, when the previous sample
     /// was playing. Capped by what was left of the song, so a long gap (suspension) cannot
-    /// count more than the song could have played.
-    private mutating func accumulate(_ observation: PlaybackObservation) {
+    /// count more than the song could have played. Nothing while `playClockStopped`.
+    /// `takePosition` false keeps the last sample position (a settle-window stop's is untrusted).
+    private mutating func accumulate(_ observation: PlaybackObservation, takePosition: Bool = true) {
         defer {
             lastSampleUptime = observation.uptime ?? lastSampleUptime
-            lastSamplePosition = observation.position ?? lastSamplePosition
+            if takePosition { lastSamplePosition = observation.position ?? lastSamplePosition }
         }
-        guard lastSampleWasPlaying, let now = observation.uptime, let then = lastSampleUptime,
-              now > then else { return }
+        guard lastSampleWasPlaying, !playClockStopped, let now = observation.uptime,
+              let then = lastSampleUptime, now > then else { return }
         var gap = now - then
         if let duration = lastDuration, let from = lastSamplePosition {
             gap = min(gap, max(0, duration - from))
         }
         elapsedPlay += gap
+        seekBaseline?.playSinceSeek += gap
     }
 
     public mutating func consume(_ observation: PlaybackObservation) -> PlaybackBoundary? {
-        defer { wasPlaying = observation.isPlaying }
+        var settlingStop = false
+        defer { if !settlingStop { wasPlaying = observation.isPlaying } }
         guard let current = observation.entryID else {
             // Queue emptied. A natural finish of the last item is a boundary.
             let finished = entryID
@@ -208,6 +285,7 @@ public struct PlaybackBoundaryDetector: Sendable {
             lastPosition = nil
             lastSampleWasPlaying = false
             observedPlaying = false
+            seekBaseline = nil
             defer { userChangePending = false }
             if let finished, mayHaveEnded, !userChangePending {
                 guard !neverProgressed else {
@@ -247,15 +325,31 @@ public struct PlaybackBoundaryDetector: Sendable {
             return .naturalEnd(finishedEntryID: previous)
         }
         if let duration = observation.duration { lastDuration = duration }
+        // Inside a seek's settle window: a stopped sample is transient and changes nothing (the
+        // next stop after the window is still judged as the first stop after playing), and no
+        // reported position is trusted. A playing sample there still counts as play time.
+        let settling = seekBaseline?.isSettling(at: observation.uptime) ?? false
+        if settling, !observation.isPlaying {
+            settlingStop = true
+            // Seek follow-up (-Atlas): play up to this stop counts, the stopped time after it
+            // does not, even though the stop itself is ignored.
+            accumulate(observation, takePosition: false)
+            playClockStopped = true
+            return nil
+        }
+        if seekBaseline != nil, !settling { seekBaseline?.settled = true }
         accumulate(observation)
+        if settling, seekBaseline?.settleUntil == nil { seekBaseline?.settled = true }
         let firstStopAfterPlaying = lastSampleWasPlaying && !observation.isPlaying
         lastSampleWasPlaying = observation.isPlaying
+        playClockStopped = false
         if observation.isPlaying {
             observedPlaying = true
-            heldByUserOrRoute = false
+            // A playing sample while settling may be stale: it cannot release a user hold.
+            if !settling { heldByUserOrRoute = false }
             interruptionSinceLastPlayingSample = false
         }
-        if let position = observation.position {
+        if !settling, let position = observation.position {
             if observation.isPlaying, let furthest = lastPosition, position < furthest,
                position >= Self.minimumProgressForNaturalEnd {
                 // Still playing well past a rewind: a real restart, so the old furthest is gone.

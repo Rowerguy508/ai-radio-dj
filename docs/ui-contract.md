@@ -196,6 +196,12 @@ All numbers are **points of the container**, not the device. They are constants 
 | `gutter` | 24 | between zones |
 | `edgeInset` | 16 | from the container edge; 16 pt side gutter on phone |
 | `touchTargetMin` | 44 | every interactive element |
+| `paneEdgeInset` | 8 | visual only: the outer margin the unfolded Studio draws (the switch still uses `edgeInset`) |
+| `paneGutter` | 12 | visual only: the space drawn between the unfolded panes, centred on the hinge |
+
+Unfolded Studio corners (`StudioCornerRadius`, continuous): panes 30, workspace cards 22,
+fields 14, segmented control capsule. Only Zone B's workspace reads them (`\.studioPanes`),
+so the compact layout and its sheet keep their radii.
 
 - **Switch rule:** `GeometryReader` on the root of the playing screen. If
   `width >= studioMinWidth` → Studio; else → compact. The switch is the only

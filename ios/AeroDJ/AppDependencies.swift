@@ -36,9 +36,6 @@ struct AppDependencies {
     }
 
     static func make(defaults: UserDefaults = .standard) -> AppDependencies {
-        #if AERODJ_P0_DIAG
-        CompositionRootProbe.markDependenciesBuilt()
-        #endif
         #if DEBUG
         // Release builds do not compile this branch, so the flag is never read there.
         if AppRuntimeMode.resolve(testStationFlag: TestStation.isEnabled(defaults: defaults),
@@ -62,7 +59,7 @@ struct AppDependencies {
         )
         let station = StationConfigurationModel(store: FileStationConfigurationStore(fileURL: stationFileURL()),
                                                 consent: composition.consent)
-        let voice = VoiceRenderer.onDeviceDefault()
+        let voice = VoiceRenderer.liveDefault()
         if voice.routes.contains(where: { $0.providerID == PhononModelPin.providerID }) {
             Task { await PhononModelCoordinator.shared.start() }
         }
@@ -71,6 +68,7 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence())
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared)
+        wireSongSeek(session: djSession, playback: MusicKitService.shared)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
         djSession.purger = purger
@@ -107,13 +105,14 @@ struct AppDependencies {
             store: InMemoryStationConfigurationStore(
                 snapshot: StationConfigurationSnapshot(state: StationConfigurationState(active: TestStation.configuration))),
             consent: composition.consent)
-        let voice = TestStation.makeRenderer(routes: [VoiceRoute.onDevice()],
+        let voice = TestStation.makeRenderer(routes: VoiceRoute.onDeviceRoutes(),
                                              cache: InMemoryAudioCache(maxAge: TestStation.cacheRetention))
         let dj = DJPresentationStore()
         let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,
                                        cadence: TestStation.cadence)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared)
+        wireSongSeek(session: djSession, playback: MusicKitService.shared)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
         djSession.purger = purger
@@ -157,6 +156,16 @@ struct AppDependencies {
         return interlude
     }
 
+    /// Song scrubbing (-Atlas): the one production assignment of `onSongSeeked`. A committed
+    /// seek tells the DJ session the playing song's new time left, so its break is kept,
+    /// re-armed or started (`DJBreakSession.songSeeked`). The boundary still comes only from
+    /// the player.
+    private static func wireSongSeek(session: DJBreakSession, playback: MusicKitService) {
+        playback.onSongSeeked = { [session] index, remaining in
+            Task { await session.songSeeked(index: index, remaining: .seconds(remaining)) }
+        }
+    }
+
     private static func supportURL(_ path: String) -> URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return support.appendingPathComponent(path)
@@ -166,16 +175,3 @@ struct AppDependencies {
         supportURL("StationConfiguration/station.json")
     }
 }
-
-#if AERODJ_P0_DIAG
-/// Records whether the normal app's dependency graph (and so `MusicKitService.shared`, which
-/// only `AppDependencies` and the normal app's views reach) was built this launch. The P0
-/// Direct Mode screen shows it to prove the old service never started. TEMPORARY with
-/// #121 / #133. -Atlas
-enum CompositionRootProbe {
-    /// Written once, on the main thread, from `AppDependencies.make()` during `App.init`.
-    nonisolated(unsafe) private(set) static var dependenciesBuilt = false
-
-    static func markDependenciesBuilt() { dependenciesBuilt = true }
-}
-#endif
