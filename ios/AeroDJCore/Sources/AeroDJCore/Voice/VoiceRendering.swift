@@ -36,10 +36,18 @@ public struct VoiceRoute: Sendable {
     /// Send SSML (`<speak>…`) instead of plain text.
     public let acceptsSSML: Bool
 
+    /// True for any route that sends text off the device (a cloud or proxy voice), even one
+    /// priced at 0 like the owner A/B ElevenLabs route. Such a route never speaks private text.
+    public let leavesDevice: Bool
+
     public var isPaid: Bool { microdollarsPerThousandCharacters > 0 }
+    /// On-device and free: safe for private text and for the over-cap fallback.
+    public var isLocalAndFree: Bool { !leavesDevice && !isPaid }
 
     public init(providerID: String, provider: any VoiceProvider, voice: VoiceProfile,
-                microdollarsPerThousandCharacters: Int = 0, timeout: Duration = .seconds(8), acceptsSSML: Bool = false) {
+                microdollarsPerThousandCharacters: Int = 0, timeout: Duration = .seconds(8), acceptsSSML: Bool = false,
+                leavesDevice: Bool = false) {
+        self.leavesDevice = leavesDevice
         self.providerID = providerID
         self.provider = provider
         self.voice = voice
@@ -534,11 +542,22 @@ public struct VoiceRenderer: Sendable {
     }
 
     /// The last route alone (the on-device standard voice), sharing this renderer's budget,
-    /// cache and revocations. Nil when there is only one route. `DJBreakPreparer` uses it to
-    /// re-render a break that ran over its cap; it is a narrowed view, not a second renderer.
+    /// cache and revocations. Nil when there is only one route, or when the last route is paid
+    /// or leaves the device (Sentinel, #154). `DJBreakPreparer` uses it to re-render a break
+    /// that ran over its cap; it is a narrowed view, not a second renderer.
     public var lastRouteOnly: VoiceRenderer? {
-        guard routes.count > 1, let last = routes.last else { return nil }
+        guard routes.count > 1, let last = routes.last, last.isLocalAndFree else { return nil }
         return VoiceRenderer(routes: [last], budget: budget, cache: cache, revocations: revocations)
+    }
+
+    /// Only the on-device, free routes, in order, sharing this renderer's budget, cache and
+    /// revocations. Nil when there are none. Used for breaks on a station with a library seed:
+    /// the listener's own library never goes to a cloud or paid voice. A narrowed view, not a
+    /// second renderer.
+    public var onDeviceOnly: VoiceRenderer? {
+        let local = routes.filter(\.isLocalAndFree)
+        guard !local.isEmpty else { return nil }
+        return VoiceRenderer(routes: local, budget: budget, cache: cache, revocations: revocations)
     }
 
     public static func cacheKey(text: String, route: VoiceRoute) -> String {

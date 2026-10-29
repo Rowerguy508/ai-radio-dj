@@ -674,3 +674,52 @@ final class StationConfigurationModelTests: XCTestCase {
         XCTAssertEqual(model.plannableBriefingSections, [.calendar])
     }
 }
+
+final class ChattyCommentaryTests: XCTestCase {
+    func testChattyAsksForEveryBoundaryWithinTheBound() {
+        XCTAssertEqual(CommentaryFrequency.chatty.talkFraction, 1.0)
+        XCTAssertLessThanOrEqual(CommentaryFrequency.chatty.talkFraction, CommentaryFrequency.maxTalkFraction)
+        XCTAssertEqual(CommentaryFrequency.allCases, [.off, .rare, .occasional, .frequent, .chatty], "dial order")
+        XCTAssertEqual(CommentaryFrequency.chatty.title, "Chatty")
+    }
+
+    func testPersistedRawValuesAreStable() {
+        XCTAssertEqual(CommentaryFrequency.allCases.map(\.rawValue), ["off", "rare", "occasional", "frequent", "chatty"])
+    }
+
+    func testOldRecipeCommentaryStillDecodes() throws {
+        for (raw, expected) in [("off", CommentaryFrequency.off), ("rare", .rare), ("occasional", .occasional), ("frequent", .frequent)] {
+            let json = #"{"active":{"commentary":"\#(raw)"}}"#
+            XCTAssertEqual(try StationConfigurationSnapshot.decode(Data(json.utf8)).state.active.commentary, expected, raw)
+        }
+    }
+
+    func testUnknownCommentaryStillFallsBackToDefault() throws {
+        let json = #"{"active":{"commentary":"nonstop"}}"#
+        XCTAssertEqual(try StationConfigurationSnapshot.decode(Data(json.utf8)).state.active.commentary,
+                       StationConfiguration.default.commentary)
+    }
+
+    func testChattyRoundTrips() throws {
+        let snapshot = StationConfigurationSnapshot(state: .init(active: .init(commentary: .chatty)))
+        let decoded = try StationConfigurationSnapshot.decode(snapshot.encoded())
+        XCTAssertEqual(decoded.state.active.commentary, .chatty)
+        XCTAssertEqual(decoded, snapshot)
+    }
+
+    /// The copy must state what the planner delivers today, not what `talkFraction` asks for.
+    /// With the shipping cadence (never back-to-back, `minSongsBetweenBreaks` 2) that is a third of songs.
+    func testChattyDescriptionMatchesDeliveredShare() {
+        let cadence = StationConfiguration(commentary: .chatty).cadence()
+        let percent = Int((cadence.expectedTalkShare * 100).rounded())
+        XCTAssertEqual(CommentaryFrequency.chatty.honestDescription,
+                       "The DJ talks after about \(percent)% of songs, never two in a row.")
+        XCTAssertFalse(CommentaryFrequency.chatty.honestDescription.localizedCaseInsensitiveContains("every song"),
+                       "not until the cadence allows back-to-back breaks")
+
+        let tracks = (0..<301).map { DJTrack(id: "t\($0)", title: "Song \($0)", artist: "Artist \($0)") }
+        var writer = DJScriptWriter(cadence: cadence, seed: 5)
+        let delivered = Double(writer.plan(tracks: tracks, briefing: nil, hour: 9).breaks.count) / Double(tracks.count - 1)
+        XCTAssertEqual(delivered, cadence.expectedTalkShare, accuracy: 0.02, "planner delivers what the copy says")
+    }
+}

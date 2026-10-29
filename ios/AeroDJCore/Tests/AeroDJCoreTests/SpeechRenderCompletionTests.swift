@@ -195,7 +195,9 @@ final class SpeechRenderCompletionTests: XCTestCase {
 
     func testDeadlineDuringDidFinishGraceDeletesTempFileAndSkipsBreak() async throws {
         // Production deadline is 20 s; scaled down here. The grace timer is never fired, so only the deadline ends it.
-        let (renderer, completion, clock, temp, inGrace, unwound) = graceFixture(timeout: .milliseconds(50))
+        // 500 ms, not 50: on a loaded Linux CI runner a 50 ms deadline could fire before the provider reached
+        // didFinish, so the grace window was never entered and `inGrace` timed out (flake, not a product bug).
+        let (renderer, completion, clock, temp, inGrace, unwound) = graceFixture(timeout: .milliseconds(500))
         let result = await renderer.render(cue(), userID: "u", stationID: "s")
         await fulfillment(of: [inGrace, unwound], timeout: 2)
         guard case .failure(let failure) = result else { return XCTFail("deadline must fail the render") }
