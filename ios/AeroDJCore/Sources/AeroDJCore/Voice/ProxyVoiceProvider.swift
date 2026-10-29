@@ -83,30 +83,47 @@ public struct ProxyVoiceProvider: VoiceProvider {
             if !(error is CancellationError) && !Task.isCancelled { backoff?.recordServerFailure() }
             throw error
         }
-        switch response.statusCode {
-        case 200: break  // counted as a success only once the audio below is validated
-        case 401: backoff?.recordUnauthorized()
-        case 429:
-            backoff?.recordRateLimited(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
-                                       reason: PaidVoiceBackoff.ProxyErrorReason.parse(data))
-        case 503:
-            backoff?.recordServiceUnavailable(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
-                                              reason: PaidVoiceBackoff.ProxyErrorReason.parse(data))
-        case 500...599: backoff?.recordServerFailure()
-        default: break
+        if response.statusCode != 200, let backoff {
+            Self.record(status: response.statusCode, body: data,
+                        retryAfter: response.value(forHTTPHeaderField: "Retry-After"), in: backoff)
         }
         guard response.statusCode == 200 else { throw VoiceRenderError.invalidResponse("status \(response.statusCode)") }
+        // From here on the 200 may already be billed: any validation failure pauses briefly
+        // (`recordInvalidAudio`) so a non-audio 200 isn't paid for again on every break.
         guard let type = response.value(forHTTPHeaderField: "Content-Type")?.lowercased(), type.hasPrefix("audio/") else {
+            backoff?.recordInvalidAudio()
             throw VoiceRenderError.invalidResponse("content type")
         }
-        guard !data.isEmpty, data.count <= configuration.maxResponseBytes else { throw VoiceRenderError.invalidResponse("size") }
+        guard !data.isEmpty, data.count <= configuration.maxResponseBytes else {
+            backoff?.recordInvalidAudio()
+            throw VoiceRenderError.invalidResponse("size")
+        }
         guard let header = response.value(forHTTPHeaderField: "X-Audio-Duration"), let seconds = Double(header),
               seconds.isFinite, seconds > 0, seconds <= 600 else {
+            backoff?.recordInvalidAudio()
             throw VoiceRenderError.invalidResponse("duration")
         }
         backoff?.recordSuccess()
         let billed = response.value(forHTTPHeaderField: "X-Billed-Characters").flatMap(Int.init) ?? text.count
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: billed,
                              provider: configuration.upstream.rawValue, cacheKey: nil)
+    }
+
+    /// Maps a non-200 proxy answer to the backoff (#233 §4.4 rev 2). See `PaidVoiceBackoff` for the policy.
+    static func record(status: Int, body: Data, retryAfter: String?, in backoff: PaidVoiceBackoff) {
+        let reason = PaidVoiceBackoff.ProxyErrorReason.parse(body)
+        switch status {
+        case 401: backoff.recordUnauthorized()
+        case 403 where reason == .noEntitlement: backoff.recordNoEntitlement()
+        case 403 where reason == .installLimit: backoff.recordInstallLimit()
+        // Do not retry that request; the next cue may use the paid route again.
+        case 400 where reason == .badRequest, 413: break
+        case 429: backoff.recordRateLimited(retryAfter: retryAfter, reason: reason)
+        // 503, and every other 5xx is "treat as 503 unknown" (Retry-After, else exponential).
+        case 500...599: backoff.recordServiceUnavailable(retryAfter: retryAfter, reason: reason)
+        // 400 `mixed_auth`, 405, and any other 4xx (missing or unknown reason): a client bug.
+        case 400...499: backoff.recordClientError()
+        default: break
+        }
     }
 }
