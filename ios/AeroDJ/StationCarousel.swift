@@ -188,7 +188,7 @@ struct StationCarouselCard: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityHint("Opens the station. Music starts only when you press Play.")
+        .accessibilityHint(station.openHint)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityIdentifier("stations.card.\(station.id.uuidString)")
     }

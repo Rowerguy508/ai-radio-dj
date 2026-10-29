@@ -23,6 +23,8 @@ import OSLog
 @MainActor
 final class StationQueuePlayer {
     let feed: StationQueueFeed<Track>
+    /// Created-station row taps (core, tested on Linux): idle with nothing queued starts the station.
+    private let createdStart: CreatedStationStarter<Track>
     private let music: MusicKitService
     private let station: StationConfigurationModel
     private let djSession: DJBreakSession
@@ -46,6 +48,7 @@ final class StationQueuePlayer {
                 return Set(queue.prefix(current + 1).map(\.id))
             },
             log: { event in log.notice("\(event.diagnostics, privacy: .public)") })
+        createdStart = CreatedStationStarter(feed: feed)
     }
 
     /// Installs the three hooks and starts following the station. Call once, at launch.
@@ -68,6 +71,22 @@ final class StationQueuePlayer {
             return { await self.play(tracks) }
         }
         feed.follow(station)
+    }
+
+    /// A created-station row was opened (Orion, #213). User tap: authorize, apply the recipe, and when
+    /// the player is idle with nothing queued start the station on the idle-Play path, waiting a
+    /// bounded time for its queue; while something plays it switches at the song boundary.
+    /// Restore: nothing. Logs the outcome as an enum only.
+    func openCreatedStation(_ trigger: StationOpenTrigger, recipeID: UUID, studio: StudioPresentationModel) async {
+        let outcome = await createdStart.open(
+            trigger,
+            authorize: { await music.authorize() },
+            apply: { if case .success = await studio.applyRecipe(recipeID) { true } else { false } },
+            active: { station.active },
+            nothingQueued: { music.queue.isEmpty && !music.isPlaying },
+            start: { tracks in await play(tracks) })
+        Logger(subsystem: "com.aerodj.app", category: "stationQueue")
+            .notice("createdStationOpen \(String(describing: outcome), privacy: .public)")
     }
 
     /// Same order as a song tap (#116): the DJ session reserves the new queue before play, so a

@@ -413,6 +413,20 @@ public final class DJBreakSession {
         return prepared
     }
 
+    /// DJ talk-over (-Fry): whether boundary `k`'s break is rendered, without taking it. The
+    /// talk-over takes the break early (through `naturalBoundary`, so every consent re-check
+    /// still runs) only when this is true; otherwise the boundary hands it out as today.
+    public func breakIsReady(afterTrack k: Int) async -> Bool {
+        await preparer.isReady(afterTrack: k)
+    }
+
+    /// DJ talk-over (-Fry): a break the talk-over took early and will not play (seek back out
+    /// of the outro, skip, pause, new queue). Not a voice failure: the Studio goes idle.
+    public func talkoverDropped(afterTrack k: Int) {
+        endOnAir(k)
+        dj.send(.breakSkipped(afterTrack: k, .cancelled))
+    }
+
     /// Song `k` was cut (skip, queue change): its break is dropped, never played after a cut song.
     public func songCut(afterTrack k: Int) async {
         _ = await preparer.takeBreak(afterTrack: k, natural: false)
@@ -611,11 +625,10 @@ public final class DJBreakSession {
     var testQueueTrackIDs: [String] { tracks.map(\.id) }
     /// Test hook: briefing is absent after withdrawal / briefing-off.
     var testBriefingIsNil: Bool { briefing == nil }
-    /// Test hook: personal source item ids still present in the briefing or planned breaks.
     /// Test hook (-Atlas): runs where `songSeeked` resumes after its suspension on the station,
     /// so a test can end the song or drop the queue at exactly that point.
     var testSeekResumed: (@MainActor () async -> Void)?
-
+    /// Test hook: personal source item ids still present in the briefing or planned breaks.
     var testPlannedSourceItemIDs: Set<UUID> {
         var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
         for b in breaks.values { ids.formUnion(b.cues.compactMap(\.sourceItemID)) }
