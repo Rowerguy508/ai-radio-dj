@@ -89,7 +89,8 @@ public actor DJBreakPreparer {
     /// Starts rendering now. `deadline` must end before the boundary (see `deadline(remainingInSong:)`).
     /// `onDeviceOnly` (a station with a library seed) renders on the on-device, free routes only;
     /// with none configured the break is skipped as `.renderFailed`, never sent off the device.
-    public func prepare(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool = false) {
+    /// No default: every caller must decide, so a new call site cannot silently skip the gate.
+    public func prepare(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool) {
         let k = djBreak.afterTrack
         guard tasks[k] == nil, results[k] == nil else { return }
         planned[k] = djBreak
@@ -120,13 +121,14 @@ public actor DJBreakPreparer {
     /// spend voice characters) again and again. Starting a break that never started rendering
     /// counts as that one re-arm; after it, a second timeout stays a final skip until the
     /// boundary is taken. Returns whether a render started.
+    /// `onDeviceOnly` is the library-seed gate, exactly as in `prepare`.
     @discardableResult
-    public func rearm(_ djBreak: DJBreak, deadline: Duration) -> Bool {
+    public func rearm(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool) -> Bool {
         let k = djBreak.afterTrack
         guard mayRearm(afterTrack: k) else { return false }
         rearmed.insert(k)
         results[k] = nil
-        prepare(djBreak, deadline: deadline)
+        prepare(djBreak, deadline: deadline, onDeviceOnly: onDeviceOnly)
         return true
     }
 
