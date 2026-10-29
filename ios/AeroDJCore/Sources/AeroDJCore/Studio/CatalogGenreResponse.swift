@@ -38,6 +38,20 @@ public enum CatalogGenreResponse {
         }
     }
 
+    /// Fry's rule (#214): Apple Music access is never requested by a genre fetch, and nothing
+    /// MusicKit runs without it. `isAuthorized` reads the current status only (the app passes
+    /// `MusicAuthorization.currentStatus == .authorized`, never `request()`); when it is false
+    /// this throws `notAuthorized()` (the app's `MusicKitError.notAuthorized`, so the picker shows
+    /// the existing not-authorized copy and Try again) and `load` (storefront lookup, cache and
+    /// request) never runs. A relaunch that reopens Tune therefore never touches Apple Music.
+    public static func whenAuthorized(_ isAuthorized: @Sendable () -> Bool,
+                                      notAuthorized: @Sendable () -> any Error,
+                                      load: @Sendable () async throws -> [CatalogGenre]) async throws -> [CatalogGenre] {
+        try Task.checkCancellation()
+        guard isAuthorized() else { throw notAuthorized() }
+        return try await load()
+    }
+
     /// Runs one fetch under the contract's cancellation rule: checks before and after the
     /// request, and maps a cancelled URL load (`URLError.cancelled`) to `CancellationError`.
     /// Any other failure is rethrown as is (the picker maps it to fixed copy).

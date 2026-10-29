@@ -106,6 +106,51 @@ final class CatalogGenreResponseTests: XCTestCase {
     }
 }
 
+// Fry's rule (#214): no Apple Music call without access; access is never requested here.
+final class CatalogGenreAuthorizationTests: XCTestCase {
+    private struct NotAuthorized: Error {}
+
+    func testNotAuthorizedThrowsTheNotAuthorizedErrorAndNeverLoads() async {
+        let loaded = LockedFlag()
+        do {
+            _ = try await CatalogGenreResponse.whenAuthorized({ false }, notAuthorized: { NotAuthorized() }) {
+                loaded.set()
+                return [CatalogGenre(id: "14", name: "Pop")]
+            }
+            XCTFail("expected the not-authorized error")
+        } catch is NotAuthorized {
+        } catch {
+            XCTFail("expected NotAuthorized, got \(error)")
+        }
+        XCTAssertFalse(loaded.value, "no storefront lookup, cache read or request without access")
+    }
+
+    func testAuthorizedFetches() async throws {
+        let loaded = LockedFlag()
+        let out = try await CatalogGenreResponse.whenAuthorized({ true }, notAuthorized: { NotAuthorized() }) {
+            loaded.set()
+            return [CatalogGenre(id: "14", name: "Pop")]
+        }
+        XCTAssertTrue(loaded.value)
+        XCTAssertEqual(out, [CatalogGenre(id: "14", name: "Pop")])
+    }
+
+    func testACancelledTaskThrowsCancellationErrorBeforeReadingTheStatus() async {
+        let asked = LockedFlag()
+        let task = Task { () -> Bool in
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await CatalogGenreResponse.whenAuthorized({ asked.set(); return true },
+                                                                  notAuthorized: { NotAuthorized() }) { [] }
+                return false
+            } catch { return error is CancellationError }
+        }
+        let cancelled = await task.value
+        XCTAssertTrue(cancelled)
+        XCTAssertFalse(asked.value)
+    }
+}
+
 private final class LockedFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var flag = false

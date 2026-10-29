@@ -131,8 +131,17 @@ actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationS
     /// from `MusicDataRequest.currentCountryCode`), in Apple's order, de-duplicated, without the
     /// root "Music" genre (34). Throws on failure, `CancellationError` when cancelled
     /// (`CatalogGenreResponse.fetch`, tested in AeroDJCore). Nothing is logged.
+    /// Without Apple Music access it throws `MusicKitError.notAuthorized` before any MusicKit
+    /// call (status read only; access is never requested here, e.g. when a relaunch reopens Tune).
     func genres() async throws -> [CatalogGenre] {
-        try Task.checkCancellation()
+        try await CatalogGenreResponse.whenAuthorized({ MusicAuthorization.currentStatus == .authorized },
+                                                      notAuthorized: { MusicKitError.notAuthorized }) {
+            try await self.authorizedGenres()
+        }
+    }
+
+    /// `genres()` once access is known to be granted: storefront, cache, request.
+    private func authorizedGenres() async throws -> [CatalogGenre] {
         let country = try await MusicDataRequest.currentCountryCode
         if let genreCache, genreCache.country == country { return genreCache.genres }
         guard let url = URL(string: "https://api.music.apple.com/v1/catalog/\(country)/genres") else {
