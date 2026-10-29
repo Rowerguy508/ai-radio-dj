@@ -216,7 +216,7 @@ Build: workflow_dispatch with `owner_ab: true` (`p0_diag: true` is optional and 
 Use the iPhone, then the Duo.
 
 1. **Flag**
-   - On the Player screen, confirm the "DJ talk-over" toolbar button (mic icon, top right) is ON by
+   - On the Player screen, confirm the "DJ talk-over" toolbar button (waveform icon, top right) is ON by
      default in this build.
    - Turn it OFF and play two boundaries: they must sound exactly like today (gap break, music
      stopped).
