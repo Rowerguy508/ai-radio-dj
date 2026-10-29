@@ -406,8 +406,12 @@ public final class DJBreakSession {
             // purge uses. The adapter ends it as `.revoked` and the boundary hands back to
             // music (`startNextTrack` -> `playIfStillAllowed`), exactly as for a purge.
             stopOnAirIfSilenced(by: change)
-            // Always cancel in-flight VOICE renders (no spend after commentary/briefing off).
-            await preparer.cancelAll()
+            // Cancel in-flight VOICE renders (no spend after commentary/briefing off). The one
+            // exception: the playing song's break, when it is plain music talk (track metadata
+            // and presenter lines only, no personal cue) and commentary is still on. A briefing-off
+            // or a withdrawal cannot touch it, and dropping it cost the first break on build 22.
+            let keptBreak = Self.survivingBreak(playing.flatMap { breaks[$0] }, after: change)
+            await preparer.cancelAll(except: keptBreak.map { [$0] } ?? [])
             // Withdrawal / briefing-off handling must run even while tap setup is pending
             // (Sentinel P1). The early return below only skips replan on the previous queue.
             if !change.withdrawnIntegrations.isEmpty {
@@ -436,10 +440,27 @@ public final class DJBreakSession {
             // Commentary or briefing off, or an integration withdrawn: drop everything prepared,
             // including the break for the playing song, then plan the rest with the new settings.
             if !change.withdrawnIntegrations.isEmpty || !change.active.briefing.enabled { briefing = nil }
-            replan(from: (playing ?? -1) + 1, keepingThrough: -1)
+            // Everything else prepared is dropped and re-planned with the new settings.
+            replan(from: (playing ?? -1) + 1, keepingThrough: keptBreak ?? -1)
             return
         }
         replanIfCadenceChanged(after: playing ?? -1)
+    }
+
+    /// The boundary of `djBreak` if it may survive an invalidating `change`, else nil.
+    /// Fails closed: commentary off drops everything, and a break survives only when every
+    /// cue has a known attribution that is track metadata or presenter phrasing (no personal
+    /// item, no briefing cue, no missing or unknown attribution).
+    nonisolated static func survivingBreak(_ djBreak: DJBreak?, after change: StationConfigurationChange) -> Int? {
+        guard let djBreak, change.active.commentary != .off, !djBreak.hasBriefing else { return nil }
+        let plain = djBreak.cues.allSatisfy { cue in
+            guard cue.sourceItemID == nil, cue.source == nil, !cue.isContent else { return false }
+            switch djBreak.attributions[cue.id] {
+            case .trackMetadata?, .presenter?: return true
+            case .personalContext?, nil: return false
+            }
+        }
+        return plain ? djBreak.afterTrack : nil
     }
 
     /// Stops the handed-out or speaking break when `change` silences it: commentary went to

@@ -135,6 +135,21 @@ public actor DJBreakPreparer {
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
+    /// `cancelAll`, except the boundaries in `kept`: those keep rendering, or stay prepared.
+    /// Only `DJBreakSession.stationChanged` passes a non-empty set, for a plain music break
+    /// with no personal content (it can carry nothing a withdrawal or briefing-off removes).
+    public func cancelAll(except kept: Set<Int>) {
+        guard !kept.isEmpty else { return cancelAll() }
+        let ready = results.compactMap { if case .ready = $0.value { $0.key } else { nil } }
+        let dropped = Set(tasks.keys).union(ready).subtracting(kept)
+        for k in Set(tasks.keys).union(results.keys).union(planned.keys) where !kept.contains(k) {
+            tasks.removeValue(forKey: k)?.cancel()
+            results[k] = nil
+            planned[k] = nil
+        }
+        for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
+    }
+
     /// Drops any pending or prepared break built from these personal items (deleted or consent
     /// revoked), so their audio is never played. Pair with `AudioCache.purge(sourceItemIDs:)`.
     public func purge(sourceItemIDs: Set<UUID>) {
