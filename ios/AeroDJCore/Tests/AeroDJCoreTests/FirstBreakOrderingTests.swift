@@ -194,4 +194,93 @@ final class FirstBreakOrderingTests: XCTestCase {
         XCTAssertFalse(session.testPlannedSourceItemIDs.contains(itemID))
         await session.stop()
     }
+
+    // MARK: #145 (-Atlas): a tap during a hold loads the new queue and defers its start
+
+    private struct HeldDeferred: Error {}
+
+    private func heldTap(_ session: DJBreakSession, _ queue: [DJTrack],
+                         play: @MainActor () async throws -> Void = { throw HeldDeferred() }) async {
+        do {
+            _ = try await TapPlaySequence.run(
+                reserve: { session.reserveQueueSetup() },
+                play: play,
+                scheduleBreakPrep: { session.beginQueueInBackground($0, queue) },
+                release: { session.releaseQueueSetup($0) },
+                loadedButDeferred: { $0 is HeldDeferred })
+            XCTFail("the held start's error must still propagate (the hold banner)")
+        } catch is HeldDeferred {
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+    }
+
+    private func waitForQueue(_ session: DJBreakSession, _ ids: [String],
+                              file: StaticString = #filePath, line: UInt = #line) async {
+        for _ in 0..<500 where session.testQueueTrackIDs != ids || session.testQueueSetupPending {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(session.testQueueTrackIDs, ids, file: file, line: line)
+        XCTAssertFalse(session.testQueueSetupPending, file: file, line: line)
+    }
+
+    func testTapDuringHoldKeepsTheNewQueueSoTheResumeNeverUsesTheOldQueue() async throws {
+        let (session, _) = await session()
+        let old = tracks("old", 4)
+        await session.queueStarted(old)                // old DJ queue active, with its breaks
+        let new = tracks("new", 6)
+        await heldTap(session, new)                    // call/route hold: MusicKit queue loaded, start deferred
+        await waitForQueue(session, new.map(\.id))    // the DJ queue follows the loaded queue
+        // The hold ends: MusicKit starts the new queue's first song.
+        await session.songStarted(index: 0, remaining: .seconds(180))
+        XCTAssertNil(session.testHeldSongStartIndex)
+        XCTAssertEqual(session.testQueueTrackIDs, new.map(\.id), "no old-queue break or context on resume")
+        XCTAssertFalse(session.plannedBoundaries.isEmpty, "the new queue's breaks are planned")
+        await session.stop()
+    }
+
+    func testSongStartDuringAHeldPlayIsReplayedForTheNewQueue() async throws {
+        let (session, _) = await session()
+        await session.queueStarted(tracks("old", 4))
+        let new = tracks("new", 6)
+        await heldTap(session, new) {
+            await session.songStarted(index: 0, remaining: .seconds(180))
+            throw HeldDeferred()
+        }
+        await waitForQueue(session, new.map(\.id))
+        XCTAssertNil(session.testHeldSongStartIndex, "the held start was replayed for the new queue")
+        await session.stop()
+    }
+
+    func testANewerTapAfterAHeldTapWins() async throws {
+        let (session, _) = await session()
+        await session.queueStarted(tracks("old", 4))
+        let second = tracks("second", 5)
+        await heldTap(session, tracks("held", 6)) {
+            _ = try await self.tap(session, second) {}
+            throw HeldDeferred()
+        }
+        await waitForQueue(session, second.map(\.id))
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(session.testQueueTrackIDs, second.map(\.id), "the superseded held tap schedules nothing")
+        await session.stop()
+    }
+
+    func testAGenuineFailureStillReleasesWithTheDeferralCheckInPlace() async throws {
+        let (session, _) = await session()
+        let old = tracks("old", 4)
+        await session.queueStarted(old)
+        do {
+            _ = try await TapPlaySequence.run(
+                reserve: { session.reserveQueueSetup() },
+                play: { throw PlayFailed() },
+                scheduleBreakPrep: { session.beginQueueInBackground($0, self.tracks("new", 6)) },
+                release: { session.releaseQueueSetup($0) },
+                loadedButDeferred: { $0 is HeldDeferred })
+            XCTFail("play error must propagate")
+        } catch is PlayFailed {}
+        XCTAssertFalse(session.testQueueSetupPending)
+        XCTAssertEqual(session.testQueueTrackIDs, old.map(\.id), "a failed play keeps the old queue")
+        await session.stop()
+    }
 }

@@ -112,6 +112,7 @@ final class StationQueuePlayer {
             scheduleBreakPrep: { reservation in
                 djSession.beginQueueInBackground(reservation, djTracks)
             },
-            release: { djSession.releaseQueueSetup($0) })
+            release: { djSession.releaseQueueSetup($0) },
+            loadedButDeferred: MusicKitError.isLoadedButDeferred)
     }
 }
