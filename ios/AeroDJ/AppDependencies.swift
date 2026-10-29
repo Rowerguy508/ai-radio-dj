@@ -83,6 +83,7 @@ struct AppDependencies {
             providers: composition.providers,
             purger: purger)
         let recipes = StationRecipeLibrary(store: FileStationRecipeStore(fileURL: supportURL("StationRecipes/recipes.json")))
+        let catalogSource = MusicCatalogSeedSource()   // one actor: seed search and genres (-Atlas)
         return AppDependencies(
             mode: .live,
             // Calendar: only calendars the listener chose. Notes: only approved picked notes.
@@ -95,12 +96,10 @@ struct AppDependencies {
             dj: dj,
             studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
                                             // Add-station search (Atlas): catalog + on-device library playlists.
-                                            seedSearch: MusicCatalogSeedSource(),
-                                            // SEAM(Atlas): pass MusicCatalogSeedSource (once it conforms to
-                                            // `GenreProviding`, /v1/catalog/{storefront}/genres) here. Nil uses
-                                            // `SeedSearchGenreProvider`, i.e. its `genreSeeds(matching: "")`.
+                                            seedSearch: catalogSource,
+                                            // Genres from Apple Music: the same actor and cache as seedSearch (-Atlas).
                                             // Feeds Tune > Genres chips and the add-station genre step.
-                                            genreProvider: nil,
+                                            genreProvider: catalogSource,
                                             seedSearchFailureKind: StudioSearchModel.searchFailureKind),
             djSession: djSession,
             pickedNotes: composition.notes,
