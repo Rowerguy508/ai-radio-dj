@@ -191,8 +191,8 @@ public struct DJScriptWriter: Sendable {
     public var cadence: DJCadence
     /// Spoken in station IDs. Unusable names (empty, braces, instruction-shaped) are skipped.
     public var stationName: String
-    /// The phrase bank. Swapping it changes the words, never the engine.
-    public let tone: EditorialTone
+    /// The phrase bank. Swapping it changes the words, never the engine. See `use(tone:)`.
+    public private(set) var tone: EditorialTone
     /// Talk/silence rolls only, so phrasing changes never move where breaks fall.
     private var rng: SeededGenerator
     /// Chooses the break shape.
@@ -227,6 +227,23 @@ public struct DJScriptWriter: Sendable {
         briefingLead = TemplatePool(tone.briefingLead)
         briefingOutro = TemplatePool(tone.briefingOutro)
         greetings = tone.greetings.mapValues { TemplatePool($0) }
+    }
+
+    /// Switches the phrase bank for plans made after this call (DJ personality, Echo build 27).
+    /// The RNGs, cadence and "already greeted" state carry on, so where breaks fall and the
+    /// one-greeting-per-session rule do not change. Same tone: no-op, so pools keep cycling.
+    public mutating func use(tone newTone: EditorialTone) {
+        guard newTone != tone else { return }
+        tone = newTone
+        backAnnounce = TemplatePool(newTone.backAnnounce)
+        closing = TemplatePool(newTone.closing)
+        artistFocus = TemplatePool(newTone.artistFocus)
+        stationIDs = TemplatePool(newTone.stationID)
+        continuation = TemplatePool(newTone.continuation)
+        atmosphere = newTone.atmosphere.mapValues { TemplatePool($0) }
+        briefingLead = TemplatePool(newTone.briefingLead)
+        briefingOutro = TemplatePool(newTone.briefingOutro)
+        greetings = newTone.greetings.mapValues { TemplatePool($0) }
     }
 
     /// - Parameters:

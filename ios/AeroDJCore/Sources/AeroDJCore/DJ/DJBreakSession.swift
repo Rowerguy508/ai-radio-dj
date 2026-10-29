@@ -29,6 +29,8 @@ public final class DJBreakSession {
     private var briefing: NarrationHandoff?
     private var breaks: [Int: DJBreak] = [:]
     private var plannedWith: DJCadence?
+    /// The DJ personality's words the current plan was written with (Echo, build 27).
+    private var plannedTone: EditorialTone?
     /// Why the last `naturalBoundary` handed out no break, and whether the cadence had planned
     /// one there. Read-only; nothing decides on it (the P0 trace's boundary row reads it).
     public private(set) var lastNoBreak: (reason: DJBreakSkipReason, cadencePlanned: Bool)?
@@ -102,7 +104,8 @@ public final class DJBreakSession {
         self.dj = dj
         self.base = base
         self.hour = hour
-        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed)
+        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed,
+                                     tone: station.active.personality.editorialTone)
     }
 
     /// Forwards preparer events to the DJ status and follows station changes. Call once.
@@ -584,7 +587,9 @@ public final class DJBreakSession {
     }
 
     private func replanIfCadenceChanged(after k: Int) {
-        guard station.active.cadence(base: base) != plannedWith else { return }
+        // A personality edit can change the words without changing the cadence (Echo, build 27).
+        guard station.active.cadence(base: base) != plannedWith
+                || station.active.personality.editorialTone != plannedTone else { return }
         replan(from: k + 1, keepingThrough: k)
     }
 
@@ -594,6 +599,9 @@ public final class DJBreakSession {
         let cadence = station.active.cadence(base: base)
         plannedWith = cadence
         writer.cadence = cadence
+        let tone = station.active.personality.editorialTone
+        plannedTone = tone
+        writer.use(tone: tone)
         breaks = breaks.filter { $0.key <= kept }
         guard first < tracks.count - 1 else { return }
         let lastBreak = breaks.keys.max()
