@@ -84,8 +84,14 @@ public struct ProxyVoiceProvider: VoiceProvider {
             throw error
         }
         switch response.statusCode {
-        case 200: backoff?.recordSuccess()
-        case 429: backoff?.recordRateLimited(retryAfter: response.value(forHTTPHeaderField: "Retry-After"))
+        case 200: break  // counted as a success only once the audio below is validated
+        case 401: backoff?.recordUnauthorized()
+        case 429:
+            backoff?.recordRateLimited(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
+                                       reason: PaidVoiceBackoff.ProxyErrorReason.parse(data))
+        case 503:
+            backoff?.recordServiceUnavailable(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
+                                              reason: PaidVoiceBackoff.ProxyErrorReason.parse(data))
         case 500...599: backoff?.recordServerFailure()
         default: break
         }
@@ -98,6 +104,7 @@ public struct ProxyVoiceProvider: VoiceProvider {
               seconds.isFinite, seconds > 0, seconds <= 600 else {
             throw VoiceRenderError.invalidResponse("duration")
         }
+        backoff?.recordSuccess()
         let billed = response.value(forHTTPHeaderField: "X-Billed-Characters").flatMap(Int.init) ?? text.count
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: billed,
                              provider: configuration.upstream.rawValue, cacheKey: nil)
