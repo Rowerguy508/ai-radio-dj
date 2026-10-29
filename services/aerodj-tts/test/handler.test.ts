@@ -1,7 +1,7 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { defaultDeps, handleTts, selectLimiter, type Deps, type Env, type LogEntry, type TtsRequest } from '../src/handler.js';
+import { defaultDeps, handleTts, selectLimiter, VOICE_SETTINGS, type Deps, type Env, type LogEntry, type TtsRequest } from '../src/handler.js';
 import {
   InMemoryUsageLimiter,
   RATE_SCRIPT,
@@ -283,13 +283,77 @@ test('success: upstream request shape is correct', async () => {
   assert.equal(url, `https://api.elevenlabs.io/v1/text-to-speech/${VOICE}?output_format=pcm_22050`);
   assert.equal(init.method, 'POST');
   assert.equal((init.headers as Record<string, string>)['xi-api-key'], API_KEY);
-  assert.deepEqual(JSON.parse(String(init.body)), { text: 'Hello from the DJ booth.', model_id: 'eleven_multilingual_v2' });
+  assert.deepEqual(JSON.parse(String(init.body)), {
+    text: 'Hello from the DJ booth.',
+    model_id: 'eleven_multilingual_v2',
+    voice_settings: { stability: 0.4, similarity_boost: 0.75, speed: 1 },
+  });
 });
 
 test('success: default model is eleven_flash_v2_5', async () => {
   const h = harness();
   await handleTts(request(), h.deps);
   assert.equal(JSON.parse(String(h.calls[0].init.body)).model_id, 'eleven_flash_v2_5');
+});
+
+// --- Voice settings (owner-approved radio tuning) ---
+test('voice_settings: exact body with the default flash model, no style, no speaker boost', async () => {
+  const h = harness();
+  assert.equal((await handleTts(request(), h.deps)).status, 200);
+  const sent = JSON.parse(String(h.calls[0].init.body)) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(sent).sort(), ['model_id', 'text', 'voice_settings']);
+  assert.equal(sent.model_id, 'eleven_flash_v2_5');
+  assert.deepEqual(sent.voice_settings, { stability: 0.4, similarity_boost: 0.75, speed: 1 });
+  const vs = sent.voice_settings as Record<string, unknown>;
+  assert.ok(!('style' in vs), 'style must never be sent');
+  assert.ok(!('use_speaker_boost' in vs), 'use_speaker_boost is not sent');
+  assert.equal(typeof vs.speed, 'number');
+  assert.ok((vs.speed as number) >= 1.0 && (vs.speed as number) <= 1.05, 'speed within [1.0, 1.05]');
+  assert.deepEqual({ ...VOICE_SETTINGS }, vs);
+  assert.ok(Object.isFrozen(VOICE_SETTINGS));
+});
+
+test('voice_settings: client-supplied settings, style, speed or model are ignored', async () => {
+  const h = harness();
+  const res = await handleTts(
+    request({
+      voice_settings: { stability: 0, similarity_boost: 1, style: 1, speed: 2, use_speaker_boost: true },
+      style: 1,
+      speed: 1.2,
+      model_id: 'eleven_multilingual_v2',
+      modelId: 'eleven_multilingual_v2',
+    }),
+    h.deps,
+  );
+  assert.equal(res.status, 200);
+  const sent = JSON.parse(String(h.calls[0].init.body)) as Record<string, unknown>;
+  assert.deepEqual(sent, {
+    text: 'Hello from the DJ booth.',
+    model_id: 'eleven_flash_v2_5',
+    voice_settings: { stability: 0.4, similarity_boost: 0.75, speed: 1 },
+  });
+  assert.ok(!String(h.calls[0].init.body).includes('style'));
+});
+
+test('voice_settings: the same settings ride on SSML renders', async () => {
+  const h = harness();
+  await handleTts(request({ text: '<speak>Next up.</speak>', format: 'ssml' }), h.deps);
+  assert.deepEqual(JSON.parse(String(h.calls[0].init.body)).voice_settings, { stability: 0.4, similarity_boost: 0.75, speed: 1 });
+});
+
+test('voice_settings do not change cap accounting: a 9,000-char daily cap still holds exactly', async () => {
+  // Production cap is set by env (AERODJ_TTS_DAILY_CHAR_CAP=9000); the limiter is built the same way here.
+  const limiter = selectLimiter({ AERODJ_TTS_DAILY_CHAR_CAP: '9000', AERODJ_TTS_RATE_PER_MINUTE: '100' });
+  assert.ok(limiter);
+  const h = harness({ limiter });
+  const text = 'x'.repeat(600);
+  for (let i = 0; i < 15; i++) assert.equal((await handleTts(request({ text }), h.deps)).status, 200, `render ${i + 1}`);
+  const over = await handleTts(request({ text: 'y' }), h.deps);
+  assert.equal(over.status, 429);
+  assert.ok(Number(over.headers['Retry-After']) > 0);
+  assert.equal(h.calls.length, 15, 'nothing past the cap reaches ElevenLabs');
+  // Charged characters are the spoken text only, never the voice_settings payload.
+  assert.deepEqual(h.logs.slice(0, 15).map((e) => e.chars), Array(15).fill(600));
 });
 
 test('success: valid WAV, sample count, duration and billed chars match the client contract', async () => {
