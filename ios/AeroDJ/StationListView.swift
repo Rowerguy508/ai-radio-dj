@@ -9,6 +9,8 @@ struct StationListView: View {
     let dependencies: AppDependencies
     @State private var stations: [Station] = Station.defaultStations
     @State private var showSharedInbox = false
+    /// One add-station flow per presentation (nil when closed). Never created in the Test Station.
+    @State private var stationCreation: StationCreationModel?
 
     var body: some View {
         #if DEBUG
@@ -27,7 +29,8 @@ struct StationListView: View {
     private var split: some View {
         StationSplitRoot(stations: stations, showsSharedInbox: dependencies.mode == .live,
                          showSharedInbox: $showSharedInbox,
-                         onUserOpenedStation: { await dependencies.playback.authorize() }) { station in
+                         onUserOpenedStation: { await dependencies.playback.authorize() },
+                         onAddStation: addStationAction) { station in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation)
@@ -45,9 +48,24 @@ struct StationListView: View {
                 }
             }
         }
+        // Add-station walkthrough (Nova). Saves a recipe only; never plays or applies.
+        .sheet(isPresented: Binding(get: { stationCreation != nil },
+                                    set: { if !$0 { stationCreation = nil } })) {
+            if let stationCreation {
+                AddStationWalkthroughView(studio: dependencies.studio, creation: stationCreation) {
+                    self.stationCreation = nil
+                }
+            }
+        }
         // Live only: lets Connections offer the .md file picker (nil in the test station).
         .environment(\.pickedNotes, dependencies.pickedNotes)
         .ownerVoiceTrialEntry() // AERODJ_OWNER_AB only; a no-op otherwise
+    }
+
+    /// The + action, or nil (no button) when the app has no seed search: previews and the Test Station.
+    private var addStationAction: (() -> Void)? {
+        guard dependencies.studio.seedSearch != nil else { return nil }
+        return { stationCreation = dependencies.studio.makeStationCreation() }
     }
 }
 
@@ -60,6 +78,8 @@ struct StationSplitRoot<Detail: View>: View {
     /// Fired only from the list selection setter (a row tap). Restore never calls this, so a
     /// relaunch with a stored station ID cannot request Apple Music permission.
     var onUserOpenedStation: (() async -> Void)? = nil
+    /// Opens the add-station walkthrough. Nil hides the + button.
+    var onAddStation: (() -> Void)? = nil
     private let detail: (Station) -> Detail
 
     @State private var selectedStationID: Station.ID? = nil
@@ -77,11 +97,13 @@ struct StationSplitRoot<Detail: View>: View {
 
     init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
          onUserOpenedStation: (() async -> Void)? = nil,
+         onAddStation: (() -> Void)? = nil,
          @ViewBuilder detail: @escaping (Station) -> Detail) {
         self.stations = stations
         self.showsSharedInbox = showsSharedInbox
         self._showSharedInbox = showSharedInbox
         self.onUserOpenedStation = onUserOpenedStation
+        self.onAddStation = onAddStation
         self.detail = detail
     }
 
@@ -107,6 +129,11 @@ struct StationSplitRoot<Detail: View>: View {
                         } label: {
                             Label("Shared Items", systemImage: "square.and.arrow.up")
                         }
+                    }
+                }
+                if let onAddStation {
+                    ToolbarItem(placement: .primaryAction) {
+                        AddStationToolbarButton(action: onAddStation)
                     }
                 }
             }
