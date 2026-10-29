@@ -492,7 +492,7 @@ struct AddStationWalkthroughView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Image(systemName: "checkmark.circle.fill").font(.system(size: 44)).foregroundStyle(.white)
                     .accessibilityHidden(true)
-                Text("\u{201C}\(savedName)\u{201D} is in your station recipes. Open Tune and tap Apply when you want it. Nothing that's playing changed.")
+                Text("\u{201C}\(savedName)\u{201D} is in your Stations list. Open it there when you want it. Nothing that's playing changed.")
                     .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -544,7 +544,7 @@ struct AddStationWalkthroughView: View {
             } else if step == .review {
                 primaryButton(creation.isSaving ? "Saving…" : "Save station", id: "addStation.save",
                               enabled: AddStationWalkthrough.canSave(on: step, progress)) { save() }
-                    .accessibilityHint("Saves it to your station recipes. What's playing doesn't change.")
+                    .accessibilityHint("Adds it to your Stations list. What's playing doesn't change.")
             } else {
                 primaryButton("Next", id: "addStation.next",
                               enabled: AddStationWalkthrough.canGoNext(from: step, progress)) { goNext() }
@@ -696,7 +696,7 @@ struct AddStationSummaryCard: View {
             row("DJ", personality)
             row("DJ talk", talk)
             row("Voice", AddStationTuning.voiceNote)
-            Text("Saved to your station recipes. It won't change what's playing.")
+            Text("Adds it to your Stations list. It won't change what's playing.")
                 .font(.caption)
                 .foregroundStyle(AddStationStyle.secondary)
                 .fixedSize(horizontal: false, vertical: true)
