@@ -1,6 +1,14 @@
 import crypto from 'node:crypto';
 import { bearerToken, parseTokenHash, tokenMatches } from './auth.js';
-import { InMemoryUsageLimiter, type UsageLimiter } from './limiter.js';
+import {
+  InMemoryUsageLimiter,
+  LimiterStoreError,
+  RedisUsageLimiter,
+  redisRestConfig,
+  type LimiterOptions,
+  type Reservation,
+  type UsageLimiter,
+} from './limiter.js';
 import { ssmlToPlainText } from './ssml.js';
 import { pcmToWav, sampleCount, SAMPLE_RATE } from './wav.js';
 
@@ -26,7 +34,8 @@ export interface LogEntry {
 export interface Deps {
   env: Env;
   fetch: typeof fetch;
-  limiter: UsageLimiter;
+  /** null = no acceptable limiter configured (production without a durable store): fail closed. */
+  limiter: UsageLimiter | null;
   /** Receives exactly { requestId, status, chars } and nothing else. */
   log: (entry: LogEntry) => void;
   now: () => number;
@@ -58,13 +67,34 @@ function csv(value: string | undefined): Set<string> {
 
 let sharedLimiter: UsageLimiter | undefined;
 
-/** Per-instance, best-effort limiter (see limiter.ts). */
-function defaultLimiter(env: Env): UsageLimiter {
-  sharedLimiter ??= new InMemoryUsageLimiter({
+function limiterOptions(env: Env): LimiterOptions {
+  return {
     dailyCharCap: positiveInt(env.AERODJ_TTS_DAILY_CHAR_CAP, DEFAULT_DAILY_CHAR_CAP),
     requestsPerMinute: positiveInt(env.AERODJ_TTS_RATE_PER_MINUTE, DEFAULT_REQUESTS_PER_MINUTE),
-  });
-  return sharedLimiter;
+  };
+}
+
+/**
+ * Picks the limiter for this environment:
+ * - Upstash Redis REST credentials present: durable `RedisUsageLimiter` (hard cap).
+ * - Otherwise, outside Vercel Production: per-instance `InMemoryUsageLimiter`.
+ * - Otherwise (Vercel Production, no store): null, so every request fails closed with
+ *   500, unless the owner explicitly accepts best-effort limits with
+ *   `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true`.
+ */
+export function selectLimiter(env: Env, fetchImpl: typeof fetch = globalThis.fetch): UsageLimiter | null {
+  const redis = redisRestConfig(env);
+  if (redis) return new RedisUsageLimiter(redis, limiterOptions(env), fetchImpl);
+  const production = env.VERCEL_ENV === 'production';
+  if (production && env.AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS?.trim() !== 'true') return null;
+  return new InMemoryUsageLimiter(limiterOptions(env));
+}
+
+function defaultLimiter(env: Env): UsageLimiter | null {
+  if (sharedLimiter) return sharedLimiter;
+  const limiter = selectLimiter(env);
+  if (limiter) sharedLimiter = limiter;
+  return limiter;
 }
 
 export function defaultDeps(env: Env = process.env): Deps {
@@ -100,9 +130,16 @@ const MESSAGES: Record<number, string> = {
   405: 'Method not allowed',
   429: 'Too many requests',
   500: 'Server misconfigured',
+  503: 'Service unavailable',
   502: 'Upstream error',
   504: 'Upstream timeout',
 };
+
+function secondsUntilNextUtcDay(now: number): string {
+  const next = new Date(now);
+  next.setUTCHours(24, 0, 0, 0);
+  return String(Math.max(1, Math.ceil((next.getTime() - now) / 1000)));
+}
 
 export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsResponse> {
   const requestId = deps.requestId();
@@ -125,8 +162,18 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   const token = bearerToken(req.authorization);
   if (!token || !tokenMatches(token, expectedHash)) return fail(401);
 
+  const limiter = deps.limiter;
+  if (!limiter) return fail(500);
+  const apiKey = deps.env.ELEVENLABS_API_KEY?.trim();
+  if (!apiKey) return fail(500);
+
   const now = deps.now();
-  if (!(await deps.limiter.allowRequest(OWNER_KEY, now))) return fail(429, { 'Retry-After': '60' });
+  try {
+    if (!(await limiter.allowRequest(OWNER_KEY, now))) return fail(429, { 'Retry-After': '60' });
+  } catch (error) {
+    if (error instanceof LimiterStoreError) return fail(503);
+    throw error;
+  }
 
   // --- Validation ---
   const body = parseBody(req.body);
@@ -144,10 +191,23 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   if (text.length === 0 || text.length > maxChars) return fail(400);
   chars = text.length;
 
-  if (!(await deps.limiter.canSpend(OWNER_KEY, chars, now))) return fail(429, { 'Retry-After': '3600' });
-
-  const apiKey = deps.env.ELEVENLABS_API_KEY?.trim();
-  if (!apiKey) return fail(500);
+  // Atomic reserve-before-render: the characters count against today's cap before the
+  // upstream call, so concurrent requests cannot jointly exceed it.
+  let reservation: Reservation | null;
+  try {
+    reservation = await limiter.reserve(OWNER_KEY, chars, now);
+  } catch (error) {
+    if (error instanceof LimiterStoreError) return fail(503);
+    throw error;
+  }
+  if (!reservation) return fail(429, { 'Retry-After': secondsUntilNextUtcDay(now) });
+  const held = reservation;
+  // Refund only when the upstream definitely did not bill (it answered non-2xx).
+  // Network errors, timeouts and bad audio after a 2xx keep the reservation: the
+  // render may have been billed, so the cap errs on the side of spending less.
+  const refund = async (): Promise<void> => {
+    await limiter.release(held).catch(() => {});
+  };
 
   // --- Upstream ---
   const controller = new AbortController();
@@ -165,6 +225,7 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
     if (!upstream.ok) {
       // Drain without reading into logs or the response.
       await upstream.body?.cancel().catch(() => {});
+      await refund();
       return fail(502);
     }
     upstreamCost = upstream.headers.get('character-cost');
@@ -183,7 +244,6 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   }
 
   const cost = upstreamCost !== null && /^\d+$/.test(upstreamCost.trim()) ? Number(upstreamCost) : chars;
-  await deps.limiter.recordSpend(OWNER_KEY, chars, now);
   deps.log({ requestId, status: 200, chars });
   return {
     status: 200,
