@@ -176,11 +176,11 @@ final class StationSeedSettingTests: XCTestCase {
         XCTAssertEqual(c.summary(of: .seeds), "A1, A2, A3 +2")
         XCTAssertEqual(c.summary(of: .reach), "Broad")
         XCTAssertEqual(StationReach.allCases.map(\.title), ["Only this", "Related", "Broad"])
-        // Nothing plays from seeds until the queue hook lands, so the indicator says Saved, not Active.
-        XCTAssertFalse(StationSetting.seeds.isReadToday)
-        XCTAssertFalse(StationSetting.reach.isReadToday)
-        XCTAssertEqual(TunerIndicator(status: .idle, setting: .seeds), .saved)
-        XCTAssertTrue(StationSetting.reach.usageCopy.contains("Not used for song picking yet"))
+        // Seeds and reach drive the station queue (StationQueueFeed), so the indicator says Active.
+        XCTAssertTrue(StationSetting.seeds.isReadToday)
+        XCTAssertTrue(StationSetting.reach.isReadToday)
+        XCTAssertEqual(TunerIndicator(status: .idle, setting: .seeds), .active)
+        XCTAssertFalse(StationSetting.reach.usageCopy.contains("Not used for song picking"))
     }
 }
 

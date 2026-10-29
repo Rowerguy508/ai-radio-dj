@@ -256,14 +256,14 @@ final class StudioScreenPresentationTests: XCTestCase {
 
 final class TunerIndicatorTests: XCTestCase {
     func testSettingsNothingReadsSaySavedNeverActive() {
-        for s in [StationSetting.genres, .moods, .energy, .discovery] {
+        for s in [StationSetting.genres, .moods, .energy] {
             XCTAssertEqual(TunerIndicator(status: .idle, setting: s), .saved)
             XCTAssertNotEqual(TunerIndicator(status: .idle, setting: s).label, "Active")
         }
     }
 
     func testReadSettingsAreActive() {
-        for s in [StationSetting.commentary, .personality, .briefing, .integration(.calendar)] {
+        for s in [StationSetting.commentary, .personality, .briefing, .integration(.calendar), .seeds, .reach, .discovery] {
             XCTAssertEqual(TunerIndicator(status: .idle, setting: s), .active)
         }
     }
@@ -284,8 +284,20 @@ final class TunerIndicatorTests: XCTestCase {
     }
 
     func testUsageCopyNeverClaimsSongPicking() {
-        for s in [StationSetting.genres, .moods, .energy, .discovery] {
+        for s in [StationSetting.genres, .moods, .energy] {
             XCTAssertTrue(s.usageCopy.contains("Not used for song picking"))
+        }
+    }
+
+    // Seeds, reach and discovery drive song picking on the station queue: never "not used".
+    func testSongPickingSettingsDropTheNotUsedCopy() {
+        XCTAssertEqual(StationSetting.seeds.usageCopy, "Picks the songs this station plays.")
+        XCTAssertEqual(StationSetting.reach.usageCopy, "Sets how far beyond your picks the songs go.")
+        XCTAssertEqual(StationSetting.discovery.usageCopy, "Sets how much new music is mixed in.")
+        for s in [StationSetting.seeds, .reach, .discovery] {
+            XCTAssertFalse(s.usageCopy.contains("Not used"))
+            XCTAssertTrue(s.isReadToday)
+            XCTAssertFalse(TunerIndicator(status: .idle, setting: s).accessibilityLabel.contains("doesn't use"))
         }
     }
 }
