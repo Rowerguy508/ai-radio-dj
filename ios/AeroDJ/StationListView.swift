@@ -293,10 +293,10 @@ struct Station: Identifiable, Hashable {
     var isCreated = false
 
     /// VoiceOver hint for the list row and carousel card: what a tap does. A created station
-    /// starts right away when nothing is playing (CreatedStationStarter), else after this song.
+    /// starts right away when nothing is queued (CreatedStationStarter), else after this song.
     var openHint: String {
         isCreated
-            ? "Plays the station now if nothing is playing, otherwise after this song."
+            ? "Plays the station now if nothing is queued, otherwise after this song."
             : "Opens the station. Music starts only when you press Play."
     }
 
