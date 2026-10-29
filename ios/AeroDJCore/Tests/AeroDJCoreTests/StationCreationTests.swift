@@ -11,7 +11,8 @@ private func seed(_ kind: StationSeedKind, _ id: String, _ name: String? = nil,
 
 @MainActor
 func makeCreationStudio(active: StationConfiguration = .default,
-                        recipes: StationRecipeLibrarySnapshot? = nil) async -> StudioPresentationModel {
+                        recipes: StationRecipeLibrarySnapshot? = nil,
+                        seedSearch: (any StationSeedSearching)? = nil) async -> StudioPresentationModel {
     let station = StationConfigurationModel(
         store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: active))),
         consent: StaticIntegrationConsent([:]))
@@ -21,7 +22,7 @@ func makeCreationStudio(active: StationConfiguration = .default,
     let connections = ConnectionsModel(station: station, sourceReader: StaticConnectionSourceReader(), providers: [],
                                        purger: NoopNarrationPurger())
     return StudioPresentationModel(station: station, recipes: library, connections: connections,
-                                   dj: DJPresentationStore())
+                                   dj: DJPresentationStore(), seedSearch: seedSearch)
 }
 
 final class StationCreationRequestTests: XCTestCase {
