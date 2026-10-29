@@ -109,13 +109,24 @@ final class AddStationTuningTests: XCTestCase {
         XCTAssertEqual(T.reviewValue(DJPersonality.minimal, current: .warm), "Minimal")
     }
 
-    func testChattyCopyIsThePlannerShareNotEverySong() {
+    func testTalkCopyIsTheTuneCopyAndMatchesThePlanner() {
+        // Reuses the Tune strings, so the walkthrough says whatever the planner delivers. Chatty
+        // is "every song" once the owner's back-to-back override (#165) is in, and "about N%,
+        // never two in a row" before it. Only a preset the planner lets talk at every
+        // boundary may say "every song".
         let chatty = T.detail(CommentaryFrequency.chatty, current: .off)
         XCTAssertEqual(chatty, CommentaryFrequency.chatty.honestDescription, "reuses the Tune copy")
-        XCTAssertTrue(chatty.contains("33%"), chatty)
-        XCTAssertTrue(chatty.contains("never two in a row"), chatty)
-        for option in T.talkOptions {
-            XCTAssertFalse(T.detail(option, current: .chatty).lowercased().contains("every song"))
+        for option in T.talkOptions.compactMap({ $0 }) where option != .off {
+            let detail = T.detail(option, current: .chatty)
+            XCTAssertEqual(detail, option.honestDescription, "\(option)")
+            let share = StationConfiguration(commentary: option).cadence().expectedTalkShare
+            if share >= 1 {
+                XCTAssertTrue(detail.contains("every song"), detail)
+            } else {
+                XCTAssertTrue(detail.contains("\(Int((share * 100).rounded()))%"), detail)
+                XCTAssertTrue(detail.contains("never two in a row"), detail)
+                XCTAssertFalse(detail.lowercased().contains("every song"), detail)
+            }
         }
         XCTAssertEqual(T.detail(CommentaryFrequency.off, current: .rare), "Music only. The DJ doesn't talk between songs.")
     }

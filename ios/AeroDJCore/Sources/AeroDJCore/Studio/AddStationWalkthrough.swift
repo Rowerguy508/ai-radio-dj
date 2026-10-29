@@ -149,7 +149,7 @@ public enum AddStationWalkthrough {
 /// Choices for the optional DJ personality and talk-level steps (-Nova). `nil` is
 /// "Keep current tuning": the request leaves the field unset and the station keeps the value the
 /// Tune controls show. Copy reuses the Tune strings (`title`, `honestDescription`), so talk shares
-/// are the planner's delivered share (Chatty: about 33% of songs, never two in a row).
+/// are the planner's delivered share (Chatty says "every song" with the owner's #165 override).
 public enum AddStationTuning {
     public static let keepTitle = "Keep current tuning"
 

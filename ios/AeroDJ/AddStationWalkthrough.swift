@@ -432,7 +432,7 @@ struct AddStationWalkthroughView: View {
         let current = studio.station.displayed.commentary
         return VStack(spacing: 10) {
             ForEach(Array(AddStationTuning.talkOptions.enumerated()), id: \.offset) { index, option in
-                // Chatty's detail is the planner's delivered share (about 33%, never two in a row).
+                // Each detail is the Tune copy, i.e. the planner's delivered share (Chatty: every song, #165).
                 ChoiceCard(title: AddStationTuning.title(option),
                            detail: AddStationTuning.detail(option, current: current),
                            systemImage: talkIcon(option),
