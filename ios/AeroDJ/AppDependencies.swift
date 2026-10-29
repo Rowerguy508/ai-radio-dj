@@ -132,7 +132,7 @@ struct AppDependencies {
         // Fixture mode: talk-over is OFF unless an owner A/B build's toggle was explicitly set ON.
         // Outside an owner A/B build it is OFF whatever was saved (DJTalkoverFlag).
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession,
-                                           unsetDefault: false)
+                                           unsetDefault: DJTalkoverFlag.unsetDefault(isTestStation: true))
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
