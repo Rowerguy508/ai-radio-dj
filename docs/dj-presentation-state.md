@@ -62,3 +62,9 @@ A failure reason clears on the next successful `ready` or `finished`. `sessionSt
 | Break caps | 12 s for a transition, 45 s for a break with the briefing | `DJCadence.maxTransitionSeconds` / `maxBriefingBreakSeconds` |
 | Audio cache | On-device, protected files, at most 7 days (longer values are clamped); purged by source on delete/revoke | `FileAudioCache(maxAge:)`, `AudioCacheRetention.maximum` |
 | Paid voice daily cap | $0 (paid routes off) | `VoiceBudget(dailyCapMicrodollars:)` |
+
+## Speech level (on-air orb)
+`DJPresentationStore.speechLevel: Float` is the DJ voice level, 0...1, smoothed (fast attack, slower release), about 30 updates a second while a clip plays. It is exactly 0 unless `state` is `.speaking`, and it drops to 0 in the same update that leaves `.speaking`. A sample for another break, or one that arrives after the break ended, is ignored.
+- Source: `InterludePlaybackAdapter` reads AVAudioPlayer metering (`averagePower`) on the main actor. No audio tap, no audio-thread work, and no change to the audio session, route or ducking.
+- Mapping and smoothing are in `DJSpeechLevel.swift` (`DJSpeechLevelMapping`, `DJSpeechLevelSmoother`, `DJSpeechLevelMeter`): -50 dBFS or lower is 0, 0 dBFS is 1.
+- The player publishes with `updateSpeechLevel(_:afterTrack:)` and clears it with 0 as soon as a break stops, before the state event arrives.
