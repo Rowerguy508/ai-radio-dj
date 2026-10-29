@@ -469,7 +469,7 @@ public extension StationSetting {
         case .reach: "Sets how far beyond your picks the songs go."
         case .discovery: "Sets how much new music is mixed in."
         case .commentary: "Changes how often the DJ talks between songs."
-        case .personality: "Changes how long a DJ break may be."
+        case .personality: "Changes the DJ's words and how long a break may be."
         case .briefing: "Lets DJ breaks carry your briefing."
         case .integration: "Read only with your consent, in Connections."
         }
