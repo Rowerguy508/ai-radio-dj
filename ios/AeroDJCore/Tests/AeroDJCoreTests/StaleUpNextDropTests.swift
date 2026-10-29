@@ -24,7 +24,8 @@ private struct WordVoice: VoiceProvider {
     }
 }
 
-@MainActor
+// No class-level @MainActor (same as Atlas's bc77569): Linux XCTest discovery (Swift 6.2) aborts
+// casting a @MainActor sync test. Async tests and helpers are @MainActor per member. -Fry
 final class StaleUpNextDropTests: XCTestCase {
     private struct Rig {
         let session: DJBreakSession
@@ -40,6 +41,7 @@ final class StaleUpNextDropTests: XCTestCase {
     }
 
     /// A seeded station, a song holding (edits wait for the boundary), and a planned queue.
+    @MainActor
     private func rig(tracks: Int = 8) async -> Rig {
         let config = Self.seeded("old")
         let station = StationConfigurationModel(
@@ -57,12 +59,14 @@ final class StaleUpNextDropTests: XCTestCase {
         return Rig(session: session, station: station, dj: dj, preparer: preparer)
     }
 
+    @MainActor
     private func until(_ condition: @MainActor () -> Bool, _ message: String = "") async {
         for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(condition(), message)
     }
 
     /// Song 0 plays and its break renders, then the edit is saved mid-song (pending).
+    @MainActor
     private func readyBreakAfterSongZero(_ r: Rig, edit: () async -> Void) async {
         XCTAssertEqual(r.session.plannedBoundaries.first, 0)
         await r.session.songStarted(index: 0, remaining: .seconds(180))
@@ -72,6 +76,7 @@ final class StaleUpNextDropTests: XCTestCase {
         XCTAssertTrue(r.station.hasPendingChanges, "mid-song: waits for the boundary")
     }
 
+    @MainActor
     private func names(_ trackID: String, in prepared: PreparedDJBreak) -> [NarrationCue] {
         prepared.cues.filter {
             if case .trackMetadata(let ids)? = prepared.attributions[$0.id] { ids.contains(trackID) } else { false }
@@ -79,6 +84,7 @@ final class StaleUpNextDropTests: XCTestCase {
     }
 
     // (1) Seeds change promoted at boundary 0: the intro for old t1 is dropped, the greeting stays.
+    @MainActor
     func testSeedsChangeDropsTheStaleIntroButKeepsTheGreeting() async throws {
         let r = await rig()
         await readyBreakAfterSongZero(r) { await r.station.setSeeds(Self.seeded("new").seeds) }
@@ -97,6 +103,7 @@ final class StaleUpNextDropTests: XCTestCase {
     }
 
     // (2) An edit that does not change what plays (energy) leaves the break untouched.
+    @MainActor
     func testEnergyChangeKeepsTheIntro() async throws {
         let r = await rig()
         await readyBreakAfterSongZero(r) { await r.station.setEnergy(0.9) }
@@ -110,6 +117,7 @@ final class StaleUpNextDropTests: XCTestCase {
     }
 
     // (3) A break whose only cue is the stale intro is skipped; music plays at once.
+    @MainActor
     func testABreakWithOnlyTheStaleIntroIsSkipped() async {
         let r = await rig()
         XCTAssertFalse(r.session.plannedBoundaries.contains(1))
@@ -131,18 +139,21 @@ final class StaleUpNextDropTests: XCTestCase {
 
     // The predicate mirrors the feed's hand-off rule and fails closed.
     func testNextSongMayChangePredicate() {
-        let a = StationQueueKey(Self.seeded("a")), b = StationQueueKey(Self.seeded("b"))
-        typealias S = DJBreakSession
-        XCTAssertFalse(S.nextSongMayChange(queue: .known(a), before: a, after: a), "same station")
-        XCTAssertTrue(S.nextSongMayChange(queue: .known(a), before: a, after: b), "promoted here")
-        XCTAssertTrue(S.nextSongMayChange(queue: .known(a), before: b, after: b), "promoted earlier, not handed off yet")
-        XCTAssertFalse(S.nextSongMayChange(queue: .known(b), before: b, after: b), "queue already on the new station")
-        XCTAssertFalse(S.nextSongMayChange(queue: .known(nil), before: a, after: a), "feed adopts, no hand-off")
-        XCTAssertFalse(S.nextSongMayChange(queue: .known(a), before: nil, after: nil), "no seeds: queue kept")
-        XCTAssertTrue(S.nextSongMayChange(queue: .unknown, before: a, after: a), "unknown fails closed")
+        MainActor.assumeIsolated {
+            let a = StationQueueKey(Self.seeded("a")), b = StationQueueKey(Self.seeded("b"))
+            typealias S = DJBreakSession
+            XCTAssertFalse(S.nextSongMayChange(queue: .known(a), before: a, after: a), "same station")
+            XCTAssertTrue(S.nextSongMayChange(queue: .known(a), before: a, after: b), "promoted here")
+            XCTAssertTrue(S.nextSongMayChange(queue: .known(a), before: b, after: b), "promoted earlier, not handed off yet")
+            XCTAssertFalse(S.nextSongMayChange(queue: .known(b), before: b, after: b), "queue already on the new station")
+            XCTAssertFalse(S.nextSongMayChange(queue: .known(nil), before: a, after: a), "feed adopts, no hand-off")
+            XCTAssertFalse(S.nextSongMayChange(queue: .known(a), before: nil, after: nil), "no seeds: queue kept")
+            XCTAssertTrue(S.nextSongMayChange(queue: .unknown, before: a, after: a), "unknown fails closed")
+        }
     }
     // (4) Queue-end refill (Atlas's 431ef68): the refill keeps the station's StationQueueKey, so the
     // boundary before the last song keeps its intro, and the refill's first song is that same track.
+    @MainActor
     func testAQueueEndRefillKeepsTheIntroForTheLastSong() async throws {
         let r = await rig(tracks: 2)
         XCTAssertEqual(r.session.plannedBoundaries.first, 0)
