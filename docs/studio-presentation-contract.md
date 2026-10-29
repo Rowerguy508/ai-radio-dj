@@ -106,6 +106,18 @@ A created station is an ordinary recipe whose seeds, reach and discovery come fr
   - Do: `setKind(_:)`, `search(_:)`, `loadLibraryPlaylists()`, `toggle(_:)`, `isSelected(_:)`, `save(named:applying:)` (defaults: suggested name, apply).
   - Search failures show fixed `SearchFailureCopy` text only. Library playlists stay on the device and are never logged.
 
+### What a station plays
+
+A station with seeds (a created station, a recipe, or seeds set in Tune) now decides what plays. `StationQueueFeed` (AeroDJCore) builds its queue ahead of time from the committed settings; `StationQueuePlayer` (app) hands it to the player. No UI call is needed.
+
+- **When:** only where the existing rules apply a music change. Mid-song, a change waits for the song to end ("Applies after this song"); the next song comes from the new station, after any DJ break. Idle, Play starts the station.
+- **Not replaced:** a queue the listener started by tapping a song belongs to the station committed at that moment. It is replaced only if the station's seeds, reach or discovery change after the tap. DJ-only edits (talk, personality, briefing) never rebuild the queue.
+- **Fallback:** no seeds (tags only), an empty pool, a failed Apple Music lookup, no playable song, or a queue not ready yet keeps the current queue (or Play's existing message), and retries for the next boundary. Never an empty queue.
+- **Order:** deterministic for a station and a day (`StationQueueKey.shuffleSeed(day:)`); songs already played in the current queue are left out.
+- **Refill:** a queue (tapped or the station's own) does not run out. At the boundary before its last song, after any break and before that song starts, the station starts a new queue: that last song, then fresh station songs (none already in the queue). It starts like a tap, so the DJ plans the last song's break through the normal `queueStarted` replan and only ever names songs that are really queued. Building starts once three or fewer songs are left to load. If nothing is ready, the lookup failed, playback is held, or there are no seeds, the last song plays and the station stops after it, as before. A single tapped song has no boundary before it and still ends as before.
+- **Library picks** play only their own songs.
+- **Copy:** seeds, reach and discovery are now used for song picking. Genres, moods and energy are still not.
+
 ## Connections
 
 `connections.sources` returns three `ConnectionSourceRow`s: Calendar, Obsidian notes, and Shared from Mail & Messages. Each row has:
