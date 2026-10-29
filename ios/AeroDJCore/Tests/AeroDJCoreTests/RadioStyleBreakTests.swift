@@ -442,9 +442,12 @@ final class RadioStyleBreakTests: XCTestCase {
 
     func testLibrarySeededClosingNeverReachesTheOffDeviceRouteWhileMainCuesAreCloudEligible() async throws {
         var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "AeroDJ")
-        let djBreak = try XCTUnwrap(writer.plan(tracks: tracks, briefing: nil, hour: 15).breaks.first { $0.afterTrack == 2 })
+        // Catalog-origin copies of the fixture: only `.catalog` track lines are cloud-eligible
+        // (Sentinel, library provenance gate); `tracks` keeps the fail-closed `.unknown` default.
+        let catalogTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artist, origin: .catalog) }
+        let djBreak = try XCTUnwrap(writer.plan(tracks: catalogTracks, briefing: nil, hour: 15).breaks.first { $0.afterTrack == 2 })
         let closing = try XCTUnwrap(djBreak.talkOverCueID)
-        XCTAssertEqual(djBreak.attributions[closing], .trackMetadata(trackIDs: ["4"]), "its own cue, the next track's metadata")
+        XCTAssertEqual(djBreak.attributions[closing], .trackMetadata(trackIDs: ["4"], origin: .catalog), "its own cue, the next track's metadata")
         for cue in djBreak.cues {   // every cue, the closing included, is gated per cue
             XCTAssertTrue(VoiceRenderer.mayLeaveDevice(cue, attribution: djBreak.attributions[cue.id]),
                           "MAIN and closing are cloud-eligible on a catalog station")

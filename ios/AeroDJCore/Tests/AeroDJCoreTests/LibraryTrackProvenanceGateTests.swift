@@ -158,6 +158,41 @@ final class LibraryTrackProvenanceGateTests: XCTestCase {
         XCTAssertTrue(spy.received.contains { $0.contains("Open Song") })
     }
 
+    /// #209's talk-over closing line (`talkOverCueID`) names the next track: when that track is
+    /// from the library or of unknown origin the closing cue is local-only; when it is catalog it
+    /// keeps the cloud voice. Rendered through the preparer with an off-device spy.
+    func testTalkOverClosingCueNamingAPersonalNextTrackStaysOnDevice() async {
+        // Library and unknown origin, both parities, so closing lines land on personal and on
+        // catalog next tracks.
+        let queues = [TrackOrigin.library, .unknown].flatMap { personal in
+            [mixedTracks(12, personal: personal), Array(mixedTracks(13, personal: personal).dropFirst())]
+        }
+        var closings = (personal: 0, catalog: 0)
+        for tracks in queues {
+            var breaks: [DJBreak] = []
+            for seed: UInt64 in 1...8 {
+                var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 0), seed: seed)
+                for b in writer.plan(tracks: tracks, briefing: nil, hour: 14).breaks {
+                    guard let id = b.talkOverCueID, let cue = b.cues.first(where: { $0.id == id }) else { continue }
+                    let next = tracks[b.afterTrack + 1]
+                    XCTAssertEqual(b.attributions[id], .trackMetadata(trackIDs: [next.id], origin: next.origin))
+                    XCTAssertEqual(VoiceRenderer.mayLeaveDevice(cue, attribution: b.attributions[id]), next.origin == .catalog)
+                    if next.origin == .catalog { closings.catalog += 1 } else { closings.personal += 1 }
+                    if seed == 1 { breaks.append(b) }
+                }
+            }
+            let spy = ProvenanceSpy()
+            let ready = await prepareAll(breaks, spy: spy)
+            XCTAssertFalse(spy.received.contains { $0.contains("Private") }, "a personal closing line reached the cloud")
+            for b in ready {
+                guard let id = b.talkOverCueID, let i = b.cues.firstIndex(where: { $0.id == id }) else { continue }
+                XCTAssertEqual(b.clips[i].audio.providerID, b.cues[i].text.contains("Private") ? "device" : "cloud", b.cues[i].text)
+            }
+        }
+        XCTAssertGreaterThan(closings.personal, 0, "precondition: a closing line names a personal track")
+        XCTAssertGreaterThan(closings.catalog, 0, "precondition: a closing line names a catalog track")
+    }
+
     /// A hand-built break whose last ("up next" / closing) cue names a library track: that cue is
     /// local while the presenter line before it may still use the cloud voice (mixed-voice break).
     func testClosingCueNamingALibraryTrackStaysLocalWhileMainMayUseCloud() async {
