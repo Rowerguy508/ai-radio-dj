@@ -46,12 +46,14 @@ public extension DJPersonality {
         }
     }
 
-    /// Honest description: today a preset only changes how long a plain DJ break may be.
-    /// It does not change the voice or the words. Do not promise more in the UI.
+    /// Honest description: a preset picks the DJ's words (`editorialTone`, #227) and how long a
+    /// plain DJ break may be. It never changes the voice. Do not promise more in the UI.
     var honestDescription: String {
         switch self {
+        case .warm: "Warm, conversational DJ talk. Breaks up to \(maxTransitionSeconds) seconds. Same voice."
+        case .upbeat: "Classic radio-host talk. Breaks up to \(maxTransitionSeconds) seconds. Same voice."
+        case .laidBack: "Low-key, unhurried DJ talk. Breaks up to \(maxTransitionSeconds) seconds. Same voice."
         case .minimal: "Shorter DJ breaks (up to \(maxTransitionSeconds) seconds). Same voice."
-        case .warm, .upbeat, .laidBack: "DJ breaks up to \(maxTransitionSeconds) seconds. Same voice; styles are coming later."
         }
     }
 }

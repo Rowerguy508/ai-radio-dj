@@ -68,11 +68,22 @@ final class StationTunerPresentationTests: XCTestCase {
         XCTAssertNil(applied.appliesCopy)
     }
 
-    func testPersonalityCopyIsHonestThatOnlyBreakLengthChanges() {
+    func testPersonalityCopyIsHonestAboutWordsAndBreakLength() {
         for p in DJPersonality.allCases {
             XCTAssertTrue(p.honestDescription.contains("\(p.maxTransitionSeconds) seconds"), "\(p)")
             XCTAssertTrue(p.honestDescription.contains("Same voice"), "\(p) must not promise a different voice")
+            XCTAssertFalse(p.honestDescription.contains("coming later"), "\(p): tones shipped in #227")
         }
+        // Personalities with their own tone (#227) say so; minimal shares warm's words and says only its cap.
+        let toned = DJPersonality.allCases.filter { $0 != .minimal }
+        for (i, a) in toned.enumerated() {
+            for b in toned.dropFirst(i + 1) {
+                XCTAssertNotEqual(a.editorialTone, b.editorialTone, "\(a) and \(b) speak different tones")
+            }
+        }
+        XCTAssertEqual(Set(toned.map(\.honestDescription)).count, toned.count, "distinct tones get distinct copy")
+        XCTAssertEqual(DJPersonality.minimal.editorialTone, DJPersonality.warm.editorialTone)
+        XCTAssertEqual(StationSetting.personality.usageCopy, "Changes the DJ's words and how long a break may be.")
         XCTAssertTrue(CommentaryFrequency.occasional.honestDescription.contains("30%"))
         XCTAssertTrue(CommentaryFrequency.frequent.honestDescription.contains("33%"), "copy states the delivered share, not the raw setting")
     }

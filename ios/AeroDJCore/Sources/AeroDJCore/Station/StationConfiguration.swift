@@ -182,9 +182,9 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
     }
 }
 
-/// A small set of presenter presets. Today a preset affects only the plain-transition
-/// length cap (see `maxTransitionSeconds`); line selection by preset is a follow-up and
-/// the UI must not promise a different voice or script until that lands.
+/// A small set of presenter presets. A preset picks the script tone (`editorialTone`, #227)
+/// and the plain-transition length cap (see `maxTransitionSeconds`). It never changes the
+/// voice, and the UI must not promise a different one.
 public enum DJPersonality: String, Codable, Sendable, CaseIterable {
     case warm, upbeat, laidBack, minimal
 
