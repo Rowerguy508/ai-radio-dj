@@ -39,6 +39,8 @@ struct StationListView: View {
                              // Row tap only, never restore. A created station starts now when nothing
                              // is queued, otherwise takes over at the song boundary (CreatedStationStarter).
                              guard let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes) else {
+                                 // HOOK(Atlas, Fry #213 nit 2): a built-in tap cancels a waiting created-station start.
+                                 dependencies.stationQueue?.cancelCreatedStationStart()
                                  await dependencies.playback.authorize()
                                  return
                              }
