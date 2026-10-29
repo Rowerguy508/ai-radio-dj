@@ -129,9 +129,10 @@ struct AppDependencies {
                                        cadence: TestStation.cadence)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
-        // Fixture mode: talk-over is OFF regardless of the build (an explicit override still wins).
+        // Fixture mode: talk-over is OFF unless an owner A/B build's toggle was explicitly set ON.
+        // Outside an owner A/B build it is OFF whatever was saved (DJTalkoverFlag).
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession,
-                                           buildDefault: false)
+                                           unsetDefault: false)
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
