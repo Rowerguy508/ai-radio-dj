@@ -30,6 +30,16 @@ final class ShortTrackEndTests: XCTestCase {
         XCTAssertFalse(i.takeNoProgressEnd())
     }
 
+    /// Sentinel's #159 edge: under 1.5 s the rewind ceiling is 0, but a rewind to 0 is already
+    /// inside the end window of a sub-1.5 s entry, so the stopped-at-end shape reports it.
+    func testSubOneAndAHalfSecondTrackRewoundToZeroStillAdvances() {
+        var i = BoundaryInterpreter()
+        i.userRequestedChange()
+        XCTAssertNil(i.interpret(obs(playing: true, 0.6, 1.0, 18.3), queueIndex: 0, queueCount: 20))
+        XCTAssertEqual(i.interpret(obs(playing: false, 0, 1.0, 19.3), queueIndex: 0, queueCount: 20), handoff)
+        XCTAssertFalse(i.takeNoProgressEnd())
+    }
+
     func testShortTrackEntryChangeIsANaturalEndNotAFailedStart() {
         var i = BoundaryInterpreter()
         _ = startedShortTrack(&i)
