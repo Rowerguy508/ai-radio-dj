@@ -392,6 +392,7 @@ final class EditorialNarrationTests: XCTestCase {
         }
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[0].cues.map(\.text)), 4)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[1].cues.map(\.text)), 6)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[2].cues.map(\.text)), 4)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 19)
         XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 45)
 
@@ -402,6 +403,7 @@ final class EditorialNarrationTests: XCTestCase {
                                                       "We'll keep it rolling.", "Here's Billy Joel, with Vienna."])
         XCTAssertEqual(stationBreak.mainSeconds, 6)
         XCTAssertEqual(stationBreak.closingSeconds, 2)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: stationBreak.cues.map(\.text)), 8)
 
         // Artist focus opener.
         var artist = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 9, stationName: "AeroDJ")
@@ -411,6 +413,7 @@ final class EditorialNarrationTests: XCTestCase {
                                                      "Next up — Billy Joel, Vienna."])
         XCTAssertEqual(artistBreak.mainSeconds, 6)
         XCTAssertEqual(artistBreak.closingSeconds, 3)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: artistBreak.cues.map(\.text)), 9)
 
         // Late night: back-announce, time-of-day color, continuation, closing.
         var late = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 5, stationName: "AeroDJ")
@@ -419,6 +422,24 @@ final class EditorialNarrationTests: XCTestCase {
                                                    "Thanks for keeping me company.", "Here's Billy Joel, with Vienna."])
         XCTAssertEqual(lateBreak.mainSeconds, 9)
         XCTAssertEqual(lateBreak.closingSeconds, 2)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: lateBreak.cues.map(\.text)), 11)
+
+        // The pre-radio-style goldens' seeds at 9 PM (seeds 2, 1, 5), pinned at what the engine
+        // produces now. Seed 1 no longer lands on artist focus: shape and phrasing draws moved.
+        func ninePM(_ seed: UInt64) throws -> DJBreak {
+            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            return try XCTUnwrap(writer.plan(tracks: tracks, briefing: nil, hour: 21).breaks.first { $0.afterTrack == 2 })
+        }
+        let seed2 = try ninePM(2), seed1 = try ninePM(1), seed5 = try ninePM(5)
+        XCTAssertEqual(seed2.cues.map(\.text), ["M83 there, with Midnight City.", "You're tuned to AeroDJ.",
+                                               "We'll keep it rolling.", "Here's Billy Joel, with Vienna."])
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed2.cues.map(\.text)), 8)
+        XCTAssertEqual(seed1.cues.map(\.text), ["That one was Midnight City by M83.", "We'll keep it rolling.", "Here's Vienna."])
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed1.cues.map(\.text)), 6)
+        XCTAssertEqual(seed5.cues.map(\.text), ["You just heard Midnight City from M83.", "Evening's settling in.",
+                                               "Thanks for keeping me company.", "Here's Billy Joel, with Vienna."])
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed5.cues.map(\.text)), 9)
+        for b in [seed2, seed1, seed5] { XCTAssertEqual(b.talkOverCueID, b.cues.last?.id) }
     }
 
     /// Delivered talk share over 4,000 boundaries. Tolerance is ±0.02 (two percentage points)
@@ -443,6 +464,8 @@ final class EditorialNarrationTests: XCTestCase {
                 XCTAssertLessThanOrEqual(djBreak.closingSeconds, Double(cadence.maxClosingSeconds))
                 let main = djBreak.cues.filter { $0.id != djBreak.talkOverCueID }.map(\.text)
                 XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: main), cadence.maxTransitionSeconds)
+                XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: djBreak.cues.map(\.text)),
+                                         cadence.maxTransitionSeconds + cadence.maxClosingSeconds)
             }
         }
 

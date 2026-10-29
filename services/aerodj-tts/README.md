@@ -51,6 +51,26 @@ SSML is stripped to plain text before it is sent, since ElevenLabs does not
 accept SSML. SSML input may be up to 4x the text cap before stripping; the
 spoken text is then held to the normal cap.
 
+## Voice settings (fixed server-side)
+
+Every render sends the owner-approved radio tuning:
+
+```json
+"voice_settings": { "stability": 0.4, "similarity_boost": 0.75, "speed": 1.0 }
+```
+
+- Set in `VOICE_SETTINGS` in `src/handler.ts`, not by env and not by the
+  client: the request contract carries no voice settings, and any
+  `voice_settings`, `style`, `speed` or `model_id` field a client adds is
+  ignored.
+- No `style` and no `use_speaker_boost` are sent.
+- `speed` is fixed at 1.0, inside the approved 1.0-1.05 range. Changing it
+  (or any other value) is a code change with review, never an env edit.
+- The model is unchanged: `eleven_flash_v2_5` unless `ELEVENLABS_MODEL_ID`
+  overrides it.
+- Voice settings do not affect the character caps: only the spoken text is
+  counted.
+
 ## Auth: owner-only bearer token (interim)
 
 - The server stores only the **SHA-256 hex digest** of the token, in
