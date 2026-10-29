@@ -788,6 +788,60 @@ final class CreatedStationStartTests: XCTestCase {
         XCTAssertEqual(player.starts, [], "the cancelled tap never starts playback")
     }
 
+    // #217: a built-in tap that lands while the created tap is still in the authorization prompt
+    // stops it before anything is applied or started (no play, so no DJ queue reservation or intro).
+    func testABuiltInTapDuringAuthorizationCancelsBeforeApplyOrStart() async throws {
+        let model = await makeStation(active: .default)
+        let feed = makeFeed(QueueFakeCatalog())
+        feed.follow(model)
+        let player = FakePlayer()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1))
+        var applies = 0
+        let outcome = await starter.open(.userTap, recipeID: UUID(),
+                                         authorize: { starter.cancelPending() },   // built-in tapped mid-prompt
+                                         apply: { applies += 1; return true },
+                                         active: { model.active },
+                                         nothingQueued: { player.nothingQueued },
+                                         start: { player.starts.append($0) })
+        XCTAssertEqual(outcome, .notStarted(.superseded))
+        XCTAssertEqual(applies, 0, "the cancelled tap never applies its recipe")
+        XCTAssertEqual(player.starts, [], "the cancelled tap never starts playback")
+    }
+
+    // #217: after a built-in tap cancels a waiting created tap, the late queue starts nothing, a
+    // restore starts nothing, and a new tap on the created station still starts it exactly once.
+    func testAfterABuiltInCancelOnlyANewTapStartsTheCreatedStation() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdNextCall()
+        let model = await makeStation(active: .default)
+        let feed = makeFeed(catalog)
+        feed.follow(model)
+        let player = FakePlayer()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1))
+        let id = UUID()
+
+        let tap = Task { await open(.userTap, starter, model, player, id: id) }
+        for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
+        let holding = await catalog.isHolding
+        XCTAssertTrue(holding, "the tap is waiting on the build")
+        starter.cancelPending()                                  // built-in station tapped
+        await catalog.release()
+        let cancelled = await tap.value
+        XCTAssertEqual(cancelled, .notStarted(.superseded))
+        for _ in 0..<500 { if feed.stagedKey != nil { break }; try await Task.sleep(nanoseconds: 1_000_000) }
+        XCTAssertNotNil(feed.stagedKey, "the late queue is built")
+        XCTAssertEqual(player.starts, [], "the late queue does not start after the built-in tap")
+
+        let restored = await open(.restore, starter, model, player, id: id)
+        XCTAssertEqual(restored, .restoredOnly)
+        XCTAssertEqual(player.starts, [], "restore never starts")
+
+        let retap = await open(.userTap, starter, model, player, id: id)
+        guard case .started = retap else { return XCTFail("a new tap starts the station, got \(retap)") }
+        XCTAssertEqual(player.starts.count, 1, "exactly one start")
+        XCTAssertEqual(starter.currentRecipeID, id)
+    }
+
     // Fry #213 nit 3: tapping the created station that is already current does not apply its recipe
     // again, so unsaved Tune edits stay.
     func testTappingTheCurrentCreatedStationAgainKeepsUnsavedTuneEdits() async throws {
