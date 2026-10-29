@@ -560,6 +560,9 @@ public struct VoiceRenderer: Sendable {
         return VoiceRenderer(routes: local, budget: budget, cache: cache, revocations: revocations)
     }
 
+    /// Attempt detail for an off-device route skipped for a local-only cue. Fixed text, no cue text.
+    public static let localOnlySkip = "local-only cue: off-device route skipped"
+
     public static func cacheKey(text: String, route: VoiceRoute) -> String {
         SHA256Digest.hex([cacheFormatVersion, route.providerID, route.voice.id, route.acceptsSSML ? "ssml" : "text", text]
             .joined(separator: "\u{1F}"))
@@ -594,7 +597,26 @@ public struct VoiceRenderer: Sendable {
         public let attempts: [VoiceAttempt]
     }
 
-    public func render(_ cue: NarrationCue, userID: String, stationID: String) async -> Result<RenderedClip, Failure> {
+    /// Whether `cue` may be sent to a route that leaves the device (#176). Fail-closed: only a
+    /// cue with an explicit non-personal attribution (`.presenter` or `.trackMetadata`) that is
+    /// itself a DJ transition with no source item, source kind or provenance is eligible.
+    /// Missing attribution, `.personalContext`, any sourced or briefing cue (Calendar, Share,
+    /// Obsidian, library notes…) or a cue whose fields disagree with its attribution is local-only.
+    public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?) -> Bool {
+        guard let attribution else { return false }
+        switch attribution {
+        case .personalContext: return false
+        case .presenter, .trackMetadata: break
+        }
+        return cue.kind == .transition && !cue.isContent && cue.source == nil && cue.provenance == nil
+    }
+
+    /// Renders `cue` on the first route that succeeds. Routes that leave the device are skipped
+    /// (never looked up in the cache, reserved against or called) unless
+    /// `mayLeaveDevice(cue, attribution:)` holds. With no attribution the cue is local-only, and
+    /// if no local route exists it fails closed with `.renderFailed`; it never falls back to cloud.
+    public func render(_ cue: NarrationCue, userID: String, stationID: String,
+                       attribution: SpokenAttribution? = nil) async -> Result<RenderedClip, Failure> {
         var attempts: [VoiceAttempt] = []
         let sources = cue.sourceItemID.map { [$0] } ?? []
         let token = revocations.token()  // before any synthesis: a later purge of `sources` wins
@@ -602,7 +624,14 @@ public struct VoiceRenderer: Sendable {
             // A purge of this item is still running: render nothing that it could miss.
             return .failure(Failure(reason: .renderFailed, attempts: [VoiceAttempt(providerID: routes.first?.providerID ?? "", result: .cancelled)]))
         }
+        // Decided once, before any cache key, reservation or provider call (#176).
+        let offDeviceAllowed = Self.mayLeaveDevice(cue, attribution: attribution)
         for route in routes {
+            if route.leavesDevice && !offDeviceAllowed {
+                // Local-only cue: its text never reaches this route, its cache keys or its budget.
+                attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.localOnlySkip)))
+                continue
+            }
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
             let text = route.acceptsSSML ? SpeechDelivery.ssml(cue.text) : SpeechDelivery.speakable(cue.text)
             let key = Self.cacheKey(text: text, route: route)
