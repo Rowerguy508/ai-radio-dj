@@ -19,7 +19,7 @@ import AeroDJCore
 ///
 /// Playing a pool: `tracks(for:)` returns the `Track`s for a built list, for the queue hook
 /// (see the PR: queueing them live is a `MusicKitService` dependency for Claude).
-actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource {
+actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationSeedSearching {
     /// Songs returned by the last lookups, so a built list can become playable `Track`s.
     private var songsByID: [String: Song] = [:]
     private static let maxCachedSongs = 2000
@@ -61,6 +61,54 @@ actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource {
                 genres = []
             }
             return artists + Array(genres.prefix(limit)) + playlists + songs
+        }
+    }
+
+    /// Add-station search (`StationSeedSearching`): catalog rows of `kinds` only (`.artist`,
+    /// `.playlist`, `.song`; genres come from `genreSeeds(matching:)`). Same blank-term and
+    /// cancellation rules as `searchSeeds(_:limit:artworkSize:)`. Nothing is logged.
+    func searchSeeds(_ term: String, kinds: Set<StationSeedKind>, limit: Int) async throws -> [StationSeedSearchResult] {
+        var types: [any MusicCatalogSearchable.Type] = []
+        if kinds.contains(.artist) { types.append(Artist.self) }
+        if kinds.contains(.playlist) { types.append(Playlist.self) }
+        if kinds.contains(.song) { types.append(Song.self) }
+        guard !types.isEmpty else { return [] }
+        let artworkSize = 120
+        return try await StationSeedSearch.run(term: term, limit: limit) { query, limit in
+            var request = MusicCatalogSearchRequest(term: query, types: types)
+            request.limit = limit
+            let response = try await request.response()
+            try Task.checkCancellation()
+            let artists = response.artists.map {
+                StationSeedSearchResult(seed: StationSeed(kind: .artist, catalogID: $0.id.rawValue, name: $0.name),
+                                        artworkURL: $0.artwork?.url(width: artworkSize, height: artworkSize))
+            }
+            let playlists = response.playlists.map {
+                StationSeedSearchResult(seed: StationSeed(kind: .playlist, catalogID: $0.id.rawValue, name: $0.name),
+                                        subtitle: $0.curatorName,
+                                        artworkURL: $0.artwork?.url(width: artworkSize, height: artworkSize))
+            }
+            let songs = response.songs.map {
+                StationSeedSearchResult(seed: StationSeed(kind: .song, catalogID: $0.id.rawValue, name: $0.title),
+                                        subtitle: $0.artistName,
+                                        artworkURL: $0.artwork?.url(width: artworkSize, height: artworkSize))
+            }
+            return artists + playlists + songs
+        }
+    }
+
+    /// The listener's library playlists as `.library` seeds, read on the device with
+    /// `MusicLibraryRequest` only. Private: their names and IDs are never sent in a catalog
+    /// request, logged, or put in diagnostics (Fry's rule (d)).
+    func libraryPlaylistSeeds(limit: Int) async throws -> [StationSeedSearchResult] {
+        try Task.checkCancellation()
+        var request = MusicLibraryRequest<Playlist>()
+        request.limit = StationCreationModel.clampedLibraryLimit(limit)
+        let items = try await request.response().items
+        try Task.checkCancellation()
+        return items.map {
+            StationSeedSearchResult(seed: StationSeed(kind: .playlist, catalogID: $0.id.rawValue, name: $0.name, source: .library),
+                                    artworkURL: $0.artwork?.url(width: 120, height: 120))
         }
     }
 

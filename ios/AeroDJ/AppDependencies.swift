@@ -89,7 +89,10 @@ struct AppDependencies {
             playback: MusicKitService.shared,
             interlude: interlude,
             dj: dj,
-            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
+            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
+                                            // Add-station search (Atlas): catalog + on-device library playlists.
+                                            seedSearch: MusicCatalogSeedSource(),
+                                            seedSearchFailureKind: StudioSearchModel.searchFailureKind),
             djSession: djSession,
             pickedNotes: composition.notes)
     }

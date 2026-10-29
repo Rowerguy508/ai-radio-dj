@@ -50,7 +50,12 @@ public final class StationCreationModel {
     public private(set) var saveError: StationRecipeError?
 
     /// Search results per request. MusicKit caps catalog search at 25 per type.
-    public static let resultLimit = 25
+    public nonisolated static let resultLimit = 25
+    /// Library playlists listed at most (on-device read, no catalog cap).
+    public nonisolated static let libraryPlaylistLimit = 200
+
+    /// `limit` clamped to 1...`libraryPlaylistLimit`, for the app's library read.
+    public nonisolated static func clampedLibraryLimit(_ limit: Int) -> Int { min(max(limit, 1), libraryPlaylistLimit) }
 
     @ObservationIgnored private let studio: StudioPresentationModel
     @ObservationIgnored private let search: any StationSeedSearching
@@ -145,7 +150,7 @@ public final class StationCreationModel {
     /// Lists the listener's library playlists (playlist stations only). They stay on the device.
     public func loadLibraryPlaylists() async {
         guard kind == .playlist else { return }
-        await run(.libraryPlaylists) { search in try await search.libraryPlaylistSeeds(limit: Self.resultLimit) }
+        await run(.libraryPlaylists) { search in try await search.libraryPlaylistSeeds(limit: Self.libraryPlaylistLimit) }
     }
 
     /// Saves the picks as a recipe through `studio.saveRecipe(named:from:applying:)`. A nil or

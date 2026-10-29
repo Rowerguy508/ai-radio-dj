@@ -240,3 +240,12 @@ final class StationCreationModelTests: XCTestCase {
         XCTAssertEqual(model.results, [])
     }
 }
+
+final class StationCreationLimitsTests: XCTestCase {
+    func testLimits() {
+        XCTAssertEqual(StationCreationModel.resultLimit, StationSeedSearch.maxLimit)
+        XCTAssertEqual(StationCreationModel.clampedLibraryLimit(0), 1)
+        XCTAssertEqual(StationCreationModel.clampedLibraryLimit(50), 50)
+        XCTAssertEqual(StationCreationModel.clampedLibraryLimit(10_000), StationCreationModel.libraryPlaylistLimit)
+    }
+}
