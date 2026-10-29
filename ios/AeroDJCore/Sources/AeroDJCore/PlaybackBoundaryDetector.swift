@@ -24,8 +24,9 @@ public struct PlaybackObservation: Equatable, Sendable {
         self.uptime = uptime
     }
 
-    /// Playback is within `tolerance` seconds of the entry's end.
-    public func isNearEnd(tolerance: TimeInterval = 1.5) -> Bool {
+    /// Playback is within `tolerance` seconds of the entry's end. The default is the detector's
+    /// end window, so the two cannot drift apart (Fry, #159 review).
+    public func isNearEnd(tolerance: TimeInterval = PlaybackBoundaryDetector.endWindowSeconds) -> Bool {
         guard let position, let duration, duration > 0 else { return false }
         return position >= duration - tolerance
     }
@@ -218,8 +219,9 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// Test hook (seek follow-up): accumulated play time of the current entry.
     var testElapsedPlay: TimeInterval { elapsedPlay }
 
-    /// Same window as `PlaybackObservation.isNearEnd()`.
-    static let endWindowSeconds: TimeInterval = 1.5
+    /// The end window: a stop this close to the end is at the end. `PlaybackObservation.isNearEnd()`
+    /// defaults to it.
+    public static let endWindowSeconds: TimeInterval = 1.5
 
     private var furthestIsNearEnd: Bool {
         PlaybackObservation(entryID: entryID, isPlaying: false, position: lastPosition,
