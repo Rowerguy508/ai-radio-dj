@@ -81,6 +81,7 @@ final class StationQueuePlayer {
         let outcome = await createdStart.open(
             trigger,
             recipeID: recipeID,
+            liveRecipeID: { studio.lastAppliedRecipeID },
             authorize: { await music.authorize() },
             apply: { if case .success = await studio.applyRecipe(recipeID) { true } else { false } },
             active: { station.active },

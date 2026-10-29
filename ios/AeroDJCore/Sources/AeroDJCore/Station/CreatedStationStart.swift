@@ -78,6 +78,10 @@ public final class CreatedStationStarter<Item: Sendable> {
     /// - Parameters:
     ///   - recipeID: the created station's recipe. When it is already current the recipe is not
     ///     applied again, so unsaved Tune edits stay (Fry #213 nit 3); an idle tap still starts it.
+    ///   - liveRecipeID: the recipe the live station last had applied from any caller
+    ///     (`StudioPresentationModel.lastAppliedRecipeID`). The apply is skipped only when this tap's
+    ///     cached id AND the live one both match, so another recipe applied in between (Tune) is
+    ///     replaced (Fry #218). The default (nil) always applies.
     ///   - authorize: the music authorization prompt (user taps only).
     ///   - apply: applies the station's recipe (`StudioPresentationModel.applyRecipe`); false if it failed.
     ///   - active: the station's active configuration, read after `apply`.
@@ -86,6 +90,7 @@ public final class CreatedStationStarter<Item: Sendable> {
     @discardableResult
     public func open(_ trigger: StationOpenTrigger,
                      recipeID: UUID? = nil,
+                     liveRecipeID: @MainActor () -> UUID? = { nil },
                      authorize: @MainActor () async -> Void,
                      apply: @MainActor () async -> Bool,
                      active: @MainActor () -> StationConfiguration,
@@ -96,7 +101,8 @@ public final class CreatedStationStarter<Item: Sendable> {
         let mine = tapGeneration
         await authorize()
         guard mine == tapGeneration else { return .notStarted(.superseded) }
-        if recipeID == nil || recipeID != currentRecipeID {
+        let alreadyCurrent = recipeID != nil && recipeID == currentRecipeID && liveRecipeID() == recipeID
+        if !alreadyCurrent {
             guard await apply() else {
                 if mine == tapGeneration { currentRecipeID = nil }
                 return .notApplied

@@ -576,6 +576,8 @@ final class CreatedStationStartTests: XCTestCase {
         var playing = false
         var authorizations = 0
         var applies = 0
+        /// Stands in for `StudioPresentationModel.lastAppliedRecipeID`.
+        var liveRecipe: UUID?
         var starts: [[String]] = []
         var nothingQueued: Bool { queue.isEmpty && !playing }
     }
@@ -596,10 +598,12 @@ final class CreatedStationStartTests: XCTestCase {
         let config = recipe ?? created
         return await starter.open(trigger,
                                   recipeID: id,
+                                  liveRecipeID: { player.liveRecipe },
                                   authorize: { player.authorizations += 1 },
                                   apply: {
                                       player.applies += 1
                                       await model.applyRecipe(StationRecipe(name: "A Radio", configuration: config))
+                                      player.liveRecipe = id
                                       return true
                                   },
                                   active: { model.active },
@@ -809,6 +813,31 @@ final class CreatedStationStartTests: XCTestCase {
         let other = await open(.userTap, starter, model, player, id: UUID())
         XCTAssertEqual(other, .switchesAtBoundary)
         XCTAssertEqual(player.applies, 2, "a different created station still applies")
+    }
+
+    // Fry #218: Tune applied another recipe after the tap, so the cached id is stale. Tapping the
+    // created station again must re-apply it, not leave the station on the other recipe.
+    func testTappingACreatedStationAfterTuneAppliedAnotherRecipeAppliesItAgain() async throws {
+        let model = await makeStation(active: .default)
+        let feed = makeFeed(QueueFakeCatalog())
+        feed.follow(model)
+        let player = FakePlayer()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(2), pollInterval: .milliseconds(1))
+        let a = UUID()
+
+        guard case .started = await open(.userTap, starter, model, player, id: a) else { return XCTFail("the first tap starts") }
+        XCTAssertEqual(player.applies, 1)
+
+        let b = station([seed(.artist, "b")])                   // Tune > Recipes applies B (not via the starter)
+        await model.applyRecipe(StationRecipe(name: "B Radio", configuration: b))
+        player.liveRecipe = UUID()
+        XCTAssertEqual(starter.currentRecipeID, a, "the starter's cached id is now stale")
+
+        let again = await open(.userTap, starter, model, player, id: a)
+        XCTAssertEqual(again, .switchesAtBoundary)
+        XCTAssertEqual(player.applies, 2, "A is applied again over B")
+        XCTAssertEqual(player.liveRecipe, a)
+        XCTAssertEqual(model.displayed.seeds, created.seeds, "the station is A again, not B")
     }
 
     func testATapThatCannotBeBuiltDoesNotStartOrWaitForever() async throws {
