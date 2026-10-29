@@ -411,6 +411,9 @@ struct TransportRow: View {
     var startTimedOut: Bool = false
     let actions: PlaybackActions
     var onTune: (() -> Void)?
+    /// Without Tune, keep an empty 52 pt slot on the left so Play/Pause sits on the row's
+    /// centre line (the wide listen column). Off by default: the phone layout is unchanged.
+    var balancesSides = false
     @State private var taps = 0
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
@@ -446,6 +449,10 @@ struct TransportRow: View {
                     .foregroundStyle(ink)
                     .accessibilityHint("Opens the tuner. Music continues.")
                     .accessibilityIdentifier("transport.tune")
+                } else if balancesSides {
+                    Color.clear
+                        .frame(width: 52, height: 52)
+                        .accessibilityHidden(true)
                 }
             }
 
