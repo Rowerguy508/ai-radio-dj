@@ -177,4 +177,17 @@ final class CloudVoiceConsentGateTests: XCTestCase {
             XCTAssertFalse(line.contains("["), "owner placeholder leaked into copy: \(line)")
         }
     }
+
+    /// The `PaidVoiceConsentProviding` shape (#244): false until accepted, false again on decline.
+    func testPaidVoiceConsentShapeIsFailClosedAndLive() async {
+        let store = CloudVoiceConsentStore.inMemory()
+        let undecided = await store.hasPaidVoiceConsent()
+        XCTAssertFalse(undecided)
+        store.accept()
+        let accepted = await store.hasPaidVoiceConsent()
+        XCTAssertTrue(accepted)
+        store.decline()
+        let declined = await store.hasPaidVoiceConsent()
+        XCTAssertFalse(declined)
+    }
 }

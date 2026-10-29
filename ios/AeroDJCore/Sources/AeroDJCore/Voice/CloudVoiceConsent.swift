@@ -88,6 +88,11 @@ public struct CloudVoiceConsentStore: @unchecked Sendable {
     /// True only for an accepted answer to the current copy version.
     public var isGranted: Bool { state == .accepted }
 
+    /// Same shape as `PaidVoiceConsentProviding.hasPaidVoiceConsent()` in Fry's #244, so the
+    /// stacked paywall PR adds only `extension CloudVoiceConsentStore: PaidVoiceConsentProviding {}`.
+    /// Reads the store on every call (no caching), so a decline is seen by the very next check.
+    public func hasPaidVoiceConsent() async -> Bool { isGranted }
+
     /// "Use cloud voice". The only way to grant.
     public func accept() { write(.accepted) }
 
