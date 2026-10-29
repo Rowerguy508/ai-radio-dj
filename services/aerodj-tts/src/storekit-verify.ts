@@ -28,19 +28,47 @@ export interface StoreKitConfig {
   allowFamilyShared: boolean;
 }
 
-/** Highest `signedDate` already accepted for an original transaction (caller-owned store). */
+/**
+ * Highest `signedDate` already accepted for one install and one purchase
+ * (caller-owned store, design §5.3 step 7). The store keys by
+ * `(h(install), h(originalTransactionId))`; it never sees one without the other,
+ * so a second install presenting the same transaction is not a replay.
+ */
 export interface LastSeenStore {
-  lastSignedDate(originalTransactionId: string): Promise<number | undefined>;
+  lastSignedDate(install: string, originalTransactionId: string): Promise<number | undefined>;
 }
 
 export type Deployment = 'production' | 'nonproduction';
+
+/**
+ * Fail-closed deployment from the same signal the handler uses (`VERCEL_ENV`):
+ * only `preview` and `development` are non-production; unset or anything else
+ * is `production`.
+ */
+export function deploymentFromEnv(env: Readonly<Record<string, string | undefined>>): Deployment {
+  const v = env.VERCEL_ENV;
+  return v === 'preview' || v === 'development' ? 'nonproduction' : 'production';
+}
+
+/** Sandbox policy (design §5.7): Production always; Sandbox off Production, or on it only if the config allows. */
+export function environmentAllowed(environment: unknown, deployment: Deployment, config: StoreKitConfig): boolean {
+  return (
+    environment === 'Production' ||
+    (environment === 'Sandbox' && (deployment !== 'production' || config.allowSandboxInProduction))
+  );
+}
 
 export interface StoreKitVerifierOptions {
   config: StoreKitConfig;
   deployment: Deployment;
   now: () => number;
   lastSeen: LastSeenStore;
-  /** Pinned roots; defaults to Apple Root CA - G3. Tests inject a fake CA. */
+  /** Opaque install identity (the attested keyId) the last-seen check is keyed on. */
+  install: string;
+  /**
+   * Test-only root override. Refused (`config`) when `deployment === 'production'`,
+   * so a fake CA can never be wired into Production; defaults to Apple Root CA - G3.
+   */
   roots?: readonly X509Certificate[];
 }
 
@@ -56,8 +84,8 @@ export type StoreKitFailure =
   | 'expired'
   | 'revoked'
   | 'ownership'
-  | 'replayed'
-  | 'stale';
+  | 'stale'
+  | 'config';
 
 export interface VerifiedTransaction {
   originalTransactionId: string;
@@ -70,7 +98,12 @@ export interface VerifiedTransaction {
   appAccountToken?: string;
 }
 
-export type StoreKitResult = { ok: true; transaction: VerifiedTransaction } | { ok: false; reason: StoreKitFailure };
+/** `new`: newer than anything this install presented for this purchase; `repost`: equal `signedDate` (idempotent, no upsert). */
+export type Freshness = 'new' | 'repost';
+
+export type StoreKitResult =
+  | { ok: true; transaction: VerifiedTransaction; freshness: Freshness }
+  | { ok: false; reason: StoreKitFailure };
 
 const B64URL = /^[A-Za-z0-9_-]+$/;
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -129,7 +162,10 @@ function chainOk(x5c: string[], roots: readonly X509Certificate[], atMs: number)
 }
 
 export async function verifySignedTransaction(jws: unknown, options: StoreKitVerifierOptions): Promise<StoreKitResult> {
-  const { config, deployment, lastSeen } = options;
+  const { config, deployment, lastSeen, install } = options;
+  // V2: an injected root is test/non-production only.
+  if (options.roots !== undefined && deployment !== 'nonproduction') return fail('config');
+  if (typeof install !== 'string' || install.length === 0) return fail('config');
   if (typeof jws !== 'string' || jws.length === 0 || jws.length > MAX_JWS_BYTES) return fail('malformed');
   const parts = jws.split('.');
   if (parts.length !== 3 || !parts.every((part) => B64URL.test(part))) return fail('malformed');
@@ -141,6 +177,8 @@ export async function verifySignedTransaction(jws: unknown, options: StoreKitVer
   // ES256 only: `none`, HS*, RS*, PS* and anything else are refused. The key comes
   // only from the pinned x5c chain; `jwk`, `jku`, `kid` and `x5u` are never read.
   if (header.alg !== 'ES256') return fail('header');
+  // No critical extensions are understood, so any `crit` is refused (RFC 7515 §4.1.11).
+  if (header.crit !== undefined) return fail('header');
   if (!Array.isArray(x5c) || x5c.length !== 3 || !x5c.every((c) => typeof c === 'string' && B64.test(c))) {
     return fail('header');
   }
@@ -176,10 +214,7 @@ export async function verifySignedTransaction(jws: unknown, options: StoreKitVer
   if (str('type') !== AUTO_RENEWABLE) return fail('type');
 
   const environment = str('environment');
-  const envOk =
-    environment === 'Production' ||
-    (environment === 'Sandbox' && (deployment !== 'production' || config.allowSandboxInProduction));
-  if (!envOk) return fail('environment');
+  if (!environmentAllowed(environment, deployment, config)) return fail('environment');
 
   if (payload.revocationDate !== undefined) return fail('revoked');
   if (!(expiresDate > options.now())) return fail('expired');
@@ -194,14 +229,15 @@ export async function verifySignedTransaction(jws: unknown, options: StoreKitVer
     return fail('malformed');
   }
 
-  const last = await lastSeen.lastSignedDate(originalTransactionId);
-  if (last !== undefined) {
-    if (signedDate === last) return fail('replayed');
-    if (signedDate < last) return fail('stale');
-  }
+  // V3: per (install, purchase). Equal = idempotent re-post; only strictly older is refused.
+  // Replay of a request is stopped by the assertion counter and single-use challenge, not here.
+  const last = await lastSeen.lastSignedDate(install, originalTransactionId);
+  if (last !== undefined && signedDate < last) return fail('stale');
+  const freshness: Freshness = last !== undefined && signedDate === last ? 'repost' : 'new';
 
   return {
     ok: true,
+    freshness,
     transaction: {
       originalTransactionId,
       transactionId,

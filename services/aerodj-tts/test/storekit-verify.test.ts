@@ -5,12 +5,14 @@ import { APPLE_ROOT_CA_G3_PEM } from '../src/apple-root-ca-g3.js';
 import { STOREKIT_CONFIG, parseStoreKitConfig } from '../src/storekit-config.js';
 import {
   appleRoots,
+  deploymentFromEnv,
+  environmentAllowed,
   verifySignedTransaction,
   type LastSeenStore,
   type StoreKitConfig,
   type StoreKitVerifierOptions,
 } from '../src/storekit-verify.js';
-import { makeChain, signJws, type FakeChain } from './helpers/fake-ca.js';
+import { LEAF_OID, INTERMEDIATE_OID, makeCert, makeChain, signJws, type FakeChain } from './helpers/fake-ca.js';
 
 const NOW = Date.parse('2026-10-29T22:00:00Z');
 const DAY = 86_400_000;
@@ -22,14 +24,24 @@ const x5c = (c: FakeChain) => [c.leafDer, c.intermediateDer, c.rootDer];
 const config: StoreKitConfig = { ...STOREKIT_CONFIG };
 
 const emptyStore: LastSeenStore = { lastSignedDate: async () => undefined };
-const storeWith = (ms: number): LastSeenStore => ({ lastSignedDate: async () => ms });
+const INSTALL_A = 'install-key-A';
+const INSTALL_B = 'install-key-B';
+const OTID = '2000000000000001';
 
+/** A last-seen store keyed per (install, originalTransactionId), like PR 6's. */
+function mapStore(entries: Array<[install: string, otid: string, ms: number]>): LastSeenStore {
+  const m = new Map(entries.map(([i, o, ms]) => [`${i}\u0000${o}`, ms]));
+  return { lastSignedDate: async (install, otid) => m.get(`${install}\u0000${otid}`) };
+}
+
+// Tests run as non-production: an injected (fake) root is refused on production (V2).
 function opts(over: Partial<StoreKitVerifierOptions> = {}): StoreKitVerifierOptions {
   return {
     config,
-    deployment: 'production',
+    deployment: 'nonproduction',
     now: () => NOW,
     lastSeen: emptyStore,
+    install: INSTALL_A,
     roots: [new X509Certificate(chain.rootDer)],
     ...over,
   };
@@ -69,8 +81,28 @@ describe('Apple root pin and config', () => {
   });
 
   it('defaults to the Apple root, so a fake-CA transaction fails without an injected root', async () => {
-    const result = await verifySignedTransaction(good(), { ...opts(), roots: undefined });
-    assert.deepEqual(result, { ok: false, reason: 'chain' });
+    for (const deployment of ['production', 'nonproduction'] as const) {
+      const result = await verifySignedTransaction(good(), { ...opts({ deployment }), roots: undefined });
+      assert.deepEqual(result, { ok: false, reason: 'chain' }, deployment);
+    }
+  });
+
+  it('V2: refuses an injected root on production, even the one that would verify', async () => {
+    assert.equal(await reason(good(), { deployment: 'production' }), 'config');
+    assert.equal(await reason(good(), { deployment: 'production', roots: [] }), 'config');
+    assert.equal(await reason(good(), { deployment: 'nonproduction' }), 'ok');
+  });
+
+  it('V2: deployment from VERCEL_ENV fails closed (unknown or unset -> production)', () => {
+    assert.equal(deploymentFromEnv({ VERCEL_ENV: 'preview' }), 'nonproduction');
+    assert.equal(deploymentFromEnv({ VERCEL_ENV: 'development' }), 'nonproduction');
+    for (const v of ['production', undefined, '', 'Preview', 'preview ', 'staging']) {
+      assert.equal(deploymentFromEnv({ VERCEL_ENV: v }), 'production', String(v));
+    }
+  });
+
+  it('refuses a missing install identity', async () => {
+    assert.equal(await reason(good(), { install: '' }), 'config');
   });
 
   it('ships the interim policy defaults and placeholder product IDs', () => {
@@ -110,11 +142,12 @@ describe('verifySignedTransaction: accepts', () => {
   });
 
   it('Sandbox on a non-production deployment', async () => {
-    assert.equal(await reason(good({ environment: 'Sandbox' }), { deployment: 'nonproduction' }), 'ok');
+    assert.equal(await reason(good({ environment: 'Sandbox' })), 'ok');
   });
 
-  it('Sandbox on production only when the config allows it', async () => {
-    assert.equal(await reason(good({ environment: 'Sandbox' }), { config: { ...config, allowSandboxInProduction: true } }), 'ok');
+  it('Sandbox on production only when the config allows it (policy function used by the verifier)', () => {
+    assert.equal(environmentAllowed('Sandbox', 'production', { ...config, allowSandboxInProduction: true }), true);
+    assert.equal(environmentAllowed('Production', 'production', config), true);
   });
 
   it('FAMILY_SHARED only when the config allows it', async () => {
@@ -124,8 +157,28 @@ describe('verifySignedTransaction: accepts', () => {
     );
   });
 
-  it('a newer transaction than the last one seen', async () => {
-    assert.equal(await reason(good(), { lastSeen: storeWith(NOW - 5000) }), 'ok');
+  it('a newer transaction than the last one this install presented', async () => {
+    const result = await verifySignedTransaction(good(), opts({ lastSeen: mapStore([[INSTALL_A, OTID, NOW - 5000]]) }));
+    assert.equal(result.ok && result.freshness, 'new');
+  });
+
+  it('V3: a second install presenting the same current transaction', async () => {
+    const lastSeen = mapStore([[INSTALL_A, OTID, NOW - 1000]]);
+    const result = await verifySignedTransaction(good(), opts({ lastSeen, install: INSTALL_B }));
+    assert.equal(result.ok && result.freshness, 'new');
+  });
+
+  it('V3: the same install re-posting the same signedDate is an idempotent re-post', async () => {
+    const lastSeen = mapStore([[INSTALL_A, OTID, NOW - 1000]]);
+    const result = await verifySignedTransaction(good(), opts({ lastSeen }));
+    assert.equal(result.ok && result.freshness, 'repost');
+  });
+
+  it('V3: the last-seen store is asked for this install and this purchase', async () => {
+    const calls: string[][] = [];
+    const lastSeen: LastSeenStore = { lastSignedDate: async (i, o) => (calls.push([i, o]), undefined) };
+    assert.equal(await reason(good(), { lastSeen, install: INSTALL_B }), 'ok');
+    assert.deepEqual(calls, [[INSTALL_B, OTID]]);
   });
 });
 
@@ -173,8 +226,11 @@ describe('verifySignedTransaction: must fail (Sentinel criterion 7)', () => {
     assert.equal(await reason(good({ revocationDate: NOW - DAY, revocationReason: 0 })), 'revoked');
   });
 
-  it('sandbox in prod (config default)', async () => {
-    assert.equal(await reason(good({ environment: 'Sandbox' })), 'environment');
+  it('sandbox in prod (config default)', () => {
+    assert.equal(environmentAllowed('Sandbox', 'production', config), false);
+    assert.equal(environmentAllowed('Sandbox', 'nonproduction', config), true);
+    assert.equal(environmentAllowed('Xcode', 'nonproduction', config), false);
+    assert.equal(environmentAllowed(undefined, 'nonproduction', config), false);
   });
 
   it('unknown environment (e.g. Xcode) everywhere', async () => {
@@ -186,12 +242,11 @@ describe('verifySignedTransaction: must fail (Sentinel criterion 7)', () => {
     assert.equal(await reason(good({ inAppOwnershipType: 'ASSIGNED' }), { config: { ...config, allowFamilyShared: true } }), 'ownership');
   });
 
-  it('replayed transaction (same signedDate already seen)', async () => {
-    assert.equal(await reason(good(), { lastSeen: storeWith(NOW - 1000) }), 'replayed');
-  });
-
-  it('older transaction than the last one seen', async () => {
-    assert.equal(await reason(good(), { lastSeen: storeWith(NOW) }), 'stale');
+  it('V3: an older signedDate than this install already presented for this purchase', async () => {
+    assert.equal(await reason(good(), { lastSeen: mapStore([[INSTALL_A, OTID, NOW]]) }), 'stale');
+    assert.equal(await reason(good(), { lastSeen: mapStore([[INSTALL_A, OTID, NOW - 999]]) }), 'stale');
+    // Another install's newer entry for the same purchase does not make this one stale.
+    assert.equal(await reason(good(), { lastSeen: mapStore([[INSTALL_B, OTID, NOW]]) }), 'ok');
   });
 
   it('malformed JWS', async () => {
@@ -207,6 +262,12 @@ describe('verifySignedTransaction: must fail (Sentinel criterion 7)', () => {
   it('JWS header: alg none, HS256, RS256, ES384 and missing alg are refused', async () => {
     for (const alg of ['none', 'HS256', 'RS256', 'ES384', 'es256', undefined]) {
       assert.equal(await reason(signJws(payload(), x5c(chain), chain.leafKey, { alg })), 'header', String(alg));
+    }
+  });
+
+  it('JWS header: any crit is refused', async () => {
+    for (const crit of [['b64'], [], 'exp']) {
+      assert.equal(await reason(signJws(payload(), x5c(chain), chain.leafKey, { crit })), 'header', JSON.stringify(crit));
     }
   });
 
@@ -247,6 +308,105 @@ describe('verifySignedTransaction: must fail (Sentinel criterion 7)', () => {
     const late = makeChain('Late', { leafNotBefore: new Date(NOW - 2000) });
     const jws = signJws(payload({ signedDate: NOW - 5000 }), x5c(late), late.leafKey);
     assert.equal(await reason(jws, { roots: [new X509Certificate(late.rootDer)] }), 'chain');
+  });
+
+  it('V1: forged leaf not signed by the genuine intermediate (same names and marker OID)', async () => {
+    // Attacker key self-signs a leaf that copies the intermediate's subject as issuer;
+    // presented under the genuine intermediate and pinned root (both public in every JWS).
+    const attacker = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const forgedLeaf = makeCert({
+      cn: 'Fake StoreKit Signing',
+      issuerCn: chain.intermediateCn,
+      issuerKey: attacker.privateKey,
+      publicKey: attacker.publicKey,
+      ca: false,
+      markerOids: [LEAF_OID],
+      serial: 3,
+    });
+    const jws = signJws(payload(), [forgedLeaf, chain.intermediateDer, chain.rootDer], attacker.privateKey);
+    assert.equal(await reason(jws), 'chain');
+  });
+
+  it('leaf whose issuer name does not match the intermediate (signature still valid)', async () => {
+    const k = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const leaf = makeCert({
+      cn: 'Fake StoreKit Signing',
+      issuerCn: 'Some Other Intermediate',
+      issuerKey: chain.intermediateKey,
+      publicKey: k.publicKey,
+      ca: false,
+      markerOids: [LEAF_OID],
+    });
+    assert.equal(await reason(signJws(payload(), [leaf, chain.intermediateDer, chain.rootDer], k.privateKey)), 'chain');
+  });
+
+  it('intermediate whose issuer name does not match the pinned root (signature still valid)', async () => {
+    const ik = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const k = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const inter = makeCert({
+      cn: chain.intermediateCn,
+      issuerCn: 'Some Other Root',
+      issuerKey: chain.rootKey,
+      publicKey: ik.publicKey,
+      ca: true,
+      markerOids: [INTERMEDIATE_OID],
+      serial: 8,
+    });
+    const leaf = makeCert({
+      cn: 'Fake StoreKit Signing',
+      issuerCn: chain.intermediateCn,
+      issuerKey: ik.privateKey,
+      publicKey: k.publicKey,
+      ca: false,
+      markerOids: [LEAF_OID],
+    });
+    assert.equal(await reason(signJws(payload(), [leaf, inter, chain.rootDer], k.privateKey)), 'chain');
+  });
+
+  it('leaf marked as a CA, or intermediate not a CA', async () => {
+    const k = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const caLeaf = makeCert({
+      cn: 'Fake StoreKit Signing',
+      issuerCn: chain.intermediateCn,
+      issuerKey: chain.intermediateKey,
+      publicKey: k.publicKey,
+      ca: true,
+      markerOids: [LEAF_OID],
+    });
+    assert.equal(await reason(signJws(payload(), [caLeaf, chain.intermediateDer, chain.rootDer], k.privateKey)), 'chain');
+
+    const ik = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const nonCaInter = makeCert({
+      cn: chain.intermediateCn,
+      issuerCn: chain.rootCn,
+      issuerKey: chain.rootKey,
+      publicKey: ik.publicKey,
+      ca: false,
+      markerOids: [INTERMEDIATE_OID],
+      serial: 7,
+    });
+    const leaf = makeCert({
+      cn: 'Fake StoreKit Signing',
+      issuerCn: chain.intermediateCn,
+      issuerKey: ik.privateKey,
+      publicKey: k.publicKey,
+      ca: false,
+      markerOids: [LEAF_OID],
+    });
+    assert.equal(await reason(signJws(payload(), [leaf, nonCaInter, chain.rootDer], k.privateKey)), 'chain');
+  });
+
+  it('leaf key not P-256 (P-384) under the genuine intermediate', async () => {
+    const k = crypto.generateKeyPairSync('ec', { namedCurve: 'secp384r1' });
+    const leaf = makeCert({
+      cn: 'Fake StoreKit Signing',
+      issuerCn: chain.intermediateCn,
+      issuerKey: chain.intermediateKey,
+      publicKey: k.publicKey,
+      ca: false,
+      markerOids: [LEAF_OID],
+    });
+    assert.equal(await reason(signJws(payload(), [leaf, chain.intermediateDer, chain.rootDer], k.privateKey)), 'chain');
   });
 
   it('chain order swapped (intermediate presented as leaf)', async () => {

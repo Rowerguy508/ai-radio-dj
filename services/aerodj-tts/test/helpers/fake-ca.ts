@@ -93,6 +93,11 @@ export interface FakeChain {
   intermediateDer: Buffer;
   leafDer: Buffer;
   leafKey: KeyObject;
+  /** Test-only: lets a test mint its own certs under this intermediate or root. */
+  intermediateKey: KeyObject;
+  rootKey: KeyObject;
+  rootCn: string;
+  intermediateCn: string;
 }
 
 const keyPair = () => crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -131,7 +136,16 @@ export function makeChain(label = 'Fake', o: ChainOptions = {}): FakeChain {
     notBefore: o.leafNotBefore,
     serial: 3,
   });
-  return { rootDer, intermediateDer, leafDer, leafKey: leaf.privateKey };
+  return {
+    rootDer,
+    intermediateDer,
+    leafDer,
+    leafKey: leaf.privateKey,
+    intermediateKey: inter.privateKey,
+    rootKey: root.privateKey,
+    rootCn,
+    intermediateCn: interCn,
+  };
 }
 
 export function signJws(
