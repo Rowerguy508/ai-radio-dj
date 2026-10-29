@@ -191,6 +191,14 @@ public actor DJBreakPreparer {
 
     /// Called at the boundary. Never waits: returns what is ready or an explicit skip.
     /// `natural` is false when the song was cut (skip, queue change); the break is then dropped.
+    /// DJ talk-over (-Fry): true when boundary `k` has a rendered break waiting. Does not take
+    /// it, cancel a render or close the boundary, so the normal hand-out is unchanged when
+    /// the talk-over does not run.
+    public func isReady(afterTrack k: Int) -> Bool {
+        if case .ready? = results[k] { return true }
+        return false
+    }
+
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
         defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k) }
         guard natural else {

@@ -152,6 +152,11 @@ final class P0EventTraceHost: ObservableObject {
         apply { _ = $0.scenePhase(mapped, at: $1) }
     }
 
+    /// DJ talk-over rows (`TalkoverCoordinator`): decisions, misses, cancels, latency. Codes only.
+    func talkover(_ body: (inout P0EventTrace, TimeInterval) -> Void) {
+        apply(body)
+    }
+
     private func apply(_ body: (inout P0EventTrace, TimeInterval) -> Void) {
         let before = trace.rows.last?.id
         let pollsBefore = trace.lastPolls.last?.id
@@ -180,9 +185,17 @@ struct P0ScenePhaseTrace: ViewModifier {
 /// The trace on the Player screen. `P0TraceView` is the view (Nova owns that file).
 struct P0EventTracePanel: View {
     @ObservedObject private var host = P0EventTraceHost.shared
+    /// DJ talk-over rollback switch (-Fry). Unset reads the build default (ON only in the
+    /// owner A/B build); flipping it stores an override that wins on the next break.
+    @AppStorage(DJTalkoverFlag.defaultsKey) private var talkover = DJTalkoverFlag.buildDefault
 
     var body: some View {
-        P0TraceView(rows: host.rows, header: host.header, onClear: { host.clear() })
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("DJ talk-over", isOn: $talkover)
+                .font(.caption.monospaced())
+                .accessibilityIdentifier("p0.talkoverToggle")
+            P0TraceView(rows: host.rows, header: host.header, onClear: { host.clear() })
+        }
     }
 }
 #endif

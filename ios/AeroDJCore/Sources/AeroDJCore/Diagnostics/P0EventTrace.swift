@@ -36,6 +36,8 @@ public enum P0TraceEvent: String, Equatable, Sendable, CaseIterable {
     case sessionNotice
     case scenePhase
     case appLifecycle
+    /// DJ talk-over (flagged): a plan, a timing miss, a cancel or a measured start latency.
+    case talkover
 }
 
 public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
@@ -48,6 +50,8 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     case began, shouldResume, reason, phase
     case playedThrough, held, intNearEnd, endReported
     case plan
+    // talk-over
+    case kind, mode, intro, outro, voice, play, unduck, lat, ms, measured
 }
 
 extension P0TraceCode {
@@ -79,6 +83,13 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     // lifecycle
     case active, inactive, background
     case willResignActive, didEnterBackground, willEnterForeground, didBecomeActive
+    // talk-over (row kind, mode, hard-break and intro-skip reasons, misses, cancels)
+    case decision, miss, cancel, latency, hardBreak, used
+    case outroAndIntro, outroOnly
+    case flagOff, durationUnknown, trackTooShort, voiceTooLong, voiceInvalid, tooLateToArm, outroTooShort, endedBeforeVoice
+    case noClosingLine, closingTooLong, nextTrackTooShort, nextTrackUnknown, introTooShort
+    case voiceStartLate, nextStartLate, nextStartEarly, endAfterPlayCue, voiceEndedFirst
+    case seekOutOfWindow, seekWhileSpeaking, skip, userStop, interruption, routeRemoved, revoked, voiceFailed
 }
 
 public enum P0TraceValue: Equatable, Sendable {
@@ -559,6 +570,49 @@ public struct P0EventTrace: Sendable {
         case .didBecomeActive: code = .didBecomeActive
         }
         return record(.appLifecycle, at: t, [(.phase, .code(code))])
+    }
+}
+
+// MARK: DJ talk-over (-Fry)
+
+extension P0EventTrace {
+    private static func code(_ raw: String) -> P0TraceValue { .code(P0TraceCode(rawValue: raw) ?? .unknown) }
+    private static func ms(_ seconds: Double?) -> P0TraceValue {
+        guard let seconds, seconds.isFinite else { return .missing }
+        return .int(Int((seconds * 1000).rounded()))
+    }
+
+    /// The planner's decision for the break after `afterTrack`. Codes and seconds only.
+    @discardableResult
+    public mutating func talkoverDecision(_ d: TalkoverDecision, afterTrack: Int, at t: TimeInterval) -> P0TraceRow {
+        var pairs: [(P0TraceKey, P0TraceValue)] = [(.kind, .code(.decision)), (.after, .int(afterTrack))]
+        switch d {
+        case .hardBreak(let r):
+            pairs += [(.mode, .code(.hardBreak)), (.reason, Self.code(r.rawValue))]
+        case .talkover(let p):
+            pairs += [(.mode, Self.code(p.mode.rawValue)), (.intro, Self.code(p.introSkip?.rawValue ?? "used")),
+                      (.outro, .tenths(p.outroOverlap)), (.voice, .tenths(p.voiceSeconds)),
+                      (.play, .tenths(p.nextPlayAfterVoice)), (.unduck, .tenths(p.unduckAfterVoice)),
+                      (.lat, Self.ms(p.startLatency))]
+        }
+        return record(.talkover, at: t, pairs)
+    }
+
+    @discardableResult
+    public mutating func talkoverMiss(_ m: TalkoverMiss, afterTrack: Int, seconds: Double?, at t: TimeInterval) -> P0TraceRow {
+        record(.talkover, at: t, [(.kind, .code(.miss)), (.after, .int(afterTrack)),
+                                  (.code, Self.code(m.rawValue)), (.ms, Self.ms(seconds))])
+    }
+
+    @discardableResult
+    public mutating func talkoverCancel(_ c: TalkoverCancel, afterTrack: Int, at t: TimeInterval) -> P0TraceRow {
+        record(.talkover, at: t, [(.kind, .code(.cancel)), (.after, .int(afterTrack)), (.reason, Self.code(c.rawValue))])
+    }
+
+    @discardableResult
+    public mutating func talkoverLatency(measured: Double, next: Double, afterTrack: Int, at t: TimeInterval) -> P0TraceRow {
+        record(.talkover, at: t, [(.kind, .code(.latency)), (.after, .int(afterTrack)),
+                                  (.measured, Self.ms(measured)), (.lat, Self.ms(next))])
     }
 }
 #endif

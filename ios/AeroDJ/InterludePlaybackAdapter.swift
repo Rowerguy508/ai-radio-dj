@@ -34,6 +34,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// Where levels go. Set once in `AppDependencies.makeInterlude`. The store keeps the
     /// level at 0 unless the DJ state is `.speaking` for the same break.
     weak var speechLevel: DJPresentationStore?
+    /// DJ talk-over (-Fry): every stop request, before it is applied, so the coordinator can
+    /// drop or keep a break it took early. Reason nil is the untagged stop (pause, skip, new queue).
+    var onStopRequested: (@MainActor (InterludeStopReason?, Int?) -> Void)?
+    /// DJ talk-over: silence before the last queued clip (Echo's speech gap). 0 otherwise.
+    private var closingGap: Double = 0
 
     init(music: MusicKitService) {
         self.music = music
@@ -166,6 +171,12 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         player.isMeteringEnabled = true
         clipPlayer = player
         stopState.adopt(player: ObjectIdentifier(player))
+        if queue.isEmpty, closingGap > 0 {
+            // Talk-over closing line: starts `closingGap` after MAIN ends, on the player clock.
+            let gap = closingGap
+            closingGap = 0
+            return player.play(atTime: player.deviceCurrentTime + gap)
+        }
         return player.play()
     }
 
@@ -224,6 +235,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// Untagged stop. `skip()` and pause send this. It cancels a handed-out or pending
     /// break, and a break that is already playing.
     func stop() {
+        onStopRequested?(nil, nil)
         _ = pendingPlay.stop(reason: .sourceRevoked, afterTrack: nil, mayAutoResume: music.mayAutoResume)
         guard stopState.stop(reason: nil) else { return }
         haltAudio()
@@ -274,6 +286,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// because the session hook was nil, is outside this guarantee.
     nonisolated func stopCurrentInterlude(reason: InterludeStopReason, afterTrack: Int? = nil) {
         MainActorImmediate.run {
+            self.onStopRequested?(reason, afterTrack)
             // A tag scopes a playing stop to that afterTrack. Nil fails closed. An
             // interruption or a route removal also cancels a handed-out or pending break.
             // Revoke of a playing clip ends as `.revoked`. Other playing stops keep the
@@ -408,6 +421,89 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         finish = nil
         outcome = result
         continuation.resume()
+    }
+
+    // MARK: DJ talk-over (-Fry, flagged; see docs/dj-talkover.md)
+
+    /// Decodes clips for the talk-over planner. Nil for a clip that will not decode or is empty.
+    func decodeTalkover(_ clips: [Data]) -> [AVAudioPlayer?] {
+        clips.map { data in
+            guard let player = try? AVAudioPlayer(data: data), player.duration > 0 else { return nil }
+            player.prepareToPlay()
+            return player
+        }
+    }
+
+    /// Plays a talk-over voice while music keeps playing: MAIN over the outro (the session
+    /// ducks other audio, which on device includes `ApplicationMusicPlayer`; unverified), then
+    /// the closing line after `closingGap`. Music is never paused for it and never resumed by
+    /// it. The break ends through `completeNarration`, which deactivates the session: the duck
+    /// ends and the song swells (system ramp). `onStarted` gets the uptime of the real start.
+    ///
+    /// Same stop paths as a normal break: `stop()`, `stopCurrentInterlude`, the timeout, and
+    /// the delegate. `.speaking` is reported only when AVAudioPlayer really starts.
+    func playTalkover(players: [AVAudioPlayer], gains: [Float], closingGap gap: Double, line: String,
+                      afterTrack: Int, onStarted: @escaping @MainActor (Double) -> Void) async -> BreakPlayerOutcome {
+        guard !isSpeaking, !players.isEmpty, !line.isEmpty else { return .failed }
+        // Same guard as a boundary break: the system is holding playback, or the user paused.
+        guard !music.pausedBySystem, music.mayAutoResume else { return .cancelled }
+        guard TalkoverAudioSession.duck() else { return .failed }
+        breakTrack = afterTrack
+        for (player, gain) in zip(players, gains + Array(repeating: 1, count: max(0, players.count - gains.count))) {
+            player.volume = gain
+        }
+        queue = players
+        closingGap = players.count > 1 ? max(0, gap) : 0
+        let total = players.reduce(0) { $0 + $1.duration } + closingGap + 2
+        outcome = .cancelled
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            finish = continuation
+            stopState.begin()
+            timeout = Task { @MainActor [weak self] in
+                do { try await Task.sleep(nanoseconds: UInt64(total * 1_000_000_000)) } catch { return }
+                self?.endBreakSilencingClip(.timeout, result: .cancelled)
+            }
+            if startNextClip() {
+                log.notice("\(PlaybackLog.breakStart(after: self.breakTrack), privacy: .public)")
+                music.djStarted(line)
+                onPlayback?(.started(afterTrack: breakTrack))
+                onStarted(ProcessInfo.processInfo.systemUptime)
+                startLevelMeter()
+            } else {
+                finishBreak(.failed)
+            }
+        }
+        log.notice("\(PlaybackLog.breakEnd(after: self.breakTrack, result: self.outcome), privacy: .public)")
+        let end = NarrationResumePolicy.narrationEnd(for: outcome)
+        let decision = NarrationResumePolicy.decide(end, mayAutoResume: music.mayAutoResume, phase: music.audioState)
+        // Releases the session (the unduck). Music was never paused, so nothing is resumed.
+        music.completeNarration(decision)
+        TalkoverAudioSession.restore()
+        switch outcome {
+        case .finished: onPlayback?(.finished(afterTrack: breakTrack))
+        case .revoked: onPlayback?(.revoked(afterTrack: breakTrack))
+        case .cancelled, .failed: onPlayback?(.failed(afterTrack: breakTrack))
+        }
+        queue = []
+        clipPlayer = nil
+        closingGap = 0
+        return outcome
+    }
+
+    /// A seek while the talk-over speaks: fade the voice out over `seconds`, then stop it.
+    /// The break ends as cancelled and is not replayed.
+    func fadeOutTalkover(seconds: Double = 0.25) {
+        guard let player = clipPlayer, finish != nil else { return }
+        queue = []
+        closingGap = 0
+        player.setVolume(0, fadeDuration: seconds)
+        let id = ObjectIdentifier(player)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard let self, let current = self.clipPlayer, ObjectIdentifier(current) == id,
+                  self.stopState.stop(reason: nil) else { return }
+            self.haltAudio()
+        }
     }
 
     // MARK: AVAudioPlayerDelegate

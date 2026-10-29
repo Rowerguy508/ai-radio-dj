@@ -122,6 +122,29 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertEqual(r.session.lastNoBreak?.cadencePlanned, false, "the cadence chose silence here")
     }
 
+    /// DJ talk-over (-Fry): the peek never takes the break, and a dropped talk-over leaves the
+    /// Studio idle (not a voice failure) and clears On Air.
+    func testTalkoverPeekLeavesTheBreakAndADropGoesIdle() async throws {
+        let r = await rig()
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready before the boundary")
+        let ready = await r.session.breakIsReady(afterTrack: 0)
+        XCTAssertTrue(ready)
+        let again = await r.session.breakIsReady(afterTrack: 0)
+        XCTAssertTrue(again, "peeking does not take it")
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        let taken = try XCTUnwrap(handed)
+        XCTAssertFalse(taken.clips.isEmpty)
+        let afterTake = await r.session.breakIsReady(afterTrack: 0)
+        XCTAssertFalse(afterTake)
+        r.session.talkoverDropped(afterTrack: 0)
+        XCTAssertEqual(r.dj.studioState, .idle)
+        XCTAssertFalse(r.dj.studioState.isOnAir)
+        let none = await r.session.breakIsReady(afterTrack: 1)
+        XCTAssertFalse(none, "nothing planned there")
+    }
+
     func testLateOrCutBreaksAreSkippedAndNeverWait() async {
         let r = await rig()
         await r.session.queueStarted(djTracks(8))
