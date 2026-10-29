@@ -150,13 +150,12 @@ public struct CatalogStationSeedResolver: StationSeedResolver {
     public func resolve(seeds: [StationSeed], reach: StationReach) async -> StationCandidatePool {
         var pool = StationCandidatePool()
         let valid = StationConfiguration.normalizedSeeds(seeds)
-        for tier in reach.tiers {
+        // The same rule as the reach picker and `validated()`: any library seed means `.only`.
+        let effective = reach.effective(for: valid)
+        if effective != reach { pool.libraryReachLimited = valid.filter { $0.source == .library }.count }
+        for tier in effective.tiers {
             var perSeed: [[StationCandidate]] = []
             for seed in valid {
-                if seed.source == .library, tier != .seed {
-                    if tier == reach.tiers.last { pool.libraryReachLimited += 1 }
-                    continue
-                }
                 do {
                     let songs = try await fetch(tier, seed)
                     perSeed.append(songs.enumerated().map { index, song in
@@ -376,8 +375,10 @@ public struct StarterStationSuggester: Sendable {
                   names.insert(clean.lowercased()).inserted else { return }
             var config = base
             config.seeds = seeds
-            config.reach = reach
+            // Library seeds play only themselves (Fry, #157): clamp through the shared rule.
+            config.reach = reach.effective(for: seeds)
             config.requestedIntegrations = []
+            config = config.validated()
             let draft = StationRecipe(id: makeID(), name: clean, configuration: config, createdAt: now())
             result.append(StarterStationSuggestion(origin: origin, draft: draft))
         }

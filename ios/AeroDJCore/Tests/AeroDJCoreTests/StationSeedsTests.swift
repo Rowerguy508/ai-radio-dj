@@ -74,12 +74,12 @@ final class StationSeedModelTests: XCTestCase {
         let c = try JSONDecoder().decode(StationConfiguration.self, from: Data(json.utf8))
         XCTAssertEqual(c.seeds.map(\.catalogID), ["21", "9"])
         XCTAssertEqual(c.seeds[1].source, .library, "a missing source is treated as private library data")
-        XCTAssertEqual(c.reach, .related)
+        XCTAssertEqual(c.reach, .only, "an unknown reach falls back to .related, then a library seed clamps it to .only")
     }
 
     func testSeedsAndReachRoundTripThroughConfigurationSnapshotAndRecipe() throws {
         let config = StationConfiguration(requestedIntegrations: [.calendar],
-                                          seeds: [artist("1"), StationSeed(kind: .playlist, catalogID: "p.1", name: "Mine", source: .library)],
+                                          seeds: [artist("1"), StationSeed(kind: .playlist, catalogID: "p.1", name: "Mine", source: .catalog)],
                                           reach: .broad)
         let decoded = try JSONDecoder().decode(StationConfiguration.self, from: JSONEncoder().encode(config))
         XCTAssertEqual(decoded, config)
@@ -206,7 +206,7 @@ final class StationSeedPrivacyTests: XCTestCase {
         XCTAssertEqual(d.librarySeedCount, 1)
         XCTAssertTrue(d.hasLibrarySeeds)
         XCTAssertEqual(d.countsByKind, [.playlist: 1, .artist: 1])
-        XCTAssertEqual(d.description, "seeds=2 library=1 reach=broad artist=1 genre=0 playlist=1 song=0")
+        XCTAssertEqual(d.description, "seeds=2 library=1 reach=only artist=1 genre=0 playlist=1 song=0")
         for leak in ["SECRETLIBID", "Breakup", "123", "Robyn"] { XCTAssertFalse(d.description.contains(leak)) }
     }
 
@@ -436,7 +436,7 @@ final class StarterStationSuggesterTests: XCTestCase {
         XCTAssertEqual(s.map(\.draft.name), ["Your Mix", "Robyn Radio", "Lorde Radio", "Dancing On My Own Radio", "Indie Chill", "Rock Radio"])
         XCTAssertEqual(s.map(\.origin), [.libraryMix, .libraryArtist, .libraryArtist, .recentlyPlayed, .recommended, .recommended])
         XCTAssertEqual(s[0].draft.configuration.seeds.map(\.catalogID), ["l1", "l2"])
-        XCTAssertEqual(s[0].draft.configuration.reach, .related)
+        XCTAssertEqual(s[0].draft.configuration.reach, .only, "library seeds play only themselves")
         XCTAssertEqual(s[4].draft.configuration.reach, .broad)
         XCTAssertEqual(s[1].draft.configuration.personality, base.personality, "keeps the listener's tuning")
         XCTAssertTrue(s.allSatisfy { $0.draft.configuration.requestedIntegrations.isEmpty }, "never carries connections")

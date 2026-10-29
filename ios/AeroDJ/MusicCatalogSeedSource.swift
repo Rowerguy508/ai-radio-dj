@@ -26,28 +26,53 @@ actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource {
 
     // MARK: Seed search (station wizard)
 
-    /// Artists, genres, playlists and songs matching `term`, as catalog seeds.
-    func searchSeeds(_ term: String, limit: Int = 10) async throws -> [StationSeed] {
-        let query = term.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return [] }
-        var request = MusicCatalogSearchRequest(term: query, types: [Artist.self, Playlist.self, Song.self])
-        request.limit = limit
-        let response = try await request.response()
-        let artists = response.artists.map { StationSeed(kind: .artist, catalogID: $0.id.rawValue, name: $0.name) }
-        let playlists = response.playlists.map { StationSeed(kind: .playlist, catalogID: $0.id.rawValue, name: $0.name) }
-        let songs = response.songs.map { StationSeed(kind: .song, catalogID: $0.id.rawValue, name: $0.title) }
-        // Genres are not a catalog search type; match the storefront's genre list instead.
-        let genres = (try? await genreSeeds(matching: query)) ?? []
-        return artists + Array(genres.prefix(limit)) + playlists + songs
+    /// Artists, genres, playlists and songs matching `term`, as catalog seeds with display-only
+    /// subtitles (a song's artist, a playlist's curator) and artwork. A blank term returns `[]`
+    /// without a request; a cancelled search throws `CancellationError` and returns nothing
+    /// partial (`StationSeedSearch.run`). Subtitles and artwork are never logged.
+    func searchSeeds(_ term: String, limit: Int = 10, artworkSize: Int = 120) async throws -> [StationSeedSearchResult] {
+        try await StationSeedSearch.run(term: term, limit: limit) { query, limit in
+            var request = MusicCatalogSearchRequest(term: query, types: [Artist.self, Playlist.self, Song.self])
+            request.limit = limit
+            let response = try await request.response()
+            try Task.checkCancellation()
+            let artists = response.artists.map {
+                StationSeedSearchResult(seed: StationSeed(kind: .artist, catalogID: $0.id.rawValue, name: $0.name),
+                                        artworkURL: $0.artwork?.url(width: artworkSize, height: artworkSize))
+            }
+            let playlists = response.playlists.map {
+                StationSeedSearchResult(seed: StationSeed(kind: .playlist, catalogID: $0.id.rawValue, name: $0.name),
+                                        subtitle: $0.curatorName,
+                                        artworkURL: $0.artwork?.url(width: artworkSize, height: artworkSize))
+            }
+            let songs = response.songs.map {
+                StationSeedSearchResult(seed: StationSeed(kind: .song, catalogID: $0.id.rawValue, name: $0.title),
+                                        subtitle: $0.artistName,
+                                        artworkURL: $0.artwork?.url(width: artworkSize, height: artworkSize))
+            }
+            // Genres are not a catalog search type; match the storefront's genre list instead.
+            // A failed genre lookup only drops genres; a cancellation cancels the whole search.
+            let genres: [StationSeedSearchResult]
+            do {
+                genres = try await self.genreSeeds(matching: query)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                genres = []
+            }
+            return artists + Array(genres.prefix(limit)) + playlists + songs
+        }
     }
 
-    /// The storefront's top-level genres, optionally filtered by name.
-    func genreSeeds(matching query: String = "") async throws -> [StationSeed] {
+    /// The storefront's top-level genres, optionally filtered by name. Genres have no artwork.
+    func genreSeeds(matching query: String = "") async throws -> [StationSeedSearchResult] {
+        try Task.checkCancellation()
         let genres = try await catalogGenres(path: "genres")
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        try Task.checkCancellation()
+        let q = StationSeedSearch.normalizedTerm(query)
         return genres
-            .filter { q.isEmpty || $0.name.localizedCaseInsensitiveContains(q) }
-            .map { StationSeed(kind: .genre, catalogID: $0.id.rawValue, name: $0.name) }
+            .filter { q == nil || $0.name.localizedCaseInsensitiveContains(q ?? "") }
+            .map { StationSeedSearchResult(seed: StationSeed(kind: .genre, catalogID: $0.id.rawValue, name: $0.name)) }
     }
 
     /// Playable tracks for a built station list, in order. Songs not looked up here are skipped.

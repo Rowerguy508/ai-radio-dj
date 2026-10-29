@@ -74,6 +74,9 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
         copy.discovery = Self.clampUnit(discovery, fallback: 0.3)
         copy.briefing = briefing.validated()
         copy.seeds = Self.normalizedSeeds(seeds)
+        // Library seeds stay on the device and are never expanded (Fry's rule (d)), so a station
+        // with any library seed is always `.only`, however it was built, saved or decoded.
+        copy.reach = reach.effective(for: copy.seeds)
         return copy
     }
 
