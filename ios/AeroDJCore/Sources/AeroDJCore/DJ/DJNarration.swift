@@ -16,11 +16,15 @@ public struct DJTrack: Equatable, Sendable {
     public let id: String
     public let title: String
     public let artist: String
+    /// Where the track entered the queue (Sentinel). Defaults to `.unknown`, which is treated as
+    /// personal: only `.catalog` tracks may be named by an off-device voice.
+    public let origin: TrackOrigin
 
-    public init(id: String, title: String, artist: String) {
+    public init(id: String, title: String, artist: String, origin: TrackOrigin = .unknown) {
         self.id = id
         self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         self.artist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.origin = origin
     }
 }
 
@@ -140,8 +144,9 @@ public struct TemplatePool: Sendable {
 
 /// Where a spoken line's words came from. Every spoken cue has one.
 public enum SpokenAttribution: Equatable, Sendable {
-    /// Built only from MusicKit title/artist of these track ids.
-    case trackMetadata(trackIDs: [String])
+    /// Built only from MusicKit title/artist of these track ids. `origin` is the most restrictive
+    /// origin of those tracks (`resolvingTrackOrigins(in:)`); only `.catalog` may leave the device.
+    case trackMetadata(trackIDs: [String], origin: TrackOrigin = .unknown)
     /// An approved, sanitized briefing item (its text also names the source aloud).
     case personalContext(itemID: UUID, source: ContextSourceKind, provenance: String)
     /// Fixed presenter phrasing with no facts (greeting, lead-in).
@@ -258,7 +263,7 @@ public struct DJScriptWriter: Sendable {
             var cues: [NarrationCue] = []
             func add(_ text: String, _ attribution: SpokenAttribution) -> NarrationCue {
                 let cue = transitionCue(text, order: &order)
-                attributions[cue.id] = attribution
+                attributions[cue.id] = attribution.resolvingTrackOrigins(in: tracks)
                 return cue
             }
             let metadata = ["title": prev.title, "artist": prev.artist]
