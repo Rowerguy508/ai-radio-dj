@@ -41,6 +41,33 @@ public struct PreparedDJBreak: Equatable, Sendable {
     public let attributions: [UUID: SpokenAttribution]
     public var includesBriefing: Bool { cues.contains { $0.isContent } }
     public var measuredSeconds: Double { clips.reduce(0) { $0 + $1.audio.seconds } }
+    /// The planned talk-over closing cue (`DJBreak.talkOverCueID`). The hooks below are derived
+    /// from `cues`/`clips`, so a rebuild that drops cues recomputes or clears them on its own.
+    public var talkOverCueID: UUID? = nil
+
+    /// Speech gap before the closing line, in seconds. A pause between two lines of speech,
+    /// not compensation for player latency.
+    public static let talkOverGapSeconds = 0.3
+
+    /// The closing cue's clip, when it is still the last clip and something plays before it.
+    private var talkOverClip: (index: Int, clip: RenderedClip)? {
+        guard let id = talkOverCueID, cues.count == clips.count, cues.count > 1,
+              cues.last?.id == id, let last = clips.last, last.cueID == id else { return nil }
+        return (clips.count - 1, last)
+    }
+
+    /// Hook for the player (Fry): when the closing line's audio starts within the break, in
+    /// seconds from the first clip's start: the rendered durations of every clip before it plus
+    /// `talkOverGapSeconds`. Nil when there is no closing cue (or it was dropped). Clips still
+    /// play one at a time, back to back; this never overlaps two lines of speech.
+    public var talkOverStartSeconds: Double? {
+        guard let (index, _) = talkOverClip else { return nil }
+        return clips[..<index].reduce(0) { $0 + $1.audio.seconds } + Self.talkOverGapSeconds
+    }
+
+    /// Hook for the player (Fry): the closing cue's rendered clip duration, so the next song
+    /// can swell back in under it. Nil exactly when `talkOverStartSeconds` is nil.
+    public var talkOverSeconds: Double? { talkOverClip?.clip.audio.seconds }
 }
 
 public enum DJBreakOutcome: Equatable, Sendable {
@@ -76,7 +103,11 @@ public actor DJBreakPreparer {
         self.renderer = renderer
         self.userID = userID
         self.stationID = stationID
-        self.maxBreakSeconds = { Double($0.hasBriefing ? cadence.maxBriefingBreakSeconds : cadence.maxTransitionSeconds) }
+        // Measured audio: the main segment's cap, plus the closing line's own cap when it is talk-over.
+        self.maxBreakSeconds = { djBreak in
+            djBreak.hasBriefing ? Double(cadence.maxBriefingBreakSeconds)
+                : Double(cadence.maxTransitionSeconds + (djBreak.talkOverCueID == nil ? 0 : cadence.maxClosingSeconds))
+        }
     }
 
     public func observe(_ observer: @escaping @Sendable (DJBreakEvent) -> Void) { observers.append(observer) }
@@ -256,7 +287,8 @@ public actor DJBreakPreparer {
     private static func measured(_ clips: [RenderedClip]) -> Double { clips.reduce(0) { $0 + $1.audio.seconds } }
 
     private static func ready(_ djBreak: DJBreak, _ pass: (cues: [NarrationCue], clips: [RenderedClip])) -> DJBreakOutcome {
-        .ready(PreparedDJBreak(afterTrack: djBreak.afterTrack, cues: pass.cues, clips: pass.clips, attributions: djBreak.attributions))
+        .ready(PreparedDJBreak(afterTrack: djBreak.afterTrack, cues: pass.cues, clips: pass.clips, attributions: djBreak.attributions,
+                               talkOverCueID: djBreak.talkOverCueID))
     }
 
     private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String) async

@@ -12,7 +12,8 @@ import Foundation
 ///
 /// Rules this enforces (see `docs/studio-presentation-contract.md`):
 /// - speech renders during the song, before its boundary (`DJBreakPreparer.deadline`),
-/// - routine breaks are capped at `maxTransitionSeconds` (12 s), briefing breaks at 45 s,
+/// - routine breaks cap the main segment at `maxTransitionSeconds` (15 s) and the talk-over
+///   closing line at `maxClosingSeconds` (4 s); briefing breaks at 45 s in total,
 /// - late, failed, over-cap or revoked breaks are skipped: music never waits,
 /// - tuner changes apply at the next boundary to *future* breaks; the playing song and the
 ///   break already preparing for it are untouched unless the change requires dropping them.
@@ -404,7 +405,9 @@ public final class DJBreakSession {
         let kept = Set(cues.map(\.id))
         let prepared = cues.count == ready.cues.count ? ready : PreparedDJBreak(
             afterTrack: k, cues: cues, clips: ready.clips.filter { kept.contains($0.cueID) },
-            attributions: ready.attributions.filter { kept.contains($0.key) })
+            attributions: ready.attributions.filter { kept.contains($0.key) },
+            // Kept only if the closing cue survived; the hooks recompute from the kept clips.
+            talkOverCueID: ready.talkOverCueID.flatMap { kept.contains($0) ? $0 : nil })
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
         onAir = (k, Set(prepared.cues.compactMap(\.sourceItemID)), ready.includesBriefing)
         return prepared
@@ -590,7 +593,9 @@ public final class DJBreakSession {
         for b in plan.breaks {
             let k = b.afterTrack + offset
             if let lastBreak, k - lastBreak <= cadence.minSongsBetweenBreaks { continue }
-            breaks[k] = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
+            var shifted = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
+            shifted.talkOverCueID = b.talkOverCueID
+            breaks[k] = shifted
         }
     }
 
