@@ -59,6 +59,16 @@ public enum PlaybackLog {
         "interlude stop reason=\(reason.logToken)"
     }
 
+    /// Song scrubbing (-Atlas): one committed seek. Index, whole seconds and tokens only.
+    public static func songSeek(index: Int, decision: SongSeekDecision) -> String {
+        switch decision {
+        case let .seek(target, remaining):
+            "song seek index=\(index) result=seeked targetSeconds=\(Int(target)) remainingSeconds=\(Int(remaining))"
+        case let .blocked(reason):
+            "song seek index=\(index) result=blocked reason=\(reason.rawValue)"
+        }
+    }
+
     public static func songDeferred(index: Int) -> String {
         "song deferred index=\(index)"
     }
