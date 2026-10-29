@@ -26,8 +26,10 @@ struct TuneForm: View {
                 if model.hasPendingChanges { PendingChangesCard(model: model) }
                 Group {
                     TuneSectionHeader(title: "Sound", detail: StationTunerCopy.musicSelectionNotice)
+                    // Suggestions are the storefront's Apple Music genres (`GenreProviding`), not a fixed list.
                     TagControl(row: row(.genres), selected: model.displayed.genres,
-                               suggestions: TuneVocabulary.genres) { tags in Task { await model.setGenres(tags) } }
+                               suggestions: studio.tuneGenres.suggestions,
+                               genreStatus: studio.tuneGenres) { tags in Task { await model.setGenres(tags) } }
                     TagControl(row: row(.moods), selected: model.displayed.moods,
                                suggestions: TuneVocabulary.moods) { tags in Task { await model.setMoods(tags) } }
                     LevelControl(row: row(.energy), value: model.displayed.energy, low: "Calm", high: "High energy") { v in
@@ -48,6 +50,7 @@ struct TuneForm: View {
             .padding(.bottom, 16)
         }
         .accessibilityIdentifier("tune.form")
+        .task { await studio.tuneGenres.load() }
     }
 
     private func row(_ setting: StationSetting) -> StationTunerRow { model.tunerRow(for: setting) }
@@ -116,9 +119,8 @@ struct TuneForm: View {
 }
 
 /// Suggestions only. Tags are free-form and normalized by `StationConfiguration`.
+/// Mood suggestions. Genre suggestions come from Apple Music (`StudioPresentationModel.tuneGenres`).
 enum TuneVocabulary {
-    static let genres = ["pop", "indie pop", "rock", "hip hop", "r&b", "neo soul", "jazz", "electronic",
-                         "house", "ambient", "classical", "folk", "latin", "country"]
     static let moods = ["calm", "bright", "focused", "dreamy", "energetic", "warm", "melancholy", "late night"]
 }
 
@@ -217,6 +219,8 @@ struct TagControl: View {
     let row: StationTunerRow
     let selected: [String]
     let suggestions: [String]
+    /// Genres only: loading / empty / error line for the Apple Music suggestions.
+    var genreStatus: TuneGenreSuggestions? = nil
     let onChange: ([String]) -> Void
     @State private var custom = ""
 
@@ -245,6 +249,7 @@ struct TagControl: View {
                     .accessibilityHint(isOn ? "Removes \(tag)" : "Adds \(tag)")
                 }
             }
+            if let genreStatus { GenreSuggestionStatus(model: genreStatus) }
             HStack {
                 TextField("", text: $custom,
                           prompt: Text("Add your own").foregroundStyle(.secondary))
@@ -268,6 +273,42 @@ struct TagControl: View {
         guard !tag.isEmpty, !selected.contains(tag) else { custom = ""; return }
         onChange(selected + [tag])
         custom = ""
+    }
+}
+
+/// Loading, empty and error states for the Apple Music genre chips. Custom tags keep working.
+struct GenreSuggestionStatus: View {
+    let model: TuneGenreSuggestions
+
+    var body: some View {
+        switch model.phase {
+        case .loaded, .idle, .unavailable:
+            EmptyView()
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Loading Apple Music genres")
+            }
+            .font(.footnote).foregroundStyle(AeroDJPalette.secondaryText)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("tune.genres.loading")
+        case .empty:
+            Text("No Apple Music genres to suggest. Add your own below.")
+                .font(.footnote).foregroundStyle(AeroDJPalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("tune.genres.empty")
+        case .failed(let message):
+            VStack(alignment: .leading, spacing: 6) {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.footnote).foregroundStyle(AeroDJPalette.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Try again") { Task { await model.load() } }
+                    .font(.footnote.weight(.semibold))
+                    .accessibilityHint("Loads genre suggestions from Apple Music again")
+                    .accessibilityIdentifier("tune.genres.retry")
+            }
+            .accessibilityIdentifier("tune.genres.error")
+        }
     }
 }
 

@@ -65,12 +65,17 @@ public final class StationCreationModel {
     @ObservationIgnored private let search: any StationSeedSearching
     @ObservationIgnored private let classifyFailure: @MainActor (Error) -> SearchFailureKind
     @ObservationIgnored private var generation = 0
+    /// Genre step source (`GenreProviding`); fetched once per flow, cached only on success.
+    @ObservationIgnored private let genreProvider: any GenreProviding
+    @ObservationIgnored private var cachedGenres: [CatalogGenre]?
 
     public init(studio: StudioPresentationModel, search: any StationSeedSearching,
                 kind: StationCreationKind = .artists, level: StationDiscoveryLevel? = nil,
+                genres: (any GenreProviding)? = nil,
                 classifyFailure: @escaping @MainActor (Error) -> SearchFailureKind = { SearchFailureCopy.kind(for: $0) }) {
         self.studio = studio
         self.search = search
+        self.genreProvider = genres ?? SeedSearchGenreProvider(search)
         self.kind = kind
         self.level = level ?? StationDiscoveryLevel.closest(to: studio.station.displayed)
         self.classifyFailure = classifyFailure
@@ -145,7 +150,7 @@ public final class StationCreationModel {
         }
         await run(source) { search in
             switch kind {
-            case .genre: try await search.genreSeeds(matching: term)
+            case .genre: GenrePicker.rows(try await self.catalogGenres(), matching: term)
             case .artists, .playlist: try await search.searchSeeds(term, kinds: [kind.seedKind], limit: Self.resultLimit)
             }
         }
@@ -176,7 +181,22 @@ public final class StationCreationModel {
         return finish(result)
     }
 
+    /// True while the genre list has not loaded yet (the genre step's first fetch or a retry
+    /// after an error). Lets the UI say "Loading genres" rather than "Searching".
+    public var isLoadingGenres: Bool { kind == .genre && phase == .searching && cachedGenres == nil }
+
     // MARK: Internals
+
+    /// The storefront's genres: the cached list, or one fetch (a failure isn't cached, so the
+    /// next search retries).
+    private func catalogGenres() async throws -> [CatalogGenre] {
+        if let cachedGenres { return cachedGenres }
+        let fetched = try await genreProvider.genres()
+        try Task.checkCancellation()
+        cachedGenres = fetched
+        return fetched
+    }
+
 
     private func finish(_ result: Result<StationRecipe, StationRecipeError>) -> Result<StationRecipe, StationRecipeError> {
         if case .failure(let e) = result { saveError = e } else { saveError = nil }
@@ -222,6 +242,7 @@ public extension StudioPresentationModel {
     /// (previews and the Test Station pass none). Create one per walkthrough presentation.
     func makeStationCreation(kind: StationCreationKind = .artists) -> StationCreationModel? {
         guard let seedSearch else { return nil }
-        return StationCreationModel(studio: self, search: seedSearch, kind: kind, classifyFailure: seedSearchFailureKind)
+        return StationCreationModel(studio: self, search: seedSearch, kind: kind, genres: genreProvider,
+                                    classifyFailure: seedSearchFailureKind)
     }
 }

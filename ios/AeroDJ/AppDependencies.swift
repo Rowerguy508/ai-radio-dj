@@ -96,6 +96,11 @@ struct AppDependencies {
             studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
                                             // Add-station search (Atlas): catalog + on-device library playlists.
                                             seedSearch: MusicCatalogSeedSource(),
+                                            // SEAM(Atlas): pass MusicCatalogSeedSource (once it conforms to
+                                            // `GenreProviding`, /v1/catalog/{storefront}/genres) here. Nil uses
+                                            // `SeedSearchGenreProvider`, i.e. its `genreSeeds(matching: "")`.
+                                            // Feeds Tune > Genres chips and the add-station genre step.
+                                            genreProvider: nil,
                                             seedSearchFailureKind: StudioSearchModel.searchFailureKind),
             djSession: djSession,
             pickedNotes: composition.notes,
@@ -140,7 +145,9 @@ struct AppDependencies {
             playback: MusicKitService.shared,
             interlude: interlude,
             dj: dj,
-            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
+            // Test Station: fixed genre fixture (no network, stable screenshots).
+            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
+                                            genreProvider: StaticGenreProvider.fixture),
             djSession: djSession,
             pickedNotes: nil,
             stationQueue: nil)
