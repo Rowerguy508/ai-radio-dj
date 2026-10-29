@@ -151,18 +151,18 @@ final class StationSeedSearchTests: XCTestCase {
         XCTAssertEqual(StationSeedSearch.normalizedLimit(10), 10)
 
         let calls = Calls()
-        let results = try await StationSeedSearch.run(term: " vesperine  ", limit: 500) { q, limit -> [String] in
+        let results = try await StationSeedSearch.run(term: " saffrelle  ", limit: 500) { q, limit -> [String] in
             calls.add("\(q)|\(limit)"); return ["r1", "r2"]
         }
         XCTAssertEqual(results, ["r1", "r2"])
-        XCTAssertEqual(calls.all, ["vesperine|25"])
+        XCTAssertEqual(calls.all, ["saffrelle|25"])
     }
 
     func testCancelledBeforeTheRequestThrowsWithoutCallingTheSearch() async {
         let calls = Calls()
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
-            return try await StationSeedSearch.run(term: "vesperine", limit: 10) { q, _ -> [String] in
+            return try await StationSeedSearch.run(term: "saffrelle", limit: 10) { q, _ -> [String] in
                 calls.add(q); return ["r1"]
             }
         }
@@ -174,7 +174,7 @@ final class StationSeedSearchTests: XCTestCase {
     func testCancelledDuringTheRequestThrowsAndDropsPartialResults() async {
         let calls = Calls()
         let task = Task {
-            try await StationSeedSearch.run(term: "vesperine", limit: 10) { q, _ -> [String] in
+            try await StationSeedSearch.run(term: "saffrelle", limit: 10) { q, _ -> [String] in
                 calls.add(q)
                 withUnsafeCurrentTask { $0?.cancel() }   // the user typed again mid-request
                 return ["partial"]
@@ -182,13 +182,13 @@ final class StationSeedSearchTests: XCTestCase {
         }
         let result = await task.result
         XCTAssertThrowsError(try result.get()) { XCTAssertTrue($0 is CancellationError) }
-        XCTAssertEqual(calls.all, ["vesperine"])
+        XCTAssertEqual(calls.all, ["saffrelle"])
     }
 
     func testACancelledRequestThatFailsDifferentlyStillThrowsCancellationError() async {
         struct URLCancelled: Error {}
         let task = Task {
-            try await StationSeedSearch.run(term: "vesperine", limit: 10) { _, _ -> [String] in
+            try await StationSeedSearch.run(term: "saffrelle", limit: 10) { _, _ -> [String] in
                 withUnsafeCurrentTask { $0?.cancel() }
                 throw URLCancelled()
             }
@@ -200,7 +200,7 @@ final class StationSeedSearchTests: XCTestCase {
     func testSearchErrorsPropagateUnchanged() async {
         struct Offline: Error {}
         do {
-            _ = try await StationSeedSearch.run(term: "vesperine", limit: 10) { _, _ -> [String] in throw Offline() }
+            _ = try await StationSeedSearch.run(term: "saffrelle", limit: 10) { _, _ -> [String] in throw Offline() }
             XCTFail("expected an error")
         } catch {
             XCTAssertTrue(error is Offline)

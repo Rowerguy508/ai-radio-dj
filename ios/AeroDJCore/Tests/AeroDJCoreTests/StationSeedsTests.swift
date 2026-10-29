@@ -147,15 +147,15 @@ final class StationSeedSettingTests: XCTestCase {
         let model = StationConfigurationModel(store: InMemoryStationConfigurationStore(), consent: StaticIntegrationConsent([:]))
         await model.load()
         await model.setPlaybackActivity(.holdingSong)
-        await model.setSeeds([artist("1", "Vesperine")])
+        await model.setSeeds([artist("1", "Saffrelle")])
         await model.setReach(.only)
         await model.saveChanges()
         XCTAssertEqual(model.active.seeds, [])
-        XCTAssertEqual(model.displayed.seeds.map(\.name), ["Vesperine"])
+        XCTAssertEqual(model.displayed.seeds.map(\.name), ["Saffrelle"])
         XCTAssertEqual(model.tunerRow(for: .seeds).appliesCopy, "Applies after this song")
         XCTAssertEqual(model.tunerRow(for: .reach).displayedSummary, "Only this")
         await model.handle(.songBoundary(afterTrack: 0))
-        XCTAssertEqual(model.active.seeds.map(\.name), ["Vesperine"])
+        XCTAssertEqual(model.active.seeds.map(\.name), ["Saffrelle"])
         XCTAssertEqual(model.active.reach, .only)
     }
 
@@ -200,14 +200,14 @@ final class StationSeedPrivacyTests: XCTestCase {
     }
 
     func testDiagnosticsCarryOnlyEnumsBoolsAndCounts() {
-        let config = StationConfiguration(seeds: [secret, artist("123", "Vesperine")], reach: .broad)
+        let config = StationConfiguration(seeds: [secret, artist("123", "Saffrelle")], reach: .broad)
         let d = StationSeedDiagnostics(config)
         XCTAssertEqual(d.seedCount, 2)
         XCTAssertEqual(d.librarySeedCount, 1)
         XCTAssertTrue(d.hasLibrarySeeds)
         XCTAssertEqual(d.countsByKind, [.playlist: 1, .artist: 1])
         XCTAssertEqual(d.description, "seeds=2 library=1 reach=only artist=1 genre=0 playlist=1 song=0")
-        for leak in ["SECRETLIBID", "Breakup", "123", "Vesperine"] { XCTAssertFalse(d.description.contains(leak)) }
+        for leak in ["SECRETLIBID", "Breakup", "123", "Saffrelle"] { XCTAssertFalse(d.description.contains(leak)) }
     }
 
     func testResolverNeverExpandsALibrarySeedThroughTheCatalog() async {
@@ -426,14 +426,14 @@ final class StarterStationSuggesterTests: XCTestCase {
 
     func testSuggestsMixArtistsRecentsAndRecommendationsInOrder() async {
         let source = FakeStarterSource(
-            top: [artist("l1", "Vesperine", source: .library), artist("l2", "Quillory", source: .library)],
-            recent: [StationSeed(kind: .song, catalogID: "s1", name: "Waltzing Past the Laundromat"), artist("l1", "Vesperine", source: .library)],
+            top: [artist("l1", "Saffrelle", source: .library), artist("l2", "Brindlemay", source: .library)],
+            recent: [StationSeed(kind: .song, catalogID: "s1", name: "Waltzing Past the Laundromat"), artist("l1", "Saffrelle", source: .library)],
             recommended: [StationSeed(kind: .playlist, catalogID: "pl.1", name: "Drizzle Commute"),
                           StationSeed(kind: .genre, catalogID: "21", name: "Rock")])
         var base = StationConfiguration.sampleMorningMix
         base.requestedIntegrations = [.calendar]
         let s = await suggester(source).suggestions(base: base)
-        XCTAssertEqual(s.map(\.draft.name), ["Your Mix", "Vesperine Radio", "Quillory Radio", "Waltzing Past the Laundromat Radio", "Drizzle Commute", "Rock Radio"])
+        XCTAssertEqual(s.map(\.draft.name), ["Your Mix", "Saffrelle Radio", "Brindlemay Radio", "Waltzing Past the Laundromat Radio", "Drizzle Commute", "Rock Radio"])
         XCTAssertEqual(s.map(\.origin), [.libraryMix, .libraryArtist, .libraryArtist, .recentlyPlayed, .recommended, .recommended])
         XCTAssertEqual(s[0].draft.configuration.seeds.map(\.catalogID), ["l1", "l2"])
         XCTAssertEqual(s[0].draft.configuration.reach, .only, "library seeds play only themselves")
@@ -445,10 +445,10 @@ final class StarterStationSuggesterTests: XCTestCase {
     }
 
     func testSkipsTakenNamesCapsCountAndSurvivesAFailingSource() async {
-        let source = FakeStarterSource(top: [artist("l1", "Vesperine", source: .library)],
+        let source = FakeStarterSource(top: [artist("l1", "Saffrelle", source: .library)],
                                        recommended: (1...10).map { StationSeed(kind: .playlist, catalogID: "pl.\($0)", name: "List \($0)") },
                                        failRecent: true)
-        let s = await suggester(source, max: 3).suggestions(existingNames: ["vesperine radio"])
+        let s = await suggester(source, max: 3).suggestions(existingNames: ["saffrelle radio"])
         XCTAssertEqual(s.map(\.draft.name), ["List 1", "List 2", "List 3"], "one artist is not a mix; a taken name is skipped")
     }
 
@@ -464,7 +464,7 @@ final class StarterStationSuggesterTests: XCTestCase {
     func testSuggestionsAreShownOnlyAndSaveGoesThroughTheRecipeLibrary() async throws {
         let lib = StationRecipeLibrary(store: InMemoryStationRecipeStore())
         await lib.load()
-        let s = await suggester(FakeStarterSource(recommended: [artist("1", "Vesperine")])).suggestions()
+        let s = await suggester(FakeStarterSource(recommended: [artist("1", "Saffrelle")])).suggestions()
         XCTAssertEqual(s.count, 1)
         XCTAssertTrue(lib.recipes.isEmpty, "suggesting never saves")
         let draft = try XCTUnwrap(s.first?.draft)

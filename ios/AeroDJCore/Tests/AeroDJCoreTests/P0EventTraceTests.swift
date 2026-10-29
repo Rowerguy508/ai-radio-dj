@@ -226,7 +226,7 @@ final class P0EventTraceTests: XCTestCase {
     /// entry point that can carry one, and none appears in any rendered row.
     func testNoTrackOrRouteStringReachesAnyRow() {
         let title = "Marmalade Switchback"
-        let artist = "Copperwick"
+        let artist = "Tallowfield"
         let catalogID = "1440857781"
         let libraryID = "i.abc123"
         let port = "AirPods Pro"
