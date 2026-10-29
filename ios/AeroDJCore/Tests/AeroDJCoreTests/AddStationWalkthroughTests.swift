@@ -12,12 +12,26 @@ final class AddStationWalkthroughTests: XCTestCase {
                            suggestedName: suggested, existingNames: existing, isSaving: saving)
     }
 
-    func testStepsAreNumberedOneToFiveInOrder() {
-        XCTAssertEqual(AddStationStep.allCases.map(\.number), [1, 2, 3, 4, 5])
+    func testStepsAreNumberedOneToSevenInOrder() {
+        XCTAssertEqual(AddStationStep.allCases.map(\.number), [1, 2, 3, 4, 5, 6, 7])
+        XCTAssertEqual(AddStationStep.allCases, [.kind, .picks, .level, .personality, .talk, .name, .review])
         XCTAssertEqual(AddStationStep.kind.next, .picks)
+        XCTAssertEqual(AddStationStep.level.next, .personality)
+        XCTAssertEqual(AddStationStep.talk.next, .name)
         XCTAssertNil(AddStationStep.review.next)
         XCTAssertNil(AddStationStep.kind.previous)
-        XCTAssertEqual(AddStationStep.picks.accessibilityLabel, "Step 2 of 5, Pick")
+        XCTAssertEqual(AddStationStep.picks.accessibilityLabel, "Step 2 of 7, Pick")
+    }
+
+    func testTuningStepsAreOptionalAndNeverBlockNext() {
+        let p = ready()
+        XCTAssertTrue(W.canGoNext(from: .level, p))
+        XCTAssertTrue(W.canGoNext(from: .personality, p))
+        XCTAssertTrue(W.canGoNext(from: .talk, p))
+        XCTAssertFalse(W.canGoNext(from: .talk, ready(saving: true)))
+        var noLevel = p
+        noLevel.level = nil
+        XCTAssertEqual(W.furthestReachable(noLevel), .level, "optional steps don't jump past a missing level")
     }
 
     func testFreshFlowOnlyAllowsChoosingAKind() {
@@ -72,5 +86,49 @@ final class AddStationWalkthroughTests: XCTestCase {
     func testHintsAreFixedCopyWithTheArtistCap() {
         XCTAssertEqual(W.pickHint(for: .artists), "Pick up to 5 artists.")
         XCTAssertEqual(W.kindSummary(.genre), "One Apple Music genre.")
+    }
+}
+
+// Optional DJ and talk steps: "Keep current tuning" (nil) first, copy reused from Tune.
+final class AddStationTuningTests: XCTestCase {
+    private typealias T = AddStationTuning
+
+    func testOptionsStartWithKeepThenEveryPreset() {
+        XCTAssertEqual(T.personalityOptions, [nil, .warm, .upbeat, .laidBack, .minimal])
+        XCTAssertEqual(T.talkOptions, [nil, .off, .rare, .occasional, .frequent, .chatty])
+        XCTAssertEqual(T.title(nil as DJPersonality?), "Keep current tuning")
+        XCTAssertEqual(T.title(nil as CommentaryFrequency?), "Keep current tuning")
+        XCTAssertEqual(T.title(CommentaryFrequency.chatty), "Chatty")
+    }
+
+    func testKeepNamesTheTuneValue() {
+        XCTAssertEqual(T.detail(nil as DJPersonality?, current: .laidBack), "Uses your Tune setting: Laid-back.")
+        XCTAssertEqual(T.detail(nil as CommentaryFrequency?, current: .rare), "Uses your Tune setting: Rarely.")
+        XCTAssertEqual(T.reviewValue(nil as CommentaryFrequency?, current: .rare), "Rarely (from Tune)")
+        XCTAssertEqual(T.reviewValue(CommentaryFrequency.frequent, current: .rare), "Often")
+        XCTAssertEqual(T.reviewValue(DJPersonality.minimal, current: .warm), "Minimal")
+    }
+
+    func testChattyCopyIsThePlannerShareNotEverySong() {
+        let chatty = T.detail(CommentaryFrequency.chatty, current: .off)
+        XCTAssertEqual(chatty, CommentaryFrequency.chatty.honestDescription, "reuses the Tune copy")
+        XCTAssertTrue(chatty.contains("33%"), chatty)
+        XCTAssertTrue(chatty.contains("never two in a row"), chatty)
+        for option in T.talkOptions {
+            XCTAssertFalse(T.detail(option, current: .chatty).lowercased().contains("every song"))
+        }
+        XCTAssertEqual(T.detail(CommentaryFrequency.off, current: .rare), "Music only. The DJ doesn't talk between songs.")
+    }
+
+    func testPersonalityCopyNeverPromisesAVoice() {
+        for option in T.personalityOptions.compactMap({ $0 }) {
+            XCTAssertTrue(T.detail(option, current: .warm).contains("Same voice"))
+        }
+        XCTAssertTrue(T.voiceNote.contains("Tune"))
+    }
+
+    func testAccessibilityIdSuffixes() {
+        XCTAssertEqual(T.personalityOptions.map(T.idSuffix), ["keep", "warm", "upbeat", "laidBack", "minimal"])
+        XCTAssertEqual(T.talkOptions.map(T.idSuffix), ["keep", "off", "rare", "occasional", "frequent", "chatty"])
     }
 }

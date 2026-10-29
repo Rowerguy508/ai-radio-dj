@@ -5,17 +5,21 @@ import Foundation
 // Atlas's `StationCreationModel`; this only reads a snapshot of it, so it runs on Linux.
 //
 // Steps follow what `StationCreationRequest` can carry: a source kind, the picks, a discovery
-// level and a name. A new station keeps the DJ talk and personality the Tune controls show, so
-// there is no voice or talk step (the review step shows those values read-only).
+// level, an optional DJ personality and talk level (`nil` keeps the Tune controls' values), and
+// a name. There is no voice step: a recipe doesn't store a voice (it's chosen in Tune), so the
+// review step shows it read-only.
 
 /// One screen of the walkthrough, in order. Raw values are the 1-based step numbers used in
-/// accessibility identifiers (`addStation.step.<n>`); never renumber one.
+/// accessibility identifiers (`addStation.step.<n>`). Renumbered once, before release, when the
+/// DJ and talk steps were added; don't renumber again after it ships.
 public enum AddStationStep: Int, CaseIterable, Sendable, Hashable, Comparable {
     case kind = 1
     case picks = 2
     case level = 3
-    case name = 4
-    case review = 5
+    case personality = 4
+    case talk = 5
+    case name = 6
+    case review = 7
 
     public static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
 
@@ -29,12 +33,14 @@ public enum AddStationStep: Int, CaseIterable, Sendable, Hashable, Comparable {
         case .kind: "Start from"
         case .picks: "Pick"
         case .level: "Discovery"
+        case .personality: "DJ"
+        case .talk: "Talk"
         case .name: "Name"
         case .review: "Review"
         }
     }
 
-    /// VoiceOver label for the step indicator: "Step 2 of 5, Pick".
+    /// VoiceOver label for the step indicator: "Step 2 of 7, Pick".
     public var accessibilityLabel: String {
         "Step \(rawValue) of \(Self.allCases.count), \(title)"
     }
@@ -93,6 +99,8 @@ public enum AddStationWalkthrough {
         case .kind: p.kind != nil
         case .picks: p.kind != nil && p.pickError == nil
         case .level: p.level != nil
+        // Optional: `nil` ("Keep current tuning") is a complete answer.
+        case .personality, .talk: true
         case .name: nameError(p) == nil
         case .review: AddStationStep.allCases.filter { $0 != .review }.allSatisfy { isComplete($0, p) }
         }
@@ -136,4 +144,44 @@ public enum AddStationWalkthrough {
         case .playlist: "A playlist, from Apple Music or your library."
         }
     }
+}
+
+/// Choices for the optional DJ personality and talk-level steps (-Nova). `nil` is
+/// "Keep current tuning": the request leaves the field unset and the station keeps the value the
+/// Tune controls show. Copy reuses the Tune strings (`title`, `honestDescription`), so talk shares
+/// are the planner's delivered share (Chatty: about 33% of songs, never two in a row).
+public enum AddStationTuning {
+    public static let keepTitle = "Keep current tuning"
+
+    /// "Keep current tuning" first, then every preset in declaration order.
+    public static var personalityOptions: [DJPersonality?] { [nil] + DJPersonality.allCases.map(Optional.some) }
+    public static var talkOptions: [CommentaryFrequency?] { [nil] + CommentaryFrequency.allCases.map(Optional.some) }
+
+    public static func title(_ p: DJPersonality?) -> String { p?.title ?? keepTitle }
+    public static func title(_ c: CommentaryFrequency?) -> String { c?.title ?? keepTitle }
+
+    /// Detail line. For `nil`, names the Tune value the station will keep.
+    public static func detail(_ p: DJPersonality?, current: DJPersonality) -> String {
+        p?.honestDescription ?? "Uses your Tune setting: \(current.title)."
+    }
+
+    public static func detail(_ c: CommentaryFrequency?, current: CommentaryFrequency) -> String {
+        c?.honestDescription ?? "Uses your Tune setting: \(current.title)."
+    }
+
+    /// Accessibility identifier suffix: `keep` or the persisted raw value.
+    public static func idSuffix(_ p: DJPersonality?) -> String { p?.rawValue ?? "keep" }
+    public static func idSuffix(_ c: CommentaryFrequency?) -> String { c?.rawValue ?? "keep" }
+
+    /// Review-card value: the effective setting, marked when it comes from Tune.
+    public static func reviewValue(_ p: DJPersonality?, current: DJPersonality) -> String {
+        p.map(\.title) ?? "\(current.title) (from Tune)"
+    }
+
+    public static func reviewValue(_ c: CommentaryFrequency?, current: CommentaryFrequency) -> String {
+        c.map(\.title) ?? "\(current.title) (from Tune)"
+    }
+
+    /// Read-only voice row on the review card. A recipe doesn't store a voice.
+    public static let voiceNote = "Same voice on every station. Set it in Tune."
 }

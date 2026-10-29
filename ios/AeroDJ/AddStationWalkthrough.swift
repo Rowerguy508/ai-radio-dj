@@ -2,7 +2,8 @@ import AeroDJCore
 import SwiftUI
 
 // Add-station walkthrough (-Nova): a guided sheet from the Stations screen's + button.
-// Five steps: start from (artists, genre or playlist), pick, discovery level, name, review.
+// Seven steps: start from (artists, genre or playlist), pick, discovery level, DJ personality
+// and talk level (both optional; "Keep current tuning" leaves them nil), name, review.
 //
 // Owns no data. Search, picks, validation and Save are Atlas's `StationCreationModel`, and Save
 // goes through `studio.saveRecipe(named:from:applying:)` with `applying: false`, so the live
@@ -167,6 +168,8 @@ struct AddStationWalkthroughView: View {
         case .kind: return "What should it start from?"
         case .picks: return chosenKind.map { "Pick \($0 == .artists ? "artists" : "a \($0.title.lowercased())")" } ?? "Pick"
         case .level: return "How adventurous?"
+        case .personality: return "Which DJ style?"
+        case .talk: return "How much should the DJ talk?"
         case .name: return "Name your station"
         case .review: return "Check it over"
         }
@@ -184,6 +187,8 @@ struct AddStationWalkthroughView: View {
         case .kind: kindStep
         case .picks: picksStep
         case .level: levelStep
+        case .personality: personalityStep
+        case .talk: talkStep
         case .name: nameStep
         case .review: reviewStep
         }
@@ -403,7 +408,54 @@ struct AddStationWalkthroughView: View {
         }
     }
 
-    // MARK: Step 4: name
+    // MARK: Step 4: DJ personality (optional)
+
+    private var personalityStep: some View {
+        let current = studio.station.displayed.personality
+        return VStack(spacing: 10) {
+            ForEach(Array(AddStationTuning.personalityOptions.enumerated()), id: \.offset) { index, option in
+                ChoiceCard(title: AddStationTuning.title(option),
+                           detail: AddStationTuning.detail(option, current: current),
+                           systemImage: option == nil ? "slider.horizontal.3" : "person.wave.2",
+                           selected: creation.personality == option) {
+                    creation.personality = option
+                }
+                .accessibilityIdentifier("addStation.personality.\(AddStationTuning.idSuffix(option))")
+                .popIn(index)
+            }
+        }
+    }
+
+    // MARK: Step 5: talk level (optional)
+
+    private var talkStep: some View {
+        let current = studio.station.displayed.commentary
+        return VStack(spacing: 10) {
+            ForEach(Array(AddStationTuning.talkOptions.enumerated()), id: \.offset) { index, option in
+                // Chatty's detail is the planner's delivered share (about 33%, never two in a row).
+                ChoiceCard(title: AddStationTuning.title(option),
+                           detail: AddStationTuning.detail(option, current: current),
+                           systemImage: talkIcon(option),
+                           selected: creation.commentary == option) {
+                    creation.commentary = option
+                }
+                .accessibilityIdentifier("addStation.talk.\(AddStationTuning.idSuffix(option))")
+                .popIn(index)
+            }
+        }
+    }
+
+    private func talkIcon(_ option: CommentaryFrequency?) -> String {
+        switch option {
+        case nil: "slider.horizontal.3"
+        case .off: "speaker.slash"
+        case .rare: "bubble.left"
+        case .occasional, .frequent: "bubble.left.and.bubble.right"
+        case .chatty: "quote.bubble"
+        }
+    }
+
+    // MARK: Step 6: name
 
     private var nameStep: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -432,7 +484,7 @@ struct AddStationWalkthroughView: View {
         }
     }
 
-    // MARK: Step 5: review and save
+    // MARK: Step 7: review and save
 
     @ViewBuilder
     private var reviewStep: some View {
@@ -458,8 +510,10 @@ struct AddStationWalkthroughView: View {
                     picks: creation.selected.map(\.name),
                     level: creation.level,
                     restriction: creation.reachRestriction,
-                    personality: studio.station.displayed.personality,
-                    talk: studio.station.displayed.commentary)
+                    personality: AddStationTuning.reviewValue(creation.personality,
+                                                              current: studio.station.displayed.personality),
+                    talk: AddStationTuning.reviewValue(creation.commentary,
+                                                       current: studio.station.displayed.commentary))
                 .popIn(0)
                 if let error = creation.saveError {
                     Label(error.userMessage, systemImage: "exclamationmark.triangle")
@@ -549,7 +603,7 @@ struct AddStationWalkthroughView: View {
     }
 }
 
-/// Five segments: done, current (wider) and upcoming. Neutral only.
+/// One segment per step: done, current (wider) and upcoming. Neutral only.
 private struct StepIndicator: View {
     let current: AddStationStep
     let complete: (AddStationStep) -> Bool
@@ -580,7 +634,7 @@ private struct StepIndicator: View {
     }
 }
 
-/// A tappable option card (kind, level).
+/// A tappable option card (kind, level, DJ, talk).
 private struct ChoiceCard: View {
     let title: String
     let detail: String
@@ -618,16 +672,17 @@ private struct ChoiceCard: View {
     }
 }
 
-/// The review card: what will be saved. DJ personality and talk come from the Tune controls
-/// (a new station keeps them), so they're shown read-only here.
+/// The review card: what will be saved. DJ and talk are the walkthrough's choices, or the Tune
+/// values marked "(from Tune)". Voice is read-only: a recipe doesn't store one.
 struct AddStationSummaryCard: View {
     let name: String
     let kind: StationCreationKind
     let picks: [String]
     let level: StationDiscoveryLevel
     let restriction: StationReachRestriction?
-    let personality: DJPersonality
-    let talk: CommentaryFrequency
+    /// `AddStationTuning.reviewValue` strings.
+    let personality: String
+    let talk: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -638,7 +693,9 @@ struct AddStationSummaryCard: View {
             row("Built from", "\(kind.title): \(picks.joined(separator: ", "))")
             row("Discovery", "\(level.title). \(level.summary)")
             if let restriction { row("Reach", restriction.message) }
-            row("DJ", "\(personality.title), talks \(talk.title.lowercased()). From your Tune settings.")
+            row("DJ", personality)
+            row("DJ talk", talk)
+            row("Voice", AddStationTuning.voiceNote)
             Text("Saved to your station recipes. It won't change what's playing.")
                 .font(.caption)
                 .foregroundStyle(AddStationStyle.secondary)
@@ -720,6 +777,8 @@ private struct AddStationPreview: View {
 #Preview("2 Pick artists") { AddStationPreview(step: .picks) }
 #Preview("2 Pick genre") { AddStationPreview(step: .picks, kind: .genre) }
 #Preview("3 Discovery") { AddStationPreview(step: .level) }
-#Preview("4 Name") { AddStationPreview(step: .name) }
-#Preview("5 Review") { AddStationPreview(step: .review) }
+#Preview("4 DJ") { AddStationPreview(step: .personality) }
+#Preview("5 Talk") { AddStationPreview(step: .talk) }
+#Preview("6 Name") { AddStationPreview(step: .name) }
+#Preview("7 Review") { AddStationPreview(step: .review) }
 #endif
