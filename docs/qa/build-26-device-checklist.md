@@ -20,12 +20,22 @@
       P0 trace panel ("rows · newest first"). Talk-over rows are tagged `talkover` and hold
       codes and numbers only.
 
-**What to capture when something fails** (each item below says which):
+**What to capture when something fails** (each item below says which; P items ask for evidence
+on a pass too):
 - **Rec:** an iOS screen recording (Control Center). A screen recording may not pick up Apple
   Music audio, so for **sound** items also record the speaker with a second phone (Voice Memos).
 - **Time:** the clock time of the failure in ET, to the minute, so it can be matched to logs.
 - **Trace:** DIAG builds only. A screenshot of the P0 trace panel covering the failure, or the
   Console.app lines for subsystem `com.aerodj.app`.
+- **Net:** turn on Settings → Privacy & Security → App Privacy Report before the run, then
+  screenshot AeroDJ's network activity (domain names only). Owner only: the `aerodj-tts` proxy
+  function log, which records only `requestId, status, chars` (`services/aerodj-tts/src/handler.ts:221,324`).
+  Network evidence comes from these two sources only. **Don't decrypt TLS to `aerodj-tts` with
+  Charles or mitmproxy:** every request carries the owner token (`ProxyVoiceProvider.swift:65`).
+  If someone does anyway: screenshot the body only, never the headers, delete the session file,
+  and never post it. The body keys are `upstream, voiceId, text, format, stationId`, and
+  `stationId` is always `"default"` (`ProxyVoiceProvider.swift:66-69`, `AppDependencies.swift:75`).
+- Never put a token, key or env value in a screenshot or a room post.
 - Always note the route (speaker, wired, AirPods) and the item ID.
 
 ---
@@ -54,6 +64,15 @@
   - Expected: "Apple Music access is off", "Allow Apple Music for AeroDJ in Settings to play your
     station." and an **Open Settings** button. No second system prompt.
   - If it fails: a screenshot, Time.
+- [ ] **I-6 Revoking Apple Music in Settings.** Access on and music playing. Turn AeroDJ off under
+      Settings → Privacy & Security → Media & Apple Music, return to the app, then tap a station.
+  - Expected: no system prompt. After the tap, "Apple Music access is off" / "Allow Apple Music
+    for AeroDJ in Settings to play your station." with **Open Settings**, and no new song starts
+    (StudioScreenPresentation.swift:170,181). The app doesn't re-check on returning to the
+    foreground. Status is re-read only at launch (PlayerView.swift:204) and on a station tap
+    (StationListView.swift:42 → MusicKitService.swift:136-143). Note whether iOS relaunched the
+    app and whether the current song kept playing.
+  - Evidence: Rec, Time.
 
 ## 2. DJ talk-over (#210, with #209's radio-style breaks)
 
@@ -136,8 +155,12 @@ songs per item. Duck depth and ramp are set by iOS and can't be tuned in code.
     so Settings → AeroDJ shows nothing about talk-over. A normal build has no button, and its
     default is OFF. **But a saved value wins over the default**, so if you touched the toggle
     in the A/B build and left it ON, a normal build will still talk over.
-  - Check: in the normal build, play two breaks. Intended: gap breaks (OFF). If you hear
-    talk-over, report T-15 "carried over". Deleting and reinstalling the app clears it.
+  - Build 26 expected: if the toggle was left ON in an A/B build, the carry-over **is expected**,
+    because the saved value wins over the build default (`DJTalkover.swift:36-38`). Record it as
+    "known, fixed in build 27" (#225), not as a new fail.
+  - Check: in the normal build, play two breaks. Gap breaks (OFF) is the intended result. If you
+    hear talk-over, report T-15 "carried over (known, fixed in build 27)". Deleting and
+    reinstalling the app clears it.
   - Capture: sound recording, Time, which build was installed before.
 
 ## 3. Station create then play (#213, #218)
@@ -207,16 +230,17 @@ from #218.
   - If it fails: Rec + sound, Time, Trace.
 - [ ] **C-6 (Build 27 only, #221) Generic failure toast.** Turn on Airplane Mode with Apple Music
       allowed and nothing queued, then tap a created station.
-  - Expected: within about 10 s a toast at the top says "Couldn't start that station" and goes
-    away after about 3 s. It doesn't cover the back button or the transport. Mark "N/A
+  - Expected: within about 10 s a toast just below the nav bar (not at the top of the screen,
+    since #221 at b2d4ebe) says "Couldn't start that station" and goes away after about 3 s. It doesn't cover the back button or the transport. Mark "N/A
     (build 26)" for now.
   - If it fails: Rec, Time.
-- [ ] **C-7 (Build 27 only) Apple Music denied.** With Apple Music denied in Settings, tap a
+- [ ] **C-7 (Build 27 only, #221) Apple Music denied.** With Apple Music denied in Settings, tap a
       created station.
-  - Requested copy: "Connect Apple Music to play this station". **That string isn't in the code
-    on any branch yet** (checked up to #221 at 6627af3). As #221 is written, this case probably
-    shows the generic "Couldn't start that station". Mark "N/A (build 26)". In build 27, report
-    which text you see.
+  - Expected (build 27): the toast says "Connect Apple Music to play this station", with no system
+    prompt. The string is in #221 at b2d4ebe (`StationStartNotice.swift:34`). It's chosen when
+    Apple Music access isn't authorized at the tap, read without prompting
+    (`StationListView.swift:53`, `TuneForm.swift:285`); with access on, a failed start shows
+    "Couldn't start that station" instead (C-6). Mark "N/A (build 26)" for now.
   - If it fails: a screenshot, Time.
 
 ## 5. Genre list (#214)
@@ -330,10 +354,59 @@ genre step ("Filter genres"). Both fetch once from Apple Music and filter on the
   - Expected: a line that names a library track (including the closing line) is in the on-device
     voice, even when the rest of the break uses the cloud voice.
   - If it fails: sound recording, Time.
+- [ ] **P-5 Normal build never calls the voice proxy.** Non-A/B build, App Privacy Report on.
+      Play 3 breaks.
+  - Expected: no "Owner voice test" button, and every line is in the iPhone voice.
+    `aerodj-tts.vercel.app` is not in AeroDJ's network activity. The paid gate is compiled out
+    (PremiumVoiceCatalog.swift:65-67, OwnerVoiceTrial+App.swift:20-33).
+  - Evidence (pass or fail): App Privacy Report screenshot, Time.
+- [ ] **P-6 Cloud voice setup is pinned (A/B only).** Owner voice test: pick a voice, keep the
+      prefilled URL, enter the token, read the status line, then tap Done and relaunch.
+  - Expected: the footer says "Host allowed" and the status says "Premium: included (catalog
+    index N)". It takes effect only after relaunch ("Applies on next launch."). With any other
+    host the footer says "Not the pinned host: route will be omitted" and every line stays
+    on-device (OwnerVoiceTrial+App.swift:144,161-171; PremiumVoiceCatalog.swift:110,200,229).
+  - Evidence (pass or fail): screenshot with the token field masked or empty, Time. Never
+    screenshot a typed token.
+- [ ] **P-7 Nothing is voiced before Play or on relaunch (A/B, cloud voice on).** Relaunch and
+      don't press Play. Wait 2 min. Restore a created station and wait 2 min more.
+  - Expected: no DJ line, and no proxy log entries in that window. Breaks are prepared only after
+    a song starts (DJBreakSession.swift:294-310).
+  - Evidence (pass or fail): Time window, plus the owner's proxy log count for that window.
+- [ ] **P-8 Proxy failure falls back on-device (A/B).** In Owner voice test, replace the token with
+      a wrong value such as `x`, tap Done, relaunch and play 2 breaks. Then put the real token back.
+  - Expected: the status still says "included", but every line is in the iPhone voice and the
+    music never stops. The proxy log shows 401s. A failed or timed-out cloud attempt moves on to
+    the on-device route (VoiceRendering.swift:666-735; 16 s timeout, PremiumVoiceCatalog.swift:107).
+  - Evidence (pass or fail): sound recording, Time, proxy log statuses.
+- [ ] **P-9 (Observe only) Daily cap.** Don't spend credits to reach it. If the proxy log shows a
+      429 on test day, check the breaks around that time.
+  - Expected: those breaks are in the iPhone voice and the music never stops. The cap is a UTC
+    day and resets at 00:00 UTC (8 PM ET until Nov 1, 7 PM ET after). The app's own budget
+    doesn't apply because the route is priced at 0 (PremiumVoiceCatalog.swift:150-158). The cap's
+    code default is 20,000 characters (handler.ts:19); the deployed value is owner-confirmed and
+    isn't recorded here.
+  - Evidence (pass or fail): Time, proxy log statuses.
+- [ ] **P-10 A created station's name is never spoken (build 26).** Create a station with an
+      unusual, non-personal name such as "Zebra Test". Play it through 5+ breaks.
+  - Expected: no line says "Zebra Test". Station-ID lines say "AeroDJ": the app never passes a
+    created name to the writer (DJBreakSession.swift:105,606; default name at DJNarration.swift:207).
+    If you hear the name, it's a fail. That line is `.presenter` (DJNarration.swift:394), so an
+    A/B cloud build would send it to the proxy. #222 fixes this.
+  - Evidence (pass or fail): sound recording, Time.
+- [ ] **P-11 Personal lines stay on-device under a cloud voice (A/B).** Cloud voice on. Connect
+      Calendar or approve a shared item, then wait for it to be mentioned.
+  - Expected: every line naming an event, note or shared item is in the iPhone voice, even when
+    other lines use the cloud voice. Sourced and personal cues are local-only
+    (VoiceRendering.swift:640-648).
+  - Evidence (pass or fail): sound recording, Time. Keep event and shared text out of anything
+    you post.
 
 ## 8. Not in build 26
 
-- "Couldn't start that station" toast (#221) and any Apple-Music-denied station copy: build 27 (C-6, C-7).
+- Station-start toasts (#221): "Couldn't start that station" and, with Apple Music access off,
+  "Connect Apple Music to play this station": build 27 (C-6, C-7).
+- Talk-over saved-value carry-over fix (#225): build 27 (T-15 is "known" in build 26).
 - Self-hosted Mac CI runner (#216) and gate-script fix (#215): CI only.
 - Talk-over ON for everyone: stays owner A/B only until T-2 to T-7 pass on this phone.
 - Intro-only fallback if ducking doesn't work: not built.
