@@ -383,9 +383,9 @@ genre step ("Filter genres"). Both fetch once from Apple Music and filter on the
       429 on test day, check the breaks around that time.
   - Expected: those breaks are in the iPhone voice and the music never stops. The cap is a UTC
     day and resets at 00:00 UTC (8 PM ET until Nov 1, 7 PM ET after). The app's own budget
-    doesn't apply because the route is priced at 0 (PremiumVoiceCatalog.swift:150-158). The cap's
-    code default is 20,000 characters (handler.ts:19); the deployed value is owner-confirmed and
-    isn't recorded here.
+    doesn't apply because the route is priced at 0 (PremiumVoiceCatalog.swift:150-158). The Production
+    cap is 9,000 characters/day (Production only, set Oct 28). The code default of 20,000
+    (handler.ts:19) applies elsewhere, never in Production.
   - Evidence (pass or fail): Time, proxy log statuses.
 - [ ] **P-10 A created station's name is never spoken (build 26).** Create a station with an
       unusual, non-personal name such as "Zebra Test". Play it through 5+ breaks.
