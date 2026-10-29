@@ -32,6 +32,8 @@ public final class StationCreationModel {
         case empty
         /// `message` is nil when there is nothing to show (a newer search replaced this one).
         case failed(message: String?)
+        /// Genre step only: Apple Music isn't authorized ("Connect Apple Music to see genres.").
+        case notAuthorized
     }
 
     /// Which list `results` holds, so the UI can label it ("Your playlists" vs search results).
@@ -68,6 +70,10 @@ public final class StationCreationModel {
     /// Genre step source (`GenreProviding`); fetched once per flow, cached only on success.
     @ObservationIgnored private let genreProvider: any GenreProviding
     @ObservationIgnored private var cachedGenres: [CatalogGenre]?
+    /// The genre load's failure (`.failed` / `.notAuthorized`), kept until `retryGenres`, so
+    /// typing in the filter never refetches after a failure (Sentinel, #214).
+    @ObservationIgnored private var genreFailure: Phase?
+    @ObservationIgnored private var genreTask: Task<[CatalogGenre], Error>?
 
     public init(studio: StudioPresentationModel, search: any StationSeedSearching,
                 kind: StationCreationKind = .artists, level: StationDiscoveryLevel? = nil,
@@ -148,12 +154,28 @@ public final class StationCreationModel {
             clearResults()
             return
         }
+        if kind == .genre, cachedGenres == nil, let genreFailure {
+            // Filtering works on the cached list only; after a failure only "Try again" fetches.
+            generation += 1
+            results = []
+            resultsSource = .none
+            phase = genreFailure
+            return
+        }
         await run(source) { search in
             switch kind {
             case .genre: GenrePicker.rows(try await self.catalogGenres(), matching: term)
             case .artists, .playlist: try await search.searchSeeds(term, kinds: [kind.seedKind], limit: Self.resultLimit)
             }
         }
+    }
+
+    /// "Try again" on the genre step: clears the kept failure and fetches exactly once, then
+    /// filters by `term`. Never requests Apple Music access.
+    public func retryGenres(matching term: String) async {
+        guard kind == .genre else { return }
+        genreFailure = nil
+        await search(term)
     }
 
     /// Lists the listener's library playlists (playlist stations only). They stay on the device.
@@ -191,10 +213,20 @@ public final class StationCreationModel {
     /// next search retries).
     private func catalogGenres() async throws -> [CatalogGenre] {
         if let cachedGenres { return cachedGenres }
-        let fetched = try await genreProvider.genres()
-        try Task.checkCancellation()
-        cachedGenres = fetched
-        return fetched
+        // One fetch shared by every keystroke that arrives while it runs.
+        let provider = genreProvider
+        let task = genreTask ?? Task { try await provider.genres() }
+        genreTask = task
+        do {
+            let fetched = try await task.value
+            genreTask = nil
+            cachedGenres = fetched
+            try Task.checkCancellation()
+            return fetched
+        } catch {
+            genreTask = nil
+            throw error
+        }
     }
 
 
@@ -232,7 +264,14 @@ public final class StationCreationModel {
             }
             results = []
             resultsSource = .none
-            phase = .failed(message: SearchFailureCopy.message(for: classifyFailure(error)))
+            if source == .genres, GenrePickerCopy.isNotAuthorized(error, classifyFailure) {
+                phase = .notAuthorized
+                genreFailure = .notAuthorized
+                return
+            }
+            let message = SearchFailureCopy.message(for: classifyFailure(error))
+            phase = .failed(message: message)
+            if source == .genres, cachedGenres == nil, message != nil { genreFailure = phase }
         }
     }
 }
