@@ -34,22 +34,12 @@ enum FoldedStyle {
     static let artMinSide: CGFloat = 140
 }
 
-/// Dark glass: white fill plus a 1 px hairline. Opaque under Reduce Transparency.
-private struct FoldedGlass<S: InsettableShape>: ViewModifier {
-    let shape: S
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    func body(content: Content) -> some View {
-        content
-            .background(reduceTransparency ? AnyShapeStyle(FoldedStyle.opaqueGlass) : AnyShapeStyle(FoldedStyle.glassFill),
-                        in: shape)
-            .overlay(shape.strokeBorder(FoldedStyle.hairline, lineWidth: 1))
-    }
-}
-
+/// Dark glass through the shared `aeroGlass`: Liquid Glass on iOS 26, the white 8 % fill plus a
+/// 1 px hairline before that, and opaque under Reduce Transparency. Buttons pass `.control`.
 extension View {
-    func foldedGlass<S: InsettableShape>(_ shape: S) -> some View {
-        modifier(FoldedGlass(shape: shape))
+    func foldedGlass<S: InsettableShape>(_ shape: S, role: AeroGlassRole = .surface) -> some View {
+        aeroGlass(shape, role: role, fallback: AnyShapeStyle(FoldedStyle.glassFill),
+                  hairline: FoldedStyle.hairline, opaqueFill: FoldedStyle.opaqueGlass)
     }
 }
 
@@ -491,16 +481,19 @@ private struct FoldedToolbar: View {
     let onTune: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            FoldedStationChip(heading: heading, action: onQueue)
-            if showsWorkspaceButtons {
-                FoldedToolbarButton(systemImage: "list.bullet",
-                                    label: upNext.first.map { "Up next: \($0.title) by \($0.artistName)" } ?? "Up next: nothing queued",
-                                    hint: "Opens the queue, tuner and connections",
-                                    identifier: "queue.affordance", action: onQueue)
-                FoldedToolbarButton(systemImage: "slider.horizontal.3", label: "Tune station",
-                                    hint: "Opens the tuner. Music continues.",
-                                    identifier: "transport.tune", action: onTune)
+        // One glass family on iOS 26, so the chip and the round buttons read as one bar.
+        AeroGlassGroup(spacing: 8) {
+            HStack(spacing: 8) {
+                FoldedStationChip(heading: heading, action: onQueue)
+                if showsWorkspaceButtons {
+                    FoldedToolbarButton(systemImage: "list.bullet",
+                                        label: upNext.first.map { "Up next: \($0.title) by \($0.artistName)" } ?? "Up next: nothing queued",
+                                        hint: "Opens the queue, tuner and connections",
+                                        identifier: "queue.affordance", action: onQueue)
+                    FoldedToolbarButton(systemImage: "slider.horizontal.3", label: "Tune station",
+                                        hint: "Opens the tuner. Music continues.",
+                                        identifier: "transport.tune", action: onTune)
+                }
             }
         }
     }
@@ -535,7 +528,7 @@ private struct FoldedStationChip: View {
             .padding(.leading, 6)
             .padding(.trailing, 14)
             .frame(maxWidth: .infinity, minHeight: FoldedStyle.toolbarHeight)
-            .foldedGlass(Capsule())
+            .foldedGlass(Capsule(), role: .control)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -565,7 +558,7 @@ private struct FoldedToolbarButton: View {
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: FoldedStyle.toolbarHeight, height: FoldedStyle.toolbarHeight)
-                .foldedGlass(Circle())
+                .foldedGlass(Circle(), role: .control)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
