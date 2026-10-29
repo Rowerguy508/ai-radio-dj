@@ -107,9 +107,11 @@ final class MusicKitService: ObservableObject {
     /// player change) unless `snapshot.canSeek`: never during a DJ break or a load. The target is
     /// clamped to [0, duration - 1 s]. The boundary detector is re-baselined first, so the samples
     /// around the seek cannot read as an end, then the playhead moves, then the DJ session gets
-    /// the new time left. Main actor: no poll can run between these steps.
-    func seek(to seconds: TimeInterval) -> Bool {
-        let decision = SongSeekPolicy.decide(seconds: seconds, duration: currentDuration, snapshot: snapshot)
+    /// the new time left. Main actor: no poll can run between these steps. A `trackID` that is
+    /// no longer the current track makes it a no-op (stale scrub).
+    func seek(to seconds: TimeInterval, trackID: String? = nil) -> Bool {
+        let decision = SongSeekPolicy.decide(seconds: seconds, duration: currentDuration,
+                                             snapshot: snapshot, trackID: trackID)
         logPlayback(PlaybackLog.songSeek(index: queueIndex, decision: decision))
         guard case let .seek(target, remaining) = decision else { return false }
         boundaries.userSeeked(to: target, uptime: ProcessInfo.processInfo.systemUptime)
