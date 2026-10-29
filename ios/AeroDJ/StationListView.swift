@@ -3,7 +3,8 @@ import SwiftUI
 
 /// Station selection screen. Adaptive container sizing (no hardcoded device dims).
 /// The split root owns the selection and the one shared studio/playback session.
-/// Neither column creates a model, and choosing a station never starts playback.
+/// Neither column creates a model. Choosing a built-in station never starts playback; tapping a
+/// created one starts it only when nothing is queued (restore never does).
 struct StationListView: View {
     /// Composed once at launch by `AppDependencies`; views receive it, never build it.
     let dependencies: AppDependencies
@@ -35,10 +36,16 @@ struct StationListView: View {
         StationSplitRoot(stations: stations, showsSharedInbox: dependencies.mode == .live,
                          showSharedInbox: $showSharedInbox,
                          onUserOpenedStation: { id in
-                             await dependencies.playback.authorize()
-                             // A created station becomes the live one under the normal boundary
-                             // rules (idle: now; mid-song: after this song). Row tap only, never restore.
-                             if let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes) {
+                             // Row tap only, never restore. A created station starts now when nothing
+                             // is queued, otherwise takes over at the song boundary (CreatedStationStarter).
+                             guard let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes) else {
+                                 await dependencies.playback.authorize()
+                                 return
+                             }
+                             if let stationQueue = dependencies.stationQueue {
+                                 await stationQueue.openCreatedStation(.userTap, recipeID: recipeID, studio: dependencies.studio)
+                             } else {
+                                 await dependencies.playback.authorize()
                                  _ = await dependencies.studio.applyRecipe(recipeID)
                              }
                          },
@@ -220,7 +227,8 @@ struct StationSplitRoot<Detail: View>: View {
 
     /// The row the list selects. Nil is not stored: the split clears the binding while it
     /// builds the list, and writing that empty value would erase the station the next launch needs.
-    /// Choosing a station records only its id and pushes the detail. It does not play.
+    /// Choosing a station records its id and pushes the detail. Only a tap on a created station
+    /// with nothing queued plays (`StationQueuePlayer.openCreatedStation`).
     /// The back gesture writes `preferredCompactColumn`, so the list can show again.
     private var selection: Binding<Station.ID?> {
         Binding(
