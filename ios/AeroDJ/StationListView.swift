@@ -65,7 +65,7 @@ struct StationListView: View {
                 } else {
                     ContentUnavailableView(
                         "Nothing shared yet", systemImage: "tray",
-                        description: Text("In Mail, Messages or Safari, tap Share and choose AeroDJ."))
+                        description: Text("In Mail, Messages or Safari, tap Share and choose \(AppName.display)."))
                 }
             }
         }
@@ -133,7 +133,7 @@ struct StationSplitRoot<Detail: View>: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
             stationPicker
-            .navigationTitle("AeroDJ")
+            .navigationTitle(AppName.display)
             // Contain first, so this identifier stays on the list and does not replace the rows.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("split.sidebar")
