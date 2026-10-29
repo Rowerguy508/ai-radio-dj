@@ -1,7 +1,7 @@
 import AeroDJCore
 import SwiftUI
 
-// Stations picker on compact width (wireframe 01, "Your stations"): station cards on a
+// Stations picker on compact width (wireframe 01): station cards on a
 // curved arc. UI only. Scrolling moves focus and nothing else; a tap on a card is the
 // existing selection (`StationSplitRoot.selection`), which opens the station and never
 // starts playback. No station data is read or sent beyond the list it is given.
@@ -34,14 +34,9 @@ struct StationCarousel: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
+            // No section heading of its own: the split root's morphing "Stations" header is the
+            // one heading on this screen (two read as a duplicate, and VoiceOver hit both).
             VStack(alignment: .leading, spacing: 12) {
-                Text("Your stations")
-                    .font(.footnote.weight(.semibold))
-                    .textCase(.uppercase)
-                    .tracking(0.6)
-                    .foregroundStyle(FoldedStyle.tertiaryInk)
-                    .padding(.horizontal, 16)
-                    .accessibilityAddTraits(.isHeader)
                 if typeSize.isAccessibilitySize {
                     stacked
                 } else {
@@ -97,6 +92,9 @@ struct StationCarousel: View {
             .padding(.bottom, StationCarouselArc.edgeDrop + 16)
         }
         .contentMargins(.horizontal, sideMargin, for: .scrollContent)
+        // Content margins reach every scroll view inside the modifier, so without this the
+        // morphing header's top margin would be added again inside the arc.
+        .contentMargins(.vertical, 0, for: .scrollContent)
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: $focusedID)
         .scrollClipDisabled()

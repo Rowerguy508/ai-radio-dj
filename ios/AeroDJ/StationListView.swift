@@ -72,6 +72,8 @@ struct StationSplitRoot<Detail: View>: View {
     /// Nothing selected opens on the list. A selection pushes the detail.
     @State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The scheme around the split. Regular width keeps it; compact forces dark (see `body`).
+    @Environment(\.colorScheme) private var systemColorScheme
 
     init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
          onUserOpenedStation: (() async -> Void)? = nil,
@@ -92,6 +94,9 @@ struct StationSplitRoot<Detail: View>: View {
             // Contain first, so this identifier stays on the list and does not replace the rows.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("split.sidebar")
+            // iOS 18+: "Stations" collapses into a compact inline bar as the list scrolls.
+            // iOS 17 keeps the system large title. Rows and selection are untouched.
+            .morphingLargeTitle("Stations", subtitle: "Your AI-hosted radio, on Apple Music")
             .toolbar {
                 // The real App Group inbox is never opened in the test station: its
                 // data must not appear next to fixtures.
@@ -105,6 +110,12 @@ struct StationSplitRoot<Detail: View>: View {
                     }
                 }
             }
+            // Compact: the whole sidebar is dark, the carousel's dark-glass cards plus the
+            // morphing header and nav bar above them. Without this, light mode drew the header
+            // in black on the dark carousel. Same pattern as the folded player. A value, not
+            // an `if`, so folding or unfolding keeps the column's identity and scroll state.
+            .environment(\.colorScheme, isCompact ? .dark : systemColorScheme)
+            .toolbarColorScheme(isCompact ? .dark : nil, for: .navigationBar)
         } detail: {
             if let station = stations.first(where: { $0.id == selectedStationID }) {
                 NavigationStack {
