@@ -30,20 +30,20 @@ This is the **single** model that the Studio UI (Claudio, #52) binds to for the 
 
 ## Station Tuner
 
-Controls: energy, mood (`moods`), genre (`genres`), discovery, DJ talk (`commentary`), DJ personality and the morning briefing.
+Controls: energy, mood (`moods`), genre (`genres`), discovery, station seeds ("Built from", `seeds`), reach (`reach`: "Only this", "Related", "Broad"), DJ talk (`commentary`), DJ personality and the morning briefing.
 
 - **Rows:** `station.tunerRows` returns one `StationTunerRow` per control (`StationSetting.tuning`) with:
   - `activeSummary`: what is playing now
   - `displayedSummary`: what the control shows, which is the pending value if there is one
   - `pendingTiming`, `appliesCopy` and `status`
 - **Control values:** bind them to `station.displayed.<field>`. Never bind them to `active`; `active` is for "Now using: …".
-- **Intents** (`async`): `setEnergy`, `setMoods`, `setGenres`, `setDiscovery`, `setCommentary`, `setPersonality`, `setBriefing { … }` and `discardPendingChanges()`.
+- **Intents** (`async`): `setEnergy`, `setMoods`, `setGenres`, `setDiscovery`, `setSeeds`, `setReach`, `setCommentary`, `setPersonality`, `setBriefing { … }` and `discardPendingChanges()`.
 
 ### When a change applies, and the exact copy
 
 | `StationChangeTiming` | `appliesCopy` | Applies at |
 |---|---|---|
-| `nextSongBoundary` | "Applies after this song" | `songBoundary(afterTrack:)`: genres, mood, energy, discovery, commentary up |
+| `nextSongBoundary` | "Applies after this song" | `songBoundary(afterTrack:)`: genres, mood, energy, discovery, seeds, reach, commentary up |
 | `nextDJBreak` | "Applies at the next DJ break" | `djBreakWillPrepare`, or the song boundary if that comes first: personality |
 | `nextBriefing` | "Applies to the next briefing" | `briefingWillPlan`, or the song boundary: briefing changes, requesting an integration |
 | `immediate` | "Applied now" | Turning commentary off, turning the briefing off, withdrawing an integration |
