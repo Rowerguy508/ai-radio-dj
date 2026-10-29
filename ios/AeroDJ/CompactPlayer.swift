@@ -209,7 +209,8 @@ struct PlaybackChromeBar: View {
                 // TODO(Atlas #seek): pass snapshot.canSeek and actions.seek
                 PlaybackScrubber(time: timeSource, transport: snapshot.transport,
                                  trackID: snapshot.nowPlaying?.id,
-                                 canSeek: false, onSeek: nil)
+                                 canSeek: false, onSeek: nil,
+                                 isDJSpeaking: dj.state.isOnAir)
             }
             if content.showsTransport {
                 TransportRow(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,

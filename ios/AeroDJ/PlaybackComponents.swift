@@ -777,7 +777,8 @@ struct PlaybackTimeSource {
 /// Inert until Atlas wires `PlaybackActions.seek(to:)` and `PlaybackSnapshot.canSeek`: with
 /// `onSeek == nil` it is today's display-only bar (no thumb, no gesture, no adjustable
 /// action, not dimmed). Wired with `canSeek == false` (DJ break, loading, non-seekable) it is
-/// dimmed and the gesture is off.
+/// dimmed and the gesture is off. Its VoiceOver hint names the DJ break only while
+/// `isDJSpeaking` (the same On Air truth as the ON AIR pill); otherwise it stays neutral.
 struct PlaybackScrubber: View {
     typealias Seek = (TimeInterval) async -> Bool
 
@@ -786,6 +787,8 @@ struct PlaybackScrubber: View {
     let trackID: String?
     let canSeek: Bool
     let onSeek: Seek?
+    /// True only while the DJ is actually speaking (`DJStudioState.isOnAir`). Wording only.
+    var isDJSpeaking: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scrub = ScrubberState()
@@ -798,7 +801,13 @@ struct PlaybackScrubber: View {
     static let draggingTrackHeight: CGFloat = 10
     static let thumbSize: CGFloat = 12
     static let draggingThumbSize: CGFloat = 22
-    static let unavailableHint = "Scrubbing unavailable during DJ break"
+    static let djBreakHint = "Seeking is paused during the DJ break"
+    static let neutralHint = "Seeking isn't available right now"
+
+    /// Why the bar is inert: the DJ break only while the DJ is on air, neutral otherwise.
+    static func unavailableHint(isDJSpeaking: Bool) -> String {
+        isDJSpeaking ? djBreakHint : neutralHint
+    }
 
     private var isWired: Bool { onSeek != nil }
     private var isInteractive: Bool { isWired && canSeek }
@@ -857,6 +866,7 @@ struct PlaybackScrubber: View {
         .accessibilityLabel("Playback position")
         .accessibilityValue(PlaybackTimeFormat.accessibilityValue(position: position, duration: duration))
         .modifier(ScrubberAccessibility(isWired: isWired, canSeek: canSeek,
+                                        unavailableHint: Self.unavailableHint(isDJSpeaking: isDJSpeaking),
                                         step: { accessibilityStep($0) }))
         .accessibilityIdentifier("playback.progress")
     }
@@ -970,6 +980,7 @@ private struct ScrubberHitShape: Shape {
 private struct ScrubberAccessibility: ViewModifier {
     let isWired: Bool
     let canSeek: Bool
+    let unavailableHint: String
     let step: (TimeInterval) -> Void
 
     @ViewBuilder
@@ -983,7 +994,7 @@ private struct ScrubberAccessibility: ViewModifier {
                 }
             }
         } else if isWired {
-            content.accessibilityHint(PlaybackScrubber.unavailableHint)
+            content.accessibilityHint(unavailableHint)
         } else {
             content
         }
@@ -1050,6 +1061,8 @@ private extension View {
         PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: nil)
         PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: true, onSeek: { _ in true })
         PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: { _ in true })
+        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: { _ in true },
+                         isDJSpeaking: true)
     }
     .padding()
     .preferredColorScheme(.dark)
