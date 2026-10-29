@@ -206,10 +206,11 @@ struct PlaybackChromeBar: View {
                 QueueAffordance(upNext: snapshot.upNext, action: onQueue)
             }
             if showsProgress, let timeSource {
-                // TODO(Atlas #seek): pass snapshot.canSeek and actions.seek
+                // One seek per release, for the track on screen (#171's stale-scrub guard).
                 PlaybackScrubber(time: timeSource, transport: snapshot.transport,
                                  trackID: snapshot.nowPlaying?.id,
-                                 canSeek: false, onSeek: nil,
+                                 canSeek: snapshot.canSeek,
+                                 onSeek: { await actions.seek(to: $0, trackID: $1) },
                                  isDJSpeaking: dj.state.isOnAir)
             }
             if content.showsTransport {

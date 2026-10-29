@@ -833,13 +833,16 @@ struct PlaybackTimeSource {
 /// release and never during a drag, and the bar holds the target until playback catches up.
 /// This view never touches playback state.
 ///
-/// Inert until Atlas wires `PlaybackActions.seek(to:)` and `PlaybackSnapshot.canSeek`: with
-/// `onSeek == nil` it is today's display-only bar (no thumb, no gesture, no adjustable
-/// action, not dimmed). Wired with `canSeek == false` (DJ break, loading, non-seekable) it is
-/// dimmed and the gesture is off. Its VoiceOver hint names the DJ break only while
-/// `isDJSpeaking` (the same On Air truth as the ON AIR pill); otherwise it stays neutral.
+/// Wired to `PlaybackActions.seek(to:trackID:)` (#156 + #171) and `PlaybackSnapshot.canSeek`.
+/// `onSeek` gets the target and the track the bar was showing at release, so a release that
+/// lands after the song changed is a no-op upstream (stale scrub) and the bar snaps back.
+/// With `onSeek == nil` (previews only) it is the display-only bar (no thumb, no gesture, no
+/// adjustable action, not dimmed). With `canSeek == false` (DJ break, loading, non-seekable)
+/// it is dimmed, the gesture is off and nothing is sent. Its VoiceOver hint names the DJ
+/// break only while `isDJSpeaking` (the same On Air truth as the ON AIR pill); otherwise it
+/// stays neutral.
 struct PlaybackScrubber: View {
-    typealias Seek = (TimeInterval) async -> Bool
+    typealias Seek = (_ seconds: TimeInterval, _ trackID: String?) async -> Bool
 
     let time: PlaybackTimeSource
     let transport: TransportState
@@ -991,6 +994,8 @@ struct PlaybackScrubber: View {
                 }
             }
             .onEnded { _ in
+                // canSeek can turn false between the last move and the lift: drop, never send.
+                guard canSeek else { scrub.cancelDrag(); return }
                 guard let target = scrub.endDrag(now: Self.now()) else { return }
                 send(target, commitID: scrub.commitID)
             }
@@ -1005,15 +1010,17 @@ struct PlaybackScrubber: View {
         send(target, commitID: scrub.commitID)
     }
 
-    /// The one seek per release. A false result goes straight back to the snapshot.
+    /// The one seek per release, pinned to the track the bar was showing. A false result
+    /// (blocked, or the song changed first) goes straight back to the snapshot.
     private func send(_ target: TimeInterval, commitID: Int) {
         commits += 1
-        guard let onSeek else {
+        guard let onSeek, canSeek else {
             scrub.seekFinished(commitID: commitID, succeeded: false)
             return
         }
+        let pinnedTrackID = scrub.trackID
         Task { @MainActor in
-            let succeeded = await onSeek(target)
+            let succeeded = await onSeek(target, pinnedTrackID)
             scrub.seekFinished(commitID: commitID, succeeded: succeeded)
             guard succeeded else { return }
             try? await Task.sleep(for: .seconds(ScrubberState.holdTimeout))
@@ -1118,9 +1125,9 @@ private extension View {
 #Preview("Scrubber") {
     VStack(spacing: 28) {
         PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: nil)
-        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: true, onSeek: { _ in true })
-        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: { _ in true })
-        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: { _ in true },
+        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: true, onSeek: { _, _ in true })
+        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: { _, _ in true })
+        PlaybackScrubber(time: .fixture, transport: .playing, trackID: "a", canSeek: false, onSeek: { _, _ in true },
                          isDJSpeaking: true)
     }
     .padding()

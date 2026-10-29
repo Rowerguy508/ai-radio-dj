@@ -3,7 +3,7 @@ import Foundation
 /// The song scrubber's own state (owner request, 7:40 PM: "We also need scrubbing for songs").
 ///
 /// Pure and display-only: it never touches playback. It decides what position the bar
-/// shows and which single target to hand to `PlaybackActions.seek(to:)` (Atlas's PR), which
+/// shows and which single target to hand to `PlaybackActions.seek(to:trackID:)`, which
 /// is called once on release and never during a drag.
 ///
 /// - `idle`: the bar follows the playback snapshot.
