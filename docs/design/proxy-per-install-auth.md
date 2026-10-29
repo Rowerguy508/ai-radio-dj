@@ -18,6 +18,13 @@ Revision 3 folds in Sentinel's re-review (comment 6509970801): E1 (the 24 h
 re-check does not bound a refund; the Apple status check is now a hard gate),
 E2 (per-link expiry and an owner reset script), and the listed nits.
 
+Revision 4 folds in Sentinel's re-review at `88a9857` (comment 6510231459:
+E2a, the residual wording, the `RESERVE2` membership nit, the leaf-validity
+wording), Sentinel's review of #243 (comment 6510231838: V3 replay contract)
+and Fry's re-review at `88a9857` (comment 6510251806: D1 kill path, D2
+per-charge refund marker, status-transaction `revocationDate`, #242 contract
+rows).
+
 ## 1. Current state
 
 **Auth.** One shared owner bearer token. The server keeps only its SHA-256
@@ -220,9 +227,26 @@ server reserves its own post-validation count (`handler.ts:262-264`), never a
 client number; if ElevenLabs' `character-cost` header is higher, a top-up
 script adds the difference to both buckets after the fact.
 
+**Per-charge refund marker (Fry D2, #238/#241 follow-up; PR 3 gate).** Every
+reservation gets a server-generated reservation id `rid`. `RELEASE2`, and the
+`character-cost` top-up, apply **at most once per `rid`**: the script first
+runs `SET refund:{aerodj-tts}:<rid> 1 NX EX 172800` (top-up:
+`topup:{aerodj-tts}:<rid>`) and does nothing if the mark already exists. The
+in-memory limiter keeps the same rule with a per-instance `Set` of spent
+`rid`s. This applies to the existing owner path's `release()` as well, so
+#241's `todo` test ("double refund of the same reservation applies once")
+must pass, **split into one test per limiter** (in-memory, and Redis against
+the fake EVAL), before PR 3 merges. Until it lands, no code path may retry a
+release or add a second release site (Sentinel's #241 gate). #241's README
+already names this a PR 3 gate; this section is the matching design.
+
 **Durability is mandatory on every verified path, in every environment**
 (Sentinel B3): `RESERVE2`, `register`, the entitlement script and the
 notifications script require `limiter.durable === true`, else 503 `store`.
+**This rule lands in PR 3**, the first PR that writes per-install state
+(`register`: key `SET NX` and the enroll counter), and every later
+per-install script (PR 4's `RESERVE2`, PR 6, PR 7) inherits it with its own
+test. #241's README names it a PR 3 gate, matching this.
 That covers Preview and Production with `ACCEPT_BEST_EFFORT_LIMITS` set. The
 in-memory limiter remains only for the legacy owner path's local dev tests.
 
@@ -231,7 +255,7 @@ the legacy app and `ray-do`). Records are well under 1 KB per install or
 entitlement. Upstash's command quota is an owner check (§11): running out
 means the paid route is down (fails closed).
 
-### 4.4 Error contract (Fry B2; app side is Fry's #234)
+### 4.4 Error contract (Fry B2; app side is Fry's #234 and #242)
 
 Every error body is `{ error, requestId, reason }`; refusals also carry
 `retryAfterSeconds` (as #238 ships). `Retry-After` is integer
@@ -239,15 +263,19 @@ seconds ≥ 1. **Every 429 and every 503 carries `Retry-After`.** The app
 trusts `Retry-After` over its own clock. Music never waits on the proxy:
 every non-200 falls through to the on-device voice for that cue.
 
-| Status | `reason` | From | `Retry-After` | App behaviour (#234 at `31a792f` unless marked NEW) |
+App behaviour is #234 at `31a792f` unless marked otherwise. **#242** is
+Fry's backoff/entitlement follow-up (`fry/tts-backoff-entitlement` at
+`8e5c813`, stacked on #234).
+
+| Status | `reason` | From | `Retry-After` | App behaviour |
 | --- | --- | --- | --- | --- |
 | 200 / 204 | – | tts / register, entitlement | – | Play / continue |
-| 400 | `bad_request` | all | – | Do not retry that request; on-device for the cue. NEW in #234 |
+| 400 | `bad_request`, **or no `reason` at all** | all | – | Do not retry that request; on-device for that cue; **paid voice stays on**. #242 treats a reasonless 400 as `bad_request`, because the proxy as deployed (#238, #241) returns 400 with no `reason` for every validation failure (unlisted voiceId, text too long, bad JSON) |
 | 400 | `mixed_auth` | tts | – | Treated as a client bug: stop paid calls until next launch. NEW |
 | 401 | `reattest` (unknown, revoked or expired key) | tts, ent | – | Stop paid calls until next launch; on next launch delete the key and attest **once** |
 | 401 | `assertion` (bad signature, counter, used/expired/wrong-purpose challenge) | tts, ent, register | – | Stop paid calls until next launch (#234). Out-of-order counters are avoided by serialising proxy calls per key (Sentinel rec. 7) |
 | 401 | `owner_token` (bearer when owner path off, or wrong) | tts | – | Stop paid calls until next launch; never falls back to anything else |
-| 403 | `no_entitlement` (no link, expired, refunded, revoked, stale, family/sandbox not allowed) | tts | – | NEW: if StoreKit shows a current entitlement, re-sync once via `/api/entitlement` (§5.2); otherwise, or if that fails, no paid calls until `Transaction.updates` emits or next launch. Never opens the paywall by itself |
+| 403 | `no_entitlement` (no link, expired, refunded, revoked, stale, TTL lapsed, family/sandbox not allowed) | tts | – | #242 stops paid calls until `entitlementDidChange()`. **PR 9:** if StoreKit shows a current entitlement, re-sync once via `/api/entitlement` (§5.2) and on success call `entitlementDidChange()`; otherwise, or if that fails, no paid calls until `Transaction.updates` emits or next launch. PR 9 also re-posts proactively before `verifiedAt + AERODJ_TTS_ENTITLEMENT_TTL_HOURS`, so the routine daily refresh (§5.6) does not cost a cue. Never opens the paywall by itself |
 | 403 | `install_limit` | ent | – | NEW: no paid calls until next launch; Nova's UI may explain "too many devices" |
 | 405 | – | all | – | Client bug, stop until next launch |
 | 413 | `too_large` | all | – | Do not retry that request. NEW |
@@ -256,16 +284,19 @@ every non-200 falls through to the on-device voice for that cue.
 | 429 | `install_daily` / `global_daily` / `owner_daily` / `sandbox_daily` | tts | seconds to 00:00 UTC | Wait `Retry-After`, else next UTC midnight, persisted across launches |
 | 500 | `misconfig` | all | 3600 | Treat as 503 unknown |
 | 502 | `upstream` | tts | 60 | Treat as 503 unknown. An ElevenLabs 429/quota error surfaces as 502 with `upstreamCode` in logs, **not** as `global_daily` |
-| 503 | `store` | all | 30 | Exponential backoff from `Retry-After` |
-| 503 | `disabled` | all | 3600 | Wait `Retry-After` (1 h) |
+| 503 | `store` | all | 30 | Wait `max(Retry-After, exponential backoff)` (#242), so a long Redis outage is not retried every 30 s |
+| 503 | `disabled` | all | 3600 | Wait `Retry-After` (1 h). **Not produced by any code today** (§4.7); arrives with PR 2 (attest endpoints) and PR 3 (every path) |
 | 503 | `apple` (status API unreachable, §5.6) | ent | 300 | Wait `Retry-After`; on-device meanwhile |
 | 504 | `upstream_timeout` | tts | 60 | Treat as 503 unknown |
 
-**Unknown or missing `reason` / header** (as #234 implements): 429 →
-`Retry-After`, else next UTC midnight; 503 and other 5xx → `Retry-After`,
-else exponential backoff; any other 4xx → stop paid calls until next launch.
+**Unknown or missing `reason` / header** (as **#242** implements; #234
+alone leaves state unchanged on other 4xx): 429 → `Retry-After`, else next
+UTC midnight; 503 and other 5xx → `Retry-After`, else exponential backoff;
+400 without a `reason` → `bad_request` (that cue only); any other 4xx → stop
+paid calls until next launch. Optional, PR 6: a `validUntil` in the
+`/api/entitlement` 204/200 so the app can tell "refresh" from "not Pro".
 
-**#234 must also handle (NEW):** 403 `no_entitlement` and `install_limit`,
+**#234/#242 must also handle (NEW):** 403 `no_entitlement` and `install_limit`,
 400/413 no-retry, `owner_daily`/`sandbox_daily` as daily caps, and the
 503 `apple` reason. 401 or attest failure **never selects the owner token**
 in an A/B build that has both paths (Fry B1), with an iOS test.
@@ -334,8 +365,27 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
   503 `disabled` unless it is exactly `true` (there is no "attested but not
   entitled" paid path in any build that reaches the public). The only
   non-entitled paid path is the owner token (§4.5).
-- `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP=0` is the master stop for every path,
-  owner included.
+- **There is no `0` = stop (Fry D1, correcting revisions 1-3).** As #238
+  ships, `parseCharCap` rejects `0` and falls back to the default 9,000, so
+  `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP=0` gives 9k, not a stop. This note does
+  not change #238.
+- **What actually stops paid voice today** (code at #238 `ad4c081` / #241
+  `470b30e`; nothing in `services/aerodj-tts` returns 503 `disabled` yet):
+  the handler returns **500** on every POST, before any limiter or
+  ElevenLabs call, when `ELEVENLABS_API_KEY` is unset or blank. Unsetting
+  `AERODJ_TTS_TOKEN_SHA256` also returns 500 for every request before auth.
+  So the real emergency stop today is: **remove `ELEVENLABS_API_KEY` from
+  the Vercel Production env and redeploy** (owner action; the 500 is "Treat
+  as 503 unknown" in the app, which falls back to on-device). Rotating the
+  key at ElevenLabs stops spend even without a redeploy.
+- **PR 3 adds an explicit master stop for every path, owner included:**
+  `AERODJ_TTS_PAID_STOP`. Any non-empty value except exactly `false` stops
+  (fail closed: a typo stops rather than runs). Stopped → 503 `disabled`,
+  `Retry-After: 3600`, checked **first** (before auth, any limiter or Redis
+  call and any ElevenLabs call). Test (PR 3): with the flag set, the
+  owner path, the attested path and every new endpoint return 503
+  `disabled` with `Retry-After`, the limiter spy and the fetch spy see zero
+  calls; unset or exactly `false` → normal behaviour.
 - **Env changes apply only to new deployments** on Vercel (correcting
   revision 1). Runbook: change env → redeploy Production (minutes). For an
   instant stop, a Redis key `cfg:{aerodj-tts}:paid_off` is read inside each
@@ -422,8 +472,10 @@ endpoint. Every check must pass; any failure → 403 `no_entitlement`
    (`AppleRootCA-G3.cer`, public, from apple.com/certificateauthority,
    committed with its SHA-256 fingerprint in a test). The `x5c` root must be
    byte-equal to the pinned one; the system trust store is never used.
-   Validity dates are checked at the JWS `signedDate`, and at now for the
-   leaf. Apple's App Store Server Library additionally requires the marker
+   Certificate validity (all three) is checked at the JWS `signedDate`
+   **only**, as Apple's library does offline; the transaction's own
+   `expiresDate` and `revocationDate` are checked at now (step 4), and OCSP
+   is explicitly deferred (Sentinel accepted this on #243). Apple's App Store Server Library additionally requires the marker
    extensions `1.2.840.113635.100.6.11.1` (leaf) and
    `1.2.840.113635.100.6.2.1` (intermediate); we copy that check. Those OIDs
    come from Apple's open-source library (github.com/apple), **not** from a
@@ -447,6 +499,21 @@ endpoint. Every check must pass; any failure → 403 `no_entitlement`
      `ASSIGNED` refused;
    - `appAccountToken`, if present, a well-formed UUID (§5.4).
 5. **Never trust a client `isPro` flag** or any client-supplied expiry.
+6. **Pinned root only in Production (Sentinel V2, #243).** The verifier
+   accepts an injected root list only when `deployment` is
+   `nonproduction`; with `deployment === 'production'` an injected root is
+   refused outright (`config`), so a test CA can never be wired into
+   Production. PR 6 derives `deployment` fail closed from `VERCEL_ENV`, the
+   same signal the handler uses: only `preview` or `development` is
+   non-production; unset or anything else is `production`.
+7. **Replay contract (Sentinel V3).** The verifier asks a caller-owned
+   last-seen store for the highest `signedDate` already accepted **for this
+   install and this purchase**, keyed by
+   `(h(keyId), h(originalTransactionId))`. Equal `signedDate` → accepted as
+   an idempotent re-post (no upsert); strictly older → refused (`stale`);
+   no entry or newer → accepted. A second install presenting the same
+   current JWS is **not** a replay (§5.5, PR 6). Real replay protection is
+   the assertion counter and the single-use challenge (§4.1).
 
 ### 5.4 `appAccountToken` definition
 
@@ -483,9 +550,13 @@ below):
   revoked transaction's `expiresDate` + max grace + 1 day (an older JWS
   fails the expiry check after that anyway).
 - `link:<keyId>` = `{ ent: h(originalTransactionId), expiresMs, graceUntilMs }`
-  (E2): `expiresMs` is the `expiresDate` of the JWS **this install**
-  presented (or Apple's status-API expiry for this install's post);
-  `graceUntilMs` only from verified renewal info. It is refreshed **only**
+  (E2, E2a): **`expiresMs = min(expiresDate of the JWS this install
+  presented, Apple's status-API expiry for this post)`**. A link never takes
+  a later expiry from Apple's status than the JWS its own install presented:
+  the status API returns the purchase's *current* renewal, so a thief
+  re-posting a stolen, unexpired JWS after the payer renews must not inherit
+  the new term. `ent` may use Apple's expiry. `graceUntilMs` only from
+  verified renewal info, and never past the same `min`. It is refreshed **only**
   when this same install re-presents a valid current transaction; renewals,
   notifications and other installs' posts never extend it. TTL = its own
   expiry + 30 days idle.
@@ -493,14 +564,19 @@ below):
 
 One `ENTLINK` script, after the assertion and JWS verify: consume challenge
 → counter → tombstone check (tomb present and JWS `signedDate` ≤ `revokedMs`
-→ 403 `no_entitlement`) → upsert `ent` if `signedDate` is newer → evict
+→ 403 `no_entitlement`) → replay check per (install, purchase) (§5.3 step 7)
+→ upsert `ent` only if `signedDate` is newer → evict
 members idle > 30 days → if this keyId is not a member and members ≥
 **`installsPerPurchase` in the StoreKit config (interim 5)** → 403 `install_limit`;
 also at most 10 new links per purchase per rolling 30 days (reinstall churn
-without unlimited rotation) → add member, set `link` with this JWS's expiry.
+without unlimited rotation) → add member, set `link` with
+`min(this JWS's expiry, Apple's status expiry)` (E2a).
 
 `/api/tts` (inside `RESERVE2`) requires **both** a current `link` (its own
-`expiresMs`/`graceUntilMs` > now) **and** a current, untombstoned `ent`. So a
+`expiresMs`/`graceUntilMs` > now) whose `keyId` is still in
+`members:<h(originalTransactionId)>` (so an idle-evicted or reset install
+cannot keep a live orphan link; Sentinel nit) **and** a current,
+untombstoned `ent`. So a
 stolen JWS dies at its own expiry even though the purchase renews, unless the
 thief keeps getting fresh JWS from the victim's device (E2).
 
@@ -511,7 +587,8 @@ purchase's `members` and every listed `link`, and prints only counts. The
 payer then re-links from their own device. Tests: clears only the target
 purchase, idempotent, no id in output.
 
-**Residual until a reset** (accepted by Sentinel as bounded): up to 4
+**Residual until a reset** (bounded by Sentinel; **owner acceptance
+pending**, §11): up to 4
 freeloaders per leaked purchase for at most the leaked JWS's remaining
 term, each held to the per-install daily cap, all under the global ceiling.
 No cross-user data is exposed (endpoints return 204 or reason enums only).
@@ -589,8 +666,12 @@ product**. A TTL by itself does not bound this (correcting revision 2's
   `GET https://api.storekit.apple.com/inApps/v1/subscriptions/{transactionId}`
   (Get All Subscription Statuses; sandbox base URL for Sandbox transactions;
   status 1 active, 2 expired, 3 billing retry, 4 grace, 5 revoked) and grants
-  only for 1, or 4 when grace is honoured. Status 5 writes a tombstone. The
-  grant uses Apple's returned expiry, not the client's JWS.
+  only for 1, or 4 when grace is honoured. Status 5 writes a tombstone.
+  Apple's returned `signedTransactionInfo` (and `signedRenewalInfo`) is
+  verified with §5.3 like any other JWS, and **any `revocationDate` refuses
+  the grant** (and writes a tombstone), whatever the status number says
+  (Fry nit a). `ent` uses Apple's returned expiry; each `link` uses
+  `min(presented JWS expiry, Apple's expiry)` (E2a, §5.5).
 - A daily reconciliation job calls **Get Notification History** and replays
   any missed notification through the same verified path.
 - Each `ent` and `link` is valid only until
@@ -607,7 +688,8 @@ product**. A TTL by itself does not bound this (correcting revision 2's
   `apple`, no grant (fail closed).
 - **Hard gate:** on Production, `AERODJ_TTS_ENTITLEMENT_REQUIRED=true` is
   honoured only when `AERODJ_TTS_STATUS_API_ENABLED=true` and the key is
-  present; otherwise the attested paid path returns 503 `disabled`. Owner A/B
+  present, where "present" means the `.p8`, key ID and issuer ID **parse at
+  startup**; a set but unparseable key → 500 `misconfig` (Fry nit b); otherwise the attested paid path returns 503 `disabled`. Owner A/B
   testing before the key exists uses the owner token, not entitlements.
 
 **Grace period and billing retry:** if the owner enables Billing Grace
@@ -665,7 +747,7 @@ to a proxy 403.
 
 ## 6. Overlaps
 
-- **Fry #234:** add the NEW rows of §4.4 (`no_entitlement`, `install_limit`,
+- **Fry #234 / #242:** #242 carries the NEW rows of §4.4 (`no_entitlement`, `install_limit`,
   400/413, `owner_daily`, `sandbox_daily`, `apple`); never fall back to the
   owner token.
 - **Nova (paywall, status UI):** product IDs from the shared config;
@@ -718,7 +800,22 @@ to a proxy 403.
   `signedDate`, swapped chain order.
 - E2: a stolen JWS linked from another keyId is refused after **its own**
   expiry even though the purchase renewed; the 6th install is refused; the
-  reset script clears only the target purchase.
+  reset script clears only the target purchase; a link whose keyId was
+  evicted from or reset out of `members` is refused by `RESERVE2`.
+- **E2a (required, PR 6):** with the status check on (faked), a stolen,
+  unexpired JWS re-posted from another keyId **after the payer renews**
+  (status API returns the renewed, later expiry) gets
+  `link.expiresMs == presented JWS expiresDate`, and `/api/tts` from that
+  link is refused right after that date while the payer's own link (which
+  presented the renewed JWS) keeps working. Mutation: set the link from
+  Apple's expiry → this test fails.
+- Status API: a returned `signedTransactionInfo` with a `revocationDate` is
+  refused (and tombstoned) even when the status number is 1.
+- Replay contract (V3, #243 + PR 6): a second install re-posting the same
+  JWS is accepted; the same install re-posting the same `signedDate` is
+  accepted without an `ent` upsert; a strictly older `signedDate` on the
+  same install is refused (`stale`); a verifier given an injected root with
+  `deployment === 'production'` refuses it.
 - E1: a pre-refund JWS re-posted with the REFUND notification lost is
   refused once the (faked) status API returns 5; Apple unreachable → 503
   `apple`, no grant; `ENTITLEMENT_REQUIRED` without the status API → 503.
@@ -730,6 +827,12 @@ to a proxy 403.
 - Quotas: two concurrent requests at the per-install edge; global
   exhaustion by N installs; `RESERVE2`/`RELEASE2` all-or-nothing against a
   fake EVAL; `durable !== true` → 503 `store` in every environment.
+- **Per-charge refund marker (D2, PR 3 gate):** releasing the same `rid`
+  twice refunds once, as **one test per limiter** (in-memory; Redis against
+  the fake EVAL), replacing #241's `todo`; a double top-up adds once.
+- **Master stop (D1, PR 3):** `AERODJ_TTS_PAID_STOP` set → 503 `disabled`
+  with `Retry-After` on every path, owner included, with zero limiter and
+  zero fetch calls; unset or exactly `false` → normal.
 - Flags: `true` enables; unset, `TRUE`, `1`, `true ` do not.
 - Contract: every row of §4.4, `Retry-After` on every 429/503.
 - Logs: no keyId, text, challenge, assertion, header value, JWS,
@@ -757,20 +860,37 @@ test that has not happened.
    kill switch checked before any store call, raw-body reader with caps.
 3. **Proxy: App Attest verifier and `register`** (pinned root, in-house
    CBOR/ASN.1 on `node:crypto` under Sentinel's rec. 5 limits, SET NX +
-   verified-only enroll counter).
+   verified-only enroll counter). **PR 3 gates** (Orion, #241 README, Fry D2,
+   Sentinel #241): (a) the per-charge refund marker of §4.3 on
+   `release()`/`RELEASE2` and the top-up, with #241's double-refund `todo`
+   passing, split per limiter; no retry or second release path before it;
+   (b) durable-only (`limiter.durable === true`, else 503 `store`) for
+   `register` and every per-install reservation, in every environment;
+   (c) the `AERODJ_TTS_PAID_STOP` master stop (§4.7, D1) with its test.
 4. **Proxy: assertion verification on `/api/tts`** (counter commit,
    challenge mark, `mixed_auth`), durable-only limiter on the verified path,
    and the exact-`true` `AERODJ_TTS_OWNER_TOKEN_ENABLED` flag (owner sets it
    before this PR deploys, §12.6). Still disabled by default.
 5. **Proxy: StoreKit signed-transaction verifier with fixtures** (pinned
    Apple Root CA - G3, ES256-only header rules, test-generated chains, every
-   §8 verifier failure case, injected last-seen store). No endpoint yet.
-   Draft PR open.
+   §8 verifier failure case, injected last-seen store keyed per install +
+   purchase, injected roots refused in Production). No endpoint yet.
+   Draft PR #243 open.
 6. **Proxy: `POST /api/entitlement` + linking** (`ENTLINK`, install cap,
    **per-link expiry from the JWS that install presented** (E2), tombstone
    check, versioned hash keys with previous-key tombstone lookups, config
    loader that fails closed: missing/non-boolean → refuse to start,
-   `installsPerPurchase` integer 1-10).
+   `installsPerPurchase` integer 1-10), `link.expiresMs = min(JWS, Apple)`
+   with the E2a test (§8), `RESERVE2` requiring `keyId ∈ members`, and
+   `deployment` derived fail closed from `VERCEL_ENV` (unknown →
+   `production`); last-seen store errors → 503 `store`, no detail.
+   **Replay resolution (Sentinel V3):** replay protection must not block a
+   second install from re-posting the same transaction. The last-seen check
+   is keyed per `(h(keyId), h(originalTransactionId))`; an equal
+   `signedDate` on the same install is an idempotent re-post (accepted, no
+   `ent` upsert); only a strictly older `signedDate` on that install is
+   rejected. Tests: second install OK, same-install re-post OK, older
+   rejected (§8).
 6b. **Owner-run `scripts/reset-purchase-installs.ts`** (E2): stdin only,
    counts-only output, tests.
 7. **Proxy: `POST /api/appstore/notifications` + Apple status check** (V2,
@@ -821,7 +941,7 @@ after the consent gate and #176 merge and the owner approves the public spend.
 | 4 No secret in the app; `.p8` only in Vercel Production env | §5.9, §5.6 |
 | 5 Fail closed; paywall never gates privacy; consent first | §5.8, §5.10 |
 | 6 No plaintext ids/JWS/token in logs; label Purchases, App Functionality, Not Linked; hash-key rotation keeps tombstones | §5.11, §5.5 |
-| 7 Forged, wrong-bundle, expired, revoked, sandbox-in-prod, replayed must fail, with mutations | §8 |
+| 7 Forged, wrong-bundle, expired, revoked, sandbox-in-prod, replayed (strictly older `signedDate` per install, §5.3 step 7) must fail, with mutations | §8 |
 
 ## 11. Owner decisions (not ours to make)
 
@@ -843,11 +963,15 @@ after the consent gate and #176 merge and the owner approves the public spend.
 - **IAP API key** for the status check: **required before public paid voice**
   (E1); creating it is on Orion's owner list. Without it, the residual risk
   is a refunded JWS keeping Pro until its own expiry (up to a year).
-- Accept the E2 residual (up to 4 freeloaders per leaked purchase until an
-  owner reset, each under the per-install cap and the global ceiling).
+- **Owner acceptance pending:** accept the E2 residual (up to 4 extra
+  installs per leaked purchase until an owner reset or until the leaked
+  JWS's own expiry, each under the per-install cap and the global ceiling).
+  Sentinel bounded it; accepting it is the owner's call.
 - Keep Sandbox-in-prod off while any public TestFlight link exists.
 - Kill switch and global cap in env only (change = redeploy) or also in Redis
-  for an instant stop (recommended).
+  for an instant stop (recommended). Today's only stop is removing
+  `ELEVENLABS_API_KEY` and redeploying (§4.7); `AERODJ_TTS_PAID_STOP`
+  arrives in PR 3.
 - Whether public users get paid voice at v1 launch (owner: v1 waits until the
   paid voice is public-ready), and the retirement date of the owner token
   (must be before any public paid route).
