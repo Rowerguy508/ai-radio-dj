@@ -87,20 +87,7 @@ struct StationSplitRoot<Detail: View>: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
-            List(selection: selection) {
-                ForEach(stations) { station in
-                    // The link is the row. Its value is the station ID, so the tap selects
-                    // that row and the split pushes the detail.
-                    NavigationLink(value: station.id) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(station.name).font(.headline)
-                            Text(station.description ?? "").font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .tag(station.id)
-                }
-            }
+            stationPicker
             .navigationTitle("AeroDJ")
             // Contain first, so this identifier stays on the list and does not replace the rows.
             .accessibilityElement(children: .contain)
@@ -144,6 +131,38 @@ struct StationSplitRoot<Detail: View>: View {
         // `preferredCompactColumn`. Visibility never writes the selection.
         .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
             columnVisibility = sizeClass == .regular ? .all : .automatic
+        }
+    }
+
+    /// Compact width (the folded phone) gets the arc carousel; regular width keeps the
+    /// sidebar list. Both write the same `selection`, so a pick only selects and opens.
+    @ViewBuilder
+    private var stationPicker: some View {
+        if isCompact {
+            // A card tap goes through the list's own setter: same push, same one-time
+            // authorization request, same stored id. Scrolling the carousel selects nothing.
+            StationCarousel(stations: stations, selectedID: selectedStationID) { id in
+                selection.wrappedValue = id
+            }
+        } else {
+            stationList
+        }
+    }
+
+    private var stationList: some View {
+        List(selection: selection) {
+            ForEach(stations) { station in
+                // The link is the row. Its value is the station ID, so the tap selects
+                // that row and the split pushes the detail.
+                NavigationLink(value: station.id) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(station.name).font(.headline)
+                        Text(station.description ?? "").font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .tag(station.id)
+            }
         }
     }
 
