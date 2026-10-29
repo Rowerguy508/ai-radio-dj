@@ -150,7 +150,9 @@ final class TalkoverCoordinator {
     /// `onSongStarted`. A new song: any held break for another boundary is stale.
     func songStarted(index: Int, duration: Double?) {
         let now = ProcessInfo.processInfo.systemUptime
-        if var r = run, r.afterTrack == index - 1, r.nextCalledAt != nil {
+        let started = key(index)
+        // Across a replacement or refill there is no sample: L stays as it was (Atlas #210).
+        if !book.isReplacement(started), var r = run, r.afterTrack == index - 1, r.nextCalledAt != nil {
             if let measured = r.nextAudible(at: now) {
                 let next = config.updatedLatency(current: config.startLatency, measured: measured)
                 trace(.latency(measured: measured, next: next, r.afterTrack))
@@ -160,7 +162,7 @@ final class TalkoverCoordinator {
             run = r
             reportMisses()
         }
-        let replaced = book.songStarted(key(index))
+        let replaced = book.songStarted(started)
         if let h = held, replaced || h.afterTrack != index - 1 { drop(h.afterTrack) }
         song = (index, duration)
     }
@@ -329,7 +331,9 @@ final class TalkoverCoordinator {
                     self.held = nil // spoken now: never replayed in the gap
                 })
             if outcome == .finished { self.run?.voiceFinished(at: ProcessInfo.processInfo.systemUptime) }
-            if self.run?.voiceStartedAt == nil, self.run?.cancelled == nil {
+            // Not finished and not cancelled: it never started, or it failed mid-line. Either way
+            // the run ends here, so it can retire (it never stays `.speaking`).
+            if let r = self.run, r.cancelled == nil, r.phase != .done {
                 _ = self.run?.stopped(.voiceFailed)
                 self.trace(.cancel(.voiceFailed, k))
             }

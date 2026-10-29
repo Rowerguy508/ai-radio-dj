@@ -24,7 +24,7 @@ private struct TalkoverToggleEntry: ViewModifier {
         content.toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Toggle(isOn: $enabled) {
-                    Label("DJ talk-over", systemImage: enabled ? "mic.fill" : "mic.slash")
+                    Label("DJ talk-over", systemImage: enabled ? "waveform" : "waveform.slash")
                 }
                 .toggleStyle(.button)
                 .accessibilityIdentifier("owner.talkoverToggle")

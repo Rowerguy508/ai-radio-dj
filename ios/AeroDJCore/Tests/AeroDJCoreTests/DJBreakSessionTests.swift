@@ -180,6 +180,49 @@ final class DJBreakSessionTests: XCTestCase {
         await until({ spy.count == 2 }, "the new queue's boundary 0 prepares")
     }
 
+    /// Sentinel #210: a station change (`cancelAll(except:)`) clears stale taken marks like a new
+    /// queue does, keeps the mark on the kept (playing) boundary, and a new station's boundary k
+    /// prepares exactly once, even with a duplicate song start after its take.
+    func testStationChangeAfterATakeClearsStaleMarksAndTheNewStationPreparesOnce() async throws {
+        final class PrepareSpy: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _count = 0
+            var count: Int { lock.withLock { _count } }
+            func hit() { lock.withLock { _count += 1 } }
+        }
+        let spy = PrepareSpy()
+        let r = await rig()
+        await r.preparer.observe { event in
+            if case .preparing(afterTrack: 0, _) = event { spy.hit() }
+        }
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready before the boundary")
+        let early = await r.session.naturalBoundary(afterTrack: 0)   // the talk-over's early take
+        XCTAssertNotNil(early)
+        // A change that keeps the playing song's plain break: its taken mark stays.
+        await r.preparer.cancelAll(except: [0])
+        let keptMark = await r.preparer.testTaken(afterTrack: 0)
+        XCTAssertTrue(keptMark, "the kept boundary stays taken")
+        await r.session.songStarted(index: 0, remaining: .seconds(8)) // duplicate start report
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(spy.count, 1, "still one prepare for the taken boundary")
+        // A change that keeps another boundary: the stale mark on 0 is cleared.
+        await r.preparer.cancelAll(except: [3])
+        let staleMark = await r.preparer.testTaken(afterTrack: 0)
+        XCTAssertFalse(staleMark, "a stale mark does not survive a station change")
+        // The new station: its boundary 0 prepares exactly once.
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ spy.count == 2 }, "the new station's boundary 0 prepares")
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready in the new station")
+        let again = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertNotNil(again, "the new station's boundary 0 is not suppressed")
+        await r.session.songStarted(index: 0, remaining: .seconds(8))
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(spy.count, 2, "exactly once in the new station")
+    }
+
     func testLateOrCutBreaksAreSkippedAndNeverWait() async {
         let r = await rig()
         await r.session.queueStarted(djTracks(8))

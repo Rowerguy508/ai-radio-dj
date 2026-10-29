@@ -504,7 +504,13 @@ public struct TalkoverBook: Equatable, Sendable {
     /// Boundaries this coordinator took the break for; the binder skips its own hand-out.
     public private(set) var owned: Set<Key> = []
     /// The talk-over in flight. Retired on every terminal path (see `retireIfDone`).
-    public var run: TalkoverRun?
+    public var run: TalkoverRun? {
+        didSet { if run == nil || oldValue == nil { runFromOldQueue = false } }
+    }
+    /// The run in flight belongs to a queue that was since replaced or refilled (Atlas #210,
+    /// 6503808131). Its indices mean nothing in the new queue, and its next song's start can
+    /// never be measured, so it retires as soon as its voice ends.
+    public private(set) var runFromOldQueue = false
     public private(set) var lastStarted: Key?
 
     public init() {}
@@ -515,8 +521,8 @@ public struct TalkoverBook: Equatable, Sendable {
     public func mayArm(_ key: Key) -> Bool {
         guard !owned.contains(key) else { return false }
         guard let r = run else { return true }
-        // A finished run for an earlier boundary never blocks a later one.
-        return r.phase == .done && r.afterTrack < key.index
+        // A finished run for an earlier boundary, or from an old queue, never blocks this one.
+        return r.phase == .done && (runFromOldQueue || r.afterTrack < key.index)
     }
 
     public mutating func claim(_ key: Key) { owned.insert(key) }
@@ -529,9 +535,10 @@ public struct TalkoverBook: Equatable, Sendable {
 
     /// Retires a finished run. A run stays only while its voice is audible or armed, or while
     /// its next song's start is still to be measured (`nextPlayCalled` without `nextAudible`).
+    /// A run from an old queue retires unconditionally: no sample is taken, L is unchanged.
     public mutating func retireIfDone() {
         guard let r = run, r.phase == .done else { return }
-        if r.nextCalledAt != nil, r.nextAudibleAt == nil, r.cancelled == nil { return }
+        if !runFromOldQueue, r.nextCalledAt != nil, r.nextAudibleAt == nil, r.cancelled == nil { return }
         run = nil
     }
 
@@ -540,15 +547,11 @@ public struct TalkoverBook: Equatable, Sendable {
     @discardableResult
     public mutating func songStarted(_ key: Key) -> Bool {
         defer { lastStarted = key }
-        let replaced: Bool
-        if let last = lastStarted {
-            replaced = key.index < last.index || (key.index == last.index && key.trackID != last.trackID)
-        } else {
-            replaced = false
-        }
+        let replaced = isReplacement(key)
         if replaced {
             owned.removeAll()
             if let r = run, !r.isSpeaking { run = nil }
+            if run != nil { runFromOldQueue = true } // still speaking: retire when the voice ends
         } else {
             owned = owned.filter { $0.index >= key.index }
             // The same song started again (a tap on it, a restart): its boundary is fresh.
@@ -563,6 +566,13 @@ public struct TalkoverBook: Equatable, Sendable {
         }
         retireIfDone()
         return replaced
+    }
+
+    /// Song `key` starting would begin a new queue (a replacement or a refill): its index went
+    /// back, or the same index holds another track. A latency sample is never taken across one.
+    public func isReplacement(_ key: Key) -> Bool {
+        guard let last = lastStarted else { return false }
+        return key.index < last.index || (key.index == last.index && key.trackID != last.trackID)
     }
 
     /// The user skipped song `key`: its boundary never comes.

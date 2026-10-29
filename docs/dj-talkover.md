@@ -287,6 +287,20 @@ Use the iPhone, then the Duo.
   - Test: `DJBreakSessionTests.testDuplicateSongStartAfterEarlyTakeNeverPreparesASecondBreak`
     (prepare count 1; it fails with 2 without the fix).
 
+- **Atlas, blocker (refill during the closing line):** a refill reloads the queue and starts index 0
+  while the closing line speaks. That run's latency sample can never be taken, so it used to block
+  arming for n − 2 songs. A run that outlives its queue is now marked (`runFromOldQueue`) and
+  retires as soon as its voice ends, without a sample (L unchanged) and without an index match.
+  The coordinator takes no latency sample across a replacement (`isReplacement`). A voice that
+  fails mid-line now ends the run too (`voiceFailed`), so it never stays `.speaking`.
+  - Tests: `DJTalkoverBookTests.testRefillDuringTheClosingLineRetiresWhenTheVoiceEndsAndTheNewQueueArms`,
+    `testRefillDuringTheClosingLineThenTheVoiceFailsOrIsCancelledStillRetires`,
+    `testANewRunAfterAnOldQueueRunIsNotMarkedStale`.
+- **Sentinel, non-blocking (station change):** `cancelAll(except:)` now clears stale taken marks as
+  a new queue does, but keeps the mark on a kept boundary. That one is the playing song's and may
+  already have been taken early, so clearing it would re-open the duplicate render.
+  - Test: `DJBreakSessionTests.testStationChangeAfterATakeClearsStaleMarksAndTheNewStationPreparesOnce`.
+
 ## Risks and unknowns
 
 - Whether `.duckOthers` ducks our own `ApplicationMusicPlayer` (the critical check; about 40%,

@@ -251,6 +251,10 @@ public actor DJBreakPreparer {
             results[k] = nil
             planned[k] = nil
         }
+        // Stale marks are cleared as for a new queue (Sentinel #210), except a kept boundary:
+        // that is the playing song's, and if the talk-over already took it early, a duplicate
+        // `onSongStarted(k)` must still never render it a second time.
+        taken.formIntersection(kept)
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 

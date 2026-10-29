@@ -700,4 +700,94 @@ final class DJTalkoverBookTests: XCTestCase {
         book.songStarted(key(1))
         XCTAssertTrue(book.mayArm(key(1)))
     }
+
+    // MARK: Refill or replacement while the closing line speaks (Atlas #210, 6503808131)
+
+    /// Old queue of `n` songs: plays songs 0...k, then the boundary after k talks over and the
+    /// station refills: the new queue's index 0 starts while the closing line is still speaking.
+    private func talkOverIntoRefill(_ book: inout TalkoverBook, k: Int) throws {
+        for i in 0...k { book.songStarted(key(i, "old\(i)")) }
+        XCTAssertTrue(book.mayArm(key(k, "old\(k)")))
+        book.claim(key(k, "old\(k)"))
+        book.run = try newRun(k)
+        startVoice(&book, at: 100)
+        let overlap = book.run!.plan.outroOverlap
+        _ = book.run?.naturalEnd(at: 100 + overlap)
+        book.run?.nextPlayCalled(at: 114.5)       // S − L: the refill's first song is requested
+        book.release(key(k, "old\(k)"))
+        XCTAssertTrue(book.isReplacement(key(0)), "the coordinator takes no latency sample across a refill")
+        XCTAssertTrue(book.songStarted(key(0)), "index 0 of the new queue is a replacement")
+        XCTAssertNotNil(book.run, "the closing line is still speaking over the new queue's song 0")
+        XCTAssertTrue(book.runFromOldQueue)
+        XCTAssertNil(book.run?.nextAudibleAt, "no latency sample: L is left unchanged")
+        XCTAssertFalse(book.mayArm(key(0)), "never a second run while one speaks")
+    }
+
+    func testRefillDuringTheClosingLineRetiresWhenTheVoiceEndsAndTheNewQueueArms() throws {
+        let n = 8
+        var book = TalkoverBook()
+        try talkOverIntoRefill(&book, k: n - 2)
+        book.run?.voiceFinished(at: 118.3)
+        XCTAssertTrue(book.mayArm(key(0)), "an old-queue run that ended never blocks, even before it retires")
+        book.retireIfDone()                        // the voice task's last step
+        XCTAssertNil(book.run, "retired without the latency sample or an index match")
+        XCTAssertFalse(book.runFromOldQueue)
+        XCTAssertTrue(book.mayArm(key(0)), "the new queue's first boundary arms")
+        // Song 0 of the new queue plays out as a gap break (no claim), then song 1 starts.
+        book.songStarted(key(1))
+        XCTAssertTrue(book.mayArm(key(1)), "new index 1 arms")
+        // And it keeps arming: not blocked for the next n − 2 songs.
+        for k in 1..<(n - 1) { try fullTalkover(&book, k, t: Double(1000 + 300 * k)) }
+        XCTAssertTrue(book.owned.isEmpty)
+    }
+
+    func testRefillDuringTheClosingLineThenTheVoiceFailsOrIsCancelledStillRetires() throws {
+        let reasons: [TalkoverCancel] = [.voiceFailed, .userStop, .interruption, .routeRemoved, .revoked, .skip]
+        for reason in reasons {
+            // The refill first, then the voice fails or is stopped.
+            var book = TalkoverBook()
+            try talkOverIntoRefill(&book, k: 5)
+            XCTAssertEqual(book.run?.stopped(reason), .stopVoice(fade: false), "\(reason)")
+            book.retireIfDone()
+            XCTAssertNil(book.run, "\(reason) after the refill retires")
+            book.songStarted(key(1))
+            XCTAssertTrue(book.mayArm(key(1)), "\(reason): new index 1 arms")
+            try fullTalkover(&book, 1, t: 1000)
+
+            // The voice stops first, then the refill lands.
+            var other = TalkoverBook()
+            for i in 0...5 { other.songStarted(key(i, "old\(i)")) }
+            other.claim(key(5, "old5"))
+            other.run = try newRun(5)
+            startVoice(&other, at: 100)
+            other.run?.nextPlayCalled(at: 114.5)
+            other.release(key(5, "old5"))
+            _ = other.run?.stopped(reason)
+            other.retireIfDone()
+            XCTAssertNil(other.run, "\(reason) before the refill retires")
+            XCTAssertTrue(other.songStarted(key(0)))
+            other.songStarted(key(1))
+            XCTAssertTrue(other.mayArm(key(1)), "\(reason) then refill: new index 1 arms")
+        }
+    }
+
+    func testANewRunAfterAnOldQueueRunIsNotMarkedStale() throws {
+        var book = TalkoverBook()
+        try talkOverIntoRefill(&book, k: 3)
+        book.run?.voiceFinished(at: 118.3)
+        book.retireIfDone()
+        book.claim(key(0))
+        book.run = try newRun(0)
+        XCTAssertFalse(book.runFromOldQueue, "a fresh run in the new queue waits for its own sample")
+        startVoice(&book, at: 500)
+        book.run?.nextPlayCalled(at: 514.5)
+        book.release(key(0))
+        book.run?.voiceFinished(at: 518.3)
+        book.retireIfDone()
+        XCTAssertNotNil(book.run, "still waits for song 1's start to be measured")
+        _ = book.run?.nextAudible(at: 515.3)
+        book.songStarted(key(1))
+        XCTAssertNil(book.run)
+        XCTAssertTrue(book.mayArm(key(1)))
+    }
 }
