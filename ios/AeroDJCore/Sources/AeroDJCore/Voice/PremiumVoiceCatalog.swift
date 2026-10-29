@@ -104,9 +104,9 @@ public enum PremiumVoiceRoutes {
     public static let providerID = "elevenlabs"
     /// Above the proxy's own 15 s upstream abort, so its 504 arrives before we give up.
     public static let timeout: Duration = .seconds(16)
-    /// Exact deployed proxy hosts only; no suffix or wildcard rule. Empty until the proxy is
-    /// deployed and its host is pinned here, so until then the ElevenLabs route is omitted.
-    public static let allowedHosts: Set<String> = []
+    /// Exact deployed proxy hosts only; no suffix or wildcard rule. The production
+    /// `aerodj-tts` deployment; any other host (preview URLs included) omits the route.
+    public static let allowedHosts: Set<String> = ["aerodj-tts.vercel.app"]
 
     public enum OmitReason: String, Equatable, Sendable {
         case paidDisabled, noSelection, unknownVoice, noCredentials, emptyToken, endpointNotAllowed
