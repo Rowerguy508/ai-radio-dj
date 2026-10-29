@@ -13,7 +13,9 @@ import Security
 ///
 /// The proxy URL and owner token come only from a Keychain entry the owner fills in at
 /// runtime; nothing is compiled in or stored in the repo, Info.plist or build settings.
-/// Spend: ElevenLabs Free plan, no pay-as-you-go ($0), plus the proxy's daily cap.
+/// Spend: ElevenLabs Starter, hard 40k-credit ceiling with no usage-based billing, a 9k-credit
+/// key cap and the proxy's 9,000-character daily cap. The route is priced at 0 µ$, so the
+/// app-side VoiceBudget does not apply to it.
 extension VoiceRenderer {
     static func liveDefault() -> VoiceRenderer {
         let base = onDeviceDefault()
@@ -119,7 +121,7 @@ private struct OwnerVoiceTrialEntry: ViewModifier {
 private struct OwnerVoicePickerSheet: View {
     @Binding var isPresented: Bool
     @State private var selected: String = PremiumVoiceSelectionStore().selectedVoiceID ?? ""
-    @State private var endpoint: String = OwnerProxyKeychain.endpoint
+    @State private var endpoint: String = PremiumVoicePickerStatus.initialEndpoint(saved: OwnerProxyKeychain.endpoint)
     @State private var token: String = ""
     private let store = PremiumVoiceSelectionStore()
 
@@ -141,7 +143,7 @@ private struct OwnerVoicePickerSheet: View {
                 } footer: {
                     Text("ElevenLabs first, on-device voice as fallback. Captions show whole lines. Applies on next launch.")
                 }
-                Section("Proxy (owner only)") {
+                Section {
                     TextField("Proxy URL (exact pinned host)", text: $endpoint)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
@@ -153,6 +155,20 @@ private struct OwnerVoicePickerSheet: View {
                         endpoint = ""
                         token = ""
                     }
+                } header: {
+                    Text("Proxy (owner only)")
+                } footer: {
+                    Text(PremiumVoicePickerStatus.endpointFooter(endpoint))
+                        .accessibilityIdentifier("ownerVoiceTrial.hostCheck")
+                }
+                Section {
+                    // Read-only: catalog index or omit reason code, never the token.
+                    Text(PremiumVoicePickerStatus.statusLine(PremiumVoicePickerStatus.pendingDecision(
+                        paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled,
+                        selectedVoiceID: selected.isEmpty ? nil : selected, endpoint: endpoint,
+                        enteredToken: token, hasSavedToken: OwnerProxyKeychain.hasToken)))
+                        .font(.footnote.monospaced())
+                        .accessibilityIdentifier("ownerVoiceTrial.status")
                 }
             }
             .navigationTitle("Owner voice test")
