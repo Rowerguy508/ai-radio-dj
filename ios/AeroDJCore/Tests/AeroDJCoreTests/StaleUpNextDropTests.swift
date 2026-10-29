@@ -5,6 +5,17 @@ import XCTest
 /// makes the station queue feed hand off a new queue after this boundary's break. The break was
 /// written during the old song, so its intro names `tracks[k + 1]` of the old queue. That intro
 /// is dropped at the boundary; greetings and back-announces stay. Other edits leave it untouched.
+/// One song per tier for any seed, so a station queue feed can build a refill.
+private struct RefillCatalog: StationSeedCatalog {
+    private func songs(_ seed: StationSeed, _ tier: String) -> [StationCandidate] {
+        (0..<4).map { StationCandidate(track: TrackInfo(id: "\(seed.catalogID)-\(tier)-\($0)", title: "Title \($0)",
+                                                         artistName: "\(seed.catalogID)-artist-\($0)")) }
+    }
+    func coreSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] { songs(seed, "core") }
+    func relatedSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] { songs(seed, "related") }
+    func broadSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] { songs(seed, "broad") }
+}
+
 private struct WordVoice: VoiceProvider {
     func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
         let words = SpeechDelivery.plainText(fromSSML: text).split(separator: " ").count
@@ -29,7 +40,7 @@ final class StaleUpNextDropTests: XCTestCase {
     }
 
     /// A seeded station, a song holding (edits wait for the boundary), and a planned queue.
-    private func rig() async -> Rig {
+    private func rig(tracks: Int = 8) async -> Rig {
         let config = Self.seeded("old")
         let station = StationConfigurationModel(
             store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
@@ -42,7 +53,7 @@ final class StaleUpNextDropTests: XCTestCase {
         let dj = DJPresentationStore()
         let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 14 })
         await session.start()
-        await session.queueStarted(djTracks(8))
+        await session.queueStarted(djTracks(tracks))
         return Rig(session: session, station: station, dj: dj, preparer: preparer)
     }
 
@@ -129,5 +140,35 @@ final class StaleUpNextDropTests: XCTestCase {
         XCTAssertFalse(S.nextSongMayChange(queue: .known(nil), before: a, after: a), "feed adopts, no hand-off")
         XCTAssertFalse(S.nextSongMayChange(queue: .known(a), before: nil, after: nil), "no seeds: queue kept")
         XCTAssertTrue(S.nextSongMayChange(queue: .unknown, before: a, after: a), "unknown fails closed")
+    }
+    // (4) Queue-end refill (Atlas's 431ef68): the refill keeps the station's StationQueueKey, so the
+    // boundary before the last song keeps its intro, and the refill's first song is that same track.
+    func testAQueueEndRefillKeepsTheIntroForTheLastSong() async throws {
+        let r = await rig(tracks: 2)
+        XCTAssertEqual(r.session.plannedBoundaries.first, 0)
+        let queue = ["t0", "t1"]
+        let feed = StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: RefillCatalog()),
+                                            materialize: { $0.map(\.id) }, day: { 42 })
+        feed.queueStarted(for: r.station.committedDisplayed, songCount: queue.count)
+        _ = await feed.prepare(r.station.active)
+        let key = StationQueueKey(r.station.active)
+        XCTAssertNotNil(key)
+        XCTAssertEqual(feed.stagedKey, key, "the refill is built for the playing station")
+
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready before the boundary")
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertEqual(StationQueueKey(r.station.active), key, "no station change: same key")
+        let prepared = try XCTUnwrap(handed, "the break plays")
+        XCTAssertNil(r.session.lastNoBreak)
+        XCTAssertEqual(names("t1", in: prepared).count, 1, "the intro still names the last song")
+        XCTAssertEqual(prepared.cues.count, prepared.clips.count)
+
+        // After the break, the player asks the feed for the next song: the real refill hand-off.
+        let refill = try XCTUnwrap(feed.queueForNextSong(after: 0, in: queue, active: r.station.active,
+                                                         playbackMayStart: true, sameSong: ==))
+        XCTAssertEqual(refill.first, "t1", "the song the intro named is the song that plays next")
+        XCTAssertGreaterThan(refill.count, 1, "the station continues after it")
+        XCTAssertEqual(feed.playingKey, key, "a refill keeps the StationQueueKey")
     }
 }
