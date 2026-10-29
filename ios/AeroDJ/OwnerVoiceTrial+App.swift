@@ -23,7 +23,7 @@ extension VoiceRenderer {
         let composition = PremiumVoiceRoutes.compose(
             onDevice: base.routes,
             paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled,
-            selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
+            access: .ownerTrial, selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
             credentials: OwnerProxyKeychain.load())
         OwnerProxyKeychain.logDecision(composition.decision, routeCount: composition.routes.count)
         // The route is composed now, but every render checks the stored cloud-voice consent
@@ -35,6 +35,20 @@ extension VoiceRenderer {
                              entitlement: .shared)
         #else
         return base
+        #endif
+    }
+}
+
+extension ProVoiceAccess {
+    /// The Pro + consent gate the live app runs with. Owner A/B builds: the owner trial, matching
+    /// the route above. Every other build: `.none` (free, no consent), so nothing paid resolves
+    /// until the paywall (Nova) and the consent sheet provide real `ProEntitlementProviding` and
+    /// `PaidVoiceConsentProviding` conformers.
+    static var live: ProVoiceAccess {
+        #if AERODJ_OWNER_AB
+        return .ownerTrial
+        #else
+        return .none
         #endif
     }
 }

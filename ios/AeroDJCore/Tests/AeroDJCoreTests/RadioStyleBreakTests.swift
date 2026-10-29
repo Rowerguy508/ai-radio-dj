@@ -505,7 +505,7 @@ final class RadioStyleBreakTests: XCTestCase {
             VoiceRoute(providerID: "avspeech", provider: DeviceVoice(), voice: VoiceProfile(id: $0, name: "Host"))
         }
         let c = PremiumVoiceRoutes.compose(
-            onDevice: device, paidProvidersEnabled: true, selectedVoiceID: jade,
+            onDevice: device, paidProvidersEnabled: true, access: .ownerTrial, selectedVoiceID: jade,
             credentials: PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!, token: "owner-test-token"),
             pinnedHosts: ["aerodj-tts.vercel.app"], transport: transport)
         return VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),

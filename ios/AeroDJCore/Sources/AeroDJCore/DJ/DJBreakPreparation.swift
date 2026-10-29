@@ -81,6 +81,9 @@ public actor DJBreakPreparer {
     private let userID: String
     private let stationID: String
     private let breakCap: @Sendable (DJBreak) -> BreakCap
+    /// Bundled pre-rendered presenter lines, tried per whole cue before the renderer. Nil or an
+    /// empty manifest (build 27) changes nothing.
+    private let bundledClips: BundledClipResolver?
     private var tasks: [Int: Task<Void, Never>] = [:]
     private var results: [Int: DJBreakOutcome] = [:]
     private var planned: [Int: DJBreak] = [:]
@@ -104,8 +107,10 @@ public actor DJBreakPreparer {
         case skipped(afterTrack: Int, DJBreakSkipReason)
     }
 
-    public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init()) {
+    public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
+                bundledClips: BundledClipResolver? = nil) {
         self.renderer = renderer
+        self.bundledClips = bundledClips
         self.userID = userID
         self.stationID = stationID
         // Measured audio. Briefing: 45 s in total, closing line included. Ordinary: the main
@@ -135,13 +140,14 @@ public actor DJBreakPreparer {
         planned[k] = djBreak
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
         let renderer = onDeviceOnly ? self.renderer.onDeviceOnly : self.renderer
-        let userID = userID, stationID = stationID, cap = breakCap(djBreak)
+        let userID = userID, stationID = stationID, cap = breakCap(djBreak), bundled = bundledClips
         tasks[k] = Task {
             let outcome: DJBreakOutcome
             guard let renderer else { self.finish(k, .skipped(.renderFailed)); return }
             do {
                 outcome = try await VoiceRenderer.withTimeout(deadline) {
-                    await Self.render(djBreak, renderer: renderer, userID: userID, stationID: stationID, cap: cap)
+                    await Self.render(djBreak, renderer: renderer, userID: userID, stationID: stationID, cap: cap,
+                                      bundled: bundled)
                 }
             } catch {
                 outcome = .skipped(.timedOut)
@@ -287,15 +293,15 @@ public actor DJBreakPreparer {
 
     /// One pooled cap for the whole break (no separate closing cap).
     static func render(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
-                       cap: Double) async -> DJBreakOutcome {
+                       cap: Double, bundled: BundledClipResolver? = nil) async -> DJBreakOutcome {
         await render(djBreak, renderer: renderer, userID: userID, stationID: stationID,
-                     cap: BreakCap(main: cap, closingCueID: nil, closing: 0))
+                     cap: BreakCap(main: cap, closingCueID: nil, closing: 0), bundled: bundled)
     }
 
     static func render(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
-                       cap: BreakCap) async -> DJBreakOutcome {
+                       cap: BreakCap, bundled: BundledClipResolver? = nil) async -> DJBreakOutcome {
         let first: (cues: [NarrationCue], clips: [RenderedClip])
-        switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID) {
+        switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID, bundled: bundled) {
         case .success(let pass): first = pass
         case .failure(let skip): return .skipped(skip.reason)
         }
@@ -307,7 +313,8 @@ public actor DJBreakPreparer {
               !first.clips.allSatisfy({ $0.audio.providerID == last.providerID && $0.audio.voiceID == last.voice.id }) else {
             return .skipped(.overBreakBudget)
         }
-        switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID) {
+        // The fallback's first route is on-device, so the bundle never resolves on this retry.
+        switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID, bundled: bundled) {
         case .success(let retry) where cap.fits(retry.clips): return ready(djBreak, retry)
         case .success: return .skipped(.overBreakBudget)
         case .failure(let skip): return .skipped(skip.reason)  // the retry's own reason (Fry, #158)
@@ -337,7 +344,8 @@ public actor DJBreakPreparer {
                                talkOverCueID: djBreak.talkOverCueID))
     }
 
-    private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String) async
+    private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
+                                   bundled: BundledClipResolver?) async
         -> Result<(cues: [NarrationCue], clips: [RenderedClip]), Skip> {
         var cues: [NarrationCue] = []
         var clips: [RenderedClip] = []
@@ -345,8 +353,16 @@ public actor DJBreakPreparer {
             // The only cancellation whose result is kept is the preparation deadline: takeBreak,
             // cancelAll and purge record their own outcome first and ignore this one.
             if Task.isCancelled { return .failure(Skip(reason: .timedOut)) }
-            switch await renderer.render(cue, userID: userID, stationID: stationID,
-                                         attribution: djBreak.attributions[cue.id]) {
+            // A whole presenter line whose text hash is in the bundle plays the bundled clip, with
+            // its measured seconds, and makes no proxy call. Anything else: today's path.
+            // (One voice per break, if a later live clip falls to on-device, is a follow-up.)
+            // Pro + consent are checked per cue inside gatedClip (fail closed).
+            let resolved = await bundled?.gatedClip(for: cue, attribution: djBreak.attributions[cue.id], renderer: renderer)
+            let result: Result<RenderedClip, VoiceRenderer.Failure>
+            if let resolved { result = .success(resolved) }
+            else { result = await renderer.render(cue, userID: userID, stationID: stationID,
+                                                  attribution: djBreak.attributions[cue.id]) }
+            switch result {
             case .success(let clip):
                 cue.renderedSeconds = clip.audio.seconds
                 cue.voiceID = clip.audio.voiceID
