@@ -77,6 +77,32 @@ An edit never restarts or changes the song that is playing. See `station-configu
   - Turning the briefing or talk off applies now.
 - A failed save rolls back and reports `.saveFailed`.
 
+### Creating a station (artists, a genre or a playlist)
+
+A created station is an ordinary recipe whose seeds, reach and discovery come from a `StationCreationRequest`. Nothing new is persisted.
+
+- **One entry point:** `studio.saveRecipe(named:from:applying:) -> Result<StationRecipe, StationRecipeError>`.
+  - Same name rules and errors as `saveRecipe(named:)`, plus `.invalidStation(StationCreationError)`. Every error has `userMessage`.
+  - Keeps the tuning the controls show (energy, personality, talk, briefing); never carries connections.
+  - `applying: false` (default) leaves the live station alone. `applying: true` then applies it with the recipe rules above.
+- **Request:** `StationCreationRequest(source:level:)`.
+  - `source`: `.artists([StationSeed])` (1–5), `.genre(StationSeed)` (catalog, numeric ID), or `.playlist(StationSeed)` (catalog or library).
+  - `suggestedName` prefills the name field. `reachRestriction` is set for a library pick.
+- **Discovery level** (`StationDiscoveryLevel`): presets over `discovery` and `reach`.
+
+  | Level | reach | discovery | Plays |
+  | --- | --- | --- | --- |
+  | `.familiar` | `.only` | 0.1 | The picks' own songs, hits first |
+  | `.balanced` (default) | `.related` | 0.3 | Picks 60%, similar artists 40%; about 3 in 10 new |
+  | `.adventurous` | `.broad` | 0.7 | Picks 40%, similar 30%, wider genre 30%; about 7 in 10 new |
+
+  - A library pick always plays only itself (`.only`), at any level.
+  - `StationDiscoveryLevel.matching(_:)` returns nil for a hand-tuned station ("Custom"). `closest(to:)` preselects a picker.
+- **View model:** `studio.makeStationCreation(kind:) -> StationCreationModel?` (nil in previews and the Test Station).
+  - Read: `kind`, `level` (settable), `selected`, `results`, `resultsSource`, `phase`, `validationError`, `canSave`, `canPickMore`, `suggestedName`, `reachRestriction`, `isSaving`, `saveError`.
+  - Do: `setKind(_:)`, `search(_:)`, `loadLibraryPlaylists()`, `toggle(_:)`, `isSelected(_:)`, `save(named:applying:)` (defaults: suggested name, apply).
+  - Search failures show fixed `SearchFailureCopy` text only. Library playlists stay on the device and are never logged.
+
 ## Connections
 
 `connections.sources` returns three `ConnectionSourceRow`s: Calendar, Obsidian notes, and Shared from Mail & Messages. Each row has:
