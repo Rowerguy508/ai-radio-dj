@@ -311,6 +311,25 @@ final class P0EventTraceTests: XCTestCase {
         trace.scenePhase(.background, at: 9)
         trace.appLifecycle(.willEnterForeground, at: 9)
         shapes += trace.rows
+        trace.clear()
+        // DJ talk-over rows: every decision, miss and cancel code fits the closed shape.
+        let plan = TalkoverPlanner.decide(flag: true, track: TalkoverTrack(duration: 200, position: 180),
+                                          voice: TalkoverVoice(totalSeconds: 18, talkOverStartSeconds: 15, talkOverSeconds: 3),
+                                          nextTrackDuration: 200)
+        trace.talkoverDecision(plan, afterTrack: 0, at: 9)
+        trace.talkoverDecision(.talkover(TalkoverPlan(mode: .outroOnly, introSkip: .noClosingLine, outroOverlap: 4,
+                                                      voiceStartAt: 196, nextPlayAfterVoice: nil, nextAudibleAfterVoice: nil,
+                                                      unduckAfterVoice: 12, startLatency: 0.8, voiceSeconds: 12)),
+                               afterTrack: 0, at: 9)
+        for r in TalkoverHardBreak.allCases { trace.talkoverDecision(.hardBreak(r), afterTrack: 0, at: 9) }
+        for m in TalkoverMiss.allCases { trace.talkoverMiss(m, afterTrack: 0, seconds: 0.25, at: 9) }
+        trace.talkoverMiss(.voiceEndedFirst, afterTrack: 0, seconds: nil, at: 9)
+        for c in TalkoverCancel.allCases { trace.talkoverCancel(c, afterTrack: 0, at: 9) }
+        trace.talkoverLatency(measured: 0.912, next: 0.83, afterTrack: 0, at: 9)
+        trace.talkoverDuckProbe(TalkoverDuckProbe(otherBefore: true, hintBefore: false, activated: true,
+                                                  otherAfter: true, hintAfter: false), afterTrack: 0, at: 9)
+        XCTAssertFalse(trace.rows.contains { $0.detail.contains("=unknown") }, "every talk-over code has a trace code")
+        shapes += trace.rows
         XCTAssertEqual(Set(shapes.map(\.event)), Set(P0TraceEvent.allCases), "every event kind is checked")
 
         let keys = Set(P0TraceKey.allCases.map(\.rawValue))

@@ -92,6 +92,11 @@ public actor DJBreakPreparer {
     /// Song scrubbing (-Atlas): open boundaries whose one seek re-arm is spent.
     private var rearmed: Set<Int> = []
     private var observers: [@Sendable (DJBreakEvent) -> Void] = []
+    /// Boundaries already taken (`takeBreak`) in this queue. A taken boundary never prepares or
+    /// re-arms again: a duplicate `songStarted(k)` after the talk-over's early take (song k is
+    /// still playing) must not render, and spend on, a second break (-Fry, Sentinel #210).
+    /// Cleared with everything else by `cancelAll()` (new queue: indices restart).
+    private var taken: Set<Int> = []
 
     public enum DJBreakEvent: Equatable, Sendable {
         case preparing(afterTrack: Int, includesBriefing: Bool)
@@ -126,7 +131,7 @@ public actor DJBreakPreparer {
     /// No default: every caller must decide, so a new call site cannot silently skip the gate.
     public func prepare(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool) {
         let k = djBreak.afterTrack
-        guard tasks[k] == nil, results[k] == nil else { return }
+        guard tasks[k] == nil, results[k] == nil, !taken.contains(k) else { return }
         planned[k] = djBreak
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
         let renderer = onDeviceOnly ? self.renderer.onDeviceOnly : self.renderer
@@ -175,13 +180,15 @@ public actor DJBreakPreparer {
 
     /// True when `rearm` would start a render for boundary `k`.
     public func mayRearm(afterTrack k: Int) -> Bool {
-        guard openForRearm.contains(k), tasks[k] == nil, !rearmed.contains(k) else { return false }
+        guard openForRearm.contains(k), tasks[k] == nil, !rearmed.contains(k), !taken.contains(k) else { return false }
         switch results[k] {
         case nil, .skipped(.timedOut)?: return true
         default: return false
         }
     }
 
+    /// Test hook: true when boundary `k` was taken in this queue (never prepared again).
+    func testTaken(afterTrack k: Int) -> Bool { taken.contains(k) }
     /// Test hook: boundaries with a render in flight.
     var testInFlight: Set<Int> { Set(tasks.keys) }
     /// Test hook: the recorded outcome for boundary `k`.
@@ -194,8 +201,16 @@ public actor DJBreakPreparer {
 
     /// Called at the boundary. Never waits: returns what is ready or an explicit skip.
     /// `natural` is false when the song was cut (skip, queue change); the break is then dropped.
+    /// DJ talk-over (-Fry): true when boundary `k` has a rendered break waiting. Does not take
+    /// it, cancel a render or close the boundary, so the normal hand-out is unchanged when
+    /// the talk-over does not run.
+    public func isReady(afterTrack k: Int) -> Bool {
+        if case .ready? = results[k] { return true }
+        return false
+    }
+
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
-        defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k) }
+        defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k); taken.insert(k) }
         guard natural else {
             tasks[k]?.cancel()
             let wasPlanned = tasks[k] != nil || results.removeValue(forKey: k) != nil
@@ -223,6 +238,7 @@ public actor DJBreakPreparer {
         planned.removeAll()
         openForRearm.removeAll()
         rearmed.removeAll()
+        taken.removeAll()
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
@@ -238,6 +254,10 @@ public actor DJBreakPreparer {
             results[k] = nil
             planned[k] = nil
         }
+        // Stale marks are cleared as for a new queue (Sentinel #210), except a kept boundary:
+        // that is the playing song's, and if the talk-over already took it early, a duplicate
+        // `onSongStarted(k)` must still never render it a second time.
+        taken.formIntersection(kept)
         openForRearm.formIntersection(kept)   // a dropped boundary can't be re-armed by a seek
         rearmed.formIntersection(kept)
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
