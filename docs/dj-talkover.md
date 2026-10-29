@@ -189,7 +189,7 @@ the planner inserts the gap with `play(atTime:)` rather than expecting it in the
   `ios/scripts/testflight-swift-conditions.sh`.
 - It is **OFF** everywhere else, including Debug, fixture mode, the test station
   (`buildDefault: false`) and unit tests.
-- The on-device toggle "DJ talk-over" is a toolbar button on the Player screen (top right, mic
+- The on-device toggle "DJ talk-over" is a toolbar button on the Player screen (top right, waveform
   icon, id `owner.talkoverToggle`). It exists **only in an `AERODJ_OWNER_AB` build**
   (`ios/AeroDJ/TalkoverToggle+App.swift`), with or without `p0_diag`. A normal owner build
   (`owner_ab: true`) has it. Every other build compiles `talkoverToggleEntry()` to a no-op.
