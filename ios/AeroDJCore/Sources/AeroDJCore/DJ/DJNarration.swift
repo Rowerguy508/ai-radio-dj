@@ -16,11 +16,15 @@ public struct DJTrack: Equatable, Sendable {
     public let id: String
     public let title: String
     public let artist: String
+    /// Where the track entered the queue (Sentinel). Defaults to `.unknown`, which is treated as
+    /// personal: only `.catalog` tracks may be named by an off-device voice.
+    public let origin: TrackOrigin
 
-    public init(id: String, title: String, artist: String) {
+    public init(id: String, title: String, artist: String, origin: TrackOrigin = .unknown) {
         self.id = id
         self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         self.artist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.origin = origin
     }
 }
 
@@ -140,12 +144,17 @@ public struct TemplatePool: Sendable {
 
 /// Where a spoken line's words came from. Every spoken cue has one.
 public enum SpokenAttribution: Equatable, Sendable {
-    /// Built only from MusicKit title/artist of these track ids.
-    case trackMetadata(trackIDs: [String])
+    /// Built only from MusicKit title/artist of these track ids. `origin` is the most restrictive
+    /// origin of those tracks (`resolvingTrackOrigins(in:)`); only `.catalog` may leave the device.
+    case trackMetadata(trackIDs: [String], origin: TrackOrigin = .unknown)
     /// An approved, sanitized briefing item (its text also names the source aloud).
     case personalContext(itemID: UUID, source: ContextSourceKind, provenance: String)
     /// Fixed presenter phrasing with no facts (greeting, lead-in).
     case presenter
+    /// A station ID that speaks a station name other than the built-in brand
+    /// (`DJScriptWriter.builtInStationName`). A created station's name was typed by the listener,
+    /// so it is personal and stays on-device (Sentinel, build 26 sweep). -Atlas
+    case stationName
 }
 
 /// One planned break at a natural song boundary.
@@ -177,6 +186,8 @@ public struct DJSessionPlan: Equatable, Sendable {
 /// Plans a session: where the DJ talks and what it says. State (template pools,
 /// RNG) lives for the whole listening session so phrasing does not repeat.
 public struct DJScriptWriter: Sendable {
+    /// The app's own brand. The only station name a station ID may treat as fixed phrasing.
+    public static let builtInStationName = "AeroDJ"
     public var cadence: DJCadence
     /// Spoken in station IDs. Unusable names (empty, braces, instruction-shaped) are skipped.
     public var stationName: String
@@ -199,7 +210,7 @@ public struct DJScriptWriter: Sendable {
     private var greetings: [DayPart: TemplatePool]
     private var hasGreeted = false
 
-    public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = "AeroDJ",
+    public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = DJScriptWriter.builtInStationName,
                 tone: EditorialTone = .warm) {
         self.cadence = cadence
         self.stationName = stationName
@@ -258,7 +269,7 @@ public struct DJScriptWriter: Sendable {
             var cues: [NarrationCue] = []
             func add(_ text: String, _ attribution: SpokenAttribution) -> NarrationCue {
                 let cue = transitionCue(text, order: &order)
-                attributions[cue.id] = attribution
+                attributions[cue.id] = attribution.resolvingTrackOrigins(in: tracks)
                 return cue
             }
             let metadata = ["title": prev.title, "artist": prev.artist]
@@ -386,7 +397,8 @@ public struct DJScriptWriter: Sendable {
         case .station:
             guard let name = EditorialStationName.usable(station),
                   let line = stationIDs.next(filling: ["station": name], using: &phrasing) else { return nil }
-            return (line, .presenter)
+            // Only the built-in brand is fixed phrasing; any other name is the listener's own words.
+            return (line, name == Self.builtInStationName ? .presenter : .stationName)
         case .atmosphere:
             guard let line = atmosphere[dayPart]?.next(filling: [:], using: &phrasing) else { return nil }
             return (line, .presenter)

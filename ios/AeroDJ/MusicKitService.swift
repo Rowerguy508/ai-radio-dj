@@ -201,7 +201,7 @@ final class MusicKitService: ObservableObject {
         var request = MusicCatalogSearchRequest(term: query, types: [Song.self])
         request.limit = 20
         let response = try await request.response()
-        return response.songs.map { Track(song: $0) }
+        return response.songs.map { Track(song: $0, origin: .catalog) }
     }
 
     /// Start playing a queue of tracks.
@@ -1247,14 +1247,18 @@ struct Track: Identifiable, Hashable {
     let artworkURL: URL?
     let duration: TimeInterval?
     let song: Song?
+    /// Catalog, library or unknown (Sentinel). Only `.catalog` may be named by an off-device
+    /// voice; `.unknown` is treated as personal. No default: every builder decides.
+    let origin: TrackOrigin
 
-    init(song: Song) {
+    init(song: Song, origin: TrackOrigin) {
         self.id = song.id.rawValue
         self.title = song.title
         self.artistName = song.artistName
         self.artworkURL = song.artwork?.url(width: 300, height: 300)
         self.duration = song.duration
         self.song = song
+        self.origin = origin
     }
 }
 

@@ -260,11 +260,11 @@ final class DJSessionEndToEndTests: XCTestCase {
         XCTAssertEqual(handoff.cues.filter(\.isContent).count, 2)
 
         // Real MusicKit metadata for the queue; seeded session.
-        let tracks = [DJTrack(id: "1", title: "Harvest Moon", artist: "Neil Young"),
-                      DJTrack(id: "2", title: "Dreams", artist: "Fleetwood Mac"),
-                      DJTrack(id: "3", title: "Holocene", artist: "Bon Iver"),
-                      DJTrack(id: "4", title: "Pink + White", artist: "Frank Ocean"),
-                      DJTrack(id: "5", title: "Vienna", artist: "Billy Joel")]
+        let tracks = [DJTrack(id: "1", title: "Harvest Moon", artist: "Neil Young", origin: .catalog),
+                      DJTrack(id: "2", title: "Dreams", artist: "Fleetwood Mac", origin: .catalog),
+                      DJTrack(id: "3", title: "Holocene", artist: "Bon Iver", origin: .catalog),
+                      DJTrack(id: "4", title: "Pink + White", artist: "Frank Ocean", origin: .catalog),
+                      DJTrack(id: "5", title: "Vienna", artist: "Billy Joel", origin: .catalog)]
         var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 2), seed: 11)
         let plan = writer.plan(tracks: tracks, briefing: handoff, hour: newYork.component(.hour, from: fixedNow))
         XCTAssertEqual(plan.breaks.map(\.afterTrack), [0, 3])

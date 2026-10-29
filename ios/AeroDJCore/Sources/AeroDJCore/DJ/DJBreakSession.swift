@@ -375,7 +375,7 @@ public final class DJBreakSession {
         // station may hand off a new queue here, drop exactly the cues attributed to that track.
         let staleNext: String? = nextMayChange && tracks.indices.contains(k + 1) ? tracks[k + 1].id : nil
         func namesStaleNext(_ cue: NarrationCue) -> Bool {
-            guard let staleNext, case .trackMetadata(let ids)? = ready.attributions[cue.id] else { return false }
+            guard let staleNext, case .trackMetadata(let ids, _)? = ready.attributions[cue.id] else { return false }
             return ids.contains(staleNext)
         }
         let cues = ready.cues.filter { cue in
@@ -562,7 +562,8 @@ public final class DJBreakSession {
             guard cue.sourceItemID == nil, cue.source == nil, !cue.isContent else { return false }
             switch djBreak.attributions[cue.id] {
             case .trackMetadata?, .presenter?: return true
-            case .personalContext?, nil: return false
+            // A created station's name may be the setting that changed: re-plan it (-Atlas).
+            case .personalContext?, .stationName?, nil: return false
             }
         }
         return plain ? djBreak.afterTrack : nil

@@ -526,6 +526,37 @@ public final class NarrationRevocations: @unchecked Sendable {
     }
 }
 
+/// Where a track entered the queue (Sentinel). Set by the app where tracks are built from
+/// MusicKit: catalog search and catalog seed lookups are `.catalog`, `MusicLibraryRequest`
+/// results are `.library`, anything else is `.unknown`. Fail-closed: only `.catalog` is
+/// non-personal; `.library` and `.unknown` narration never leaves the device.
+public enum TrackOrigin: String, Codable, Equatable, Hashable, Sendable {
+    case catalog, library, unknown
+
+    /// The more restrictive of two origins: `.library` over `.unknown` over `.catalog`.
+    public func restricted(by other: TrackOrigin) -> TrackOrigin {
+        if self == .library || other == .library { return .library }
+        if self == .unknown || other == .unknown { return .unknown }
+        return .catalog
+    }
+}
+
+extension SpokenAttribution {
+    /// Track metadata with `origin` derived from `tracks` (any existing origin is replaced): the
+    /// most restrictive origin of every named id, `.unknown` when an id is not in `tracks` or
+    /// no id is named. Other attributions are returned unchanged.
+    public func resolvingTrackOrigins(in tracks: [DJTrack]) -> SpokenAttribution {
+        guard case .trackMetadata(let ids, _) = self else { return self }
+        var origin: TrackOrigin = ids.isEmpty ? .unknown : .catalog
+        for id in ids {
+            let matches = tracks.filter { $0.id == id }
+            origin = origin.restricted(by: matches.isEmpty ? .unknown
+                                       : matches.map(\.origin).reduce(.catalog) { $0.restricted(by: $1) })
+        }
+        return .trackMetadata(trackIDs: ids, origin: origin)
+    }
+}
+
 public struct VoiceRenderer: Sendable {
     public static let cacheFormatVersion = "v1"
     public let routes: [VoiceRoute]
@@ -600,13 +631,18 @@ public struct VoiceRenderer: Sendable {
     /// Whether `cue` may be sent to a route that leaves the device (#176). Fail-closed: only a
     /// cue with an explicit non-personal attribution (`.presenter` or `.trackMetadata`) that is
     /// itself a DJ transition with no source item, source kind or provenance is eligible.
-    /// Missing attribution, `.personalContext`, any sourced or briefing cue (Calendar, Share,
+    /// Missing attribution, `.personalContext`, `.stationName` (a created station's name), any sourced or briefing cue (Calendar, Share,
     /// Obsidian, library notes…) or a cue whose fields disagree with its attribution is local-only.
+    ///
+    /// Track metadata is eligible only when every named track is `.catalog` (Sentinel): a track
+    /// from the listener's library, or one of `.unknown` origin, is personal and stays on-device,
+    /// even on a catalog station (main segment and closing line alike).
     public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?) -> Bool {
         guard let attribution else { return false }
         switch attribution {
-        case .personalContext: return false
-        case .presenter, .trackMetadata: break
+        case .personalContext, .stationName: return false
+        case .trackMetadata(_, let origin): guard origin == .catalog else { return false }
+        case .presenter: break
         }
         return cue.kind == .transition && !cue.isContent && cue.source == nil && cue.provenance == nil
     }

@@ -219,6 +219,34 @@ final class EditorialNarrationTests: XCTestCase {
         XCTAssertFalse(lines.contains { $0.contains("{") })
     }
 
+    // Sentinel build 26 sweep: a station ID speaking a created station's name is personal and never
+    // leaves the device; the built-in brand stays fixed presenter phrasing. -Atlas
+    func testAStationIDNamingACreatedStationStaysOnDevice() {
+        func stationIDs(_ name: String) -> [(NarrationCue, SpokenAttribution)] {
+            var out: [(NarrationCue, SpokenAttribution)] = []
+            for seed in UInt64(1)...40 {
+                var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed,
+                                            stationName: name)
+                for djBreak in writer.plan(tracks: djTracks(12), briefing: nil, hour: 16).breaks {
+                    for cue in djBreak.cues where cue.text.contains(name) { out.append((cue, djBreak.attributions[cue.id]!)) }
+                }
+            }
+            return out
+        }
+        let created = stationIDs("Maria's Gym Mix")
+        XCTAssertFalse(created.isEmpty, "the seeds produce station IDs")
+        for (cue, attribution) in created {
+            XCTAssertEqual(attribution, .stationName)
+            XCTAssertFalse(VoiceRenderer.mayLeaveDevice(cue, attribution: attribution), "a listener-typed name stays on-device")
+        }
+        let brand = stationIDs(DJScriptWriter.builtInStationName)
+        XCTAssertFalse(brand.isEmpty)
+        for (cue, attribution) in brand {
+            XCTAssertEqual(attribution, .presenter)
+            XCTAssertTrue(VoiceRenderer.mayLeaveDevice(cue, attribution: attribution), "the built-in brand is unchanged")
+        }
+    }
+
     func testDurationCapsUseTheWordCountEstimateAndRejectLongAudio() async throws {
         let line = "You're listening to AeroDJ."
         XCTAssertEqual(SpokenDurationEstimate.wordCount(line), 4)

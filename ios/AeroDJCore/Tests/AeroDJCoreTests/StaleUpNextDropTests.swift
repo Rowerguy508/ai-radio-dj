@@ -79,7 +79,7 @@ final class StaleUpNextDropTests: XCTestCase {
     @MainActor
     private func names(_ trackID: String, in prepared: PreparedDJBreak) -> [NarrationCue] {
         prepared.cues.filter {
-            if case .trackMetadata(let ids)? = prepared.attributions[$0.id] { ids.contains(trackID) } else { false }
+            if case .trackMetadata(let ids, _)? = prepared.attributions[$0.id] { ids.contains(trackID) } else { false }
         }
     }
 
