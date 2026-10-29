@@ -180,6 +180,8 @@ public final class StationQueueFeed<Item: Sendable> {
     /// Songs staged for the next hand-off (count only), `nil` when nothing is staged.
     public var stagedCount: Int? { staged?.items.count }
     public var stagedKey: StationQueueKey? { staged?.key }
+    /// The station whose queue is being built, `nil` when no build is running.
+    public var buildingKey: StationQueueKey? { building }
 
     // MARK: Building
 
