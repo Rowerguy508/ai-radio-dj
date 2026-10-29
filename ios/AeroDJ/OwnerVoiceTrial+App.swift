@@ -34,20 +34,6 @@ extension VoiceRenderer {
     }
 }
 
-extension ProVoiceAccess {
-    /// The Pro + consent gate the live app runs with. Owner A/B builds: the owner trial, matching
-    /// the route above. Every other build: `.none` (free, no consent), so nothing paid resolves
-    /// until the paywall (Nova) and the consent sheet provide real `ProEntitlementProviding` and
-    /// `PaidVoiceConsentProviding` conformers.
-    static var live: ProVoiceAccess {
-        #if AERODJ_OWNER_AB
-        return .ownerTrial
-        #else
-        return .none
-        #endif
-    }
-}
-
 extension View {
     /// Adds the owner voice picker entry in an `AERODJ_OWNER_AB` build; a no-op otherwise.
     @ViewBuilder func ownerVoiceTrialEntry() -> some View {

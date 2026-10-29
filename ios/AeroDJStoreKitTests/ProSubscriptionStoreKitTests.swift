@@ -106,6 +106,35 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         XCTAssertEqual(refunded, .denied(.revoked))
     }
 
+    /// SKTestSession cannot create a family-shared transaction (the group is not family
+    /// shareable), so the `.familyShared` case is covered by the Linux mapper test. This pins the
+    /// other half: an own purchase carries `.purchased` into the snapshot and counts as Pro.
+    func testOwnPurchaseCarriesPurchasedOwnership() async throws {
+        let transaction = try await session.buyProduct(identifier: ProSubscriptionConfig.monthlyProductID)
+        XCTAssertEqual(transaction.ownershipType, .purchased)
+        let snapshot = ProEntitlementObserver.snapshot(transaction, isVerified: true)
+        XCTAssertEqual(snapshot.ownership, .purchased)
+        XCTAssertTrue(ProEntitlementMapper.state(for: [snapshot], now: Date()).showsPro)
+    }
+
+    /// Sentinel N1: past the expiry, the gate input is not `.pro` even with no refresh and no
+    /// `Transaction.updates` event in between.
+    func testCurrentEntitlementIsNotACachedProPastExpiry() async throws {
+        let clock = TestClock()
+        let o = ProEntitlementObserver(now: { clock.now })
+        try await session.buyProduct(identifier: ProSubscriptionConfig.monthlyProductID)
+        await o.refresh()
+        guard case .pro(_, let expiresAt?) = o.state else { return XCTFail("expected .pro, got \(o.state)") }
+        let before = await o.currentProEntitlement()
+        XCTAssertTrue(before.showsPro)
+
+        clock.now = expiresAt.addingTimeInterval(1)
+        let after = await o.currentProEntitlement()
+        XCTAssertEqual(after, .expired(productID: ProSubscriptionConfig.monthlyProductID, expiredAt: expiresAt))
+        let gate = await ProVoiceAccess(entitlement: o, consent: GrantedConsent()).decision()
+        XCTAssertEqual(gate, .denied(.expired))
+    }
+
     private func waitForState(_ o: ProEntitlementObserver, timeout: TimeInterval = 10,
                               _ matches: (ProEntitlementState) -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
@@ -120,4 +149,13 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
 
 private struct GrantedConsent: PaidVoiceConsentProviding {
     func hasPaidVoiceConsent() async -> Bool { true }
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = Date()
+    var now: Date {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
 }

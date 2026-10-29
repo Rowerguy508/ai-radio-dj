@@ -210,21 +210,20 @@ public enum PremiumVoicePickerStatus {
                                        enteredToken: String, hasSavedToken: Bool) -> PremiumVoiceRoutes.Decision {
         pendingDecision(paidProvidersEnabled: paidProvidersEnabled, selectedVoiceID: selectedVoiceID, endpoint: endpoint,
                         enteredToken: enteredToken, hasSavedToken: hasSavedToken,
-                        pinnedHosts: PremiumVoiceRoutes.allowedHosts)
+                        pinnedHosts: PremiumVoiceRoutes.allowedHosts, access: ProVoiceGate.ownerPickerAccess)
     }
 
     static func pendingDecision(paidProvidersEnabled: Bool, selectedVoiceID: String?, endpoint: String,
                                 enteredToken: String, hasSavedToken: Bool,
-                                pinnedHosts: Set<String>) -> PremiumVoiceRoutes.Decision {
+                                pinnedHosts: Set<String>, access: ProVoiceGate.Decision) -> PremiumVoiceRoutes.Decision {
         let entered = enteredToken.trimmingCharacters(in: .whitespacesAndNewlines)
         // Done: an empty field keeps the saved token; a typed one replaces it (blank deletes it).
         let hasToken = enteredToken.isEmpty ? hasSavedToken : !entered.isEmpty
         let credentials = savedURL(endpoint).flatMap { url in
             hasToken ? PremiumProxyCredentials(endpoint: url, token: entered.isEmpty ? "saved" : entered) : nil
         }
-        // The owner picker previews the owner A/B trial, so it states that access explicitly.
         return PremiumVoiceRoutes.compose(onDevice: [], paidProvidersEnabled: paidProvidersEnabled,
-                                          access: .ownerTrial, selectedVoiceID: selectedVoiceID, credentials: credentials,
+                                          access: access, selectedVoiceID: selectedVoiceID, credentials: credentials,
                                           pinnedHosts: pinnedHosts).decision
     }
 
