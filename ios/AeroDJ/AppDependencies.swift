@@ -28,11 +28,15 @@ struct AppDependencies {
     /// Live only: the store for notes the listener picked (`.fileImporter`). `nil` in the
     /// test station, so the file picker is not offered there.
     let pickedNotes: LiveConnectionSources?
+    /// Station queue (-Atlas; flagged for Claude): live only. Feeds the built station into the
+    /// player at natural boundaries and on an idle Play. `nil` in the test station.
+    let stationQueue: StationQueuePlayer?
 
     /// Starts the Studio and the DJ session once per launch.
     func start() async {
         await studio.start()
         await djSession.start()
+        stationQueue?.start()
     }
 
     static func make(defaults: UserDefaults = .standard) -> AppDependencies {
@@ -94,7 +98,8 @@ struct AppDependencies {
                                             seedSearch: MusicCatalogSeedSource(),
                                             seedSearchFailureKind: StudioSearchModel.searchFailureKind),
             djSession: djSession,
-            pickedNotes: composition.notes)
+            pickedNotes: composition.notes,
+            stationQueue: StationQueuePlayer(music: MusicKitService.shared, station: station, djSession: djSession))
     }
 
     #if DEBUG
@@ -137,7 +142,8 @@ struct AppDependencies {
             dj: dj,
             studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
             djSession: djSession,
-            pickedNotes: nil)
+            pickedNotes: nil,
+            stationQueue: nil)
     }
     #endif
 

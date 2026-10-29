@@ -69,6 +69,17 @@ final class MusicKitService: ObservableObject {
     /// Called once per boundary. For a natural end, the index is the song that just finished.
     /// The handler must resolve the transition: play a DJ line, or call `skipInterlude()`.
     var onBoundary: (@MainActor (PlaybackBoundary, Int) -> Void)?
+    /// Station queue (-Atlas; flagged for Claude, this file's owner). At a natural boundary, after
+    /// the break and before the next song loads: `StationQueuePlayer` returns its start when the
+    /// station's music settings changed since this queue began and the station's queue is ready.
+    /// Nil, or a nil result, loads the next song of this queue exactly as before.
+    var stationQueueAtBoundary: (@MainActor (_ finishedIndex: Int) -> (@MainActor () async -> Void)?)?
+    /// Station queue (-Atlas; flagged for Claude): Play with nothing queued starts the station's
+    /// queue when it is ready. Nil, or a nil result, keeps the existing "nothing to resume" error.
+    var stationQueueForIdlePlay: (@MainActor () -> (@MainActor () async -> Void)?)?
+    /// Station queue (-Atlas; flagged for Claude): a new queue replaced the old one (a tap or a station
+    /// hand-off), so `StationQueuePlayer` knows which station the playing queue belongs to.
+    var onQueueReplaced: (@MainActor () -> Void)?
     private var pollTimer: Timer?
     /// Playback timing for device validation. Indices and durations only: no titles or identifiers.
     private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
@@ -216,6 +227,7 @@ final class MusicKitService: ObservableObject {
         // a pending play and halts a playing clip.
         onBreakMustStop?(nil)
         queue = tracks
+        onQueueReplaced?()
         currentTrack = tracks.first
         boundaries.userRequestedChange()
         queueIndex = 0
@@ -263,6 +275,11 @@ final class MusicKitService: ObservableObject {
 
     /// The user pressed play.
     func resume() async throws {
+        // Station queue (-Atlas; flagged for Claude): an idle Play starts the station when it is ready.
+        if queue.isEmpty, let startStation = stationQueueForIdlePlay?() {
+            await startStation()
+            return
+        }
         guard !queue.isEmpty else {
             let message = PlaybackFailureCopy.message(for: .nothingToResume)
             lastError = message
@@ -483,6 +500,12 @@ final class MusicKitService: ObservableObject {
             return
         }
         releaseSongEndHoldIfAllowed(finished: index)
+        // Station queue (-Atlas; flagged for Claude): a station change that applied at this boundary
+        // replaces the queue here, through the same path as a tap. Otherwise nothing changes.
+        if let startStation = stationQueueAtBoundary?(index) {
+            await startStation()
+            return
+        }
         let next = index + 1
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.startNextTrack(.indexOK(queue.indices.contains(next)), after: index, queueCount: queue.count, gates: p0Gates)
