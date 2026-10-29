@@ -297,7 +297,8 @@ public final class DJBreakSession {
         // the boundary went by while this seek was suspended. `rearm` re-checks inside the
         // preparer: a boundary that `takeBreak` or `cancelAll` closed is never re-armed.
         guard playing == index, let djBreak = breaks[index] else { return }
-        await preparer.rearm(djBreak, deadline: deadline)
+        // Library-seed gate (#154), read at re-arm time like `songStarted`.
+        await preparer.rearm(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))
     }
 
     /// Song `k` ended on its own. Applies pending station edits at this safe boundary, then
