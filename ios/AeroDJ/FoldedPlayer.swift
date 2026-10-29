@@ -354,10 +354,11 @@ private struct FoldedTestStationTag: View {
 
 // MARK: - DJ status slot
 
-/// Only real DJ state draws here. Idle and ready draw nothing. Preparing gets a capsule with
-/// a scanning shimmer (static under Reduce Motion); speaking gets the amber ON AIR pill;
-/// voice or budget failures reuse the shared `DJStatusLine`. Shared items to review live in
-/// the ⋯ menu.
+/// Only real DJ state draws here. Idle and ready draw nothing. Preparing gets a quiet capsule
+/// with the presentation's headline; its shimmer runs only when
+/// `DJStatusPresentation.animatesActivity` says so (On Air only today, so it is static) and
+/// never under Reduce Motion. Speaking gets the amber ON AIR pill; voice or budget failures
+/// reuse the shared `DJStatusLine`. Shared items to review live in the ⋯ menu.
 private struct FoldedDJStatus: View {
     let dj: DJStatusPresentation
 
@@ -365,7 +366,9 @@ private struct FoldedDJStatus: View {
         switch dj.state {
         case .preparing:
             if let headline = dj.headline {
-                FoldedPreparingCapsule(headline: headline, accessibilityLabel: dj.accessibilityLabel)
+                FoldedStatusCapsule(headline: headline, accessibilityLabel: dj.accessibilityLabel,
+                                    systemImage: "scope", animates: dj.animatesActivity,
+                                    identifier: "dj.preparing")
             }
         case .speaking:
             FoldedOnAirPill()
@@ -374,21 +377,28 @@ private struct FoldedDJStatus: View {
                 DJStatusLine(presentation: dj)
             }
         case .idle, .ready:
+            // `.ready` stays silent like `DJStatusLine`: its headline and detail can linger when
+            // no break plays (f65ff0d, testReadyStateShowsNoBreakText).
             EmptyView()
         }
     }
 }
 
-private struct FoldedPreparingCapsule: View {
+/// Quiet status capsule (preparing today). The shimmer is drawn only when the caller passes the
+/// presentation's `animatesActivity` as true and Reduce Motion is off.
+private struct FoldedStatusCapsule: View {
     let headline: String
     let accessibilityLabel: String
+    let systemImage: String
+    let animates: Bool
+    let identifier: String
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
     private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "scope")
+            Image(systemName: systemImage)
                 .font(.subheadline.weight(.medium))
                 .accessibilityHidden(true)
             Text(headline)
@@ -404,13 +414,13 @@ private struct FoldedPreparingCapsule: View {
         .clipShape(Capsule())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel.isEmpty ? headline : accessibilityLabel)
-        .accessibilityIdentifier("dj.preparing")
+        .accessibilityIdentifier(identifier)
     }
 
-    /// Exists only while this capsule does, i.e. only while a break is being prepared.
+    /// Bound to `DJStatusPresentation.animatesActivity`; nothing animates under Reduce Motion.
     @ViewBuilder
     private var shimmer: some View {
-        if !reduceMotion {
+        if animates && !reduceMotion {
             TimelineView(.animation(minimumInterval: 1 / 30)) { context in
                 GeometryReader { geo in
                     let period = 1.8
