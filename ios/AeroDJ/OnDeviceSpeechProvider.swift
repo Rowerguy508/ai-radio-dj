@@ -18,11 +18,44 @@ public struct OnDeviceSpeechProvider: VoiceProvider {
 
     public init() { _ = Self.launchSweep }
 
-    public func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+    /// Per `voice.id` render health, shared by every route that uses this provider.
+    static let health = VoiceHealthLedger()
+
+    /// A Premium or Enhanced voice that is still downloading can hang with no audio. Give it
+    /// this long to produce its first frames, so the standard-voice route still has time.
+    /// Standard voices ship with iOS and get no limit beyond the route timeout.
+    static let firstAudioLimitForHigherTier: Duration = .seconds(4)
+
+    private static func firstAudioLimit(_ voiceID: String) -> Duration? {
+        guard let voice = AVSpeechSynthesisVoice(identifier: voiceID), voice.quality != .default else { return nil }
+        return firstAudioLimitForHigherTier
+    }
+
+    private static func render(_ text: String, voiceID: String) async throws -> (Data, Double) {
         // The temp file is deleted on success, error and cancellation.
-        let (data, seconds) = try await SpeechTempFiles.shared.withFile { url in
-            try await SpeechRenderJob(text: text, voiceID: voice.id, url: url).run()
+        try await SpeechTempFiles.shared.withFile { url in
+            try await SpeechRenderJob(text: text, voiceID: voiceID, url: url).run(firstAudioWithin: firstAudioLimit(voiceID))
         }
+    }
+
+    public func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+        // A voice that just rendered nothing (a Premium voice still downloading, say) is skipped
+        // for a while, so the renderer goes straight to the standard-voice route instead of
+        // waiting out another timeout. Cancellation is never held against a voice.
+        if Self.health.isSuspect(voice.id) { throw OnDeviceSpeechError.voiceRecentlyFailed }
+        let (data, seconds): (Data, Double)
+        do {
+            (data, seconds) = try await Self.render(text, voiceID: voice.id)
+        } catch {
+            // Only a higher-tier voice is held off: the standard voice is the last route, and one
+            // bad render must not silence the DJ for the whole hold-off.
+            if !(error is CancellationError), !Task.isCancelled,
+               let used = AVSpeechSynthesisVoice(identifier: voice.id), used.quality != .default {
+                Self.health.recordFailure(voice.id)
+            }
+            throw error
+        }
+        Self.health.recordSuccess(voice.id)
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: 0,
                              provider: Self.providerID, cacheKey: nil)
     }
@@ -31,6 +64,8 @@ public struct OnDeviceSpeechProvider: VoiceProvider {
 enum OnDeviceSpeechError: Error {
     case unexpectedBuffer
     case emptyAudio
+    case voiceRecentlyFailed
+    case noAudioInTime
 }
 
 private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
@@ -47,7 +82,7 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
     init(text: String, voiceID: String, url: URL) {
         let ssml = text.hasPrefix("<speak>") ? AVSpeechUtterance(ssmlRepresentation: text) : nil
         utterance = ssml ?? AVSpeechUtterance(string: SpeechDelivery.plainText(fromSSML: text))
-        utterance.voice = AVSpeechSynthesisVoice(identifier: voiceID) ?? AVSpeechSynthesisVoice(language: "en-US")
+        utterance.voice = AVSpeechSynthesisVoice(identifier: voiceID) ?? OnDeviceVoiceChoice.bestVoice()
         self.url = url
         super.init()
         // Build 9 P0 (-Atlas): this synthesizer only renders to a buffer, in the background,
@@ -61,7 +96,17 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
 
     private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
 
-    func run() async throws -> (Data, Double) {
+    func run(firstAudioWithin limit: Duration? = nil) async throws -> (Data, Double) {
+        let watchdog = limit.map { limit in
+            Task { [self] in
+                try? await Task.sleep(for: limit)
+                if !Task.isCancelled, !hasFrames() {
+                    finish(.failed, OnDeviceSpeechError.noAudioInTime)
+                    synthesizer.stopSpeaking(at: .immediate)
+                }
+            }
+        }
+        defer { watchdog?.cancel() }
         defer {
             // every path: no write can (re)create the file after deletion
             let (frames, _) = closeFile()
@@ -81,6 +126,12 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
         return (data, Double(rendered) / rate)
     }
 
+    private func hasFrames() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return frames > 0
+    }
+
     /// Synchronous so NSLock is never held across (or called from) an async context.
     private func closeFile() -> (AVAudioFramePosition, Double) {
         lock.lock()
@@ -92,7 +143,13 @@ private final class SpeechRenderJob: NSObject, AVSpeechSynthesizerDelegate, @unc
 
     private func handle(_ buffer: AVAudioBuffer) {
         guard let pcm = buffer as? AVAudioPCMBuffer else { return finish(.failed, OnDeviceSpeechError.unexpectedBuffer) }
-        if pcm.frameLength == 0 { return finish(.finalBuffer) }
+        if pcm.frameLength == 0 {
+            // Higher-tier voices can send an empty buffer before any audio. Only an empty
+            // buffer after real audio ends the render; otherwise `didFinish` (or the
+            // deadline) does, and a render with no frames still fails as `emptyAudio`.
+            guard hasFrames() else { return }
+            return finish(.finalBuffer)
+        }
         do {
             lock.lock()
             defer { lock.unlock() }
@@ -124,9 +181,23 @@ extension VoiceRoute {
     /// The one on-device voice route (AVSpeechSynthesizer). Shared by the live app
     /// and the test station so voice settings have a single source.
     static func onDevice() -> VoiceRoute {
-        let voice = VoiceProfile(id: AVSpeechSynthesisVoice(language: "en-US")?.identifier ?? "", name: "Host")
-        return VoiceRoute(providerID: OnDeviceSpeechProvider.providerID, provider: OnDeviceSpeechProvider(),
-                          voice: voice, timeout: .seconds(20), acceptsSSML: true)
+        onDevice(voiceID: OnDeviceVoiceChoice.bestVoice()?.identifier ?? "")
+    }
+
+    /// The best voice first, then a standard voice that ships with iOS. If the best voice
+    /// fails, times out, or reads past the cue's cap, `VoiceRenderer` falls through to the
+    /// standard route, as it does for any route, before the break is skipped.
+    static func onDeviceRoutes() -> [VoiceRoute] {
+        let primary = onDevice()
+        guard let standard = OnDeviceVoiceChoice.standardVoice(), standard.identifier != primary.voice.id else {
+            return [primary]
+        }
+        return [primary, onDevice(voiceID: standard.identifier)]
+    }
+
+    private static func onDevice(voiceID: String) -> VoiceRoute {
+        VoiceRoute(providerID: OnDeviceSpeechProvider.providerID, provider: OnDeviceSpeechProvider(),
+                   voice: VoiceProfile(id: voiceID, name: "Host"), timeout: .seconds(20), acceptsSSML: true)
     }
 }
 
@@ -147,5 +218,49 @@ extension VoiceRenderer {
             routes: PhononSpeechRoutes.make(),
             budget: VoiceBudget(dailyCapMicrodollars: VoiceBetaDefaults.paidDailyCapMicrodollars, file: support.appendingPathComponent("Voice/budget.json")),
             cache: cache)
+    }
+}
+
+/// The DJ's on-device voice: the best installed English voice (premium, then enhanced),
+/// not the compact default, which sounds robotic. Falls back to the default en-US voice.
+/// Premium and enhanced voices are downloaded by the user in Settings; an app cannot fetch them.
+enum OnDeviceVoiceChoice {
+    private static let log = Logger(subsystem: "com.aerodj.app", category: "speech")
+
+    static func bestVoice() -> AVSpeechSynthesisVoice? {
+        let installed = AVSpeechSynthesisVoice.speechVoices()
+        let candidates = installed.map { voice in
+            VoiceCandidate(identifier: voice.identifier, language: voice.language, tier: tier(voice.quality),
+                           isNovelty: voice.voiceTraits.contains(.isNoveltyVoice),
+                           isPersonalVoice: voice.voiceTraits.contains(.isPersonalVoice))
+        }
+        guard let pick = VoiceQualitySelector.best(from: candidates),
+              let voice = installed.first(where: { $0.identifier == pick.identifier }) else {
+            log.info("voice selected tier=fallback")
+            return AVSpeechSynthesisVoice(language: "en-US")
+        }
+        // Sanitized: the tier enum only, never the voice name, identifier or language.
+        log.info("voice selected tier=\(pick.tier.rawValue, privacy: .public)")
+        return voice
+    }
+
+    /// The best standard-tier English voice, the fallback route's voice. Nil when none is installed.
+    static func standardVoice() -> AVSpeechSynthesisVoice? {
+        let installed = AVSpeechSynthesisVoice.speechVoices()
+        let candidates = installed.map { voice in
+            VoiceCandidate(identifier: voice.identifier, language: voice.language, tier: tier(voice.quality),
+                           isNovelty: voice.voiceTraits.contains(.isNoveltyVoice),
+                           isPersonalVoice: voice.voiceTraits.contains(.isPersonalVoice))
+        }
+        guard let pick = VoiceQualitySelector.fallback(from: candidates) else { return nil }
+        return installed.first { $0.identifier == pick.identifier }
+    }
+
+    private static func tier(_ quality: AVSpeechSynthesisVoiceQuality) -> VoiceQualityTier {
+        switch quality {
+        case .premium: .premium
+        case .enhanced: .enhanced
+        default: .standard
+        }
     }
 }

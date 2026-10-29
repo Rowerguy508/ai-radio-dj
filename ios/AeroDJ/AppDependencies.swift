@@ -107,7 +107,7 @@ struct AppDependencies {
             store: InMemoryStationConfigurationStore(
                 snapshot: StationConfigurationSnapshot(state: StationConfigurationState(active: TestStation.configuration))),
             consent: composition.consent)
-        let voice = TestStation.makeRenderer(routes: [VoiceRoute.onDevice()],
+        let voice = TestStation.makeRenderer(routes: VoiceRoute.onDeviceRoutes(),
                                              cache: InMemoryAudioCache(maxAge: TestStation.cacheRetention))
         let dj = DJPresentationStore()
         let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,

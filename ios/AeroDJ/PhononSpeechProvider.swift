@@ -61,13 +61,13 @@ enum PhononSpeechRoutes {
         if decision.attemptsPhonon {
             log.info("phonon enabled=true providers=\(decision.providerIDs.count, privacy: .public)")
         }
-        return decision.providerIDs.map { id in
+        return decision.providerIDs.flatMap { id -> [VoiceRoute] in
             if id == PhononModelPin.providerID {
-                return VoiceRoute(providerID: id, provider: PhononSpeechProvider(),
-                                  voice: VoiceProfile(id: PhononModelPin.voiceID, name: PhononModelPin.voiceID),
-                                  microdollarsPerThousandCharacters: 0, timeout: .seconds(20), acceptsSSML: false)
+                return [VoiceRoute(providerID: id, provider: PhononSpeechProvider(),
+                                   voice: VoiceProfile(id: PhononModelPin.voiceID, name: PhononModelPin.voiceID),
+                                   microdollarsPerThousandCharacters: 0, timeout: .seconds(20), acceptsSSML: false)]
             }
-            return .onDevice()
+            return VoiceRoute.onDeviceRoutes()
         }
     }
 }
