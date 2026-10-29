@@ -53,7 +53,10 @@ public final class DJBreakSession {
     /// tap — not on commentary/briefing off (that lets setup finish with the new settings).
     private var queueSetupTask: Task<Void, Never>?
     /// `songStarted` arrived before background queue setup finished planning breaks.
-    private var pendingSongStart: (index: Int, remaining: Duration)?
+    /// `heldAt` is when it arrived: the song keeps playing while setup runs, so the replay
+    /// must subtract that time or the render deadline lands past the real boundary
+    /// (build 22 P0: the afterTrack 0 break ran into `notReadyAtBoundary`, -Fry).
+    private var pendingSongStart: (index: Int, remaining: Duration, heldAt: Date)?
     /// True while `beginQueueInBackground`'s task has not finished `queueStarted`.
     private var queueSetupPending = false
     /// Bumped on every begin/cancel so a cancelled setup cannot clear a newer one.
@@ -157,7 +160,8 @@ public final class DJBreakSession {
             self.queueSetupPending = false
             if let pending = self.pendingSongStart {
                 self.pendingSongStart = nil
-                await self.songStarted(index: pending.index, remaining: pending.remaining)
+                let held = max(0, self.now().timeIntervalSince(pending.heldAt))
+                await self.songStarted(index: pending.index, remaining: pending.remaining - .seconds(held))
             }
         }
         queueSetupTask = task
@@ -252,9 +256,10 @@ public final class DJBreakSession {
         playing = index
         // Queue identity not applied yet (tap played first; break prep still in flight).
         if queueSetupPending {
-            pendingSongStart = (index, remaining)
+            pendingSongStart = (index, remaining, now())
             return
         }
+        testLastSongStartRemaining = remaining
         await preparer.openBoundary(afterTrack: index)   // seeks may re-arm this boundary once (-Atlas)
         guard breaks[index] != nil, let deadline = DJBreakPreparer.deadline(remainingInSong: remaining) else { return }
         // Personality edits apply when a break starts preparing; re-plan this break if they did.
@@ -277,7 +282,8 @@ public final class DJBreakSession {
     /// While background queue setup is pending, the held song start takes the new `remaining`.
     public func songSeeked(index: Int, remaining: Duration) async {
         if queueSetupPending {
-            if pendingSongStart?.index == index { pendingSongStart = (index, remaining) }
+            // A seek reports `remaining` as of now, so the held time restarts here (#162).
+            if pendingSongStart?.index == index { pendingSongStart = (index, remaining, now()) }
             return
         }
         guard playing == index, breaks[index] != nil,
@@ -509,6 +515,8 @@ public final class DJBreakSession {
         }
     }
 
+    /// Test hook: the `remaining` the last non-held `songStarted` prepared with.
+    var testLastSongStartRemaining: Duration?
     /// Test hook: the planned boundaries.
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: background tap setup has not finished planning.
