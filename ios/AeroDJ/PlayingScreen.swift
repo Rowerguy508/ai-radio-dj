@@ -102,9 +102,6 @@ struct PlayingScreen: View {
         }
         .background(Color(.systemBackground))
         .environment(\.artStation, currentStation)
-        // The opened station, never the playing one: build 9 kept "Morning Calm" here after the
-        // owner opened Late Night, so the next song tap looked like a station jump.
-        .stationToolbar(heading.header, isTestStation: isTestStation)
         .sheet(isPresented: $showWorkspace) {
             NavigationStack {
                 workspace
@@ -123,20 +120,26 @@ struct PlayingScreen: View {
         }
     }
 
+    /// Each branch sets its own navigation bar. Studio keeps `stationToolbar` with the opened
+    /// station, never the playing one: build 9 kept "Morning Calm" there after the owner opened
+    /// Late Night, so the next song tap looked like a station jump. Folded uses `foldedToolbar`
+    /// (back + ⋯) and names the same opened station in its bottom chip.
     @ViewBuilder
     private func layout(mode: StudioLayoutMode, width: Double, height: CGFloat) -> some View {
         switch mode {
         case .compact:
-            CompactPlayer(station: currentStation, content: content, snapshot: snapshot,
-                          actions: actions, dj: dj, soundTags: soundTags, search: search,
-                          studioSearch: studioSearch, timeSource: timeSource,
-                          artworkNamespace: morphNamespace,
-                          extendsUnderSafeArea: true,
-                          onOpenWorkspace: { segment = .queue; showWorkspace = true },
-                          onTune: { segment = .tune; showWorkspace = true },
-                          onReview: { segment = .connections; showWorkspace = true })
+            // Folded redesign (wireframe 08): back + ⋯ in the bar, the station chip below.
+            FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
+                         content: content, snapshot: snapshot, actions: actions, dj: dj,
+                         search: search, studioSearch: studioSearch, timeSource: timeSource,
+                         artworkNamespace: morphNamespace,
+                         onQueue: { segment = .queue; showWorkspace = true },
+                         onTune: { segment = .tune; showWorkspace = true },
+                         onReview: { segment = .connections; showWorkspace = true })
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
+                .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
+                               onConnections: { segment = .connections; showWorkspace = true })
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,
@@ -144,11 +147,13 @@ struct PlayingScreen: View {
                              workspace: workspace)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("layout.studio")
+                    .stationToolbar(heading.header, isTestStation: isTestStation)
             }
         case .studioStacked:
             StudioStackedLayout(zoneA: zoneA(usesParentScroll: true), workspace: workspace)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.studioStacked")
+                .stationToolbar(heading.header, isTestStation: isTestStation)
         }
     }
 
