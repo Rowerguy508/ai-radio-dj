@@ -21,8 +21,12 @@ Source: `ios/AeroDJCore/Sources/AeroDJCore/Station/`.
 | `commentary` | `off` 0, `rare` 0.15, `occasional` 0.3 (default), `frequent` 0.45. Maps to `DJCadence.talkFraction`, max 0.5 | Next song boundary. Turning it **off** applies immediately |
 | `briefing` | `enabled` (default on). `window` is a start minute plus 15–240 minutes and may wrap midnight; default 07:00 for 2 h. `targetSeconds` is 60–600, default 300, and is a flexible target where music comes first. `sections` are calendar, shared items and notes | Next briefing that's planned. Turning it **off** applies immediately |
 | `requestedIntegrations` | `calendar`, `shareInbox`, `obsidian`. Default none | Requesting one applies at the next briefing. Withdrawing one applies **immediately** |
+| `seeds` | What the station is built from: `StationSeed { kind: artist/genre/playlist/song, catalogID, name, source: catalog/library }`. At most 8, unique by kind plus `catalogID` (first kept, order kept), names trimmed and capped at 64, seeds with an empty ID or name dropped. Default `[]`; a config or recipe saved before seeds existed loads as `[]` | Next song boundary |
+| `reach` | `only`, `related` (default), `broad`. How far the station goes from its seeds; `discovery` is the familiar-vs-new mix within it. Missing or unknown loads as `related` | Next song boundary |
 
 `configuration.cadence(base:)` returns the `DJCadence` the break planner uses. The `minimal` personality caps plain transitions at 6 s.
+
+**Seeds and reach (-Atlas):** the engine is in `Station/StationSeedEngine.swift`: `CatalogStationSeedResolver` (only = the seed's own songs; related adds similar artists; broad adds the genre and chart neighbourhood), the pure `StationPoolBuilder` (dedupe, tier mix, discovery mix, artist spacing, limit) and `StarterStationSuggester` (suggested drafts, shown only, saved only through `recipes.save(name:configuration:)`). The app adapter is `ios/AeroDJ/MusicCatalogSeedSource.swift`. Nothing plays from seeds until the live queue hook lands, so the tuner shows them as Saved, not Active. **Privacy:** `.library` seeds stay on the device. Their IDs and names never go into diagnostics, logs, cloud or paid voice requests (only `StationSeedDiagnostics` counts and enums may), and the resolver never expands a library seed through catalog lookups.
 
 **Honesty note:** personality doesn't change the voice or the script lines yet; line selection by preset is a follow-up. Until it lands, the UI must not describe presets as different voices.
 

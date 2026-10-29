@@ -399,7 +399,7 @@ public extension StationSetting {
     /// stored and applied at boundaries but no selection engine reads it yet.
     var isReadToday: Bool {
         switch self {
-        case .genres, .moods, .energy, .discovery: false
+        case .genres, .moods, .energy, .discovery, .seeds, .reach: false
         case .commentary, .personality, .briefing, .integration: true
         }
     }
@@ -407,7 +407,7 @@ public extension StationSetting {
     /// One honest line on what the setting changes today.
     var usageCopy: String {
         switch self {
-        case .genres, .moods, .energy, .discovery: "Saved with your station. Not used for song picking yet."
+        case .genres, .moods, .energy, .discovery, .seeds, .reach: "Saved with your station. Not used for song picking yet."
         case .commentary: "Changes how often the DJ talks between songs."
         case .personality: "Changes how long a DJ break may be."
         case .briefing: "Lets DJ breaks carry your briefing."

@@ -8,14 +8,18 @@ import Foundation
 /// One user-facing control. Used for per-control pending/status reporting.
 public enum StationSetting: Hashable, Sendable {
     case genres, moods, energy, discovery, personality, commentary, briefing
+    /// What the station is built from, and how far it reaches (Fry's rule (c): own cases,
+    /// applied at the next song boundary like the other music settings).
+    case seeds, reach
     case integration(StationIntegration)
 
     public static let all: [StationSetting] =
-        [.genres, .moods, .energy, .discovery, .personality, .commentary, .briefing]
+        [.genres, .moods, .energy, .discovery, .seeds, .reach, .personality, .commentary, .briefing]
         + StationIntegration.allCases.map(StationSetting.integration)
 
     /// The Station Tuner controls: everything except connections.
-    public static let tuning: [StationSetting] = [.genres, .moods, .energy, .discovery, .personality, .commentary, .briefing]
+    public static let tuning: [StationSetting] =
+        [.genres, .moods, .energy, .discovery, .seeds, .reach, .personality, .commentary, .briefing]
 
     func differs(_ a: StationConfiguration, _ b: StationConfiguration) -> Bool {
         switch self {
@@ -23,6 +27,8 @@ public enum StationSetting: Hashable, Sendable {
         case .moods: a.moods != b.moods
         case .energy: a.energy != b.energy
         case .discovery: a.discovery != b.discovery
+        case .seeds: a.seeds != b.seeds
+        case .reach: a.reach != b.reach
         case .personality: a.personality != b.personality
         case .commentary: a.commentary != b.commentary
         case .briefing: a.briefing != b.briefing
@@ -37,6 +43,8 @@ public enum StationSetting: Hashable, Sendable {
         case .moods: target.moods = source.moods
         case .energy: target.energy = source.energy
         case .discovery: target.discovery = source.discovery
+        case .seeds: target.seeds = source.seeds
+        case .reach: target.reach = source.reach
         case .personality: target.personality = source.personality
         case .commentary: target.commentary = source.commentary
         case .briefing: target.briefing = source.briefing
@@ -49,7 +57,7 @@ public enum StationSetting: Hashable, Sendable {
     /// When a change from `active` to `proposed` takes effect.
     func timing(from active: StationConfiguration, to proposed: StationConfiguration) -> StationChangeTiming {
         switch self {
-        case .genres, .moods, .energy, .discovery: .nextSongBoundary
+        case .genres, .moods, .energy, .discovery, .seeds, .reach: .nextSongBoundary
         case .commentary: proposed.commentary == .off ? .immediate : .nextSongBoundary
         case .personality: .nextDJBreak
         case .briefing: (active.briefing.enabled && !proposed.briefing.enabled) ? .immediate : .nextBriefing
