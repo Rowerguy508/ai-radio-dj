@@ -227,7 +227,7 @@ struct StationSplitRoot<Detail: View>: View {
                 .tag(station.id)
                 // Same label, hint and identifier scheme as the carousel card (StationCarousel.swift:189-193),
                 // so UI tests and VoiceOver treat a created station like any other row.
-                .accessibilityHint("Opens the station. Music starts only when you press Play.")
+                .accessibilityHint(station.openHint)
                 .accessibilityIdentifier("stations.row.\(station.id.uuidString)")
             }
         }
@@ -289,6 +289,16 @@ struct Station: Identifiable, Hashable {
     let id: UUID
     let name: String
     let description: String?
+    /// A station made with + (a seeded recipe). Its row tap can start playback (#213).
+    var isCreated = false
+
+    /// VoiceOver hint for the list row and carousel card: what a tap does. A created station
+    /// starts right away when nothing is playing (CreatedStationStarter), else after this song.
+    var openHint: String {
+        isCreated
+            ? "Plays the station now if nothing is playing, otherwise after this song."
+            : "Opens the station. Music starts only when you press Play."
+    }
 
     /// Stable IDs so a restored selection can find the same row after a relaunch.
     static let morningCalmID = UUID(uuidString: "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D")!
@@ -304,7 +314,7 @@ extension Station {
     /// A station the listener created (`CreatedStations`). Its id is the recipe id. An extension,
     /// so the memberwise init the built-ins use stays.
     init(created: CreatedStationEntry) {
-        self.init(id: created.id, name: created.name, description: created.summary)
+        self.init(id: created.id, name: created.name, description: created.summary, isCreated: true)
     }
 }
 
