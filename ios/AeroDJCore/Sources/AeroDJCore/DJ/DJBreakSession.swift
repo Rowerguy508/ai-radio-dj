@@ -606,11 +606,10 @@ public final class DJBreakSession {
     var testQueueTrackIDs: [String] { tracks.map(\.id) }
     /// Test hook: briefing is absent after withdrawal / briefing-off.
     var testBriefingIsNil: Bool { briefing == nil }
-    /// Test hook: personal source item ids still present in the briefing or planned breaks.
     /// Test hook (-Atlas): runs where `songSeeked` resumes after its suspension on the station,
     /// so a test can end the song or drop the queue at exactly that point.
     var testSeekResumed: (@MainActor () async -> Void)?
-
+    /// Test hook: personal source item ids still present in the briefing or planned breaks.
     var testPlannedSourceItemIDs: Set<UUID> {
         var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
         for b in breaks.values { ids.formUnion(b.cues.compactMap(\.sourceItemID)) }
