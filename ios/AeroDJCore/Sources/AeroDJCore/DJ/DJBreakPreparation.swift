@@ -170,8 +170,8 @@ public actor DJBreakPreparer {
         }
         switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID) {
         case .success(let retry) where measured(retry.clips) <= cap: return ready(djBreak, retry)
-        case .failure(let skip) where skip.reason == .timedOut: return .skipped(.timedOut)
-        default: return .skipped(.overBreakBudget)
+        case .success: return .skipped(.overBreakBudget)
+        case .failure(let skip): return .skipped(skip.reason)  // the retry's own reason (Fry, #158)
         }
     }
 

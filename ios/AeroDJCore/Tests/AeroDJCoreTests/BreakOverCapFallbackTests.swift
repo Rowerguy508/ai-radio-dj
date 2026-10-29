@@ -64,6 +64,11 @@ final class BreakOverCapFallbackTests: XCTestCase {
         XCTAssertEqual(result, .skipped(.overBreakBudget))
     }
 
+    func testFailedReRenderReportsItsOwnReason() async {
+        let result = await outcome([route("premium", PacedVoice(secondsPerCue: 7)), route("standard", FailingVoice())])
+        XCTAssertEqual(result, .skipped(.renderFailed))
+    }
+
     func testAlreadyOnStandardVoiceIsNotRenderedTwice() async {
         // Premium failed, so the first pass already used the standard voice: no second pass.
         let result = await outcome([route("premium", FailingVoice()), route("standard", PacedVoice(secondsPerCue: 7))])
