@@ -3,9 +3,11 @@ import { bearerToken, parseTokenHash, tokenMatches } from './auth.js';
 import {
   DEFAULT_GLOBAL_DAILY_CHAR_CAP,
   DEFAULT_INSTALL_DAILY_CHAR_CAP,
+  DEFAULT_REQUESTS_PER_MINUTE,
   InMemoryUsageLimiter,
   LimiterStoreError,
   MAX_CONFIGURED_CHAR_CAP,
+  MAX_CONFIGURED_REQUESTS_PER_MINUTE,
   OWNER_SUBJECT,
   RedisUsageLimiter,
   redisRestConfig,
@@ -22,7 +24,6 @@ export const ELEVENLABS_BASE = 'https://api.elevenlabs.io';
 export const MAX_RESPONSE_BYTES = 5_000_000; // matches ProxyVoiceProvider.maxResponseBytes
 export const MAX_DURATION_SECONDS = 600; // matches ProxyVoiceProvider duration guard
 const DEFAULT_MAX_TEXT_CHARS = 600;
-const DEFAULT_REQUESTS_PER_MINUTE = 12;
 const DEFAULT_MODEL_ID = 'eleven_flash_v2_5';
 /**
  * ElevenLabs voice_settings sent on every render (owner-approved radio tuning).
@@ -155,10 +156,22 @@ let sharedLimiter: UsageLimiter | undefined;
  * therefore never become unlimited through configuration.
  */
 export function parseCharCap(value: string | undefined): number | null {
+  return parseBoundedInt(value, MAX_CONFIGURED_CHAR_CAP);
+}
+
+/**
+ * Parses `AERODJ_TTS_RATE_PER_MINUTE` by the same rule as the caps: a plain decimal integer
+ * in [1, MAX_CONFIGURED_REQUESTS_PER_MINUTE], else null (the caller uses the default of 12).
+ */
+export function parseRatePerMinute(value: string | undefined): number | null {
+  return parseBoundedInt(value, MAX_CONFIGURED_REQUESTS_PER_MINUTE);
+}
+
+function parseBoundedInt(value: string | undefined, max: number): number | null {
   const trimmed = value?.trim();
   if (!trimmed || !/^\d{1,9}$/.test(trimmed)) return null;
   const n = Number(trimmed);
-  return n >= 1 && n <= MAX_CONFIGURED_CHAR_CAP ? n : null;
+  return n >= 1 && n <= max ? n : null;
 }
 
 /**
@@ -176,7 +189,7 @@ export function limiterOptions(env: Env): LimiterOptions {
     dailyCharCap,
     ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? dailyCharCap,
     installDailyCharCap: parseCharCap(env.AERODJ_TTS_INSTALL_DAILY_CHAR_CAP) ?? DEFAULT_INSTALL_DAILY_CHAR_CAP,
-    requestsPerMinute: positiveInt(env.AERODJ_TTS_RATE_PER_MINUTE, DEFAULT_REQUESTS_PER_MINUTE),
+    requestsPerMinute: parseRatePerMinute(env.AERODJ_TTS_RATE_PER_MINUTE) ?? DEFAULT_REQUESTS_PER_MINUTE,
   };
 }
 

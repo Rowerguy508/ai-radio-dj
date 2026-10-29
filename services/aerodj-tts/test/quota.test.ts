@@ -5,14 +5,17 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { handleTts, limiterOptions, parseCharCap, secondsUntilNextUtcDay, type Deps, type Env, type LogEntry } from '../src/handler.js';
+import { handleTts, limiterOptions, parseCharCap, parseRatePerMinute, secondsUntilNextUtcDay, type Deps, type Env, type LogEntry } from '../src/handler.js';
 import {
   DEFAULT_GLOBAL_DAILY_CHAR_CAP,
   DEFAULT_INSTALL_DAILY_CHAR_CAP,
   InMemoryUsageLimiter,
   MAX_CONFIGURED_CHAR_CAP,
+  MAX_CONFIGURED_REQUESTS_PER_MINUTE,
   OWNER_SUBJECT,
   RedisUsageLimiter,
+  RATE_SCRIPT,
+  RELEASE2_SCRIPT,
   RESERVE2_SCRIPT,
   subjectBucket,
   type LimiterOptions,
@@ -228,6 +231,82 @@ test('refund on an install reservation releases both buckets, floored at zero, k
   }
 });
 
+test('refund floor: a counter above 0 but below the refund amount clamps to 0, never negative (real Lua)', async () => {
+  const store = fakeUpstash();
+  const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
+  const r = await limiter.reserve(A, 500, NOON);
+  assert.ok(r.ok);
+  // The counters dropped below this reservation after it was taken (e.g. the store was
+  // reset or the key expired and was recreated): 0 < counter < refund amount.
+  store.redis.data.set(installKey(A), '200');
+  store.redis.data.set(globalKey, '100');
+  await limiter.release(r.reservation);
+  assert.equal(store.redis.data.get(installKey(A)), '0');
+  assert.equal(store.redis.data.get(globalKey), '0');
+  assert.ok(store.redis.expiresAt.has(installKey(A)) && store.redis.expiresAt.has(globalKey), 'KEEPTTL');
+});
+
+test('refund that would go below zero: an absent or zero counter is left untouched (real Lua)', async () => {
+  const store = fakeUpstash();
+  const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, store.fetchImpl);
+  // A reservation for a day whose counters no longer exist (expired, or never written).
+  await limiter.release({ bucket: subjectBucket(A), day: DAY, chars: 500 });
+  assert.equal(store.redis.data.has(installKey(A)), false, 'no counter is created');
+  assert.equal(store.redis.data.has(globalKey), false, 'no counter is created');
+  assert.equal(store.redis.commands.filter((c) => c[0] === 'SET').length, 0, 'no TTL-less key is written');
+  // Counters at exactly 0 stay 0.
+  store.redis.data.set(installKey(A), '0');
+  store.redis.data.set(globalKey, '0');
+  await limiter.release({ bucket: subjectBucket(A), day: DAY, chars: 500 });
+  assert.equal(store.redis.data.get(installKey(A)), '0');
+  assert.equal(store.redis.data.get(globalKey), '0');
+});
+
+test('double refund: a non-2xx request releases its charge exactly once, so other callers stay counted', async () => {
+  for (const [name, limiter, redis] of limiters({ dailyCharCap: 9_000, requestsPerMinute: 100 })) {
+    // Another caller already holds 300 of the global ceiling.
+    assert.ok((await limiter.reserve(B, 300, NOON)).ok);
+    const releases: unknown[] = [];
+    const counting: UsageLimiter = {
+      durable: limiter.durable,
+      allowRequest: (b, n) => limiter.allowRequest(b, n),
+      reserve: (s, c, n) => limiter.reserve(s, c, n),
+      release: (r) => {
+        releases.push(r);
+        return limiter.release(r);
+      },
+    };
+    const h = deps(counting, { fetch: async () => new Response('nope', { status: 500 }) });
+    assert.equal((await handleTts(req('x'.repeat(500)), h.d)).status, 502, name);
+    assert.equal(releases.length, 1, `${name}: one release per charge`);
+    if (redis) {
+      assert.equal(redis.get(ownerKey), 0, name);
+      assert.equal(redis.get(globalKey), 300, `${name}: B's 300 is still counted`);
+      assert.equal(redis.commands.filter((c) => c[0] === 'SET').length, 2, `${name}: one RELEASE2 (2 SETs)`);
+    } else {
+      const mem = limiter as InMemoryUsageLimiter;
+      assert.equal(mem.used('owner', NOON), 0);
+      assert.equal(mem.used('global', NOON), 300, `${name}: B's 300 is still counted`);
+    }
+  }
+});
+
+// Expected failure, documented: release() is NOT idempotent today. The handler calls it at
+// most once per charge (test above) and has no retry path, so nothing undercounts in
+// practice, but releasing the same reservation twice would refund it twice. The per-charge
+// refund marker that fixes this is a PR 3 gate (#233); flip this from todo when it lands.
+test('double refund of the same reservation applies once (needs the per-charge marker, PR 3 gate #233)', { todo: 'per-charge refund marker is a PR 3 gate (#233)' }, async () => {
+  for (const [name, limiter, redis] of limiters({ dailyCharCap: 9_000, requestsPerMinute: 100 })) {
+    assert.ok((await limiter.reserve(B, 300, NOON)).ok);
+    const r = await limiter.reserve(A, 500, NOON);
+    assert.ok(r.ok);
+    await limiter.release(r.reservation);
+    await limiter.release(r.reservation);
+    const global = redis ? redis.get(globalKey) : (limiter as InMemoryUsageLimiter).used('global', NOON);
+    assert.equal(global, 300, `${name}: B's 300 must still be counted`);
+  }
+});
+
 test('both buckets reset at 00:00 UTC; day keys carry a 2-day TTL', async () => {
   const late = Date.UTC(2026, 9, 28, 23, 59, 30);
   const next = Date.UTC(2026, 9, 29, 0, 0, 1);
@@ -290,6 +369,36 @@ test('rate 429 and store 503 carry reason and Retry-After 60', async () => {
   assert.equal(res.headers['Retry-After'], '60');
   assert.deepEqual(body(res), { error: 'Service unavailable', requestId: 'req-1', reason: 'store', retryAfterSeconds: 60 });
   assert.equal(store.upstream(), 0);
+});
+
+test('a store error at reserve (after the rate check passed) fails closed: 503 store, no upstream call', async () => {
+  const failures: [string, (() => Promise<Response>)][] = [
+    ['HTTP 500', async () => new Response('{"error":"down"}', { status: 500 })],
+    ['network error', async () => { throw new TypeError('fetch failed'); }],
+    ['error payload', async () => new Response('{"error":"ERR script"}', { status: 200 })],
+    ['non-numeric result', async () => new Response('{"result":"OK"}', { status: 200 })],
+    ['unknown negative result', async () => new Response('{"result":-3}', { status: 200 })],
+  ];
+  for (const [name, fail] of failures) {
+    const store = fakeUpstash();
+    let reserveCalls = 0;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const command = JSON.parse(String(init.body)) as unknown[];
+      if (command[1] === RESERVE2_SCRIPT) {
+        reserveCalls++;
+        return fail();
+      }
+      assert.equal(command[1], RATE_SCRIPT, `${name}: only the rate check reaches the store`);
+      return store.fetchImpl(url, init);
+    }) as typeof fetch;
+    const h = deps(new RedisUsageLimiter(STORE, limiterOptions({}), fetchImpl));
+    const res = await handleTts(req('hi'), h.d);
+    assert.equal(reserveCalls, 1, `${name}: the rate check passed and reserve was attempted`);
+    assert.equal(res.status, 503, name);
+    assert.deepEqual(body(res), { error: 'Service unavailable', requestId: 'req-1', reason: 'store', retryAfterSeconds: 60 }, name);
+    assert.equal(h.upstream(), 0, `${name}: upstream never called`);
+    assert.equal(store.redis.commands.some((c) => c[0] === 'INCRBY'), false, `${name}: nothing reserved`);
+  }
 });
 
 test('other errors keep the old body shape (no reason, no Retry-After)', async () => {
@@ -380,4 +489,23 @@ test('limiterOptions: defaults 9,000 global / 1,500 install, legacy cap honoured
   );
   assert.equal(limiterOptions({ AERODJ_TTS_OWNER_DAILY_CHAR_CAP: '2000' }).ownerDailyCharCap, 2_000);
   assert.equal(limiterOptions({ AERODJ_TTS_INSTALL_DAILY_CHAR_CAP: '800' }).installDailyCharCap, 800);
+});
+
+test('parseRatePerMinute: same rule as the caps, plain integers in [1, 600]; 1e9 and friends fall back', () => {
+  assert.equal(MAX_CONFIGURED_REQUESTS_PER_MINUTE, 600);
+  for (const ok of [['1', 1], ['12', 12], [' 100 ', 100], ['600', 600]] as const) {
+    assert.equal(parseRatePerMinute(ok[0]), ok[1], ok[0]);
+  }
+  for (const bad of [undefined, '', '  ', '0', '-1', '1.5', '1e9', '1e2', '0x10', 'Infinity', 'NaN', 'abc', '12abc',
+    '+12', '601', '1000000000', '99999999', '1,000']) {
+    assert.equal(parseRatePerMinute(bad), null, String(bad));
+  }
+});
+
+test('limiterOptions: AERODJ_TTS_RATE_PER_MINUTE out of range or malformed uses the default 12, never unlimited', () => {
+  assert.equal(limiterOptions({ AERODJ_TTS_RATE_PER_MINUTE: '30' }).requestsPerMinute, 30);
+  assert.equal(limiterOptions({ AERODJ_TTS_RATE_PER_MINUTE: '600' }).requestsPerMinute, 600);
+  for (const bad of ['1e9', '601', '1000000000', 'Infinity', '0', '-5', '2.5']) {
+    assert.equal(limiterOptions({ AERODJ_TTS_RATE_PER_MINUTE: bad }).requestsPerMinute, 12, bad);
+  }
 });

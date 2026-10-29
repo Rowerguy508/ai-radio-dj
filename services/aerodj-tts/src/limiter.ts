@@ -89,6 +89,12 @@ export const DEFAULT_GLOBAL_DAILY_CHAR_CAP = 9_000;
 export const DEFAULT_INSTALL_DAILY_CHAR_CAP = 1_500;
 /** Above this a configured cap is treated as a mistake and the default applies (never unlimited). */
 export const MAX_CONFIGURED_CHAR_CAP = 10_000_000;
+export const DEFAULT_REQUESTS_PER_MINUTE = 12;
+/**
+ * Above this a configured per-minute rate is treated as a mistake and the default applies,
+ * the same rule as the caps (so `1e9`, `Infinity` or `99999999` can never disable the rate limit).
+ */
+export const MAX_CONFIGURED_REQUESTS_PER_MINUTE = 600;
 
 /** The cap for a subject's own bucket. */
 export function subjectCap(subject: Subject, options: LimiterOptions): number {
