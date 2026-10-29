@@ -226,7 +226,8 @@ means the paid route is down (fails closed).
 
 ### 4.4 Error contract (Fry B2; app side is Fry's #234)
 
-Every error body is `{ error, requestId, reason }`. `Retry-After` is integer
+Every error body is `{ error, requestId, reason }`; refusals also carry
+`retryAfterSeconds` (as #238 ships). `Retry-After` is integer
 seconds ≥ 1. **Every 429 and every 503 carries `Retry-After`.** The app
 trusts `Retry-After` over its own clock. Music never waits on the proxy:
 every non-200 falls through to the on-device voice for that cue.
@@ -269,10 +270,10 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
   `AERODJ_TTS_TOKEN_SHA256` is set. Unset, empty, `TRUE`, `true ` or `1` all
   mean off. This changes today's behaviour (on whenever the hash is set), so
   the owner sets the flag explicitly before the PR that introduces it
-  deploys (§12). It never defaults to on.
+  (PR 4) deploys (§12.6). It never defaults to on. PR 1 (#238) adds no flag.
 - The owner bucket has **its own cap**, `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`,
-  and also reserves against the global ceiling. Unset cap = 0 = owner path
-  refuses (429 `owner_daily`). Proposal: equal to global while the owner is
+  and also reserves against the global ceiling. As shipped in #238, unset
+  cap = the global ceiling. Proposal: equal to global while the owner is
   the only paid user; 1,500 once any public install has paid voice.
 - **The owner keeps the paid voice without buying** through this flagged
   token until it is retired. The owner token is **not** subject to the
@@ -586,6 +587,9 @@ to a proxy 403.
   the config; tests for purchase/restore/expiry/refund drive the app's
   entitlement sync. StoreKitTest transactions are not Apple-chain signed, so
   they test the app, not the server verifier (which uses fixtures, §8).
+- **Fry #237 (bundled clips):** clips are paid-voice audio, so they play only
+  when the app-side paid route is configured, which PR 9 makes conditional on
+  a current Pro entitlement. Free tier: zero clips, zero proxy calls.
 - **App Review 3.1.1:** IAP is the only unlock; no external purchase path.
 - **Sentinel:** reviews the verifier and entitlement path (§5) against the
   criteria in §10.
@@ -640,18 +644,22 @@ test that has not happened.
 
 ## 9. PR breakdown (each with exact-head CI and Fry + Sentinel sign-off)
 
-1. **Proxy: quota keys and 429 contract** (in flight on
-   `atlas/proxy-quotas`). Two-bucket `RESERVE2`/`RELEASE2`, `reason` enum,
-   `Retry-After` on every 429/503, owner bucket with its own cap and the
-   exact-`true` owner flag, durable-only limiter for the verified path. If it
-   lands before this revision is final, a follow-up aligns it.
+1. **Proxy: quota keys and 429 contract — shipped as #238 (head
+   `ad4c081`).** Two-bucket reserve/release, `reason` enum including
+   `owner_daily`, refusal body `{ error, requestId, reason, retryAfterSeconds }`
+   plus `Retry-After`, rate `Retry-After` fixed at 60 s, global ceiling
+   defaulting to 9,000 when unset. Adds **no flags**: the owner token keeps
+   working unchanged, with its own `owner_daily` bucket defaulting to the
+   global ceiling. Going live needs the owner's deploy OK.
 2. **Proxy: stateless challenge endpoint** (HMAC, purpose tag, no Redis),
    kill switch checked before any store call, raw-body reader with caps.
 3. **Proxy: App Attest verifier and `register`** (pinned root, in-house
    CBOR/ASN.1 on `node:crypto` under Sentinel's rec. 5 limits, SET NX +
    verified-only enroll counter).
 4. **Proxy: assertion verification on `/api/tts`** (counter commit,
-   challenge mark, `mixed_auth`). Still disabled by default.
+   challenge mark, `mixed_auth`), durable-only limiter on the verified path,
+   and the exact-`true` `AERODJ_TTS_OWNER_TOKEN_ENABLED` flag (owner sets it
+   before this PR deploys, §12.6). Still disabled by default.
 5. **Proxy: `AppStoreJwsVerifier` with fixtures** (pinned Apple Root CA -
    G3, test-generated chains, every §8 failure case). No endpoint yet.
 6. **Proxy: `POST /api/entitlement` + linking** (`ENTLINK`, install cap,
@@ -662,6 +670,11 @@ test that has not happened.
 8. **Proxy: enforcement on `/api/tts` behind `AERODJ_TTS_ENTITLEMENT_REQUIRED`**
    (exact `true`; attested paid path refused otherwise).
 9. **iOS: `AppAttesting` client, entitlement sync, `stationId` dropped**;
+   the Pro entitlement gates the **paid-voice route config** on the app side,
+   and therefore also gates bundled clips (Fry's #237, which today play
+   whenever the paid route is configured; Sentinel on #237). Required test:
+   the free tier gets **zero bundled clips and zero proxy calls**. No bundled
+   clips ship before this PR lands;
    App Attest capability in `AeroDJ.entitlements` (owner step); wired for
    A/B builds first. One backoff implementation (Fry #234).
 10. **Retire the owner bearer** (server and app, Keychain field,
@@ -675,7 +688,8 @@ merge before 9 ships to TestFlight. Docs (proxy README, `docs/privacy/*`) ride
 with the PR that changes behaviour.
 
 **Rollout.** (1) Merge 1-8 with every new flag unset; the owner path keeps
-working once the owner sets its flag (§12.6). (2) Owner completes §12, then
+working unchanged through PR 1-3, and from PR 4 once the owner sets its
+flag (§12.6). (2) Owner completes §12, then
 enables attest and entitlement on Production only. (3) Owner A/B TestFlight
 build on App Attest + a Sandbox purchase: validate quotas, the contract,
 refund/expiry via Sandbox notifications, and on-device fallback on the Duo.
@@ -745,7 +759,8 @@ after the consent gate and #176 merge and the owner approves the public spend.
    unset; Preview has **no** `ELEVENLABS_API_KEY` or has Deployment
    Protection on (lesson of #232); add a Firewall per-IP rate rule for
    `/api/attest/*`, `/api/entitlement`, `/api/tts`.
-6. **Before PR 1's deploy:** set `AERODJ_TTS_OWNER_TOKEN_ENABLED=true` and
+6. **Before PR 4's deploy** (the PR that introduces the flag; PR 1 / #238
+   adds none): set `AERODJ_TTS_OWNER_TOKEN_ENABLED=true` and
    `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`, or the owner A/B build loses paid voice
    (fails closed, by design).
 7. When enabling: generate and set `AERODJ_TTS_CHALLENGE_HMAC_KEY` and
