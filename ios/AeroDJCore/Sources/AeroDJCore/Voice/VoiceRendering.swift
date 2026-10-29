@@ -560,7 +560,7 @@ public struct VoiceRenderer: Sendable {
         return VoiceRenderer(routes: local, budget: budget, cache: cache, revocations: revocations)
     }
 
-    /// Attempt detail for an off-device route skipped for a local-only cue. Fixed text, no cue text.
+    /// Attempt detail for an off-device or paid route skipped for a local-only cue. Fixed text, no cue text.
     public static let localOnlySkip = "local-only cue: off-device route skipped"
 
     public static func cacheKey(text: String, route: VoiceRoute) -> String {
@@ -611,10 +611,11 @@ public struct VoiceRenderer: Sendable {
         return cue.kind == .transition && !cue.isContent && cue.source == nil && cue.provenance == nil
     }
 
-    /// Renders `cue` on the first route that succeeds. Routes that leave the device are skipped
-    /// (never looked up in the cache, reserved against or called) unless
-    /// `mayLeaveDevice(cue, attribution:)` holds. With no attribution the cue is local-only, and
-    /// if no local route exists it fails closed with `.renderFailed`; it never falls back to cloud.
+    /// Renders `cue` on the first route that succeeds. Unless `mayLeaveDevice(cue, attribution:)`
+    /// holds, only `isLocalAndFree` routes are used: any route that leaves the device or is paid
+    /// (even one built without `leavesDevice`) is skipped, never looked up in the cache, reserved
+    /// against or called. With no attribution the cue is local-only, and if no local, free route
+    /// exists it fails closed with `.renderFailed`; it never falls back to cloud or a paid voice.
     public func render(_ cue: NarrationCue, userID: String, stationID: String,
                        attribution: SpokenAttribution? = nil) async -> Result<RenderedClip, Failure> {
         var attempts: [VoiceAttempt] = []
@@ -624,11 +625,13 @@ public struct VoiceRenderer: Sendable {
             // A purge of this item is still running: render nothing that it could miss.
             return .failure(Failure(reason: .renderFailed, attempts: [VoiceAttempt(providerID: routes.first?.providerID ?? "", result: .cancelled)]))
         }
-        // Decided once, before any cache key, reservation or provider call (#176).
+        // Decided once, before any cache key, reservation or provider call (#176). Ineligible
+        // cues use `isLocalAndFree` routes only.
         let offDeviceAllowed = Self.mayLeaveDevice(cue, attribution: attribution)
         for route in routes {
-            if route.leavesDevice && !offDeviceAllowed {
-                // Local-only cue: its text never reaches this route, its cache keys or its budget.
+            if !route.isLocalAndFree && !offDeviceAllowed {
+                // Local-only cue: its text never reaches this off-device or paid route, its cache
+                // keys or its budget (Echo: a paid route without `leavesDevice` is not local).
                 attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.localOnlySkip)))
                 continue
             }

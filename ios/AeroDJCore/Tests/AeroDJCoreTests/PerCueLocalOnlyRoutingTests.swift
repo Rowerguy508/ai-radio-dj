@@ -185,6 +185,41 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         XCTAssertTrue(spy.received.isEmpty)
     }
 
+    // 4b. Echo: a paid route built without `leavesDevice` is not local. A personal cue never
+    // reaches it, reserves no budget, derives no cache key; with only that route it fails closed.
+    func testPaidRouteWithoutLeavesDeviceNeverHearsAPersonalCue() async {
+        let spy = OffDeviceSpy()
+        let paid = VoiceRoute(providerID: "paid", provider: spy, voice: djVoice,
+                              microdollarsPerThousandCharacters: 30_000, leavesDevice: false)
+        XCTAssertFalse(paid.leavesDevice)
+        XCTAssertFalse(paid.isLocalAndFree)
+        let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000)
+        let cache = KeyRecordingCache()
+        let device = deviceRoute()
+        let r = VoiceRenderer(routes: [paid, device], budget: budget, cache: cache, revocations: NarrationRevocations())
+        let item = UUID()
+        let attribution = SpokenAttribution.personalContext(itemID: item, source: .calendar, provenance: "test:item")
+        let result = await r.render(personalCue(item), userID: "u", stationID: "s", attribution: attribution)
+        guard case .success(let clip) = result else { return XCTFail("the local, free route should speak it") }
+        XCTAssertEqual(clip.audio.providerID, "device")
+        XCTAssertEqual(clip.attempts.first, VoiceAttempt(providerID: "paid", result: .failed(VoiceRenderer.localOnlySkip)))
+        XCTAssertTrue(spy.received.isEmpty, "personal cue text reached a paid route")
+        let spent = await budget.committed(userID: "u")
+        XCTAssertEqual(spent, 0, "no reservation for a skipped paid route")
+        let touched = await cache.touched
+        XCTAssertFalse(touched.contains(VoiceRenderer.cacheKey(text: SpeechDelivery.speakable(personalText), route: paid)))
+
+        let paidOnly = VoiceRenderer(routes: [paid], budget: budget, cache: InMemoryAudioCache(), revocations: NarrationRevocations())
+        let closed = await paidOnly.render(personalCue(item), userID: "u", stationID: "s", attribution: attribution)
+        guard case .failure(let f) = closed else { return XCTFail("must fail closed, never fall back to a paid voice") }
+        XCTAssertEqual(f.reason, .renderFailed)
+        XCTAssertTrue(spy.received.isEmpty)
+
+        // Control: an eligible generic line may still use the paid route.
+        let generic = await r.render(transitionCue(), userID: "u", stationID: "s", attribution: .trackMetadata(trackIDs: ["t1"]))
+        XCTAssertEqual(try? generic.get().audio.providerID, "paid")
+    }
+
     // 5a. An attribution that disagrees with the cue (sourced cue labelled presenter) is local-only.
     func testSourcedCueMislabelledAsPresenterStaysLocal() async {
         for source in [ContextSourceKind.calendar, .userShared, .obsidian, .emailShared, .messagesShared] {

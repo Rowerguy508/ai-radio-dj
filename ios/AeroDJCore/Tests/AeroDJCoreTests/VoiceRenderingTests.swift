@@ -51,6 +51,10 @@ private func cue(_ text: String, max: Int = 30, order: Int = 1, kind: BriefingSc
                  provenance: kind == .followUp ? "test" : nil)
 }
 
+// Tests that exercise paid-route mechanics (cost cap, cancellation, timeout, failure chain,
+// cache key) render a `.transition` cue attributed `.presenter`: the minimal cue that may use a
+// paid or off-device route under the per-cue local-only gate (#176). Calendar `.followUp`
+// cues are local-only and never reach `paid(_:)`.
 private func paid(_ v: FakeVoice, perK: Int = 30_000, timeout: Duration = .seconds(2)) -> VoiceRoute {
     VoiceRoute(providerID: "paid", provider: v, voice: voice, microdollarsPerThousandCharacters: perK, timeout: timeout, acceptsSSML: true)
 }
@@ -93,15 +97,15 @@ final class VoiceRenderingTests: XCTestCase {
         let cloud = FakeVoice(id: "cloud"), device = FakeVoice(id: "device")
         let renderer = VoiceRenderer(routes: [paid(cloud), free(device)], budget: budget, cache: InMemoryAudioCache())
         // ~45 chars of SSML+text at 30,000 µ$/1k chars ≈ 1,500-2,000 µ$: one paid call fits the cap.
-        let first = await renderer.render(cue("Coming up at 9 AM: Standup."), userID: "ana", stationID: "s1")
+        let first = await renderer.render(cue("Coming up at 9 AM: Standup.", kind: .transition), userID: "ana", stationID: "s1", attribution: .presenter)
         XCTAssertEqual(try first.get().audio.providerID, "paid")
-        let second = await renderer.render(cue("Coming up at 10 AM: Review."), userID: "ana", stationID: "s2")
+        let second = await renderer.render(cue("Coming up at 10 AM: Review.", kind: .transition), userID: "ana", stationID: "s2", attribution: .presenter)
         XCTAssertEqual(try second.get().audio.providerID, "avspeech", "hard stop -> on-device, across stations")
         XCTAssertEqual(try second.get().attempts.first?.result, .overCostCap)
-        let other = await renderer.render(cue("Coming up at 10 AM: Review."), userID: "ben", stationID: "s1")
+        let other = await renderer.render(cue("Coming up at 10 AM: Review.", kind: .transition), userID: "ben", stationID: "s1", attribution: .presenter)
         XCTAssertEqual(try other.get().audio.providerID, "paid", "caps are per user")
         clock.now = t0.addingTimeInterval(16 * 3600)       // next UTC day
-        let tomorrow = await renderer.render(cue("Coming up at 11 AM: Sync."), userID: "ana", stationID: "s1")
+        let tomorrow = await renderer.render(cue("Coming up at 11 AM: Sync.", kind: .transition), userID: "ana", stationID: "s1", attribution: .presenter)
         XCTAssertEqual(try tomorrow.get().audio.providerID, "paid", "cap resets at midnight")
         let spent = await budget.committed(userID: "ana")
         XCTAssertLessThanOrEqual(spent, 2_000)
@@ -144,7 +148,7 @@ final class VoiceRenderingTests: XCTestCase {
         // Final beta default: $0 paid spend. A paid route is refused before any request is made.
         let cloud = FakeVoice(id: "cloud")
         let zero = VoiceRenderer(routes: [paid(cloud)], budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
-        let result = await zero.render(cue("Coming up at 9 AM: Standup."), userID: "ana", stationID: "s")
+        let result = await zero.render(cue("Coming up at 9 AM: Standup.", kind: .transition), userID: "ana", stationID: "s", attribution: .presenter)
         guard case .failure(let failure) = result else { return XCTFail("paid route must not render at $0") }
         XCTAssertEqual(failure.attempts.map(\.result), [.overCostCap])
         let calls = await cloud.log.texts
@@ -157,7 +161,7 @@ final class VoiceRenderingTests: XCTestCase {
         let slow = FakeVoice(id: "slow", delay: .seconds(3), ignoresCancellation: true)
         let renderer = VoiceRenderer(routes: [paid(slow, timeout: .seconds(10)), free(FakeVoice(id: "device"))],
                                      budget: budget, cache: cache)
-        let task = Task { await renderer.render(cue("Coming up at 9 AM: Standup."), userID: "ana", stationID: "s") }
+        let task = Task { await renderer.render(cue("Coming up at 9 AM: Standup.", kind: .transition), userID: "ana", stationID: "s", attribution: .presenter) }
         try await Task.sleep(for: .milliseconds(100))
         let started = ContinuousClock.now
         task.cancel()
@@ -218,7 +222,7 @@ final class VoiceRenderingTests: XCTestCase {
         let renderer = VoiceRenderer(routes: [paid(slow, timeout: .milliseconds(100)), free(FakeVoice(id: "device"))],
                                      budget: budget, cache: InMemoryAudioCache())
         let started = ContinuousClock.now
-        let clip = try await renderer.render(cue("Coming up at 9 AM: Standup."), userID: "ana", stationID: "s").get()
+        let clip = try await renderer.render(cue("Coming up at 9 AM: Standup.", kind: .transition), userID: "ana", stationID: "s", attribution: .presenter).get()
         XCTAssertLessThan(ContinuousClock.now - started, .seconds(2))
         XCTAssertEqual(clip.attempts.map(\.result), [.timedOut, .rendered])
         let spent = await budget.committed(userID: "ana")
@@ -233,7 +237,7 @@ final class VoiceRenderingTests: XCTestCase {
         let empty = FakeVoice(id: "empty", emptyAudio: true)
         let renderer = VoiceRenderer(routes: [dessa, paid(broken), free(empty), free(FakeVoice(id: "device"))],
                                      budget: budget, cache: InMemoryAudioCache())
-        let clip = try await renderer.render(cue("Due today: Pay rent."), userID: "ana", stationID: "s").get()
+        let clip = try await renderer.render(cue("Due today: Pay rent.", kind: .transition), userID: "ana", stationID: "s", attribution: .presenter).get()
         XCTAssertEqual(clip.attempts.count, 4)
         XCTAssertEqual(clip.attempts[0].result, .failed(String(describing: VoiceRenderError.notImplemented("Dessa adapter is not implemented yet"))))
         XCTAssertEqual(clip.attempts[2].result, .invalidAudio)
@@ -247,8 +251,8 @@ final class VoiceRenderingTests: XCTestCase {
         let cloud = FakeVoice(id: "cloud")
         let cache = InMemoryAudioCache()
         let renderer = VoiceRenderer(routes: [paid(cloud)], budget: budget, cache: cache)
-        let a = try await renderer.render(cue("Due today: Pay rent."), userID: "ana", stationID: "s").get()
-        let b = try await renderer.render(cue("Due today: Pay rent."), userID: "ana", stationID: "s").get()
+        let a = try await renderer.render(cue("Due today: Pay rent.", kind: .transition), userID: "ana", stationID: "s", attribution: .presenter).get()
+        let b = try await renderer.render(cue("Due today: Pay rent.", kind: .transition), userID: "ana", stationID: "s", attribution: .presenter).get()
         XCTAssertEqual(b.attempts.map(\.result), [.cacheHit])
         XCTAssertEqual(a.cacheKey, b.cacheKey)
         let calls = await cloud.log.texts.count
@@ -257,7 +261,7 @@ final class VoiceRenderingTests: XCTestCase {
         let otherVoice = VoiceRoute(providerID: "paid", provider: cloud, voice: VoiceProfile(id: "other", name: "O"),
                                     microdollarsPerThousandCharacters: 30_000, acceptsSSML: true)
         let c = try await VoiceRenderer(routes: [otherVoice], budget: budget, cache: cache)
-            .render(cue("Due today: Pay rent."), userID: "ana", stationID: "s").get()
+            .render(cue("Due today: Pay rent.", kind: .transition), userID: "ana", stationID: "s", attribution: .presenter).get()
         XCTAssertNotEqual(c.cacheKey, a.cacheKey)
         XCTAssertNotEqual(VoiceRenderer.cacheKey(text: "x", route: paid(cloud)), VoiceRenderer.cacheKey(text: "y", route: paid(cloud)))
         let spentTwice = await budget.committed(userID: "ana")
