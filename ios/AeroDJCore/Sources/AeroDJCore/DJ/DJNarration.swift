@@ -199,14 +199,7 @@ public struct DJScriptWriter: Sendable {
     private var greetings: [DayPart: TemplatePool]
     private var hasGreeted = false
 
-    /// The app's own name. A station ID naming exactly this may use an off-device voice.
-    public static let builtInStationName = "AeroDJ"
-    /// Stable item id for station-ID lines that name a listener's own (created) station.
-    static let stationNameItemID = UUID(uuidString: "5A7E1D00-0000-4000-8000-00000000A1D0")!
-    static let stationNameProvenance = "station:name"
-
-    public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max),
-                stationName: String = DJScriptWriter.builtInStationName,
+    public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = "AeroDJ",
                 tone: EditorialTone = .warm) {
         self.cadence = cadence
         self.stationName = stationName
@@ -393,21 +386,11 @@ public struct DJScriptWriter: Sendable {
         case .station:
             guard let name = EditorialStationName.usable(station),
                   let line = stationIDs.next(filling: ["station": name], using: &phrasing) else { return nil }
-            return (line, Self.stationIDAttribution(name))
+            return (line, .presenter)
         case .atmosphere:
             guard let line = atmosphere[dayPart]?.next(filling: [:], using: &phrasing) else { return nil }
             return (line, .presenter)
         }
-    }
-
-    /// A created station's name is listener content (Sentinel, build-26 sweep). Only the exact
-    /// built-in name is presenter phrasing; any other name is personal, so
-    /// `VoiceRenderer.mayLeaveDevice` keeps that line on the on-device voice (fail closed).
-    static func stationIDAttribution(_ name: String) -> SpokenAttribution {
-        guard name == builtInStationName else {
-            return .personalContext(itemID: stationNameItemID, source: .userShared, provenance: stationNameProvenance)
-        }
-        return .presenter
     }
 
     private func estimate(_ text: String?) -> Double {

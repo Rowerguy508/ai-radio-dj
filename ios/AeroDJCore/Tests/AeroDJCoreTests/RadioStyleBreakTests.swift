@@ -300,37 +300,6 @@ final class RadioStyleBreakTests: XCTestCase {
         }
     }
 
-    // MARK: Station-ID attribution (Sentinel, build-26 sweep)
-
-    func testAStationIDNamingACreatedStationStaysOnDevice() {
-        func stationCues(_ name: String) -> [(NarrationCue, SpokenAttribution?)] {
-            var found: [(NarrationCue, SpokenAttribution?)] = []
-            for seed in UInt64(0)..<60 {
-                var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: name)
-                for djBreak in writer.plan(tracks: tracks, briefing: nil, hour: 15).breaks {
-                    for cue in djBreak.cues where cue.text.contains(name) {
-                        found.append((cue, djBreak.attributions[cue.id]))
-                    }
-                }
-            }
-            return found
-        }
-        let builtIn = stationCues(DJScriptWriter.builtInStationName)
-        XCTAssertFalse(builtIn.isEmpty)
-        for (cue, attribution) in builtIn {
-            XCTAssertEqual(attribution, .presenter, cue.text)
-            XCTAssertTrue(VoiceRenderer.mayLeaveDevice(cue, attribution: attribution), "the app's own name may use the cloud voice")
-        }
-        for created in ["Ana's Road Trip", "Morning Mix", "aerodj", "AeroDJ Late"] {
-            let cues = stationCues(created)
-            XCTAssertFalse(cues.isEmpty, created)
-            for (cue, attribution) in cues {
-                guard case .personalContext? = attribution else { return XCTFail("\(created): \(String(describing: attribution))") }
-                XCTAssertFalse(VoiceRenderer.mayLeaveDevice(cue, attribution: attribution), "a created station's name stays local: \(cue.text)")
-            }
-        }
-    }
-
     func testBriefingBreakKeepsItsCapAndEndsWithTheClosingLine() {
         let item = UUID()
         let cues = (0..<5).map { i in
