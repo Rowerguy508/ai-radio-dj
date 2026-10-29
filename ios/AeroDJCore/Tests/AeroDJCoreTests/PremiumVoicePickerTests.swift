@@ -268,7 +268,9 @@ final class PremiumVoicePickerTests: XCTestCase {
         XCTAssertEqual(decide(true, nil), .omitted(.noSelection))
         XCTAssertEqual(PremiumVoicePickerStatus.pendingDecision(
             paidProvidersEnabled: true, selectedVoiceID: jade, endpoint: PremiumVoiceRoutes.defaultEndpoint,
-            enteredToken: "", hasSavedToken: true), .omitted(.endpointNotAllowed), "default (empty) pins omit")
+            enteredToken: "", hasSavedToken: true),
+                       PremiumVoiceRoutes.compose(onDevice: [], paidProvidersEnabled: true, selectedVoiceID: jade,
+                                                  credentials: creds).decision, "defaults to compose's pins")
     }
 
     func testStatusLineShowsOnlyIndexOrReasonCode() {

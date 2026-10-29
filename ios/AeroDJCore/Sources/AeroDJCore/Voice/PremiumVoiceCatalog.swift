@@ -108,8 +108,6 @@ public enum PremiumVoiceRoutes {
     /// Exact deployed proxy hosts only; no suffix or wildcard rule. Empty until the proxy is
     /// deployed and its host is pinned here, so until then the ElevenLabs route is omitted.
     public static let allowedHosts: Set<String> = []
-    /// Prefilled in the owner picker when the Keychain has no endpoint (still editable).
-    public static let defaultEndpoint = "https://aerodj-tts.vercel.app/api/tts"
 
     public enum OmitReason: String, Equatable, Sendable {
         case paidDisabled, noSelection, unknownVoice, noCredentials, emptyToken, endpointNotAllowed
@@ -128,6 +126,9 @@ public enum PremiumVoiceRoutes {
 
     /// The proxy returns no timestamps, so ElevenLabs captions show the whole line.
     public static func hasWordTimings(providerID: String) -> Bool { false }
+
+    /// Prefilled in the owner picker when the Keychain has no endpoint (still editable).
+    public static let defaultEndpoint = "https://aerodj-tts.vercel.app/api/tts"
 
     public static func isAllowed(host: String, pinned: Set<String> = allowedHosts) -> Bool {
         pinned.contains(host.lowercased())
