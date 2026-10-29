@@ -53,7 +53,10 @@ public final class DJBreakSession {
     /// tap — not on commentary/briefing off (that lets setup finish with the new settings).
     private var queueSetupTask: Task<Void, Never>?
     /// `songStarted` arrived before background queue setup finished planning breaks.
-    private var pendingSongStart: (index: Int, remaining: Duration)?
+    /// `heldAt` is when it arrived: the song keeps playing while setup runs, so the replay
+    /// must subtract that time or the render deadline lands past the real boundary
+    /// (build 22 P0: the afterTrack 0 break ran into `notReadyAtBoundary`, -Fry).
+    private var pendingSongStart: (index: Int, remaining: Duration, heldAt: Date)?
     /// True while `beginQueueInBackground`'s task has not finished `queueStarted`.
     private var queueSetupPending = false
     /// Bumped on every begin/cancel so a cancelled setup cannot clear a newer one.
@@ -157,7 +160,8 @@ public final class DJBreakSession {
             self.queueSetupPending = false
             if let pending = self.pendingSongStart {
                 self.pendingSongStart = nil
-                await self.songStarted(index: pending.index, remaining: pending.remaining)
+                let held = max(0, self.now().timeIntervalSince(pending.heldAt))
+                await self.songStarted(index: pending.index, remaining: pending.remaining - .seconds(held))
             }
         }
         queueSetupTask = task
@@ -252,9 +256,10 @@ public final class DJBreakSession {
         playing = index
         // Queue identity not applied yet (tap played first; break prep still in flight).
         if queueSetupPending {
-            pendingSongStart = (index, remaining)
+            pendingSongStart = (index, remaining, now())
             return
         }
+        testLastSongStartRemaining = remaining
         await preparer.openBoundary(afterTrack: index)   // seeks may re-arm this boundary once (-Atlas)
         guard breaks[index] != nil, let deadline = DJBreakPreparer.deadline(remainingInSong: remaining) else { return }
         // Personality edits apply when a break starts preparing; re-plan this break if they did.
@@ -277,7 +282,8 @@ public final class DJBreakSession {
     /// While background queue setup is pending, the held song start takes the new `remaining`.
     public func songSeeked(index: Int, remaining: Duration) async {
         if queueSetupPending {
-            if pendingSongStart?.index == index { pendingSongStart = (index, remaining) }
+            // A seek reports `remaining` as of now, so the held time restarts here (#162).
+            if pendingSongStart?.index == index { pendingSongStart = (index, remaining, now()) }
             return
         }
         guard playing == index, breaks[index] != nil,
@@ -291,7 +297,8 @@ public final class DJBreakSession {
         // the boundary went by while this seek was suspended. `rearm` re-checks inside the
         // preparer: a boundary that `takeBreak` or `cancelAll` closed is never re-armed.
         guard playing == index, let djBreak = breaks[index] else { return }
-        await preparer.rearm(djBreak, deadline: deadline)
+        // Library-seed gate (#154), read at re-arm time like `songStarted`.
+        await preparer.rearm(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))
     }
 
     /// Song `k` ended on its own. Applies pending station edits at this safe boundary, then
@@ -430,8 +437,12 @@ public final class DJBreakSession {
             // purge uses. The adapter ends it as `.revoked` and the boundary hands back to
             // music (`startNextTrack` -> `playIfStillAllowed`), exactly as for a purge.
             stopOnAirIfSilenced(by: change)
-            // Always cancel in-flight VOICE renders (no spend after commentary/briefing off).
-            await preparer.cancelAll()
+            // Cancel in-flight VOICE renders (no spend after commentary/briefing off). The one
+            // exception: the playing song's break, when it is plain music talk (track metadata
+            // and presenter lines only, no personal cue) and commentary is still on. A briefing-off
+            // or a withdrawal cannot touch it, and dropping it cost the first break on build 22.
+            let keptBreak = Self.survivingBreak(playing.flatMap { breaks[$0] }, after: change)
+            await preparer.cancelAll(except: keptBreak.map { [$0] } ?? [])
             // Withdrawal / briefing-off handling must run even while tap setup is pending
             // (Sentinel P1). The early return below only skips replan on the previous queue.
             if !change.withdrawnIntegrations.isEmpty {
@@ -460,10 +471,27 @@ public final class DJBreakSession {
             // Commentary or briefing off, or an integration withdrawn: drop everything prepared,
             // including the break for the playing song, then plan the rest with the new settings.
             if !change.withdrawnIntegrations.isEmpty || !change.active.briefing.enabled { briefing = nil }
-            replan(from: (playing ?? -1) + 1, keepingThrough: -1)
+            // Everything else prepared is dropped and re-planned with the new settings.
+            replan(from: (playing ?? -1) + 1, keepingThrough: keptBreak ?? -1)
             return
         }
         replanIfCadenceChanged(after: playing ?? -1)
+    }
+
+    /// The boundary of `djBreak` if it may survive an invalidating `change`, else nil.
+    /// Fails closed: commentary off drops everything, and a break survives only when every
+    /// cue has a known attribution that is track metadata or presenter phrasing (no personal
+    /// item, no briefing cue, no missing or unknown attribution).
+    nonisolated static func survivingBreak(_ djBreak: DJBreak?, after change: StationConfigurationChange) -> Int? {
+        guard let djBreak, change.active.commentary != .off, !djBreak.hasBriefing else { return nil }
+        let plain = djBreak.cues.allSatisfy { cue in
+            guard cue.sourceItemID == nil, cue.source == nil, !cue.isContent else { return false }
+            switch djBreak.attributions[cue.id] {
+            case .trackMetadata?, .presenter?: return true
+            case .personalContext?, nil: return false
+            }
+        }
+        return plain ? djBreak.afterTrack : nil
     }
 
     /// Stops the handed-out or speaking break when `change` silences it: commentary went to
@@ -509,6 +537,8 @@ public final class DJBreakSession {
         }
     }
 
+    /// Test hook: the `remaining` the last non-held `songStarted` prepared with.
+    var testLastSongStartRemaining: Duration?
     /// Test hook: the planned boundaries.
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: background tap setup has not finished planning.

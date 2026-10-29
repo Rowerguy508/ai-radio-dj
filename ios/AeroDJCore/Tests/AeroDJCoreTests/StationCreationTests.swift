@@ -175,44 +175,53 @@ final class StudioSaveRecipeFromRequestTests: XCTestCase {
 }
 
 // Walkthrough talk and DJ steps (-Atlas, for Nova): optional, nil keeps the on-screen tuning.
-@MainActor
+// No class-level @MainActor: Linux XCTest discovery (Swift 6.2) aborts casting a @MainActor sync test.
+// Sync tests run on the main thread and assume isolation; async tests are @MainActor per test. -Atlas
 final class StationCreationTuningStepTests: XCTestCase {
     private let rock = StationCreationSource.genre(StationSeed(kind: .genre, catalogID: "21", name: "Rock"))
 
     func testNilKeepsTheBaseTalkAndPersonality() throws {
-        var base = StationConfiguration.default
-        base.commentary = .rare
-        base.personality = .laidBack
-        let config = try StationCreationRequest(source: rock).configuration(base: base).get()
-        XCTAssertEqual(config.commentary, .rare)
-        XCTAssertEqual(config.personality, .laidBack)
-        XCTAssertNil(StationCreationRequest(source: rock).commentary)
-        XCTAssertNil(StationCreationRequest(source: rock).personality)
+        let rock = rock
+        try MainActor.assumeIsolated {
+            var base = StationConfiguration.default
+            base.commentary = .rare
+            base.personality = .laidBack
+            let config = try StationCreationRequest(source: rock).configuration(base: base).get()
+            XCTAssertEqual(config.commentary, .rare)
+            XCTAssertEqual(config.personality, .laidBack)
+            XCTAssertNil(StationCreationRequest(source: rock).commentary)
+            XCTAssertNil(StationCreationRequest(source: rock).personality)
+        }
     }
 
     func testSetValuesReplaceOnlyTheirOwnField() throws {
-        var base = StationConfiguration.default
-        base.commentary = .rare
-        base.personality = .laidBack
-        base.energy = 0.9
-        let talkOnly = try StationCreationRequest(source: rock, commentary: .chatty).configuration(base: base).get()
-        XCTAssertEqual(talkOnly.commentary, .chatty)
-        XCTAssertEqual(talkOnly.personality, .laidBack)
-        let both = try StationCreationRequest(source: rock, level: .familiar, commentary: .off, personality: .minimal)
-            .configuration(base: base).get()
-        XCTAssertEqual(both.commentary, .off)
-        XCTAssertEqual(both.personality, .minimal)
-        XCTAssertEqual(both.energy, 0.9, "other tuning is kept")
-        XCTAssertEqual(both.reach, .only)
-        XCTAssertEqual(both, both.validated(), "validated with the existing rules")
+        let rock = rock
+        try MainActor.assumeIsolated {
+            var base = StationConfiguration.default
+            base.commentary = .rare
+            base.personality = .laidBack
+            base.energy = 0.9
+            let talkOnly = try StationCreationRequest(source: rock, commentary: .chatty).configuration(base: base).get()
+            XCTAssertEqual(talkOnly.commentary, .chatty)
+            XCTAssertEqual(talkOnly.personality, .laidBack)
+            let both = try StationCreationRequest(source: rock, level: .familiar, commentary: .off, personality: .minimal)
+                .configuration(base: base).get()
+            XCTAssertEqual(both.commentary, .off)
+            XCTAssertEqual(both.personality, .minimal)
+            XCTAssertEqual(both.energy, 0.9, "other tuning is kept")
+            XCTAssertEqual(both.reach, .only)
+            XCTAssertEqual(both, both.validated(), "validated with the existing rules")
+        }
     }
 
     func testInvalidPicksStillFailWhateverTheTuning() {
-        let request = StationCreationRequest(source: .artists([]), commentary: .chatty, personality: .upbeat)
-        XCTAssertEqual(request.configuration(), .failure(.noSeeds))
+        MainActor.assumeIsolated {
+            let request = StationCreationRequest(source: .artists([]), commentary: .chatty, personality: .upbeat)
+            XCTAssertEqual(request.configuration(), .failure(.noSeeds))
+        }
     }
 
-    func testSavedRecipeCarriesTheStepsWithTheSameKeys() async throws {
+    @MainActor func testSavedRecipeCarriesTheStepsWithTheSameKeys() async throws {
         let studio = await makeCreationStudio(active: .sampleMorningMix)
         let request = StationCreationRequest(source: rock, commentary: .frequent, personality: .upbeat)
         let recipe = try await studio.saveRecipe(named: "Rock Radio", from: request).get()
@@ -227,7 +236,7 @@ final class StationCreationTuningStepTests: XCTestCase {
         XCTAssertEqual(try keys(recipe.configuration), try keys(plain.configuration), "no new saved keys")
     }
 
-    func testModelPassesTheStepsThrough() async throws {
+    @MainActor func testModelPassesTheStepsThrough() async throws {
         let studio = await makeCreationStudio(seedSearch: NoSeedResults())
         let model = try XCTUnwrap(studio.makeStationCreation(kind: .genre))
         XCTAssertNil(model.commentary)

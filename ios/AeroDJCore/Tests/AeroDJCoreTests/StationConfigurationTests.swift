@@ -707,19 +707,27 @@ final class ChattyCommentaryTests: XCTestCase {
         XCTAssertEqual(decoded, snapshot)
     }
 
-    /// The copy must state what the planner delivers today, not what `talkFraction` asks for.
-    /// With the shipping cadence (never back-to-back, `minSongsBetweenBreaks` 2) that is a third of songs.
+    /// The copy must state what the planner delivers. Chatty is the owner's override: every song.
     func testChattyDescriptionMatchesDeliveredShare() {
         let cadence = StationConfiguration(commentary: .chatty).cadence()
-        let percent = Int((cadence.expectedTalkShare * 100).rounded())
-        XCTAssertEqual(CommentaryFrequency.chatty.honestDescription,
-                       "The DJ talks after about \(percent)% of songs, never two in a row.")
-        XCTAssertFalse(CommentaryFrequency.chatty.honestDescription.localizedCaseInsensitiveContains("every song"),
-                       "not until the cadence allows back-to-back breaks")
+        XCTAssertEqual(cadence.minSongsBetweenBreaks, 0)
+        XCTAssertTrue(cadence.allowsBackToBack)
+        XCTAssertEqual(cadence.expectedTalkShare, 1)
+        XCTAssertEqual(CommentaryFrequency.chatty.honestDescription, "The DJ talks after every song.")
 
         let tracks = (0..<301).map { DJTrack(id: "t\($0)", title: "Song \($0)", artist: "Artist \($0)") }
         var writer = DJScriptWriter(cadence: cadence, seed: 5)
-        let delivered = Double(writer.plan(tracks: tracks, briefing: nil, hour: 9).breaks.count) / Double(tracks.count - 1)
-        XCTAssertEqual(delivered, cadence.expectedTalkShare, accuracy: 0.02, "planner delivers what the copy says")
+        let after = writer.plan(tracks: tracks, briefing: nil, hour: 9).breaks.map(\.afterTrack)
+        XCTAssertEqual(after, Array(0..<300), "a break after every song, none before song 1")
+    }
+
+    /// Only Chatty drops the spacing rule; every other preset still never talks two in a row.
+    func testOnlyChattyAllowsBackToBack() {
+        for c in CommentaryFrequency.allCases where c != .chatty {
+            let cadence = StationConfiguration(commentary: c).cadence()
+            XCTAssertFalse(cadence.allowsBackToBack, "\(c)")
+            XCTAssertGreaterThanOrEqual(cadence.minSongsBetweenBreaks, 1, "\(c)")
+        }
+        XCTAssertEqual(DJCadence(minSongsBetweenBreaks: 0).minSongsBetweenBreaks, 1, "0 is clamped without the override")
     }
 }
