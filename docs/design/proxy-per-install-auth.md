@@ -367,7 +367,12 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
   `installsPerPurchase: 5`, `allowSandboxInProduction: false` (Sandbox
   rejected on Production), `honorGracePeriod: false` (no grace period),
   `allowFamilyShared: false` (Family Sharing off). Each is one value, so a
-  change is a one-line edit plus a deploy.
+  change is a one-line edit plus a deploy. The loader fails closed: a
+  missing or non-boolean policy value, or `installsPerPurchase` outside the
+  integers 1-10, makes the proxy refuse to start. `honorGracePeriod` and
+  `allowFamilyShared` must match the ASC settings (Billing Grace Period,
+  Family Sharing); `allowSandboxInProduction` stays `false` while any public
+  TestFlight link exists.
 - **App-side Pro gate (owned by Fry on `fry/storekit-config`, credit Fry and
   Nova):** Fry gates bundled clips and the paid-voice route config on Pro,
   reading the entitlement through Nova's paywall protocol; Nova's paywall
