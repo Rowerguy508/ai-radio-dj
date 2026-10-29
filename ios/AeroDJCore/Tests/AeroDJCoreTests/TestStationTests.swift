@@ -24,7 +24,8 @@ final class TestStationTests: XCTestCase {
     func testUsesFinalBetaDefaults() {
         XCTAssertEqual(TestStation.paidDailyCapMicrodollars, 0)
         XCTAssertEqual(TestStation.cadence.talkFraction, 0.3)
-        XCTAssertEqual(TestStation.cadence.maxTransitionSeconds, 12)
+        XCTAssertEqual(TestStation.cadence.maxTransitionSeconds, 15)  // radio-style main segment (was 12)
+        XCTAssertEqual(TestStation.cadence.maxClosingSeconds, 4)
         XCTAssertEqual(TestStation.cadence.maxBriefingBreakSeconds, 45)
         XCTAssertEqual(TestStation.cadence, DJCadence(), "same as the shipped defaults")
         XCTAssertEqual(TestStation.cacheRetention, 7 * 24 * 3600)
@@ -101,7 +102,8 @@ final class TestStationTests: XCTestCase {
         let tracks = (0..<8).map { DJTrack(id: "t\($0)", title: "Song \($0)", artist: "Artist \($0)") }
         let plan = writer.plan(tracks: tracks, briefing: script.handoff(maxSpokenSeconds: engine.configuration.maxSpokenSeconds), hour: 7)
         for b in plan.breaks {
-            XCTAssertLessThanOrEqual(b.estimatedSeconds, Double(b.hasBriefing ? 45 : 12) + 0.001)
+            XCTAssertLessThanOrEqual(b.hasBriefing ? b.estimatedSeconds : b.mainSeconds, Double(b.hasBriefing ? 45 : 15) + 0.001)
+            XCTAssertLessThanOrEqual(b.closingSeconds, 4 + 0.001)
             for case .personalContext(_, _, let provenance) in b.attributions.values {
                 XCTAssertTrue(provenance.hasPrefix(TestStation.provenancePrefix))
             }

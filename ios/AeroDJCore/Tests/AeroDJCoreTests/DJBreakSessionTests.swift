@@ -108,7 +108,8 @@ final class DJBreakSessionTests: XCTestCase {
         let prepared = try XCTUnwrap(handed)
         XCTAssertNil(r.session.lastNoBreak, "a handed-out break leaves no skip reason")
         XCTAssertFalse(prepared.clips.isEmpty)
-        XCTAssertLessThanOrEqual(prepared.measuredSeconds, 12, "routine cap")
+        // Radio-style (Echo): routine cap is 15 s main + 4 s talk-over closing line (was 12).
+        XCTAssertLessThanOrEqual(prepared.measuredSeconds, 15 + 4, "routine cap")
         XCTAssertTrue(prepared.clips.allSatisfy { $0.audio.providerID == "device" }, "$0 on-device voice")
         r.session.playbackStarted(afterTrack: 0)
         XCTAssertTrue(r.dj.studioState.isOnAir, "On Air only after the player confirms audio")
