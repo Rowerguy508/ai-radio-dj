@@ -171,6 +171,9 @@ public enum PremiumVoiceRoutes {
 
 /// Display-only helpers for the owner picker sheet. They mirror what Done saves
 /// (trimmed endpoint, typed token replaces the saved one) and never read or return a token.
+/// They only READ `PremiumVoiceRoutes.allowedHosts` (a `let`): the public API takes no host
+/// list, so the app has no way to widen the pin. The `pinnedHosts:` overloads are internal,
+/// for `@testable` tests only.
 public enum PremiumVoicePickerStatus {
     /// The endpoint field's initial value: the saved endpoint, else `PremiumVoiceRoutes.defaultEndpoint`.
     public static func initialEndpoint(saved: String?) -> String {
@@ -179,14 +182,20 @@ public enum PremiumVoicePickerStatus {
     }
 
     /// Whether `compose` would accept this endpoint (same rule, via `proxyConfiguration`).
-    public static func isEndpointAllowed(_ endpoint: String,
-                                         pinnedHosts: Set<String> = PremiumVoiceRoutes.allowedHosts) -> Bool {
+    public static func isEndpointAllowed(_ endpoint: String) -> Bool {
+        isEndpointAllowed(endpoint, pinnedHosts: PremiumVoiceRoutes.allowedHosts)
+    }
+
+    static func isEndpointAllowed(_ endpoint: String, pinnedHosts: Set<String>) -> Bool {
         guard let url = savedURL(endpoint) else { return false }
         return PremiumVoiceRoutes.proxyConfiguration(endpoint: url, token: "", pinnedHosts: pinnedHosts) != nil
     }
 
-    public static func endpointFooter(_ endpoint: String,
-                                      pinnedHosts: Set<String> = PremiumVoiceRoutes.allowedHosts) -> String {
+    public static func endpointFooter(_ endpoint: String) -> String {
+        endpointFooter(endpoint, pinnedHosts: PremiumVoiceRoutes.allowedHosts)
+    }
+
+    static func endpointFooter(_ endpoint: String, pinnedHosts: Set<String>) -> String {
         isEndpointAllowed(endpoint, pinnedHosts: pinnedHosts)
             ? "Host allowed" : "Not the pinned host: route will be omitted"
     }
@@ -194,8 +203,15 @@ public enum PremiumVoicePickerStatus {
     /// The decision `compose` would make on next launch if Done saved these settings.
     /// `hasSavedToken` stands in for the Keychain token, whose value is never needed here.
     public static func pendingDecision(paidProvidersEnabled: Bool, selectedVoiceID: String?, endpoint: String,
-                                       enteredToken: String, hasSavedToken: Bool,
-                                       pinnedHosts: Set<String> = PremiumVoiceRoutes.allowedHosts) -> PremiumVoiceRoutes.Decision {
+                                       enteredToken: String, hasSavedToken: Bool) -> PremiumVoiceRoutes.Decision {
+        pendingDecision(paidProvidersEnabled: paidProvidersEnabled, selectedVoiceID: selectedVoiceID, endpoint: endpoint,
+                        enteredToken: enteredToken, hasSavedToken: hasSavedToken,
+                        pinnedHosts: PremiumVoiceRoutes.allowedHosts)
+    }
+
+    static func pendingDecision(paidProvidersEnabled: Bool, selectedVoiceID: String?, endpoint: String,
+                                enteredToken: String, hasSavedToken: Bool,
+                                pinnedHosts: Set<String>) -> PremiumVoiceRoutes.Decision {
         let entered = enteredToken.trimmingCharacters(in: .whitespacesAndNewlines)
         // Done: an empty field keeps the saved token; a typed one replaces it (blank deletes it).
         let hasToken = enteredToken.isEmpty ? hasSavedToken : !entered.isEmpty

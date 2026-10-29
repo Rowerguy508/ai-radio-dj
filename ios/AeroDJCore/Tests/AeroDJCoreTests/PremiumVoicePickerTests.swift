@@ -278,6 +278,25 @@ final class PremiumVoicePickerTests: XCTestCase {
                                                   credentials: creds).decision, "defaults to compose's pins")
     }
 
+    /// Security review: the sheet's check only reads the pin; running it never widens it.
+    func testSheetValidationNeverWidensTheAllowlist() {
+        let before = PremiumVoiceRoutes.allowedHosts
+        let evil = "https://evil.example/api/tts"
+        XCTAssertFalse(PremiumVoicePickerStatus.isEndpointAllowed(evil))
+        _ = PremiumVoicePickerStatus.endpointFooter(evil)
+        _ = PremiumVoicePickerStatus.pendingDecision(paidProvidersEnabled: true, selectedVoiceID: jade, endpoint: evil,
+                                                     enteredToken: "t", hasSavedToken: true)
+        XCTAssertEqual(PremiumVoiceRoutes.allowedHosts, before, "validation must not mutate the pin")
+        XCTAssertFalse(PremiumVoiceRoutes.isAllowed(host: "evil.example"))
+        XCTAssertFalse(PremiumVoicePickerStatus.isEndpointAllowed(evil), "still refused after validation ran")
+        XCTAssertEqual(PremiumVoicePickerStatus.endpointFooter(evil), "Not the pinned host: route will be omitted")
+        let after = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: jade,
+                                               credentials: PremiumProxyCredentials(endpoint: URL(string: evil)!,
+                                                                                    token: "t"))
+        XCTAssertEqual(after.decision, .omitted(.endpointNotAllowed))
+        XCTAssertEqual(after.routes.map(\.providerID), ["device"])
+    }
+
     func testStatusLineShowsOnlyIndexOrReasonCode() {
         XCTAssertEqual(PremiumVoicePickerStatus.statusLine(.included(catalogIndex: 3)), "Premium: included (catalog index 3)")
         XCTAssertEqual(PremiumVoicePickerStatus.statusLine(.omitted(.endpointNotAllowed)),
