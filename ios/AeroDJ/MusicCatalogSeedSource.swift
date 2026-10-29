@@ -239,14 +239,16 @@ actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource {
     }
 
     private func chartSongs(genreID: String, limit: Int) async throws -> [Song] {
-        guard let genre = try await catalogGenres(path: "genres/\(genreID)").first else { return [] }
+        guard StationSeed.isValidCatalogGenreID(genreID),
+              let genre = try await catalogGenres(path: "genres/\(genreID)").first else { return [] }
         var request = MusicCatalogChartsRequest(genre: genre, kinds: [.mostPlayed], types: [Song.self])
         request.limit = min(max(limit, 1), 50)
         return try await request.response().songCharts.flatMap { Array($0.items) }
     }
 
     private func chartPlaylistSongs(genreID: String, playlists range: Range<Int>, limit: Int) async throws -> [Song] {
-        guard let genre = try await catalogGenres(path: "genres/\(genreID)").first else { return [] }
+        guard StationSeed.isValidCatalogGenreID(genreID),
+              let genre = try await catalogGenres(path: "genres/\(genreID)").first else { return [] }
         var request = MusicCatalogChartsRequest(genre: genre, kinds: [.mostPlayed], types: [Playlist.self])
         request.limit = range.upperBound
         let charts = try await request.response().playlistCharts.flatMap { Array($0.items) }

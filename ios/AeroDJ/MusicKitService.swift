@@ -63,6 +63,9 @@ final class MusicKitService: ObservableObject {
     }
     /// Called when a song really starts, with its catalog duration if MusicKit reports one.
     var onSongStarted: (@MainActor (Int, TimeInterval?) -> Void)?
+    /// Song scrubbing (-Atlas): a committed seek moved song `index` to a point with this many
+    /// seconds left. The composition root routes it to `DJBreakSession.songSeeked`.
+    var onSongSeeked: (@MainActor (Int, TimeInterval) -> Void)?
     /// Called once per boundary. For a natural end, the index is the song that just finished.
     /// The handler must resolve the transition: play a DJ line, or call `skipInterlude()`.
     var onBoundary: (@MainActor (PlaybackBoundary, Int) -> Void)?
@@ -98,6 +101,24 @@ final class MusicKitService: ObservableObject {
     var playbackTime: TimeInterval { player.playbackTime }
     /// Catalog duration of the current track, if MusicKit reported one.
     var currentDuration: TimeInterval? { currentTrack?.duration }
+
+    /// Song scrubbing (-Atlas; flagged for Claude, this file's owner): one committed seek within
+    /// the current song, called once when the scrubber is released. Blocked (returns false, no
+    /// player change) unless `snapshot.canSeek`: never during a DJ break or a load. The target is
+    /// clamped to [0, duration - 1 s]. The boundary detector is re-baselined first, so the samples
+    /// around the seek cannot read as an end, then the playhead moves, then the DJ session gets
+    /// the new time left. Main actor: no poll can run between these steps. A `trackID` that is
+    /// no longer the current track makes it a no-op (stale scrub).
+    func seek(to seconds: TimeInterval, trackID: String? = nil) -> Bool {
+        let decision = SongSeekPolicy.decide(seconds: seconds, duration: currentDuration,
+                                             snapshot: snapshot, trackID: trackID)
+        logPlayback(PlaybackLog.songSeek(index: queueIndex, decision: decision))
+        guard case let .seek(target, remaining) = decision else { return false }
+        boundaries.userSeeked(to: target, uptime: ProcessInfo.processInfo.systemUptime)
+        player.playbackTime = target
+        onSongSeeked?(queueIndex, remaining)
+        return true
+    }
 
     /// Request MusicKit authorization. Explicit degraded state on denial.
     /// Call only after a tap that names Apple Music (Allow) or an explicit station open — never at launch.
@@ -946,7 +967,8 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Route lock-screen / Control Center play through `resume()` (userPlay + playIfStillAllowed)
-    /// and pause through `pause()`, so remote commands cannot bypass the hold gate.
+    /// and pause through `pause()`, so remote commands cannot bypass the hold gate. Scrubbing
+    /// goes through `seek(to:trackID:)` for the same reason.
     private func installRemoteCommands() {
         guard !remoteCommandsInstalled else { return }
         remoteCommandsInstalled = true
@@ -980,6 +1002,26 @@ final class MusicKitService: ObservableObject {
                 }
             }
             return .success
+        }
+        // Seek follow-up (-Atlas; flagged for Claude): a lock-screen / Control Center scrub goes
+        // through the in-app `seek(to:trackID:)`, so it has the same gates (blocked during a DJ
+        // break or a load, clamped, detector re-baselined, DJ session told). On the main thread
+        // the track is pinned when the command arrives, and a blocked seek reports failure.
+        center.changePlaybackPositionCommand.isEnabled = true
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self, let event = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            let position = event.positionTime
+            guard Thread.isMainThread else {
+                // Off-main delivery (not expected): the track cannot be read here, so this
+                // seek is untargeted. Every other gate still applies after the hop.
+                Task { @MainActor in _ = self.seek(to: position) }
+                return .success
+            }
+            return MainActor.assumeIsolated {
+                self.seek(to: position, trackID: self.snapshot.nowPlaying?.id) ? .success : .commandFailed
+            }
         }
     }
 
@@ -1054,6 +1096,9 @@ final class MusicKitService: ObservableObject {
 
     private func noteSongStarted(index: Int, duration: TimeInterval?) {
         log.notice("song started index=\(index, privacy: .public) durationSeconds=\(duration ?? -1, privacy: .public)")
+        // Song scrubbing: the song is on air as music. A catalog song in a one-song
+        // ApplicationMusicPlayer queue is seekable; MusicKit has no per-item flag to read.
+        send(.songStarted(duration: duration, seekable: true))
         onSongStarted?(index, duration)
     }
 }

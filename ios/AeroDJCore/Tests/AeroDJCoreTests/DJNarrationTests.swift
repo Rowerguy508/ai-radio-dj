@@ -229,7 +229,7 @@ final class DJNarrationTests: XCTestCase {
         let preparer = DJBreakPreparer(renderer: djRenderer(), userID: "u", stationID: "s")
         let log = DJEventLog()
         await preparer.observe { log.add($0) }
-        await preparer.prepare(djBreak, deadline: .seconds(2))
+        await preparer.prepare(djBreak, deadline: .seconds(2), onDeviceOnly: false)
         try await Task.sleep(for: .milliseconds(200))
         let cut = await preparer.takeBreak(afterTrack: djBreak.afterTrack, natural: false)
         XCTAssertEqual(cut, .skipped(.notNaturalBoundary), "a skipped song never gets a break, even if audio is ready")
@@ -242,7 +242,7 @@ final class DJNarrationTests: XCTestCase {
         let preparer = DJBreakPreparer(renderer: djRenderer(free: DJFakeVoice(delay: .seconds(5))), userID: "u", stationID: "s")
         var w = DJScriptWriter(cadence: .init(talkFraction: 1), seed: 1)
         let djBreak = try XCTUnwrap(w.plan(tracks: djTracks(3), briefing: nil, hour: 9).breaks.first)
-        await preparer.prepare(djBreak, deadline: .seconds(10))
+        await preparer.prepare(djBreak, deadline: .seconds(10), onDeviceOnly: false)
         let start = ContinuousClock.now
         let outcome = await preparer.takeBreak(afterTrack: djBreak.afterTrack)
         XCTAssertEqual(outcome, .skipped(.notReadyAtBoundary))
@@ -259,7 +259,7 @@ final class DJNarrationTests: XCTestCase {
         // Event-driven, not wall-clock: wait for the preparer to settle, then take the break.
         let slow = DJBreakPreparer(renderer: djRenderer(free: DJFakeVoice(delay: .seconds(30))), userID: "u", stationID: "s")
         let lateSettled = await settled(slow, afterTrack: k)
-        await slow.prepare(djBreak, deadline: .milliseconds(50))
+        await slow.prepare(djBreak, deadline: .milliseconds(50), onDeviceOnly: false)
         await fulfillment(of: [lateSettled], timeout: 10)
         let late = await slow.takeBreak(afterTrack: k)
         XCTAssertEqual(late, .skipped(.timedOut), "a render cut by the deadline is a timeout, never renderFailed")
@@ -267,7 +267,7 @@ final class DJNarrationTests: XCTestCase {
         let capped = DJBreakPreparer(renderer: djRenderer(paid: DJFakeVoice(id: "cloud"), free: nil, capMicrodollars: 0),
                                      userID: "u", stationID: "s")
         let capSettled = await settled(capped, afterTrack: k)
-        await capped.prepare(djBreak, deadline: .seconds(10))
+        await capped.prepare(djBreak, deadline: .seconds(10), onDeviceOnly: false)
         await fulfillment(of: [capSettled], timeout: 10)
         let cap = await capped.takeBreak(afterTrack: k)
         XCTAssertEqual(cap, .skipped(.costCap))
@@ -279,7 +279,7 @@ final class DJNarrationTests: XCTestCase {
         for _ in 0..<25 {
             let p = DJBreakPreparer(renderer: djRenderer(free: DJFakeVoice(delay: .seconds(30))), userID: "u", stationID: "s")
             let done = await settled(p, afterTrack: djBreak.afterTrack)
-            await p.prepare(djBreak, deadline: .milliseconds(1))
+            await p.prepare(djBreak, deadline: .milliseconds(1), onDeviceOnly: false)
             await fulfillment(of: [done], timeout: 10)
             let outcome = await p.takeBreak(afterTrack: djBreak.afterTrack)
             XCTAssertEqual(outcome, .skipped(.timedOut))
@@ -333,8 +333,8 @@ final class DJNarrationTests: XCTestCase {
         let fast = DJBreakPreparer(renderer: djRenderer(), userID: "u", stationID: "s")
         await fast.observe { log.add($0) }
 
-        await fast.prepare(second, deadline: .seconds(2))           // ready before the station change
-        await preparer.prepare(first, deadline: .seconds(2))        // still rendering (paid, reserved)
+        await fast.prepare(second, deadline: .seconds(2), onDeviceOnly: false)           // ready before the station change
+        await preparer.prepare(first, deadline: .seconds(2), onDeviceOnly: false)        // still rendering (paid, reserved)
         try await Task.sleep(for: .milliseconds(100))
         await fast.cancelAll()
         await preparer.cancelAll()                                   // e.g. station switched at a boundary
@@ -371,8 +371,8 @@ final class DJNarrationTests: XCTestCase {
                                        userID: "u", stationID: "s")
         let log = DJEventLog()
         await preparer.observe { log.add($0) }
-        await preparer.prepare(withSource, deadline: .seconds(2))
-        await preparer.prepare(other, deadline: .seconds(2))
+        await preparer.prepare(withSource, deadline: .seconds(2), onDeviceOnly: false)
+        await preparer.prepare(other, deadline: .seconds(2), onDeviceOnly: false)
         try await Task.sleep(for: .milliseconds(200))
 
         await preparer.purge(sourceItemIDs: [revoked])
