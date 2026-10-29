@@ -81,7 +81,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
 
     private func renderer(_ routes: [VoiceRoute], cache: any AudioCache = InMemoryAudioCache(),
                           revocations: NarrationRevocations = NarrationRevocations()) -> VoiceRenderer {
-        VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, revocations: revocations)
+        VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, revocations: revocations, cloudConsent: .inMemory(.accepted))
     }
 
     private func outcome(_ preparer: DJBreakPreparer, afterTrack k: Int) async -> DJBreakOutcome {
@@ -196,7 +196,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000)
         let cache = KeyRecordingCache()
         let device = deviceRoute()
-        let r = VoiceRenderer(routes: [paid, device], budget: budget, cache: cache, revocations: NarrationRevocations())
+        let r = VoiceRenderer(routes: [paid, device], budget: budget, cache: cache, revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
         let item = UUID()
         let attribution = SpokenAttribution.personalContext(itemID: item, source: .calendar, provenance: "test:item")
         let result = await r.render(personalCue(item), userID: "u", stationID: "s", attribution: attribution)
@@ -209,7 +209,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         let touched = await cache.touched
         XCTAssertFalse(touched.contains(VoiceRenderer.cacheKey(text: SpeechDelivery.speakable(personalText), route: paid)))
 
-        let paidOnly = VoiceRenderer(routes: [paid], budget: budget, cache: InMemoryAudioCache(), revocations: NarrationRevocations())
+        let paidOnly = VoiceRenderer(routes: [paid], budget: budget, cache: InMemoryAudioCache(), revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
         let closed = await paidOnly.render(personalCue(item), userID: "u", stationID: "s", attribution: attribution)
         guard case .failure(let f) = closed else { return XCTFail("must fail closed, never fall back to a paid voice") }
         XCTAssertEqual(f.reason, .renderFailed)

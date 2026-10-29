@@ -43,6 +43,7 @@ struct TuneForm: View {
                     commentaryControl
                     personalityControl
                     briefingControl
+                    CloudVoiceToggleCard()
                 }
                 .disabled(blockedMessage != nil)
                 RecipesSection(studio: studio, editable: blockedMessage == nil)

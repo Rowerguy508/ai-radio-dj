@@ -26,8 +26,11 @@ extension VoiceRenderer {
             selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
             credentials: OwnerProxyKeychain.load())
         OwnerProxyKeychain.logDecision(composition.decision, routeCount: composition.routes.count)
+        // The route is composed now, but every render checks the stored cloud-voice consent
+        // first: until "Use cloud voice" is stored, and from the moment it is turned off, the
+        // on-device route speaks every line. Accepting applies without a relaunch.
         return VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
-                             revocations: base.revocations)
+                             revocations: base.revocations, cloudConsent: CloudVoiceConsentStore())
         #else
         return base
         #endif
