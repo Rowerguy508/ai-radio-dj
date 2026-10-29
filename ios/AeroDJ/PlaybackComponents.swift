@@ -12,31 +12,14 @@ import OSLog
 
 /// Restrained Liquid Glass on iOS 26+, a material before that, and an opaque grouped
 /// background when Reduce Transparency is on. Used for the transport bar and the two
-/// Studio zones only; content itself is never glass.
+/// Studio zones only; content itself is never glass. The decision lives in `aeroGlass`.
 struct StudioSurface: ViewModifier {
     var cornerRadius: CGFloat = 24
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        if reduceTransparency {
-            content.background(Color(.secondarySystemBackground), in: shape)
-        } else {
-            glass(content, shape: shape)
-        }
-    }
-
-    @ViewBuilder
-    private func glass(_ content: Content, shape: RoundedRectangle) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            content.glassEffect(.regular, in: shape)
-        } else {
-            content.background(.regularMaterial, in: shape)
-        }
-        #else
-        content.background(.regularMaterial, in: shape)
-        #endif
+        content.aeroGlass(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
+                          fallback: AnyShapeStyle(.regularMaterial),
+                          opaqueFill: Color(.secondarySystemBackground))
     }
 }
 
