@@ -118,9 +118,11 @@ final class MusicKitService: ObservableObject {
     /// player change) unless `snapshot.canSeek`: never during a DJ break or a load. The target is
     /// clamped to [0, duration - 1 s]. The boundary detector is re-baselined first, so the samples
     /// around the seek cannot read as an end, then the playhead moves, then the DJ session gets
-    /// the new time left. Main actor: no poll can run between these steps.
-    func seek(to seconds: TimeInterval) -> Bool {
-        let decision = SongSeekPolicy.decide(seconds: seconds, duration: currentDuration, snapshot: snapshot)
+    /// the new time left. Main actor: no poll can run between these steps. A `trackID` that is
+    /// no longer the current track makes it a no-op (stale scrub).
+    func seek(to seconds: TimeInterval, trackID: String? = nil) -> Bool {
+        let decision = SongSeekPolicy.decide(seconds: seconds, duration: currentDuration,
+                                             snapshot: snapshot, trackID: trackID)
         logPlayback(PlaybackLog.songSeek(index: queueIndex, decision: decision))
         guard case let .seek(target, remaining) = decision else { return false }
         boundaries.userSeeked(to: target, uptime: ProcessInfo.processInfo.systemUptime)
@@ -988,7 +990,8 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Route lock-screen / Control Center play through `resume()` (userPlay + playIfStillAllowed)
-    /// and pause through `pause()`, so remote commands cannot bypass the hold gate.
+    /// and pause through `pause()`, so remote commands cannot bypass the hold gate. Scrubbing
+    /// goes through `seek(to:trackID:)` for the same reason.
     private func installRemoteCommands() {
         guard !remoteCommandsInstalled else { return }
         remoteCommandsInstalled = true
@@ -1022,6 +1025,26 @@ final class MusicKitService: ObservableObject {
                 }
             }
             return .success
+        }
+        // Seek follow-up (-Atlas; flagged for Claude): a lock-screen / Control Center scrub goes
+        // through the in-app `seek(to:trackID:)`, so it has the same gates (blocked during a DJ
+        // break or a load, clamped, detector re-baselined, DJ session told). On the main thread
+        // the track is pinned when the command arrives, and a blocked seek reports failure.
+        center.changePlaybackPositionCommand.isEnabled = true
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self, let event = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            let position = event.positionTime
+            guard Thread.isMainThread else {
+                // Off-main delivery (not expected): the track cannot be read here, so this
+                // seek is untargeted. Every other gate still applies after the hop.
+                Task { @MainActor in _ = self.seek(to: position) }
+                return .success
+            }
+            return MainActor.assumeIsolated {
+                self.seek(to: position, trackID: self.snapshot.nowPlaying?.id) ? .success : .commandFailed
+            }
         }
     }
 

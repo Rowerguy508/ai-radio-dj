@@ -208,7 +208,7 @@ final class CatalogPlaybackLifecycleTests: XCTestCase {
             if case .skipped(let track, _) = event, track == djBreak.afterTrack { settled.fulfill() }
         }
         let started = ContinuousClock.now
-        await preparer.prepare(djBreak, deadline: .seconds(30))
+        await preparer.prepare(djBreak, deadline: .seconds(30), onDeviceOnly: false)
         await fulfillment(of: [settled], timeout: 2)
         let elapsed = ContinuousClock.now - started
         XCTAssertLessThan(elapsed, .milliseconds(500), "a failed render returns without waiting out the deadline")
@@ -268,7 +268,7 @@ final class CatalogPlaybackLifecycleTests: XCTestCase {
         )
         let log = DJEventLog()
         await preparer.observe { log.add($0) }
-        await preparer.prepare(djBreak, deadline: .seconds(30))
+        await preparer.prepare(djBreak, deadline: .seconds(30), onDeviceOnly: false)
         await preparer.cancelAll()
         XCTAssertTrue(log.all.contains {
             if case .skipped(let track, .cancelled) = $0 { track == djBreak.afterTrack } else { false }
@@ -345,7 +345,7 @@ final class CatalogPlaybackLifecycleTests: XCTestCase {
         await preparer.observe { event in
             if case .prepared(let track, _, _) = event, track == djBreak.afterTrack { ready.fulfill() }
         }
-        await preparer.prepare(djBreak, deadline: .seconds(30))
+        await preparer.prepare(djBreak, deadline: .seconds(30), onDeviceOnly: false)
         await fulfillment(of: [ready], timeout: 2)
         return (preparer, djBreak)
     }

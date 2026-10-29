@@ -246,7 +246,7 @@ final class EditorialNarrationTests: XCTestCase {
         await preparer.observe { event in
             if case .skipped(_, .overBreakBudget) = event { settled.fulfill() }
         }
-        await preparer.prepare(djBreak, deadline: .seconds(2))
+        await preparer.prepare(djBreak, deadline: .seconds(2), onDeviceOnly: false)
         await fulfillment(of: [settled], timeout: 3)
         let outcome = await preparer.takeBreak(afterTrack: djBreak.afterTrack)
         XCTAssertEqual(outcome, .skipped(.overBreakBudget))
@@ -331,7 +331,7 @@ final class EditorialNarrationTests: XCTestCase {
         let refused = await blocked.render(
             NarrationCue(id: UUID(), order: 0, group: 0, kind: .transition, text: "Good morning.", estimatedSeconds: 1,
                          maxSeconds: 12, sourceItemID: nil, source: nil, provenance: nil),
-            userID: "ana", stationID: "morning")
+            userID: "ana", stationID: "morning", attribution: .presenter)  // eligible, so the $0 cap is what refuses it (#176)
         guard case .failure(let failure) = refused else { return XCTFail("paid route must not render") }
         XCTAssertTrue(failure.attempts.contains { $0.result == .overCostCap })
         XCTAssertEqual(paidCalls.value, 0, "no paid request is sent")
@@ -455,7 +455,7 @@ final class EditorialNarrationTests: XCTestCase {
         let slowCalls = CallCount()
         let slowVoice = HoldingVoice(calls: slowCalls)
         let slow = DJBreakPreparer(renderer: onDevice(slowVoice), userID: "u", stationID: "s")
-        await slow.prepare(djBreak, deadline: .seconds(30))
+        await slow.prepare(djBreak, deadline: .seconds(30), onDeviceOnly: false)
         try await Task.sleep(for: .milliseconds(30))
         let started = slowCalls.value
         let clock = ContinuousClock.now
@@ -473,7 +473,7 @@ final class EditorialNarrationTests: XCTestCase {
         await ready.observe { event in
             if case .prepared = event { settled.fulfill() }
         }
-        await ready.prepare(djBreak, deadline: .seconds(2))
+        await ready.prepare(djBreak, deadline: .seconds(2), onDeviceOnly: false)
         await fulfillment(of: [settled], timeout: 3)
         let preparedCalls = readyCalls.value
         XCTAssertGreaterThan(preparedCalls, 0)

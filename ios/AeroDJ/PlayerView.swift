@@ -110,7 +110,7 @@ enum PlaybackSessionBinder {
                     if case .playbackFailed(let k) = report.event {
                         djSession.playbackFailed(afterTrack: k)
                     }
-                    music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
+                    music.logBreakSkipped(after: finishedIndex, reason: PlaybackLog.handedOutReason(reason))
                     if report.resume.audioEvent != nil {
                         music.skipInterlude()
                     }
@@ -151,7 +151,8 @@ enum PlaybackSessionBinder {
                     #endif
                     // No prepared break. Same close-out: the hand-out is over.
                     interlude.abandonHandOut()
-                    music.logBreakSkipped(after: finishedIndex, reason: .notPlanned)
+                    music.logBreakSkipped(after: finishedIndex,
+                                          reason: PlaybackLog.noBreakReason(djSession.lastNoBreak))
                     music.skipInterlude()
                 }
                 await music.startNextTrack(after: finishedIndex)
