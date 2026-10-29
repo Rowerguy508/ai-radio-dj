@@ -56,6 +56,27 @@ public final class StudioPresentationModel {
         await recipes.save(name: name, configuration: station.displayed)
     }
 
+    /// Creates a station from artists, a genre or a playlist at a discovery level, and saves it
+    /// as a recipe named `name` (same name rules and errors as `saveRecipe(named:)`). The new
+    /// recipe keeps the tuning the controls show (energy, DJ personality, talk, briefing) and
+    /// takes its seeds, reach and discovery from `request`. An invalid request fails with
+    /// `.invalidStation(_)` and saves nothing. The live station is untouched unless `applying` is
+    /// true, which then applies the saved recipe with the normal boundary rules (`applyRecipe`).
+    @discardableResult
+    public func saveRecipe(named name: String, from request: StationCreationRequest,
+                           applying: Bool = false) async -> Result<StationRecipe, StationRecipeError> {
+        let configuration: StationConfiguration
+        switch request.configuration(base: station.displayed) {
+        case .failure(let reason): return .failure(.invalidStation(reason))
+        case .success(let config): configuration = config
+        }
+        let saved = await recipes.save(name: name, configuration: configuration)
+        if applying, case .success(let recipe) = saved {
+            _ = await recipes.apply(recipe.id, to: station)
+        }
+        return saved
+    }
+
     @discardableResult
     public func applyRecipe(_ id: UUID) async -> Result<[StationSetting: StationChangeTiming], StationRecipeError> {
         await recipes.apply(id, to: station)
