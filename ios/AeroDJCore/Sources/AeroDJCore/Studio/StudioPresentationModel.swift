@@ -24,6 +24,11 @@ public final class StudioPresentationModel {
     public let tuneGenres: TuneGenreSuggestions
 
     @ObservationIgnored private var changeTask: Task<Void, Never>?
+    /// The recipe most recently applied to the live station through this model, from any caller
+    /// (a created-station tap, Tune's recipe list, or create-and-apply). Nil until one succeeds or
+    /// after one fails. `CreatedStationStarter` reads it so a re-tap never trusts a stale id
+    /// (Fry #218). -Atlas
+    @ObservationIgnored public private(set) var lastAppliedRecipeID: UUID?
 
     public init(station: StationConfigurationModel, recipes: StationRecipeLibrary,
                 connections: ConnectionsModel, dj: DJPresentationStore,
@@ -90,14 +95,16 @@ public final class StudioPresentationModel {
         }
         let saved = await recipes.save(name: name, configuration: configuration)
         if applying, case .success(let recipe) = saved {
-            _ = await recipes.apply(recipe.id, to: station)
+            _ = await applyRecipe(recipe.id)
         }
         return saved
     }
 
     @discardableResult
     public func applyRecipe(_ id: UUID) async -> Result<[StationSetting: StationChangeTiming], StationRecipeError> {
-        await recipes.apply(id, to: station)
+        let result = await recipes.apply(id, to: station)
+        if case .success = result { lastAppliedRecipeID = id } else { lastAppliedRecipeID = nil }
+        return result
     }
 }
 

@@ -49,6 +49,9 @@ public final class CreatedStationStarter<Item: Sendable> {
     private let maxPolls: Int
     private let sleep: @MainActor (Duration) async -> Void
     private var tapGeneration = 0
+    /// The created station the last tap applied (Fry #213 nit 3). Cleared by `cancelPending()`
+    /// and by a failed apply, so only a station that is still the listener's choice is skipped.
+    public private(set) var currentRecipeID: UUID?
 
     /// - Parameters:
     ///   - readyTimeout: how long a tap waits for its queue before giving up (Play still works later).
@@ -64,8 +67,21 @@ public final class CreatedStationStarter<Item: Sendable> {
         self.sleep = sleep
     }
 
+    /// A built-in station was tapped (Fry #213 nit 2): a created-station tap still waiting for its
+    /// queue must not start, and the created station is no longer current.
+    public func cancelPending() {
+        tapGeneration += 1
+        currentRecipeID = nil
+    }
+
     /// Opens a created station.
     /// - Parameters:
+    ///   - recipeID: the created station's recipe. When it is already current the recipe is not
+    ///     applied again, so unsaved Tune edits stay (Fry #213 nit 3); an idle tap still starts it.
+    ///   - liveRecipeID: the recipe the live station last had applied from any caller
+    ///     (`StudioPresentationModel.lastAppliedRecipeID`). The apply is skipped only when this tap's
+    ///     cached id AND the live one both match, so another recipe applied in between (Tune) is
+    ///     replaced (Fry #218). The default (nil) always applies.
     ///   - authorize: the music authorization prompt (user taps only).
     ///   - apply: applies the station's recipe (`StudioPresentationModel.applyRecipe`); false if it failed.
     ///   - active: the station's active configuration, read after `apply`.
@@ -73,6 +89,8 @@ public final class CreatedStationStarter<Item: Sendable> {
     ///   - start: plays the items (the idle-Play path: `StationQueuePlayer.play`).
     @discardableResult
     public func open(_ trigger: StationOpenTrigger,
+                     recipeID: UUID? = nil,
+                     liveRecipeID: @MainActor () -> UUID? = { nil },
                      authorize: @MainActor () async -> Void,
                      apply: @MainActor () async -> Bool,
                      active: @MainActor () -> StationConfiguration,
@@ -83,8 +101,15 @@ public final class CreatedStationStarter<Item: Sendable> {
         let mine = tapGeneration
         await authorize()
         guard mine == tapGeneration else { return .notStarted(.superseded) }
-        guard await apply() else { return .notApplied }
-        guard mine == tapGeneration else { return .notStarted(.superseded) }
+        let alreadyCurrent = recipeID != nil && recipeID == currentRecipeID && liveRecipeID() == recipeID
+        if !alreadyCurrent {
+            guard await apply() else {
+                if mine == tapGeneration { currentRecipeID = nil }
+                return .notApplied
+            }
+            guard mine == tapGeneration else { return .notStarted(.superseded) }
+            currentRecipeID = recipeID
+        }
         guard nothingQueued() else { return .switchesAtBoundary }
         let config = active()
         guard let key = StationQueueKey(config) else { return .notStarted(.noStation) }

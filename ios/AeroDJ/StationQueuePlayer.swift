@@ -80,6 +80,8 @@ final class StationQueuePlayer {
     func openCreatedStation(_ trigger: StationOpenTrigger, recipeID: UUID, studio: StudioPresentationModel) async {
         let outcome = await createdStart.open(
             trigger,
+            recipeID: recipeID,
+            liveRecipeID: { studio.lastAppliedRecipeID },
             authorize: { await music.authorize() },
             apply: { if case .success = await studio.applyRecipe(recipeID) { true } else { false } },
             active: { station.active },
@@ -87,6 +89,12 @@ final class StationQueuePlayer {
             start: { tracks in await play(tracks) })
         Logger(subsystem: "com.aerodj.app", category: "stationQueue")
             .notice("createdStationOpen \(String(describing: outcome), privacy: .public)")
+    }
+
+    /// A built-in station row was tapped (Fry #213 nit 2): a created-station tap still waiting for
+    /// its queue does not start.
+    func cancelCreatedStationStart() {
+        createdStart.cancelPending()
     }
 
     /// Same order as a song tap (#116): the DJ session reserves the new queue before play, so a

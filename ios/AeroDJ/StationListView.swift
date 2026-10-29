@@ -39,6 +39,8 @@ struct StationListView: View {
                              // Row tap only, never restore. A created station starts now when nothing
                              // is queued, otherwise takes over at the song boundary (CreatedStationStarter).
                              guard let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes) else {
+                                 // HOOK(Atlas, Fry #213 nit 2): a built-in tap cancels a waiting created-station start.
+                                 dependencies.stationQueue?.cancelCreatedStationStart()
                                  await dependencies.playback.authorize()
                                  return
                              }
@@ -293,10 +295,10 @@ struct Station: Identifiable, Hashable {
     var isCreated = false
 
     /// VoiceOver hint for the list row and carousel card: what a tap does. A created station
-    /// starts right away when nothing is playing (CreatedStationStarter), else after this song.
+    /// starts right away when nothing is queued (CreatedStationStarter), else after this song.
     var openHint: String {
         isCreated
-            ? "Plays the station now if nothing is playing, otherwise after this song."
+            ? "Plays the station now if nothing is queued, otherwise after this song."
             : "Opens the station. Music starts only when you press Play."
     }
 
