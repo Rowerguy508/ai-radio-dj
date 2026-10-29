@@ -1,11 +1,17 @@
 import crypto from 'node:crypto';
 import { bearerToken, parseTokenHash, tokenMatches } from './auth.js';
 import {
+  DEFAULT_GLOBAL_DAILY_CHAR_CAP,
+  DEFAULT_INSTALL_DAILY_CHAR_CAP,
   InMemoryUsageLimiter,
   LimiterStoreError,
+  MAX_CONFIGURED_CHAR_CAP,
+  OWNER_SUBJECT,
   RedisUsageLimiter,
   redisRestConfig,
+  subjectBucket,
   type LimiterOptions,
+  type QuotaReason,
   type Reservation,
   type UsageLimiter,
 } from './limiter.js';
@@ -16,7 +22,6 @@ export const ELEVENLABS_BASE = 'https://api.elevenlabs.io';
 export const MAX_RESPONSE_BYTES = 5_000_000; // matches ProxyVoiceProvider.maxResponseBytes
 export const MAX_DURATION_SECONDS = 600; // matches ProxyVoiceProvider duration guard
 const DEFAULT_MAX_TEXT_CHARS = 600;
-const DEFAULT_DAILY_CHAR_CAP = 20_000;
 const DEFAULT_REQUESTS_PER_MINUTE = 12;
 const DEFAULT_MODEL_ID = 'eleven_flash_v2_5';
 /**
@@ -27,8 +32,25 @@ const DEFAULT_MODEL_ID = 'eleven_flash_v2_5';
  */
 export const VOICE_SETTINGS = Object.freeze({ stability: 0.4, similarity_boost: 0.75, speed: 1.0 });
 const UPSTREAM_TIMEOUT_MS = 15_000;
-/** Single-owner deployment: every authenticated request shares one usage bucket. */
-const OWNER_KEY = 'owner';
+/**
+ * Until per-install attestation lands, the owner bearer is the only authenticated caller,
+ * so every request is charged to the fixed owner bucket. It has its own cap and also
+ * counts against the global ceiling. Nothing in the request body selects the bucket.
+ */
+const SUBJECT = OWNER_SUBJECT;
+const SUBJECT_BUCKET = subjectBucket(SUBJECT);
+
+/**
+ * Machine-readable refusal reason, sent as `reason` in the error body and logged.
+ * Enum only: never text, ids or keys. `rate` = per-minute rate, `install_daily` = this
+ * install's daily cap, `owner_daily` = the owner bucket's daily cap, `global_daily` = the global daily ceiling, `store` = limiter
+ * store unreachable (fails closed).
+ */
+export type ErrorReason = 'rate' | QuotaReason | 'store';
+
+/** Retry-After (seconds) for a rate 429 and a store 503: an upper bound for both window types. */
+export const RATE_RETRY_AFTER_SECONDS = 60;
+export const STORE_RETRY_AFTER_SECONDS = 60;
 
 export type Env = Record<string, string | undefined>;
 
@@ -40,6 +62,8 @@ export interface LogEntry {
   upstreamStatus?: number;
   /** Upstream non-2xx only: allowlisted `detail.status` code, else 'other'. */
   upstreamCode?: string;
+  /** 429 and limiter-store 503 only: the enum refusal reason. */
+  reason?: ErrorReason;
 }
 
 /** Bytes of an upstream error body read for `detail.status`; the rest is discarded. */
@@ -124,9 +148,34 @@ function csv(value: string | undefined): Set<string> {
 
 let sharedLimiter: UsageLimiter | undefined;
 
-function limiterOptions(env: Env): LimiterOptions {
+/**
+ * Parses a character cap. Only a plain decimal integer in [1, MAX_CONFIGURED_CHAR_CAP] is
+ * accepted; anything else (unset, empty, garbage, 0, negative, fractional, exponent,
+ * hex, Infinity, too large) returns null so the caller uses its safe default. A cap can
+ * therefore never become unlimited through configuration.
+ */
+export function parseCharCap(value: string | undefined): number | null {
+  const trimmed = value?.trim();
+  if (!trimmed || !/^\d{1,9}$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  return n >= 1 && n <= MAX_CONFIGURED_CHAR_CAP ? n : null;
+}
+
+/**
+ * Global ceiling: `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP`, else the legacy single-bucket
+ * `AERODJ_TTS_DAILY_CHAR_CAP` (so today's owner-set 9,000 keeps applying), else 9,000.
+ * Owner bucket: `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`, else the global ceiling.
+ * Per install: `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP`, else 1,500.
+ */
+export function limiterOptions(env: Env): LimiterOptions {
+  const dailyCharCap =
+    parseCharCap(env.AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP) ??
+    parseCharCap(env.AERODJ_TTS_DAILY_CHAR_CAP) ??
+    DEFAULT_GLOBAL_DAILY_CHAR_CAP;
   return {
-    dailyCharCap: positiveInt(env.AERODJ_TTS_DAILY_CHAR_CAP, DEFAULT_DAILY_CHAR_CAP),
+    dailyCharCap,
+    ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? dailyCharCap,
+    installDailyCharCap: parseCharCap(env.AERODJ_TTS_INSTALL_DAILY_CHAR_CAP) ?? DEFAULT_INSTALL_DAILY_CHAR_CAP,
     requestsPerMinute: positiveInt(env.AERODJ_TTS_RATE_PER_MINUTE, DEFAULT_REQUESTS_PER_MINUTE),
   };
 }
@@ -167,6 +216,7 @@ export function defaultDeps(env: Env = process.env): Deps {
           requestId: entry.requestId,
           status: entry.status,
           chars: entry.chars,
+          ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
           ...(entry.upstreamStatus !== undefined && entry.upstreamCode !== undefined
             ? { upstreamStatus: entry.upstreamStatus, upstreamCode: entry.upstreamCode }
             : {}),
@@ -203,10 +253,10 @@ const MESSAGES: Record<number, string> = {
   504: 'Upstream timeout',
 };
 
-function secondsUntilNextUtcDay(now: number): string {
+export function secondsUntilNextUtcDay(now: number): number {
   const next = new Date(now);
   next.setUTCHours(24, 0, 0, 0);
-  return String(Math.max(1, Math.ceil((next.getTime() - now) / 1000)));
+  return Math.max(1, Math.ceil((next.getTime() - now) / 1000));
 }
 
 export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsResponse> {
@@ -225,6 +275,24 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
       body: Buffer.from(JSON.stringify({ error: MESSAGES[status] ?? 'Error', requestId })),
     };
   };
+  /**
+   * 429 / store-503 contract: `Retry-After` (integer seconds >= 1) and a body of
+   * `{ error, requestId, reason, retryAfterSeconds }`: enum and numbers only.
+   */
+  const refuse = (status: 429 | 503, reason: ErrorReason, retryAfterSeconds: number): TtsResponse => {
+    const seconds = Math.max(1, Math.ceil(retryAfterSeconds));
+    deps.log({ requestId, status, chars, reason });
+    return {
+      status,
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+        'X-Request-Id': requestId,
+        'Retry-After': String(seconds),
+      },
+      body: Buffer.from(JSON.stringify({ error: MESSAGES[status], requestId, reason, retryAfterSeconds: seconds })),
+    };
+  };
 
   if (req.method !== 'POST') return fail(405, { Allow: 'POST' });
 
@@ -241,9 +309,9 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
 
   const now = deps.now();
   try {
-    if (!(await limiter.allowRequest(OWNER_KEY, now))) return fail(429, { 'Retry-After': '60' });
+    if (!(await limiter.allowRequest(SUBJECT_BUCKET, now))) return refuse(429, 'rate', RATE_RETRY_AFTER_SECONDS);
   } catch (error) {
-    if (error instanceof LimiterStoreError) return fail(503);
+    if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
     throw error;
   }
 
@@ -265,14 +333,15 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
 
   // Atomic reserve-before-render: the characters count against today's cap before the
   // upstream call, so concurrent requests cannot jointly exceed it.
-  let reservation: Reservation | null;
+  let reservation: Reservation;
   try {
-    reservation = await limiter.reserve(OWNER_KEY, chars, now);
+    const result = await limiter.reserve(SUBJECT, chars, now);
+    if (!result.ok) return refuse(429, result.reason, secondsUntilNextUtcDay(now));
+    reservation = result.reservation;
   } catch (error) {
-    if (error instanceof LimiterStoreError) return fail(503);
+    if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
     throw error;
   }
-  if (!reservation) return fail(429, { 'Retry-After': secondsUntilNextUtcDay(now) });
   const held = reservation;
   // Refund only when the upstream definitely did not bill (it answered non-2xx).
   // Network errors, timeouts and bad audio after a 2xx keep the reservation: the
