@@ -46,6 +46,14 @@ public struct StationSeed: Codable, Hashable, Sendable {
 
     public var key: Key { Key(kind: kind, catalogID: catalogID) }
 
+    /// True only for a non-empty run of ASCII digits `0`-`9` (-Atlas, Sentinel's #157 follow-up).
+    /// Apple Music genre IDs are numeric, and the catalog adapter interpolates the ID into a
+    /// `genres/<id>` URL path, so anything else (empty, sign, whitespace, `/`, `?`, `..`,
+    /// non-ASCII digits such as `١٢`) must never reach the URL.
+    public static func isValidCatalogGenreID(_ id: String) -> Bool {
+        !id.isEmpty && id.utf8.allSatisfy { $0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9") }
+    }
+
     /// Trimmed ID, trimmed name capped at `maxNameLength`, or `nil` when either is empty.
     public func normalized() -> StationSeed? {
         let id = catalogID.trimmingCharacters(in: .whitespacesAndNewlines)

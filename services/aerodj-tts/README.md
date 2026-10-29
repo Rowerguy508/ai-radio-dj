@@ -113,8 +113,11 @@ confirm both on the ElevenLabs side; the proxy cannot verify them.
 ## Logging and privacy
 
 Each request logs exactly one JSON line: `{ requestId, status, chars }`.
-Text, headers, tokens, voice IDs, station IDs and upstream bodies are never
-logged. A test asserts this.
+When ElevenLabs answers non-2xx, that line also carries `upstreamStatus` (the
+integer HTTP status) and `upstreamCode`: the body's `detail.status` if it
+matches `^[a-z0-9_]{1,64}$`, otherwise `other`. At most 4 KB of the error body
+is read for this and then dropped. Text, headers, tokens, voice IDs, station
+IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 
 ## Environment variables
 

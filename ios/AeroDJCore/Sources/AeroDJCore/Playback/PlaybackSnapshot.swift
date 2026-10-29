@@ -98,6 +98,11 @@ public struct PlaybackSnapshot: Equatable, Sendable {
     /// Build 9 P0 (-Atlas, Sentinel): the `.preparing` start passed its 8 s confirm deadline.
     /// Before that a transport tap is ignored; after it the button is "Stop" and cancels the start.
     public var startTimedOut: Bool
+    /// Song scrubbing (-Atlas): the scrubber may commit a seek. False during a DJ break
+    /// (preparing or airing), while a song is loading, starting or changing, when the
+    /// duration is unknown or not above 0, and when the item cannot be seeked.
+    /// Set only by `PlaybackEngine` (`.songStarted`); see `SongSeekPolicy`.
+    public var canSeek: Bool
 
     public init(
         station: StationRef? = nil,
@@ -107,7 +112,8 @@ public struct PlaybackSnapshot: Equatable, Sendable {
         dj: DJActivity = .idle,
         error: PlaybackError? = nil,
         hold: PlaybackHold? = nil,
-        startTimedOut: Bool = false
+        startTimedOut: Bool = false,
+        canSeek: Bool = false
     ) {
         self.station = station
         self.nowPlaying = nowPlaying
@@ -117,5 +123,6 @@ public struct PlaybackSnapshot: Equatable, Sendable {
         self.error = error
         self.hold = hold
         self.startTimedOut = startTimedOut
+        self.canSeek = canSeek
     }
 }
