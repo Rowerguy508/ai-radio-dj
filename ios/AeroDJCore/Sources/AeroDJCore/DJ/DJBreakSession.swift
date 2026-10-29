@@ -239,6 +239,11 @@ public final class DJBreakSession {
         replan(from: 0, keepingThrough: -1)
     }
 
+    /// True when any seed of the station is from the listener's library.
+    nonisolated static func speaksOnDeviceOnly(_ configuration: StationConfiguration) -> Bool {
+        configuration.seeds.contains { $0.source == .library }
+    }
+
     /// Song `index` started with `remaining` time left. Starts rendering its break, if one is
     /// planned and there is time to render before the boundary.
     /// When background queue setup has not finished planning yet, the start is held and
@@ -255,7 +260,9 @@ public final class DJBreakSession {
         await station.handle(.djBreakWillPrepare(afterTrack: index))
         replanIfCadenceChanged(after: index - 1)
         guard let djBreak = breaks[index] else { return }
-        await preparer.prepare(djBreak, deadline: deadline)
+        // Library-seed gate (#154): a station built from the listener's own library is spoken
+        // on-device only, so no seed, song or artist from it reaches a cloud or paid voice.
+        await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))
     }
 
     /// Song `k` ended on its own. Applies pending station edits at this safe boundary, then
