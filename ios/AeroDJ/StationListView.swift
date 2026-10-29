@@ -105,6 +105,9 @@ struct StationSplitRoot<Detail: View>: View {
             // Contain first, so this identifier stays on the list and does not replace the rows.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("split.sidebar")
+            // iOS 18+: "Stations" collapses into a compact inline bar as the list scrolls.
+            // iOS 17 keeps the system large title. Rows and selection are untouched.
+            .morphingLargeTitle("Stations", subtitle: "Your AI-hosted radio, on Apple Music")
             .toolbar {
                 // The real App Group inbox is never opened in the test station: its
                 // data must not appear next to fixtures.
