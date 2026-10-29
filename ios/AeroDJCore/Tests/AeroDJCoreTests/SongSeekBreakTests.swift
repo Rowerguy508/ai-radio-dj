@@ -176,4 +176,121 @@ final class SongSeekBreakTests: XCTestCase {
         XCTAssertTrue(inFlight.isEmpty)
         await r.session.stop()
     }
+
+    // MARK: One re-arm per boundary (Echo's review: scrubbing must not respend voice characters)
+
+    func testTwoSeeksAfterATimeoutGiveExactlyOneReRender() async {
+        let r = await rig()
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))
+        await r.session.songSeeked(index: 0, remaining: .seconds(170))
+        XCTAssertEqual(r.log.preparing(0), 2, "the first render plus exactly one re-render")
+        let inFlight = await r.preparer.testInFlight
+        XCTAssertEqual(inFlight, [0])
+        await r.session.stop()
+    }
+
+    func testASecondTimeoutAfterTheReArmStaysSkippedWithNoThirdRender() async {
+        let r = await rig()
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))     // the one re-arm
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)    // it timed out again
+        await r.session.songSeeked(index: 0, remaining: .seconds(170))
+        await r.session.songSeeked(index: 0, remaining: .seconds(120))
+        XCTAssertEqual(r.log.preparing(0), 2, "no third render")
+        let result = await r.preparer.testResult(afterTrack: 0)
+        XCTAssertEqual(result, .skipped(.timedOut), "final for this boundary")
+        let inFlight = await r.preparer.testInFlight
+        XCTAssertTrue(inFlight.isEmpty)
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertNil(handed, "music plays at once")
+        await r.session.stop()
+    }
+
+    func testStartingABreakThatNeverRenderedIsTheOneReArm() async {
+        let r = await rig()
+        await r.session.songStarted(index: 0, remaining: .seconds(2))      // too late to render
+        await r.session.songSeeked(index: 0, remaining: .seconds(120))     // starts it: the one re-arm
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))
+        XCTAssertEqual(r.log.preparing(0), 1, "no second render")
+        await r.session.stop()
+    }
+
+    func testTheReArmAllowanceResetsOnTheNextSongAndBoundary() async {
+        let r = await rig()
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        let first = await r.preparer.mayRearm(afterTrack: 0)
+        XCTAssertFalse(first, "spent for boundary 0")
+        _ = await r.session.naturalBoundary(afterTrack: 0)
+        for index in 1...3 { await r.session.songStarted(index: index, remaining: .seconds(180)) }
+        XCTAssertEqual(r.log.preparing(3), 1)
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 3)
+        await r.session.songSeeked(index: 3, remaining: .seconds(150))
+        XCTAssertEqual(r.log.preparing(3), 2, "the next boundary gets its own re-arm")
+        await r.session.stop()
+    }
+
+    func testTheReArmAllowanceResetsWhenTheSameBoundaryComesAgainInANewQueue() async {
+        let r = await rig()
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.session.queueStarted(djTracks(8))                           // new queue: boundary 0 again
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))
+        XCTAssertEqual(r.log.preparing(0), 4, "two renders per song 0: its first and its one re-arm")
+        await r.session.stop()
+    }
+
+    // MARK: Fry's race: a seek suspended across the boundary must not start an orphan render
+
+    func testASeekThatResumesAfterTheBoundaryWasTakenStartsNoRender() async {
+        let r = await rig()
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)    // re-arm would be allowed
+        let preparer = r.preparer
+        r.session.testSeekResumed = { _ = await preparer.takeBreak(afterTrack: 0) }  // the song ended meanwhile
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))
+        XCTAssertEqual(r.log.preparing(0), 1, "no orphan render for a boundary that went by")
+        let inFlight = await r.preparer.testInFlight
+        XCTAssertTrue(inFlight.isEmpty)
+        let reopened = await r.preparer.mayRearm(afterTrack: 0)
+        XCTAssertFalse(reopened, "closed until song 0 starts again")
+        await r.session.stop()
+    }
+
+    func testASeekThatResumesAfterCancelAllStartsNoRender() async {
+        let r = await rig()
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        let preparer = r.preparer
+        r.session.testSeekResumed = { await preparer.cancelAll() }          // queue replaced or stopped meanwhile
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))
+        XCTAssertEqual(r.log.preparing(0), 1, "no orphan render after cancelAll")
+        let inFlight = await r.preparer.testInFlight
+        XCTAssertTrue(inFlight.isEmpty)
+        let reopened = await r.preparer.mayRearm(afterTrack: 0)
+        XCTAssertFalse(reopened)
+        await r.session.stop()
+    }
+
+    func testADuplicateStartReportDoesNotBuyASecondReArm() async {
+        let r = await rig()
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))     // the one re-arm
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.session.songStarted(index: 0, remaining: .seconds(140))    // repeated start report
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))
+        XCTAssertEqual(r.log.preparing(0), 2)
+        await r.session.stop()
+    }
 }

@@ -247,6 +247,7 @@ public final class DJBreakSession {
             pendingSongStart = (index, remaining)
             return
         }
+        await preparer.openBoundary(afterTrack: index)   // seeks may re-arm this boundary once (-Atlas)
         guard breaks[index] != nil, let deadline = DJBreakPreparer.deadline(remainingInSong: remaining) else { return }
         // Personality edits apply when a break starts preparing; re-plan this break if they did.
         await station.handle(.djBreakWillPrepare(afterTrack: index))
@@ -259,7 +260,7 @@ public final class DJBreakSession {
     /// left. The boundary itself is never moved here: it still comes only from the player's
     /// natural end, so a seek back never fires the break early and never drops it.
     /// - Seek back: a ready or rendering break is kept. One whose render timed out is re-armed
-    ///   with the new deadline.
+    ///   with the new deadline, at most once per boundary (see `DJBreakPreparer.rearm`).
     /// - Seek forward: a ready break is kept; a render in flight is kept and, if it cannot
     ///   finish, is skipped at the boundary. A planned break that never started rendering
     ///   starts now if `remaining` is still outside the render margin.
@@ -274,7 +275,11 @@ public final class DJBreakSession {
               await preparer.mayRearm(afterTrack: index) else { return }
         // Same order as `songStarted`: personality edits apply when a break starts preparing.
         await station.handle(.djBreakWillPrepare(afterTrack: index))
+        await testSeekResumed?()
         replanIfCadenceChanged(after: index - 1)
+        // `playing` still reads `index` until the next song starts, so it cannot tell whether
+        // the boundary went by while this seek was suspended. `rearm` re-checks inside the
+        // preparer: a boundary that `takeBreak` or `cancelAll` closed is never re-armed.
         guard playing == index, let djBreak = breaks[index] else { return }
         await preparer.rearm(djBreak, deadline: deadline)
     }
@@ -499,6 +504,10 @@ public final class DJBreakSession {
     /// Test hook: briefing is absent after withdrawal / briefing-off.
     var testBriefingIsNil: Bool { briefing == nil }
     /// Test hook: personal source item ids still present in the briefing or planned breaks.
+    /// Test hook (-Atlas): runs where `songSeeked` resumes after its suspension on the station,
+    /// so a test can end the song or drop the queue at exactly that point.
+    var testSeekResumed: (@MainActor () async -> Void)?
+
     var testPlannedSourceItemIDs: Set<UUID> {
         var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
         for b in breaks.values { ids.formUnion(b.cues.compactMap(\.sourceItemID)) }
