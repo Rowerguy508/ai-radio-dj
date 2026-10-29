@@ -808,6 +808,29 @@ final class CreatedStationStartTests: XCTestCase {
         XCTAssertEqual(player.starts, [], "the cancelled tap never starts playback")
     }
 
+    // #217 (Sentinel on #220): a built-in tap that lands while the recipe is being applied stops the
+    // created tap before it becomes current or starts anything.
+    func testABuiltInTapDuringApplyCancelsBeforeStart() async throws {
+        let model = await makeStation(active: .default)
+        let feed = makeFeed(QueueFakeCatalog())
+        feed.follow(model)
+        let player = FakePlayer()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1))
+        let outcome = await starter.open(.userTap, recipeID: UUID(),
+                                         authorize: {},
+                                         apply: {
+                                             await model.applyRecipe(StationRecipe(name: "A Radio", configuration: self.created))
+                                             starter.cancelPending()               // built-in tapped mid-apply
+                                             return true
+                                         },
+                                         active: { model.active },
+                                         nothingQueued: { player.nothingQueued },
+                                         start: { player.starts.append($0) })
+        XCTAssertEqual(outcome, .notStarted(.superseded))
+        XCTAssertNil(starter.currentRecipeID, "the cancelled tap does not become current")
+        XCTAssertEqual(player.starts, [], "the cancelled tap never starts playback")
+    }
+
     // #217: after a built-in tap cancels a waiting created tap, the late queue starts nothing, a
     // restore starts nothing, and a new tap on the created station still starts it exactly once.
     func testAfterABuiltInCancelOnlyANewTapStartsTheCreatedStation() async throws {
