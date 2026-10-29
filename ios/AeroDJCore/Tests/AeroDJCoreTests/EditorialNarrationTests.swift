@@ -331,7 +331,7 @@ final class EditorialNarrationTests: XCTestCase {
         let refused = await blocked.render(
             NarrationCue(id: UUID(), order: 0, group: 0, kind: .transition, text: "Good morning.", estimatedSeconds: 1,
                          maxSeconds: 12, sourceItemID: nil, source: nil, provenance: nil),
-            userID: "ana", stationID: "morning")
+            userID: "ana", stationID: "morning", attribution: .presenter)  // eligible, so the $0 cap is what refuses it (#176)
         guard case .failure(let failure) = refused else { return XCTFail("paid route must not render") }
         XCTAssertTrue(failure.attempts.contains { $0.result == .overCostCap })
         XCTAssertEqual(paidCalls.value, 0, "no paid request is sent")

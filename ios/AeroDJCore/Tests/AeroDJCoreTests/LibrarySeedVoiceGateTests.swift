@@ -52,7 +52,7 @@ final class LibrarySeedVoiceGateTests: XCTestCase {
     private func oneCueBreak() -> DJBreak {
         let cue = NarrationCue(id: UUID(), order: 1, group: 1, kind: .transition, text: "Up next from your library.",
                                estimatedSeconds: 2, maxSeconds: 8, sourceItemID: nil, source: nil, provenance: nil)
-        return DJBreak(afterTrack: 0, cues: [cue], attributions: [:])
+        return DJBreak(afterTrack: 0, cues: [cue], attributions: [cue.id: .presenter])
     }
 
     // MARK: lastRouteOnly is never a paid or off-device route

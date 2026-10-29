@@ -267,7 +267,8 @@ public actor DJBreakPreparer {
             // The only cancellation whose result is kept is the preparation deadline: takeBreak,
             // cancelAll and purge record their own outcome first and ignore this one.
             if Task.isCancelled { return .failure(Skip(reason: .timedOut)) }
-            switch await renderer.render(cue, userID: userID, stationID: stationID) {
+            switch await renderer.render(cue, userID: userID, stationID: stationID,
+                                         attribution: djBreak.attributions[cue.id]) {
             case .success(let clip):
                 cue.renderedSeconds = clip.audio.seconds
                 cue.voiceID = clip.audio.voiceID
