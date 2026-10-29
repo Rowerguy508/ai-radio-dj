@@ -8,7 +8,10 @@ import OSLog
 /// time with `CatalogStationSeedResolver` + `StationPoolBuilder.build(_:configuration:)` over
 /// `MusicCatalogSeedSource`, and decides when to hand it out. This type only connects it:
 /// - `MusicKitService.stationQueueAtBoundary`: at a natural boundary, after the break, a station
-///   whose music settings changed since the playing queue began replaces the queue.
+///   whose music settings changed since the playing queue began replaces the queue; at the
+///   boundary before the queue's last song, `[last song] + station songs` refills it (Echo's
+///   conditions: before the last song starts, today's stop path on any failure, and the DJ only
+///   ever names queued songs because its list is the player's list).
 /// - `MusicKitService.stationQueueForIdlePlay`: Play with nothing queued starts the station.
 /// - `MusicKitService.onQueueReplaced`: every new queue belongs to the station committed then.
 /// A hand-off starts like a song tap (`TapPlaySequence`: reserve, play, then break prep), so the
@@ -50,12 +53,14 @@ final class StationQueuePlayer {
         music.onQueueReplaced = { [weak self] in
             guard let self else { return }
             if self.ownQueueStarting { self.ownQueueStarting = false; return }
-            self.feed.queueStarted(for: self.station.committedDisplayed)
+            self.feed.queueStarted(for: self.station.committedDisplayed, songCount: self.music.queue.count)
         }
-        music.stationQueueAtBoundary = { [weak self] _ in
+        music.stationQueueAtBoundary = { [weak self] finishedIndex in
             guard let self,
-                  let tracks = self.feed.takeForBoundary(active: self.station.active,
-                                                         playbackMayStart: self.music.mayAutoResume) else { return nil }
+                  let tracks = self.feed.queueForNextSong(after: finishedIndex, in: self.music.queue,
+                                                          active: self.station.active,
+                                                          playbackMayStart: self.music.mayAutoResume,
+                                                          sameSong: { $0.id == $1.id }) else { return nil }
             return { await self.play(tracks) }
         }
         music.stationQueueForIdlePlay = { [weak self] in
