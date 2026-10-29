@@ -314,8 +314,9 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
 
 - **Only the literal string `true` enables anything.** That applies to
   `AERODJ_TTS_ATTEST_ENABLED`, `AERODJ_TTS_OWNER_TOKEN_ENABLED`,
-  `AERODJ_TTS_ENTITLEMENT_REQUIRED`, `AERODJ_TTS_ALLOW_SANDBOX_IAP`,
-  `AERODJ_TTS_ALLOW_FAMILY_SHARED`, `AERODJ_TTS_STATUS_API_ENABLED`.
+  `AERODJ_TTS_ENTITLEMENT_REQUIRED`, `AERODJ_TTS_STATUS_API_ENABLED`.
+  Purchase policy (sandbox, Family Sharing, grace, installs per purchase) is
+  not env: it lives in the single StoreKit config (§5.1).
   Anything else is off.
 - Attest kill switch off → `challenge`, `register`, `entitlement` and the
   attested `/api/tts` return 503 `disabled` **before any Redis call**.
@@ -349,6 +350,20 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
   build (Nova's paywall), Fry's `.storekit` file (a test asserts the IDs
   match), and the proxy (imported at build time as the allowlist). Whoever
   lands first creates it; the others import it.
+- **Proxy side, single config:** `services/aerodj-tts/config/storekit.json`
+  (the Vercel project deploys from `services/aerodj-tts`, so the proxy keeps
+  its own copy; a later CI check asserts its product IDs equal the app's).
+  It holds the bundle ID, the Pro product allowlist and one value per
+  purchase policy. **Orion's interim defaults until the owner answers:**
+  `installsPerPurchase: 5`, `allowSandboxInProduction: false` (Sandbox
+  rejected on Production), `honorGracePeriod: false` (no grace period),
+  `allowFamilyShared: false` (Family Sharing off). Each is one value, so a
+  change is a one-line edit plus a deploy.
+- **App-side Pro gate (owned by Fry on `fry/storekit-config`, credit Fry and
+  Nova):** Fry gates bundled clips and the paid-voice route config on Pro,
+  reading the entitlement through Nova's paywall protocol; Nova's paywall
+  gates on Pro **plus** consent. PR 9 consumes their protocol rather than
+  defining its own. The server-side check (§5.3-§5.6) stays Atlas's.
 - Free tier = on-device voice, always available. Pro unlocks only the
   ElevenLabs route. Per App Review Guideline 3.1.1, unlocking that feature
   must use in-app purchase: no external payment links, codes or other
@@ -451,7 +466,7 @@ One `ENTLINK` script, after the assertion and JWS verify: consume challenge
 → counter → tombstone check (tomb present and JWS `signedDate` ≤ `revokedMs`
 → 403 `no_entitlement`) → upsert `ent` if `signedDate` is newer → evict
 members idle > 30 days → if this keyId is not a member and members ≥
-**`AERODJ_TTS_INSTALLS_PER_PURCHASE` (proposal 5)** → 403 `install_limit`;
+**`installsPerPurchase` in the StoreKit config (interim 5)** → 403 `install_limit`;
 also at most 10 new links per purchase per rolling 30 days (reinstall churn
 without unlimited rotation) → add member, set `link`.
 
@@ -462,7 +477,7 @@ Owner decision (§11).
 
 **Family Sharing:** recommendation is **off** for v1, because each paid
 listener costs ElevenLabs credits. Then only `PURCHASED` is accepted.
-If the owner enables it, `AERODJ_TTS_ALLOW_FAMILY_SHARED=true` accepts
+If the owner enables it, `allowFamilyShared: true` in the config accepts
 `FAMILY_SHARED`; whether a family member's transaction carries its own
 `originalTransactionId` or the purchaser's is **unverified** in Apple's docs,
 so PR 6 tests both and the cap applies per `originalTransactionId` either way
@@ -532,7 +547,7 @@ App Review and TestFlight purchases are not Production-environment
 transactions (Sandbox; exact TestFlight behaviour to confirm against Apple's
 TestFlight docs in PR 6). Refusing Sandbox outright on Production would leave
 App Review unable to test Pro. Recommendation: on Production,
-`AERODJ_TTS_ALLOW_SANDBOX_IAP=true` accepts `Sandbox` transactions from a
+`allowSandboxInProduction: true` in the config accepts `Sandbox` transactions from a
 **separate** small bucket, `chars:sandbox:<UTCday>` under
 `AERODJ_TTS_SANDBOX_DAILY_CHAR_CAP` (proposal 1,500), still under the global
 ceiling (429 `sandbox_daily`). Flag off → Sandbox is 403 `no_entitlement`
@@ -670,8 +685,9 @@ test that has not happened.
 8. **Proxy: enforcement on `/api/tts` behind `AERODJ_TTS_ENTITLEMENT_REQUIRED`**
    (exact `true`; attested paid path refused otherwise).
 9. **iOS: `AppAttesting` client, entitlement sync, `stationId` dropped**;
-   the Pro entitlement gates the **paid-voice route config** on the app side,
-   and therefore also gates bundled clips (Fry's #237, which today play
+   it consumes Fry's app-side Pro gate (`fry/storekit-config`, read through
+   Nova's paywall protocol, which gates on Pro plus consent). That gate covers
+   the **paid-voice route config** and therefore also bundled clips (Fry's #237, which today play
    whenever the paid route is configured; Sentinel on #237). Required test:
    the free tier gets **zero bundled clips and zero proxy calls**. No bundled
    clips ship before this PR lands;
@@ -714,7 +730,10 @@ after the consent gate and #176 merge and the owner approves the public spend.
   ceiling (9,000 today), owner-bucket cap (= global until any public paid
   voice, then 1,500), sandbox cap (1,500), enrollment cap per day. A bigger
   ceiling means a bigger ElevenLabs plan.
-- **Installs per subscription:** proposal 5 active installs, 10 new links
+- **Interim defaults (Orion) until the owner answers**, each one value in
+  `config/storekit.json` (§5.1): 5 installs per subscription, Sandbox
+  rejected on Production, no grace period, Family Sharing off.
+- **Installs per subscription:** interim 5 active installs, 10 new links
   per 30 days.
 - **Sandbox policy:** allow Sandbox on Production behind the flag with its
   own small bucket (recommended, for App Review/TestFlight), or refuse.
@@ -741,7 +760,8 @@ after the consent gate and #176 merge and the owner approves the public spend.
 1. **App Store Connect (Orion coordinates with the owner):** create the
    subscription group and the two Pro products with the IDs in the shared
    config; set Billing Grace Period and Family Sharing per §11.
-2. **ASC → App Information → App Store Server Notifications:** set the
+2. **ASC → App Information → App Store Server Notifications** (waits on the
+   owner accepting the **Paid Apps Agreement** in ASC): set the
    **Version 2** Production URL to
    `https://<aerodj-tts host>/api/appstore/notifications`, optionally the
    same for Sandbox. Then use Apple's Request a Test Notification endpoint
@@ -767,7 +787,7 @@ after the consent gate and #176 merge and the owner approves the public spend.
    `AERODJ_TTS_ID_HMAC_KEY` (32 random bytes each, Production only); set the
    non-secret vars `AERODJ_TTS_APPLE_APP_ID_PREFIX`,
    `AERODJ_TTS_BUNDLE_ID=com.aerodj.app`, `AERODJ_TTS_APP_ATTEST_ENV=production`,
-   the caps, `AERODJ_TTS_INSTALLS_PER_PURCHASE`,
+   the caps,
    `AERODJ_TTS_ENTITLEMENT_TTL_HOURS`, and the exact-`true` flags. Redeploy
    after each change.
 8. Phase 2 only: DeviceCheck key into Vercel Production env.
