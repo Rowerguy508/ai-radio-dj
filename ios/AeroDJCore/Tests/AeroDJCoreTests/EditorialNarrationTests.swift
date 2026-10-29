@@ -315,7 +315,7 @@ final class EditorialNarrationTests: XCTestCase {
         XCTAssertFalse(route.isPaid)
 
         let budget = VoiceBudget(dailyCapMicrodollars: BetaVoicePolicy.paidSpendAllowedMicrodollars)
-        let renderer = VoiceRenderer(routes: [route], budget: budget, cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
+        let renderer = VoiceRenderer(routes: [route], budget: budget, cache: InMemoryAudioCache())
         for text in ["Good morning.", "You're listening to AeroDJ.", "Up next, Holocene by Bon Iver."] {
             let cue = NarrationCue(id: UUID(), order: 0, group: 0, kind: .transition, text: text, estimatedSeconds: 2,
                                    maxSeconds: 12, sourceItemID: nil, source: nil, provenance: nil)
