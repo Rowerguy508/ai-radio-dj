@@ -122,6 +122,38 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertEqual(r.session.lastNoBreak?.cadencePlanned, false, "the cadence chose silence here")
     }
 
+    /// DJ personality picks the words (Echo, build 27): the session's writer speaks the active
+    /// personality's tone, and an edit reaches the next break that starts preparing even though
+    /// warm/upbeat/laid-back share the same cadence.
+    func testPersonalityPicksTheToneAndAnEditReachesTheNextBreak() async throws {
+        func closing(_ text: String, in tone: EditorialTone, next: DJTrack) -> Bool {
+            tone.closing.contains { TemplatePool.fill($0, ["nextTitle": next.title, "nextArtist": next.artist]) == text }
+        }
+        let tracks = djTracks(12)
+        let r = await rig(.init(personality: .upbeat, commentary: .frequent))
+        await r.session.queueStarted(tracks)
+        let first = try XCTUnwrap(r.session.plannedBoundaries.first)
+        await r.session.songStarted(index: first, remaining: .seconds(180))
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "first break ready")
+        let handedUpbeat = await r.session.naturalBoundary(afterTrack: first)
+        let upbeat = try XCTUnwrap(handedUpbeat)
+        XCTAssertTrue(closing(upbeat.cues.last!.text, in: .classic, next: tracks[first + 1]), upbeat.cues.last!.text)
+        r.session.playbackStarted(afterTrack: first)
+        r.session.playbackFinished(afterTrack: first)
+
+        await r.station.setPersonality(.laidBack)
+        await r.station.saveChanges()
+        let second = try XCTUnwrap(r.session.plannedBoundaries.first { $0 > first })
+        await r.session.songStarted(index: second, remaining: .seconds(180))
+        XCTAssertEqual(r.station.active.personality, .laidBack)
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "second break ready")
+        let handedLaidBack = await r.session.naturalBoundary(afterTrack: second)
+        let laidBack = try XCTUnwrap(handedLaidBack)
+        let text = laidBack.cues.last!.text
+        XCTAssertTrue(closing(text, in: .lateNight, next: tracks[second + 1]), text)
+        XCTAssertFalse(closing(text, in: .classic, next: tracks[second + 1]), "the old tone's words are gone")
+    }
+
     /// DJ talk-over (-Fry): the peek never takes the break, and a dropped talk-over leaves the
     /// Studio idle (not a voice failure) and clears On Air.
     func testTalkoverPeekLeavesTheBreakAndADropGoesIdle() async throws {

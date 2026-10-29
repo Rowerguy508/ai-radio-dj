@@ -50,6 +50,11 @@ final class RadioStyleBreakTests: XCTestCase {
         DJTrack(id: "6", title: "Pink + White", artist: "Frank Ocean"),
     ]
 
+    /// Every selectable tone (Echo, build 27). Pool lint runs on all of them.
+    private let tones: [(name: String, tone: EditorialTone)] = [
+        ("warm", .warm), ("classic", .classic), ("lateNight", .lateNight),
+    ]
+
     private func placeholders(_ line: String) -> Set<String> {
         var found: Set<String> = []
         var rest = Substring(line)
@@ -62,8 +67,8 @@ final class RadioStyleBreakTests: XCTestCase {
 
     // MARK: Pools
 
-    func testWarmPoolsUseOnlyTheirOwnMetadataPlaceholders() {
-        let tone = EditorialTone.warm
+    func testEveryTonePoolUsesOnlyItsOwnMetadataPlaceholders() {
+      for (toneName, tone) in tones {
         let allowed: [(String, [String], Set<String>)] = [
             ("backAnnounce", tone.backAnnounce, ["title", "artist"]),
             ("artistFocus", tone.artistFocus, ["title", "artist"]),
@@ -76,21 +81,23 @@ final class RadioStyleBreakTests: XCTestCase {
             ("greetings", tone.greetings.values.flatMap { $0 }, []),
         ]
         for (name, lines, ok) in allowed {
-            XCTAssertFalse(lines.isEmpty, name)
-            XCTAssertEqual(Set(lines).count, lines.count, "\(name) has no duplicate lines")
+            XCTAssertFalse(lines.isEmpty, "\(toneName).\(name)")
+            XCTAssertEqual(Set(lines).count, lines.count, "\(toneName).\(name) has no duplicate lines")
             for line in lines {
-                XCTAssertTrue(placeholders(line).isSubset(of: ok), "\(name): \(line)")
+                XCTAssertTrue(placeholders(line).isSubset(of: ok), "\(toneName).\(name): \(line)")
             }
         }
         for part in DayPart.allCases {
-            XCTAssertFalse(tone.atmosphere[part, default: []].isEmpty, "time-of-day color for \(part)")
-            XCTAssertFalse(tone.greetings[part, default: []].isEmpty, "greeting for \(part)")
+            XCTAssertFalse(tone.atmosphere[part, default: []].isEmpty, "\(toneName): time-of-day color for \(part)")
+            XCTAssertFalse(tone.greetings[part, default: []].isEmpty, "\(toneName): greeting for \(part)")
         }
-        XCTAssertTrue(tone.closing.allSatisfy { !placeholders($0).isEmpty }, "every closing line names the next song")
+        XCTAssertTrue(tone.closing.allSatisfy { placeholders($0).contains("nextTitle") },
+                      "\(toneName): every closing line names the next song")
+      }
     }
 
-    func testWarmPoolsAreFactFreePlainTextWithoutHype() {
-        let tone = EditorialTone.warm
+    func testEveryToneIsFactFreePlainTextWithoutHype() {
+      for (toneName, tone) in tones {
         for line in tone.allLines {
             XCTAssertFalse(line.contains("<") || line.contains(">"), "no SSML in cloud text: \(line)")
             for hype in EditorialPhrasing.forbiddenHype {
@@ -103,9 +110,10 @@ final class RadioStyleBreakTests: XCTestCase {
             XCTAssertLessThanOrEqual(line.split(separator: " ").count, 7, line)
             XCTAssertEqual(line.filter { $0 == "." }.count, 1, line)
         }
-        XCTAssertTrue(tone.allLines.contains { $0.contains("—") }, "em dashes for natural pauses")
-        XCTAssertTrue(tone.allLines.contains { $0.contains("'") }, "contractions")
-        XCTAssertEqual(EditorialPhrasing.songIntro, tone.closing)
+        XCTAssertTrue(tone.allLines.contains { $0.contains("—") }, "\(toneName): em dashes for natural pauses")
+        XCTAssertTrue(tone.allLines.contains { $0.contains("'") }, "\(toneName): contractions")
+      }
+        XCTAssertEqual(EditorialPhrasing.songIntro, EditorialTone.warm.closing)
     }
 
     // MARK: Break shape and the closing marker
@@ -236,8 +244,39 @@ final class RadioStyleBreakTests: XCTestCase {
         }
     }
 
+    /// Classic and late-night (Echo, build 27): sensible pool sizes, the same distinctness rules
+    /// as warm, and no line shared between two tones, so switching personality changes the words.
+    func testSelectableTonesHaveSensiblePoolsAndShareNoLines() {
+        for (toneName, tone) in tones {
+            XCTAssertGreaterThanOrEqual(tone.backAnnounce.count, 10, toneName)
+            XCTAssertGreaterThanOrEqual(tone.closing.count, 8, toneName)
+            XCTAssertGreaterThanOrEqual(tone.artistFocus.count, 4, toneName)
+            XCTAssertGreaterThanOrEqual(tone.stationID.count, 6, toneName)
+            XCTAssertGreaterThanOrEqual(tone.continuation.count, 5, toneName)
+            XCTAssertGreaterThanOrEqual(tone.briefingLead.count, 3, toneName)
+            XCTAssertGreaterThanOrEqual(tone.briefingOutro.count, 3, toneName)
+            for part in DayPart.allCases {
+                XCTAssertGreaterThanOrEqual(tone.greetings[part, default: []].count, 3, "\(toneName) greetings \(part)")
+                XCTAssertGreaterThanOrEqual(tone.atmosphere[part, default: []].count, 3, "\(toneName) color \(part)")
+            }
+            XCTAssertEqual(Set(tone.allLines).count, tone.allLines.count, "\(toneName): no line appears in two pools")
+            let shapes = tone.allLines.map { line in
+                line.lowercased().filter { $0.isLetter || $0 == " " || $0 == "{" || $0 == "}" }
+                    .split(separator: " ").joined(separator: " ")
+            }
+            XCTAssertEqual(Set(shapes).count, shapes.count, "\(toneName): no paraphrase pairs")
+            XCTAssertFalse(tone.allLines.contains { $0.contains("!") }, "\(toneName): no exclamations")
+        }
+        for (i, a) in tones.enumerated() {
+            for b in tones.dropFirst(i + 1) {
+                let shared = Set(a.tone.allLines).intersection(b.tone.allLines)
+                XCTAssertTrue(shared.isEmpty, "\(a.name) and \(b.name) share \(shared)")
+            }
+        }
+    }
+
     func testTimeOfDayLinesOnlyNameTheirOwnDayPart() {
-        let tone = EditorialTone.warm
+      for (toneName, tone) in tones {
         let foreign: [DayPart: [String]] = [
             .earlyMorning: ["afternoon", "evening", "night"],
             .morning: ["afternoon", "evening", "night"],
@@ -248,14 +287,23 @@ final class RadioStyleBreakTests: XCTestCase {
         for part in DayPart.allCases {
             for line in tone.greetings[part, default: []] + tone.atmosphere[part, default: []] {
                 for word in foreign[part, default: []] {
-                    XCTAssertFalse(line.lowercased().contains(word), "\(part): \(line)")
+                    XCTAssertFalse(line.lowercased().contains(word), "\(toneName) \(part): \(line)")
                 }
             }
         }
+        // Pools that are not tied to a day part are spoken at any hour: no time words.
+        let anyHour = tone.backAnnounce + tone.closing + tone.artistFocus + tone.stationID + tone.continuation
+            + tone.briefingLead + tone.briefingOutro
+        let timeWords: Set<String> = ["morning", "afternoon", "evening", "night", "tonight", "late"]
+        for line in anyHour {
+            let words = Set(line.lowercased().split { !$0.isLetter }.map(String.init))
+            XCTAssertTrue(words.isDisjoint(with: timeWords), "\(toneName), any hour: \(line)")
+        }
+      }
     }
 
     func testWorstCaseDurationsWithLongNamesStayInsideTheCaps() throws {
-        let tone = EditorialTone.warm
+      for (toneName, tone) in tones {
         let cadence = DJCadence()
         func seconds(_ text: String) -> Double { Double(SpokenDurationEstimate.seconds(text)) }
         func fill(_ template: String, _ values: [String: String]) throws -> String {
@@ -289,15 +337,16 @@ final class RadioStyleBreakTests: XCTestCase {
         for seed in UInt64(0)..<100 {
             for hour in [5, 9, 15, 19, 23] {
                 var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed,
-                                            stationName: station)
+                                            stationName: station, tone: tone)
                 let breaks = writer.plan(tracks: tracks, briefing: nil, hour: hour).breaks
-                XCTAssertEqual(breaks.count, 20, "no break skipped for length (seed \(seed), hour \(hour))")
+                XCTAssertEqual(breaks.count, 20, "\(toneName): no break skipped for length (seed \(seed), hour \(hour))")
                 for djBreak in breaks {
                     XCTAssertLessThanOrEqual(djBreak.mainSeconds, Double(cadence.maxTransitionSeconds))
                     XCTAssertLessThanOrEqual(djBreak.closingSeconds, Double(cadence.maxClosingSeconds))
                 }
             }
         }
+      }
     }
 
     func testBriefingBreakKeepsItsCapAndEndsWithTheClosingLine() {
