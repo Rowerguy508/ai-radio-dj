@@ -29,6 +29,56 @@ export interface LogEntry {
   requestId: string;
   status: number;
   chars: number;
+  /** Upstream non-2xx only: ElevenLabs' integer HTTP status. */
+  upstreamStatus?: number;
+  /** Upstream non-2xx only: allowlisted `detail.status` code, else 'other'. */
+  upstreamCode?: string;
+}
+
+/** Bytes of an upstream error body read for `detail.status`; the rest is discarded. */
+export const MAX_ERROR_BODY_BYTES = 4096;
+const UPSTREAM_CODE = /^[a-z0-9_]{1,64}$/;
+
+/** Reads at most `MAX_ERROR_BODY_BYTES` of a response body, then cancels the stream. */
+async function readCapped(res: Response): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < MAX_ERROR_BODY_BYTES) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      const take = value.subarray(0, MAX_ERROR_BODY_BYTES - total);
+      chunks.push(take);
+      total += take.length;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * Returns ElevenLabs' `detail.status` only when it is a short lowercase code
+ * (/^[a-z0-9_]{1,64}$/); anything else (absent, non-JSON, invalid) is 'other'.
+ * The body itself, `detail.message` and every other field are discarded.
+ */
+export async function upstreamErrorCode(res: Response): Promise<string> {
+  let text: string;
+  try {
+    text = await readCapped(res);
+  } catch {
+    return 'other';
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    const detail = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>).detail : undefined;
+    const status = detail && typeof detail === 'object' ? (detail as Record<string, unknown>).status : undefined;
+    return typeof status === 'string' && UPSTREAM_CODE.test(status) ? status : 'other';
+  } catch {
+    return 'other';
+  }
 }
 
 export interface Deps {
@@ -36,7 +86,7 @@ export interface Deps {
   fetch: typeof fetch;
   /** null = no acceptable limiter configured (production without a durable store): fail closed. */
   limiter: UsageLimiter | null;
-  /** Receives exactly { requestId, status, chars } and nothing else. */
+  /** Receives { requestId, status, chars }, plus { upstreamStatus, upstreamCode } on an upstream non-2xx only. */
   log: (entry: LogEntry) => void;
   now: () => number;
   timeoutMs: number;
@@ -102,8 +152,19 @@ export function defaultDeps(env: Env = process.env): Deps {
     env,
     fetch: globalThis.fetch,
     limiter: defaultLimiter(env),
-    // Structured, minimal: request ID, status and character count only.
-    log: (entry) => console.log(JSON.stringify({ requestId: entry.requestId, status: entry.status, chars: entry.chars })),
+    // Structured, minimal: request ID, status and character count; on an upstream
+    // non-2xx also the integer upstream status and the allowlisted detail code.
+    log: (entry) =>
+      console.log(
+        JSON.stringify({
+          requestId: entry.requestId,
+          status: entry.status,
+          chars: entry.chars,
+          ...(entry.upstreamStatus !== undefined && entry.upstreamCode !== undefined
+            ? { upstreamStatus: entry.upstreamStatus, upstreamCode: entry.upstreamCode }
+            : {}),
+        }),
+      ),
     now: Date.now,
     timeoutMs: UPSTREAM_TIMEOUT_MS,
     requestId: () => crypto.randomUUID(),
@@ -145,8 +206,12 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   const requestId = deps.requestId();
   let chars = 0;
 
-  const fail = (status: number, extra: Record<string, string> = {}): TtsResponse => {
-    deps.log({ requestId, status, chars });
+  const fail = (
+    status: number,
+    extra: Record<string, string> = {},
+    upstream?: { upstreamStatus: number; upstreamCode: string },
+  ): TtsResponse => {
+    deps.log(upstream ? { requestId, status, chars, ...upstream } : { requestId, status, chars });
     return {
       status,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Request-Id': requestId, ...extra },
@@ -223,10 +288,11 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
       signal: controller.signal,
     });
     if (!upstream.ok) {
-      // Drain without reading into logs or the response.
-      await upstream.body?.cancel().catch(() => {});
+      // Read at most 4 KB for the allowlisted detail.status code, then drop the body.
+      // Neither the body nor detail.message reaches the logs or the response.
+      const upstreamCode = await upstreamErrorCode(upstream);
       await refund();
-      return fail(502);
+      return fail(502, {}, { upstreamStatus: upstream.status, upstreamCode });
     }
     upstreamCost = upstream.headers.get('character-cost');
     pcm = Buffer.from(await upstream.arrayBuffer());

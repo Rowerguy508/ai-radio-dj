@@ -362,10 +362,12 @@ test('logs contain only requestId, status and chars; never text, token, key or v
   for (const secret of [SECRET_TEXT, TOKEN, TOKEN_HASH, 'wrong-secret-token', API_KEY, VOICE, 'evilVoice', 'UPSTREAM-SECRET', 'Bearer']) {
     assert.ok(!all.includes(secret), `log leaked ${secret}`);
   }
-  for (const line of lines) {
+  for (const line of lines.slice(0, 3)) {
     const parsed = JSON.parse(line);
     assert.deepEqual(Object.keys(parsed).sort(), ['chars', 'requestId', 'status']);
   }
+  // The upstream non-2xx line adds exactly upstreamStatus and upstreamCode.
+  assert.deepEqual(Object.keys(JSON.parse(lines[3])).sort(), ['chars', 'requestId', 'status', 'upstreamCode', 'upstreamStatus']);
   assert.deepEqual(lines.map((l) => JSON.parse(l).status), [200, 401, 400, 502]);
 });
 
@@ -580,4 +582,112 @@ test('no acceptable limiter returns generic 500 without calling upstream', async
   const res = await handleTts(request(), h.deps);
   assert.equal(res.status, 500);
   assert.equal(h.calls.length, 0);
+});
+
+// --- Upstream failure diagnostics: integer status + allowlisted detail.status code only ---
+async function captureUpstreamFailure(upstream: () => Response, text = SECRET_TEXT) {
+  const lines: string[] = [];
+  const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
+    mock.method(console, m, (...args: unknown[]) => lines.push(args.map(String).join(' '))),
+  );
+  let res;
+  try {
+    const deps = {
+      ...defaultDeps(baseEnv()),
+      limiter: new InMemoryUsageLimiter({ dailyCharCap: 1e6, requestsPerMinute: 1e6 }),
+      fetch: (async () => upstream()) as typeof fetch,
+    };
+    res = await handleTts(request({ text }), deps);
+  } finally {
+    spies.forEach((s) => s.mock.restore());
+  }
+  assert.equal(lines.length, 1);
+  return { res, line: lines[0], parsed: JSON.parse(lines[0]) as Record<string, unknown> };
+}
+
+const GENERIC_502_KEYS = ['error', 'requestId'];
+
+test('upstream 402 logs upstreamStatus 402 and upstreamCode payment_required, never the message, voice or text', async () => {
+  const { res, line, parsed } = await captureUpstreamFailure(
+    () => new Response(JSON.stringify({ detail: { status: 'payment_required', message: 'secret text' } }), { status: 402 }),
+  );
+  assert.equal(parsed.upstreamStatus, 402);
+  assert.equal(parsed.upstreamCode, 'payment_required');
+  for (const leak of ['secret text', VOICE, SECRET_TEXT, 'message', 'detail']) assert.ok(!line.includes(leak), `log leaked ${leak}`);
+  assert.equal(res.status, 502);
+  assert.deepEqual(Object.keys(errorBody(res)).sort(), GENERIC_502_KEYS);
+  assert.equal(errorBody(res).error, 'Upstream error');
+  assert.ok(!res.body.toString().includes('payment_required'));
+});
+
+test('upstream non-JSON body logs upstreamCode other', async () => {
+  const { parsed } = await captureUpstreamFailure(() => new Response('<html>Bad Gateway</html>', { status: 500 }));
+  assert.equal(parsed.upstreamStatus, 500);
+  assert.equal(parsed.upstreamCode, 'other');
+});
+
+test('absent or invalid detail.status logs upstreamCode other', async () => {
+  const bodies = [
+    {},
+    { detail: 'quota_exceeded' },
+    { detail: { message: 'no status' } },
+    { detail: { status: 42 } },
+    { detail: { status: 'has spaces in it' } },
+    { detail: { status: 'UPPER_case' } },
+    { detail: { status: 'a'.repeat(65) } },
+    { detail: { status: '' } },
+  ];
+  for (const body of bodies) {
+    const { parsed, line } = await captureUpstreamFailure(() => new Response(JSON.stringify(body), { status: 401 }));
+    assert.equal(parsed.upstreamStatus, 401);
+    assert.equal(parsed.upstreamCode, 'other', JSON.stringify(body));
+    assert.ok(!line.includes('has spaces') && !line.includes('a'.repeat(65)) && !line.includes('UPPER'));
+  }
+  // Exactly 64 allowed characters still passes the allowlist.
+  const ok = await captureUpstreamFailure(() => new Response(JSON.stringify({ detail: { status: 'b'.repeat(64) } }), { status: 401 }));
+  assert.equal(ok.parsed.upstreamCode, 'b'.repeat(64));
+});
+
+test('hostile upstream body: log holds only the two added fields and none of its values', async () => {
+  const FAKE_KEY = 'sk_live_FAKE123';
+  const LONG = 'L'.repeat(2_000); // keeps the body under the 4 KB cap so it is parsed
+  const hostile = JSON.stringify({
+    detail: { status: 'quota_exceeded', message: `${SECRET_TEXT} ${VOICE} ${FAKE_KEY}` },
+    echo: { text: SECRET_TEXT, voice_id: VOICE, key: FAKE_KEY, xi: API_KEY, token: TOKEN },
+    long: LONG,
+  });
+  assert.ok(Buffer.byteLength(hostile) < 4096);
+  const { res, line, parsed } = await captureUpstreamFailure(() => new Response(hostile, { status: 401 }));
+  assert.deepEqual(Object.keys(parsed).sort(), ['chars', 'requestId', 'status', 'upstreamCode', 'upstreamStatus']);
+  assert.equal(parsed.status, 502);
+  assert.equal(parsed.upstreamStatus, 401);
+  assert.equal(parsed.upstreamCode, 'quota_exceeded');
+  for (const leak of [SECRET_TEXT, VOICE, FAKE_KEY, API_KEY, TOKEN, 'LLLLLLLL', 'message', 'echo']) {
+    assert.ok(!line.includes(leak), `log leaked ${leak.slice(0, 20)}`);
+    assert.ok(!res.body.toString().includes(leak), `response leaked ${leak.slice(0, 20)}`);
+  }
+});
+
+test('upstream error body is read at most 4 KB: a status beyond the cap is not parsed', async () => {
+  // Valid JSON overall, but detail.status sits after the 4 KB cap, so the truncated text fails to parse.
+  const body = JSON.stringify({ pad: 'p'.repeat(5000), detail: { status: 'quota_exceeded' } });
+  const { parsed } = await captureUpstreamFailure(() => new Response(body, { status: 429 }));
+  assert.equal(parsed.upstreamStatus, 429);
+  assert.equal(parsed.upstreamCode, 'other');
+});
+
+test('upstream failure still returns the same generic 502 body and refunds the reservation', async () => {
+  const limiter = new InMemoryUsageLimiter({ dailyCharCap: 600, requestsPerMinute: 100 });
+  const h = harness({
+    limiter,
+    fetch: async () => new Response(JSON.stringify({ detail: { status: 'payment_required', message: 'secret text' } }), { status: 402 }),
+  });
+  const res = await handleTts(request({ text: 'x'.repeat(600) }), h.deps);
+  assert.equal(res.status, 502);
+  assert.deepEqual(errorBody(res), { error: 'Upstream error', requestId: 'req-1' });
+  assert.equal(res.headers['Content-Type'], 'application/json');
+  assert.deepEqual(h.logs, [{ requestId: 'req-1', status: 502, chars: 600, upstreamStatus: 402, upstreamCode: 'payment_required' }]);
+  // Refunded: the full 600-char cap is available again.
+  const again = harness({ limiter });
+  assert.equal((await handleTts(request({ text: 'x'.repeat(600) }), again.deps)).status, 200);
 });
