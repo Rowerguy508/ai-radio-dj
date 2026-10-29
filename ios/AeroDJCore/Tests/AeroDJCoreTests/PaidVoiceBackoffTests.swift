@@ -649,8 +649,7 @@ final class PaidVoiceBackoffTests: XCTestCase {
     }
 
     func test400MixedAuthAnd405StopForThisLaunch() async {
-        for response in [ScriptedResponse.proxyError(400, reason: "mixed_auth"), ScriptedResponse(status: 405),
-                         .proxyError(400, reason: "something_new")] {
+        for response in [ScriptedResponse.proxyError(400, reason: "mixed_auth"), ScriptedResponse(status: 405)] {
             let backoff = PaidVoiceBackoff(now: { [t0] in t0 })
             let transport = ScriptedTransport([response, .ok])
             let r = renderer(transport, backoff)
@@ -663,7 +662,10 @@ final class PaidVoiceBackoffTests: XCTestCase {
 
     func test400BadRequestAnd413DoNotRetryThatRequestButDoNotPause() async {
         for response in [ScriptedResponse.proxyError(400, reason: "bad_request"), .proxyError(413, reason: "too_large"),
-                         ScriptedResponse(status: 413)] {
+                         ScriptedResponse(status: 413), ScriptedResponse(status: 400),
+                         ScriptedResponse(status: 400, headers: ["Content-Type": "application/json"],
+                                          body: Data(#"{"error":"voice not allowed","requestId":"r1"}"#.utf8)),
+                         .proxyError(400, reason: "something_new")] {
             let store = MemoryBackoffStore()
             let backoff = PaidVoiceBackoff(store: store, now: { [t0] in t0 })
             let transport = ScriptedTransport([response, .ok])
@@ -741,5 +743,45 @@ final class PaidVoiceBackoffTests: XCTestCase {
             for n in 1...3 { _ = await render(r, n) }
             XCTAssertEqual(transport.callCount, 3, "\(response.status): opt-in only, nil backoff is the old behavior")
         }
+    }
+
+    /// Today's proxy (#238/#241) answers 400 with no reason for routine validation failures
+    /// (unlisted voice, text too long). That must not stop the paid voice for the session.
+    func testReasonless400IsBadRequestAndDoesNotStopTheSession() async {
+        let store = MemoryBackoffStore()
+        let backoff = PaidVoiceBackoff(store: store, now: { [t0] in t0 })
+        let transport = ScriptedTransport([ScriptedResponse(status: 400), ScriptedResponse(status: 400), .ok])
+        let r = renderer(transport, backoff)
+        _ = await render(r, 1)
+        _ = await render(r, 2)
+        let third = await render(r, 3)
+        XCTAssertEqual(third, "elevenlabs", "a reasonless 400 only skips that cue")
+        XCTAssertEqual(transport.callCount, 3)
+        XCTAssertNil(backoff.stopReason)
+        XCTAssertFalse(backoff.isStoppedForThisLaunch)
+        XCTAssertEqual(store.saveCount, 0)
+    }
+
+    /// 503 `store`: max(Retry-After, exponential), so a long Redis outage that keeps sending
+    /// `Retry-After: 30` still backs off 30, 60, 120 ... up to 15 min.
+    func test503StoreUsesTheLongerOfRetryAfterAndExponential() async {
+        let clock = TestClock(t0)
+        let backoff = PaidVoiceBackoff(now: { clock.now })
+        let transport = ScriptedTransport([.proxyError(503, reason: "store", retryAfter: "30")])
+        let r = renderer(transport, backoff)
+        var waits: [TimeInterval] = []
+        for n in 1...7 {
+            _ = await render(r, n)
+            let wait = (backoff.suspendedUntil() ?? clock.now).timeIntervalSince(clock.now)
+            waits.append(wait)
+            clock.advance(wait)
+        }
+        XCTAssertEqual(waits, [30, 60, 120, 240, 480, 900, 900])
+        XCTAssertEqual(transport.callCount, 7)
+        XCTAssertEqual(PaidVoiceBackoff.serviceUnavailableWait(retryAfter: "600", reason: .store, consecutiveFailures: 2, now: t0), 600,
+                       "a longer Retry-After still wins")
+        XCTAssertEqual(PaidVoiceBackoff.serviceUnavailableWait(retryAfter: "30", reason: .store, consecutiveFailures: 4, now: t0), 240)
+        XCTAssertEqual(PaidVoiceBackoff.serviceUnavailableWait(retryAfter: "30", reason: .disabled, consecutiveFailures: 4, now: t0), 30,
+                       "only store takes the max; other reasons keep Retry-After")
     }
 }

@@ -18,7 +18,8 @@ import Foundation
 /// - **503 and every other 5xx** (`500 misconfig`, `502 upstream`, `504 upstream_timeout` are
 ///   "treat as 503 unknown"): `Retry-After` when present, clamped to [30 s, 24 h]. Without it,
 ///   `disabled` (the kill switch) waits 1 h, `apple` (App Store status API unreachable) waits
-///   5 min, and `store` or anything else uses the exponential backoff. Persisted.
+///   5 min, and `store` or anything else uses the exponential backoff. `store` always waits
+///   max(`Retry-After`, exponential), so a long Redis outage doesn't retry every 30 s. Persisted.
 /// - **Transport error**: exponential backoff, 30 s doubling per consecutive failure up to 15 min.
 ///   No 5xx or transport error ever shortens a longer suspension.
 /// - **Stop for the rest of this launch** (in memory only, never persisted; the next launch tries
@@ -27,8 +28,10 @@ import Foundation
 /// - **403 `no_entitlement`**: stop paid calls in memory until `entitlementDidChange()` (called on
 ///   `Transaction.updates` or after a successful `/api/entitlement` re-sync) or the next launch.
 ///   Nothing here opens a paywall: the only effect is that the provider throws `.suspended`.
-/// - **400 `bad_request` and 413**: that request is not retried (on-device for the cue); no state
-///   change, so the next cue may use the paid route.
+/// - **400 `bad_request`, a 400 with a missing or unknown reason, and 413**: that request is not
+///   retried (on-device for the cue); no state change, so the next cue may use the paid route.
+///   Today's proxy (#238/#241) sends a reasonless 400 for routine validation failures (unlisted
+///   voice, text too long), so only 400 `mixed_auth` stops the session.
 /// - **200 whose audio fails validation** (content type, size, duration): the call may already be
 ///   billed, so pause 5 min doubling per consecutive failure up to 1 h. Persisted. Never shortens
 ///   a longer suspension.
@@ -280,7 +283,10 @@ public final class PaidVoiceBackoff: @unchecked Sendable {
     public static func serviceUnavailableWait(retryAfter: String?, reason: ProxyErrorReason?,
                                               consecutiveFailures: Int, now: Date) -> TimeInterval {
         if let header = retryAfter.flatMap({ retryAfterInterval($0, now: now) }) {
-            return min(max(header, serverErrorBaseWait), maximumRateLimitWait)
+            var wait = max(header, serverErrorBaseWait)
+            // `store` (durable store down): never sooner than the exponential backoff.
+            if reason == .store { wait = max(wait, serverErrorWait(consecutiveFailures: consecutiveFailures)) }
+            return min(wait, maximumRateLimitWait)
         }
         if reason == .disabled { return disabledWait }
         if reason == .apple { return appleWait }

@@ -116,8 +116,10 @@ public struct ProxyVoiceProvider: VoiceProvider {
         case 401: backoff.recordUnauthorized()
         case 403 where reason == .noEntitlement: backoff.recordNoEntitlement()
         case 403 where reason == .installLimit: backoff.recordInstallLimit()
-        // Do not retry that request; the next cue may use the paid route again.
-        case 400 where reason == .badRequest, 413: break
+        // `bad_request` (or a 400 with no or an unknown reason: today's proxy sends a reasonless 400
+        // for routine validation failures such as an unlisted voice or text too long) and 413: do
+        // not retry that request; the next cue may use the paid route again.
+        case 400 where reason != .mixedAuth, 413: break
         case 429: backoff.recordRateLimited(retryAfter: retryAfter, reason: reason)
         // 503, and every other 5xx is "treat as 503 unknown" (Retry-After, else exponential).
         case 500...599: backoff.recordServiceUnavailable(retryAfter: retryAfter, reason: reason)
