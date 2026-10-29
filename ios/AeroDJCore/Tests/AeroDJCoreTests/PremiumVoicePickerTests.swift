@@ -144,7 +144,7 @@ final class PremiumVoicePickerTests: XCTestCase {
 
     /// Fail-closed host pinning: exact hosts only, no suffix rule, empty pins omit the route.
     func testHostPinningIsExactAndFailsClosed() {
-        XCTAssertTrue(PremiumVoiceRoutes.allowedHosts.isEmpty, "pin the deployed host explicitly")
+        XCTAssertEqual(PremiumVoiceRoutes.allowedHosts, ["aerodj-tts.vercel.app"], "the production host only")
         let lookalike = PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts-x.vercel.app/api/tts")!, token: "t")
         XCTAssertFalse(PremiumVoiceRoutes.isAllowed(host: "aerodj-tts-x.vercel.app", pinned: pinned))
         XCTAssertEqual(PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: jade,
@@ -152,7 +152,12 @@ final class PremiumVoicePickerTests: XCTestCase {
                        .omitted(.endpointNotAllowed))
         XCTAssertEqual(PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: jade,
                                                   credentials: creds).decision,
-                       .omitted(.endpointNotAllowed), "default (empty) pins omit the route")
+                       .included(catalogIndex: 3), "the default pin admits the production host")
+        let preview = PremiumProxyCredentials(
+            endpoint: URL(string: "https://aerodj-tts-git-main-rowerguy508.vercel.app/api/tts")!, token: "t")
+        XCTAssertEqual(PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: jade,
+                                                  credentials: preview).decision,
+                       .omitted(.endpointNotAllowed), "a preview deployment is not pinned")
         XCTAssertEqual(PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: jade,
                                                   credentials: creds, pinnedHosts: pinned).decision,
                        .included(catalogIndex: 3))
@@ -178,7 +183,7 @@ final class PremiumVoicePickerTests: XCTestCase {
                                            credentials: creds, pinnedHosts: pinned, transport: transport)
         let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
                                      cache: InMemoryAudioCache())
-        guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s") else {
+        guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s", attribution: .presenter) else {
             return XCTFail("proxy route should render")
         }
         XCTAssertEqual(clip.audio.providerID, "elevenlabs")
@@ -196,7 +201,7 @@ final class PremiumVoicePickerTests: XCTestCase {
                                                credentials: creds, pinnedHosts: pinned, transport: transport)
             let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
                                          cache: InMemoryAudioCache())
-            guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s") else {
+            guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s", attribution: .presenter) else {
                 return XCTFail("on-device must rescue status \(status)")
             }
             XCTAssertEqual(clip.audio.providerID, "device")
@@ -214,7 +219,7 @@ final class PremiumVoicePickerTests: XCTestCase {
                                            credentials: creds, pinnedHosts: pinned, transport: transport)
         let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
                                      cache: InMemoryAudioCache())
-        guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s") else {
+        guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s", attribution: .presenter) else {
             return XCTFail("on-device must rescue an over-cap clip")
         }
         XCTAssertEqual(clip.audio.providerID, "device")

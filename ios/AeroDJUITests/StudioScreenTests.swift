@@ -326,20 +326,25 @@ final class StudioScreenTests: XCTestCase {
         }
     }
 
-    /// `.ready` must not print the break headline or its VoiceOver detail.
-    /// Either can stay on screen when no break plays.
+    /// Open (Studio): `.ready` must not print the break headline or its VoiceOver detail.
+    /// Folded: a quiet, static "DJ break after this song" line shows instead (Fry, #161).
     @MainActor
     func testReadyStateShowsNoBreakText() throws {
         let app = launch(scenario: "breakReady")
         let layout = isOpenLayout ? "layout.studio" : "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
                       "ready capture did not show \(layout):\n\(app.debugDescription)")
-        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen while the break line is hidden")
+        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
         // `shows` reads XCUIElement.label, which is the visible text and the accessibility label.
-        XCTAssertFalse(shows(app, "break"), ".ready must not expose break text in visible text or the accessibility label")
-        XCTAssertFalse(shows(app, "after this song"), ".ready must not expose after-this-song text in visible text or the accessibility label")
+        if isOpenLayout {
+            XCTAssertFalse(shows(app, "break"), ".ready must not expose break text in visible text or the accessibility label")
+            XCTAssertFalse(shows(app, "after this song"), ".ready must not expose after-this-song text in visible text or the accessibility label")
+        } else {
+            XCTAssertTrue(app.descendants(matching: .any)["dj.ready"].exists, "folded .ready shows its quiet line")
+            XCTAssertFalse(shows(app, "On Air"), ".ready never claims the DJ is speaking")
+        }
         XCTAssertTrue(app.buttons["transport.playPause"].exists)
-        save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-no-break")
+        save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-line")
     }
 
     @MainActor

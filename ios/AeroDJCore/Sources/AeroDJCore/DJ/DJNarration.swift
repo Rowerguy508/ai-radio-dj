@@ -40,8 +40,11 @@ public struct DJCadence: Equatable, Sendable {
     /// Target share of song boundaries that get a music-only break (0...1). The spacing rule
     /// caps what is achievable at `1 / (minSongsBetweenBreaks + 1)`; see `expectedTalkShare`.
     public var talkFraction: Double
-    /// Whole songs that must play between two breaks (at least 1: never back-to-back).
+    /// Whole songs that must play between two breaks. At least 1 (never back-to-back) unless
+    /// `allowsBackToBack`, which only the owner's Chatty override sets.
     public var minSongsBetweenBreaks: Int
+    /// Chatty only: a break may follow every song (`minSongsBetweenBreaks` 0).
+    public var allowsBackToBack: Bool
     /// Cap for a break with no briefing content.
     public var maxTransitionSeconds: Int
     /// Cap for a break that carries briefing cues. Durable notes that do not fit
@@ -49,9 +52,11 @@ public struct DJCadence: Equatable, Sendable {
     public var maxBriefingBreakSeconds: Int
 
     public init(talkFraction: Double = 0.3, minSongsBetweenBreaks: Int = 2,
-                maxTransitionSeconds: Int = 12, maxBriefingBreakSeconds: Int = 45) {
+                maxTransitionSeconds: Int = 12, maxBriefingBreakSeconds: Int = 45,
+                allowsBackToBack: Bool = false) {
         self.talkFraction = min(max(talkFraction, 0), 1)
-        self.minSongsBetweenBreaks = max(1, minSongsBetweenBreaks)
+        self.allowsBackToBack = allowsBackToBack
+        self.minSongsBetweenBreaks = max(allowsBackToBack ? 0 : 1, minSongsBetweenBreaks)
         self.maxTransitionSeconds = maxTransitionSeconds
         self.maxBriefingBreakSeconds = maxBriefingBreakSeconds
     }

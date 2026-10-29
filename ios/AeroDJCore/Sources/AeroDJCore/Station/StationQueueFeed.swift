@@ -6,6 +6,7 @@ import Observation
 //   committed station (pending ?? active)  --prepare-->  resolver -> StationPoolBuilder -> playable items (staged)
 //   natural song boundary (after pending changes applied)  --takeForBoundary-->  staged queue replaces the queue
 //   Play with nothing queued  --takeForIdleStart-->  staged queue starts
+//   the boundary before the queue's last song  --refill-->  [last song] + station songs
 //
 // Rules:
 // - Never mid-song. A station change applies only where the existing boundary rules apply it
@@ -16,6 +17,11 @@ import Observation
 //   keeps playing (or Play shows its existing "nothing to resume" message). Never an empty queue.
 // - A queue the listener started (a search tap) belongs to the station committed at that moment,
 //   so it is never replaced unless the station's music settings change after it started.
+// - Refill (Echo's conditions): the station refills a queue at the boundary *before* its last
+//   song starts, as a new queue `[last song] + station songs` started like a tap, so the DJ session
+//   plans the last song's break through the normal `queueStarted` replan; every break then names
+//   only songs that are really queued (the DJ's list is the player's list). Any failure hands out
+//   nothing and today's path runs unchanged: the last song plays and the station stops after it.
 // - Library seeds play only themselves: `StationPoolBuilder.build(_:configuration:)` validates the
 //   configuration (reach clamped to `.only`) and the resolver never expands a library seed.
 // - Logs are `StationQueueEvent`s: enums, bools and counts only. No seed, song, artist or ID.
@@ -89,6 +95,8 @@ public enum StationQueueKeepReason: String, Equatable, Sendable, CaseIterable {
 
 public enum StationQueueTrigger: String, Equatable, Sendable, CaseIterable {
     case songBoundary, idleStart
+    /// The boundary before the queue's last song: the station continues after it.
+    case refill
 }
 
 /// Diagnostics. Enums and counts only.
@@ -132,6 +140,7 @@ public final class StationQueueFeed<Item: Sendable> {
     private let day: @MainActor () -> Int
     private let recentlyPlayed: @MainActor () -> Set<String>
     private let log: @MainActor (StationQueueEvent) -> Void
+    private let refillLead: Int
 
     private var staged: (key: StationQueueKey, items: [Item])?
     private var building: StationQueueKey?
@@ -146,12 +155,15 @@ public final class StationQueueFeed<Item: Sendable> {
     ///   - options: `limit` and `artistGap` for one queue; `shuffleSeed` and `excludedSongIDs` are set per build.
     ///   - day: a day number for the shuffle seed (the app passes days since the reference date).
     ///   - recentlyPlayed: song IDs to leave out (the current queue's played songs).
+    ///   - refillLead: start building the refill when this many songs or fewer are left to load.
     public init(resolver: any StationSeedResolver,
                 materialize: @escaping Materialize,
                 options: StationPoolBuilder.Options = .init(),
                 day: @escaping @MainActor () -> Int = { Int(Date().timeIntervalSinceReferenceDate / 86_400) },
                 recentlyPlayed: @escaping @MainActor () -> Set<String> = { [] },
+                refillLead: Int = 3,
                 log: @escaping @MainActor (StationQueueEvent) -> Void = { _ in }) {
+        self.refillLead = max(1, refillLead)
         self.resolver = resolver
         self.materialize = materialize
         self.options = options
@@ -215,8 +227,59 @@ public final class StationQueueFeed<Item: Sendable> {
     /// A queue started (any queue: a search tap or a hand-off). It belongs to `committed`, the
     /// station committed at that moment (`StationConfigurationModel.committedDisplayed`), so a
     /// station change saved before the tap does not replace the tapped songs at the next boundary.
-    public func queueStarted(for committed: StationConfiguration) {
+    /// `songCount` is the new queue's length: a short queue starts building its refill now.
+    public func queueStarted(for committed: StationConfiguration, songCount: Int? = nil) {
         playingKey = StationQueueKey(committed)
+        if let songCount, songCount <= refillLead { prefetch(committed) }
+    }
+
+    /// The one call at a natural boundary, after the break, before the next song loads. `queue` is
+    /// the playing queue and `finishedIndex` the song that just ended. Returns the queue to start
+    /// instead of loading `queue[finishedIndex + 1]`, or `nil` to load it exactly as today:
+    /// 1. the station's music settings changed since this queue began: the new station's queue;
+    /// 2. the next song is the queue's last: a refill, `[that song] + station songs`, started now so
+    ///    the DJ plans the last song's break with a song that is really queued next.
+    /// Anything not ready, empty, held, or no next song at all: `nil` (today's stop path).
+    /// `sameSong` matches two items as the same song; station songs already in `queue` are dropped.
+    public func queueForNextSong(after finishedIndex: Int, in queue: [Item], active: StationConfiguration,
+                                 playbackMayStart: Bool, sameSong: (Item, Item) -> Bool) -> [Item]? {
+        if let switched = takeForBoundary(active: active, playbackMayStart: playbackMayStart) { return switched }
+        let next = finishedIndex + 1
+        guard queue.indices.contains(next) else { return nil }
+        if queue.count - next <= refillLead { prefetch(active) }
+        guard next == queue.count - 1 else { return nil }
+        return takeForRefill(lastSong: queue[next], queue: queue, active: active,
+                             playbackMayStart: playbackMayStart, sameSong: sameSong)
+    }
+
+    /// `[lastSong] + staged station songs not already in `queue``, or `nil` (today's behavior).
+    func takeForRefill(lastSong: Item, queue: [Item], active: StationConfiguration,
+                       playbackMayStart: Bool, sameSong: (Item, Item) -> Bool) -> [Item]? {
+        guard let key = StationQueueKey(active) else { return keep(.refill, .noStation) }
+        guard playbackMayStart else { return keep(.refill, .playbackHeld) }
+        guard let ready = staged, ready.key == key else {
+            prefetch(active)
+            return keep(.refill, .notReady)
+        }
+        let fresh = ready.items.filter { item in !queue.contains { sameSong($0, item) } }
+        guard !fresh.isEmpty else {
+            staged = nil
+            prefetch(active)
+            return keep(.refill, .notReady)
+        }
+        staged = nil
+        playingKey = key
+        let refill = [lastSong] + fresh
+        log(.handedOff(.refill, songs: refill.count))
+        // A short refill starts its own refill now (its start skips `queueStarted`'s check).
+        if refill.count <= refillLead { prefetch(active) }
+        return refill
+    }
+
+    /// Builds `configuration`'s queue in the background unless it is staged or building.
+    private func prefetch(_ configuration: StationConfiguration) {
+        guard let key = StationQueueKey(configuration), staged?.key != key, building != key else { return }
+        Task { await self.prepare(configuration) }
     }
 
     /// Call at a natural boundary, after `DJBreakSession.naturalBoundary` applied pending changes
@@ -247,7 +310,7 @@ public final class StationQueueFeed<Item: Sendable> {
         guard playbackMayStart else { return keep(trigger, .playbackHeld) }
         guard let ready = staged, ready.key == key, !ready.items.isEmpty else {
             // Not built in time, or the build failed (offline): try again for a later boundary.
-            if building != key { Task { await self.prepare(active) } }
+            prefetch(active)
             return keep(trigger, .notReady)
         }
         staged = nil

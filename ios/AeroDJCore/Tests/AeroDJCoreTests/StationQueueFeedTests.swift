@@ -52,6 +52,7 @@ private final class QueueEventRecorder {
 @MainActor
 private func makeFeed(_ catalog: QueueFakeCatalog, recorder: QueueEventRecorder = QueueEventRecorder(), limit: Int = 10,
                       playable: @escaping @Sendable (StationCandidate) -> Bool = { _ in true },
+                      refillLead: Int = 3,
                       recentlyPlayed: @escaping @MainActor () -> Set<String> = { [] }) -> StationQueueFeed<String> {
     StationQueueFeed<String>(
         resolver: CatalogStationSeedResolver(catalog: catalog),
@@ -59,6 +60,7 @@ private func makeFeed(_ catalog: QueueFakeCatalog, recorder: QueueEventRecorder 
         options: .init(limit: limit),
         day: { 42 },
         recentlyPlayed: recentlyPlayed,
+        refillLead: refillLead,
         log: { recorder.events.append($0) })
 }
 
@@ -346,4 +348,190 @@ final class StationQueueFeedBoundaryTests: XCTestCase {
         let after = await catalog.asked.count
         XCTAssertEqual(before, after)
     }
+}
+
+// Refill at the queue's end (-Atlas). Echo's conditions, one suite each:
+// (1) it lands before the last song starts, so the DJ plans that song's break via `queueStarted`;
+// (2) on any failure nothing is handed out and today's stop path runs unchanged;
+// (3) no break ever names a song that is not actually queued.
+
+private let refillStation = station([seed(.artist, "1")])
+
+@MainActor
+private func until(_ condition: @MainActor () -> Bool, _ message: String = "",
+                   file: StaticString = #filePath, line: UInt = #line) async {
+    for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
+    XCTAssertTrue(condition(), message, file: file, line: line)
+}
+
+@MainActor
+private func refillFeed(_ catalog: QueueFakeCatalog = QueueFakeCatalog(),
+                        recorder: QueueEventRecorder = QueueEventRecorder()) async -> StationQueueFeed<String> {
+    let feed = makeFeed(catalog, recorder: recorder)
+    feed.queueStarted(for: refillStation)
+    _ = await feed.prepare(refillStation)
+    return feed
+}
+
+@MainActor
+private func next(_ feed: StationQueueFeed<String>, after finished: Int, in queue: [String],
+                  active: StationConfiguration = refillStation, mayStart: Bool = true) -> [String]? {
+    feed.queueForNextSong(after: finished, in: queue, active: active, playbackMayStart: mayStart, sameSong: ==)
+}
+
+/// Unique, non-overlapping titles so a break's text can be checked for every queued song.
+private func djTrack(_ id: String) -> DJTrack { DJTrack(id: id, title: "Song <\(id)>", artist: "Artist <\(id)>") }
+
+@MainActor
+final class StationQueueRefillLandsBeforeTheLastSongTests: XCTestCase {
+    func testTheRefillIsHandedOutOnlyAtTheBoundaryBeforeTheLastSong() async throws {
+        let recorder = QueueEventRecorder()
+        let feed = await refillFeed(recorder: recorder)
+        let queue = ["mine-0", "mine-1", "mine-2"]
+        XCTAssertNil(next(feed, after: 0, in: queue), "song 1 is not the last: it loads as today")
+        XCTAssertGreaterThan(feed.stagedCount ?? 0, 0, "nothing was used up early")
+
+        let refill = try XCTUnwrap(next(feed, after: 1, in: queue), "song 2 is last: refill before it starts")
+        XCTAssertEqual(refill.first, "mine-2", "the last song still plays next, now as the refill's first song")
+        XCTAssertGreaterThan(refill.count, 1, "the station continues after it")
+        XCTAssertNil(feed.stagedCount, "used up")
+        XCTAssertEqual(recorder.events.last, .handedOff(.refill, songs: refill.count))
+    }
+
+    func testOnceTheLastSongHasStartedThereIsNoRefill() async {
+        let feed = await refillFeed()
+        XCTAssertNil(next(feed, after: 2, in: ["a", "b", "c"]), "after the last song: today's stop path")
+        XCTAssertGreaterThan(feed.stagedCount ?? 0, 0)
+    }
+
+    func testTheLastSongsBreakIsPlannedThroughTheNormalQueueStartedReplan() async throws {
+        let feed = await refillFeed()
+        let refill = try XCTUnwrap(next(feed, after: 1, in: ["a", "b", "c"]))
+        let r = await djRig()
+        // The tap path's queueStarted, exactly as for any new queue (StationQueuePlayer uses TapPlaySequence).
+        await r.session.queueStarted(refill.map(djTrack))
+        XCTAssertEqual(r.session.testQueueTrackIDs, refill, "the DJ plans the queue the player plays")
+        XCTAssertEqual(r.session.plannedBoundaries.first, 0, "the old last song (now index 0) has its break planned")
+    }
+
+    func testAShortQueueStartsBuildingItsRefillWhenItBegins() async {
+        let catalog = QueueFakeCatalog()
+        let feed = makeFeed(catalog)
+        feed.queueStarted(for: refillStation, songCount: 2)
+        await until({ feed.stagedKey == StationQueueKey(refillStation) }, "built in the background")
+        XCTAssertNotNil(next(feed, after: 0, in: ["a", "b"]), "ready before the last song")
+    }
+
+    func testTheNextRefillIsBuiltAsTheRefillNearsItsEnd() async throws {
+        let feed = await refillFeed()
+        let refill = try XCTUnwrap(next(feed, after: 1, in: ["a", "b", "c"]))
+        XCTAssertNil(feed.stagedKey)
+        XCTAssertNil(next(feed, after: refill.count - 4, in: refill), "three left to load: not the last yet")
+        await until({ feed.stagedKey == StationQueueKey(refillStation) }, "the next refill is building")
+    }
+}
+
+@MainActor
+final class StationQueueRefillFailureKeepsTodaysStopTests: XCTestCase {
+    private let queue = ["a", "b", "c"]
+
+    func testNothingBuiltYetHandsOutNothing() {
+        let recorder = QueueEventRecorder()
+        let feed = makeFeed(QueueFakeCatalog(), recorder: recorder)
+        feed.queueStarted(for: refillStation)
+        XCTAssertNil(next(feed, after: 1, in: queue), "the last song loads and the station stops after it, as today")
+        XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.refill, .notReady))
+    }
+
+    func testAFailedCatalogFetchHandsOutNothing() async {
+        let catalog = QueueFakeCatalog()
+        await catalog.setFailing(true)
+        let recorder = QueueEventRecorder()
+        let feed = makeFeed(catalog, recorder: recorder)
+        feed.queueStarted(for: refillStation)
+        let outcome = await feed.prepare(refillStation)
+        XCTAssertEqual(outcome, .skipped(.emptyPool))
+        XCTAssertNil(next(feed, after: 1, in: queue))
+        XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.refill, .notReady))
+    }
+
+    func testATagsOnlyStationHasNoRefill() async {
+        let recorder = QueueEventRecorder()
+        let feed = makeFeed(QueueFakeCatalog(), recorder: recorder)
+        feed.queueStarted(for: .default)
+        XCTAssertNil(next(feed, after: 1, in: queue, active: .default))
+        XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.refill, .noStation))
+    }
+
+    func testAHeldStartHandsOutNothingAndKeepsTheBuiltQueue() async {
+        let recorder = QueueEventRecorder()
+        let feed = await refillFeed(recorder: recorder)
+        XCTAssertNil(next(feed, after: 1, in: queue, mayStart: false))
+        XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.refill, .playbackHeld))
+        XCTAssertGreaterThan(feed.stagedCount ?? 0, 0)
+    }
+
+    func testStationSongsAllAlreadyQueuedHandOutNothing() async throws {
+        let feed = await refillFeed()
+        let builtCopy = try XCTUnwrap(next(feed, after: 1, in: queue)).dropFirst()
+        let feed2 = await refillFeed()
+        XCTAssertNil(next(feed2, after: builtCopy.count, in: ["x"] + builtCopy + ["last"]),
+                     "nothing new to add: the last song loads as today")
+    }
+
+    func testAOneSongQueueHasNoBoundaryBeforeItsLastSong() async {
+        let feed = await refillFeed()
+        XCTAssertNil(next(feed, after: 0, in: ["only"]), "documented: a single tapped song ends as today")
+    }
+}
+
+@MainActor
+final class StationQueueRefillNamesOnlyQueuedSongsTests: XCTestCase {
+    func testEveryBreakNamesOnlyTheSongsAroundItInTheQueue() async throws {
+        let feed = await refillFeed()
+        let refill = try XCTUnwrap(next(feed, after: 1, in: ["a", "b", "c"]))
+        XCTAssertEqual(Set(refill).count, refill.count, "no song is queued twice")
+        let r = await djRig()
+        let tracks = refill.map(djTrack)
+        await r.session.queueStarted(tracks)
+        let boundaries = r.session.plannedBoundaries
+        XCTAssertFalse(boundaries.isEmpty)
+        var introduced: [Int] = []
+        for k in boundaries {
+            await r.session.songStarted(index: k, remaining: .seconds(180))
+            await until({ if case .ready = r.dj.studioState { true } else { false } }, "break \(k) ready")
+            let handed = await r.session.naturalBoundary(afterTrack: k)
+            let prepared = try XCTUnwrap(handed, "break \(k)")
+            let text = prepared.cues.map(\.text).joined(separator: " ")
+            let named = tracks.indices.filter { text.contains(tracks[$0].title) || text.contains(tracks[$0].artist) }
+            XCTAssertTrue(Set(named).isSubset(of: [k, k + 1]), "break \(k) names only its own and the next queued song")
+            XCTAssertLessThan(k + 1, tracks.count, "a break always has a queued next song")
+            if named.contains(k + 1) { introduced.append(k) }
+            r.session.playbackStarted(afterTrack: k)
+            r.session.playbackFinished(afterTrack: k)
+        }
+        XCTAssertTrue(boundaries.contains(0), "including the old last song's break, naming the first station song")
+        XCTAssertFalse(introduced.isEmpty, "the check is not vacuous: breaks do name the next queued song")
+    }
+}
+
+@MainActor
+private struct DJRig {
+    let session: DJBreakSession
+    let dj: DJPresentationStore
+}
+
+@MainActor
+private func djRig() async -> DJRig {
+    var config = refillStation
+    config.commentary = .frequent
+    let station = StationConfigurationModel(
+        store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config.validated()))),
+        consent: StaticIntegrationConsent([:]))
+    await station.load()
+    let preparer = DJBreakPreparer(renderer: djRenderer(), userID: "u", stationID: "s", cadence: config.cadence())
+    let dj = DJPresentationStore()
+    let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 14 })
+    await session.start()
+    return DJRig(session: session, dj: dj)
 }
