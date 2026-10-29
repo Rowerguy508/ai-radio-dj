@@ -42,12 +42,12 @@ private struct DeviceVoice: VoiceProvider {
 
 final class RadioStyleBreakTests: XCTestCase {
     private let tracks = [
-        DJTrack(id: "1", title: "Holocene", artist: "Bon Iver"),
-        DJTrack(id: "2", title: "Myth", artist: "Beach House"),
-        DJTrack(id: "3", title: "Midnight City", artist: "M83"),
-        DJTrack(id: "4", title: "Vienna", artist: "Billy Joel"),
-        DJTrack(id: "5", title: "Dreams", artist: "Fleetwood Mac"),
-        DJTrack(id: "6", title: "Pink + White", artist: "Frank Ocean"),
+        DJTrack(id: "1", title: "Gravel Road Gospel", artist: "Wyatt Callahan"),
+        DJTrack(id: "2", title: "Motel Pool Summer", artist: "Larkspur Avenue"),
+        DJTrack(id: "3", title: "Glass Horizon Protocol", artist: "Orbitelle"),
+        DJTrack(id: "4", title: "Thunder on the Interstate", artist: "Ironwood Junction"),
+        DJTrack(id: "5", title: "Bubblegum Gravity", artist: "Sunny Varga"),
+        DJTrack(id: "6", title: "Late Fees & Lullabies", artist: "Jalen Prospero"),
     ]
 
     private func placeholders(_ line: String) -> Set<String> {

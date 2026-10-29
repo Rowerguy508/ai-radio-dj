@@ -33,9 +33,9 @@ final class StationArtTests: XCTestCase {
     func testMonogram() {
         XCTAssertEqual(StationArtStyle.monogram("Bakery Lights on Fennimore"), "BL")
         XCTAssertEqual(StationArtStyle.monogram("golden"), "G")
-        XCTAssertEqual(StationArtStyle.monogram("(I Can't Get No) Satisfaction"), "IC")
+        XCTAssertEqual(StationArtStyle.monogram("(Not Quite) Saltwick Sundown"), "NQ")
         XCTAssertEqual(StationArtStyle.monogram("   "), "♪")
-        XCTAssertEqual(StationArtStyle.monogram("99 Problems"), "9P")
+        XCTAssertEqual(StationArtStyle.monogram("47 Lanterns Down"), "4L")
     }
 
     func testLegibleRanges() {

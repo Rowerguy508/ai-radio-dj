@@ -280,14 +280,14 @@ final class P0TransportAttemptTests: XCTestCase {
 
     func testErrorCodeCarriesNoDescription() {
         struct Secretive: LocalizedError {
-            var errorDescription: String? { "Kiss of Life by Sade, storefront us" }
+            var errorDescription: String? { "Lanolin Tide by Odile Fairweather, storefront us" }
         }
         let code = PlaybackErrorCode(Secretive())
         XCTAssertEqual(code.typeName, "Secretive")
-        XCTAssertFalse(code.description.contains("Kiss"))
+        XCTAssertFalse(code.description.contains("Lanolin"))
         XCTAssertFalse(code.description.contains("storefront"))
         let ns = PlaybackErrorCode(NSError(domain: "MPErrorDomain", code: 6,
-                                           userInfo: [NSLocalizedDescriptionKey: "Kiss of Life"]))
+                                           userInfo: [NSLocalizedDescriptionKey: "Lanolin Tide"]))
         XCTAssertEqual(ns.domain, "MPErrorDomain")
         XCTAssertEqual(ns.code, 6)
         XCTAssertEqual(ns.description, "NSError MPErrorDomain code 6")
@@ -295,6 +295,6 @@ final class P0TransportAttemptTests: XCTestCase {
         let message = StartFailurePolicy.effect(.threw(ns), attempt: a, current: attempts.current).message ?? ""
         XCTAssertEqual(message, "Apple Music couldn't start this song. Try again.")
         XCTAssertFalse(message.contains("MPErrorDomain"))
-        XCTAssertFalse(message.contains("Kiss"))
+        XCTAssertFalse(message.contains("Lanolin"))
     }
 }

@@ -1,7 +1,7 @@
 import XCTest
 @testable import AeroDJCore
 
-/// Build 21 P0 (-Atlas): owner trace on "Concert for You" (2.4 s). Polls are 1 s apart, so the
+/// Build 21 P0 (-Atlas): owner trace on a 2.4 s catalog track. Polls are 1 s apart, so the
 /// furthest playing sample was 1.6 s (end window, not 90%), then MusicKit rewound the finished
 /// one-song queue to 0, paused. Nothing reported the end, so the station stalled at song 1.
 final class ShortTrackEndTests: XCTestCase {

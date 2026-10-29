@@ -6,7 +6,7 @@ import XCTest
 final class AddStationWalkthroughTests: XCTestCase {
     private typealias W = AddStationWalkthrough
 
-    private func ready(typed: String = "", suggested: String? = "Khruangbin Radio",
+    private func ready(typed: String = "", suggested: String? = "Orbitelle Radio",
                        existing: [String] = [], saving: Bool = false) -> AddStationProgress {
         AddStationProgress(kind: .artists, pickError: nil, level: .balanced, typedName: typed,
                            suggestedName: suggested, existingNames: existing, isSaving: saving)
@@ -53,16 +53,16 @@ final class AddStationWalkthroughTests: XCTestCase {
     }
 
     func testBlankNameUsesSuggestion() {
-        XCTAssertEqual(try W.resolvedName(ready()).get(), "Khruangbin Radio")
+        XCTAssertEqual(try W.resolvedName(ready()).get(), "Orbitelle Radio")
         XCTAssertEqual(try W.resolvedName(ready(typed: "  Sunday   Drive ")).get(), "Sunday Drive")
     }
 
     func testNameErrorsMatchRecipeLibraryRules() {
         XCTAssertEqual(W.nameError(ready(suggested: nil)), .emptyName)
         XCTAssertEqual(W.nameError(ready(typed: String(repeating: "a", count: 41))), .nameTooLong)
-        XCTAssertEqual(W.nameError(ready(existing: ["khruangbin radio"])), .duplicateName)
-        XCTAssertNil(W.nameError(ready(typed: "Other", existing: ["khruangbin radio"])))
-        XCTAssertFalse(W.canGoNext(from: .name, ready(existing: ["Khruangbin Radio"])))
+        XCTAssertEqual(W.nameError(ready(existing: ["orbitelle radio"])), .duplicateName)
+        XCTAssertNil(W.nameError(ready(typed: "Other", existing: ["orbitelle radio"])))
+        XCTAssertFalse(W.canGoNext(from: .name, ready(existing: ["Orbitelle Radio"])))
     }
 
     func testSaveOnlyOnReviewWhenEverythingIsComplete() {

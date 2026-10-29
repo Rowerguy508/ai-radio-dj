@@ -72,7 +72,7 @@ export function StationEditor() {
           <textarea
             value={station.searchQuery}
             onChange={e => update({ searchQuery: e.target.value })}
-            placeholder="e.g. 90s hip hop, lo-fi beats, indie rock, jazz piano, Radiohead, Khruangbin..."
+            placeholder="Type an artist or genre you love"
             rows={2}
             className="w-full bg-zinc-800/40 border border-white/[0.06] rounded-xl px-4 py-3 text-white text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 transition-all resize-none"
           />

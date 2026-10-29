@@ -78,7 +78,7 @@ final class StationCreationModelTests: XCTestCase {
         await model.search("  ")
         let blankCalls = await fake.calls
         XCTAssertEqual(blankCalls, [], "a blank term never reaches the network")
-        await model.search("björk")
+        await model.search("ylvöra")
         let kinds = await fake.kindsAsked
         XCTAssertEqual(kinds, [[.artist]])
         XCTAssertEqual(model.results.map(\.seed.catalogID), ["1", "2"], "right kind only, de-duplicated")
