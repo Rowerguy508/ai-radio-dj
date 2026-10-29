@@ -18,6 +18,9 @@ enum StudioCapture {
     static let darkKey = "AeroDJStudioCaptureDark"
     /// Optional: `YES` forces Reduce Motion for the capture, whatever the simulator setting is.
     static let reduceMotionKey = "AeroDJReduceMotion"
+    /// `duoWideReady`: the stand-in for the unfolded Duo's split-view detail. The UI test
+    /// (`testDuoWideListenPlayerIsOneCentredColumn`) checks the same 640 × 820 pt.
+    static let duoWideContainerSize = CGSize(width: 640, height: 820)
 
     static func isRequested(mode: AppRuntimeMode, defaults: UserDefaults = .standard) -> Bool {
         mode == .testStation && defaults.bool(forKey: defaultsKey)
@@ -57,6 +60,10 @@ enum StudioCaptureScenario: String {
     case resizeTune
     /// The real station split. Selecting a row must not start playback.
     case shell
+    /// The listen player with a break ready (`breakReady`) in a 640 × 820 pt compact-class
+    /// container: below the Studio switch but wider than any phone in portrait, like the
+    /// unfolded Duo's split-view detail (owner, build 25). Needs a window at least that big.
+    case duoWideReady
 
     var access: PlaybackAccess {
         switch self {
@@ -126,6 +133,8 @@ struct StudioCaptureView: View {
                 CaptureStationSplit(dependencies: dependencies)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("capture.shell")
+            } else if scenario == .duoWideReady {
+                DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else {
                 NavigationStack {
                     if showsProbe {
@@ -185,7 +194,7 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady:
+            case .breakReady, .duoWideReady:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .config, .resizeTune:
                 // Fry #110: Save while holding schedules pending until a safe boundary.
@@ -209,6 +218,44 @@ struct StudioCaptureView: View {
             }
             loaded = true
         }
+    }
+}
+
+/// The unfolded Duo's split-view detail, stood in by a fixed 640 × 820 pt compact-class
+/// container (`StudioCapture.duoWideContainerSize`). Fry, #207: the first capture pinned that
+/// container top-leading inside the iPad window with nothing behind it, so the screenshot was
+/// three quarters player and one quarter blank, and read as a capture taken mid-resize (the
+/// "spinner" in the corner is iPadOS's window resize grip, on every iPad shot). Now the
+/// container owns its NavigationStack like a split-view detail column, sits centred on a
+/// neutral backdrop, is clipped to its own bounds (the art glow no longer bleeds past it) and
+/// is outlined, so the frame shows exactly what the Duo shows. `capture.duoContainer` lets
+/// the UI test wait for its final size and position before the screenshot.
+private struct DuoWideCaptureContainer: View {
+    let scenario: StudioCaptureScenario
+    let studio: StudioPresentationModel
+
+    var body: some View {
+        let size = StudioCapture.duoWideContainerSize
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack {
+            Color(white: 0.14)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+            NavigationStack {
+                PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                              snapshot: scenario.snapshot, actions: .preview,
+                              search: .captureOffline,
+                              studio: studio, isTestStation: true,
+                              timeSource: .fixture)
+            }
+            .environment(\.horizontalSizeClass, .compact)
+            .frame(width: size.width, height: size.height)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("capture.duoContainer")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 }
 

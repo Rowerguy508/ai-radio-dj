@@ -166,8 +166,11 @@ final class PlaybackTimeFormatTests: XCTestCase {
     }
 
     func testRemainingNeverNegative() {
-        XCTAssertEqual(PlaybackTimeFormat.remaining(position: 72, duration: 225), "2:33")
-        XCTAssertEqual(PlaybackTimeFormat.remaining(position: 300, duration: 225), "0:00")
+        XCTAssertEqual(PlaybackTimeFormat.remaining(position: 72, duration: 225), "-2:33")
+        XCTAssertEqual(PlaybackTimeFormat.remaining(position: 300, duration: 225), "-0:00")
+        // Owner's build 25 case: 4:32 in, 13 s left.
+        XCTAssertEqual(PlaybackTimeFormat.label(272), "4:32")
+        XCTAssertEqual(PlaybackTimeFormat.remaining(position: 272, duration: 285), "-0:13")
     }
 
     func testAccessibilityValue() {

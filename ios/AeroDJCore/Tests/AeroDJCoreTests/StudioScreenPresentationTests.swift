@@ -301,3 +301,39 @@ final class TunerIndicatorTests: XCTestCase {
         }
     }
 }
+
+final class FoldedColumnLayoutTests: XCTestCase {
+    func testPhonesInPortraitStayCompact() {
+        for width in [320.0, 375, 390, 393, 402, 430, 440] {
+            XCTAssertFalse(FoldedColumnLayout.isWide(containerWidth: width), "\(width) pt")
+        }
+    }
+
+    func testWideBelowTheStudioSwitch() {
+        XCTAssertTrue(FoldedColumnLayout.isWide(containerWidth: 500))
+        XCTAssertTrue(FoldedColumnLayout.isWide(containerWidth: 640))
+        XCTAssertLessThan(FoldedColumnLayout.wideMinWidth, StudioLayoutMetrics.studioMinWidth)
+        XCTAssertFalse(FoldedColumnLayout.isWide(containerWidth: .nan))
+    }
+
+    func testColumnIsTheArtWidthAndCentredCapped() {
+        let m = FoldedColumnLayout.metrics(containerWidth: 640, containerHeight: 900,
+                                           reserveBelowArt: 360, artMin: 140, artMax: 420)
+        XCTAssertEqual(m.artSide, 420)
+        XCTAssertEqual(m.column, 420)
+    }
+
+    func testShortContainerShrinksArtButKeepsAColumnForTheToolbar() {
+        let m = FoldedColumnLayout.metrics(containerWidth: 640, containerHeight: 600,
+                                           reserveBelowArt: 360, artMin: 140, artMax: 420)
+        XCTAssertEqual(m.artSide, 600 - 360 - 44 - 8)
+        XCTAssertEqual(m.column, FoldedColumnLayout.columnMinWidth)
+    }
+
+    func testColumnNeverWiderThanTheContainer() {
+        let m = FoldedColumnLayout.metrics(containerWidth: 500, containerHeight: 1200,
+                                           reserveBelowArt: 360, artMin: 140, artMax: 900)
+        XCTAssertEqual(m.column, 500 - 64)
+        XCTAssertLessThanOrEqual(m.artSide, m.column)
+    }
+}
