@@ -1007,18 +1007,16 @@ final class MusicKitService: ObservableObject {
         // through the in-app `seek(to:trackID:)`, so it has the same gates (blocked during a DJ
         // break or a load, clamped, detector re-baselined, DJ session told). On the main thread
         // the track is pinned when the command arrives, and a blocked seek reports failure.
+        // Off-main delivery reports `.commandFailed` and seeks nothing (-Sentinel): the handler
+        // must return synchronously, the track cannot be pinned off-main, and a hop would answer
+        // `.success` before the seek ran (or was blocked).
         center.changePlaybackPositionCommand.isEnabled = true
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self, let event = event as? MPChangePlaybackPositionCommandEvent else {
                 return .commandFailed
             }
             let position = event.positionTime
-            guard Thread.isMainThread else {
-                // Off-main delivery (not expected): the track cannot be read here, so this
-                // seek is untargeted. Every other gate still applies after the hop.
-                Task { @MainActor in _ = self.seek(to: position) }
-                return .success
-            }
+            guard Thread.isMainThread else { return .commandFailed }
             return MainActor.assumeIsolated {
                 self.seek(to: position, trackID: self.snapshot.nowPlaying?.id) ? .success : .commandFailed
             }
