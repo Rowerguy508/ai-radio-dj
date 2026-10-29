@@ -492,7 +492,7 @@ struct AddStationWalkthroughView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Image(systemName: "checkmark.circle.fill").font(.system(size: 44)).foregroundStyle(.white)
                     .accessibilityHidden(true)
-                Text("\u{201C}\(savedName)\u{201D} is in your station recipes. Open Tune and tap Apply when you want it. Nothing that's playing changed.")
+                Text("\u{201C}\(savedName)\u{201D} is in your Stations list. Open it there when you want it. Nothing that's playing changed.")
                     .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

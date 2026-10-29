@@ -328,6 +328,23 @@ final class StationQueueFeedBoundaryTests: XCTestCase {
         XCTAssertEqual(feed.takeForIdleStart(active: model.active)?.count, 10)
     }
 
+    // P0 build 25 (-Atlas): a queue tapped on a station with no seeds is a reported start, so the
+    // first created station replaces it at the next boundary (it used to stay on "sameStation").
+    func testP0FirstCreatedStationTakesOverAtTheBoundary() async throws {
+        let model = await makeStation(active: .default)          // owner's station: no seeds
+        await model.setPlaybackActivity(.holdingSong)
+        let feed = makeFeed(QueueFakeCatalog())
+        feed.queueStarted(for: model.committedDisplayed)        // search tap on the seedless station
+        feed.follow(model)
+        let created = station([seed(.artist, "a")])
+        await model.applyRecipe(StationRecipe(name: "A Radio", configuration: created))
+        try await waitForStaged(feed, StationQueueKey(created))
+        await model.handle(.songBoundary(afterTrack: 0))
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["a"])
+        XCTAssertNotNil(feed.takeForBoundary(active: model.active, playbackMayStart: true),
+                        "P0: the created station should replace the seedless queue at the boundary")
+    }
+
     func testATapAfterSavingAChangeKeepsTheTappedSongs() async throws {
         let old = station([seed(.artist, "old")])
         let new = station([seed(.artist, "a")])

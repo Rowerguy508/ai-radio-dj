@@ -7,7 +7,12 @@ import SwiftUI
 struct StationListView: View {
     /// Composed once at launch by `AppDependencies`; views receive it, never build it.
     let dependencies: AppDependencies
-    @State private var stations: [Station] = Station.defaultStations
+    /// Built-in stations, then every station created with the + walkthrough (P0 build 25: the
+    /// list was only the built-ins, so a saved station never appeared). Created rows come from
+    /// the recipe library, the store `StationCreationModel.save` writes, so they update live.
+    private var stations: [Station] {
+        Station.defaultStations + CreatedStations.entries(from: dependencies.studio.recipes.recipes).map(Station.init(created:))
+    }
     @State private var showSharedInbox = false
     /// One add-station flow per presentation (nil when closed). Never created in the Test Station.
     @State private var stationCreation: StationCreationModel?
@@ -29,7 +34,14 @@ struct StationListView: View {
     private var split: some View {
         StationSplitRoot(stations: stations, showsSharedInbox: dependencies.mode == .live,
                          showSharedInbox: $showSharedInbox,
-                         onUserOpenedStation: { await dependencies.playback.authorize() },
+                         onUserOpenedStation: { id in
+                             await dependencies.playback.authorize()
+                             // A created station becomes the live one under the normal boundary
+                             // rules (idle: now; mid-song: after this song). Row tap only, never restore.
+                             if let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes) {
+                                 _ = await dependencies.studio.applyRecipe(recipeID)
+                             }
+                         },
                          onAddStation: addStationAction) { station in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
@@ -77,7 +89,7 @@ struct StationSplitRoot<Detail: View>: View {
     @Binding var showSharedInbox: Bool
     /// Fired only from the list selection setter (a row tap). Restore never calls this, so a
     /// relaunch with a stored station ID cannot request Apple Music permission.
-    var onUserOpenedStation: (() async -> Void)? = nil
+    var onUserOpenedStation: ((Station.ID) async -> Void)? = nil
     /// Opens the add-station walkthrough. Nil hides the + button.
     var onAddStation: (() -> Void)? = nil
     private let detail: (Station) -> Detail
@@ -96,7 +108,7 @@ struct StationSplitRoot<Detail: View>: View {
     @Environment(\.colorScheme) private var systemColorScheme
 
     init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
-         onUserOpenedStation: (() async -> Void)? = nil,
+         onUserOpenedStation: ((Station.ID) async -> Void)? = nil,
          onAddStation: (() -> Void)? = nil,
          @ViewBuilder detail: @escaping (Station) -> Detail) {
         self.stations = stations
@@ -165,6 +177,8 @@ struct StationSplitRoot<Detail: View>: View {
         // and a stored id can arrive after the first render.
         .task { restoreSelection() }
         .onChange(of: storedStationID) { _, _ in restoreSelection() }
+        // Created stations arrive when the recipes load, after the first render.
+        .onChange(of: stations.map(\.id)) { _, _ in restoreSelection() }
         // Regular is both columns. Compact leaves the visible column to
         // `preferredCompactColumn`. Visibility never writes the selection.
         .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
@@ -224,7 +238,7 @@ struct StationSplitRoot<Detail: View>: View {
                 // Explicit row tap only. `restoreSelection` writes `selectedStationID` directly
                 // and never enters this setter, so restore cannot request Apple Music.
                 if let onUserOpenedStation {
-                    Task { await onUserOpenedStation() }
+                    Task { await onUserOpenedStation(newValue) }
                 }
             }
         )
@@ -270,6 +284,13 @@ struct Station: Identifiable, Hashable {
     ]
 }
 
+extension Station {
+    /// A station the listener created (`CreatedStations`). Its id is the recipe id. An extension,
+    /// so the memberwise init the built-ins use stays.
+    init(created: CreatedStationEntry) {
+        self.init(id: created.id, name: created.name, description: created.summary)
+    }
+}
 
 /// Share-inbox sheet chrome: Done always dismisses; swipe-to-dismiss stays enabled.
 struct SharedInboxSheet<Content: View>: View {
