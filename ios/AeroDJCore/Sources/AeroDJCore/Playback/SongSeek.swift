@@ -3,7 +3,7 @@ import Foundation
 /// Song scrubbing (-Atlas; owner: "We also need scrubbing for songs."; API by Nova and Orion).
 ///
 /// The scrubber's drag state lives in the view. On release the view calls
-/// `PlaybackActions.seek(to:)` once. The transport owner (`MusicKitService`) asks this policy
+/// `PlaybackActions.seek(to:trackID:)` once. The transport owner (`MusicKitService`) asks this policy
 /// whether to seek and where, then re-baselines the boundary detector
 /// (`BoundaryInterpreter.userSeeked`), sets `ApplicationMusicPlayer.playbackTime`, and tells
 /// the DJ session the new remaining time (`DJBreakSession.songSeeked`).
@@ -21,6 +21,9 @@ public enum SongSeekBlock: String, Equatable, Sendable {
     case unknownDuration
     /// The requested time is not a finite number.
     case invalidTarget
+    /// The seek named a track that is no longer the current one: a scrub released after the
+    /// song changed (stale drag, or a lock-screen scrub that raced a track change).
+    case staleTrack
 }
 
 public enum SongSeekDecision: Equatable, Sendable {
@@ -46,9 +49,13 @@ public enum SongSeekPolicy {
     }
 
     /// One committed seek. `duration` is the current song's catalog duration.
+    /// `trackID` is the track the caller was showing when the seek was committed. When it is
+    /// given and is not `snapshot.nowPlaying`, the seek is a no-op (`.staleTrack`), so a target
+    /// meant for one song never moves another. Nil keeps the untargeted behavior.
     public static func decide(seconds: TimeInterval, duration: TimeInterval?,
-                              snapshot: PlaybackSnapshot) -> SongSeekDecision {
+                              snapshot: PlaybackSnapshot, trackID: String? = nil) -> SongSeekDecision {
         guard snapshot.canSeek else { return .blocked(.notSeekableNow) }
+        if let trackID, trackID != snapshot.nowPlaying?.id { return .blocked(.staleTrack) }
         guard let duration, duration.isFinite, duration > 0 else { return .blocked(.unknownDuration) }
         guard let target = clamp(seconds, duration: duration) else { return .blocked(.invalidTarget) }
         return .seek(target: target, remaining: duration - target)

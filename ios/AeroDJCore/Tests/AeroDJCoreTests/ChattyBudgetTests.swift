@@ -25,7 +25,7 @@ final class ChattyBudgetTests: XCTestCase {
                 default: break
                 }
             }
-            await preparer.prepare(djBreak, deadline: .seconds(10))
+            await preparer.prepare(djBreak, deadline: .seconds(10), onDeviceOnly: false)
             await fulfillment(of: [done], timeout: 10)
             outcomes.append(await preparer.takeBreak(afterTrack: k))
         }

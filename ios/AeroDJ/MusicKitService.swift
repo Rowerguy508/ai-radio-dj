@@ -69,6 +69,17 @@ final class MusicKitService: ObservableObject {
     /// Called once per boundary. For a natural end, the index is the song that just finished.
     /// The handler must resolve the transition: play a DJ line, or call `skipInterlude()`.
     var onBoundary: (@MainActor (PlaybackBoundary, Int) -> Void)?
+    /// Station queue (-Atlas; flagged for Claude, this file's owner). At a natural boundary, after
+    /// the break and before the next song loads: `StationQueuePlayer` returns its start when the
+    /// station's music settings changed since this queue began and the station's queue is ready.
+    /// Nil, or a nil result, loads the next song of this queue exactly as before.
+    var stationQueueAtBoundary: (@MainActor (_ finishedIndex: Int) -> (@MainActor () async -> Void)?)?
+    /// Station queue (-Atlas; flagged for Claude): Play with nothing queued starts the station's
+    /// queue when it is ready. Nil, or a nil result, keeps the existing "nothing to resume" error.
+    var stationQueueForIdlePlay: (@MainActor () -> (@MainActor () async -> Void)?)?
+    /// Station queue (-Atlas; flagged for Claude): a new queue replaced the old one (a tap or a station
+    /// hand-off), so `StationQueuePlayer` knows which station the playing queue belongs to.
+    var onQueueReplaced: (@MainActor () -> Void)?
     private var pollTimer: Timer?
     /// Playback timing for device validation. Indices and durations only: no titles or identifiers.
     private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
@@ -107,9 +118,11 @@ final class MusicKitService: ObservableObject {
     /// player change) unless `snapshot.canSeek`: never during a DJ break or a load. The target is
     /// clamped to [0, duration - 1 s]. The boundary detector is re-baselined first, so the samples
     /// around the seek cannot read as an end, then the playhead moves, then the DJ session gets
-    /// the new time left. Main actor: no poll can run between these steps.
-    func seek(to seconds: TimeInterval) -> Bool {
-        let decision = SongSeekPolicy.decide(seconds: seconds, duration: currentDuration, snapshot: snapshot)
+    /// the new time left. Main actor: no poll can run between these steps. A `trackID` that is
+    /// no longer the current track makes it a no-op (stale scrub).
+    func seek(to seconds: TimeInterval, trackID: String? = nil) -> Bool {
+        let decision = SongSeekPolicy.decide(seconds: seconds, duration: currentDuration,
+                                             snapshot: snapshot, trackID: trackID)
         logPlayback(PlaybackLog.songSeek(index: queueIndex, decision: decision))
         guard case let .seek(target, remaining) = decision else { return false }
         boundaries.userSeeked(to: target, uptime: ProcessInfo.processInfo.systemUptime)
@@ -216,6 +229,7 @@ final class MusicKitService: ObservableObject {
         // a pending play and halts a playing clip.
         onBreakMustStop?(nil)
         queue = tracks
+        onQueueReplaced?()
         currentTrack = tracks.first
         boundaries.userRequestedChange()
         queueIndex = 0
@@ -263,6 +277,11 @@ final class MusicKitService: ObservableObject {
 
     /// The user pressed play.
     func resume() async throws {
+        // Station queue (-Atlas; flagged for Claude): an idle Play starts the station when it is ready.
+        if queue.isEmpty, let startStation = stationQueueForIdlePlay?() {
+            await startStation()
+            return
+        }
         guard !queue.isEmpty else {
             let message = PlaybackFailureCopy.message(for: .nothingToResume)
             lastError = message
@@ -483,6 +502,12 @@ final class MusicKitService: ObservableObject {
             return
         }
         releaseSongEndHoldIfAllowed(finished: index)
+        // Station queue (-Atlas; flagged for Claude): a station change that applied at this boundary
+        // replaces the queue here, through the same path as a tap. Otherwise nothing changes.
+        if let startStation = stationQueueAtBoundary?(index) {
+            await startStation()
+            return
+        }
         let next = index + 1
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.startNextTrack(.indexOK(queue.indices.contains(next)), after: index, queueCount: queue.count, gates: p0Gates)
@@ -965,7 +990,8 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Route lock-screen / Control Center play through `resume()` (userPlay + playIfStillAllowed)
-    /// and pause through `pause()`, so remote commands cannot bypass the hold gate.
+    /// and pause through `pause()`, so remote commands cannot bypass the hold gate. Scrubbing
+    /// goes through `seek(to:trackID:)` for the same reason.
     private func installRemoteCommands() {
         guard !remoteCommandsInstalled else { return }
         remoteCommandsInstalled = true
@@ -999,6 +1025,26 @@ final class MusicKitService: ObservableObject {
                 }
             }
             return .success
+        }
+        // Seek follow-up (-Atlas; flagged for Claude): a lock-screen / Control Center scrub goes
+        // through the in-app `seek(to:trackID:)`, so it has the same gates (blocked during a DJ
+        // break or a load, clamped, detector re-baselined, DJ session told). On the main thread
+        // the track is pinned when the command arrives, and a blocked seek reports failure.
+        center.changePlaybackPositionCommand.isEnabled = true
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self, let event = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            let position = event.positionTime
+            guard Thread.isMainThread else {
+                // Off-main delivery (not expected): the track cannot be read here, so this
+                // seek is untargeted. Every other gate still applies after the hop.
+                Task { @MainActor in _ = self.seek(to: position) }
+                return .success
+            }
+            return MainActor.assumeIsolated {
+                self.seek(to: position, trackID: self.snapshot.nowPlaying?.id) ? .success : .commandFailed
+            }
         }
     }
 

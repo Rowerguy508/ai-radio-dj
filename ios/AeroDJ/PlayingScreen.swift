@@ -132,7 +132,7 @@ struct PlayingScreen: View {
             FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
                          content: content, snapshot: snapshot, actions: actions, dj: dj,
                          search: search, studioSearch: studioSearch, timeSource: timeSource,
-                         artworkNamespace: morphNamespace,
+                         artworkNamespace: morphNamespace, speechLevel: studio.dj,
                          onQueue: { segment = .queue; showWorkspace = true },
                          onTune: { segment = .tune; showWorkspace = true },
                          onReview: { segment = .connections; showWorkspace = true })

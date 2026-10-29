@@ -59,6 +59,8 @@ public enum StationRecipeError: Error, Equatable, Sendable {
     /// Recipes on disk are from a newer AeroDJ; the library is read-only.
     case readOnlyNewerVersion
     case notLoaded
+    /// A new station's picks didn't validate (`StationCreationRequest`); nothing was saved.
+    case invalidStation(StationCreationError)
 
     public var userMessage: String {
         switch self {
@@ -70,6 +72,7 @@ public enum StationRecipeError: Error, Equatable, Sendable {
         case .saveFailed: "Couldn't save. Nothing changed."
         case .readOnlyNewerVersion: "Recipes were saved by a newer AeroDJ and can't be edited here."
         case .notLoaded: "Recipes are still loading."
+        case .invalidStation(let reason): reason.userMessage
         }
     }
 }

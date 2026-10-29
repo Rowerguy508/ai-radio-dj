@@ -26,6 +26,14 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     private var pendingPlay = PendingPlayStop()
     /// Indices and the stop reason only. No line text.
     private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
+    /// Live voice level for the on-air orb (-Fry). Read from AVAudioPlayer metering on the
+    /// main actor at about 30 Hz while a clip plays: no tap, no audio-thread work, and no
+    /// change to the audio session, route or ducking. See `DJSpeechLevelMeter`.
+    private var levelMeter = DJSpeechLevelMeter()
+    private var levelTicker: Task<Void, Never>?
+    /// Where levels go. Set once in `AppDependencies.makeInterlude`. The store keeps the
+    /// level at 0 unless the DJ state is `.speaking` for the same break.
+    weak var speechLevel: DJPresentationStore?
 
     init(music: MusicKitService) {
         self.music = music
@@ -155,9 +163,54 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         guard !queue.isEmpty else { return false }
         let player = queue.removeFirst()
         player.delegate = self
+        player.isMeteringEnabled = true
         clipPlayer = player
         stopState.adopt(player: ObjectIdentifier(player))
         return player.play()
+    }
+
+    // MARK: Speech level (-Fry)
+
+    /// Starts the ~30 Hz level reads once audio is really playing. Each tick reads the
+    /// current clip's meter and publishes one value on the main actor.
+    private func startLevelMeter() {
+        stopLevelMeter()
+        let track = breakTrack
+        let nanos = UInt64(DJSpeechLevelMeter.interval * 1_000_000_000)
+        levelTicker = Task { @MainActor [weak self] in
+            var last = ContinuousClock.now
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: nanos) } catch { return }
+                guard let self, !Task.isCancelled, self.finish != nil else { return }
+                let now = ContinuousClock.now
+                let elapsed = now - last
+                last = now
+                let dt = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+                self.publishLevel(dt: dt, afterTrack: track)
+            }
+        }
+    }
+
+    private func publishLevel(dt: Double, afterTrack: Int) {
+        // Between clips, or a player that is not playing, reads as silence.
+        var dBFS = -Float.infinity
+        if let player = clipPlayer, player.isPlaying {
+            player.updateMeters()
+            for channel in 0..<max(1, player.numberOfChannels) {
+                dBFS = max(dBFS, player.averagePower(forChannel: channel))
+            }
+        }
+        let level = levelMeter.sample(dBFS: dBFS, dt: dt)
+        speechLevel?.updateSpeechLevel(level, afterTrack: afterTrack)
+    }
+
+    /// Stops the reads and drops the published level to 0 now, before the state event
+    /// for the end of the break arrives.
+    private func stopLevelMeter() {
+        levelTicker?.cancel()
+        levelTicker = nil
+        levelMeter.reset()
+        speechLevel?.updateSpeechLevel(0, afterTrack: breakTrack)
     }
 
     /// One clip finished. Continue with the next clip, or end the break.
@@ -289,6 +342,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
                 self.log.notice("\(PlaybackLog.breakStart(after: self.breakTrack), privacy: .public)")
                 music.djStarted(line)
                 onPlayback?(.started(afterTrack: breakTrack))
+                startLevelMeter()
             } else {
                 finishBreak(.failed)
             }
@@ -346,6 +400,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     private func finishBreak(_ result: BreakPlayerOutcome) {
+        stopLevelMeter()
         stopState.end()
         timeout?.cancel()
         timeout = nil

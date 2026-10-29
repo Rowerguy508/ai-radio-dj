@@ -28,11 +28,15 @@ struct AppDependencies {
     /// Live only: the store for notes the listener picked (`.fileImporter`). `nil` in the
     /// test station, so the file picker is not offered there.
     let pickedNotes: LiveConnectionSources?
+    /// Station queue (-Atlas; flagged for Claude): live only. Feeds the built station into the
+    /// player at natural boundaries and on an idle Play. `nil` in the test station.
+    let stationQueue: StationQueuePlayer?
 
     /// Starts the Studio and the DJ session once per launch.
     func start() async {
         await studio.start()
         await djSession.start()
+        stationQueue?.start()
     }
 
     static func make(defaults: UserDefaults = .standard) -> AppDependencies {
@@ -67,7 +71,7 @@ struct AppDependencies {
         // One preparer per launch: revoking a source purges prepared breaks as well as cached audio.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence())
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
-        let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared)
+        let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         wireSongSeek(session: djSession, playback: MusicKitService.shared)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
@@ -89,9 +93,13 @@ struct AppDependencies {
             playback: MusicKitService.shared,
             interlude: interlude,
             dj: dj,
-            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
+            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
+                                            // Add-station search (Atlas): catalog + on-device library playlists.
+                                            seedSearch: MusicCatalogSeedSource(),
+                                            seedSearchFailureKind: StudioSearchModel.searchFailureKind),
             djSession: djSession,
-            pickedNotes: composition.notes)
+            pickedNotes: composition.notes,
+            stationQueue: StationQueuePlayer(music: MusicKitService.shared, station: station, djSession: djSession))
     }
 
     #if DEBUG
@@ -111,7 +119,7 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,
                                        cadence: TestStation.cadence)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
-        let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared)
+        let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         wireSongSeek(session: djSession, playback: MusicKitService.shared)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
@@ -134,7 +142,8 @@ struct AppDependencies {
             dj: dj,
             studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
             djSession: djSession,
-            pickedNotes: nil)
+            pickedNotes: nil,
+            stationQueue: nil)
     }
     #endif
 
@@ -143,8 +152,11 @@ struct AppDependencies {
     /// Armed here, while the session and the interlude player are created, so the
     /// hook is already non-nil when a clip can play. PlayerView must not assign it again.
     /// Fry #73 owns the stored property and the `purge` call.
-    private static func makeInterlude(session: DJBreakSession, playback: MusicKitService) -> InterludePlaybackAdapter {
+    private static func makeInterlude(session: DJBreakSession, playback: MusicKitService,
+                                      dj: DJPresentationStore) -> InterludePlaybackAdapter {
         let interlude = InterludePlaybackAdapter(music: playback)
+        // The on-air orb's voice level (-Fry). The store gates it to `.speaking`.
+        interlude.speechLevel = dj
         let speechStop = SpeechStopGate()
         speechStop.arm { [interlude] reason, afterTrack in
             interlude.stopCurrentInterlude(reason: reason, afterTrack: afterTrack)

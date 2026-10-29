@@ -284,7 +284,7 @@ final class DJSessionEndToEndTests: XCTestCase {
             renderer: djRenderer(paid: DJFakeVoice(id: "cloud", delay: .seconds(5)), paidTimeout: .milliseconds(50)),
             userID: "u1", stationID: "morning")
         await fallback.observe { model.apply($0.presentationEvent) }
-        await fallback.prepare(first, deadline: .seconds(3))
+        await fallback.prepare(first, deadline: .seconds(3), onDeviceOnly: false)
         try await waitUntil { if case .ready(0, true, _) = model.state { true } else { false } }
         let ready = await fallback.takeBreak(afterTrack: 0)
         guard case .ready(let prepared) = ready else { return XCTFail("expected prepared audio, got \(ready)") }
@@ -303,7 +303,7 @@ final class DJSessionEndToEndTests: XCTestCase {
         let capped = DJBreakPreparer(renderer: djRenderer(paid: DJFakeVoice(id: "cloud"), free: nil, capMicrodollars: 0),
                                      userID: "u1", stationID: "morning")
         await capped.observe { model.apply($0.presentationEvent) }
-        await capped.prepare(second, deadline: .seconds(3))
+        await capped.prepare(second, deadline: .seconds(3), onDeviceOnly: false)
         try await waitUntil { model.history.last == .unavailable(.budgetReached) }
         let skipped = await capped.takeBreak(afterTrack: 3)
         XCTAssertEqual(skipped, .skipped(.costCap))

@@ -77,6 +77,47 @@ An edit never restarts or changes the song that is playing. See `station-configu
   - Turning the briefing or talk off applies now.
 - A failed save rolls back and reports `.saveFailed`.
 
+### Creating a station (artists, a genre or a playlist)
+
+A created station is an ordinary recipe whose seeds, reach and discovery come from a `StationCreationRequest`. Nothing new is persisted.
+
+- **One entry point:** `studio.saveRecipe(named:from:applying:) -> Result<StationRecipe, StationRecipeError>`.
+  - Same name rules and errors as `saveRecipe(named:)`, plus `.invalidStation(StationCreationError)`. Every error has `userMessage`.
+  - Keeps the tuning the controls show (energy, personality, talk, briefing) unless the request sets talk or personality; never carries connections.
+  - `applying: false` (default) leaves the live station alone. `applying: true` then applies it with the recipe rules above.
+- **Request:** `StationCreationRequest(source:level:commentary:personality:)`.
+  - `commentary: CommentaryFrequency?` (talk level) and `personality: DJPersonality?` (presenter preset) are optional; `nil` (the default) keeps the on-screen tuning. Saved in the recipe's existing `commentary` and `personality` keys; no new keys.
+  - The voice is not part of a recipe (it is chosen in the voice settings), so a walkthrough voice step cannot be saved per station yet.
+  - `StationCreationModel.commentary` / `.personality` (both `nil` by default) feed the request.
+  - `source`: `.artists([StationSeed])` (1–5), `.genre(StationSeed)` (catalog, numeric ID), or `.playlist(StationSeed)` (catalog or library).
+  - `suggestedName` prefills the name field. `reachRestriction` is set for a library pick.
+- **Discovery level** (`StationDiscoveryLevel`): presets over `discovery` and `reach`.
+
+  | Level | reach | discovery | Plays |
+  | --- | --- | --- | --- |
+  | `.familiar` | `.only` | 0.1 | The picks' own songs, hits first |
+  | `.balanced` (default) | `.related` | 0.3 | Picks 60%, similar artists 40%; about 3 in 10 new |
+  | `.adventurous` | `.broad` | 0.7 | Picks 40%, similar 30%, wider genre 30%; about 7 in 10 new |
+
+  - A library pick always plays only itself (`.only`), at any level.
+  - `StationDiscoveryLevel.matching(_:)` returns nil for a hand-tuned station ("Custom"). `closest(to:)` preselects a picker.
+- **View model:** `studio.makeStationCreation(kind:) -> StationCreationModel?` (nil in previews and the Test Station).
+  - Read: `kind`, `level` (settable), `selected`, `results`, `resultsSource`, `phase`, `validationError`, `canSave`, `canPickMore`, `suggestedName`, `reachRestriction`, `isSaving`, `saveError`.
+  - Do: `setKind(_:)`, `search(_:)`, `loadLibraryPlaylists()`, `toggle(_:)`, `isSelected(_:)`, `save(named:applying:)` (defaults: suggested name, apply).
+  - Search failures show fixed `SearchFailureCopy` text only. Library playlists stay on the device and are never logged.
+
+### What a station plays
+
+A station with seeds (a created station, a recipe, or seeds set in Tune) now decides what plays. `StationQueueFeed` (AeroDJCore) builds its queue ahead of time from the committed settings; `StationQueuePlayer` (app) hands it to the player. No UI call is needed.
+
+- **When:** only where the existing rules apply a music change. Mid-song, a change waits for the song to end ("Applies after this song"); the next song comes from the new station, after any DJ break. Idle, Play starts the station.
+- **Not replaced:** a queue the listener started by tapping a song belongs to the station committed at that moment. It is replaced only if the station's seeds, reach or discovery change after the tap. DJ-only edits (talk, personality, briefing) never rebuild the queue.
+- **Fallback:** no seeds (tags only), an empty pool, a failed Apple Music lookup, no playable song, or a queue not ready yet keeps the current queue (or Play's existing message), and retries for the next boundary. Never an empty queue.
+- **Order:** deterministic for a station and a day (`StationQueueKey.shuffleSeed(day:)`); songs already played in the current queue are left out.
+- **Refill:** a queue (tapped or the station's own) does not run out. At the boundary before its last song, after any break and before that song starts, the station starts a new queue: that last song, then fresh station songs (none already in the queue). It starts like a tap, so the DJ plans the last song's break through the normal `queueStarted` replan and only ever names songs that are really queued. Building starts once three or fewer songs are left to load. If nothing is ready, the lookup failed, playback is held, or there are no seeds, the last song plays and the station stops after it, as before. A single tapped song has no boundary before it and still ends as before.
+- **Library picks** play only their own songs.
+- **Copy:** seeds, reach and discovery are now used for song picking. Genres, moods and energy are still not.
+
 ## Connections
 
 `connections.sources` returns three `ConnectionSourceRow`s: Calendar, Obsidian notes, and Shared from Mail & Messages. Each row has:

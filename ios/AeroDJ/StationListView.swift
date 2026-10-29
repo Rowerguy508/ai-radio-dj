@@ -9,6 +9,8 @@ struct StationListView: View {
     let dependencies: AppDependencies
     @State private var stations: [Station] = Station.defaultStations
     @State private var showSharedInbox = false
+    /// One add-station flow per presentation (nil when closed). Never created in the Test Station.
+    @State private var stationCreation: StationCreationModel?
 
     var body: some View {
         #if DEBUG
@@ -27,7 +29,8 @@ struct StationListView: View {
     private var split: some View {
         StationSplitRoot(stations: stations, showsSharedInbox: dependencies.mode == .live,
                          showSharedInbox: $showSharedInbox,
-                         onUserOpenedStation: { await dependencies.playback.authorize() }) { station in
+                         onUserOpenedStation: { await dependencies.playback.authorize() },
+                         onAddStation: addStationAction) { station in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation)
@@ -45,9 +48,24 @@ struct StationListView: View {
                 }
             }
         }
+        // Add-station walkthrough (Nova). Saves a recipe only; never plays or applies.
+        .sheet(isPresented: Binding(get: { stationCreation != nil },
+                                    set: { if !$0 { stationCreation = nil } })) {
+            if let stationCreation {
+                AddStationWalkthroughView(studio: dependencies.studio, creation: stationCreation) {
+                    self.stationCreation = nil
+                }
+            }
+        }
         // Live only: lets Connections offer the .md file picker (nil in the test station).
         .environment(\.pickedNotes, dependencies.pickedNotes)
         .ownerVoiceTrialEntry() // AERODJ_OWNER_AB only; a no-op otherwise
+    }
+
+    /// The + action, or nil (no button) when the app has no seed search: previews and the Test Station.
+    private var addStationAction: (() -> Void)? {
+        guard dependencies.studio.seedSearch != nil else { return nil }
+        return { stationCreation = dependencies.studio.makeStationCreation() }
     }
 }
 
@@ -60,6 +78,8 @@ struct StationSplitRoot<Detail: View>: View {
     /// Fired only from the list selection setter (a row tap). Restore never calls this, so a
     /// relaunch with a stored station ID cannot request Apple Music permission.
     var onUserOpenedStation: (() async -> Void)? = nil
+    /// Opens the add-station walkthrough. Nil hides the + button.
+    var onAddStation: (() -> Void)? = nil
     private let detail: (Station) -> Detail
 
     @State private var selectedStationID: Station.ID? = nil
@@ -72,14 +92,18 @@ struct StationSplitRoot<Detail: View>: View {
     /// Nothing selected opens on the list. A selection pushes the detail.
     @State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The scheme around the split. Regular width keeps it; compact forces dark (see `body`).
+    @Environment(\.colorScheme) private var systemColorScheme
 
     init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
          onUserOpenedStation: (() async -> Void)? = nil,
+         onAddStation: (() -> Void)? = nil,
          @ViewBuilder detail: @escaping (Station) -> Detail) {
         self.stations = stations
         self.showsSharedInbox = showsSharedInbox
         self._showSharedInbox = showSharedInbox
         self.onUserOpenedStation = onUserOpenedStation
+        self.onAddStation = onAddStation
         self.detail = detail
     }
 
@@ -87,24 +111,14 @@ struct StationSplitRoot<Detail: View>: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
-            List(selection: selection) {
-                ForEach(stations) { station in
-                    // The link is the row. Its value is the station ID, so the tap selects
-                    // that row and the split pushes the detail.
-                    NavigationLink(value: station.id) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(station.name).font(.headline)
-                            Text(station.description ?? "").font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .tag(station.id)
-                }
-            }
+            stationPicker
             .navigationTitle("AeroDJ")
             // Contain first, so this identifier stays on the list and does not replace the rows.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("split.sidebar")
+            // iOS 18+: "Stations" collapses into a compact inline bar as the list scrolls.
+            // iOS 17 keeps the system large title. Rows and selection are untouched.
+            .morphingLargeTitle("Stations", subtitle: "Your AI-hosted radio, on Apple Music")
             .toolbar {
                 // The real App Group inbox is never opened in the test station: its
                 // data must not appear next to fixtures.
@@ -117,7 +131,18 @@ struct StationSplitRoot<Detail: View>: View {
                         }
                     }
                 }
+                if let onAddStation {
+                    ToolbarItem(placement: .primaryAction) {
+                        AddStationToolbarButton(action: onAddStation)
+                    }
+                }
             }
+            // Compact: the whole sidebar is dark, the carousel's dark-glass cards plus the
+            // morphing header and nav bar above them. Without this, light mode drew the header
+            // in black on the dark carousel. Same pattern as the folded player. A value, not
+            // an `if`, so folding or unfolding keeps the column's identity and scroll state.
+            .environment(\.colorScheme, isCompact ? .dark : systemColorScheme)
+            .toolbarColorScheme(isCompact ? .dark : nil, for: .navigationBar)
         } detail: {
             if let station = stations.first(where: { $0.id == selectedStationID }) {
                 NavigationStack {
@@ -144,6 +169,38 @@ struct StationSplitRoot<Detail: View>: View {
         // `preferredCompactColumn`. Visibility never writes the selection.
         .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
             columnVisibility = sizeClass == .regular ? .all : .automatic
+        }
+    }
+
+    /// Compact width (the folded phone) gets the arc carousel; regular width keeps the
+    /// sidebar list. Both write the same `selection`, so a pick only selects and opens.
+    @ViewBuilder
+    private var stationPicker: some View {
+        if isCompact {
+            // A card tap goes through the list's own setter: same push, same one-time
+            // authorization request, same stored id. Scrolling the carousel selects nothing.
+            StationCarousel(stations: stations, selectedID: selectedStationID) { id in
+                selection.wrappedValue = id
+            }
+        } else {
+            stationList
+        }
+    }
+
+    private var stationList: some View {
+        List(selection: selection) {
+            ForEach(stations) { station in
+                // The link is the row. Its value is the station ID, so the tap selects
+                // that row and the split pushes the detail.
+                NavigationLink(value: station.id) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(station.name).font(.headline)
+                        Text(station.description ?? "").font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .tag(station.id)
+            }
         }
     }
 

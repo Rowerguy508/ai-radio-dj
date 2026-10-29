@@ -80,6 +80,19 @@ jobs:
         working-directory: ios
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading component"
+            xcodebuild -downloadComponent MetalToolchain
+            if ! xcrun metal --version; then
+              echo "::error::Metal toolchain still unavailable after xcodebuild -downloadComponent MetalToolchain"
+              exit 1
+            fi
+          fi
       - name: Build app and embedded share extension
         run: |
           xcodebuild build \
@@ -147,6 +160,19 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
         working-directory: ios
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading component"
+            xcodebuild -downloadComponent MetalToolchain
+            if ! xcrun metal --version; then
+              echo "::error::Metal toolchain still unavailable after xcodebuild -downloadComponent MetalToolchain"
+              exit 1
+            fi
+          fi
       - name: Build Debug and Release for a physical device without signing
         # Proves both arm64 device slices compile. Release proves the test station is
         # compiled out. Signing needs the owner's team (ios/Config/Signing.local.xcconfig),
@@ -243,6 +269,19 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
         working-directory: ios
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading component"
+            xcodebuild -downloadComponent MetalToolchain
+            if ! xcrun metal --version; then
+              echo "::error::Metal toolchain still unavailable after xcodebuild -downloadComponent MetalToolchain"
+              exit 1
+            fi
+          fi
       - name: Build Debug and Release for the simulator
         run: |
           for CONFIG in Debug Release; do
@@ -306,6 +345,19 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
         working-directory: ios
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading component"
+            xcodebuild -downloadComponent MetalToolchain
+            if ! xcrun metal --version; then
+              echo "::error::Metal toolchain still unavailable after xcodebuild -downloadComponent MetalToolchain"
+              exit 1
+            fi
+          fi
       - name: Toolchain
         run: xcodebuild -version
       - name: Pick iPhone (closed) and iPad (open) simulators

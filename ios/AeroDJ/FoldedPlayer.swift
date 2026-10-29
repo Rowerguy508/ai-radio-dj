@@ -34,22 +34,12 @@ enum FoldedStyle {
     static let artMinSide: CGFloat = 140
 }
 
-/// Dark glass: white fill plus a 1 px hairline. Opaque under Reduce Transparency.
-private struct FoldedGlass<S: InsettableShape>: ViewModifier {
-    let shape: S
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    func body(content: Content) -> some View {
-        content
-            .background(reduceTransparency ? AnyShapeStyle(FoldedStyle.opaqueGlass) : AnyShapeStyle(FoldedStyle.glassFill),
-                        in: shape)
-            .overlay(shape.strokeBorder(FoldedStyle.hairline, lineWidth: 1))
-    }
-}
-
+/// Dark glass through the shared `aeroGlass`: Liquid Glass on iOS 26, the white 8 % fill plus a
+/// 1 px hairline before that, and opaque under Reduce Transparency. Buttons pass `.control`.
 extension View {
-    func foldedGlass<S: InsettableShape>(_ shape: S) -> some View {
-        modifier(FoldedGlass(shape: shape))
+    func foldedGlass<S: InsettableShape>(_ shape: S, role: AeroGlassRole = .surface) -> some View {
+        aeroGlass(shape, role: role, fallback: AnyShapeStyle(FoldedStyle.glassFill),
+                  hairline: FoldedStyle.hairline, opaqueFill: FoldedStyle.opaqueGlass)
     }
 }
 
@@ -83,6 +73,8 @@ struct FoldedPlayer: View {
     @ObservedObject var studioSearch: StudioSearchModel
     var timeSource: PlaybackTimeSource? = nil
     var artworkNamespace: Namespace.ID? = nil
+    /// Fry's DJ voice level for the on-air orb. Read only; nil (previews) is a quiet orb.
+    var speechLevel: DJPresentationStore? = nil
     let onQueue: () -> Void
     let onTune: () -> Void
     let onReview: () -> Void
@@ -136,7 +128,7 @@ struct FoldedPlayer: View {
             switch content {
             case .track(let track):
                 FoldedArtCard(track: track, station: station, isOnAir: dj.state.isOnAir,
-                              side: artSide, namespace: artworkNamespace)
+                              side: artSide, namespace: artworkNamespace, speechLevel: speechLevel)
                     .frame(maxWidth: .infinity)
                 FoldedTitleBlock(track: track, isTestStation: isTestStation)
                     .padding(.top, 24)
@@ -184,11 +176,13 @@ struct FoldedPlayer: View {
             PlaybackErrorBanner(error: snapshot.error, actions: actions)
                 .padding(.horizontal, FoldedStyle.contentInset)
             if showsProgress, let timeSource {
-                // Display-only until #155 lands its scrubber here (inert until #156 wires seek).
-                // Dimmed while the DJ is on air: the song is held during the break.
-                PlaybackProgressBar(time: timeSource, transport: snapshot.transport,
-                                    trackID: snapshot.nowPlaying?.id)
-                    .opacity(dj.state.isOnAir ? 0.4 : 1)
+                // One seek per release, for the track on screen (#171's stale-scrub guard).
+                // The scrubber dims itself and drops the gesture while canSeek is false (DJ break).
+                PlaybackScrubber(time: timeSource, transport: snapshot.transport,
+                                 trackID: snapshot.nowPlaying?.id,
+                                 canSeek: snapshot.canSeek,
+                                 onSeek: { await actions.seek(to: $0, trackID: $1) },
+                                 isDJSpeaking: dj.state.isOnAir)
                     .padding(.horizontal, FoldedStyle.contentInset)
             }
             if content.showsTransport {
@@ -241,13 +235,15 @@ private struct FoldedBackdrop: View {
 // MARK: - Art card
 
 /// Album art (or station art) in a 24 pt card with one soft glow. While ON AIR the card
-/// shows a static art-tinted glow placeholder for the orb (the level meter is a later PR).
+/// shows the lava-lamp orb (`DJLavaOrb`), coloured by the same art and driven by the DJ
+/// voice level.
 private struct FoldedArtCard: View {
     let track: TrackInfo
     let station: StationRef?
     let isOnAir: Bool
     let side: CGFloat
     let namespace: Namespace.ID?
+    var speechLevel: DJPresentationStore? = nil
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: FoldedStyle.artRadius, style: .continuous)
@@ -275,8 +271,8 @@ private struct FoldedArtCard: View {
         if isOnAir {
             ZStack {
                 BleedArtwork(track: track, station: station).opacity(0.18)
-                FoldedOrbPlaceholder(style: .track(track, on: station))
-                    .frame(width: side * 0.62, height: side * 0.62)
+                DJLavaOrb(track: track, station: station, levels: speechLevel)
+                    .frame(width: side * 0.72, height: side * 0.72)
             }
             .clipShape(shape)
             .foldedGlass(shape)
@@ -285,22 +281,6 @@ private struct FoldedArtCard: View {
                 .clipShape(shape)
                 .overlay(shape.strokeBorder(FoldedStyle.hairline, lineWidth: 1))
         }
-    }
-}
-
-/// Static orb stand-in: a radial glow in the art's colours. No motion and no caption.
-private struct FoldedOrbPlaceholder: View {
-    let style: StationArtStyle
-
-    var body: some View {
-        Circle()
-            .fill(RadialGradient(stops: [.init(color: style.color(2).opacity(0.95), location: 0),
-                                         .init(color: style.color(0).opacity(0.85), location: 0.38),
-                                         .init(color: style.color(1).opacity(0.55), location: 0.62),
-                                         .init(color: style.color(1).opacity(0), location: 0.72)],
-                                 center: UnitPoint(x: 0.42, y: 0.38), startRadius: 0, endRadius: 140))
-            .blur(radius: 4)
-            .accessibilityHidden(true)
     }
 }
 
@@ -354,10 +334,11 @@ private struct FoldedTestStationTag: View {
 
 // MARK: - DJ status slot
 
-/// Only real DJ state draws here. Idle and ready draw nothing. Preparing gets a capsule with
-/// a scanning shimmer (static under Reduce Motion); speaking gets the amber ON AIR pill;
-/// voice or budget failures reuse the shared `DJStatusLine`. Shared items to review live in
-/// the ⋯ menu.
+/// Only real DJ state draws here. Idle draws nothing. Preparing and ready get a quiet capsule
+/// with the presentation's headline; its shimmer runs only when
+/// `DJStatusPresentation.animatesActivity` says so (On Air only today, so both are static) and
+/// never under Reduce Motion. Speaking gets the amber ON AIR pill; voice or budget failures
+/// reuse the shared `DJStatusLine`. Shared items to review live in the ⋯ menu.
 private struct FoldedDJStatus: View {
     let dj: DJStatusPresentation
 
@@ -365,7 +346,9 @@ private struct FoldedDJStatus: View {
         switch dj.state {
         case .preparing:
             if let headline = dj.headline {
-                FoldedPreparingCapsule(headline: headline, accessibilityLabel: dj.accessibilityLabel)
+                FoldedStatusCapsule(headline: headline, accessibilityLabel: dj.accessibilityLabel,
+                                    systemImage: "scope", animates: dj.animatesActivity,
+                                    identifier: "dj.preparing")
             }
         case .speaking:
             FoldedOnAirPill()
@@ -373,22 +356,35 @@ private struct FoldedDJStatus: View {
             if dj.reviewCount == nil {
                 DJStatusLine(presentation: dj)
             }
-        case .idle, .ready:
+        case .ready:
+            // Quiet, static line so the owner can see a break is queued ("DJ break after this
+            // song"). Folded only; `DJStatusLine` (Studio) still hides `.ready` per f65ff0d.
+            if let headline = dj.headline {
+                FoldedStatusCapsule(headline: headline, accessibilityLabel: dj.accessibilityLabel,
+                                    systemImage: "clock", animates: dj.animatesActivity,
+                                    identifier: "dj.ready")
+            }
+        case .idle:
             EmptyView()
         }
     }
 }
 
-private struct FoldedPreparingCapsule: View {
+/// Quiet status capsule for preparing and ready. The shimmer is drawn only when the caller passes the
+/// presentation's `animatesActivity` as true and Reduce Motion is off.
+private struct FoldedStatusCapsule: View {
     let headline: String
     let accessibilityLabel: String
+    let systemImage: String
+    let animates: Bool
+    let identifier: String
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
     private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "scope")
+            Image(systemName: systemImage)
                 .font(.subheadline.weight(.medium))
                 .accessibilityHidden(true)
             Text(headline)
@@ -404,13 +400,13 @@ private struct FoldedPreparingCapsule: View {
         .clipShape(Capsule())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel.isEmpty ? headline : accessibilityLabel)
-        .accessibilityIdentifier("dj.preparing")
+        .accessibilityIdentifier(identifier)
     }
 
-    /// Exists only while this capsule does, i.e. only while a break is being prepared.
+    /// Bound to `DJStatusPresentation.animatesActivity`; nothing animates under Reduce Motion.
     @ViewBuilder
     private var shimmer: some View {
-        if !reduceMotion {
+        if animates && !reduceMotion {
             TimelineView(.animation(minimumInterval: 1 / 30)) { context in
                 GeometryReader { geo in
                     let period = 1.8
@@ -447,7 +443,7 @@ private struct FoldedOnAirPill: View {
                     .font(.caption.weight(.bold))
                     .tracking(1.4)
                     .foregroundStyle(FoldedStyle.onAirAmber)
-                Text(PlaybackProgressBar.format(elapsed))
+                Text(PlaybackTimeFormat.label(elapsed))
                     .font(.subheadline.weight(.medium).monospacedDigit())
                     .foregroundStyle(FoldedStyle.onAirTimer)
             }
@@ -456,7 +452,7 @@ private struct FoldedOnAirPill: View {
             .background(FoldedStyle.onAirAmber.opacity(0.14), in: Capsule())
             .overlay(Capsule().strokeBorder(FoldedStyle.onAirAmber.opacity(0.55), lineWidth: 1))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("On Air, \(PlaybackProgressBar.format(elapsed))")
+            .accessibilityLabel("On Air, \(PlaybackTimeFormat.label(elapsed))")
         }
         .accessibilityIdentifier("dj.onAir")
     }
@@ -473,16 +469,19 @@ private struct FoldedToolbar: View {
     let onTune: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            FoldedStationChip(heading: heading, action: onQueue)
-            if showsWorkspaceButtons {
-                FoldedToolbarButton(systemImage: "list.bullet",
-                                    label: upNext.first.map { "Up next: \($0.title) by \($0.artistName)" } ?? "Up next: nothing queued",
-                                    hint: "Opens the queue, tuner and connections",
-                                    identifier: "queue.affordance", action: onQueue)
-                FoldedToolbarButton(systemImage: "slider.horizontal.3", label: "Tune station",
-                                    hint: "Opens the tuner. Music continues.",
-                                    identifier: "transport.tune", action: onTune)
+        // One glass family on iOS 26, so the chip and the round buttons read as one bar.
+        AeroGlassGroup(spacing: 8) {
+            HStack(spacing: 8) {
+                FoldedStationChip(heading: heading, action: onQueue)
+                if showsWorkspaceButtons {
+                    FoldedToolbarButton(systemImage: "list.bullet",
+                                        label: upNext.first.map { "Up next: \($0.title) by \($0.artistName)" } ?? "Up next: nothing queued",
+                                        hint: "Opens the queue, tuner and connections",
+                                        identifier: "queue.affordance", action: onQueue)
+                    FoldedToolbarButton(systemImage: "slider.horizontal.3", label: "Tune station",
+                                        hint: "Opens the tuner. Music continues.",
+                                        identifier: "transport.tune", action: onTune)
+                }
             }
         }
     }
@@ -517,7 +516,7 @@ private struct FoldedStationChip: View {
             .padding(.leading, 6)
             .padding(.trailing, 14)
             .frame(maxWidth: .infinity, minHeight: FoldedStyle.toolbarHeight)
-            .foldedGlass(Capsule())
+            .foldedGlass(Capsule(), role: .control)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -547,7 +546,7 @@ private struct FoldedToolbarButton: View {
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: FoldedStyle.toolbarHeight, height: FoldedStyle.toolbarHeight)
-                .foldedGlass(Circle())
+                .foldedGlass(Circle(), role: .control)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -654,6 +653,20 @@ private struct LegacyToolbarGlass: ViewModifier {
                      content: .track(PlaybackFixtures.songs[0]),
                      snapshot: PlaybackFixtures.playing, actions: .preview,
                      dj: .init(state: .preparing(includesBriefing: false)), search: nil,
+                     studioSearch: StudioSearchModel(query: ""), timeSource: .fixture,
+                     onQueue: {}, onTune: {}, onReview: {})
+            .foldedToolbar(PlaybackFixtures.station, reviewCount: nil, onConnections: {})
+    }
+}
+
+#Preview("Folded ready") {
+    NavigationStack {
+        FoldedPlayer(station: PlaybackFixtures.station,
+                     heading: StationHeading(opened: PlaybackFixtures.station, playing: PlaybackFixtures.station),
+                     isTestStation: false,
+                     content: .track(PlaybackFixtures.songs[0]),
+                     snapshot: PlaybackFixtures.playing, actions: .preview,
+                     dj: .init(state: .ready(includesBriefing: false, seconds: 24)), search: nil,
                      studioSearch: StudioSearchModel(query: ""), timeSource: .fixture,
                      onQueue: {}, onTune: {}, onReview: {})
             .foldedToolbar(PlaybackFixtures.station, reviewCount: nil, onConnections: {})
