@@ -25,6 +25,12 @@ and Fry's re-review at `88a9857` (comment 6510251806: D1 kill path, D2
 per-charge refund marker, status-transaction `revocationDate`, #242 contract
 rows).
 
+Revision 5 folds in Fry's re-review at `a10beeb` (comment 6510393042): a
+§4.4 row for a 200 with bad audio, a 400 with any reason other than
+`mixed_auth` skips only that cue (as #242 does), #242 pinned at `05c5b9f`,
+and §4.7's 500 stop applies to authenticated POSTs and carries no
+`reason` or `Retry-After`.
+
 ## 1. Current state
 
 **Auth.** One shared owner bearer token. The server keeps only its SHA-256
@@ -265,12 +271,13 @@ every non-200 falls through to the on-device voice for that cue.
 
 App behaviour is #234 at `31a792f` unless marked otherwise. **#242** is
 Fry's backoff/entitlement follow-up (`fry/tts-backoff-entitlement` at
-`8e5c813`, stacked on #234).
+`05c5b9f`, stacked on #234).
 
 | Status | `reason` | From | `Retry-After` | App behaviour |
 | --- | --- | --- | --- | --- |
 | 200 / 204 | – | tts / register, entitlement | – | Play / continue |
-| 400 | `bad_request`, **or no `reason` at all** | all | – | Do not retry that request; on-device for that cue; **paid voice stays on**. #242 treats a reasonless 400 as `bad_request`, because the proxy as deployed (#238, #241) returns 400 with no `reason` for every validation failure (unlisted voiceId, text too long, bad JSON) |
+| 200 | – (audio fails validation: content type, size or duration) | tts | – | #242: on-device for that cue, then pause paid calls 5 min, doubling per consecutive failure up to 1 h, persisted across launches; never shortens a longer wait (the call may already be billed). A 200 with valid audio clears the count |
+| 400 | `bad_request`, **no `reason`, or any unknown `reason`** (anything but `mixed_auth`) | all | – | Do not retry that request; on-device for that cue; **paid voice stays on**. A 400 is per-request validation, so #242 treats every 400 except `mixed_auth` like `bad_request`; the proxy as deployed (#238, #241) returns 400 with no `reason` for every validation failure (unlisted voiceId, text too long, bad JSON) |
 | 400 | `mixed_auth` | tts | – | Treated as a client bug: stop paid calls until next launch. NEW |
 | 401 | `reattest` (unknown, revoked or expired key) | tts, ent | – | Stop paid calls until next launch; on next launch delete the key and attest **once** |
 | 401 | `assertion` (bad signature, counter, used/expired/wrong-purpose challenge) | tts, ent, register | – | Stop paid calls until next launch (#234). Out-of-order counters are avoided by serialising proxy calls per key (Sentinel rec. 7) |
@@ -278,7 +285,7 @@ Fry's backoff/entitlement follow-up (`fry/tts-backoff-entitlement` at
 | 403 | `no_entitlement` (no link, expired, refunded, revoked, stale, TTL lapsed, family/sandbox not allowed) | tts | – | #242 stops paid calls until `entitlementDidChange()`. **PR 9:** if StoreKit shows a current entitlement, re-sync once via `/api/entitlement` (§5.2) and on success call `entitlementDidChange()`; otherwise, or if that fails, no paid calls until `Transaction.updates` emits or next launch. PR 9 also re-posts proactively before `verifiedAt + AERODJ_TTS_ENTITLEMENT_TTL_HOURS`, so the routine daily refresh (§5.6) does not cost a cue. Never opens the paywall by itself |
 | 403 | `install_limit` | ent | – | NEW: no paid calls until next launch; Nova's UI may explain "too many devices" |
 | 405 | – | all | – | Client bug, stop until next launch |
-| 413 | `too_large` | all | – | Do not retry that request. NEW |
+| 413 | `too_large`, or any or no `reason` | all | – | Do not retry that request; on-device for that cue; paid voice stays on. NEW |
 | 429 | `rate` | tts, ent | seconds left in window | Wait `Retry-After`, else 60 s |
 | 429 | `enroll` | register | seconds | Wait `Retry-After`, else 60 s; do not re-attest before then |
 | 429 | `install_daily` / `global_daily` / `owner_daily` / `sandbox_daily` | tts | seconds to 00:00 UTC | Wait `Retry-After`, else next UTC midnight, persisted across launches |
@@ -292,8 +299,12 @@ Fry's backoff/entitlement follow-up (`fry/tts-backoff-entitlement` at
 **Unknown or missing `reason` / header** (as **#242** implements; #234
 alone leaves state unchanged on other 4xx): 429 → `Retry-After`, else next
 UTC midnight; 503 and other 5xx → `Retry-After`, else exponential backoff;
-400 without a `reason` → `bad_request` (that cue only); any other 4xx → stop
-paid calls until next launch. Optional, PR 6: a `validUntil` in the
+400 (no or unknown `reason`) and 413 (any `reason`) → that cue only, paid
+voice stays on; 401 (any `reason`) → stop until next launch, as listed.
+Beyond the listed stops (400 `mixed_auth`, 401, 403 `install_limit`, 405),
+**stop paid calls until next launch** applies only to a 4xx status the
+contract does not list (402, 404, 409, ...) and to a 403 whose `reason` is
+missing or unknown. No other 400 and no 413 ever stops the launch. Optional, PR 6: a `validUntil` in the
 `/api/entitlement` 204/200 so the app can tell "refresh" from "not Pro".
 
 **#234/#242 must also handle (NEW):** 403 `no_entitlement` and `install_limit`,
@@ -371,12 +382,16 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
   not change #238.
 - **What actually stops paid voice today** (code at #238 `ad4c081` / #241
   `470b30e`; nothing in `services/aerodj-tts` returns 503 `disabled` yet):
-  the handler returns **500** on every POST, before any limiter or
-  ElevenLabs call, when `ELEVENLABS_API_KEY` is unset or blank. Unsetting
+  the handler returns **500** on every **authenticated** POST, before any
+  limiter or ElevenLabs call, when `ELEVENLABS_API_KEY` is unset or blank
+  (the key check runs after bearer auth, so an unauthenticated POST still
+  gets 401). Today's `fail(500)` carries no `reason` and no `Retry-After`. Unsetting
   `AERODJ_TTS_TOKEN_SHA256` also returns 500 for every request before auth.
   So the real emergency stop today is: **remove `ELEVENLABS_API_KEY` from
   the Vercel Production env and redeploy** (owner action; the 500 is "Treat
-  as 503 unknown" in the app, which falls back to on-device). Rotating the
+  as 503 unknown" in the app, which falls back to on-device; with no
+  `Retry-After` #242 backs off 30 s doubling to 15 min, not 1 h, which is
+  harmless because nothing is spent). Rotating the
   key at ElevenLabs stops spend even without a redeploy.
 - **PR 3 adds an explicit master stop for every path, owner included:**
   `AERODJ_TTS_PAID_STOP`. Any non-empty value except exactly `false` stops
@@ -747,9 +762,10 @@ to a proxy 403.
 
 ## 6. Overlaps
 
-- **Fry #234 / #242:** #242 carries the NEW rows of §4.4 (`no_entitlement`, `install_limit`,
-  400/413, `owner_daily`, `sandbox_daily`, `apple`); never fall back to the
-  owner token.
+- **Fry #234 / #242:** #242 (`05c5b9f`) carries the NEW rows of §4.4 (`no_entitlement`, `install_limit`,
+  400/413 that-cue-only for any reason except 400 `mixed_auth`, the 200
+  bad-audio pause, `owner_daily`, `sandbox_daily`, `apple`); never fall
+  back to the owner token.
 - **Nova (paywall, status UI):** product IDs from the shared config;
   `appAccountToken` per §5.4 on every purchase; restore purchases and the
   manage-subscription link; post to `/api/entitlement` per §5.2; consent
