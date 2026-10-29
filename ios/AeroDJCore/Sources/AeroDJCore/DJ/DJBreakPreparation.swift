@@ -57,6 +57,13 @@ public actor DJBreakPreparer {
     private var tasks: [Int: Task<Void, Never>] = [:]
     private var results: [Int: DJBreakOutcome] = [:]
     private var planned: [Int: DJBreak] = [:]
+    /// Song scrubbing (-Atlas): boundaries a seek may still re-arm. Opened when song `k`
+    /// starts (`openBoundary`); closed when boundary `k` is taken (`takeBreak`) or everything is
+    /// dropped (`cancelAll`), so a seek that resumes after the song already ended (or the queue
+    /// was replaced) cannot start an orphan render for a boundary that went by.
+    private var openForRearm: Set<Int> = []
+    /// Song scrubbing (-Atlas): open boundaries whose one seek re-arm is spent.
+    private var rearmed: Set<Int> = []
     private var observers: [@Sendable (DJBreakEvent) -> Void] = []
 
     public enum DJBreakEvent: Equatable, Sendable {
@@ -103,10 +110,56 @@ public actor DJBreakPreparer {
         }
     }
 
+    /// Song scrubbing (-Atlas): a user seek changed the time left before boundary `k`.
+    /// A render in flight or a ready break is kept (no second render, no extra spend; a render
+    /// that cannot finish before the new boundary is skipped there as `.notReadyAtBoundary`, so
+    /// music never waits). A render starts when nothing was started for `k`, or when the last
+    /// one only ran out of time (`.timedOut`) and the seek gave it time again. Every other skip
+    /// (revoked, cost cap, failure, cut, cancelled) is final.
+    /// At most ONE re-arm per boundary: scrubbing back and forth must not restart a render (and
+    /// spend voice characters) again and again. Starting a break that never started rendering
+    /// counts as that one re-arm; after it, a second timeout stays a final skip until the
+    /// boundary is taken. Returns whether a render started.
+    @discardableResult
+    public func rearm(_ djBreak: DJBreak, deadline: Duration) -> Bool {
+        let k = djBreak.afterTrack
+        guard mayRearm(afterTrack: k) else { return false }
+        rearmed.insert(k)
+        results[k] = nil
+        prepare(djBreak, deadline: deadline)
+        return true
+    }
+
+    /// Song `k` started: seeks may re-arm boundary `k` (once) until it is taken or cancelled.
+    /// A repeated start report for a song whose boundary is already open keeps the spent re-arm,
+    /// so a duplicate start never buys a second one.
+    public func openBoundary(afterTrack k: Int) {
+        if openForRearm.insert(k).inserted { rearmed.remove(k) }
+    }
+
+    /// True when `rearm` would start a render for boundary `k`.
+    public func mayRearm(afterTrack k: Int) -> Bool {
+        guard openForRearm.contains(k), tasks[k] == nil, !rearmed.contains(k) else { return false }
+        switch results[k] {
+        case nil, .skipped(.timedOut)?: return true
+        default: return false
+        }
+    }
+
+    /// Test hook: boundaries with a render in flight.
+    var testInFlight: Set<Int> { Set(tasks.keys) }
+    /// Test hook: the recorded outcome for boundary `k`.
+    func testResult(afterTrack k: Int) -> DJBreakOutcome? { results[k] }
+    /// Test hook: records an outcome as if a render for `k` had finished with it.
+    func testRecord(_ outcome: DJBreakOutcome, afterTrack k: Int) {
+        tasks.removeValue(forKey: k)?.cancel()
+        results[k] = outcome
+    }
+
     /// Called at the boundary. Never waits: returns what is ready or an explicit skip.
     /// `natural` is false when the song was cut (skip, queue change); the break is then dropped.
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
-        defer { tasks[k] = nil; planned[k] = nil }
+        defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k) }
         guard natural else {
             tasks[k]?.cancel()
             let wasPlanned = tasks[k] != nil || results.removeValue(forKey: k) != nil
@@ -132,6 +185,8 @@ public actor DJBreakPreparer {
         tasks.removeAll()
         results.removeAll()
         planned.removeAll()
+        openForRearm.removeAll()
+        rearmed.removeAll()
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 

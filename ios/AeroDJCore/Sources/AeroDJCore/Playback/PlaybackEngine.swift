@@ -35,6 +35,10 @@ public enum PlaybackEvent: Equatable, Sendable {
     case upNextEdited(UpNextEdit)
     case errorRaised(PlaybackError)
     case errorCleared
+    /// Song scrubbing (-Atlas): the loaded song really started (`noteSongStarted`), with its
+    /// catalog duration and whether the item can be seeked. Until this arrives for the current
+    /// song (after a load, skip or natural boundary), `canSeek` is false.
+    case songStarted(duration: TimeInterval?, seekable: Bool)
 }
 
 /// Pure, deterministic state machine. Given the same events it always produces the
@@ -43,6 +47,14 @@ public struct PlaybackEngine: Sendable {
     public private(set) var snapshot = PlaybackSnapshot()
     private var tracks: [TrackInfo] = []
     private var index = 0
+    /// The current song started and is the music on air: set by `.songStarted`, cleared by
+    /// anything that loads, changes or ends the song, or hands the air to the DJ.
+    private var startedSong: StartedSong?
+
+    private struct StartedSong: Equatable, Sendable {
+        let duration: TimeInterval?
+        let seekable: Bool
+    }
 
     public init() {}
 
@@ -51,12 +63,14 @@ public struct PlaybackEngine: Sendable {
         switch event {
         case let .queueStarted(tracks, startIndex, station):
             guard !tracks.isEmpty else {
+                startedSong = nil
                 self.tracks = []
                 index = 0
                 snapshot = PlaybackSnapshot(station: station, error: snapshot.error)
                 return snapshot
             }
             self.tracks = tracks
+            startedSong = nil
             index = min(max(startIndex, 0), tracks.count - 1)
             snapshot.station = station
             snapshot.startTimedOut = false
@@ -70,6 +84,8 @@ public struct PlaybackEngine: Sendable {
                 return apply(.queueFinished)
             }
             index = nextIndex
+            // The song ended or was cut: a break may be preparing or airing, then a load.
+            startedSong = nil
             if case .userSkipped = event { snapshot.startTimedOut = false }
             // Keep preparing if we were still waiting on MusicKit; otherwise preserve transport.
             // A stopped show that advances (shouldn't) goes to preparing, not optimistic playing.
@@ -81,6 +97,7 @@ public struct PlaybackEngine: Sendable {
             publishPosition(transport: nextTransport)
 
         case .queueFinished:
+            startedSong = nil
             tracks = []
             index = 0
             snapshot.nowPlaying = nil
@@ -121,6 +138,8 @@ public struct PlaybackEngine: Sendable {
 
         case let .djStarted(line):
             snapshot.dj = line.isEmpty ? .idle : .speaking(line: line)
+            // The DJ has the air: the finished song is no longer seekable.
+            startedSong = nil
 
         case .djFinished, .djCancelled:
             snapshot.dj = .idle
@@ -145,10 +164,23 @@ public struct PlaybackEngine: Sendable {
 
         case .errorCleared:
             snapshot.error = nil
+
+        case let .songStarted(duration, seekable):
+            startedSong = tracks.indices.contains(index) ? StartedSong(duration: duration, seekable: seekable) : nil
         }
+        snapshot.canSeek = Self.canSeek(startedSong, snapshot)
         // The flag belongs to one `.preparing` start; it never outlives it.
         if snapshot.transport != .preparing { snapshot.startTimedOut = false }
         return snapshot
+    }
+
+    /// Seeking is offered only for song music on air: a started song with a known duration
+    /// above 0 that the player can seek, transport `.playing` or `.paused` (not `.preparing`,
+    /// which is a load, start or resume in flight), and no DJ line speaking.
+    private static func canSeek(_ song: StartedSong?, _ snapshot: PlaybackSnapshot) -> Bool {
+        guard let song, song.seekable, let duration = song.duration, duration.isFinite, duration > 0,
+              snapshot.dj == .idle, snapshot.nowPlaying != nil else { return false }
+        return snapshot.transport == .playing || snapshot.transport == .paused
     }
 
     private static func message(for reason: UpNextEditError) -> String {
