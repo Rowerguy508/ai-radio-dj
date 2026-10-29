@@ -94,6 +94,22 @@ targets:
         INFOPLIST_FILE: AeroDJShare/Info.plist
         CODE_SIGN_ENTITLEMENTS: AeroDJShare/AeroDJShare.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
+  AeroDJStoreKitTests:
+    # StoreKitTest (SKTestSession) coverage for the Pro subscription: purchase, restore, expiry,
+    # refund. Hosted in the app so it can see ProEntitlementObserver. The .storekit file is a
+    # test resource here and the Run action's StoreKit configuration; it is not in the app bundle.
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: AeroDJStoreKitTests
+      - path: StoreKit/OnAirlyPro.storekit
+        buildPhase: resources
+    dependencies:
+      - target: AeroDJ
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app.storekittests
+        GENERATE_INFOPLIST_FILE: YES
   AeroDJUITests:
     # Debug-only UI integration tests and screenshots of the playing screen (capture mode).
     type: bundle.ui-testing
@@ -111,9 +127,14 @@ schemes:
     build:
       targets:
         AeroDJ: all
+    run:
+      # Local StoreKit testing in Xcode (Run only). TestFlight and App Store builds use the
+      # real App Store products, which the owner creates in App Store Connect.
+      storeKitConfiguration: StoreKit/OnAirlyPro.storekit
     test:
       targets:
         - package: AeroDJCore/AeroDJCoreTests
+        - AeroDJStoreKitTests
   AeroDJStudioUI:
     # Separate scheme so the unit-test scheme stays fast; CI runs this on iPhone and iPad.
     build:

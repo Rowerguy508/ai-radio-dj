@@ -356,7 +356,8 @@ public actor DJBreakPreparer {
             // A whole presenter line whose text hash is in the bundle plays the bundled clip, with
             // its measured seconds, and makes no proxy call. Anything else: today's path.
             // (One voice per break, if a later live clip falls to on-device, is a follow-up.)
-            let resolved = bundled?.clip(for: cue, attribution: djBreak.attributions[cue.id], renderer: renderer)
+            // Pro + consent are checked per cue inside gatedClip (fail closed).
+            let resolved = await bundled?.gatedClip(for: cue, attribution: djBreak.attributions[cue.id], renderer: renderer)
             let result: Result<RenderedClip, VoiceRenderer.Failure>
             if let resolved { result = .success(resolved) }
             else { result = await renderer.render(cue, userID: userID, stationID: stationID,

@@ -77,7 +77,8 @@ struct AppDependencies {
         let bundledClips = BundledClipResolver(
             manifest: .load(contentsOf: Bundle.main.url(forResource: BundledClipManifest.resourceName,
                                                         withExtension: BundledClipManifest.resourceExtension)),
-            directory: Bundle.main.resourceURL ?? Bundle.main.bundleURL)
+            directory: Bundle.main.resourceURL ?? Bundle.main.bundleURL,
+            access: .live)
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
                                        bundledClips: bundledClips)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)

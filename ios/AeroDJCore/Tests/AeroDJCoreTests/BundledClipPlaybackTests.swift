@@ -50,9 +50,9 @@ final class BundledClipPlaybackTests: XCTestCase {
     }
 
     private func resolver(_ m: BundledClipManifest, allowedTexts: Set<String>? = BundledClipResolver.allowedTexts,
-                          readable: Bool = true) -> BundledClipResolver {
+                          readable: Bool = true, access: ProVoiceAccess = .proWithConsentForTests) -> BundledClipResolver {
         let bytes = clipBytes
-        return BundledClipResolver(manifest: m, directory: directory, allowedTexts: allowedTexts,
+        return BundledClipResolver(manifest: m, directory: directory, access: access, allowedTexts: allowedTexts,
                                    readData: { _ in readable ? bytes : nil })
     }
 
@@ -83,9 +83,9 @@ final class BundledClipPlaybackTests: XCTestCase {
         let plan = writer.plan(tracks: tracks, briefing: nil, hour: 8)
         XCTAssertFalse(plan.breaks.isEmpty)
         let emptyResolvers: [BundledClipResolver] = [
-            BundledClipResolver(manifest: .empty, directory: directory),
-            BundledClipResolver(manifest: .decode(Data()), directory: directory),
-            BundledClipResolver(manifest: .load(contentsOf: shippedManifestURL), directory: directory),
+            BundledClipResolver(manifest: .empty, directory: directory, access: .proWithConsentForTests),
+            BundledClipResolver(manifest: .decode(Data()), directory: directory, access: .proWithConsentForTests),
+            BundledClipResolver(manifest: .load(contentsOf: shippedManifestURL), directory: directory, access: .proWithConsentForTests),
         ]
         for empty in emptyResolvers {
             XCTAssertEqual(empty.usableCount, 0)
@@ -107,7 +107,7 @@ final class BundledClipPlaybackTests: XCTestCase {
         let c = cue(presenterLine)
         var outcomes: [DJBreakOutcome] = []
         var calls: [[String]] = []
-        for bundled in [nil, BundledClipResolver(manifest: .empty, directory: directory)] {
+        for bundled in [nil, BundledClipResolver(manifest: .empty, directory: directory, access: .proWithConsentForTests)] {
             let spy = ProxySpy()
             let preparer = DJBreakPreparer(renderer: renderer(spy), userID: "u", stationID: "s", bundledClips: bundled)
             await preparer.prepare(oneCueBreak(c), deadline: .seconds(10), onDeviceOnly: false)
@@ -347,7 +347,7 @@ final class BundledClipPlaybackTests: XCTestCase {
             XCTAssertEqual(shipped.renderSettingsVersion, BundledClipManifest.currentRenderSettingsVersion)
             XCTAssertNotNil(shipped.voiceID.flatMap(PremiumVoiceCatalog.index(ofVoiceID:)), "a catalog voice")
         }
-        XCTAssertEqual(BundledClipResolver(manifest: shipped, directory: directory).usableCount, shipped.entries.count)
+        XCTAssertEqual(BundledClipResolver(manifest: shipped, directory: directory, access: .proWithConsentForTests).usableCount, shipped.entries.count)
     }
 
     func testAppWiresTheShippedManifestIntoTheLivePreparer() throws {
@@ -362,5 +362,61 @@ final class BundledClipPlaybackTests: XCTestCase {
             if let result = await preparer.testResult(afterTrack: k) { return result }
             await Task.yield()
         }
+    }
+}
+
+// MARK: the Pro + consent gate (fry/storekit-config)
+
+extension BundledClipPlaybackTests {
+    /// A manifest that would hit, rendered through the preparer with `access`: the provider IDs
+    /// of the clips, and what the proxy was sent.
+    private func gatedRun(_ access: ProVoiceAccess) async -> (providers: [String], proxy: [String]) {
+        let spy = ProxySpy()
+        let bundled = resolver(manifest([entry(presenterLine)]), access: access)
+        let outcome = await render(oneCueBreak(cue(presenterLine)), renderer(spy), bundled)
+        guard case .ready(let p) = outcome else { XCTFail("break should still be ready on today's path"); return ([], []) }
+        return (p.clips.map(\.audio.providerID), spy.received)
+    }
+
+    func testProWithConsentIsTheOnlyAccessThatPlaysABundledClip() async {
+        let hit = await gatedRun(.proWithConsentForTests)
+        XCTAssertEqual(hit.providers, [BundledClipResolver.providerID], "control: this manifest does hit")
+        XCTAssertTrue(hit.proxy.isEmpty)
+    }
+
+    func testFreeTierGetsZeroBundledClips() async {
+        for access in [ProVoiceAccess.none, .testing(.free, consent: true), .testing(.free, consent: false)] {
+            let run = await gatedRun(access)
+            XCTAssertFalse(run.providers.contains(BundledClipResolver.providerID))
+        }
+    }
+
+    func testProWithConsentRevokedGetsZeroBundledClips() async {
+        let run = await gatedRun(.testing(.pro(productID: ProSubscriptionConfig.yearlyProductID, expiresAt: nil), consent: false))
+        XCTAssertFalse(run.providers.contains(BundledClipResolver.providerID))
+    }
+
+    func testUnverifiedExpiredOrRevokedGetZeroBundledClips() async {
+        let id = ProSubscriptionConfig.monthlyProductID
+        let states: [ProEntitlementState] = [.unverified(productID: id),
+                                             .expired(productID: id, expiredAt: Date(timeIntervalSince1970: 0)),
+                                             .revoked(productID: id, revokedAt: Date(timeIntervalSince1970: 0))]
+        for state in states {
+            let run = await gatedRun(.testing(state, consent: true))
+            XCTAssertFalse(run.providers.contains(BundledClipResolver.providerID), "\(state)")
+        }
+    }
+
+    func testConsentWithdrawnMidShowStopsTheNextLookup() async {
+        let consent = SwitchableConsent(true)
+        let bundled = resolver(manifest([entry(presenterLine)]),
+                               access: ProVoiceAccess(entitlement: FixedEntitlement(.pro(productID: ProSubscriptionConfig.monthlyProductID, expiresAt: nil)),
+                                                      consent: consent))
+        let r = renderer(ProxySpy())
+        let first = await bundled.gatedClip(for: cue(presenterLine), attribution: .presenter, renderer: r)
+        XCTAssertNotNil(first)
+        consent.set(false)
+        let second = await bundled.gatedClip(for: cue(presenterLine), attribution: .presenter, renderer: r)
+        XCTAssertNil(second)
     }
 }

@@ -150,17 +150,21 @@ public struct BundledClipResolver: Sendable {
 
     public let manifest: BundledClipManifest
     public let directory: URL
+    /// Pro + consent (`ProVoiceGate`). Bundled clips are the paid voice, so they need both.
+    /// Required, so no resolver exists without a gate; `ProVoiceAccess.none` resolves nothing.
+    public let access: ProVoiceAccess
     public let activeRenderSettingsVersion: String
     /// Only entries with no problem, by `textSHA256`. Empty when the manifest-level fields are bad.
     private let byHash: [String: BundledClipManifest.Entry]
     private let readData: @Sendable (URL) -> Data?
 
-    public init(manifest: BundledClipManifest, directory: URL,
+    public init(manifest: BundledClipManifest, directory: URL, access: ProVoiceAccess,
                 activeRenderSettingsVersion: String = BundledClipManifest.currentRenderSettingsVersion,
                 allowedTexts: Set<String>? = BundledClipResolver.allowedTexts,
                 readData: @escaping @Sendable (URL) -> Data? = { try? Data(contentsOf: $0) }) {
         self.manifest = manifest
         self.directory = directory
+        self.access = access
         self.activeRenderSettingsVersion = activeRenderSettingsVersion
         self.readData = readData
         var table: [String: BundledClipManifest.Entry] = [:]
@@ -177,7 +181,17 @@ public struct BundledClipResolver: Sendable {
     /// Number of entries that can ever resolve.
     public var usableCount: Int { byHash.count }
 
-    /// The clip for `cue`, or nil. Hits only when all hold:
+    /// The clip for `cue` if the Pro + consent gate allows it right now, else nil (fail closed).
+    /// This is what the preparer calls, once per cue, so a consent withdrawal or an expiry
+    /// mid-show stops the very next lookup. The gate is asked only when the manifest could hit.
+    public func gatedClip(for cue: NarrationCue, attribution: SpokenAttribution?, renderer: VoiceRenderer) async -> RenderedClip? {
+        guard !byHash.isEmpty else { return nil }
+        guard await access.decision().permitsPaidVoice else { return nil }
+        return clip(for: cue, attribution: attribution, renderer: renderer)
+    }
+
+    /// Matching only, with no Pro + consent check: use `gatedClip`. The clip for `cue`, or nil.
+    /// Hits only when all hold:
     /// - attribution is exactly `.presenter` (never `.stationName`, track metadata, personal
     ///   context or missing attribution), and `VoiceRenderer.mayLeaveDevice` would allow it;
     /// - the renderer's first route is the ElevenLabs route in the manifest's voice (so an
@@ -185,7 +199,7 @@ public struct BundledClipResolver: Sendable {
     /// - the manifest's render settings match the active ones;
     /// - SHA-256 of the normalized cue text equals the entry's hash (and the texts agree);
     /// - the clip fits the cue's `maxSeconds` and its file reads as non-empty data.
-    public func clip(for cue: NarrationCue, attribution: SpokenAttribution?, renderer: VoiceRenderer) -> RenderedClip? {
+    func clip(for cue: NarrationCue, attribution: SpokenAttribution?, renderer: VoiceRenderer) -> RenderedClip? {
         guard !byHash.isEmpty else { return nil }
         guard case .presenter? = attribution, VoiceRenderer.mayLeaveDevice(cue, attribution: attribution) else { return nil }
         guard let route = renderer.routes.first, route.providerID == PremiumVoiceRoutes.providerID, route.leavesDevice,
