@@ -281,7 +281,7 @@ final class RadioStyleBreakTests: XCTestCase {
         // Every color and continuation line is short on its own.
         let station = try XCTUnwrap(EditorialStationName.usable("The Late Night Listening Room on AeroDJ"))
         for line in try tone.stationID.map({ try fill($0, ["station": station]) }) + tone.continuation
-            + tone.atmosphere.values.joined() + tone.greetings.values.joined() {
+            + Array(tone.atmosphere.values.joined()) + Array(tone.greetings.values.joined()) {
             XCTAssertLessThanOrEqual(seconds(line), 7, line)
         }
         // Planner: every eligible boundary airs a break inside both caps.
