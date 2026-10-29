@@ -46,6 +46,8 @@ public struct EditorialTone: Equatable, Sendable {
     }
 
     /// Default: warm and conversational.
+    /// Batch 2 (Echo, build 27): back-announce, closing, station ID, time-of-day color and greetings
+    /// roughly doubled. Same placeholders, same rules: no genres, years, chart claims, moods or weather.
     public static let warm = EditorialTone(
         backAnnounce: [
             "That was {title}, from {artist}.",
@@ -54,15 +56,27 @@ public struct EditorialTone: Equatable, Sendable {
             "That one was {title} by {artist}.",
             "{title}, from {artist}.",
             "Just had {title} there.",
+            "{title} — that was {artist}.",
+            "And that's {artist}, with {title}.",
+            "If you were wondering, that was {title} by {artist}.",
+            "Coming out of {title}, from {artist}.",
+            "That's been {artist} — {title}.",
+            "{title}, by {artist} — glad that one came around.",
         ],
-        // Kept at five lines, in this order. `DJNarrationTests` cycles this pool.
-        // One sentence of at most seven words, so it fits `DJCadence.maxClosingSeconds`.
+        // `DJNarrationTests` and `RadioStyleBreakTests` cycle this pool by its count.
+        // One sentence, at most three words besides the names, so it fits `DJCadence.maxClosingSeconds`
+        // when the next title and artist come to seven words or fewer. Every line names {nextTitle}.
         closing: [
             "Here's {nextArtist}, with {nextTitle}.",
             "Here's {nextTitle}, from {nextArtist}.",
             "Next up — {nextArtist}, {nextTitle}.",
             "Here's {nextTitle}.",
             "This is {nextTitle}.",
+            "And now, {nextTitle}.",
+            "Here's {nextArtist} — {nextTitle}.",
+            "Coming up, {nextTitle} from {nextArtist}.",
+            "{nextArtist} now, with {nextTitle}.",
+            "Let's hear {nextTitle}.",
         ],
         artistFocus: [
             "That was {artist}.",
@@ -75,13 +89,27 @@ public struct EditorialTone: Equatable, Sendable {
             "This is {station}.",
             "You're tuned to {station}.",
             "{station} — thanks for listening.",
+            "You've found {station} — stick around.",
+            "Right here on {station}.",
+            "Still with you on {station}.",
+            "{station} — keeping the music going.",
         ],
         atmosphere: [
-            .earlyMorning: ["Quiet start — the day's just getting going.", "Early one. Take it slow."],
-            .morning: ["Hope the morning's going easy.", "A little while before midday."],
-            .afternoon: ["Middle of the afternoon — hope it's going okay.", "The afternoon's moving along."],
-            .evening: ["Evening's settling in.", "Winding the day down — no rush."],
-            .lateNight: ["Late hours — a quiet stretch of the night.", "Still up this late? Glad you're here."],
+            .earlyMorning: ["Quiet start — the day's just getting going.", "Early one. Take it slow.",
+                            "Ease into it — no need to hurry this early.",
+                            "The day hasn't really started yet. Plenty of time."],
+            .morning: ["Hope the morning's going easy.", "A little while before midday.",
+                       "Morning's underway — let's keep it moving.",
+                       "However your morning's going, the music's here."],
+            .afternoon: ["Middle of the afternoon — hope it's going okay.", "The afternoon's moving along.",
+                         "Settling into the afternoon.",
+                         "Somewhere in the middle of the day — give or take."],
+            .evening: ["Evening's settling in.", "Winding the day down — no rush.",
+                       "The evening's yours — take your time.",
+                       "Day's done, or close to it."],
+            .lateNight: ["Late hours — a quiet stretch of the night.", "Still up this late? Glad you're here.",
+                         "For the night owls — glad to have you.",
+                         "Keeping it easy for the late hours."],
         ],
         continuation: [
             "Wherever you're listening, thanks for spending a little time here.",
@@ -102,11 +130,16 @@ public struct EditorialTone: Equatable, Sendable {
             "That's all for now.",
         ],
         greetings: [
-            .earlyMorning: ["Early start today.", "Good morning, early riser."],
-            .morning: ["Good morning.", "Morning."],
-            .afternoon: ["Good afternoon.", "Afternoon."],
-            .evening: ["Good evening.", "Evening."],
-            .lateNight: ["Late one tonight.", "Still up? Good."],
+            .earlyMorning: ["Early start today.", "Good morning, early riser.",
+                            "Morning — you're up early.", "Up with the early crowd. Good morning."],
+            .morning: ["Good morning.", "Morning.",
+                       "Good morning, and welcome in.", "Morning — glad you're here."],
+            .afternoon: ["Good afternoon.", "Afternoon.",
+                         "Afternoon — thanks for tuning in.", "Hey there, good afternoon."],
+            .evening: ["Good evening.", "Evening.",
+                       "Good evening — come on in.", "Evening, and welcome."],
+            .lateNight: ["Late one tonight.", "Still up? Good.",
+                         "Hey there, night owl.", "Welcome in — we're keeping it low tonight."],
         ]
     )
 

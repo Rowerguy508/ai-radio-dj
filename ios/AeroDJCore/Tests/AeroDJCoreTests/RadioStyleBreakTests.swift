@@ -213,6 +213,93 @@ final class RadioStyleBreakTests: XCTestCase {
         for (a, b) in zip(closings, closings.dropFirst()) { XCTAssertNotEqual(a, b, "never twice in a row") }
     }
 
+    // MARK: Scripts batch 2 (Echo, build 27)
+
+    func testBatch2PoolsRoughlyDoubleAndStayDistinct() {
+        let tone = EditorialTone.warm
+        XCTAssertGreaterThanOrEqual(tone.backAnnounce.count, 12)
+        XCTAssertGreaterThanOrEqual(tone.closing.count, 10)
+        XCTAssertGreaterThanOrEqual(tone.stationID.count, 8)
+        for part in DayPart.allCases {
+            XCTAssertGreaterThanOrEqual(tone.greetings[part, default: []].count, 4, "greetings for \(part)")
+            XCTAssertGreaterThanOrEqual(tone.atmosphere[part, default: []].count, 4, "time-of-day color for \(part)")
+        }
+        XCTAssertEqual(Set(tone.allLines).count, tone.allLines.count, "no line appears in two pools")
+        // Lines that differ only by punctuation are paraphrases, not variety.
+        let shapes = tone.allLines.map { line in
+            line.lowercased().filter { $0.isLetter || $0 == " " || $0 == "{" || $0 == "}" }
+                .split(separator: " ").joined(separator: " ")
+        }
+        XCTAssertEqual(Set(shapes).count, shapes.count)
+        for line in tone.allLines {
+            XCTAssertFalse(line.contains("!"), "no exclamations: \(line)")
+        }
+    }
+
+    func testTimeOfDayLinesOnlyNameTheirOwnDayPart() {
+        let tone = EditorialTone.warm
+        let foreign: [DayPart: [String]] = [
+            .earlyMorning: ["afternoon", "evening", "night"],
+            .morning: ["afternoon", "evening", "night"],
+            .afternoon: ["morning", "evening", "night"],
+            .evening: ["morning", "afternoon", "late"],
+            .lateNight: ["morning", "afternoon", "evening"],
+        ]
+        for part in DayPart.allCases {
+            for line in tone.greetings[part, default: []] + tone.atmosphere[part, default: []] {
+                for word in foreign[part, default: []] {
+                    XCTAssertFalse(line.lowercased().contains(word), "\(part): \(line)")
+                }
+            }
+        }
+    }
+
+    func testWorstCaseDurationsWithLongNamesStayInsideTheCaps() throws {
+        let tone = EditorialTone.warm
+        let cadence = DJCadence()
+        func seconds(_ text: String) -> Double { Double(SpokenDurationEstimate.seconds(text)) }
+        func fill(_ template: String, _ values: [String: String]) throws -> String {
+            try XCTUnwrap(TemplatePool.fill(template, values), template)
+        }
+        // Six-word title and six-word artist: longer than almost anything MusicKit returns.
+        let longTitle = "The Less I Know the Better", longArtist = "Edward Sharpe and the Magnetic Zeros"
+        let prev = ["title": longTitle, "artist": longArtist]
+        let next = ["nextTitle": longTitle, "nextArtist": longArtist]
+
+        // Closing: at most three words besides the names, so a next song whose title and artist
+        // come to seven words or fewer always gets a talk-over closing line (4 s).
+        for line in tone.closing {
+            XCTAssertLessThanOrEqual(line.split(separator: " ").filter { !$0.contains("{") }.count, 3, line)
+            let filled = try fill(line, ["nextTitle": "Here Comes the Sun", "nextArtist": "Tears for Fears"])
+            XCTAssertLessThanOrEqual(seconds(filled), Double(cadence.maxClosingSeconds), filled)
+        }
+        // Opener plus a closing that is too long to talk over still fits the main cap, so long
+        // names never skip a break; the planner trims color and continuation first.
+        let opener = try (tone.backAnnounce + tone.artistFocus).map { seconds(try fill($0, prev)) }.max() ?? 0
+        let closing = try tone.closing.map { seconds(try fill($0, next)) }.max() ?? 0
+        XCTAssertLessThanOrEqual(opener + closing, Double(cadence.maxTransitionSeconds))
+        // Every color and continuation line is short on its own.
+        let station = try XCTUnwrap(EditorialStationName.usable("The Late Night Listening Room on AeroDJ"))
+        for line in try tone.stationID.map({ try fill($0, ["station": station]) }) + tone.continuation
+            + Array(tone.atmosphere.values.joined()) + Array(tone.greetings.values.joined()) {
+            XCTAssertLessThanOrEqual(seconds(line), 7, line)
+        }
+        // Planner: every eligible boundary airs a break inside both caps.
+        let tracks = (0..<41).map { DJTrack(id: "l\($0)", title: longTitle, artist: longArtist) }
+        for seed in UInt64(0)..<100 {
+            for hour in [5, 9, 15, 19, 23] {
+                var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed,
+                                            stationName: station)
+                let breaks = writer.plan(tracks: tracks, briefing: nil, hour: hour).breaks
+                XCTAssertEqual(breaks.count, 20, "no break skipped for length (seed \(seed), hour \(hour))")
+                for djBreak in breaks {
+                    XCTAssertLessThanOrEqual(djBreak.mainSeconds, Double(cadence.maxTransitionSeconds))
+                    XCTAssertLessThanOrEqual(djBreak.closingSeconds, Double(cadence.maxClosingSeconds))
+                }
+            }
+        }
+    }
+
     func testBriefingBreakKeepsItsCapAndEndsWithTheClosingLine() {
         let item = UUID()
         let cues = (0..<5).map { i in
