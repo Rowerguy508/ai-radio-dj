@@ -227,6 +227,24 @@ public struct StationConfigurationState: Codable, Equatable, Sendable {
         return StationConfigurationChange(previous: previousActive, active: active, applied: applied, boundary: event)
     }
 
+    /// Promotes any `.immediate` reduction found in `pending` (briefing off, commentary off,
+    /// an integration withdrawn). `edit` never leaves one there, but a decoded snapshot skips
+    /// `init` and could: left pending, the next song boundary would promote it and cancel the
+    /// break already prepared for that boundary. Call on load. Returns `nil` when none.
+    public mutating func promotePendingReductions() -> StationConfigurationChange? {
+        guard let pending else { return nil }
+        let previousActive = active
+        var applied = Set<StationSetting>()
+        for setting in StationSetting.all where setting.differs(active, pending)
+            && setting.timing(from: active, to: pending) == .immediate {
+            setting.copy(from: pending, into: &active)
+            applied.insert(setting)
+        }
+        guard !applied.isEmpty else { return nil }
+        if active == pending { self.pending = nil }
+        return StationConfigurationChange(previous: previousActive, active: active, applied: applied, boundary: nil)
+    }
+
     /// Drops every pending edit. Active is untouched.
     public mutating func discardPending() { pending = nil }
 

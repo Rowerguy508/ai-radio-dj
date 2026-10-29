@@ -21,6 +21,23 @@ public enum PlaybackLog {
         "break skipped after=\(track) reason=\(reason.rawValue)"
     }
 
+    /// The reason a boundary with no prepared break is logged under: the session's own
+    /// `lastNoBreak` reason, or `.notPlanned` when the session recorded none.
+    public static func noBreakReason(
+        _ lastNoBreak: (reason: DJBreakSkipReason, cadencePlanned: Bool)?
+    ) -> DJBreakSkipReason {
+        lastNoBreak?.reason ?? .notPlanned
+    }
+
+    /// The reason a handed-out break that never started is logged under. An empty line or
+    /// no clips, and clips that did not decode, mean the prepared audio was unusable.
+    public static func handedOutReason(_ skip: HandedOutBreakSkip) -> DJBreakSkipReason {
+        switch skip {
+        case .emptyLine, .decodeFailed: .renderFailed
+        case .notPlayable: .notPlanned
+        }
+    }
+
     public static func queueEnd(finished: Int, signal: QueueEndSignal) -> String {
         "boundary queueEnd finished=\(finished) signal=\(signal.rawValue)"
     }
