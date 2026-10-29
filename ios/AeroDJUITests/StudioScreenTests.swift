@@ -335,6 +335,14 @@ final class StudioScreenTests: XCTestCase {
     /// the 640 × 820 container (`capture.duoContainer`) to hold their final frames, for the
     /// column (`folded.wideColumn`) to hold a stable frame at the column width, and for every
     /// spinner to go, then checks the column is centred in the window before saving.
+    ///
+    /// Run 40919120200: `folded.wideColumn`'s accessibility frame came back 376 pt while the
+    /// drawn column (art rule → `columnMinWidth` 360 pt), the scrubber track and the toolbar
+    /// were all 360 pt (230–590 pt in the failure recording). SwiftUI sizes a `.contain`
+    /// container's accessibility frame from its children, not from `.frame(width:)`, so it is
+    /// 8 pt wider each side than the layout. The edges are therefore measured on the toolbar,
+    /// whose station chip is `maxWidth: .infinity` and so spans the drawn column exactly;
+    /// the accessibility frame is used only for settling and centring.
     @MainActor
     func testDuoWideListenPlayerIsOneCentredColumn() throws {
         try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
@@ -355,11 +363,12 @@ final class StudioScreenTests: XCTestCase {
                       "container \(box) outside window \(windowFrame)")
 
         // Column: exists, holds still, and is as wide as the column rule allows in 640 pt
-        // (FoldedColumnLayout: 360…min(640 − 2 × 32, 560) = 576).
+        // (FoldedColumnLayout: 360…min(640 − 2 × 32, 560) = 560), plus the accessibility
+        // frame's slack (see `DuoWideColumn`).
         let column = any["folded.wideColumn"]
         XCTAssertTrue(column.waitForExistence(timeout: 10), "wide column missing\n\(app.debugDescription)")
         let col = try XCTUnwrap(settledFrame(of: column, "wide column") {
-            $0.width >= 360 - 1 && $0.width <= 576 + 1
+            $0.width >= DuoWideColumn.minWidth - 1 && $0.width <= DuoWideColumn.maxWidth + DuoWideColumn.accessibilitySlack
         }, "wide column never settled at a column width: \(column.frame)")
 
         // No spinner anywhere in the app (the Play/Pause face, art or queue loading).
@@ -373,24 +382,43 @@ final class StudioScreenTests: XCTestCase {
         let scrubber = any["playback.progress"]
         let chip = any["station.title"]
         let more = any["folded.more"]
+        let tune = app.buttons["transport.tune"]   // wide: Tune is only in the toolbar
         for (name, element) in [("play", play), ("ready", ready), ("scrubber", scrubber),
-                                ("chip", chip), ("more", more)] {
+                                ("chip", chip), ("more", more), ("tune", tune)] {
             XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing\n\(app.debugDescription)")
         }
+        // The drawn column: chip leading edge to Tune's trailing edge.
+        let edges = (minX: chip.frame.minX, maxX: tune.frame.maxX)
+        let drawn = edges.maxX - edges.minX
+        let frames = "column(ax) \(col) drawn \(edges) scrubber \(scrubber.frame) chip \(chip.frame) "
+            + "tune \(tune.frame) more \(more.frame) play \(play.frame) ready \(ready.frame)"
+        XCTAssertGreaterThanOrEqual(drawn, DuoWideColumn.minWidth - 1, "column below the minimum: \(frames)")
+        XCTAssertLessThanOrEqual(drawn, DuoWideColumn.maxWidth + 1, "column above the cap: \(frames)")
+        XCTAssertLessThanOrEqual(drawn, col.width + 1, "drawn column wider than its container: \(frames)")
         XCTAssertEqual(col.midX, box.midX, accuracy: 2, "column centred in the container")
         XCTAssertEqual(col.midX, windowFrame.midX, accuracy: 2, "column centred in the window")
-        XCTAssertEqual(scrubber.frame.width, col.width, accuracy: 2, "scrubber spans the column")
         let midX = col.midX
-        XCTAssertEqual(play.frame.midX, midX, accuracy: 2, "Play/Pause on the column centre")
-        XCTAssertEqual(ready.frame.midX, midX, accuracy: 2, "DJ line centred")
-        XCTAssertEqual(scrubber.frame.midX, midX, accuracy: 2, "scrubber centred")
-        XCTAssertEqual(chip.frame.minX, scrubber.frame.minX, accuracy: 2, "Playing-from bar on the column edge")
-        XCTAssertEqual(more.frame.maxX, scrubber.frame.maxX, accuracy: 2, "⋯ on the column edge")
-        XCTAssertLessThanOrEqual(scrubber.frame.minY - ready.frame.maxY, 48, "no gap under the DJ line")
+        XCTAssertEqual((edges.minX + edges.maxX) / 2, midX, accuracy: 2, "toolbar centred: \(frames)")
+        XCTAssertEqual(scrubber.frame.minX, edges.minX, accuracy: 2, "scrubber on the column's leading edge: \(frames)")
+        XCTAssertEqual(scrubber.frame.maxX, edges.maxX, accuracy: 2, "scrubber on the column's trailing edge: \(frames)")
+        XCTAssertEqual(play.frame.midX, midX, accuracy: 2, "Play/Pause on the column centre: \(frames)")
+        XCTAssertEqual(ready.frame.midX, midX, accuracy: 2, "DJ line centred: \(frames)")
+        XCTAssertEqual(scrubber.frame.midX, midX, accuracy: 2, "scrubber centred: \(frames)")
+        XCTAssertEqual(more.frame.maxX, edges.maxX, accuracy: 2, "⋯ on the column edge: \(frames)")
+        XCTAssertLessThanOrEqual(scrubber.frame.minY - ready.frame.maxY, 48, "no gap under the DJ line: \(frames)")
         // Re-check nothing moved while the assertions ran, then capture.
         XCTAssertEqual(column.frame.midX, col.midX, accuracy: 0.5, "column moved before the screenshot")
         XCTAssertEqual(container.frame.width, box.width, accuracy: 0.5, "container resized before the screenshot")
         save(app, "duo-wide-ready")
+    }
+
+    /// `FoldedColumnLayout` in a 640 pt container (the UI tests don't link AeroDJCore):
+    /// 360…min(640 − 2 × 32, 560). `accessibilitySlack`: the column's `.contain` frame can be
+    /// up to 8 pt wider each side than the drawn column (run 40919120200: 376 for 360).
+    private enum DuoWideColumn {
+        static let minWidth: CGFloat = 360
+        static let maxWidth: CGFloat = 560
+        static let accessibilitySlack: CGFloat = 2 * 8 + 1
     }
 
     /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and
