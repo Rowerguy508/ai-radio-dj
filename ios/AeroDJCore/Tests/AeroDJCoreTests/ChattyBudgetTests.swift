@@ -7,7 +7,7 @@ final class ChattyBudgetTests: XCTestCase {
     func testChattyOnPaidRouteStopsAtVoiceBudget() async throws {
         let cadence = StationConfiguration(commentary: .chatty).cadence()
         var writer = DJScriptWriter(cadence: cadence, seed: 3)
-        let breaks = writer.plan(tracks: djTracks(12), briefing: nil, hour: 9).breaks
+        let breaks = writer.plan(tracks: djTracks(12, origin: .catalog), briefing: nil, hour: 9).breaks
         XCTAssertEqual(breaks.map(\.afterTrack), Array(0..<11))
 
         // Paid only, no free fallback: 30 µ$ per character, cap fits a couple of breaks.
