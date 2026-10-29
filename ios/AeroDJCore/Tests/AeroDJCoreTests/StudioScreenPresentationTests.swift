@@ -37,6 +37,54 @@ final class StudioScreenPresentationTests: XCTestCase {
         XCTAssertEqual(exact, StudioZoneWidths(zoneA: 320, zoneB: 340))
     }
 
+    // MARK: Unfolded panes (owner request 2026-10-28: near edge to edge, larger radii)
+
+    func testPaneInsetsAreVisualOnlyAndKeepTheSwitch() {
+        XCTAssertEqual(StudioLayoutMetrics.paneEdgeInset, 8)
+        XCTAssertEqual(StudioLayoutMetrics.paneGutter, 12)
+        // The switch still comes from the original metrics.
+        XCTAssertEqual(StudioLayoutMetrics.edgeInset, 16)
+        XCTAssertEqual(StudioLayoutMetrics.gutter, 24)
+        XCTAssertEqual(StudioLayoutMetrics.studioMinWidth, 716)
+        XCTAssertNil(StudioZoneWidths.allocatePanes(containerWidth: 715))
+        XCTAssertNotNil(StudioZoneWidths.allocatePanes(containerWidth: 716))
+        for width in stride(from: 600.0, through: 1400, by: 1) {
+            XCTAssertEqual(StudioZoneWidths.allocatePanes(containerWidth: width) == nil,
+                           StudioZoneWidths.allocate(containerWidth: width) == nil, "width \(width)")
+        }
+    }
+
+    func testPanesFillContainerWithReclaimedWidthAndCentredGutter() {
+        let m = StudioLayoutMetrics.self
+        for width in stride(from: 716.0, through: 1400, by: 1) {
+            let z = StudioZoneWidths.allocatePanes(containerWidth: width)!
+            let old = StudioZoneWidths.allocate(containerWidth: width)!
+            XCTAssertEqual(z.edgeInset, m.paneEdgeInset)
+            XCTAssertEqual(z.gutter, m.paneGutter)
+            XCTAssertEqual(z.edgeInset * 2 + z.gutter + z.zoneA + z.zoneB, width, accuracy: 0.001, "width \(width)")
+            XCTAssertGreaterThanOrEqual(z.zoneA, m.zoneAMinWidth)
+            XCTAssertGreaterThanOrEqual(z.zoneB, m.zoneBMinWidth)
+            // The 28 pt freed by the smaller margins and gutter goes to the zones.
+            XCTAssertEqual(z.zoneA + z.zoneB - (old.zoneA + old.zoneB), 28, accuracy: 0.001)
+            // Gutter centred on the hinge: within half a point (odd content widths).
+            let gutterMid = z.edgeInset + z.zoneA + z.gutter / 2
+            XCTAssertLessThanOrEqual(abs(gutterMid - width / 2), 0.5, "width \(width)")
+        }
+        // At the breakpoint both zones are already past their minimums and split evenly.
+        XCTAssertEqual(StudioZoneWidths.allocatePanes(containerWidth: 716),
+                       StudioZoneWidths(zoneA: 344, zoneB: 344, edgeInset: 8, gutter: 12))
+    }
+
+    func testCornerRadiiNest() {
+        XCTAssertEqual(StudioCornerRadius.panel, 30)
+        XCTAssertEqual(StudioCornerRadius.card, 22)
+        XCTAssertEqual(StudioCornerRadius.field, 14)
+        XCTAssertGreaterThan(StudioCornerRadius.panel, StudioCornerRadius.card)
+        XCTAssertGreaterThan(StudioCornerRadius.card, StudioCornerRadius.field)
+        // A card inset by the panel padding never pokes past the panel's curve.
+        XCTAssertGreaterThanOrEqual(StudioCornerRadius.card, StudioCornerRadius.panel - StudioCornerRadius.panelPadding)
+    }
+
     func testArtworkUsesZoneWidthAndHeightBudget() {
         let narrow = StudioZoneWidths.allocate(containerWidth: 716)!
         XCTAssertEqual(narrow.artworkSide(containerHeight: 900), 304) // 320 - 16
