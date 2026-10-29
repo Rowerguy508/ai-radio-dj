@@ -20,10 +20,32 @@ public enum StudioLayoutMetrics {
     public static var studioMinWidth: Double { zoneAMinWidth + gutter + zoneBMinWidth + edgeInset * 2 }
     /// Below this container height Zone A drops artwork to 120 pt and keeps transport.
     public static let lowHeight: Double = 480
+
+    /// Visual only: the outer margin the unfolded Studio actually draws. Smaller than
+    /// `edgeInset`, so the two panes run close to edge to edge. `edgeInset` and `gutter`
+    /// still define `studioMinWidth`, so the compact/Studio switch does not move.
+    public static let paneEdgeInset: Double = 8
+    /// Visual only: the space the unfolded Studio draws between the panes, centred in the container.
+    public static let paneGutter: Double = 12
 }
 
-/// Which layout a container gets. Width is the only input besides text size: no device
-/// model, no size class, no fold sensor. Folding just changes the container width.
+/// Continuous corner radii for the unfolded Studio (owner request, 2026-10-28). One token,
+/// so the panes, the cards inside them and the field nest evenly. The compact layout keeps
+/// its own radii.
+public enum StudioCornerRadius {
+    /// Zone A (art and player card) and Zone B (the workspace panel).
+    public static let panel: Double = 30
+    /// Cards inside the workspace (Genres, Mood, Connections sources, recipes).
+    public static let card: Double = 22
+    /// Text fields inside those cards ("Add your own").
+    public static let field: Double = 14
+    /// Padding between the panel edge and its cards.
+    public static let panelPadding: Double = 16
+}
+
+/// Which layout a container gets. Width is the only input besides text size and, in the
+/// screen's rule, whether the width class is regular: no device model, no fold sensor.
+/// Folding just changes the container width.
 public enum StudioLayoutMode: Equatable, Sendable {
     /// Closed Duo, or any container narrower than `studioMinWidth`.
     case compact
@@ -36,22 +58,57 @@ public enum StudioLayoutMode: Equatable, Sendable {
         guard containerWidth >= StudioLayoutMetrics.studioMinWidth else { return .compact }
         return accessibilityTextSize ? .studioStacked : .studio
     }
+
+    /// The screen's full rule: the width class gates the Studio, then the width rule above.
+    /// Pass `horizontalSizeClass == .regular`, never `!= .compact`, so a missing size class
+    /// (nil, UIKit's `unspecified`) takes the compact layout. The 716 pt threshold is unchanged.
+    public static func resolve(hasRegularWidth: Bool, containerWidth: Double,
+                               accessibilityTextSize: Bool) -> StudioLayoutMode {
+        guard hasRegularWidth else { return .compact }
+        return resolve(containerWidth: containerWidth, accessibilityTextSize: accessibilityTextSize)
+    }
 }
 
-/// Widths actually given to the two zones. The split is even whenever both minimums allow
-/// it, so the gutter straddles the middle of the container, where a Duo's hinge sits.
-/// Near the breakpoint each zone gets at least its minimum and Zone B takes the rest.
+/// Widths actually given to the two zones. The split is an even split of the available
+/// width whenever both minimums allow it, so the gutter straddles the middle of the
+/// container. That is not a promise it sits over a Duo's hinge: a vertical bar or a sidebar
+/// can shift or narrow the container. Near the breakpoint each zone gets at least its
+/// minimum and Zone B takes the rest.
 public struct StudioZoneWidths: Equatable, Sendable {
     public let zoneA: Double
     public let zoneB: Double
+    /// The outer margin and gutter these widths were allocated with. The view draws exactly
+    /// these, so `edgeInset * 2 + gutter + zoneA + zoneB` is always the container width.
+    public let edgeInset: Double
+    public let gutter: Double
+
+    public init(zoneA: Double, zoneB: Double,
+                edgeInset: Double = StudioLayoutMetrics.edgeInset,
+                gutter: Double = StudioLayoutMetrics.gutter) {
+        self.zoneA = zoneA
+        self.zoneB = zoneB
+        self.edgeInset = edgeInset
+        self.gutter = gutter
+    }
 
     /// `nil` when the container is too narrow for Studio (the compact layout applies).
-    public static func allocate(containerWidth: Double) -> StudioZoneWidths? {
+    /// The switch always uses `studioMinWidth`. `edgeInset` and `gutter` only change how
+    /// the width is drawn: any width they free up goes to the zones.
+    public static func allocate(containerWidth: Double,
+                                edgeInset: Double = StudioLayoutMetrics.edgeInset,
+                                gutter: Double = StudioLayoutMetrics.gutter) -> StudioZoneWidths? {
         let m = StudioLayoutMetrics.self
         guard containerWidth >= m.studioMinWidth else { return nil }
-        let content = containerWidth - m.edgeInset * 2 - m.gutter
+        let content = containerWidth - edgeInset * 2 - gutter
         let a = max(m.zoneAMinWidth, min((content / 2).rounded(.down), content - m.zoneBMinWidth))
-        return StudioZoneWidths(zoneA: a, zoneB: content - a)
+        return StudioZoneWidths(zoneA: a, zoneB: content - a, edgeInset: edgeInset, gutter: gutter)
+    }
+
+    /// The unfolded Studio as drawn: `paneEdgeInset` and `paneGutter`, same switch.
+    public static func allocatePanes(containerWidth: Double) -> StudioZoneWidths? {
+        allocate(containerWidth: containerWidth,
+                 edgeInset: StudioLayoutMetrics.paneEdgeInset,
+                 gutter: StudioLayoutMetrics.paneGutter)
     }
 
     /// Artwork side in Zone A: min(zone width − 16, 360, 44% of the height). Zone A is not a
@@ -216,7 +273,7 @@ public struct DJStatusPresentation: Equatable, Sendable {
             headline = nil
             reviewCount = nil
         case .preparing(let briefing):
-            headline = briefing ? "Preparing your briefing" : "Preparing a DJ break"
+            headline = briefing ? "Preparing your briefing for after this song" : "Preparing the break after this song"
             reviewCount = nil
         case .ready(let briefing, _):
             headline = briefing ? "Briefing after this song" : "DJ break after this song"
@@ -344,13 +401,13 @@ public extension StationTunerRow {
 
 /// The one indicator each tuner control shows: saved, pending or active (plus saving,
 /// consent and error states). "Active" is used only for settings something actually reads
-/// today; settings nothing reads yet (genres, mood, energy, discovery) say "Saved".
+/// today; settings nothing reads yet (genres, mood, energy) say "Saved".
 public enum TunerIndicator: Equatable, Sendable {
     /// Saved, and nothing reads it yet. Honest: song picking doesn't use these settings.
     case saved
     /// Saved, waiting for a safe moment (copy says when).
     case pending(String)
-    /// Saved and in effect for what reads it (DJ breaks, briefings).
+    /// Saved and in effect for what reads it (song picking, DJ breaks, briefings).
     case active
     case saving
     /// Requested but consent isn't granted; nothing is read.
@@ -395,19 +452,22 @@ public enum TunerIndicator: Equatable, Sendable {
 }
 
 public extension StationSetting {
-    /// Whether anything in the app reads this setting today. Tuning for song picking is
-    /// stored and applied at boundaries but no selection engine reads it yet.
+    /// Whether anything in the app reads this setting today. Seeds, reach and discovery drive
+    /// song picking (`StationQueueFeed`); genres, moods and energy are stored but not read yet.
     var isReadToday: Bool {
         switch self {
-        case .genres, .moods, .energy, .discovery: false
-        case .commentary, .personality, .briefing, .integration: true
+        case .genres, .moods, .energy: false
+        case .discovery, .seeds, .reach, .commentary, .personality, .briefing, .integration: true
         }
     }
 
     /// One honest line on what the setting changes today.
     var usageCopy: String {
         switch self {
-        case .genres, .moods, .energy, .discovery: "Saved with your station. Not used for song picking yet."
+        case .genres, .moods, .energy: "Saved with your station. Not used for song picking yet."
+        case .seeds: "Picks the songs this station plays."
+        case .reach: "Sets how far beyond your picks the songs go."
+        case .discovery: "Sets how much new music is mixed in."
         case .commentary: "Changes how often the DJ talks between songs."
         case .personality: "Changes how long a DJ break may be."
         case .briefing: "Lets DJ breaks carry your briefing."

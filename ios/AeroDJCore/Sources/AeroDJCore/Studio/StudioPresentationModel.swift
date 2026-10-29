@@ -13,14 +13,23 @@ public final class StudioPresentationModel {
     /// Fed by `DJBreakPreparer` events and the player's started/finished/failed callbacks.
     public let dj: DJPresentationStore
 
+    /// Seed search for the add-station flow (`makeStationCreation`). Nil in previews and the Test Station.
+    @ObservationIgnored public let seedSearch: (any StationSeedSearching)?
+    /// Maps a seed-search error to fixed banner copy (the app passes its MusicKit-aware mapper).
+    @ObservationIgnored let seedSearchFailureKind: @MainActor (Error) -> SearchFailureKind
+
     @ObservationIgnored private var changeTask: Task<Void, Never>?
 
     public init(station: StationConfigurationModel, recipes: StationRecipeLibrary,
-                connections: ConnectionsModel, dj: DJPresentationStore) {
+                connections: ConnectionsModel, dj: DJPresentationStore,
+                seedSearch: (any StationSeedSearching)? = nil,
+                seedSearchFailureKind: @escaping @MainActor (Error) -> SearchFailureKind = { SearchFailureCopy.kind(for: $0) }) {
         self.station = station
         self.recipes = recipes
         self.connections = connections
         self.dj = dj
+        self.seedSearch = seedSearch
+        self.seedSearchFailureKind = seedSearchFailureKind
     }
 
     /// DJ status in the owner's five states. `isOnAir` is true only while `speaking`.
@@ -54,6 +63,27 @@ public final class StudioPresentationModel {
     @discardableResult
     public func saveRecipe(named name: String) async -> Result<StationRecipe, StationRecipeError> {
         await recipes.save(name: name, configuration: station.displayed)
+    }
+
+    /// Creates a station from artists, a genre or a playlist at a discovery level, and saves it
+    /// as a recipe named `name` (same name rules and errors as `saveRecipe(named:)`). The new
+    /// recipe keeps the tuning the controls show (energy, DJ personality, talk, briefing) and
+    /// takes its seeds, reach and discovery from `request`. An invalid request fails with
+    /// `.invalidStation(_)` and saves nothing. The live station is untouched unless `applying` is
+    /// true, which then applies the saved recipe with the normal boundary rules (`applyRecipe`).
+    @discardableResult
+    public func saveRecipe(named name: String, from request: StationCreationRequest,
+                           applying: Bool = false) async -> Result<StationRecipe, StationRecipeError> {
+        let configuration: StationConfiguration
+        switch request.configuration(base: station.displayed) {
+        case .failure(let reason): return .failure(.invalidStation(reason))
+        case .success(let config): configuration = config
+        }
+        let saved = await recipes.save(name: name, configuration: configuration)
+        if applying, case .success(let recipe) = saved {
+            _ = await recipes.apply(recipe.id, to: station)
+        }
+        return saved
     }
 
     @discardableResult

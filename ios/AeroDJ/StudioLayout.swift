@@ -5,7 +5,9 @@ import SwiftUI
 /// Now Playing panel with transport; Zone B is the Queue / Tune / Connections workspace.
 /// Zone widths come from `StudioZoneWidths.allocate`, the same source of truth as the
 /// compact/Studio switch, so the switch and the geometry can never disagree (#60 P1).
-/// The split is even when possible, so the gutter sits over the Duo's hinge.
+/// The split is an even split of the available width when possible, so the gutter sits at
+/// the container's middle. It does not track the Duo's hinge: a vertical bar or a sidebar
+/// can shift or narrow the container.
 ///
 /// Originally written by Claudio (#60); taken over and revised by Fry.
 struct StudioLayout: View {
@@ -15,30 +17,35 @@ struct StudioLayout: View {
     let workspace: WorkspaceView
 
     var body: some View {
-        let edge = CGFloat(StudioLayoutMetrics.edgeInset)
-        let gutter = CGFloat(StudioLayoutMetrics.gutter)
+        // The margin and gutter `widths` was allocated with (`allocatePanes`: 8 and 12 pt),
+        // so the drawn geometry always adds up to the container. The compact/Studio switch
+        // still uses `StudioLayoutMetrics.studioMinWidth`.
+        let edge = CGFloat(widths.edgeInset)
+        let gutter = CGFloat(widths.gutter)
+        let panel = RoundedRectangle(cornerRadius: CGFloat(StudioCornerRadius.panel), style: .continuous)
         // Exact column widths. Edge is outer padding only — never folded into zoneA/zoneB,
         // which previously made Zone A’s container report past the gutter (430 > 422).
         HStack(alignment: .top, spacing: gutter) {
             zoneA
                 .frame(width: CGFloat(widths.zoneA))
                 .frame(maxHeight: .infinity, alignment: .top)
-                .clipped()
+                .clipShape(panel)
                 .contentShape(Rectangle())
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneA")
             workspace
-                .padding(16)
+                .environment(\.studioPanes, true)
+                .padding(CGFloat(StudioCornerRadius.panelPadding))
                 .frame(width: CGFloat(widths.zoneB), alignment: .topLeading)
                 .frame(maxHeight: .infinity, alignment: .topLeading)
                 .systemMaterialBackground()
-                .clipped()
+                .clipShape(panel)
                 .contentShape(Rectangle())
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("studio.zoneB")
         }
         .padding(.horizontal, edge)
-        .padding(.bottom, 12)
+        // No extra bottom padding: the container already stops at the bottom safe area.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .frame(height: containerHeight, alignment: .top)
         .background(Color(.systemBackground))
@@ -127,6 +134,7 @@ struct WorkspaceView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .workspaceSegmentShape()
             .accessibilityIdentifier("workspace.segment")
 
             switch segment {

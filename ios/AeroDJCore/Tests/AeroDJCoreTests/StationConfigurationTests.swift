@@ -674,3 +674,60 @@ final class StationConfigurationModelTests: XCTestCase {
         XCTAssertEqual(model.plannableBriefingSections, [.calendar])
     }
 }
+
+final class ChattyCommentaryTests: XCTestCase {
+    func testChattyAsksForEveryBoundaryWithinTheBound() {
+        XCTAssertEqual(CommentaryFrequency.chatty.talkFraction, 1.0)
+        XCTAssertLessThanOrEqual(CommentaryFrequency.chatty.talkFraction, CommentaryFrequency.maxTalkFraction)
+        XCTAssertEqual(CommentaryFrequency.allCases, [.off, .rare, .occasional, .frequent, .chatty], "dial order")
+        XCTAssertEqual(CommentaryFrequency.chatty.title, "Chatty")
+    }
+
+    func testPersistedRawValuesAreStable() {
+        XCTAssertEqual(CommentaryFrequency.allCases.map(\.rawValue), ["off", "rare", "occasional", "frequent", "chatty"])
+    }
+
+    func testOldRecipeCommentaryStillDecodes() throws {
+        for (raw, expected) in [("off", CommentaryFrequency.off), ("rare", .rare), ("occasional", .occasional), ("frequent", .frequent)] {
+            let json = #"{"active":{"commentary":"\#(raw)"}}"#
+            XCTAssertEqual(try StationConfigurationSnapshot.decode(Data(json.utf8)).state.active.commentary, expected, raw)
+        }
+    }
+
+    func testUnknownCommentaryStillFallsBackToDefault() throws {
+        let json = #"{"active":{"commentary":"nonstop"}}"#
+        XCTAssertEqual(try StationConfigurationSnapshot.decode(Data(json.utf8)).state.active.commentary,
+                       StationConfiguration.default.commentary)
+    }
+
+    func testChattyRoundTrips() throws {
+        let snapshot = StationConfigurationSnapshot(state: .init(active: .init(commentary: .chatty)))
+        let decoded = try StationConfigurationSnapshot.decode(snapshot.encoded())
+        XCTAssertEqual(decoded.state.active.commentary, .chatty)
+        XCTAssertEqual(decoded, snapshot)
+    }
+
+    /// The copy must state what the planner delivers. Chatty is the owner's override: every song.
+    func testChattyDescriptionMatchesDeliveredShare() {
+        let cadence = StationConfiguration(commentary: .chatty).cadence()
+        XCTAssertEqual(cadence.minSongsBetweenBreaks, 0)
+        XCTAssertTrue(cadence.allowsBackToBack)
+        XCTAssertEqual(cadence.expectedTalkShare, 1)
+        XCTAssertEqual(CommentaryFrequency.chatty.honestDescription, "The DJ talks after every song.")
+
+        let tracks = (0..<301).map { DJTrack(id: "t\($0)", title: "Song \($0)", artist: "Artist \($0)") }
+        var writer = DJScriptWriter(cadence: cadence, seed: 5)
+        let after = writer.plan(tracks: tracks, briefing: nil, hour: 9).breaks.map(\.afterTrack)
+        XCTAssertEqual(after, Array(0..<300), "a break after every song, none before song 1")
+    }
+
+    /// Only Chatty drops the spacing rule; every other preset still never talks two in a row.
+    func testOnlyChattyAllowsBackToBack() {
+        for c in CommentaryFrequency.allCases where c != .chatty {
+            let cadence = StationConfiguration(commentary: c).cadence()
+            XCTAssertFalse(cadence.allowsBackToBack, "\(c)")
+            XCTAssertGreaterThanOrEqual(cadence.minSongsBetweenBreaks, 1, "\(c)")
+        }
+        XCTAssertEqual(DJCadence(minSongsBetweenBreaks: 0).minSongsBetweenBreaks, 1, "0 is clamped without the override")
+    }
+}

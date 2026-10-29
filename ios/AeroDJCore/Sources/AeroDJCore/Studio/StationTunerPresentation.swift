@@ -24,6 +24,8 @@ public extension StationSetting {
         case .moods: "Mood"
         case .energy: "Energy"
         case .discovery: "Discovery"
+        case .seeds: "Built from"
+        case .reach: "Reach"
         case .personality: "DJ personality"
         case .commentary: "DJ talk"
         case .briefing: "Morning briefing"
@@ -61,12 +63,14 @@ public extension CommentaryFrequency {
         case .rare: "Rarely"
         case .occasional: "Sometimes"
         case .frequent: "Often"
+        case .chatty: "Chatty"
         }
     }
 
     var honestDescription: String {
         switch self {
         case .off: "Music only. The DJ doesn't talk between songs."
+        case .chatty: "The DJ talks after every song."
         default: "The DJ talks after about \(Int((StationConfiguration(commentary: self).cadence().expectedTalkShare * 100).rounded()))% of songs, never two in a row."
         }
     }
@@ -98,11 +102,40 @@ public extension StationConfiguration {
         case .moods: moods.isEmpty ? "Any" : moods.joined(separator: ", ")
         case .energy: "\(Int((energy * 100).rounded()))%"
         case .discovery: "\(Int((discovery * 100).rounded()))% new music"
+        case .seeds: seedsSummary
+        case .reach: reach.title
         case .personality: personality.title
         case .commentary: commentary.title
         case .briefing: briefing.enabled ? "On, about \(briefing.targetSeconds / 60) min" : "Off"
         case .integration(let i): requestedIntegrations.contains(i) ? "Requested" : "Off"
         }
+    }
+}
+
+public extension StationReach {
+    var title: String {
+        switch self {
+        case .only: "Only this"
+        case .related: "Related"
+        case .broad: "Broad"
+        }
+    }
+
+    var honestDescription: String {
+        switch self {
+        case .only: "Only what you picked: the artist's own songs, the playlist, the genre chart or the song."
+        case .related: "What you picked plus similar artists."
+        case .broad: "Related, plus the wider genre and charts."
+        }
+    }
+}
+
+extension StationConfiguration {
+    /// On-screen only (seed names never leave the device through this). Up to 3 names, then "+N".
+    var seedsSummary: String {
+        guard !seeds.isEmpty else { return "Any" }
+        let shown = seeds.prefix(3).map(\.name).joined(separator: ", ")
+        return seeds.count > 3 ? "\(shown) +\(seeds.count - 3)" : shown
     }
 }
 

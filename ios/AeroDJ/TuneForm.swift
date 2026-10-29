@@ -20,7 +20,7 @@ struct TuneForm: View {
                         .foregroundStyle(AeroDJPalette.secondaryText)
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .workspaceCardBackground(Color(.tertiarySystemFill), compactRadius: 12)
                 }
                 if model.hasUnsavedChanges { UnsavedChangesCard(model: model) }
                 if model.hasPendingChanges { PendingChangesCard(model: model) }
@@ -144,11 +144,11 @@ struct ControlCard<Content: View>: View {
                         .lineLimit(2)
                 }
                 .font(.caption.weight(.medium))
-                .foregroundStyle(AeroDJPalette.accentText)
+                .foregroundStyle(AeroDJPalette.secondaryText)
             }
         }
         .padding(14)
-        .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .workspaceCardBackground(Color(.tertiarySystemFill).opacity(0.6))
     }
 }
 
@@ -228,12 +228,17 @@ struct TagControl: View {
                     Button {
                         onChange(isOn ? selected.filter { $0 != tag } : selected + [tag])
                     } label: {
+                        // Neutral, not accent blue (wireframe 08): selected = 18% fill + hairline
+                        // and a heavier weight, so selection reads without colour.
                         Text(tag)
-                            .font(.subheadline)
+                            .font(.subheadline.weight(isOn ? .semibold : .regular))
                             .padding(.horizontal, 12)
                             .frame(minHeight: 36)
-                            .background(Capsule().fill(isOn ? AnyShapeStyle(AeroDJPalette.chipSelectedFill) : AnyShapeStyle(.quaternary)))
-                            .foregroundStyle(isOn ? AeroDJPalette.onMediaLight : Color.primary)
+                            .background(Capsule().fill(Color.primary.opacity(isOn ? 0.18 : 0)))
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(isOn ? 0.22 : 0.14), lineWidth: 1))
+                            .foregroundStyle(isOn ? Color.primary : Color.primary.opacity(0.7))
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(isOn ? .isSelected : [])
@@ -247,7 +252,7 @@ struct TagControl: View {
                     .onSubmit(addCustom)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
-                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .workspaceFieldBackground(Color(.tertiarySystemFill), compactRadius: 8)
                     .accessibilityLabel("Add your own")
                 Button("Add", action: addCustom)
                     .disabled(custom.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -323,7 +328,8 @@ struct UnsavedChangesCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .workspaceCardBackground(Color.primary.opacity(0.07))
+        .overlay(NeutralCardHairline())
         .accessibilityElement(children: .contain)
     }
 }
@@ -348,7 +354,8 @@ struct PendingChangesCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .workspaceCardBackground(Color.primary.opacity(0.07))
+        .overlay(NeutralCardHairline())
         .accessibilityElement(children: .contain)
     }
 }
@@ -411,7 +418,7 @@ struct RecipesSection: View {
             }
         }
         .padding(14)
-        .background(Color(.tertiarySystemFill).opacity(0.6), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .workspaceCardBackground(Color(.tertiarySystemFill).opacity(0.6))
         .alert("Rename recipe", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newName)
             Button("Save") {
@@ -479,5 +486,17 @@ struct TunePreviewLoader: View {
             if let studio { TuneForm(studio: studio).padding() } else { ProgressView() }
         }
         .task { studio = await StudioPresentationModel.preview() }
+    }
+}
+
+/// 1 pt hairline for the neutral Pending / Unsaved cards (they used to carry a blue tint).
+/// Same radius rule as `workspaceCardBackground`: 22 pt in the unfolded Studio, 16 pt elsewhere.
+private struct NeutralCardHairline: View {
+    @Environment(\.studioPanes) private var studioPanes
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: studioPanes ? CGFloat(StudioCornerRadius.card) : 16, style: .continuous)
+            .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+            .allowsHitTesting(false)
     }
 }

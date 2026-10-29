@@ -18,6 +18,19 @@ final class StudioScreenTests: XCTestCase {
                         dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                         restoreStationID: String? = nil,
                         musicAuthStatus: String? = nil) -> XCUIApplication {
+        // Probe the layout before this test's own launch: the probe launches and terminates
+        // its own app, so it must never run while the test's app is up.
+        _ = isOpenLayout
+        return startApp(segment: segment, scenario: scenario, largeText: largeText, dark: dark,
+                        contentSize: contentSize, reduceMotion: reduceMotion,
+                        restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus)
+    }
+
+    @MainActor
+    private func startApp(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
+                          dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
+                          restoreStationID: String? = nil,
+                          musicAuthStatus: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
@@ -58,8 +71,26 @@ final class StudioScreenTests: XCTestCase {
         return app
     }
 
+    /// Which layout this simulator's window gets, read from the app itself rather than the
+    /// device idiom: one probe launch of the default capture, then whichever of
+    /// `layout.studio` / `layout.compact` the real `PlayingScreen` shows. A narrow iPad
+    /// window or a wide iPhone window then picks the matching assertions.
     @MainActor
-    private var isOpenLayout: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+    private static var probedOpenLayout: Bool?
+
+    @MainActor
+    private var isOpenLayout: Bool {
+        if let probed = Self.probedOpenLayout { return probed }
+        let app = startApp()
+        let any = app.descendants(matching: .any)
+        let either = any.matching(NSPredicate(format: "identifier IN %@", ["layout.studio", "layout.compact"])).firstMatch
+        XCTAssertTrue(either.waitForExistence(timeout: 15),
+                      "Neither layout.studio nor layout.compact appeared\n\(visibleIdentifiers(app))")
+        let open = any["layout.studio"].exists
+        app.terminate()
+        Self.probedOpenLayout = open
+        return open
+    }
 
     @MainActor
     func testClosedDuoIsImmersiveCompactPlayer() throws {
@@ -295,20 +326,25 @@ final class StudioScreenTests: XCTestCase {
         }
     }
 
-    /// `.ready` must not print the break headline or its VoiceOver detail.
-    /// Either can stay on screen when no break plays.
+    /// Open (Studio): `.ready` must not print the break headline or its VoiceOver detail.
+    /// Folded: a quiet, static "DJ break after this song" line shows instead (Fry, #161).
     @MainActor
     func testReadyStateShowsNoBreakText() throws {
         let app = launch(scenario: "breakReady")
         let layout = isOpenLayout ? "layout.studio" : "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
                       "ready capture did not show \(layout):\n\(app.debugDescription)")
-        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen while the break line is hidden")
+        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
         // `shows` reads XCUIElement.label, which is the visible text and the accessibility label.
-        XCTAssertFalse(shows(app, "break"), ".ready must not expose break text in visible text or the accessibility label")
-        XCTAssertFalse(shows(app, "after this song"), ".ready must not expose after-this-song text in visible text or the accessibility label")
+        if isOpenLayout {
+            XCTAssertFalse(shows(app, "break"), ".ready must not expose break text in visible text or the accessibility label")
+            XCTAssertFalse(shows(app, "after this song"), ".ready must not expose after-this-song text in visible text or the accessibility label")
+        } else {
+            XCTAssertTrue(app.descendants(matching: .any)["dj.ready"].exists, "folded .ready shows its quiet line")
+            XCTAssertFalse(shows(app, "On Air"), ".ready never claims the DJ is speaking")
+        }
         XCTAssertTrue(app.buttons["transport.playPause"].exists)
-        save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-no-break")
+        save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-line")
     }
 
     @MainActor
