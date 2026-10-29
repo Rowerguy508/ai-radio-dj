@@ -184,11 +184,13 @@ struct FoldedPlayer: View {
             PlaybackErrorBanner(error: snapshot.error, actions: actions)
                 .padding(.horizontal, FoldedStyle.contentInset)
             if showsProgress, let timeSource {
-                // Display-only until #155 lands its scrubber here (inert until #156 wires seek).
-                // Dimmed while the DJ is on air: the song is held during the break.
-                PlaybackProgressBar(time: timeSource, transport: snapshot.transport,
-                                    trackID: snapshot.nowPlaying?.id)
-                    .opacity(dj.state.isOnAir ? 0.4 : 1)
+                // One seek per release, for the track on screen (#171's stale-scrub guard).
+                // The scrubber dims itself and drops the gesture while canSeek is false (DJ break).
+                PlaybackScrubber(time: timeSource, transport: snapshot.transport,
+                                 trackID: snapshot.nowPlaying?.id,
+                                 canSeek: snapshot.canSeek,
+                                 onSeek: { await actions.seek(to: $0, trackID: $1) },
+                                 isDJSpeaking: dj.state.isOnAir)
                     .padding(.horizontal, FoldedStyle.contentInset)
             }
             if content.showsTransport {
@@ -447,7 +449,7 @@ private struct FoldedOnAirPill: View {
                     .font(.caption.weight(.bold))
                     .tracking(1.4)
                     .foregroundStyle(FoldedStyle.onAirAmber)
-                Text(PlaybackProgressBar.format(elapsed))
+                Text(PlaybackTimeFormat.label(elapsed))
                     .font(.subheadline.weight(.medium).monospacedDigit())
                     .foregroundStyle(FoldedStyle.onAirTimer)
             }
@@ -456,7 +458,7 @@ private struct FoldedOnAirPill: View {
             .background(FoldedStyle.onAirAmber.opacity(0.14), in: Capsule())
             .overlay(Capsule().strokeBorder(FoldedStyle.onAirAmber.opacity(0.55), lineWidth: 1))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("On Air, \(PlaybackProgressBar.format(elapsed))")
+            .accessibilityLabel("On Air, \(PlaybackTimeFormat.label(elapsed))")
         }
         .accessibilityIdentifier("dj.onAir")
     }
