@@ -22,9 +22,10 @@ on:
         default: integration/device-duo
         type: string
       p0_diag:
-        # TEMPORARY P0 (remove with #121 / #133): compiles MusicKit Direct Mode in via
-        # AERODJ_P0_DIAG. Internal TestFlight only; never submit such a build to the App Store.
-        description: Internal P0 diagnostic build (AERODJ_P0_DIAG, Direct Mode). Not for App Store.
+        # TEMPORARY P0 (remove with #121 / #133): compiles the P0 event trace in via
+        # AERODJ_P0_DIAG. Launches the normal app with the DJ session (Direct Mode is removed).
+        # Internal TestFlight only; never submit such a build to the App Store.
+        description: Internal P0 diagnostic build (AERODJ_P0_DIAG, P0 trace, normal mode). Not for App Store.
         required: false
         default: false
         type: boolean
