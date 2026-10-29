@@ -152,7 +152,8 @@ public enum PremiumVoiceRoutes {
         let route = VoiceRoute(providerID: providerID,
                                provider: ProxyVoiceProvider(configuration: configuration, transport: transport),
                                voice: VoiceProfile(id: option.id, name: option.displayName),
-                               microdollarsPerThousandCharacters: 0, timeout: timeout, acceptsSSML: false)
+                               microdollarsPerThousandCharacters: 0, timeout: timeout, acceptsSSML: false,
+                               leavesDevice: true)
         return Composition(routes: [route] + onDevice, decision: .included(catalogIndex: index))
     }
 }

@@ -80,14 +80,18 @@ public actor DJBreakPreparer {
     }
 
     /// Starts rendering now. `deadline` must end before the boundary (see `deadline(remainingInSong:)`).
-    public func prepare(_ djBreak: DJBreak, deadline: Duration) {
+    /// `onDeviceOnly` (a station with a library seed) renders on the on-device, free routes only;
+    /// with none configured the break is skipped as `.renderFailed`, never sent off the device.
+    public func prepare(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool = false) {
         let k = djBreak.afterTrack
         guard tasks[k] == nil, results[k] == nil else { return }
         planned[k] = djBreak
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
-        let renderer = renderer, userID = userID, stationID = stationID, cap = maxBreakSeconds(djBreak)
+        let renderer = onDeviceOnly ? self.renderer.onDeviceOnly : self.renderer
+        let userID = userID, stationID = stationID, cap = maxBreakSeconds(djBreak)
         tasks[k] = Task {
             let outcome: DJBreakOutcome
+            guard let renderer else { self.finish(k, .skipped(.renderFailed)); return }
             do {
                 outcome = try await VoiceRenderer.withTimeout(deadline) {
                     await Self.render(djBreak, renderer: renderer, userID: userID, stationID: stationID, cap: cap)
