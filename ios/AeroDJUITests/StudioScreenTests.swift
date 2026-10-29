@@ -326,6 +326,37 @@ final class StudioScreenTests: XCTestCase {
         }
     }
 
+    /// Owner, build 25 on the unfolded Duo: the listen player in a wide, compact-class container
+    /// (640 pt, below the Studio switch) is one centred column. Play/Pause and the ready line
+    /// sit on the column's centre line, the scrubber, the Playing-from chip and ⋯ share its
+    /// edges, and the controls follow the DJ line without a large gap.
+    @MainActor
+    func testDuoWideListenPlayerIsOneCentredColumn() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoWideReady")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        let column = any["folded.wideColumn"]
+        XCTAssertTrue(column.waitForExistence(timeout: 5), "wide column missing\n\(app.debugDescription)")
+        let play = app.buttons["transport.playPause"]
+        let ready = any["dj.ready"]
+        let scrubber = any["playback.progress"]
+        let chip = any["station.title"]
+        let more = any["folded.more"]
+        for (name, element) in [("play", play), ("ready", ready), ("scrubber", scrubber),
+                                ("chip", chip), ("more", more)] {
+            XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing\n\(app.debugDescription)")
+        }
+        let midX = column.frame.midX
+        XCTAssertEqual(play.frame.midX, midX, accuracy: 2, "Play/Pause on the column centre")
+        XCTAssertEqual(ready.frame.midX, midX, accuracy: 2, "DJ line centred")
+        XCTAssertEqual(scrubber.frame.midX, midX, accuracy: 2, "scrubber centred")
+        XCTAssertEqual(chip.frame.minX, scrubber.frame.minX, accuracy: 2, "Playing-from bar on the column edge")
+        XCTAssertEqual(more.frame.maxX, scrubber.frame.maxX, accuracy: 2, "⋯ on the column edge")
+        XCTAssertLessThanOrEqual(scrubber.frame.minY - ready.frame.maxY, 48, "no gap under the DJ line")
+        save(app, "duo-wide-ready")
+    }
+
     /// Open (Studio): `.ready` must not print the break headline or its VoiceOver detail.
     /// Folded: a quiet, static "DJ break after this song" line shows instead (Fry, #161).
     @MainActor

@@ -57,6 +57,10 @@ enum StudioCaptureScenario: String {
     case resizeTune
     /// The real station split. Selecting a row must not start playback.
     case shell
+    /// The listen player with a break ready (`breakReady`) in a 640 × 820 pt compact-class
+    /// container: below the Studio switch but wider than any phone in portrait, like the
+    /// unfolded Duo's split-view detail (owner, build 25). Needs a window at least that big.
+    case duoWideReady
 
     var access: PlaybackAccess {
         switch self {
@@ -130,6 +134,15 @@ struct StudioCaptureView: View {
                 NavigationStack {
                     if showsProbe {
                         LayoutResizeProbe(wide: $probeWide, scenario: scenario, studio: dependencies.studio)
+                    } else if scenario == .duoWideReady {
+                        PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                                      snapshot: scenario.snapshot, actions: .preview,
+                                      search: .captureOffline,
+                                      studio: dependencies.studio, isTestStation: true,
+                                      timeSource: .fixture)
+                            .environment(\.horizontalSizeClass, .compact)
+                            .frame(width: 640, height: 820, alignment: .topLeading)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     } else {
                         PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
                                       snapshot: scenario.snapshot, actions: .preview,
@@ -185,7 +198,7 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady:
+            case .breakReady, .duoWideReady:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .config, .resizeTune:
                 // Fry #110: Save while holding schedules pending until a safe boundary.
