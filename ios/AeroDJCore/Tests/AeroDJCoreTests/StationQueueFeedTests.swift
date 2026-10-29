@@ -64,40 +64,49 @@ private func makeFeed(_ catalog: QueueFakeCatalog, recorder: QueueEventRecorder 
         log: { recorder.events.append($0) })
 }
 
-@MainActor
+// No class-level @MainActor: Linux XCTest discovery (Swift 6.2) aborts casting a @MainActor sync test.
+// Sync tests run on the main thread and assume isolation; async tests are @MainActor per test. -Atlas
 final class StationQueueKeyTests: XCTestCase {
     func testNoSeedsIsNotAStation() {
-        XCTAssertNil(StationQueueKey(.default))
+        MainActor.assumeIsolated {
+            XCTAssertNil(StationQueueKey(.default))
+        }
     }
 
     func testNamesAndFloatNoiseDoNotCountButMusicSettingsDo() {
-        let a = station([seed(.artist, "1")])
-        var renamed = a
-        renamed.seeds[0].name = "Other"
-        var noisy = a
-        noisy.discovery = 0.3000000001
-        XCTAssertEqual(StationQueueKey(a), StationQueueKey(renamed))
-        XCTAssertEqual(StationQueueKey(a), StationQueueKey(noisy))
-        XCTAssertNotEqual(StationQueueKey(a), StationQueueKey(station([seed(.artist, "1")], reach: .broad)))
-        XCTAssertNotEqual(StationQueueKey(a), StationQueueKey(station([seed(.artist, "1")], discovery: 0.7)))
-        XCTAssertNotEqual(StationQueueKey(a), StationQueueKey(station([seed(.artist, "2")])))
-        var talk = a
-        talk.commentary = .chatty
-        XCTAssertEqual(StationQueueKey(a), StationQueueKey(talk), "DJ tuning never rebuilds the queue")
+        MainActor.assumeIsolated {
+            let a = station([seed(.artist, "1")])
+            var renamed = a
+            renamed.seeds[0].name = "Other"
+            var noisy = a
+            noisy.discovery = 0.3000000001
+            XCTAssertEqual(StationQueueKey(a), StationQueueKey(renamed))
+            XCTAssertEqual(StationQueueKey(a), StationQueueKey(noisy))
+            XCTAssertNotEqual(StationQueueKey(a), StationQueueKey(station([seed(.artist, "1")], reach: .broad)))
+            XCTAssertNotEqual(StationQueueKey(a), StationQueueKey(station([seed(.artist, "1")], discovery: 0.7)))
+            XCTAssertNotEqual(StationQueueKey(a), StationQueueKey(station([seed(.artist, "2")])))
+            var talk = a
+            talk.commentary = .chatty
+            XCTAssertEqual(StationQueueKey(a), StationQueueKey(talk), "DJ tuning never rebuilds the queue")
+        }
     }
 
     func testLibrarySeedKeyUsesTheClampedReach() throws {
-        let lib = try XCTUnwrap(StationQueueKey(station([seed(.playlist, "p", .library)], reach: .broad)))
-        XCTAssertEqual(lib.reach, .only)
+        try MainActor.assumeIsolated {
+            let lib = try XCTUnwrap(StationQueueKey(station([seed(.playlist, "p", .library)], reach: .broad)))
+            XCTAssertEqual(lib.reach, .only)
+        }
     }
 
     func testShuffleSeedIsStablePerStationAndDay() throws {
-        let key = try XCTUnwrap(StationQueueKey(station([seed(.artist, "1")])))
-        let again = try XCTUnwrap(StationQueueKey(station([seed(.artist, "1")])))
-        XCTAssertEqual(key.shuffleSeed(day: 1), again.shuffleSeed(day: 1))
-        XCTAssertNotEqual(key.shuffleSeed(day: 1), key.shuffleSeed(day: 2))
-        let other = try XCTUnwrap(StationQueueKey(station([seed(.artist, "2")])))
-        XCTAssertNotEqual(key.shuffleSeed(day: 1), other.shuffleSeed(day: 1))
+        try MainActor.assumeIsolated {
+            let key = try XCTUnwrap(StationQueueKey(station([seed(.artist, "1")])))
+            let again = try XCTUnwrap(StationQueueKey(station([seed(.artist, "1")])))
+            XCTAssertEqual(key.shuffleSeed(day: 1), again.shuffleSeed(day: 1))
+            XCTAssertNotEqual(key.shuffleSeed(day: 1), key.shuffleSeed(day: 2))
+            let other = try XCTUnwrap(StationQueueKey(station([seed(.artist, "2")])))
+            XCTAssertNotEqual(key.shuffleSeed(day: 1), other.shuffleSeed(day: 1))
+        }
     }
 }
 
@@ -431,19 +440,23 @@ final class StationQueueRefillLandsBeforeTheLastSongTests: XCTestCase {
     }
 }
 
-@MainActor
+// No class-level @MainActor: Linux XCTest discovery (Swift 6.2) aborts casting a @MainActor sync test.
+// Sync tests run on the main thread and assume isolation; async tests are @MainActor per test. -Atlas
 final class StationQueueRefillFailureKeepsTodaysStopTests: XCTestCase {
     private let queue = ["a", "b", "c"]
 
     func testNothingBuiltYetHandsOutNothing() {
-        let recorder = QueueEventRecorder()
-        let feed = makeFeed(QueueFakeCatalog(), recorder: recorder)
-        feed.queueStarted(for: refillStation)
-        XCTAssertNil(next(feed, after: 1, in: queue), "the last song loads and the station stops after it, as today")
-        XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.refill, .notReady))
+        let queue = queue
+        MainActor.assumeIsolated {
+            let recorder = QueueEventRecorder()
+            let feed = makeFeed(QueueFakeCatalog(), recorder: recorder)
+            feed.queueStarted(for: refillStation)
+            XCTAssertNil(next(feed, after: 1, in: queue), "the last song loads and the station stops after it, as today")
+            XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.refill, .notReady))
+        }
     }
 
-    func testAFailedCatalogFetchHandsOutNothing() async {
+    @MainActor func testAFailedCatalogFetchHandsOutNothing() async {
         let catalog = QueueFakeCatalog()
         await catalog.setFailing(true)
         let recorder = QueueEventRecorder()
@@ -455,7 +468,7 @@ final class StationQueueRefillFailureKeepsTodaysStopTests: XCTestCase {
         XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.refill, .notReady))
     }
 
-    func testATagsOnlyStationHasNoRefill() async {
+    @MainActor func testATagsOnlyStationHasNoRefill() async {
         let recorder = QueueEventRecorder()
         let feed = makeFeed(QueueFakeCatalog(), recorder: recorder)
         feed.queueStarted(for: .default)
@@ -463,7 +476,7 @@ final class StationQueueRefillFailureKeepsTodaysStopTests: XCTestCase {
         XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.refill, .noStation))
     }
 
-    func testAHeldStartHandsOutNothingAndKeepsTheBuiltQueue() async {
+    @MainActor func testAHeldStartHandsOutNothingAndKeepsTheBuiltQueue() async {
         let recorder = QueueEventRecorder()
         let feed = await refillFeed(recorder: recorder)
         XCTAssertNil(next(feed, after: 1, in: queue, mayStart: false))
@@ -471,7 +484,7 @@ final class StationQueueRefillFailureKeepsTodaysStopTests: XCTestCase {
         XCTAssertGreaterThan(feed.stagedCount ?? 0, 0)
     }
 
-    func testStationSongsAllAlreadyQueuedHandOutNothing() async throws {
+    @MainActor func testStationSongsAllAlreadyQueuedHandOutNothing() async throws {
         let feed = await refillFeed()
         let builtCopy = try XCTUnwrap(next(feed, after: 1, in: queue)).dropFirst()
         let feed2 = await refillFeed()
@@ -479,7 +492,7 @@ final class StationQueueRefillFailureKeepsTodaysStopTests: XCTestCase {
                      "nothing new to add: the last song loads as today")
     }
 
-    func testAOneSongQueueHasNoBoundaryBeforeItsLastSong() async {
+    @MainActor func testAOneSongQueueHasNoBoundaryBeforeItsLastSong() async {
         let feed = await refillFeed()
         XCTAssertNil(next(feed, after: 0, in: ["only"]), "documented: a single tapped song ends as today")
     }
