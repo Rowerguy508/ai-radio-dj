@@ -146,13 +146,16 @@ struct FoldedPlayer: View {
                     .padding(.top, CGFloat(Gap.statusToControls))
             }
             .frame(width: column)
+            // The column itself, not the full-width scroll view: UI tests read its width and
+            // centre (#207). `.contain` keeps every control its own element.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("folded.wideColumn")
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, minHeight: size.height, alignment: .center)
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
         .frame(width: size.width, height: size.height)
-        .accessibilityIdentifier("folded.wideColumn")
     }
 
     /// ⋯ at the column's trailing edge. Empty (same height) when the caller keeps ⋯ in the bar.
