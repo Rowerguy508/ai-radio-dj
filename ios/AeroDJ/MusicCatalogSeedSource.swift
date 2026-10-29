@@ -22,6 +22,10 @@ import AeroDJCore
 actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationSeedSearching {
     /// Songs returned by the last lookups, so a built list can become playable `Track`s.
     private var songsByID: [String: Song] = [:]
+    /// Where each cached song came from (Sentinel): `MusicLibraryRequest` lookups are `.library`,
+    /// catalog lookups `.catalog`; library wins if an id was seen both ways. Read by `tracks(for:)`
+    /// so the DJ never names a library song in an off-device voice.
+    private var originsByID: [String: TrackOrigin] = [:]
     private static let maxCachedSongs = 2000
 
     // MARK: Seed search (station wizard)
@@ -125,7 +129,7 @@ actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationS
 
     /// Playable tracks for a built station list, in order. Songs not looked up here are skipped.
     func tracks(for candidates: [StationCandidate]) -> [Track] {
-        candidates.compactMap { songsByID[$0.id].map(Track.init(song:)) }
+        candidates.compactMap { c in songsByID[c.id].map { Track(song: $0, origin: originsByID[c.id] ?? .unknown) } }
     }
 
     // MARK: StationSeedCatalog
@@ -133,19 +137,19 @@ actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationS
     func coreSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] {
         switch (seed.source, seed.kind) {
         case (.catalog, .artist):
-            return remember(try await artist(seed.catalogID)?.topSongs, limit: limit)
+            return remember(try await artist(seed.catalogID)?.topSongs, limit: limit, origin: .catalog)
         case (.catalog, .song):
-            return remember(try await catalogSong(seed.catalogID).map { [$0] }, limit: limit)
+            return remember(try await catalogSong(seed.catalogID).map { [$0] }, limit: limit, origin: .catalog)
         case (.catalog, .playlist):
-            return remember(Self.songs(in: try await catalogPlaylist(seed.catalogID)?.tracks), limit: limit)
+            return remember(Self.songs(in: try await catalogPlaylist(seed.catalogID)?.tracks), limit: limit, origin: .catalog)
         case (.catalog, .genre):
-            return remember(try await chartSongs(genreID: seed.catalogID, limit: limit), limit: limit)
+            return remember(try await chartSongs(genreID: seed.catalogID, limit: limit), limit: limit, origin: .catalog)
         case (.library, .playlist):
-            return remember(try await libraryPlaylistSongs(seed.catalogID), limit: limit)
+            return remember(try await libraryPlaylistSongs(seed.catalogID), limit: limit, origin: .library)
         case (.library, .song):
-            return remember(try await librarySong(seed.catalogID).map { [$0] }, limit: limit)
+            return remember(try await librarySong(seed.catalogID).map { [$0] }, limit: limit, origin: .library)
         case (.library, .artist):
-            return remember(try await librarySongs(byArtistNamed: seed.name), limit: limit)
+            return remember(try await librarySongs(byArtistNamed: seed.name), limit: limit, origin: .library)
         case (.library, .genre):
             return []
         }
@@ -156,22 +160,22 @@ actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationS
         switch seed.kind {
         case .artist:
             let similar = Array(try await artist(seed.catalogID)?.similarArtists ?? [])
-            return remember(try await topSongs(of: similar, limit: limit), limit: limit)
+            return remember(try await topSongs(of: similar, limit: limit), limit: limit, origin: .catalog)
         case .song:
             guard let song = try await catalogSong(seed.catalogID),
                   let first = song.artists?.first, let main = try await artist(first.id.rawValue) else { return [] }
             let own = Array(main.topSongs ?? []).filter { $0.id != song.id }
             let similar = try await topSongs(of: Array(main.similarArtists ?? []), limit: limit)
-            return remember(Self.alternate(own, similar), limit: limit)
+            return remember(Self.alternate(own, similar), limit: limit, origin: .catalog)
         case .playlist:
             let mains = try await mainArtists(ofPlaylist: seed.catalogID)
             var similar: [Artist] = []
             for a in mains {
                 if let detail = try await artist(a.id.rawValue) { similar += Array(detail.similarArtists ?? []).prefix(2) }
             }
-            return remember(try await topSongs(of: similar, limit: limit), limit: limit)
+            return remember(try await topSongs(of: similar, limit: limit), limit: limit, origin: .catalog)
         case .genre:
-            return remember(try await chartPlaylistSongs(genreID: seed.catalogID, playlists: 0..<2, limit: limit), limit: limit)
+            return remember(try await chartPlaylistSongs(genreID: seed.catalogID, playlists: 0..<2, limit: limit), limit: limit, origin: .catalog)
         }
     }
 
@@ -186,13 +190,13 @@ actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationS
         case .playlist:
             genreIDs = try await genres(ofPlaylist: seed.catalogID)
         case .genre:
-            return remember(try await chartPlaylistSongs(genreID: seed.catalogID, playlists: 2..<5, limit: limit), limit: limit)
+            return remember(try await chartPlaylistSongs(genreID: seed.catalogID, playlists: 2..<5, limit: limit), limit: limit, origin: .catalog)
         }
         var songs: [Song] = []
         for id in Self.unique(genreIDs).prefix(2) {
             songs += try await chartSongs(genreID: id, limit: limit)
         }
-        return remember(songs, limit: limit)
+        return remember(songs, limit: limit, origin: .catalog)
     }
 
     // MARK: StarterStationSource
@@ -341,11 +345,15 @@ actor MusicCatalogSeedSource: StationSeedCatalog, StarterStationSource, StationS
     // MARK: Helpers
 
     /// Caches the songs for `tracks(for:)` and maps them to engine candidates (catalog order).
-    private func remember<S: Sequence>(_ songs: S?, limit: Int) -> [StationCandidate] where S.Element == Song {
+    /// `origin` has no default: every lookup states whether it read the library or the catalog.
+    private func remember<S: Sequence>(_ songs: S?, limit: Int, origin: TrackOrigin) -> [StationCandidate] where S.Element == Song {
         guard let songs else { return [] }
         let list = Array(songs.prefix(limit))
-        if songsByID.count + list.count > Self.maxCachedSongs { songsByID.removeAll() }
-        for song in list { songsByID[song.id.rawValue] = song }
+        if songsByID.count + list.count > Self.maxCachedSongs { songsByID.removeAll(); originsByID.removeAll() }
+        for song in list {
+            songsByID[song.id.rawValue] = song
+            originsByID[song.id.rawValue] = (originsByID[song.id.rawValue] ?? origin).restricted(by: origin)
+        }
         return list.map { song in
             StationCandidate(track: TrackInfo(id: song.id.rawValue, title: song.title, artistName: song.artistName,
                                               artworkURL: song.artwork?.url(width: 300, height: 300)))

@@ -73,7 +73,7 @@ final class StationQueuePlayer {
     /// Same order as a song tap (#116): the DJ session reserves the new queue before play, so a
     /// song start reported during play belongs to it. `play` raises its own snapshot error.
     private func play(_ tracks: [Track]) async {
-        let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) }
+        let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName, origin: $0.origin) }
         let stationRef = music.snapshot.station
         _ = try? await TapPlaySequence.run(
             reserve: { djSession.reserveQueueSetup() },
