@@ -83,6 +83,8 @@ struct FoldedPlayer: View {
     @ObservedObject var studioSearch: StudioSearchModel
     var timeSource: PlaybackTimeSource? = nil
     var artworkNamespace: Namespace.ID? = nil
+    /// Fry's DJ voice level for the on-air orb. Read only; nil (previews) is a quiet orb.
+    var speechLevel: DJPresentationStore? = nil
     let onQueue: () -> Void
     let onTune: () -> Void
     let onReview: () -> Void
@@ -136,7 +138,7 @@ struct FoldedPlayer: View {
             switch content {
             case .track(let track):
                 FoldedArtCard(track: track, station: station, isOnAir: dj.state.isOnAir,
-                              side: artSide, namespace: artworkNamespace)
+                              side: artSide, namespace: artworkNamespace, speechLevel: speechLevel)
                     .frame(maxWidth: .infinity)
                 FoldedTitleBlock(track: track, isTestStation: isTestStation)
                     .padding(.top, 24)
@@ -241,13 +243,15 @@ private struct FoldedBackdrop: View {
 // MARK: - Art card
 
 /// Album art (or station art) in a 24 pt card with one soft glow. While ON AIR the card
-/// shows a static art-tinted glow placeholder for the orb (the level meter is a later PR).
+/// shows the lava-lamp orb (`DJLavaOrb`), coloured by the same art and driven by the DJ
+/// voice level.
 private struct FoldedArtCard: View {
     let track: TrackInfo
     let station: StationRef?
     let isOnAir: Bool
     let side: CGFloat
     let namespace: Namespace.ID?
+    var speechLevel: DJPresentationStore? = nil
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: FoldedStyle.artRadius, style: .continuous)
@@ -275,8 +279,8 @@ private struct FoldedArtCard: View {
         if isOnAir {
             ZStack {
                 BleedArtwork(track: track, station: station).opacity(0.18)
-                FoldedOrbPlaceholder(style: .track(track, on: station))
-                    .frame(width: side * 0.62, height: side * 0.62)
+                DJLavaOrb(track: track, station: station, levels: speechLevel)
+                    .frame(width: side * 0.72, height: side * 0.72)
             }
             .clipShape(shape)
             .foldedGlass(shape)
@@ -285,22 +289,6 @@ private struct FoldedArtCard: View {
                 .clipShape(shape)
                 .overlay(shape.strokeBorder(FoldedStyle.hairline, lineWidth: 1))
         }
-    }
-}
-
-/// Static orb stand-in: a radial glow in the art's colours. No motion and no caption.
-private struct FoldedOrbPlaceholder: View {
-    let style: StationArtStyle
-
-    var body: some View {
-        Circle()
-            .fill(RadialGradient(stops: [.init(color: style.color(2).opacity(0.95), location: 0),
-                                         .init(color: style.color(0).opacity(0.85), location: 0.38),
-                                         .init(color: style.color(1).opacity(0.55), location: 0.62),
-                                         .init(color: style.color(1).opacity(0), location: 0.72)],
-                                 center: UnitPoint(x: 0.42, y: 0.38), startRadius: 0, endRadius: 140))
-            .blur(radius: 4)
-            .accessibilityHidden(true)
     }
 }
 
