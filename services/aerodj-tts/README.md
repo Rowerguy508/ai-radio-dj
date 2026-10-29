@@ -41,11 +41,31 @@ never echo user input or the upstream response:
 | 400 | invalid JSON, `upstream` not `elevenlabs`, voice not allowlisted, empty/too-long text, bad `format` |
 | 401 | missing, malformed or wrong bearer token |
 | 405 | any method other than POST |
-| 429 | per-minute rate limit or daily character cap reached (`Retry-After` set) |
+| 429 | per-minute rate limit or a daily character cap reached (`Retry-After` and `reason` set, see below) |
 | 500 | server misconfigured (token hash or ElevenLabs key unset, or Production without a durable limiter store) |
-| 503 | limiter store unreachable or erroring (fails closed) |
+| 503 | limiter store unreachable or erroring (fails closed; `Retry-After: 60`, `reason: "store"`) |
 | 502 | upstream non-2xx, network error, empty or oversized audio |
 | 504 | upstream took longer than 15 s (AbortController) |
+
+### 429 / 503 refusal contract
+
+A refusal from the limiter carries `Retry-After` (integer seconds, at least 1) and
+a body of enums and numbers only:
+
+```
+{ "error": "Too many requests", "requestId": "...", "reason": "<enum>", "retryAfterSeconds": <n> }
+```
+
+| Status | `reason` | `Retry-After` |
+| --- | --- | --- |
+| 429 | `rate` | 60 (upper bound of the minute window) |
+| 429 | `owner_daily` | seconds until 00:00 UTC |
+| 429 | `install_daily` | seconds until 00:00 UTC (not reachable until per-install auth lands) |
+| 429 | `global_daily` | seconds until 00:00 UTC |
+| 503 | `store` | 60 |
+
+Every other error keeps the `{ error, requestId }` body with no `reason`. Logs add
+only the same `reason` enum to that request's one line.
 
 SSML is stripped to plain text before it is sent, since ElevenLabs does not
 accept SSML. SSML input may be up to 4x the text cap before stripping; the
@@ -99,18 +119,39 @@ printf %s "$TOKEN" | shasum -a 256 | cut -d' ' -f1   # paste this hex into Verce
 - Voice IDs: only those in `AERODJ_TTS_VOICE_IDS`.
 - Rate: `AERODJ_TTS_RATE_PER_MINUTE` requests per minute (default 12), one bucket
   for the single owner bearer (the contract carries no device ID, so per-bearer is
-  per-owner). 429 with `Retry-After: 60`.
-- Daily characters: `AERODJ_TTS_DAILY_CHAR_CAP` (default 20,000), UTC day. 429
-  with `Retry-After` = seconds until 00:00 UTC.
+  per-owner). 429 `rate` with `Retry-After: 60`.
+- Daily characters, UTC day, two buckets reserved together (all or nothing):
+  - **Global ceiling** across every caller: `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP`, else
+    the legacy `AERODJ_TTS_DAILY_CHAR_CAP`, else **9,000**.
+  - **The caller's own bucket.** Today the only caller is the owner bearer, charged
+    to a fixed `owner` bucket: `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`, else the global
+    ceiling. Per-install buckets (`AERODJ_TTS_INSTALL_DAILY_CHAR_CAP`, default
+    **1,500**) exist in the limiter but no request can select one until App Attest
+    lands (design note `docs/design/proxy-per-install-auth.md`, PRs 3-4). Nothing in
+    the request body chooses the bucket.
+  - Caps accept only a plain integer from 1 to 10,000,000. Anything else (empty,
+    0, negative, fractional, `Infinity`, too large) uses the default, so a cap can
+    never become unlimited.
+- Rate accepts only a plain integer from 1 to 600 by the same rule as the caps.
+  Anything else (`1e9`, `Infinity`, `601`, fractional, empty) uses the default 12,
+  so the rate limit can never be switched off by configuration.
 - Upstream timeout: 15 s.
 
 ### How the daily cap is enforced
 
-The characters are **reserved atomically before** the ElevenLabs call (one
-check-and-add), so concurrent requests cannot jointly exceed the cap. The
+The characters are **reserved atomically before** the ElevenLabs call: one Lua
+script checks the caller's bucket and the global ceiling and increments both, or
+neither. Concurrent requests therefore cannot jointly exceed either cap. The
 reservation is **released (refunded) only when ElevenLabs answers non-2xx**, since
 then nothing was billed. A network error, timeout, or bad audio after a 2xx keeps
 the reservation, because the render may have been billed.
+
+The handler releases a reservation at most once and never retries a failed
+release. `release()` itself is not idempotent yet: releasing the same reservation
+twice would refund it twice and undercount the global ceiling (a `todo` test in
+`test/quota.test.ts` records this). **Per-charge marker and 503-without-Redis for
+install reservations are PR 3 gates (#233).** No retry of a release may be added
+before the per-charge marker lands.
 
 ### Which store backs the limits
 
@@ -148,8 +189,11 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_VOICE_IDS` | yes | Comma-separated ElevenLabs voice ID allowlist. |
 | `ELEVENLABS_MODEL_ID` | no | Default `eleven_flash_v2_5`. |
 | `AERODJ_TTS_MAX_TEXT_CHARS` | no | Default 600. |
-| `AERODJ_TTS_DAILY_CHAR_CAP` | no | Default 20000. |
-| `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. |
+| `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP` | no | Global daily ceiling. Default: `AERODJ_TTS_DAILY_CHAR_CAP`, else 9000. |
+| `AERODJ_TTS_DAILY_CHAR_CAP` | no | Legacy name, used for the global ceiling when the new name is unset. |
+| `AERODJ_TTS_OWNER_DAILY_CHAR_CAP` | no | Owner bucket cap. Default: the global ceiling. |
+| `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP` | no | Per-install cap. Default 1500. Inert until per-install auth lands. |
+| `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. Plain integer 1-600; anything else uses 12. |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | yes in Production | Injected by the Upstash Redis integration (Vercel Marketplace, free tier). `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work. HTTPS only. |
 | `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter. Owner decision only; leave unset. |
 

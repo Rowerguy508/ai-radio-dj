@@ -4,12 +4,13 @@ import crypto from 'node:crypto';
 import { defaultDeps, handleTts, selectLimiter, VOICE_SETTINGS, type Deps, type Env, type LogEntry, type TtsRequest } from '../src/handler.js';
 import {
   InMemoryUsageLimiter,
+  OWNER_SUBJECT,
   RATE_SCRIPT,
   RedisUsageLimiter,
-  RELEASE_SCRIPT,
-  RESERVE_SCRIPT,
+  RESERVE2_SCRIPT,
   type UsageLimiter,
 } from '../src/limiter.js';
+import { fakeUpstash } from './redis-lua.js';
 import { ssmlToPlainText } from '../src/ssml.js';
 import apiHandler from '../api/tts.js';
 
@@ -207,9 +208,9 @@ test('daily character cap returns 429 once exhausted', async () => {
 test('daily cap resets on the next UTC day', async () => {
   const limiter = new InMemoryUsageLimiter({ dailyCharCap: 10, requestsPerMinute: 100 });
   const day1 = Date.UTC(2026, 9, 28, 23, 59);
-  assert.ok(await limiter.reserve('k', 10, day1));
-  assert.equal(await limiter.reserve('k', 1, day1), null);
-  assert.ok(await limiter.reserve('k', 1, day1 + 2 * 60_000));
+  assert.equal((await limiter.reserve(OWNER_SUBJECT, 10, day1)).ok, true);
+  assert.equal((await limiter.reserve(OWNER_SUBJECT, 1, day1)).ok, false);
+  assert.equal((await limiter.reserve(OWNER_SUBJECT, 1, day1 + 2 * 60_000)).ok, true);
 });
 
 test('rate limit returns 429 with Retry-After', async () => {
@@ -474,39 +475,6 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-/**
- * Minimal Upstash REST stand-in. Each EVAL runs to completion in one synchronous step,
- * like a Lua script in single-threaded Redis, after yielding so requests interleave.
- */
-function fakeUpstash(opts: { status?: number } = {}) {
-  const data = new Map<string, number>();
-  const calls: { url: string; auth: string | null; command: unknown[] }[] = [];
-  const fetchImpl = (async (url: string, init: RequestInit) => {
-    const command = JSON.parse(String(init.body)) as unknown[];
-    calls.push({ url: String(url), auth: new Headers(init.headers).get('authorization'), command });
-    await new Promise((r) => setImmediate(r));
-    if (opts.status && opts.status !== 200) return new Response('{"error":"down"}', { status: opts.status });
-    const [verb, script, numKeys, key, ...args] = command as [string, string, number, string, ...string[]];
-    assert.equal(verb, 'EVAL');
-    assert.equal(numKeys, 1);
-    let result: number;
-    const used = data.get(key) ?? 0;
-    if (script === RATE_SCRIPT) {
-      data.set(key, used + 1);
-      result = used + 1 > Number(args[0]) ? 0 : 1;
-    } else if (script === RESERVE_SCRIPT) {
-      if (used + Number(args[0]) > Number(args[1])) result = -1;
-      else data.set(key, (result = used + Number(args[0])));
-    } else if (script === RELEASE_SCRIPT) {
-      data.set(key, (result = Math.max(0, used - Number(args[0]))));
-    } else {
-      throw new Error('unexpected script');
-    }
-    return new Response(JSON.stringify({ result }), { status: 200 });
-  }) as typeof fetch;
-  return { data, calls, fetchImpl };
-}
-
 const STORE = { url: 'https://store.example.upstash.io', token: 'test-store-token-not-real' };
 const TEXT_600 = 'y'.repeat(600);
 
@@ -536,7 +504,7 @@ test('concurrent requests on two instances sharing the Redis store cannot jointl
   const h2 = harness({ fetch: upstream, limiter: new RedisUsageLimiter(STORE, options, store.fetchImpl) });
   assert.deepEqual(await concurrentPair(h1, h2, gate), [200, 429]);
   assert.equal(h1.calls.length + h2.calls.length, 1, 'only one request reaches the paid upstream');
-  assert.equal(store.data.get('aerodj-tts:chars:owner:2026-10-28'), 600);
+  assert.equal(store.redis.get('aerodj-tts:chars:owner:2026-10-28'), 600);
 });
 
 test('in-memory limiter is per instance: two instances each allow a full cap (why production needs Redis)', async () => {
@@ -570,7 +538,7 @@ test('upstream non-2xx refunds the Redis reservation too', async () => {
   const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 600, requestsPerMinute: 100 }, store.fetchImpl);
   const h = harness({ limiter, fetch: async () => new Response('nope', { status: 503 }) });
   assert.equal((await handleTts(request({ text: TEXT_600 }), h.deps)).status, 502);
-  assert.equal(store.data.get('aerodj-tts:chars:owner:2026-10-28'), 0);
+  assert.equal(store.redis.get('aerodj-tts:chars:owner:2026-10-28'), 0);
 });
 
 test('network error, timeout and bad audio keep the reservation (may have been billed)', async () => {
@@ -613,8 +581,17 @@ test('Redis limiter speaks Upstash REST: bearer store token, one EVAL per operat
   }
   assert.equal(store.calls[0].command[1], RATE_SCRIPT);
   assert.equal(store.calls[0].command[3], `aerodj-tts:rate:owner:${Math.floor(h.deps.now() / 60_000)}`);
-  assert.equal(store.calls[1].command[1], RESERVE_SCRIPT);
-  assert.deepEqual(store.calls[1].command.slice(3), ['aerodj-tts:chars:owner:2026-10-28', String('Hello from the DJ booth.'.length), '20000', '172800']);
+  assert.equal(store.calls[1].command[1], RESERVE2_SCRIPT);
+  // One EVAL reserves on the owner bucket AND the global ceiling (owner cap = global cap).
+  assert.deepEqual(store.calls[1].command.slice(2), [
+    2,
+    'aerodj-tts:chars:owner:2026-10-28',
+    'aerodj-tts:chars:global:2026-10-28',
+    String('Hello from the DJ booth.'.length),
+    '20000',
+    '20000',
+    '172800',
+  ]);
   assert.ok(!JSON.stringify(store.calls).includes(TOKEN), 'the owner bearer never reaches the store');
 });
 
