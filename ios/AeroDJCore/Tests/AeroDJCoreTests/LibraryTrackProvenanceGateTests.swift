@@ -44,7 +44,7 @@ final class LibraryTrackProvenanceGateTests: XCTestCase {
         VoiceRenderer(routes: [VoiceRoute(providerID: "cloud", provider: spy, voice: djVoice, leavesDevice: true),
                                VoiceRoute(providerID: "device", provider: ProvenanceDeviceVoice(), voice: djVoice)],
                       budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),
-                      revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
+                      revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
     }
 
     // MARK: The gate itself
@@ -236,7 +236,7 @@ final class LibraryTrackProvenanceSessionTests: XCTestCase {
         let renderer = VoiceRenderer(
             routes: [VoiceRoute(providerID: "cloud", provider: spy, voice: djVoice, leavesDevice: true),
                      VoiceRoute(providerID: "device", provider: ProvenanceDeviceVoice(), voice: djVoice)],
-            budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
+            budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence())
         let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 })
         await session.start()

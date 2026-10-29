@@ -50,6 +50,11 @@ final class CloudVoiceConsentModel {
         store.accept()
         state = store.state
         isSheetPresented = false
+        // Consent first, then (Free only) the Pro offer, once the consent sheet has closed.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            SubscriptionModel.shared.offerIfAllowed()
+        }
     }
 
     func decline() {

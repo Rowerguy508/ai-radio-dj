@@ -53,7 +53,7 @@ final class SeekRearmOnDeviceGateTests: XCTestCase {
                                 provider: RecordingHangingVoice(id: "device", calls: calls, failIfCalled: false),
                                 voice: djVoice)
         let renderer = VoiceRenderer(routes: [cloud, device], budget: VoiceBudget(dailyCapMicrodollars: 0),
-                                     cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
+                                     cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence())
         let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 })
         await session.start()

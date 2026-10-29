@@ -182,7 +182,7 @@ final class PremiumVoicePickerTests: XCTestCase {
         let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: sawyer,
                                            credentials: creds, pinnedHosts: pinned, transport: transport)
         let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
-                                     cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
+                                     cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
         guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s", attribution: .presenter) else {
             return XCTFail("proxy route should render")
         }
@@ -200,7 +200,7 @@ final class PremiumVoicePickerTests: XCTestCase {
             let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: sawyer,
                                                credentials: creds, pinnedHosts: pinned, transport: transport)
             let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
-                                         cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
+                                         cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
             guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s", attribution: .presenter) else {
                 return XCTFail("on-device must rescue status \(status)")
             }
@@ -218,7 +218,7 @@ final class PremiumVoicePickerTests: XCTestCase {
         let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, selectedVoiceID: sawyer,
                                            credentials: creds, pinnedHosts: pinned, transport: transport)
         let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
-                                     cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
+                                     cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted), entitlement: .fixed(.pro))
         guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s", attribution: .presenter) else {
             return XCTFail("on-device must rescue an over-cap clip")
         }

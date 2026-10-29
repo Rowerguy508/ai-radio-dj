@@ -30,7 +30,9 @@ extension VoiceRenderer {
         // first: until "Use cloud voice" is stored, and from the moment it is turned off, the
         // on-device route speaks every line. Accepting applies without a relaunch.
         return VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
-                             revocations: base.revocations, cloudConsent: CloudVoiceConsentStore())
+                             revocations: base.revocations, cloudConsent: CloudVoiceConsentStore(),
+                             // Advisory client tier from StoreKit (SubscriptionModel); starts Free.
+                             entitlement: .shared)
         #else
         return base
         #endif
