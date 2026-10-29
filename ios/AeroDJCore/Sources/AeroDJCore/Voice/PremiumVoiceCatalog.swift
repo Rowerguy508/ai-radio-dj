@@ -55,8 +55,9 @@ public enum PremiumVoiceCatalog {
 /// and every other build compile the `#else` branch (`check-release-disables-paid-voice.sh`).
 /// Even with the flag, the ElevenLabs route needs a selected voice and a Keychain token.
 ///
-/// Spend (owner, 2026-10-28): ElevenLabs Free plan, no pay-as-you-go, so $0, plus the
-/// proxy's daily character cap. The app-side route is priced at 0 for that reason.
+/// Spend (owner, 2026-10-29): ElevenLabs Starter, hard 40k-credit ceiling with no usage-based
+/// billing, a 9k-credit key cap and the proxy's 9,000-character daily cap. The app-side route
+/// is priced at 0, so the app's VoiceBudget does not apply to it.
 public enum OwnerVoiceTrial {
     #if AERODJ_OWNER_AB
     /// Found in the binary only when the flag is set (needle positive control).
@@ -107,6 +108,8 @@ public enum PremiumVoiceRoutes {
     /// Exact deployed proxy hosts only; no suffix or wildcard rule. The production
     /// `aerodj-tts` deployment; any other host (preview URLs included) omits the route.
     public static let allowedHosts: Set<String> = ["aerodj-tts.vercel.app"]
+    /// Prefilled in the owner picker when the Keychain has no endpoint (still editable).
+    public static let defaultEndpoint = "https://aerodj-tts.vercel.app/api/tts"
 
     public enum OmitReason: String, Equatable, Sendable {
         case paidDisabled, noSelection, unknownVoice, noCredentials, emptyToken, endpointNotAllowed
@@ -142,18 +145,78 @@ public enum PremiumVoiceRoutes {
         guard let credentials else { return omit(.noCredentials) }
         let token = credentials.token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { return omit(.emptyToken) }
-        guard let host = credentials.endpoint.host?.lowercased(), isAllowed(host: host, pinned: pinnedHosts),
-              let configuration = try? ProxyVoiceProvider.Configuration(
-                  endpoint: credentials.endpoint, allowedHosts: [host], upstream: .elevenlabs,
-                  sessionToken: { token }) else { return omit(.endpointNotAllowed) }
+        guard let configuration = proxyConfiguration(endpoint: credentials.endpoint, token: token,
+                                                     pinnedHosts: pinnedHosts) else { return omit(.endpointNotAllowed) }
         let option = PremiumVoiceCatalog.voices[index]
-        // App-side price is 0: Free plan, no pay-as-you-go ($0), capped server-side by the
-        // proxy's daily character cap, so the app's $0 VoiceBudget does not block it.
+        // App-side price is 0: spend is capped upstream (Starter's hard 40k credits, the key's
+        // 9k cap) and by the proxy's daily character cap, so the app's $0 VoiceBudget does not block it.
         let route = VoiceRoute(providerID: providerID,
                                provider: ProxyVoiceProvider(configuration: configuration, transport: transport),
                                voice: VoiceProfile(id: option.id, name: option.displayName),
                                microdollarsPerThousandCharacters: 0, timeout: timeout, acceptsSSML: false,
                                leavesDevice: true)
         return Composition(routes: [route] + onDevice, decision: .included(catalogIndex: index))
+    }
+
+    /// The one endpoint rule `compose` applies: exact pinned host, then HTTPS and no userinfo
+    /// (`ProxyVoiceProvider.Configuration`). `nil` means the route is omitted.
+    static func proxyConfiguration(endpoint: URL, token: String,
+                                   pinnedHosts: Set<String>) -> ProxyVoiceProvider.Configuration? {
+        guard let host = endpoint.host?.lowercased(), isAllowed(host: host, pinned: pinnedHosts) else { return nil }
+        return try? ProxyVoiceProvider.Configuration(endpoint: endpoint, allowedHosts: [host], upstream: .elevenlabs,
+                                                     sessionToken: { token })
+    }
+}
+
+/// Display-only helpers for the owner picker sheet. They mirror what Done saves
+/// (trimmed endpoint, typed token replaces the saved one) and never read or return a token.
+public enum PremiumVoicePickerStatus {
+    /// The endpoint field's initial value: the saved endpoint, else `PremiumVoiceRoutes.defaultEndpoint`.
+    public static func initialEndpoint(saved: String?) -> String {
+        guard let saved, !saved.isEmpty else { return PremiumVoiceRoutes.defaultEndpoint }
+        return saved
+    }
+
+    /// Whether `compose` would accept this endpoint (same rule, via `proxyConfiguration`).
+    public static func isEndpointAllowed(_ endpoint: String,
+                                         pinnedHosts: Set<String> = PremiumVoiceRoutes.allowedHosts) -> Bool {
+        guard let url = savedURL(endpoint) else { return false }
+        return PremiumVoiceRoutes.proxyConfiguration(endpoint: url, token: "", pinnedHosts: pinnedHosts) != nil
+    }
+
+    public static func endpointFooter(_ endpoint: String,
+                                      pinnedHosts: Set<String> = PremiumVoiceRoutes.allowedHosts) -> String {
+        isEndpointAllowed(endpoint, pinnedHosts: pinnedHosts)
+            ? "Host allowed" : "Not the pinned host: route will be omitted"
+    }
+
+    /// The decision `compose` would make on next launch if Done saved these settings.
+    /// `hasSavedToken` stands in for the Keychain token, whose value is never needed here.
+    public static func pendingDecision(paidProvidersEnabled: Bool, selectedVoiceID: String?, endpoint: String,
+                                       enteredToken: String, hasSavedToken: Bool,
+                                       pinnedHosts: Set<String> = PremiumVoiceRoutes.allowedHosts) -> PremiumVoiceRoutes.Decision {
+        let entered = enteredToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Done: an empty field keeps the saved token; a typed one replaces it (blank deletes it).
+        let hasToken = enteredToken.isEmpty ? hasSavedToken : !entered.isEmpty
+        let credentials = savedURL(endpoint).flatMap { url in
+            hasToken ? PremiumProxyCredentials(endpoint: url, token: entered.isEmpty ? "saved" : entered) : nil
+        }
+        return PremiumVoiceRoutes.compose(onDevice: [], paidProvidersEnabled: paidProvidersEnabled,
+                                          selectedVoiceID: selectedVoiceID, credentials: credentials,
+                                          pinnedHosts: pinnedHosts).decision
+    }
+
+    /// Type, code and catalog index only.
+    public static func statusLine(_ decision: PremiumVoiceRoutes.Decision) -> String {
+        switch decision {
+        case .included(let index): return "Premium: included (catalog index \(index))"
+        case .omitted(let reason): return "Premium: omitted (\(reason.rawValue))"
+        }
+    }
+
+    /// The URL the Keychain would hold after Done (trimmed; empty means none).
+    private static func savedURL(_ endpoint: String) -> URL? {
+        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : URL(string: trimmed)
     }
 }

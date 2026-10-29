@@ -225,6 +225,63 @@ final class PremiumVoicePickerTests: XCTestCase {
         XCTAssertEqual(clip.audio.providerID, "device")
     }
 
+    // MARK: Picker sheet status (display only)
+
+    func testEndpointPrefillsDefaultOnlyWhenNoneSaved() {
+        XCTAssertEqual(PremiumVoiceRoutes.defaultEndpoint, "https://aerodj-tts.vercel.app/api/tts")
+        XCTAssertEqual(PremiumVoicePickerStatus.initialEndpoint(saved: nil), PremiumVoiceRoutes.defaultEndpoint)
+        XCTAssertEqual(PremiumVoicePickerStatus.initialEndpoint(saved: ""), PremiumVoiceRoutes.defaultEndpoint)
+        XCTAssertEqual(PremiumVoicePickerStatus.initialEndpoint(saved: "https://other.example/x"), "https://other.example/x")
+    }
+
+    /// The footer uses the exact rule `compose` uses, so the two can never disagree.
+    func testEndpointFooterMatchesComposeDecision() {
+        let endpoints = ["https://aerodj-tts.vercel.app/api/tts", "  https://AERODJ-TTS.vercel.app/api/tts \n",
+                         "http://aerodj-tts.vercel.app/api/tts", "https://user:pw@aerodj-tts.vercel.app/api/tts",
+                         "https://aerodj-tts-x.vercel.app/api/tts", "https://vercel.app/api/tts", "aerodj-tts.vercel.app",
+                         "", "not a url"]
+        for pins in [pinned, PremiumVoiceRoutes.allowedHosts] {
+            for endpoint in endpoints {
+                let composed = PremiumVoicePickerStatus.pendingDecision(
+                    paidProvidersEnabled: true, selectedVoiceID: jade, endpoint: endpoint, enteredToken: "t",
+                    hasSavedToken: false, pinnedHosts: pins)
+                let allowed = PremiumVoicePickerStatus.isEndpointAllowed(endpoint, pinnedHosts: pins)
+                XCTAssertEqual(allowed, composed == .included(catalogIndex: 3), "\(endpoint) \(pins)")
+            }
+        }
+        XCTAssertEqual(PremiumVoicePickerStatus.endpointFooter(PremiumVoiceRoutes.defaultEndpoint, pinnedHosts: pinned),
+                       "Host allowed")
+        XCTAssertEqual(PremiumVoicePickerStatus.endpointFooter("http://aerodj-tts.vercel.app/api/tts", pinnedHosts: pinned),
+                       "Not the pinned host: route will be omitted")
+    }
+
+    func testPendingDecisionMirrorsWhatDoneSaves() {
+        func decide(_ enabled: Bool = true, _ voice: String? = "g7LVvkPWALzPxOQbF6OE",
+                    endpoint: String = PremiumVoiceRoutes.defaultEndpoint, token: String = "",
+                    saved: Bool = true) -> PremiumVoiceRoutes.Decision {
+            PremiumVoicePickerStatus.pendingDecision(paidProvidersEnabled: enabled, selectedVoiceID: voice,
+                                                     endpoint: endpoint, enteredToken: token, hasSavedToken: saved,
+                                                     pinnedHosts: pinned)
+        }
+        XCTAssertEqual(decide(), .included(catalogIndex: 3), "saved token is kept when the field is empty")
+        XCTAssertEqual(decide(token: "new", saved: false), .included(catalogIndex: 3))
+        XCTAssertEqual(decide(saved: false), .omitted(.noCredentials))
+        XCTAssertEqual(decide(token: "  "), .omitted(.noCredentials), "a blank typed token deletes the saved one")
+        XCTAssertEqual(decide(endpoint: "  "), .omitted(.noCredentials), "an empty endpoint is deleted on save")
+        XCTAssertEqual(decide(endpoint: "https://evil.example/api/tts"), .omitted(.endpointNotAllowed))
+        XCTAssertEqual(decide(false), .omitted(.paidDisabled))
+        XCTAssertEqual(decide(true, nil), .omitted(.noSelection))
+        XCTAssertEqual(PremiumVoicePickerStatus.pendingDecision(
+            paidProvidersEnabled: true, selectedVoiceID: jade, endpoint: PremiumVoiceRoutes.defaultEndpoint,
+            enteredToken: "", hasSavedToken: true), .omitted(.endpointNotAllowed), "default (empty) pins omit")
+    }
+
+    func testStatusLineShowsOnlyIndexOrReasonCode() {
+        XCTAssertEqual(PremiumVoicePickerStatus.statusLine(.included(catalogIndex: 3)), "Premium: included (catalog index 3)")
+        XCTAssertEqual(PremiumVoicePickerStatus.statusLine(.omitted(.endpointNotAllowed)),
+                       "Premium: omitted (endpointNotAllowed)")
+    }
+
     // MARK: Captions
 
     func testElevenLabsCaptionsAreWholeLine() {
