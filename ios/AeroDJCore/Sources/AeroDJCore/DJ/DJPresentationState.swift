@@ -17,6 +17,9 @@ public enum DJPresentationState: Equatable, Sendable {
 
     /// True only while real speech audio is playing.
     public var isLive: Bool { if case .speaking = self { true } else { false } }
+
+    /// The break that is audible now, or nil when nothing is speaking.
+    public var speakingTrack: Int? { if case .speaking(let k, _) = self { k } else { nil } }
 }
 
 public enum DJUnavailableReason: Equatable, Sendable {
@@ -109,6 +112,12 @@ public struct DJPresentationModel: Equatable, Sendable {
 @MainActor @Observable
 public final class DJPresentationStore {
     public private(set) var state: DJPresentationState = .idle
+    /// Live DJ voice level for the on-air orb, 0...1, smoothed, about 30 updates a second
+    /// while speech plays. Exactly 0 unless `state` is `.speaking`: it drops to 0 in the same
+    /// update that leaves `.speaking` (finish, failure, revoke, skip, interruption, stop), and
+    /// a sample for any other break, or one that arrives late, is ignored. Only the clip
+    /// player sets it, through `updateSpeechLevel(_:afterTrack:)`. -Fry
+    public private(set) var speechLevel: Float = 0
     @ObservationIgnored private var model = DJPresentationModel()
     @ObservationIgnored private var continuations: [UUID: AsyncStream<DJPresentationState>.Continuation] = [:]
 
@@ -118,7 +127,28 @@ public final class DJPresentationStore {
         let next = model.apply(event)
         guard next != state else { return }
         state = next
+        if !next.isLive || next.speakingTrack != speakingLevelTrack { speechLevel = 0; speakingLevelTrack = nil }
         for continuation in continuations.values { continuation.yield(next) }
+    }
+
+    /// The break whose level `speechLevel` shows. Reset whenever speaking ends or changes break.
+    @ObservationIgnored private var speakingLevelTrack: Int?
+
+    /// A level reading from the clip player for the break after `afterTrack`.
+    ///
+    /// Applied only while `state` is `.speaking(afterTrack:)` for that same break; otherwise
+    /// the level stays 0 and the sample is dropped, so a stale tick after the break ended can
+    /// never show DJ activity. 0 is always accepted, so the player can clear it at once on a
+    /// stop before the state event arrives. Values are clamped to 0...1; NaN is 0.
+    public func updateSpeechLevel(_ level: Float, afterTrack: Int) {
+        let clamped: Float = level.isNaN ? 0 : min(1, max(0, level))
+        guard clamped > 0 else {
+            if speechLevel != 0 { speechLevel = 0 }
+            return
+        }
+        guard state.speakingTrack == afterTrack else { return }
+        speakingLevelTrack = afterTrack
+        if speechLevel != clamped { speechLevel = clamped }
     }
 
     /// Current state first, then every change.
