@@ -14,15 +14,17 @@ if ! all="$(xcodebuild -showBuildSettings \
   echo "::error::xcodebuild -showBuildSettings failed for Release"; exit 1
 fi
 # Positive control: we really read the AeroDJ app target's Release settings.
-printf '%s\n' "$all" | grep -qE '^[[:space:]]*CONFIGURATION = Release$' \
-  && printf '%s\n' "$all" | grep -qE '^[[:space:]]*TARGET_NAME = AeroDJ$' \
+# Here-strings, not `printf | grep -q`: grep -q exits at the first match, and under pipefail
+# the writer's SIGPIPE/"Broken pipe" turned a match into a random failure. -Atlas
+grep -qE '^[[:space:]]*CONFIGURATION = Release$' <<<"$all" \
+  && grep -qE '^[[:space:]]*TARGET_NAME = AeroDJ$' <<<"$all" \
   || { printf '%s\n' "$all" | tail -40 >&2; echo "::error::could not read the AeroDJ Release build settings"; exit 1; }
 # A plain Release sets no compilation conditions, and xcodebuild omits an empty setting,
 # so a missing line means "no conditions" (absent). `present` still needs the flag itself.
-settings="$(printf '%s\n' "$all" | grep -E '^[[:space:]]*SWIFT_ACTIVE_COMPILATION_CONDITIONS =' || true)"
+settings="$(grep -E '^[[:space:]]*SWIFT_ACTIVE_COMPILATION_CONDITIONS =' <<<"$all" || true)"
 [ -n "$settings" ] || settings="SWIFT_ACTIVE_COMPILATION_CONDITIONS = (not set)"
 echo "Release SWIFT_ACTIVE_COMPILATION_CONDITIONS:"; printf '%s\n' "$settings" | sort -u
-if printf '%s\n' "$settings" | grep -qw AERODJ_OWNER_AB; then found=present; else found=absent; fi
+if grep -qw AERODJ_OWNER_AB <<<"$settings"; then found=present; else found=absent; fi
 if [ "$found" != "$expect" ]; then
   echo "::error::AERODJ_OWNER_AB is $found in Release build settings (expected $expect)"; exit 1
 fi
