@@ -49,7 +49,8 @@ struct StationListView: View {
                              if let stationQueue = dependencies.stationQueue {
                                  let outcome = await stationQueue.openCreatedStation(.userTap, recipeID: recipeID,
                                                                                      studio: dependencies.studio)
-                                 startNotice.finish(tap: tap, outcome: outcome)
+                                 // Status read only (never authorize() or a prompt), and only if a toast is due.
+                                 startNotice.finish(tap: tap, outcome: outcome, musicAuthorized: GenreAccess.isAuthorized)
                              } else {
                                  await dependencies.playback.authorize()
                                  _ = await dependencies.studio.applyRecipe(recipeID)
@@ -59,9 +60,10 @@ struct StationListView: View {
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation)
+            // Inside the detail's NavigationStack: the top of the content, below the nav bar,
+            // so it never covers Back or the title. A tap always opens this column. Never takes a tap.
+            .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
         }
-        // Above both columns, so it shows whichever one is on screen. Never takes a tap.
-        .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
         .sheet(isPresented: $showSharedInbox) {
             // Always a NavigationStack with Done. An empty `if` body left an undismissable sheet.

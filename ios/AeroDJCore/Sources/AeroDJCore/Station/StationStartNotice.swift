@@ -6,6 +6,7 @@ import Observation
 // ends with nothing going to play, the app shows a short toast. Decisions live here so they are
 // tested on Linux; the app only draws `message`. Restore never toasts, a boundary switch never
 // toasts, and a tap the listener replaced (a newer tap, or Play / a song tap meanwhile) never toasts.
+// Apple Music not authorized at that moment says so instead ("Connect Apple Music to play this station").
 
 extension CreatedStationOpenOutcome {
     /// True when the listener's own tap will not play anything and nothing else replaced it.
@@ -29,6 +30,8 @@ extension CreatedStationOpenOutcome {
 public final class StationStartNotice {
     /// Fixed copy, never an error's own text.
     public nonisolated static let couldNotStart = "Couldn't start that station"
+    /// The same failure while Apple Music isn't authorized (worded like #214's genre step).
+    public nonisolated static let connectAppleMusic = "Connect Apple Music to play this station"
     /// How long the toast stays before it dismisses itself.
     public nonisolated static let displayDuration: Duration = .seconds(3)
 
@@ -50,9 +53,12 @@ public final class StationStartNotice {
     }
 
     /// The tap's outcome. Shows the toast only for the latest tap and only when it warrants one.
-    public func finish(tap: Int, outcome: CreatedStationOpenOutcome) {
+    /// - Parameter musicAuthorized: the app's non-prompting Apple Music status read (never a
+    ///   request). Read only when a toast is shown; false picks "Connect Apple Music…".
+    public func finish(tap: Int, outcome: CreatedStationOpenOutcome,
+                       musicAuthorized: @autoclosure () -> Bool) {
         guard tap == tapID, outcome.warrantsStartFailureNotice else { return }
-        message = Self.couldNotStart
+        message = musicAuthorized() ? Self.couldNotStart : Self.connectAppleMusic
         showID += 1
     }
 

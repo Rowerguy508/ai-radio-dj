@@ -1,8 +1,9 @@
 import AeroDJCore
 import SwiftUI
 
-/// "Couldn't start that station" (-Nova). A short glass capsule over the station split when the
-/// listener's created-station tap could not start anything (`StationStartNotice`, tested in core).
+/// "Couldn't start that station" / "Connect Apple Music to play this station" (-Nova). A short glass
+/// capsule at the top of the station detail, below its nav bar, when the listener's created-station
+/// tap could not start anything (`StationStartNotice`, tested in core).
 /// - Never blocks taps: no hit testing, no buttons. It dismisses itself after 3 s; the next row tap
 ///   clears it sooner.
 /// - VoiceOver hears it once as an announcement when it appears.
@@ -33,8 +34,8 @@ struct StationStartToast: View {
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.35), value: notice.message)
         .task(id: notice.showID) {
             let shown = notice.showID
-            guard notice.message != nil else { return }
-            AccessibilityNotification.Announcement(StationStartNotice.couldNotStart).post()
+            guard let message = notice.message else { return }
+            AccessibilityNotification.Announcement(message).post()
             try? await Task.sleep(for: StationStartNotice.displayDuration)
             guard !Task.isCancelled else { return }
             notice.dismiss(showID: shown)
@@ -45,7 +46,7 @@ struct StationStartToast: View {
 #if DEBUG
 @MainActor private func previewNotice() -> StationStartNotice {
     let notice = StationStartNotice()
-    notice.finish(tap: notice.beginTap(), outcome: .notStarted(.notReadyInTime))
+    notice.finish(tap: notice.beginTap(), outcome: .notStarted(.notReadyInTime), musicAuthorized: true)
     return notice
 }
 

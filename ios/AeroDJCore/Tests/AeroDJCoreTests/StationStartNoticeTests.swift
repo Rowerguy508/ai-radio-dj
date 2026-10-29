@@ -3,7 +3,7 @@ import XCTest
 
 // "Couldn't start that station" toast (-Nova): shown only when the listener's latest created-station
 // tap ends with nothing going to play. Never on restore, a boundary switch, a start, or a tap the
-// listener replaced. Any new tap or dismiss clears it.
+// listener replaced. Any new tap or dismiss clears it. Without Apple Music access it asks to connect.
 
 private struct Offline: Error {}
 
@@ -34,8 +34,19 @@ final class StationStartNoticeTests: XCTestCase {
         MainActor.assumeIsolated {
             for outcome in failures {
                 let notice = StationStartNotice()
-                notice.finish(tap: notice.beginTap(), outcome: outcome)
+                notice.finish(tap: notice.beginTap(), outcome: outcome, musicAuthorized: true)
                 XCTAssertEqual(notice.message, "Couldn't start that station", "\(outcome)")
+                XCTAssertEqual(notice.showID, 1, "\(outcome)")
+            }
+        }
+    }
+
+    func testAFailureWithoutAppleMusicAccessAsksToConnect() {
+        MainActor.assumeIsolated {
+            for outcome in failures {
+                let notice = StationStartNotice()
+                notice.finish(tap: notice.beginTap(), outcome: outcome, musicAuthorized: false)
+                XCTAssertEqual(notice.message, "Connect Apple Music to play this station", "\(outcome)")
                 XCTAssertEqual(notice.showID, 1, "\(outcome)")
             }
         }
@@ -44,18 +55,38 @@ final class StationStartNoticeTests: XCTestCase {
     func testStartsBoundarySwitchesRestoreAndReplacedTapsStayQuiet() {
         MainActor.assumeIsolated {
             for outcome in quiet {
-                let notice = StationStartNotice()
-                notice.finish(tap: notice.beginTap(), outcome: outcome)
-                XCTAssertNil(notice.message, "\(outcome)")
-                XCTAssertEqual(notice.showID, 0, "\(outcome)")
+                for authorized in [true, false] {
+                    let notice = StationStartNotice()
+                    var statusReads = 0
+                    func status() -> Bool { statusReads += 1; return authorized }
+                    notice.finish(tap: notice.beginTap(), outcome: outcome, musicAuthorized: status())
+                    XCTAssertNil(notice.message, "\(outcome) authorized=\(authorized)")
+                    XCTAssertEqual(notice.showID, 0, "\(outcome)")
+                    XCTAssertEqual(statusReads, 0, "no toast due: the status is not even read")
+                }
             }
+        }
+    }
+
+    func testTheStatusIsReadOnceAtFinishOnlyForTheLatestFailingTap() {
+        MainActor.assumeIsolated {
+            let notice = StationStartNotice()
+            var statusReads = 0
+            func status() -> Bool { statusReads += 1; return false }
+            let stale = notice.beginTap()
+            let latest = notice.beginTap()
+            notice.finish(tap: stale, outcome: .notApplied, musicAuthorized: status())
+            XCTAssertEqual(statusReads, 0)
+            notice.finish(tap: latest, outcome: .notApplied, musicAuthorized: status())
+            XCTAssertEqual(statusReads, 1)
+            XCTAssertEqual(notice.message, StationStartNotice.connectAppleMusic)
         }
     }
 
     func testANewTapClearsTheToast() {
         MainActor.assumeIsolated {
             let notice = StationStartNotice()
-            notice.finish(tap: notice.beginTap(), outcome: .notStarted(.notReadyInTime))
+            notice.finish(tap: notice.beginTap(), outcome: .notStarted(.notReadyInTime), musicAuthorized: true)
             XCTAssertNotNil(notice.message)
             _ = notice.beginTap()
             XCTAssertNil(notice.message, "the next tap (built-in or created) clears it")
@@ -67,9 +98,9 @@ final class StationStartNoticeTests: XCTestCase {
             let notice = StationStartNotice()
             let first = notice.beginTap()
             let second = notice.beginTap()
-            notice.finish(tap: first, outcome: .notStarted(.buildFailed))
+            notice.finish(tap: first, outcome: .notStarted(.buildFailed), musicAuthorized: true)
             XCTAssertNil(notice.message, "an older tap's late failure is not shown")
-            notice.finish(tap: second, outcome: .started(songs: 10, waited: true))
+            notice.finish(tap: second, outcome: .started(songs: 10, waited: true), musicAuthorized: true)
             XCTAssertNil(notice.message)
         }
     }
@@ -77,16 +108,16 @@ final class StationStartNoticeTests: XCTestCase {
     func testDismissClearsAndAStaleTimerCannotHideANewerToast() {
         MainActor.assumeIsolated {
             let notice = StationStartNotice()
-            notice.finish(tap: notice.beginTap(), outcome: .notApplied)
+            notice.finish(tap: notice.beginTap(), outcome: .notApplied, musicAuthorized: true)
             let firstShow = notice.showID
-            notice.finish(tap: notice.beginTap(), outcome: .notStarted(.buildFailed))
+            notice.finish(tap: notice.beginTap(), outcome: .notStarted(.buildFailed), musicAuthorized: true)
             XCTAssertGreaterThan(notice.showID, firstShow)
             notice.dismiss(showID: firstShow)
             XCTAssertNotNil(notice.message, "the first toast's timer must not hide the second")
             notice.dismiss(showID: notice.showID)
             XCTAssertNil(notice.message)
 
-            notice.finish(tap: notice.beginTap(), outcome: .notApplied)
+            notice.finish(tap: notice.beginTap(), outcome: .notApplied, musicAuthorized: true)
             notice.dismiss()
             XCTAssertNil(notice.message, "a plain dismiss always hides it")
         }
@@ -118,13 +149,13 @@ final class StationStartNoticeTests: XCTestCase {
         }
 
         let restoreTap = notice.beginTap()
-        notice.finish(tap: restoreTap, outcome: await open(.restore))
-        XCTAssertNil(notice.message, "restore never toasts")
+        notice.finish(tap: restoreTap, outcome: await open(.restore), musicAuthorized: false)
+        XCTAssertNil(notice.message, "restore never toasts, even without Apple Music access")
 
         let tap = notice.beginTap()
         let outcome = await open(.userTap)
         XCTAssertEqual(outcome, .notStarted(.buildFailed))
-        notice.finish(tap: tap, outcome: outcome)
+        notice.finish(tap: tap, outcome: outcome, musicAuthorized: true)
         XCTAssertEqual(notice.message, StationStartNotice.couldNotStart)
         XCTAssertEqual(starts, 0)
     }
