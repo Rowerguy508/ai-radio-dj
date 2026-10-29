@@ -467,6 +467,81 @@ final class StudioScreenTests: XCTestCase {
         save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-line")
     }
 
+    // MARK: App Store video scenarios (build 27)
+
+    /// The DJ is on air between songs one and two: `PlaybackFixtures.djSpeaking`, reached through
+    /// `breakReady` then `playbackStarted`. The folded ON AIR timer is pinned at 0:04
+    /// (`StudioCapture.onAirElapsed`), so this frame never changes between runs.
+    @MainActor
+    func testDJSpeakingCapture() throws {
+        let app = launch(scenario: "djSpeaking", reduceMotion: true)
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(shows(app, "Cardamom Overcoat"), "Song two is on screen while the DJ talks")
+        XCTAssertTrue(shows(app, "On Air"), "Speaking is the one On Air state\n\(app.debugDescription)")
+        if !isOpenLayout {
+            let pill = app.descendants(matching: .any)["dj.onAir"]
+            XCTAssertTrue(pill.waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertEqual(pill.label, "On Air, 0:04", "The capture pins the ON AIR timer")
+            _ = settledFrame(of: pill, "ON AIR pill")
+        }
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        save(app, isOpenLayout ? "open-dj-speaking" : "closed-dj-speaking")
+    }
+
+    /// The break after song one has finished (`playbackFinished`): On Air is gone and song two
+    /// plays from a fixed 0:03.
+    @MainActor
+    func testBreakToSongHandoffCapture() throws {
+        let app = launch(scenario: "breakToSongHandoff", reduceMotion: true)
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(shows(app, "Cardamom Overcoat"), "Song two is now playing")
+        XCTAssertFalse(shows(app, "On Air"), "A finished break is never On Air\n\(app.debugDescription)")
+        XCTAssertFalse(app.descendants(matching: .any)["dj.onAir"].exists)
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        save(app, isOpenLayout ? "open-break-handoff" : "closed-break-handoff")
+    }
+
+    /// The add-station genre step over `StaticGenreProvider.fixture`: genres listed without
+    /// Apple Music, Electronic already picked, and nothing asks for access.
+    @MainActor
+    func testGenreBuilderCapture() throws {
+        let app = launch(scenario: "genreBuilder", reduceMotion: true)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["capture.genreBuilder"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(any["addStation.step.2"].waitForExistence(timeout: 5), app.debugDescription)
+        let picked = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Electronic")).firstMatch
+        XCTAssertTrue(picked.waitForExistence(timeout: 10), "The fixture genres load\n\(app.debugDescription)")
+        XCTAssertEqual(picked.value as? String, "Picked")
+        XCTAssertTrue(app.buttons["Remove Electronic"].exists, "The picked chip shows")
+        XCTAssertTrue(shows(app, "Jazz"))
+        XCTAssertFalse(any["addStation.genres.connect"].exists, "Fixture genres never need Apple Music")
+        // The rows pop in one after another; screenshot only once the first one holds still.
+        let first = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Pop")).firstMatch
+        XCTAssertTrue(first.waitForExistence(timeout: 5), app.debugDescription)
+        _ = settledFrame(of: first, "first genre row")
+        _ = settledFrame(of: picked, "picked genre row")
+        save(app, isOpenLayout ? "open-genre-builder" : "closed-genre-builder")
+    }
+
+    /// The station picker with a created station after the built-ins. Nothing is selected or
+    /// restored, and it is not the player.
+    @MainActor
+    func testStationListCustomCapture() throws {
+        let app = launch(scenario: "stationListCustom", reduceMotion: true)
+        let any = app.descendants(matching: .any)
+        let created = any.matching(NSPredicate(format: "label CONTAINS[c] %@", "Night Bus Electronic")).firstMatch
+        XCTAssertTrue(created.waitForExistence(timeout: 15), "Created station fixture\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Morning Calm"))
+        XCTAssertTrue(shows(app, "Late Night"))
+        XCTAssertTrue(shows(app, "Your genre station"), "Created rows use the fixed seed-kind summary")
+        XCTAssertFalse(shows(app, "Bakery Lights on Fennimore"), "The station list is not the player")
+        let calm = any.matching(NSPredicate(format: "label CONTAINS[c] %@", "Morning Calm")).firstMatch
+        _ = settledFrame(of: calm, "first station")
+        save(app, isOpenLayout ? "open-station-list-custom" : "closed-station-list-custom")
+    }
+
     @MainActor
     func testAX5LightAppearance() throws {
         let app = launch(contentSize: Self.ax5)
