@@ -273,7 +273,7 @@ public struct DJStatusPresentation: Equatable, Sendable {
             headline = nil
             reviewCount = nil
         case .preparing(let briefing):
-            headline = briefing ? "Preparing your briefing" : "Preparing a DJ break"
+            headline = briefing ? "Preparing your briefing for after this song" : "Preparing the break after this song"
             reviewCount = nil
         case .ready(let briefing, _):
             headline = briefing ? "Briefing after this song" : "DJ break after this song"

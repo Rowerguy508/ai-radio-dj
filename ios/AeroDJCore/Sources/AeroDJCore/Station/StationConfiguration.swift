@@ -113,12 +113,15 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
 
     /// The talk cadence the DJ break planner should use, derived from `base`.
     /// Only `talkFraction` and the plain-transition cap change; briefing caps are kept.
+    /// Chatty is the owner's explicit override: a break after every song (spacing 0).
     public func cadence(base: DJCadence = .init()) -> DJCadence {
-        DJCadence(
+        let everySong = commentary == .chatty
+        return DJCadence(
             talkFraction: commentary.talkFraction,
-            minSongsBetweenBreaks: base.minSongsBetweenBreaks,
+            minSongsBetweenBreaks: everySong ? 0 : base.minSongsBetweenBreaks,
             maxTransitionSeconds: min(base.maxTransitionSeconds, personality.maxTransitionSeconds),
-            maxBriefingBreakSeconds: base.maxBriefingBreakSeconds
+            maxBriefingBreakSeconds: base.maxBriefingBreakSeconds,
+            allowsBackToBack: everySong
         )
     }
 
@@ -198,8 +201,8 @@ public enum DJPersonality: String, Codable, Sendable, CaseIterable {
 public enum CommentaryFrequency: String, Codable, Sendable, CaseIterable {
     case off, rare, occasional, frequent, chatty
 
-    /// Upper bound for any preset's requested `talkFraction`. `chatty` asks for every boundary;
-    /// the never-back-to-back spacing rule in `DJCadence` still limits what is delivered.
+    /// Upper bound for any preset's requested `talkFraction`. `chatty` asks for every boundary
+    /// and is the only preset whose cadence allows back-to-back breaks.
     public static let maxTalkFraction = 1.0
 
     /// Maps onto `DJCadence.talkFraction`. Briefing content is governed by `BriefingPreferences`, not this.

@@ -70,6 +70,7 @@ public extension CommentaryFrequency {
     var honestDescription: String {
         switch self {
         case .off: "Music only. The DJ doesn't talk between songs."
+        case .chatty: "The DJ talks after every song."
         default: "The DJ talks after about \(Int((StationConfiguration(commentary: self).cadence().expectedTalkShare * 100).rounded()))% of songs, never two in a row."
         }
     }
