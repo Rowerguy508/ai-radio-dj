@@ -5,8 +5,11 @@ import Foundation
 //   - the station name, when it is usable, and
 //   - approved briefing cues from `MorningBriefingEngine`.
 // Templates add no facts of their own (no genres, years, chart claims, or weather).
-// Phrasing pools live in `EditorialPhrasing`. A talk break is one short shape
-// (transition, artist focus, station ID, or time-of-day), not a stack of all of them.
+// Phrasing pools live in `EditorialTone` (default `.warm`). A talk break is a MAIN segment
+// (back-announce or artist focus, optional station ID or time-of-day color, optional fact-free
+// continuation) and one short CLOSING line naming the next song. The closing line is the last
+// cue and is budgeted on its own (`maxClosingSeconds`) so the player may let it land over the
+// next song's intro. Each cue is filled from one source, so its attribution is exact.
 
 /// Track metadata exactly as MusicKit reported it. Empty fields are never spoken.
 public struct DJTrack: Equatable, Sendable {
@@ -45,19 +48,24 @@ public struct DJCadence: Equatable, Sendable {
     public var minSongsBetweenBreaks: Int
     /// Chatty only: a break may follow every song (`minSongsBetweenBreaks` 0).
     public var allowsBackToBack: Bool
-    /// Cap for a break with no briefing content.
+    /// Cap for the MAIN segment of a break with no briefing content (every cue except the
+    /// talk-over closing line). A closing line that does not fit `maxClosingSeconds` is not
+    /// talk-over and counts here instead.
     public var maxTransitionSeconds: Int
+    /// Cap for the talk-over closing line, counted separately from the main segment.
+    public var maxClosingSeconds: Int
     /// Cap for a break that carries briefing cues. Durable notes that do not fit
     /// may be offered next show; time-sensitive cues are dropped, not deferred.
     public var maxBriefingBreakSeconds: Int
 
     public init(talkFraction: Double = 0.3, minSongsBetweenBreaks: Int = 2,
-                maxTransitionSeconds: Int = 12, maxBriefingBreakSeconds: Int = 45,
-                allowsBackToBack: Bool = false) {
+                maxTransitionSeconds: Int = 15, maxBriefingBreakSeconds: Int = 45,
+                allowsBackToBack: Bool = false, maxClosingSeconds: Int = 4) {
         self.talkFraction = min(max(talkFraction, 0), 1)
         self.allowsBackToBack = allowsBackToBack
         self.minSongsBetweenBreaks = max(allowsBackToBack ? 0 : 1, minSongsBetweenBreaks)
         self.maxTransitionSeconds = maxTransitionSeconds
+        self.maxClosingSeconds = max(0, maxClosingSeconds)
         self.maxBriefingBreakSeconds = maxBriefingBreakSeconds
     }
 
@@ -148,9 +156,16 @@ public struct DJBreak: Equatable, Sendable {
     public let cues: [NarrationCue]
     /// Attribution for every cue id in `cues`.
     public let attributions: [UUID: SpokenAttribution]
+    /// The closing line (always the last cue) when it fits `maxClosingSeconds` and may land
+    /// over the next song's intro. Nil: every cue plays in the gap, as before.
+    public var talkOverCueID: UUID? = nil
     public var briefingCueIDs: [UUID] { cues.filter(\.isContent).map(\.id) }
     public var hasBriefing: Bool { cues.contains { $0.isContent } }
     public var estimatedSeconds: Double { cues.reduce(0) { $0 + $1.plannedSeconds } }
+    /// Planned seconds of the talk-over closing line; 0 without one.
+    public var closingSeconds: Double { cues.last.flatMap { $0.id == talkOverCueID ? $0.plannedSeconds : nil } ?? 0 }
+    /// Planned seconds spoken in the gap (everything but the talk-over closing line).
+    public var mainSeconds: Double { estimatedSeconds - closingSeconds }
 }
 
 public struct DJSessionPlan: Equatable, Sendable {
@@ -165,33 +180,42 @@ public struct DJScriptWriter: Sendable {
     public var cadence: DJCadence
     /// Spoken in station IDs. Unusable names (empty, braces, instruction-shaped) are skipped.
     public var stationName: String
+    /// The phrase bank. Swapping it changes the words, never the engine.
+    public let tone: EditorialTone
+    /// Talk/silence rolls only, so phrasing changes never move where breaks fall.
     private var rng: SeededGenerator
-    /// Chooses the break shape. Kept off `rng` so the talk/silence rolls stay put.
+    /// Chooses the break shape.
     private var editorial: SeededGenerator
-    private var backAnnounce = TemplatePool(EditorialPhrasing.backAnnounce)
-    private var intro = TemplatePool(EditorialPhrasing.songIntro)
-    private var artistFocus = TemplatePool(EditorialPhrasing.artistFocus)
-    private var stationIDs = TemplatePool(EditorialPhrasing.stationID)
-    private var atmosphere: [DayPart: TemplatePool] = EditorialPhrasing.atmosphere.mapValues { TemplatePool($0) }
-    private var briefingLead = TemplatePool([
-        "Let me catch you up.",
-        "A couple of things before the next song.",
-        "While we're between songs.",
-    ])
-    private var greetings: [DayPart: TemplatePool] = [
-        .earlyMorning: TemplatePool(["Early start today.", "Good morning, early riser."]),
-        .morning: TemplatePool(["Good morning.", "Morning."]),
-        .afternoon: TemplatePool(["Good afternoon.", "Afternoon."]),
-        .evening: TemplatePool(["Good evening.", "Evening."]),
-        .lateNight: TemplatePool(["Late one tonight.", "Still up? Good."]),
-    ]
+    /// Picks lines from the pools.
+    private var phrasing: SeededGenerator
+    private var backAnnounce: TemplatePool
+    private var closing: TemplatePool
+    private var artistFocus: TemplatePool
+    private var stationIDs: TemplatePool
+    private var continuation: TemplatePool
+    private var atmosphere: [DayPart: TemplatePool]
+    private var briefingLead: TemplatePool
+    private var briefingOutro: TemplatePool
+    private var greetings: [DayPart: TemplatePool]
     private var hasGreeted = false
 
-    public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = "AeroDJ") {
+    public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = "AeroDJ",
+                tone: EditorialTone = .warm) {
         self.cadence = cadence
         self.stationName = stationName
+        self.tone = tone
         self.rng = SeededGenerator(seed: seed)
         self.editorial = SeededGenerator(seed: seed &+ 0x9E37_79B9_7F4A_7C15)
+        self.phrasing = SeededGenerator(seed: seed &+ 0x3C6E_F372_FE94_F82B)
+        backAnnounce = TemplatePool(tone.backAnnounce)
+        closing = TemplatePool(tone.closing)
+        artistFocus = TemplatePool(tone.artistFocus)
+        stationIDs = TemplatePool(tone.stationID)
+        continuation = TemplatePool(tone.continuation)
+        atmosphere = tone.atmosphere.mapValues { TemplatePool($0) }
+        briefingLead = TemplatePool(tone.briefingLead)
+        briefingOutro = TemplatePool(tone.briefingOutro)
+        greetings = tone.greetings.mapValues { TemplatePool($0) }
     }
 
     /// - Parameters:
@@ -237,20 +261,26 @@ public struct DJScriptWriter: Sendable {
                 attributions[cue.id] = attribution
                 return cue
             }
-            if !hasGreeted, let greeting = greetings[dayPart]?.next(filling: [:], using: &rng) {
+            let metadata = ["title": prev.title, "artist": prev.artist]
+            // Opener: the greeting once per session, else artist focus or a back-announce.
+            let shape = wantsBriefing ? BreakShape.plain : breakShape()
+            if !hasGreeted, let greeting = greetings[dayPart]?.next(filling: [:], using: &phrasing) {
                 cues.append(add(greeting, .presenter))
                 hasGreeted = true
-            } else if !wantsBriefing, let colored = colorLine(prev: prev, dayPart: dayPart, station: station) {
-                cues.append(add(colored.text, colored.attribution))
-            } else if let line = backAnnounce.next(filling: ["title": prev.title, "artist": prev.artist], using: &rng) {
+            } else if shape.artistOpener, let line = artistFocus.next(filling: metadata, using: &phrasing) {
+                cues.append(add(line, .trackMetadata(trackIDs: [prev.id])))
+            } else if let line = backAnnounce.next(filling: metadata, using: &phrasing) {
                 cues.append(add(line, .trackMetadata(trackIDs: [prev.id])))
             }
-            let introLine = intro.next(filling: ["nextTitle": next.title, "nextArtist": next.artist], using: &rng)
+            // Closing line: its own cue, attributed to the next track only, so it goes through
+            // `VoiceRenderer.mayLeaveDevice` per cue exactly like the main segment.
+            let closingLine = closing.next(filling: ["nextTitle": next.title, "nextArtist": next.artist], using: &phrasing)
+            let closingFits = closingLine.map { estimate($0) <= Double(cadence.maxClosingSeconds) } ?? false
 
             if wantsBriefing {
                 let limit = Double(cadence.maxBriefingBreakSeconds)
-                var spent = cues.reduce(0) { $0 + $1.plannedSeconds } + estimate(introLine)
-                if let lead = briefingLead.next(filling: [:], using: &rng) {
+                var spent = cues.reduce(0) { $0 + $1.plannedSeconds } + estimate(closingLine)
+                if let lead = briefingLead.next(filling: [:], using: &phrasing) {
                     let leadCue = add(lead, .presenter)
                     spent += leadCue.plannedSeconds
                     var taken: [NarrationCue] = []
@@ -268,16 +298,42 @@ public struct DJScriptWriter: Sendable {
                             outcomes[cue.id] = .scheduled(.afterTrack(boundary))
                             attributions[cue.id] = .personalContext(itemID: cue.sourceItemID!, source: cue.source!, provenance: cue.provenance!)
                         }
+                        // A short sign-off, only when it still fits the briefing cap.
+                        if let outro = briefingOutro.next(filling: [:], using: &phrasing), spent + estimate(outro) <= limit {
+                            cues.append(add(outro, .presenter))
+                        }
                     } else {
                         attributions[leadCue.id] = nil
                     }
                 }
+            } else {
+                // Main-segment color, then a continuation; dropped (continuation first) to fit.
+                var extras: [NarrationCue] = []
+                if let colored = colorLine(shape.color, dayPart: dayPart, station: station) {
+                    extras.append(add(colored.text, colored.attribution))
+                }
+                if shape.continues, let line = continuation.next(filling: [:], using: &phrasing) {
+                    extras.append(add(line, .presenter))
+                }
+                let closingInMain = closingFits ? 0 : estimate(closingLine)
+                func main() -> Double { (cues + extras).reduce(0) { $0 + $1.plannedSeconds } + closingInMain }
+                while !extras.isEmpty, main() > Double(cadence.maxTransitionSeconds) {
+                    attributions[extras.removeLast().id] = nil
+                }
+                cues += extras
             }
-            if let introLine { cues.append(add(introLine, .trackMetadata(trackIDs: [next.id]))) }
+            var talkOverCueID: UUID?
+            if let closingLine {
+                let cue = add(closingLine, .trackMetadata(trackIDs: [next.id]))
+                cues.append(cue)
+                if closingFits { talkOverCueID = cue.id }
+            }
             guard !cues.isEmpty else { continue }
             let isBriefing = cues.contains { $0.isContent }
-            if !isBriefing, cues.reduce(0, { $0 + $1.plannedSeconds }) > Double(cadence.maxTransitionSeconds) { continue }
-            breaks.append(DJBreak(afterTrack: boundary, cues: cues, attributions: attributions))
+            var planned = DJBreak(afterTrack: boundary, cues: cues, attributions: attributions)
+            planned.talkOverCueID = talkOverCueID
+            if !isBriefing, planned.mainSeconds > Double(cadence.maxTransitionSeconds) { continue }
+            breaks.append(planned)
             lastBreak = boundary
         }
         for cue in pending {
@@ -300,34 +356,39 @@ public struct DJScriptWriter: Sendable {
         return carriesToLaterShow(cue) ? .deferred(.noTrackBoundary) : .dropped(.notCarriedForward)
     }
 
-    private enum BreakColor { case plain, artist, station, atmosphere }
+    private enum BreakColor { case none, station, atmosphere }
 
-    /// About 55% plain transitions, 20% artist focus, 12% station IDs, 13% time-of-day.
-    /// One shape per break, so ordinary talk stays a couple of short lines.
-    private mutating func editorialColor() -> BreakColor {
-        switch editorial.next() % 100 {
-        case 0..<20: return .artist
-        case 20..<32: return .station
-        case 32..<45: return .atmosphere
-        default: return .plain
-        }
+    private struct BreakShape {
+        var artistOpener: Bool
+        var color: BreakColor
+        var continues: Bool
+        static let plain = BreakShape(artistOpener: false, color: .none, continues: false)
     }
 
-    /// One connector line, or nil when this break should use the plain back-announce.
-    /// A nil return does not draw from `rng` (the caller draws the back-announce instead).
-    private mutating func colorLine(prev: DJTrack, dayPart: DayPart, station: String) -> (text: String, attribution: SpokenAttribution)? {
-        switch editorialColor() {
-        case .plain:
+    /// About 20% artist-focus openers; color: 20% station ID, 25% time of day, else none;
+    /// a continuation about two times in three. Whatever does not fit the main cap is dropped.
+    private mutating func breakShape() -> BreakShape {
+        let artist = editorial.next() % 100 < 20
+        let color: BreakColor
+        switch editorial.next() % 100 {
+        case 0..<20: color = .station
+        case 20..<45: color = .atmosphere
+        default: color = .none
+        }
+        return BreakShape(artistOpener: artist, color: color, continues: editorial.next() % 100 < 65)
+    }
+
+    /// One color line with no track facts, or nil.
+    private mutating func colorLine(_ color: BreakColor, dayPart: DayPart, station: String) -> (text: String, attribution: SpokenAttribution)? {
+        switch color {
+        case .none:
             return nil
-        case .artist:
-            guard let line = artistFocus.next(filling: ["title": prev.title, "artist": prev.artist], using: &rng) else { return nil }
-            return (line, .trackMetadata(trackIDs: [prev.id]))
         case .station:
             guard let name = EditorialStationName.usable(station),
-                  let line = stationIDs.next(filling: ["station": name], using: &rng) else { return nil }
+                  let line = stationIDs.next(filling: ["station": name], using: &phrasing) else { return nil }
             return (line, .presenter)
         case .atmosphere:
-            guard let line = atmosphere[dayPart]?.next(filling: [:], using: &rng) else { return nil }
+            guard let line = atmosphere[dayPart]?.next(filling: [:], using: &phrasing) else { return nil }
             return (line, .presenter)
         }
     }

@@ -83,6 +83,7 @@ struct AppDependencies {
             providers: composition.providers,
             purger: purger)
         let recipes = StationRecipeLibrary(store: FileStationRecipeStore(fileURL: supportURL("StationRecipes/recipes.json")))
+        let catalogSource = MusicCatalogSeedSource()   // one actor: seed search and genres (-Atlas)
         return AppDependencies(
             mode: .live,
             // Calendar: only calendars the listener chose. Notes: only approved picked notes.
@@ -95,7 +96,10 @@ struct AppDependencies {
             dj: dj,
             studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
                                             // Add-station search (Atlas): catalog + on-device library playlists.
-                                            seedSearch: MusicCatalogSeedSource(),
+                                            seedSearch: catalogSource,
+                                            // Genres from Apple Music: the same actor and cache as seedSearch (-Atlas).
+                                            // Feeds Tune > Genres chips and the add-station genre step.
+                                            genreProvider: catalogSource,
                                             seedSearchFailureKind: StudioSearchModel.searchFailureKind),
             djSession: djSession,
             pickedNotes: composition.notes,
@@ -140,7 +144,9 @@ struct AppDependencies {
             playback: MusicKitService.shared,
             interlude: interlude,
             dj: dj,
-            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj),
+            // Test Station: fixed genre fixture (no network, stable screenshots).
+            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
+                                            genreProvider: StaticGenreProvider.fixture),
             djSession: djSession,
             pickedNotes: nil,
             stationQueue: nil)

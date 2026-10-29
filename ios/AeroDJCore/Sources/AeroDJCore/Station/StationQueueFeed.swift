@@ -145,8 +145,13 @@ public final class StationQueueFeed<Item: Sendable> {
     private var staged: (key: StationQueueKey, items: [Item])?
     private var building: StationQueueKey?
     private var generation = 0
-    /// The station the playing queue belongs to. `nil` until the first queue starts.
+    /// The station the playing queue belongs to. `nil` before the first queue start, and for a
+    /// queue started on a station with no seeds (see `queueStartReported`).
     public private(set) var playingKey: StationQueueKey?
+    /// True once any queue start was reported. A reported start on a station with no seeds
+    /// leaves `playingKey` nil but is still a known, older queue (P0 build 25: the first
+    /// created station never replaced the tapped songs). Before any report, nil means unknown.
+    public private(set) var queueStartReported = false
     private var observedKey: StationQueueKey?
     private var observing = false
 
@@ -175,6 +180,8 @@ public final class StationQueueFeed<Item: Sendable> {
     /// Songs staged for the next hand-off (count only), `nil` when nothing is staged.
     public var stagedCount: Int? { staged?.items.count }
     public var stagedKey: StationQueueKey? { staged?.key }
+    /// The station whose queue is being built, `nil` when no build is running.
+    public var buildingKey: StationQueueKey? { building }
 
     // MARK: Building
 
@@ -230,6 +237,7 @@ public final class StationQueueFeed<Item: Sendable> {
     /// `songCount` is the new queue's length: a short queue starts building its refill now.
     public func queueStarted(for committed: StationConfiguration, songCount: Int? = nil) {
         playingKey = StationQueueKey(committed)
+        queueStartReported = true
         if let songCount, songCount <= refillLead { prefetch(committed) }
     }
 
@@ -301,7 +309,7 @@ public final class StationQueueFeed<Item: Sendable> {
                       playbackMayStart: Bool, requireChange: Bool) -> [Item]? {
         guard let key = StationQueueKey(active) else { return keep(trigger, .noStation) }
         if requireChange, key == playingKey { return keep(trigger, .sameStation) }
-        if requireChange, playingKey == nil {
+        if requireChange, playingKey == nil, !queueStartReported {
             // No queue start was reported: the playing queue is not known to be older than this
             // station, so it is never replaced on a guess.
             playingKey = key

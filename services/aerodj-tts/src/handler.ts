@@ -19,6 +19,13 @@ const DEFAULT_MAX_TEXT_CHARS = 600;
 const DEFAULT_DAILY_CHAR_CAP = 20_000;
 const DEFAULT_REQUESTS_PER_MINUTE = 12;
 const DEFAULT_MODEL_ID = 'eleven_flash_v2_5';
+/**
+ * ElevenLabs voice_settings sent on every render (owner-approved radio tuning).
+ * Fixed server-side: the request contract carries no voice settings, so nothing a
+ * client sends can change them. Deliberately no `style` (owner decision) and
+ * no `use_speaker_boost`. `speed` stays inside the approved [1.0, 1.05] range.
+ */
+export const VOICE_SETTINGS = Object.freeze({ stability: 0.4, similarity_boost: 0.75, speed: 1.0 });
 const UPSTREAM_TIMEOUT_MS = 15_000;
 /** Single-owner deployment: every authenticated request shares one usage bucket. */
 const OWNER_KEY = 'owner';
@@ -284,7 +291,11 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
     const upstream = await deps.fetch(url, {
       method: 'POST',
       headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json', Accept: 'audio/pcm' },
-      body: JSON.stringify({ text, model_id: deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID }),
+      body: JSON.stringify({
+        text,
+        model_id: deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
+        voice_settings: VOICE_SETTINGS,
+      }),
       signal: controller.signal,
     });
     if (!upstream.ok) {
