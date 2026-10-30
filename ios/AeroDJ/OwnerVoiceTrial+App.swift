@@ -7,7 +7,7 @@ import Security
 
 /// Owner-only ElevenLabs A/B wiring. Compiled only with the Swift condition
 /// `AERODJ_OWNER_AB` (TestFlight `owner_ab: true`). Owner-only here: the owner token
-/// (`OwnerProxyKeychain`), the owner-trial access, the voice picker and the A/B switch.
+/// (`OwnerProxyKeychain`), the owner trial access, the voice picker and the A/B switch.
 /// The paid-voice route and its per-cue Pro + consent gate are build-agnostic
 /// (`PaidVoice+App.swift`, `PaidVoice` in AeroDJCore); every other build gets the public
 /// composition there and `ownerVoiceTrialEntry()` returns the view unchanged (-Echo).
@@ -20,7 +20,7 @@ import Security
 #if AERODJ_OWNER_AB
 extension PaidVoice {
     /// The owner A/B composition: owner token from the Keychain, the owner trial decision at
-    /// setup, and `ProVoiceAccess.live` (the owner trial in this build) as the per-cue gate.
+    /// setup, and `ProVoiceAccess.buildDefault` (the owner trial in this build) as the per-cue gate.
     static func ownerTrial(base: VoiceRenderer) -> PaidVoice {
         let composition = PremiumVoiceRoutes.compose(
             onDevice: base.routes,
@@ -31,7 +31,7 @@ extension PaidVoice {
         // the compose decision is logged once by PaidVoice.live() (PaidVoiceLog).
         return PaidVoice(renderer: VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
                                                  revocations: base.revocations, cloudConsent: base.cloudConsent),
-                         access: .live, decision: composition.decision)
+                         access: .buildDefault, decision: composition.decision)
     }
 }
 #endif
