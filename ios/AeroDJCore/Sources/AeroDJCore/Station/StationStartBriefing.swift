@@ -70,3 +70,14 @@ public enum StationStartBriefing {
             sources: handoff.connectionItems)
     }
 }
+
+extension DJBreakSession {
+    /// #332: the one briefing provider for song taps (`PlayerView`) and station starts
+    /// (`AppDependencies`). It always reads this session's `personalUpdates` ledger, the same
+    /// instance `playbackStarted` records airings on, so a tap and a start share one daily limit.
+    public func briefingProvider(studio: some LiveQueueStudio,
+                                 now: (@MainActor () -> Date)? = nil,
+                                 calendar: Calendar = .current) -> @MainActor () -> ApprovedShowHandoff {
+        LiveQueueBriefing.provider(studio: studio, now: now, calendar: calendar, ledger: personalUpdates)
+    }
+}
