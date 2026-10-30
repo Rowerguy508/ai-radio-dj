@@ -999,11 +999,12 @@ final class LatestTapWinsTests: XCTestCase {
             starter.listenerStartedPlayback()
         }
 
-        func tapStation(_ config: StationConfiguration, gate: Gate? = nil) async -> CreatedStationOpenOutcome {
+        func tapStation(_ config: StationConfiguration, gate: Gate? = nil, applyGate: Gate? = nil) async -> CreatedStationOpenOutcome {
             await starter.open(.userTap,
                                recipeID: UUID(),
                                authorize: { await gate?.wait() },
                                apply: {
+                                   await applyGate?.wait()
                                    await self.model.applyRecipe(StationRecipe(name: "Created", configuration: config))
                                    return true
                                },
@@ -1086,6 +1087,67 @@ final class LatestTapWinsTests: XCTestCase {
         app.queue = []
         app.playing = false
         XCTAssertEqual(app.feed.takeForIdleStart(active: app.model.active)?.count, 10)
+    }
+
+    // Fry: the apply window (authorize done, recipe not yet committed).
+    func testFrySongTapDuringApplyKeepsPlayingPastTheBoundary() async throws {
+        let app = await makeApp(active: old, playing: true)
+        let gate = Gate()
+        let tap = Task { await app.tapStation(created, applyGate: gate) }
+        try await waitUntil { gate.isWaiting }
+        app.tapSongs(listenerSongs)
+        gate.open()
+        let outcome = await tap.value
+        XCTAssertEqual(outcome, .notStarted(.playbackBegan))
+        try await app.waitForStaged(created)
+        let next = await app.crossBoundary()
+        XCTAssertNil(next, "the station is not handed off at the boundary")
+        XCTAssertEqual(app.queue, listenerSongs)
+        XCTAssertEqual(app.model.active.seeds.map(\.catalogID), ["a"])
+    }
+
+    // Sentinel (#296 nit): the cancel while a hand-off is still unconfirmed. Station tap held,
+    // a short song tap, then the refill before its last song hands off the old station's songs and
+    // that start has not reported yet when the station tap finishes. `cancelSwitch` is a no-op
+    // there (documented): no event, the playing queue stays credited to the old station. Once the
+    // hand-off reports (started or failed) the queue is the old station's refill, so the selected
+    // station takes over at the next boundary, as for any queue on the old station.
+    func testSentinelCancelWhileAHandOffIsUnconfirmedIsANoOp() async throws {
+        for result in [StationHandOffResult.started, .failed] {
+            let app = await makeApp(active: old, playing: true)
+            try await app.waitForStaged(old)
+            let gate = Gate()
+            let tap = Task { await app.tapStation(created, gate: gate) }
+            try await waitUntil { gate.isWaiting }
+
+            let songs = ["song-1", "song-2"]
+            app.tapSongs(songs)                                   // the latest tap (clears no hand-off yet)
+            try await app.waitForStaged(old)
+            let refill = try XCTUnwrap(
+                app.feed.queueForNextSong(after: 0, in: songs, active: app.model.active,
+                                          playbackMayStart: true, sameSong: ==),
+                "the refill before the last song hands off (\(result))")
+            XCTAssertEqual(refill.first, "song-2")
+            app.queue = refill                                    // own start: no queueStarted, unconfirmed
+
+            gate.open()
+            let outcome = await tap.value
+            XCTAssertEqual(outcome, .notStarted(.playbackBegan), "\(result)")
+            XCTAssertFalse(app.recorder.events.contains(.switchCancelledByListener),
+                           "no cancel while the hand-off is unconfirmed (\(result))")
+            XCTAssertEqual(app.feed.playingKey, StationQueueKey(old),
+                           "the playing queue is not credited to the new station (\(result))")
+            XCTAssertEqual(app.model.committedDisplayed.seeds.map(\.catalogID), ["a"],
+                           "the station is committed, active at the boundary (\(result))")
+
+            app.feed.handOffFinished(result)
+            XCTAssertEqual(app.feed.playingKey, StationQueueKey(old), "\(result)")
+            try await app.waitForStaged(created)
+            let boundary = await app.crossBoundary()
+            let next = try XCTUnwrap(boundary, "the selected station takes over the refill (\(result))")
+            XCTAssertTrue(next.allSatisfy { $0.hasPrefix("a-") }, "\(result)")
+            XCTAssertEqual(app.starts, [], "\(result)")
+        }
     }
 
     // 1b. The same while the station's queue is still building (idle tap, catalog held).
