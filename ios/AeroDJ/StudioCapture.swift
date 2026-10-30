@@ -64,6 +64,11 @@ enum StudioCaptureScenario: String {
     /// container: below the Studio switch but wider than any phone in portrait, like the
     /// unfolded Duo's split-view detail (owner, build 25). Needs a window at least that big.
     case duoWideReady
+    /// The Pro voice 18+ step (-Nova) as it opens: Pro and consent allow the paid voice, no
+    /// answer yet. In-memory answer and fixture gate only: no Keychain, no StoreKit, no network.
+    case ageStep
+    /// The same step reopened to change an answer already on record (yes): current answer + Clear.
+    case ageStepAnswered
 
     var access: PlaybackAccess {
         switch self {
@@ -135,6 +140,8 @@ struct StudioCaptureView: View {
                     .accessibilityIdentifier("capture.shell")
             } else if scenario == .duoWideReady {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario == .ageStep || scenario == .ageStepAnswered {
+                PaidVoiceAgeStepCapture(answered: scenario == .ageStepAnswered)
             } else {
                 NavigationStack {
                     if showsProbe {
@@ -219,6 +226,52 @@ struct StudioCaptureView: View {
             loaded = true
         }
     }
+}
+
+/// The Pro voice 18+ step's sheet content as the root, with a fixture gate that allows the
+/// paid voice (Pro + consent) and an in-memory answer. `capture.ageAccessChanged` counts the
+/// `paidVoiceAccessChanged` hand-offs, so the UI test sees each answer reach the session hook.
+private struct PaidVoiceAgeStepCapture: View {
+    @State private var model: PaidVoiceAgeStepModel
+    @State private var counter: CaptureAccessChangedCounter
+
+    init(answered: Bool) {
+        let store = PaidVoiceAgeStore(storage: InMemoryPaidVoiceAgeStorage())
+        if answered { store.record(isAdult: true) }
+        let counter = CaptureAccessChangedCounter()
+        _counter = State(initialValue: counter)
+        _model = State(initialValue: PaidVoiceAgeStepModel(
+            store: store,
+            accessWithoutAge: ProVoiceAccess(entitlement: CaptureProEntitlement(), consent: CapturePaidVoiceConsent()),
+            accessChanged: { counter.count += 1 }))
+    }
+
+    var body: some View {
+        PaidVoiceAgeStepSheet(model: model) {}
+            .overlay(alignment: .bottomTrailing) {
+                Text(verbatim: "accessChanged=\(counter.count)")
+                    .font(.caption.monospacedDigit())
+                    .padding(8)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(8)
+                    .accessibilityIdentifier("capture.ageAccessChanged")
+                    .allowsHitTesting(false)
+            }
+            .task { await model.refresh() }
+    }
+}
+
+@MainActor @Observable
+private final class CaptureAccessChangedCounter {
+    var count = 0
+}
+
+private struct CaptureProEntitlement: ProEntitlementProviding {
+    func currentProEntitlement() async -> ProEntitlementState { .pro(productID: "capture.fixture", expiresAt: .distantFuture) }
+}
+
+private struct CapturePaidVoiceConsent: PaidVoiceConsentProviding {
+    func hasPaidVoiceConsent() async -> Bool { true }
 }
 
 /// The unfolded Duo's split-view detail, stood in by a fixed 640 × 820 pt compact-class

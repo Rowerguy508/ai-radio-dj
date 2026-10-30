@@ -55,6 +55,8 @@ struct StationListView: View {
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation)
+            // Pro voice 18+ step (-Nova): no toolbar item and no sheet unless Pro + consent allow the paid voice.
+            .paidVoiceAgeEntry(dependencies.paidVoiceAge)
         }
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
         .sheet(isPresented: $showSharedInbox) {
