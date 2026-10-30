@@ -175,6 +175,10 @@ public struct DJBreak: Equatable, Sendable {
     /// The closing line (always the last cue) when it fits `maxClosingSeconds` and may land
     /// over the next song's intro. Nil: every cue plays in the gap, as before.
     public var talkOverCueID: UUID? = nil
+    /// Ordinary breaks: the optional lines (continuation, then station ID or time-of-day color),
+    /// in the order the planner drops them. `DJBreakPreparer` drops them in this order when the
+    /// measured audio runs over `DJCadence.maxOrdinaryBreakSeconds`. Never the opener or closing.
+    public var optionalCueIDs: [UUID] = []
     public var briefingCueIDs: [UUID] { cues.filter(\.isContent).map(\.id) }
     public var hasBriefing: Bool { cues.contains { $0.isContent } }
     public var estimatedSeconds: Double { cues.reduce(0) { $0 + $1.plannedSeconds } }
@@ -310,6 +314,7 @@ public struct DJScriptWriter: Sendable {
             let closingLine = closing.next(filling: ["nextTitle": next.title, "nextArtist": next.artist], using: &phrasing)
             let closingFits = closingLine.map { estimate($0) <= Double(cadence.maxClosingSeconds) } ?? false
 
+            var optionalCueIDs: [UUID] = []
             if wantsBriefing {
                 let limit = Double(cadence.maxBriefingBreakSeconds)
                 var spent = cues.reduce(0) { $0 + $1.plannedSeconds } + estimate(closingLine)
@@ -359,6 +364,7 @@ public struct DJScriptWriter: Sendable {
                     trimmed += 1
                 }
                 if trimmed > 0 { capReport.trimmedOptionalLines[boundary] = trimmed }
+                optionalCueIDs = extras.reversed().map(\.id)   // drop order: continuation, then color
                 cues += extras
             }
             var talkOverCueID: UUID?
@@ -371,6 +377,7 @@ public struct DJScriptWriter: Sendable {
             let isBriefing = cues.contains { $0.isContent }
             var planned = DJBreak(afterTrack: boundary, cues: cues, attributions: attributions)
             planned.talkOverCueID = talkOverCueID
+            if !isBriefing { planned.optionalCueIDs = optionalCueIDs }
             if !isBriefing, planned.mainSeconds > Double(cadence.maxTransitionSeconds)
                 || planned.estimatedSeconds > Double(cadence.maxOrdinaryBreakSeconds) {
                 capReport.trimmedOptionalLines[boundary] = nil

@@ -44,6 +44,9 @@ public struct PreparedDJBreak: Equatable, Sendable {
     /// The planned talk-over closing cue (`DJBreak.talkOverCueID`). The hooks below are derived
     /// from `cues`/`clips`, so a rebuild that drops cues recomputes or clears them on its own.
     public var talkOverCueID: UUID? = nil
+    /// Optional lines (`DJBreak.optionalCueIDs`) dropped because the measured audio ran over
+    /// `DJCadence.maxOrdinaryBreakSeconds`. See `DJSessionPlan.capReport(afterBreaks:)`.
+    public var trimmedCueIDs: [UUID] = []
 
     /// Speech gap before the closing line, in seconds. A pause between two lines of speech,
     /// not compensation for player latency.
@@ -119,12 +122,16 @@ public actor DJBreakPreparer {
         // segment is capped at 15 s and a talk-over closing line at 4 s, separately. A closing
         // line over 4 s (or any closing line with talk-over off) loses its talk-over marker and,
         // when over 4 s, counts toward the 15 s main budget instead of skipping the break
-        // (P0 build 26, -Fry). See `BreakCap`.
+        // (P0 build 26, -Fry). See `BreakCap`. An ordinary break's whole measured audio, closing
+        // line included, is also capped at `maxOrdinaryBreakSeconds` (12 s): optional lines are
+        // dropped in the planner's order to fit, and the break is skipped if opener plus closing
+        // alone run over it.
         self.breakCap = { djBreak in
             djBreak.hasBriefing
                 ? BreakCap(main: Double(cadence.maxBriefingBreakSeconds), closingCueID: nil, closing: 0)
                 : BreakCap(main: Double(cadence.maxTransitionSeconds), closingCueID: djBreak.talkOverCueID,
-                           closing: Double(cadence.maxClosingSeconds))
+                           closing: Double(cadence.maxClosingSeconds),
+                           whole: Double(cadence.maxOrdinaryBreakSeconds), optional: djBreak.optionalCueIDs)
         }
     }
 
@@ -304,13 +311,12 @@ public actor DJBreakPreparer {
 
     static func render(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
                        cap: BreakCap) async -> DJBreakOutcome {
-        let first: (cues: [NarrationCue], clips: [RenderedClip])
+        let first: Pass
         switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID) {
         case .success(let pass): first = pass
         case .failure(let skip): return .skipped(skip.reason)
         }
-        let firstFit = cap.fit(first.clips)
-        if firstFit != .skip { return ready(djBreak, first, firstFit) }
+        if let fitted = cap.fitting(first) { return ready(djBreak, fitted) }
         // Build 20: each cue can fit its own cap in a slower Enhanced or Premium voice while the
         // whole break runs past the cadence cap. Re-render the whole break once on the last route
         // (the standard on-device voice, $0), so every cue is in one voice, before skipping it.
@@ -320,13 +326,13 @@ public actor DJBreakPreparer {
         }
         switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID) {
         case .success(let retry):
-            let retryFit = cap.fit(retry.clips)
-            return retryFit == .skip ? .skipped(.overBreakBudget) : ready(djBreak, retry, retryFit)
+            return cap.fitting(retry).map { ready(djBreak, $0) } ?? .skipped(.overBreakBudget)
         case .failure(let skip): return .skipped(skip.reason)  // the retry's own reason (Fry, #158)
         }
     }
 
     private struct Skip: Error { let reason: DJBreakSkipReason }
+    typealias Pass = (cues: [NarrationCue], clips: [RenderedClip])
 
     /// Measured-audio cap. `main` covers every clip except the closing clip, which has its own
     /// `closing` allowance while it is within it. Without a closing cue, `main` is the whole
@@ -341,6 +347,10 @@ public actor DJBreakPreparer {
         let main: Double
         let closingCueID: UUID?
         let closing: Double
+        /// Ordinary breaks: cap on every measured clip, closing line included. Nil: none.
+        var whole: Double? = nil
+        /// Clips that may be dropped to fit, in drop order (`DJBreak.optionalCueIDs`).
+        var optional: [UUID] = []
         /// False: talk-over is off, so the closing line is never marked for talk-over.
         var talkOverEnabled = true
 
@@ -369,14 +379,31 @@ public actor DJBreakPreparer {
         }
 
         func fits(_ clips: [RenderedClip]) -> Bool { fit(clips) != .skip }
+
+        /// `pass` within every cap, after dropping optional clips (in `optional` order) while it
+        /// is over. Never drops a required line (opener, closing). Nil: still over, skip.
+        func fitting(_ pass: Pass) -> (pass: Pass, fit: Fit, trimmed: [UUID])? {
+            var pass = pass, trimmed: [UUID] = [], queue = optional
+            while true {
+                let f = fit(pass.clips)
+                if f != .skip, whole.map({ DJBreakPreparer.measured(pass.clips) <= $0 }) ?? true { return (pass, f, trimmed) }
+                guard let id = queue.first(where: { id in pass.clips.contains { $0.cueID == id } }) else { return nil }
+                queue.removeAll { $0 == id }
+                pass.cues.removeAll { $0.id == id }
+                pass.clips.removeAll { $0.cueID == id }
+                trimmed.append(id)
+            }
+        }
     }
 
     fileprivate static func measured(_ clips: [RenderedClip]) -> Double { clips.reduce(0) { $0 + $1.audio.seconds } }
 
-    private static func ready(_ djBreak: DJBreak, _ pass: (cues: [NarrationCue], clips: [RenderedClip]),
-                              _ fit: BreakCap.Fit) -> DJBreakOutcome {
-        .ready(PreparedDJBreak(afterTrack: djBreak.afterTrack, cues: pass.cues, clips: pass.clips, attributions: djBreak.attributions,
-                               talkOverCueID: fit == .keepMarker ? djBreak.talkOverCueID : nil))
+    private static func ready(_ djBreak: DJBreak, _ fitted: (pass: Pass, fit: BreakCap.Fit, trimmed: [UUID])) -> DJBreakOutcome {
+        let kept = Set(fitted.pass.cues.map(\.id))
+        return .ready(PreparedDJBreak(afterTrack: djBreak.afterTrack, cues: fitted.pass.cues, clips: fitted.pass.clips,
+                                      attributions: djBreak.attributions.filter { kept.contains($0.key) },
+                                      talkOverCueID: fitted.fit == .keepMarker ? djBreak.talkOverCueID : nil,
+                                      trimmedCueIDs: fitted.trimmed))
     }
 
     private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String) async
@@ -414,6 +441,25 @@ public actor DJBreakPreparer {
 }
 
 extension DJSessionPlan {
+    /// `ordinaryCapReport` plus what the measured-audio cap left out: optional lines trimmed at
+    /// render time, and ordinary breaks skipped as `.overBreakBudget` (music-only boundary).
+    public func capReport(afterBreaks outcomes: [Int: DJBreakOutcome]) -> OrdinaryBreakCapReport {
+        var report = ordinaryCapReport
+        for djBreak in breaks where !djBreak.hasBriefing {
+            let k = djBreak.afterTrack
+            switch outcomes[k] {
+            case .ready(let prepared)? where !prepared.trimmedCueIDs.isEmpty:
+                report.trimmedOptionalLines[k, default: 0] += prepared.trimmedCueIDs.count
+            case .skipped(.overBreakBudget)?:
+                report.trimmedOptionalLines[k] = nil
+                if !report.skippedOverCap.contains(k) { report.skippedOverCap.append(k) }
+            default: break
+            }
+        }
+        report.skippedOverCap.sort()
+        return report
+    }
+
     /// Merges preparation outcomes: briefing cues in a skipped break become explicit drops,
     /// so every original cue still has exactly one outcome.
     public func report(afterBreaks outcomes: [Int: DJBreakOutcome]) -> NarrationScheduleReport {
