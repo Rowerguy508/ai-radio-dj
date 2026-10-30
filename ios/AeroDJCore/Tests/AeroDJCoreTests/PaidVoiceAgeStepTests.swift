@@ -56,6 +56,32 @@ final class PaidVoiceAgeStepTests: XCTestCase {
         return (m, spy, storage)
     }
 
+    #if AERODJ_OWNER_AB
+    // MARK: Owner A/B builds (Fry's nit 1 / Sentinel N1 on #281)
+
+    /// Only in an owner A/B build (`-DAERODJ_OWNER_AB`, check-release-disables-paid-voice.sh).
+    /// There `.buildDefault` is the owner trial, which the age step does not ask about (#267: the
+    /// owner trial is not age-gated). Counting `.ownerTrial` as "otherwise allowed" would offer
+    /// the 18+ step to the owner; this pins it. Real Pro + consent in the same build still asks.
+    func testOwnerABBuildOffersTheStepOnlyForRealProAndConsentNotForTheOwnerTrial() async {
+        XCTAssertFalse(PaidVoiceAgeStepModel.otherwiseAllows(.ownerTrial), "the owner trial is not Pro + consent")
+        let ownerDefault = await ProVoiceAccess.buildDefault.decision()
+        XCTAssertEqual(ownerDefault, .ownerTrial, "owner A/B build default is the owner trial")
+        XCTAssertFalse(PaidVoiceAgeStepModel.otherwiseAllows(ownerDefault), "owner A/B build default (owner trial)")
+        for (access, name) in [(ProVoiceAccess.ownerTrial, "owner trial"), (.buildDefault, "owner A/B build default")] {
+            let (m, spy, _) = model(access)
+            await m.refresh()
+            XCTAssertFalse(m.offersStep, "\(name): no age step")
+            XCTAssertFalse(m.showsChangeEntry, "\(name): no age entry")
+            XCTAssertEqual(spy.calls, 0, "\(name): nothing written")
+        }
+        let (real, _, _) = model(.testing(pro, consent: true))
+        await real.refresh()
+        XCTAssertTrue(real.offersStep, "owner A/B build, real Pro + consent, unanswered: the step is offered")
+        XCTAssertTrue(real.showsChangeEntry)
+    }
+    #endif
+
     // MARK: When the step appears
 
     func testOfferedOnlyWhenProAndConsentAllowAndAgeIsUnanswered() async {

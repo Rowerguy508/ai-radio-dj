@@ -64,6 +64,35 @@ final class ProSubscriptionConfigTests: XCTestCase {
         XCTAssertEqual(settings["_storefront"] as? String, "USA")
     }
 
+    /// Owner decision (9:19 PM): a 7-day free trial on both Pro products. Each subscription in
+    /// the .storekit file carries exactly one introductory offer, free for one 1-week period,
+    /// with no other offers, and the prices are the owner's, unchanged by the trial.
+    func testBothProProductsHaveExactlyOneFreeOneWeekTrialAndUnchangedPrices() throws {
+        XCTAssertEqual(ProSubscriptionConfig.freeTrial, .init(period: "P1W", numberOfPeriods: 1))
+        let data = try Data(contentsOf: RepoPaths.storeKitConfig)
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let groups = try XCTUnwrap(root["subscriptionGroups"] as? [[String: Any]])
+        let subs = groups.flatMap { $0["subscriptions"] as? [[String: Any]] ?? [] }
+        let byID = Dictionary(uniqueKeysWithValues: subs.map { ($0["productID"] as? String ?? "", $0) })
+        XCTAssertEqual(Set(byID.keys), [ProSubscriptionConfig.monthlyProductID, ProSubscriptionConfig.yearlyProductID])
+        XCTAssertEqual(byID[ProSubscriptionConfig.monthlyProductID]?["displayPrice"] as? String, "4.99")
+        XCTAssertEqual(byID[ProSubscriptionConfig.yearlyProductID]?["displayPrice"] as? String, "34.99")
+        var offerIDs: Set<String> = []
+        for (id, sub) in byID {
+            let offer = try XCTUnwrap(sub["introductoryOffer"] as? [String: Any], "\(id) has no introductory offer")
+            XCTAssertEqual(offer["paymentMode"] as? String, "free", id)
+            XCTAssertEqual(offer["subscriptionPeriod"] as? String, ProSubscriptionConfig.freeTrial.period, id)
+            XCTAssertEqual(offer["numberOfPeriods"] as? Int, ProSubscriptionConfig.freeTrial.numberOfPeriods, id)
+            XCTAssertNil(offer["displayPrice"], "\(id): a free trial has no price")
+            XCTAssertEqual(Set(offer.keys), ["internalID", "numberOfPeriods", "paymentMode", "subscriptionPeriod"], id)
+            offerIDs.insert(offer["internalID"] as? String ?? "")
+            XCTAssertEqual((sub["adHocOffers"] as? [Any])?.count, 0, "\(id): the trial is the only offer")
+            XCTAssertEqual((sub["codeOffers"] as? [Any])?.count, 0, "\(id): the trial is the only offer")
+        }
+        XCTAssertEqual(offerIDs.count, 2, "each product has its own offer")
+        XCTAssertFalse(offerIDs.contains(""))
+    }
+
     /// Sentinel criterion 4: no App Store Server API key, shared secret or ASC account link in
     /// the app's StoreKit pieces. A local config only, never synced to the owner's team.
     func testNoSecretsOrAccountLinksInTheStoreKitPieces() throws {
@@ -168,6 +197,33 @@ final class ProEntitlementMapperTests: XCTestCase {
                        .pro(productID: monthly, expiresAt: now.addingTimeInterval(86_400)))
         // The one config value is what decides: turned on, the same transaction would be Pro.
         XCTAssertTrue(ProEntitlementMapper.state(for: [shared], now: now, familySharingEnabled: true).showsPro)
+    }
+
+    /// The 7-day free trial is an introductory-offer transaction: signed, own purchase, one week
+    /// long. The mapper reads no offer fields, so a trial is Pro on exactly the same rules as a
+    /// paid period: verified, purchased (not family-shared), not expired, not revoked.
+    func testFreeTrialTransactionFollowsTheSameProRules() {
+        let week: TimeInterval = 7 * 86_400
+        let trial = tx(monthly, bought: -3600, expires: week - 3600)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [trial], now: now),
+                       .pro(productID: monthly, expiresAt: now.addingTimeInterval(week - 3600)))
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: ProEntitlementMapper.state(for: [trial], now: now),
+                                           paidVoiceConsent: true, now: now), .allowed)
+        // The trial ends with no renewal: expired, not Pro.
+        XCTAssertEqual(ProEntitlementMapper.state(for: [trial], now: now.addingTimeInterval(week)),
+                       .expired(productID: monthly, expiredAt: now.addingTimeInterval(week - 3600)))
+        // Unverified trial: never Pro.
+        let forged = ProTransactionSnapshot(productID: yearly, purchaseDate: now.addingTimeInterval(-60),
+                                            expirationDate: now.addingTimeInterval(week), isVerified: false)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [forged], now: now), .unverified(productID: yearly))
+        // Family-shared trial: not Pro while Family Sharing is off.
+        let shared = ProTransactionSnapshot(productID: yearly, purchaseDate: now.addingTimeInterval(-60),
+                                            expirationDate: now.addingTimeInterval(week), ownership: .familyShared)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [shared], now: now), .free)
+        // Refunded during the trial: revoked.
+        let refunded = tx(yearly, bought: -3600, expires: week, revoked: -60)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [refunded], now: now),
+                       .revoked(productID: yearly, revokedAt: now.addingTimeInterval(-60)))
     }
 
     /// Sentinel N1: what was `.pro` when read is not `.pro` once its expiry passes, with no
