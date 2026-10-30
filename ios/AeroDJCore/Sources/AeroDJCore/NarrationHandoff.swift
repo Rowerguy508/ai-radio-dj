@@ -123,6 +123,12 @@ public enum NarrationDropReason: String, Codable, Sendable {
     /// Time-sensitive item (calendar event or due task) that did not air in this
     /// show. Do not pass it into a later show.
     case notCarriedForward
+    /// Personal update that already aired today (`PersonalUpdateLedger`, #332), or a second
+    /// cue for the same source item in one handoff. Not carried into a later show.
+    case repeatLimit
+    /// Personal update whose row expired (`expiresAt` passed) before it could air (#332).
+    /// Calendar events and due tasks are never carried into a later show.
+    case windowPassed
 }
 
 public enum NarrationOutcome: Codable, Equatable, Sendable {
