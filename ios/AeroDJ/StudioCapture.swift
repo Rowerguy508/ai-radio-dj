@@ -139,7 +139,7 @@ enum StudioCaptureScenario: String {
 
     /// Fixed progress for a playing scenario, nil when nothing plays. Song two has only just
     /// started in the break scenarios; every other playing scenario keeps 1:12 of 3:45.
-    var timeSource: PlaybackTimeSource? {
+    @MainActor var timeSource: PlaybackTimeSource? {
         switch self {
         case .djSpeaking: return .songStart(elapsed: 0)
         case .breakToSongHandoff: return .songStart(elapsed: 3)
