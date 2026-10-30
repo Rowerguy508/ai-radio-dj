@@ -44,7 +44,7 @@ never echo user input or the upstream response:
 | 405 | any method other than POST |
 | 429 | per-minute rate limit or a daily character cap reached (`Retry-After` and `reason` set, see below) |
 | 500 | server misconfigured (token hash or ElevenLabs key unset, or Production without a durable limiter store; `Retry-After: 3600`, `reason: "misconfig"`) |
-| 503 | limiter store unreachable or erroring (fails closed; `Retry-After: 60`, `reason: "store"`), or the master stop `AERODJ_TTS_PAID_STOP` is set (`Retry-After: 3600`, `reason: "disabled"`) |
+| 503 | limiter store unreachable or erroring (fails closed; `Retry-After: 30`, `reason: "store"`), or the master stop `AERODJ_TTS_PAID_STOP` is set (`Retry-After: 3600`, `reason: "disabled"`) |
 | 502 | upstream non-2xx, network error, empty or oversized audio |
 | 504 | upstream took longer than 15 s (AbortController) |
 
@@ -63,7 +63,7 @@ a body of enums and numbers only:
 | 429 | `owner_daily` | seconds until 00:00 UTC |
 | 429 | `install_daily` | seconds until 00:00 UTC (not reachable until per-install auth lands) |
 | 429 | `global_daily` | seconds until 00:00 UTC |
-| 503 | `store` | 60 |
+| 503 | `store` | 30 |
 | 503 | `disabled` (master stop, below) | 3600 |
 | 500 | `misconfig` | 3600 |
 
@@ -163,8 +163,12 @@ added it must use its own `topup:{aerodj-tts}:<rid>` marker the same way (note Â
 reservation goes through `reserveForInstall` (`src/install-quota.ts`). Without a
 durable store (`limiter.durable === true`, i.e. Upstash) it refuses with
 **503 `store`, `Retry-After: 30`**, in every environment, and makes no limiter call;
-`AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` does not apply to installs. No request reaches
-an install reservation yet (PR 4 wires it).
+`AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` does not apply to installs. A store error from
+the durable limiter is also 503 `store`; any other throw from `reserve` is **500
+`misconfig`, `Retry-After: 3600`** (PR 4), never a bare platform 500. The owner
+`/api/tts` reserve uses the same mapping (503 `store` with `Retry-After: 30`, else 500
+`misconfig`). No request reaches an install reservation yet (the attested `/api/tts`
+path and PR 3b's `register` wire it).
 
 ### Which store backs the limits
 
@@ -178,7 +182,8 @@ an install reservation yet (PR 4 wires it).
 Rate counters are fixed one-minute windows in Redis (a burst at a minute boundary
 can reach 2x the per-minute rate) and a sliding window in memory. If the store is
 unreachable or errors, the request fails closed with 503 and never reaches
-ElevenLabs.
+ElevenLabs. Each Upstash call is bounded at 2 s (`UPSTASH_FETCH_TIMEOUT_MS`,
+request and body); a store that does not answer in time is the same 503 `store`.
 
 Independent of the limiter, the $0 backstop is the ElevenLabs plan itself (Free
 plan: no overage) plus the restricted key's own credit limit. The owner should

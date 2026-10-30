@@ -24,3 +24,5 @@ export function paidStopped(env: Env): boolean {
 /** `Retry-After` (s) for 503 `disabled` and 500 `misconfig` (note §4.4). */
 export const DISABLED_RETRY_AFTER_SECONDS = 3600;
 export const MISCONFIG_RETRY_AFTER_SECONDS = 3600;
+/** `Retry-After` (s) for 503 `store` on every path, `/api/tts` and install alike (note §4.4). */
+export const STORE_RETRY_AFTER_SECONDS = 30;

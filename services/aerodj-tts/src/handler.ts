@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, paidStopped } from './attest-flags.js';
+import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS, paidStopped } from './attest-flags.js';
 import { bearerToken, parseTokenHash, tokenMatches } from './auth.js';
 import {
   DEFAULT_GLOBAL_DAILY_CHAR_CAP,
@@ -53,7 +53,7 @@ export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconf
 
 /** Retry-After (seconds) for a rate 429 and a store 503: an upper bound for both window types. */
 export const RATE_RETRY_AFTER_SECONDS = 60;
-export const STORE_RETRY_AFTER_SECONDS = 60;
+export { STORE_RETRY_AFTER_SECONDS };
 
 export type Env = Record<string, string | undefined>;
 
@@ -125,7 +125,23 @@ export interface Deps {
   now: () => number;
   timeoutMs: number;
   requestId: () => string;
+  /** Lost-refund log (Fry's nit on #257); defaults to one console.log JSON line. */
+  logRefundLost?: (entry: RefundLostLog) => void;
 }
+
+/**
+ * Emitted once when the refund after an upstream non-2xx fails or times out, so that
+ * day's budget stays charged. Enums and numbers only: no keys, install IDs, text or tokens.
+ */
+export interface RefundLostLog {
+  event: 'refund_lost';
+  reason: 'store' | 'timeout';
+  chars: number;
+}
+
+export const logRefundLostToConsole = (entry: RefundLostLog): void => {
+  console.log(JSON.stringify({ event: entry.event, reason: entry.reason, chars: entry.chars }));
+};
 
 export interface TtsRequest {
   method: string | undefined;
@@ -361,14 +377,19 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
     reservation = result.reservation;
   } catch (error) {
     if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
-    throw error;
+    // Any other reserve failure is a server fault, not a store outage: 500 `misconfig`
+    // with Retry-After 3600 (note §4.4; Sentinel's #250 nit), before any upstream call.
+    return misconfigured();
   }
   const held = reservation;
   // Refund only when the upstream definitely did not bill (it answered non-2xx).
   // Network errors, timeouts and bad audio after a 2xx keep the reservation: the
   // render may have been billed, so the cap errs on the side of spending less.
   const refund = async (): Promise<void> => {
-    await limiter.release(held).catch(() => {});
+    await limiter.release(held).catch((error: unknown) => {
+      const timedOut = error instanceof LimiterStoreError && error.timedOut;
+      (deps.logRefundLost ?? logRefundLostToConsole)({ event: 'refund_lost', reason: timedOut ? 'timeout' : 'store', chars: held.chars });
+    });
   };
 
   // --- Upstream ---
