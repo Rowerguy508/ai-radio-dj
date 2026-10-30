@@ -19,21 +19,40 @@ import Foundation
 // MARK: - Flag
 
 /// Default OFF. ON only in the owner A/B TestFlight build (`AERODJ_OWNER_AB`), which the owner
-/// asked for on 2026-10-29. A `UserDefaults` bool under `defaultsKey` overrides the build
-/// default either way, so the owner can roll back on the device (DIAG panel toggle) without a
-/// new build. Debug, the fixture test station, plain Release and `swift test` are OFF.
+/// asked for on 2026-10-29. In that build a `UserDefaults` bool under `defaultsKey` (the Player
+/// toolbar toggle) can turn it off and back on without a new build. In every other build the
+/// saved value is ignored (not deleted): a normal build installed over an owner A/B build has no
+/// toggle, so a saved ON must not keep it talking over (build 26 QA T-15). Debug, the fixture test
+/// station, plain Release and `swift test` are OFF.
 public enum DJTalkoverFlag {
     public static let defaultsKey = "AeroDJTalkoverEnabled"
 
     #if AERODJ_OWNER_AB
-    public static let buildDefault = true
+    public static let isOwnerABBuild = true
     #else
-    public static let buildDefault = false
+    public static let isOwnerABBuild = false
     #endif
 
-    /// The override, if set, else the build default. Pass the build default explicitly in tests.
-    public static func isEnabled(defaults: UserDefaults = .standard, buildDefault: Bool = DJTalkoverFlag.buildDefault) -> Bool {
-        (defaults.object(forKey: defaultsKey) as? Bool) ?? buildDefault
+    /// What an unset toggle shows in the owner A/B build (ON). OFF in every other build.
+    public static let buildDefault = isOwnerABBuild
+
+    /// What an unset toggle means: ON on the live station, OFF on the fixture test station. The
+    /// coordinator and the owner A/B toggle both use this, so the toggle never shows ON while
+    /// talk-over is off.
+    public static func unsetDefault(isTestStation: Bool) -> Bool { !isTestStation }
+
+    /// The decision, pure. ON only in an owner A/B build whose saved toggle is ON, or unset with
+    /// `unsetDefault` ON. Outside an owner A/B build it is OFF whatever was saved (fail-closed).
+    public static func isEnabled(ownerABBuild: Bool, saved: Bool?, unsetDefault: Bool = true) -> Bool {
+        guard ownerABBuild else { return false }
+        return saved ?? unsetDefault
+    }
+
+    /// Reads the saved toggle (never writes or removes it). Pass `ownerABBuild` explicitly in tests.
+    public static func isEnabled(defaults: UserDefaults = .standard, ownerABBuild: Bool = DJTalkoverFlag.isOwnerABBuild,
+                                 unsetDefault: Bool = true) -> Bool {
+        isEnabled(ownerABBuild: ownerABBuild, saved: defaults.object(forKey: defaultsKey) as? Bool,
+                  unsetDefault: unsetDefault)
     }
 }
 

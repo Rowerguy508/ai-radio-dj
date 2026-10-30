@@ -67,7 +67,12 @@
           "familyShareable" : false,
           "groupNumber" : 1,
           "internalID" : "6A0D1F0001",
-          "introductoryOffer" : null,
+          "introductoryOffer" : {
+            "internalID" : "6A0D1F0101",
+            "numberOfPeriods" : 1,
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P1W"
+          },
           "localizations" : [
             {
               "description" : "Your stations hosted in the premium voice.",
@@ -88,7 +93,12 @@
           "familyShareable" : false,
           "groupNumber" : 1,
           "internalID" : "6A0D1F0002",
-          "introductoryOffer" : null,
+          "introductoryOffer" : {
+            "internalID" : "6A0D1F0102",
+            "numberOfPeriods" : 1,
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P1W"
+          },
           "localizations" : [
             {
               "description" : "Your stations hosted in the premium voice, billed yearly.",
