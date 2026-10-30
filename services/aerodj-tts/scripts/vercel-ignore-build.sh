@@ -11,7 +11,7 @@
 # changes ... since last deploy 2b748bd42a93", leaving Production on old code.
 # This step has no API token (and Vercel settings/env stay untouched), so it
 # cannot tell which environment PREV came from. So VERCEL_ENV=production always
-# builds (fail open), and so does an unset, empty or unknown VERCEL_ENV. The
+# builds (fails toward building), and so does an unset, empty or unknown VERCEL_ENV. The
 # check runs before any git or fetch work. Cost: app-only commits that deploy
 # to Production now build the proxy too, which is harmless (build minutes only).
 #
@@ -28,14 +28,16 @@
 # and `rev-parse --verify` don't take it; they only ever see PREV after the
 # 40-hex check below, so it can't start with "-" there.
 #
-# Anything we can't prove is a no-op fails OPEN (build): PREV unset, not a full
+# Anything we can't prove is a no-op fails toward building: PREV unset, not a full
 # 40-hex SHA, not in the shallow clone and not fetchable, not an ancestor of
 # HEAD (force-push / rewritten history, or a shallow history that neither
 # --deepen nor --unshallow could extend in time), services/aerodj-tts/vercel.json
 # gone from HEAD, or any git error.
 #
 # Every fetch is bounded by IGNORE_BUILD_FETCH_TIMEOUT_S (default 20 s) when
-# `timeout` exists; a fetch that times out counts as failed.
+# `timeout` exists; a fetch that times out counts as failed. Only 1-300 is used
+# (digits only, no leading 0): anything else, 0 included (`timeout 0` would turn
+# the bound off), falls back to 20 (#288 nit, Fry).
 #
 # Vercel runs this from the project's Root Directory (services/aerodj-tts).
 # The proxy is self-contained (own package.json, lockfile, tsconfig and
@@ -45,6 +47,7 @@ set -u
 
 WATCH_PATHS=(":(top)services/aerodj-tts/")
 FETCH_TIMEOUT_S="${IGNORE_BUILD_FETCH_TIMEOUT_S:-20}"
+{ [[ "$FETCH_TIMEOUT_S" =~ ^[1-9][0-9]{0,2}$ ]] && (( FETCH_TIMEOUT_S <= 300 )); } || FETCH_TIMEOUT_S=20
 # Commits to deepen the shallow clone by before a full --unshallow (Sentinel's
 # #279 nit): most deploys are a few commits apart, so this is usually enough
 # and much cheaper. 1-99999 (digits only, no leading 0); anything else uses 50.
