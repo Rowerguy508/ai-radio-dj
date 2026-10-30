@@ -26,6 +26,8 @@ final class SubscriptionModel: ProEntitlementProviding {
     private(set) var status: ProSubscriptionStatus = .loading
     private(set) var products: [Product] = []
     private(set) var prices: Prices = .loading
+    /// `isEligibleForIntroOffer` per product ID, read once with the products. Missing = not eligible.
+    private(set) var introEligible: [String: Bool] = [:]
     private(set) var message: String?
     private(set) var isBusy = false
     var isPaywallPresented = false
@@ -119,6 +121,9 @@ final class SubscriptionModel: ProEntitlementProviding {
         do {
             let loaded = try await Product.products(for: SubscriptionPeriod.paywallOrder)
             products = SubscriptionPeriod.paywallOrder.compactMap { id in loaded.first { $0.id == id } }
+            for product in products {
+                introEligible[product.id] = await product.subscription?.isEligibleForIntroOffer ?? false
+            }
             prices = products.isEmpty ? .unavailable : .loaded
         } catch {
             prices = .unavailable
@@ -179,6 +184,24 @@ final class SubscriptionModel: ProEntitlementProviding {
     }
 
     func plan(for product: Product) -> SubscriptionPeriod? { SubscriptionPeriod(productID: product.id) }
+
+    /// "7 days free, then <displayPrice>/month" from the product's own intro offer, or nil when it
+    /// has no free trial or the user isn't eligible (then only the plain price shows). -Nova
+    func trialLine(for product: Product, period: SubscriptionPeriod) -> String? {
+        let offer = product.subscription?.introductoryOffer.flatMap { intro -> PaywallIntroOffer? in
+            let unit: PaywallIntroOffer.Unit
+            switch intro.period.unit {
+            case .day: unit = .day
+            case .week: unit = .week
+            case .month: unit = .month
+            case .year: unit = .year
+            @unknown default: return nil
+            }
+            return PaywallIntroOffer(value: intro.period.value, unit: unit, isFreeTrial: intro.paymentMode == .freeTrial)
+        }
+        return PaywallCopy.trialLine(period, price: product.displayPrice, offer: offer,
+                                     eligible: introEligible[product.id] ?? false)
+    }
 }
 
 extension View {
@@ -258,15 +281,23 @@ struct PaywallView: View {
             VStack(spacing: 10) {
                 ForEach(model.products, id: \.id) { product in
                     if let period = model.plan(for: product) {
+                        let trial = model.trialLine(for: product, period: period)
                         Button { Task { await model.purchase(product) } } label: {
-                            Text(PaywallCopy.planLine(period, price: product.displayPrice))
-                                .font(.headline)
-                                .frame(maxWidth: .infinity, minHeight: 44)
+                            VStack(spacing: 2) {
+                                Text(PaywallCopy.planLine(period, price: product.displayPrice))
+                                    .font(.headline)
+                                if let trial {
+                                    Text(trial)
+                                        .font(.subheadline)
+                                        .accessibilityIdentifier("paywall.trial.\(period.rawValue)")
+                                }
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 44)
                         }
                         .buttonStyle(.plain)
                         .disabled(model.isBusy)
                         .aeroGlass(Capsule(), role: .control, fallback: AnyShapeStyle(.tint.opacity(0.18)))
-                        .accessibilityLabel("Subscribe \(period.title.lowercased()), \(product.displayPrice) \(period.perPeriod)")
+                        .accessibilityLabel("Subscribe \(period.title.lowercased()), " + (trial ?? "\(product.displayPrice) \(period.perPeriod)"))
                         .accessibilityHint("Auto-renews until cancelled.")
                         .accessibilityIdentifier("paywall.plan.\(period.rawValue)")
                     }

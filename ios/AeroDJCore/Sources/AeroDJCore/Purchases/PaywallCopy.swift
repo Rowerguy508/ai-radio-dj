@@ -58,3 +58,48 @@ public enum PaywallCopy {
         }
     }
 }
+
+/// A product's introductory offer as the paywall needs it, mapped from StoreKit's
+/// `Product.SubscriptionInfo.introductoryOffer` in the app (`period` and `paymentMode`).
+/// Pure, so the trial copy is testable on Linux. -Nova
+public struct PaywallIntroOffer: Equatable, Sendable {
+    public enum Unit: Equatable, Sendable { case day, week, month, year }
+    public let value: Int
+    public let unit: Unit
+    /// `paymentMode == .freeTrial`. Pay-as-you-go and pay-up-front offers are not a free trial.
+    public let isFreeTrial: Bool
+
+    public init(value: Int, unit: Unit, isFreeTrial: Bool) {
+        self.value = value
+        self.unit = unit
+        self.isFreeTrial = isFreeTrial
+    }
+}
+
+extension SubscriptionPeriod {
+    /// "/month" / "/year", appended to `Product.displayPrice` in the trial line.
+    public var perPeriodShort: String { self == .monthly ? "/month" : "/year" }
+}
+
+extension PaywallCopy {
+    /// "7 days free, then $4.99/month". `price` is `Product.displayPrice` (localized, never
+    /// hard-coded). nil unless the product has a free-trial intro offer AND the user is eligible
+    /// (`isEligibleForIntroOffer`): then the paywall shows only the plain `planLine`. -Nova
+    public static func trialLine(_ period: SubscriptionPeriod, price: String,
+                                 offer: PaywallIntroOffer?, eligible: Bool) -> String? {
+        guard eligible, let offer, offer.isFreeTrial, let length = trialLength(offer) else { return nil }
+        return "\(length) free, then \(price)\(period.perPeriodShort)"
+    }
+
+    /// "7 days" for a one-week trial (the owner's wording), "1 month", "3 days". nil if empty.
+    public static func trialLength(_ offer: PaywallIntroOffer) -> String? {
+        guard offer.value > 0 else { return nil }
+        let (count, noun): (Int, String) = switch offer.unit {
+        case .day: (offer.value, "day")
+        case .week: (offer.value * 7, "day")
+        case .month: (offer.value, "month")
+        case .year: (offer.value, "year")
+        }
+        return "\(count) \(noun)\(count == 1 ? "" : "s")"
+    }
+}
