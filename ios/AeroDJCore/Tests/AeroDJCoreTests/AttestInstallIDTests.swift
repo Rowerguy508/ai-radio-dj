@@ -69,6 +69,29 @@ private final class RacyStorage: AttestInstallIDStorage, @unchecked Sendable {
     func replaceInstallID(_ value: String) -> Bool { lock.withLock { self.value = value }; return true }
 }
 
+/// `InMemoryAttestInstallIDStorage` with slow reads and counted writes, so a first call that
+/// isn't serialized would show up as a second add.
+private final class CountingInMemoryStorage: AttestInstallIDStorage, @unchecked Sendable {
+    let inner = InMemoryAttestInstallIDStorage()
+    private let lock = NSLock()
+    private var adds = 0, replaces = 0
+    var addAttempts: Int { lock.withLock { adds } }
+    var replaceAttempts: Int { lock.withLock { replaces } }
+    func readInstallID() -> AttestInstallIDRead {
+        let r = inner.readInstallID()
+        usleep(2_000)
+        return r
+    }
+    func addInstallID(_ value: String) -> AttestInstallIDAdd {
+        lock.withLock { adds += 1 }
+        return inner.addInstallID(value)
+    }
+    func replaceInstallID(_ value: String) -> Bool {
+        lock.withLock { replaces += 1 }
+        return inner.replaceInstallID(value)
+    }
+}
+
 private final class ResultsBox: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [String?] = []
@@ -228,15 +251,27 @@ final class AttestInstallIDTests: XCTestCase {
     }
 
     /// Sentinel N2: one shared instance, so concurrent first-run callers anywhere in the app
-    /// get one ID (on Linux the shared instance is in-memory; on iOS it is the Keychain item).
-    func testConcurrentFirstCallsThroughTheSharedInstanceGetOneID() {
+    /// go through one lock. Identity only: `shared` is never read here, because on iOS it is
+    /// the Keychain item, which errors in the unsigned CI simulator (Atlas, #277).
+    func testLiveIsAlwaysTheOneSharedInstance() {
         XCTAssertTrue(AttestInstallID.live() === AttestInstallID.shared)
         XCTAssertTrue(AttestInstallID.live() === AttestInstallID.live(), "never a second instance")
+    }
+
+    /// Sixteen concurrent first calls on one injected instance (the shape of `shared`, with
+    /// in-memory storage instead of the Keychain, so it runs on every platform): all 16 get the
+    /// same non-nil ID, and exactly one ID is ever written.
+    func testSixteenConcurrentFirstCallsOnOneInstanceGetOneID() {
+        let storage = CountingInMemoryStorage()
+        let id = AttestInstallID(storage: storage)
         let box = ResultsBox()
-        DispatchQueue.concurrentPerform(iterations: 16) { _ in box.append(AttestInstallID.live().current()?.rawValue) }
+        DispatchQueue.concurrentPerform(iterations: 16) { _ in box.append(id.current()?.rawValue) }
         XCTAssertEqual(box.values.count, 16)
         XCTAssertEqual(Set(box.values).count, 1)
         XCTAssertNotNil(box.values.first ?? nil)
+        XCTAssertEqual(storage.addAttempts, 1, "exactly one ID is created")
+        XCTAssertEqual(storage.replaceAttempts, 0)
+        XCTAssertEqual(storage.inner.stored, box.values.first ?? nil, "the one persisted ID is the one returned")
     }
 
     func testKeychainCodeNeverDeletesAndMapsOnlyNotFoundToCreate() throws {
