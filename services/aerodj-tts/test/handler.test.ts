@@ -61,6 +61,8 @@ function harness(
     now: () => Date.UTC(2026, 9, 28, 12),
     timeoutMs: 50,
     requestId: () => 'req-1',
+    // Test-only: these harnesses drive the handler with an in-memory/spy limiter (Fry on #287 gate).
+    testOnlyAllowNonDurableLimiter: true,
   };
   return { deps, logs, calls };
 }
@@ -414,7 +416,7 @@ test('logs contain only requestId, status and chars; never text, token, key or v
     mock.method(console, m, (...args: unknown[]) => lines.push(args.map(String).join(' '))),
   );
   try {
-    const deps = { ...defaultDeps(baseEnv()), limiter: new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 1e6, requestsPerMinute: 1e6 }) };
+    const deps = { ...defaultDeps(baseEnv()), limiter: new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 1e6, requestsPerMinute: 1e6 }), testOnlyAllowNonDurableLimiter: true as const };
     const ok = { ...deps, fetch: (async () => pcmResponse(22_050)) as typeof fetch };
     await handleTts(request({ text: SECRET_TEXT }), ok);
     await handleTts(request({ text: SECRET_TEXT }, 'Bearer wrong-secret-token'), ok);
@@ -645,6 +647,7 @@ async function captureUpstreamFailure(upstream: () => Response, text = SECRET_TE
     const deps = {
       ...defaultDeps(baseEnv()),
       limiter: new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 1e6, requestsPerMinute: 1e6 }),
+      testOnlyAllowNonDurableLimiter: true as const,
       fetch: (async () => upstream()) as typeof fetch,
     };
     res = await handleTts(request({ text }), deps);
