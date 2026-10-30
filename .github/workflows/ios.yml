@@ -207,8 +207,11 @@ jobs:
           done
       - name: Privacy manifests are in the built app and share extension
         # App Store processing requires PrivacyInfo.xcprivacy for required-reason APIs
-        # (ITMS-91053). Checks both device builds carry the app's and the extension's manifest,
-        # that they parse, and that neither declares tracking. -Sentinel
+        # (ITMS-91053), per bundle. For Debug and Release this fails if either manifest is
+        # missing or declares tracking, if a reason code is wrong for its category, if the
+        # app's or the extension's binary references a required-reason API its own manifest
+        # doesn't declare, or if the app's Device ID row (#277) changes. testflight.yml runs
+        # the same script on the archive before export and upload. -Sentinel
         run: |
           set -euo pipefail
           for CONFIG in Debug Release; do
@@ -216,25 +219,8 @@ jobs:
             for M in "$APP/PrivacyInfo.xcprivacy" "$APP/PlugIns/AeroDJShare.appex/PrivacyInfo.xcprivacy"; do
               test -f "$M" || { echo "::error::$CONFIG: $M missing"; exit 1; }
               plutil -lint "$M"
-              [ "$(/usr/libexec/PlistBuddy -c 'Print :NSPrivacyTracking' "$M")" = "false" ] \
-                || { echo "::error::$M declares tracking"; exit 1; }
-              plutil -convert json -o - "$M" | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d.get("NSPrivacyTrackingDomains",[])==[] and not any(t.get("NSPrivacyCollectedDataTypeTracking") for t in d.get("NSPrivacyCollectedDataTypes",[]))' \
-                || { echo "::error::$M lists a tracking domain or a tracking data type"; exit 1; }
             done
-            /usr/libexec/PlistBuddy -c 'Print :NSPrivacyAccessedAPITypes' "$APP/PrivacyInfo.xcprivacy" \
-              | grep -q 'NSPrivacyAccessedAPICategoryUserDefaults' \
-              || { echo "::error::$CONFIG app manifest lost the UserDefaults declaration"; exit 1; }
-            # #277's Keychain installId: Device ID, not linked, not tracking, App Functionality only.
-            plutil -convert json -o - "$APP/PrivacyInfo.xcprivacy" | python3 -c 'import json,sys;d=json.load(sys.stdin);t=[x for x in d.get("NSPrivacyCollectedDataTypes",[]) if x.get("NSPrivacyCollectedDataType")=="NSPrivacyCollectedDataTypeDeviceID"];assert len(t)==1 and t[0].get("NSPrivacyCollectedDataTypeLinked") is False and t[0].get("NSPrivacyCollectedDataTypeTracking") is False and t[0].get("NSPrivacyCollectedDataTypePurposes")==["NSPrivacyCollectedDataTypePurposeAppFunctionality"]' \
-              || { echo "::error::$CONFIG app manifest must declare Device ID (installId) once: not linked, not tracking, App Functionality"; exit 1; }
-          done
-          # The extension's manifest declares no required-reason API. Warn (not fail) if the
-          # Release appex binary starts referencing one, so the manifest gets updated.
-          APPEX_BIN="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app/PlugIns/AeroDJShare.appex/AeroDJShare"
-          for NEEDLE in NSUserDefaults systemUptime mach_absolute_time attributesOfItemAtPath volumeAvailableCapacity; do
-            if LC_ALL=C grep -a -q "$NEEDLE" "$APPEX_BIN"; then
-              echo "::warning::AeroDJShare.appex references $NEEDLE: declare it in ios/AeroDJShare/PrivacyInfo.xcprivacy"
-            fi
+            python3 ios/scripts/check-privacy-manifests.py "$APP" --label "$CONFIG"
           done
       - name: P0 diagnostics are absent from Release and present only with AERODJ_P0_DIAG
         # TEMPORARY with #121 / #133. Proves the diag build compiles, and that a plain Release

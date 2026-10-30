@@ -2,8 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   Privacy manifest for AeroDJShare.appex. The extension only writes the shared item to the
-  App Group inbox on the device: no tracking, nothing collected, and its own code calls no
-  required-reason API. ios.yml warns if the built binary starts referencing one.
+  App Group inbox on the device: no tracking, nothing collected. Its own code calls no
+  required-reason API, but it links AeroDJCore statically and Apple scans each bundle's
+  binary, so it declares what AeroDJCore brings in (Release run 40969297604 flagged
+  NSUserDefaults and attributesOfItemAtPath). ios/scripts/check-privacy-manifests.py fails
+  the build if the binary references a category declared nowhere here.
   See docs/privacy/app-store-privacy-label-v1.md. -Sentinel
 -->
 <plist version="1.0">
@@ -15,6 +18,28 @@
 	<key>NSPrivacyCollectedDataTypes</key>
 	<array/>
 	<key>NSPrivacyAccessedAPITypes</key>
-	<array/>
+	<array>
+		<!-- AeroDJCore reads and writes UserDefaults.standard only (talk-over, voice pick, test
+		     station flags). There is no suiteName anywhere, so nothing is shared with the app
+		     through App Group defaults: CA92.1, not 1C8F.1. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+		<!-- SharedInboxReader: FileManager.attributesOfItem (size only) on inbox files in the
+		     group.com.aerodj App Group container. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

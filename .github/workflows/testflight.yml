@@ -88,6 +88,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/owner-ab"
           cp ios/scripts/testflight-swift-conditions.sh ios/scripts/check-owner-ab-build-settings.sh "$RUNNER_TEMP/owner-ab/"
+          # Same for the privacy manifest check, which gates the upload below.
+          cp ios/scripts/check-privacy-manifests.py "$RUNNER_TEMP/owner-ab/"
 
       - name: Validate and resolve the requested ref
         env:
@@ -373,6 +375,16 @@ jobs:
           if [ "$EXPECT" = absent ] && grep -q -- '-DAERODJ_OWNER_AB' "$LOG_DIR/archive.log"; then
             echo "::error::AERODJ_OWNER_AB reached the archive's compile commands without owner_ab"; exit 1
           fi
+
+      - name: Privacy manifests match the archived binaries
+        # Blocks export and upload (ITMS-91053): both bundles carry a manifest with no
+        # tracking, valid reason codes, every required-reason API category their binaries
+        # reference, and the app's Device ID row (#277). Same script as ios.yml. -Sentinel
+        run: |
+          set -euo pipefail
+          APP="$ARCHIVE_PATH/Products/Applications/AeroDJ.app"
+          test -d "$APP" || { echo "::error::$APP missing from the archive"; exit 1; }
+          python3 "$RUNNER_TEMP/owner-ab/check-privacy-manifests.py" "$APP" --label Archive
 
       - name: Export signed IPA (manual, local)
         run: |

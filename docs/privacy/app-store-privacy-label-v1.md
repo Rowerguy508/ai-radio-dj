@@ -72,11 +72,11 @@ The privacy policy and consent sheet (Nova) should say: song and artist names of
 
 `URL.resourceValues` is used only for `isRegularFile`, `isSymbolicLink`, `fileSize` and iCloud download status, not for dates (`SecurityScopedNoteReader.swift:27`, `SharedInboxReader.swift:46`, `SpeechTempFiles.swift:45`, `VoiceRendering.swift:359`).
 
-`ios/AeroDJShare/PrivacyInfo.xcprivacy`: no tracking, nothing collected, no required-reason API. The extension only writes the shared item to the App Group inbox (`AeroDJShareViewController.swift:72-81`).
+`ios/AeroDJShare/PrivacyInfo.xcprivacy`: no tracking, nothing collected. The extension only writes the shared item to the App Group inbox (`AeroDJShareViewController.swift:72-81`), but it links AeroDJCore statically and Apple scans each bundle's binary, so it declares UserDefaults `CA92.1` (`.standard` only, no `suiteName`, so not `1C8F.1`) and FileTimestamp `C617.1` (`SharedInboxReader` reads file size in the App Group container). Release run 40969297604 flagged both.
 
 Third-party SDKs: none in the app bundle. `xn-ptts` is resolved but not linked or embedded (`ios/project.yml:36-40`).
 
-Bundling: XcodeGen 2.46.0 adds `.xcprivacy` files under a target's source path to its Resources phase by default. `ios.yml` now fails if either manifest is missing from the Debug or Release device build, does not parse, or declares tracking, and warns if the Release `AeroDJShare` binary starts referencing a required-reason API.
+Bundling: XcodeGen 2.46.0 adds `.xcprivacy` files under a target's source path to its Resources phase by default. `ios.yml` now fails if either manifest is missing from the Debug or Release device build, does not parse, or declares tracking, It runs `ios/scripts/check-privacy-manifests.py`, which also fails if the app's or the extension's binary (Debug and Release) references a required-reason API category its manifest doesn't declare, if a reason code isn't valid for its category, or if the Device ID row changes. `testflight.yml` runs the same script on the archive before export and upload.
 
 ## 5. #174 §6 blockers for a public paid voice (status at `ce6a529`)
 
