@@ -406,6 +406,7 @@ jobs:
           mkdir -p "$SHOTS"
           xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$PHONE_UDID" -b
+          ios/scripts/override-status-bar.sh "$PHONE_UDID"
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
@@ -418,6 +419,7 @@ jobs:
         run: |
           xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$PHONE_UDID" -b
+          ios/scripts/override-status-bar.sh "$PHONE_UDID"
           xcrun simctl io "$PHONE_UDID" recordVideo --codec h264 --force "$SHOTS/walkthrough-closed.mp4" &
           REC=$!
           sleep 2
@@ -441,6 +443,7 @@ jobs:
           xcrun simctl shutdown "$PHONE_UDID" 2>/dev/null || true
           xcrun simctl boot "$PAD_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$PAD_UDID" -b
+          ios/scripts/override-status-bar.sh "$PAD_UDID"
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PAD_UDID" -- \
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
@@ -470,6 +473,48 @@ jobs:
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
+      - name: Screenshot compare script test (status-bar mask)
+        if: github.event_name == 'pull_request'
+        run: python3 ios/scripts/compare-iphone-screenshots-test.py
+      - name: iPhone screenshots at the PR base (baseline)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHOTS: ${{ runner.temp }}/base-screenshots
+        run: |
+          # Same runner, same iPhone simulator, same status-bar override: only the code
+          # differs. Base UI-test failures are a warning here; the PR's own steps above gate.
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git worktree prune
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          (cd "$RUNNER_TEMP/base/ios" && xcodegen generate)
+          xcodebuild build-for-testing \
+            -project "$RUNNER_TEMP/base/ios/AeroDJ.xcodeproj" \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData-ui-base" \
+            CODE_SIGNING_ALLOWED=NO
+          mkdir -p "$BASE_SHOTS"
+          xcrun simctl shutdown "$PAD_UDID" 2>/dev/null || true
+          xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$PHONE_UDID" -b
+          ios/scripts/override-status-bar.sh "$PHONE_UDID"
+          ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
+            env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$BASE_SHOTS" xcodebuild test-without-building \
+            -project "$RUNNER_TEMP/base/ios/AeroDJ.xcodeproj" \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData-ui-base" \
+            -resultBundlePath "$RUNNER_TEMP/base-phone.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            || echo "::warning::iPhone UI tests failed at the base ($BASE_SHA); comparing the screenshots they wrote"
+          ls -la "$BASE_SHOTS"
+      - name: iPhone screenshots match the base (status bar masked)
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 ios/scripts/compare-iphone-screenshots.py \
+            "$RUNNER_TEMP/base-screenshots" "$SHOTS" --report "$SHOTS/iphone-compare.txt" \
+            || { echo "::error::iPhone screenshots changed outside the status bar (see iphone-compare.txt and the base-screenshots artifact)"; exit 1; }
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -478,6 +523,14 @@ jobs:
           path: |
             studio-screenshots/*.png
             studio-screenshots/*.mp4
+            studio-screenshots/iphone-compare.txt
+          if-no-files-found: warn
+      - name: Upload base iPhone screenshots
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-screenshots
+          path: ${{ runner.temp }}/base-screenshots/*.png
           if-no-files-found: warn
       - name: Upload iPhone UI result
         if: failure()
