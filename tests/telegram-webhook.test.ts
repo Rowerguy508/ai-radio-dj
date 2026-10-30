@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as control from '@/app/api/telegram/route';
-import * as setWebhook from '@/app/api/telegram/set-webhook/route';
 import * as intake from '@/app/api/webhooks/telegram/route';
 
 const SECRET = 'fixture-webhook-secret';
@@ -25,12 +24,6 @@ describe('telegram webhook authentication', () => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
-  });
-
-  it('refuses set-webhook and does not call the network', async () => {
-    const response = await setWebhook.POST();
-    expect(response.status).toBe(404);
-    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('rejects the control receiver when the secret is unset', async () => {

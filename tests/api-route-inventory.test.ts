@@ -12,7 +12,6 @@ const REVIEWED_ROUTES: Record<string, string[]> = {
   'spotify/disconnect/route.ts': ['GET'],
   'stations/route.ts': ['GET', 'POST', 'PUT'],
   'telegram/route.ts': ['POST'],
-  'telegram/set-webhook/route.ts': ['POST'],
   'voice/route.ts': ['POST'],
   'voices/route.ts': ['DELETE', 'GET', 'POST'],
   'webhooks/telegram/route.ts': ['POST'],
@@ -60,5 +59,17 @@ describe('API route inventory', () => {
       const source = readFileSync(path.join(API_DIR, file), 'utf8');
       expect(source, file).toContain('if (!paidRoutesEnabled())');
     }
+  });
+
+  it('keeps every paid route behind the admin token as well', () => {
+    for (const file of ['commentary/route.ts', 'voice/route.ts']) {
+      const source = readFileSync(path.join(API_DIR, file), 'utf8');
+      expect(source, file).toContain('await adminDecision(request.headers)');
+    }
+  });
+
+  it('runs the fail-closed middleware on every /api path', async () => {
+    const { config } = await import('@/middleware');
+    expect(config.matcher).toEqual(['/api', '/api/:path*']);
   });
 });
