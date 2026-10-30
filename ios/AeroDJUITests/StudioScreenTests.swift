@@ -728,6 +728,92 @@ final class StudioScreenTests: XCTestCase {
                        "Done dismisses the share sheet\n\(app.debugDescription)")
     }
 
+    // MARK: Pro voice 18+ step (-Nova; capture scenarios `ageStep` / `ageStepAnswered`)
+
+    @MainActor
+    private func ageElement(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        app.descendants(matching: .any)[id]
+    }
+
+    @MainActor
+    private func launchAgeStep(answered: Bool = false, dark: Bool = false, largeText: Bool = false) -> XCUIApplication {
+        let app = launch(scenario: answered ? "ageStepAnswered" : "ageStep", largeText: largeText, dark: dark)
+        XCTAssertTrue(ageElement(app, "ageStep.title").waitForExistence(timeout: 15),
+                      "Age step did not appear\n\(visibleIdentifiers(app))")
+        return app
+    }
+
+    @MainActor
+    func testAgeStepAsksAndShowsTheChoices() throws {
+        let app = launchAgeStep()
+        XCTAssertEqual(ageElement(app, "ageStep.title").label, "Are you 18 or older?")
+        XCTAssertTrue(app.buttons["ageStep.yes"].isHittable)
+        XCTAssertTrue(app.buttons["ageStep.no"].isHittable)
+        XCTAssertTrue(app.buttons["ageStep.notNow"].exists, "Not now is always there")
+        XCTAssertFalse(app.buttons["ageStep.clear"].exists, "nothing to clear before an answer")
+        XCTAssertTrue(shows(app, "works the same either way"), "free features are never gated")
+        XCTAssertFalse(shows(app, "launch"), "never says next launch")
+        XCTAssertEqual(ageElement(app, "capture.ageAccessChanged").label, "accessChanged=0")
+        save(app, isOpenLayout ? "open-age-step" : "closed-age-step")
+    }
+
+    @MainActor
+    func testAgeStepDark() throws {
+        let app = launchAgeStep(dark: true)
+        XCTAssertTrue(app.buttons["ageStep.yes"].exists)
+        save(app, isOpenLayout ? "open-age-step-dark" : "closed-age-step-dark")
+    }
+
+    @MainActor
+    func testAgeStepLargeTextKeepsBothAnswersReachable() throws {
+        let app = launchAgeStep(largeText: true)
+        let no = app.buttons["ageStep.no"]
+        XCTAssertTrue(no.exists)
+        if !no.isHittable { app.swipeUp() }
+        XCTAssertTrue(no.isHittable, "No is reachable at large text")
+        XCTAssertTrue(app.buttons["ageStep.yes"].exists)
+        save(app, isOpenLayout ? "open-age-step-large-text" : "closed-age-step-large-text")
+    }
+
+    @MainActor
+    func testAgeStepYesSaysNextBreakAndReachesTheSessionHook() throws {
+        let app = launchAgeStep()
+        app.buttons["ageStep.yes"].tap()
+        let confirmation = ageElement(app, "ageStep.confirmation")
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirmation.label.contains("from the next break"), confirmation.label)
+        XCTAssertEqual(ageElement(app, "capture.ageAccessChanged").label, "accessChanged=1")
+        XCTAssertTrue(app.buttons["ageStep.done"].exists)
+        XCTAssertFalse(app.buttons["ageStep.notNow"].exists)
+        save(app, isOpenLayout ? "open-age-step-yes" : "closed-age-step-yes")
+    }
+
+    @MainActor
+    func testAgeStepNoKeepsTheOnDeviceVoice() throws {
+        let app = launchAgeStep()
+        app.buttons["ageStep.no"].tap()
+        let confirmation = ageElement(app, "ageStep.confirmation")
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirmation.label.contains("on-device voice"), confirmation.label)
+        XCTAssertEqual(ageElement(app, "capture.ageAccessChanged").label, "accessChanged=1")
+        save(app, isOpenLayout ? "open-age-step-no" : "closed-age-step-no")
+    }
+
+    @MainActor
+    func testAgeStepChangeLaterShowsTheAnswerAndClears() throws {
+        let app = launchAgeStep(answered: true)
+        XCTAssertEqual(ageElement(app, "ageStep.current").label, "Your answer: 18 or older")
+        let clear = app.buttons["ageStep.clear"]
+        XCTAssertTrue(clear.exists)
+        save(app, isOpenLayout ? "open-age-step-answered" : "closed-age-step-answered")
+        if !clear.isHittable { app.swipeUp() }
+        clear.tap()
+        let confirmation = ageElement(app, "ageStep.confirmation")
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirmation.label.contains("Answer cleared"), confirmation.label)
+        XCTAssertEqual(ageElement(app, "capture.ageAccessChanged").label, "accessChanged=1")
+    }
+
     // MARK: Recorded walkthrough (CI records the simulator screen while this runs)
 
     @MainActor

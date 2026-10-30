@@ -34,6 +34,9 @@ struct AppDependencies {
     /// DJ talk-over (-Fry, flagged; docs/dj-talkover.md). App-scoped like the interlude, so a
     /// fold or a view change never touches a voice in flight.
     let talkover: TalkoverCoordinator
+    /// The Pro voice 18+ step (-Nova, Fry's #267 store). Shown only where Pro and consent allow
+    /// the paid voice and the age is unanswered; never in the test station.
+    let paidVoiceAge: PaidVoiceAgeStepModel
 
     /// Starts the Studio and the DJ session once per launch.
     func start() async {
@@ -120,7 +123,12 @@ struct AppDependencies {
             djSession: djSession,
             pickedNotes: composition.notes,
             stationQueue: StationQueuePlayer(music: MusicKitService.shared, station: station, djSession: djSession),
-            talkover: talkover)
+            talkover: talkover,
+            // The same Pro + consent gate `PaidVoice.live()` composes (`.buildDefault`), without the
+            // age check. When the real gate is wired there, pass it here too. A write is followed by
+            // `paidVoiceAccessChanged()`, as after a consent change (#267).
+            paidVoiceAge: PaidVoiceAgeStepModel(store: .live, accessWithoutAge: .buildDefault,
+                                                accessChanged: { [djSession] in await djSession.paidVoiceAccessChanged() }))
     }
 
     #if DEBUG
@@ -177,7 +185,11 @@ struct AppDependencies {
             djSession: djSession,
             pickedNotes: nil,
             stationQueue: nil,
-            talkover: talkover)
+            talkover: talkover,
+            // Fixture mode: free and no consent, in memory only. The step never appears.
+            paidVoiceAge: PaidVoiceAgeStepModel(store: PaidVoiceAgeStore(storage: InMemoryPaidVoiceAgeStorage()),
+                                                accessWithoutAge: .none,
+                                                accessChanged: { [djSession] in await djSession.paidVoiceAccessChanged() }))
     }
     #endif
 

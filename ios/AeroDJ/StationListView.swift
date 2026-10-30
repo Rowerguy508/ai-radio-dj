@@ -65,6 +65,8 @@ struct StationListView: View {
             // Inside the detail's NavigationStack: the top of the content, below the nav bar,
             // so it never covers Back or the title. A tap always opens this column. Never takes a tap.
             .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
+            // Pro voice 18+ step (-Nova): no toolbar item and no sheet unless Pro + consent allow the paid voice.
+            .paidVoiceAgeEntry(dependencies.paidVoiceAge)
         }
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
         .sheet(isPresented: $showSharedInbox) {
