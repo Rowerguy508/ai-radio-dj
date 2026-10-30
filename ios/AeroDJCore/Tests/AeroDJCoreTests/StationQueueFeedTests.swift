@@ -580,6 +580,10 @@ final class CreatedStationStartTests: XCTestCase {
         var liveRecipe: UUID?
         var starts: [[String]] = []
         var nothingQueued: Bool { queue.isEmpty && !playing }
+        /// How many times `open()` has read `nothingQueued`. The first read is the pre-loop check
+        /// (CreatedStationStart's `guard nothingQueued() else { return .switchesAtBoundary }`), so a
+        /// count of 1 or more means `open()` is past that check and in the wait loop.
+        var nothingQueuedReads = 0
     }
 
     private func makeStation(active: StationConfiguration) async -> StationConfigurationModel {
@@ -607,7 +611,10 @@ final class CreatedStationStartTests: XCTestCase {
                                       return true
                                   },
                                   active: { model.active },
-                                  nothingQueued: { player.nothingQueued },
+                                  nothingQueued: {
+                                      player.nothingQueuedReads += 1
+                                      return player.nothingQueued
+                                  },
                                   start: { items in
                                       player.starts.append(items)
                                       player.queue = items
@@ -702,7 +709,17 @@ final class CreatedStationStartTests: XCTestCase {
         let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1))
 
         let tap = Task { await open(.userTap, starter, model, player) }
-        for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
+        // The follow's build can reach the held catalog call before open() reaches its pre-loop
+        // idle check; flipping the player then makes open() return .switchesAtBoundary (~1 in 40
+        // runs). Wait for both the hold and open()'s first nothingQueued read, so the listener's
+        // song tap lands while open() is waiting in its loop, which is what this test covers.
+        for _ in 0..<500 {
+            if await catalog.isHolding, player.nothingQueuedReads >= 1 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let holding = await catalog.isHolding
+        XCTAssertTrue(holding, "the build is waiting on the catalog")
+        XCTAssertGreaterThanOrEqual(player.nothingQueuedReads, 1, "open() passed its pre-loop idle check and is waiting")
         player.queue = ["searched"]                             // listener tapped a search result meanwhile
         player.playing = true
         await catalog.release()
