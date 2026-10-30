@@ -453,11 +453,14 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
   purchase policy. **Orion's interim defaults until the owner answers:**
   `installsPerPurchase: 5`, `allowSandboxInProduction: false` (Sandbox
   rejected on Production), `honorGracePeriod: false` (no grace period),
-  `allowFamilyShared: false` (Family Sharing off). Each is one value, so a
-  change is a one-line edit plus a deploy. The loader fails closed: a
+  Family Sharing off. Each is one value, so a
+  change is a one-line edit plus a deploy. (Family Sharing moved out of this
+  file on #264: its single setting is the env var
+  `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED`, default off, strict `true`/`false`;
+  the loader refuses a leftover `allowFamilyShared` key.) The loader fails closed: a
   missing or non-boolean policy value, or `installsPerPurchase` outside the
   integers 1-10, makes the proxy refuse to start. `honorGracePeriod` and
-  `allowFamilyShared` must match the ASC settings (Billing Grace Period,
+  `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED` must match the ASC settings (Billing Grace Period,
   Family Sharing); `allowSandboxInProduction` stays `false` while any public
   TestFlight link exists.
 - **App-side Pro gate (owned by Fry on `fry/storekit-config`, credit Fry and
@@ -650,12 +653,13 @@ decides otherwise.** Per Apple (ASC help "Turn on Family Sharing for In-App
 Purchases" and the StoreKit article "Supporting Family Sharing in your app",
 as cited by Sentinel), once enabled for a product it **cannot be turned off**.
 Each paid listener costs ElevenLabs credits. Only `PURCHASED` is accepted.
-If the owner ever enables it, `allowFamilyShared: true` in the config accepts
-`FAMILY_SHARED`; whether a family member's transaction carries its own
+If the owner ever enables it, `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED=true`
+(exactly; anything else but unset/`false` is 500 `misconfig` on the Pro path) accepts
+`FAMILY_SHARED`; missing or unknown ownership is refused either way; whether a family member's transaction carries its own
 `originalTransactionId` or the purchaser's is **unverified** in Apple's docs,
 so PR 6 tests both and the cap applies per `originalTransactionId` either way
 (at worst a family shares 5 slots). Revoking Family Sharing arrives as
-`REVOKE` (§5.6). The ASC toggle and `allowFamilyShared` must stay in step.
+`REVOKE` (§5.6). The ASC toggle and `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED` must stay in step.
 
 ### 5.6 Expiry, refund and revocation
 
