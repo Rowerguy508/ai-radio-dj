@@ -258,6 +258,16 @@ export function dayKeys(bucket: string, day: string): [string, string] {
 
 export class LimiterStoreError extends Error {}
 
+/**
+ * Upstash REST returns a Lua integer reply as a JSON number. Anything else (null from a
+ * nil reply, booleans, floats, strings, objects) is a store error, never coerced: with
+ * Number(), null read as 0 ("already refunded" / reserve success) and true as 1 (Fry N2).
+ */
+export function strictRedisInteger(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new LimiterStoreError('limiter store error');
+  return value;
+}
+
 export interface RedisRestConfig {
   url: string;
   token: string;
@@ -297,14 +307,16 @@ export class RedisUsageLimiter implements UsageLimiter {
       throw new LimiterStoreError('limiter store error');
     }
     const payload = (await response.json().catch(() => null)) as { result?: unknown } | null;
-    const result = Number(payload?.result);
-    if (!payload || 'error' in payload || !Number.isFinite(result)) throw new LimiterStoreError('limiter store error');
-    return result;
+    if (!payload || typeof payload !== 'object' || 'error' in payload) throw new LimiterStoreError('limiter store error');
+    return strictRedisInteger(payload.result);
   }
 
   async allowRequest(bucket: string, now: number): Promise<boolean> {
     const k = `${KEY_PREFIX}:rate:${bucket}:${utcMinute(now)}`;
-    return (await this.eval(RATE_SCRIPT, [k], [this.options.requestsPerMinute, MINUTE_TTL_MS])) === 1;
+    const result = await this.eval(RATE_SCRIPT, [k], [this.options.requestsPerMinute, MINUTE_TTL_MS]);
+    // RATE_SCRIPT returns only 0 (limited) or 1 (allowed); any other integer is a store fault (503), not 429.
+    if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
+    return result === 1;
   }
 
   async reserve(subject: Subject, chars: number, now: number): Promise<ReserveResult> {
@@ -319,6 +331,9 @@ export class RedisUsageLimiter implements UsageLimiter {
     if (result === -1) return { ok: false, reason: subjectReason(subject) };
     if (result === -2) return { ok: false, reason: 'global_daily' };
     if (result < 0) throw new LimiterStoreError('limiter store error');
+    // Success is the subject counter after INCRBY chars, so it is at least `chars`; less
+    // (0 included) means the store did not apply the reservation.
+    if (result < chars) throw new LimiterStoreError('limiter store error');
     return { ok: true, reservation: { rid: newReservationId(), bucket, day, chars } };
   }
 
