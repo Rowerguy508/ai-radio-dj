@@ -125,7 +125,23 @@ export interface Deps {
   now: () => number;
   timeoutMs: number;
   requestId: () => string;
+  /** Lost-refund log (Fry's nit on #257); defaults to one console.log JSON line. */
+  logRefundLost?: (entry: RefundLostLog) => void;
 }
+
+/**
+ * Emitted once when the refund after an upstream non-2xx fails or times out, so that
+ * day's budget stays charged. Enums and numbers only: no keys, install IDs, text or tokens.
+ */
+export interface RefundLostLog {
+  event: 'refund_lost';
+  reason: 'store' | 'timeout';
+  chars: number;
+}
+
+export const logRefundLostToConsole = (entry: RefundLostLog): void => {
+  console.log(JSON.stringify({ event: entry.event, reason: entry.reason, chars: entry.chars }));
+};
 
 export interface TtsRequest {
   method: string | undefined;
@@ -370,7 +386,10 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   // Network errors, timeouts and bad audio after a 2xx keep the reservation: the
   // render may have been billed, so the cap errs on the side of spending less.
   const refund = async (): Promise<void> => {
-    await limiter.release(held).catch(() => {});
+    await limiter.release(held).catch((error: unknown) => {
+      const timedOut = error instanceof LimiterStoreError && error.timedOut;
+      (deps.logRefundLost ?? logRefundLostToConsole)({ event: 'refund_lost', reason: timedOut ? 'timeout' : 'store', chars: held.chars });
+    });
   };
 
   // --- Upstream ---
