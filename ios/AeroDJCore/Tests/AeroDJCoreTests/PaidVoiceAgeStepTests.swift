@@ -134,7 +134,7 @@ final class PaidVoiceAgeStepTests: XCTestCase {
         XCTAssertEqual(spy.answersSeen, [.adult], "one access change, after the write")
         XCTAssertEqual(m.answer, .adult)
         XCTAssertFalse(m.offersStep)
-        XCTAssertEqual(m.confirmation, "Thanks. Your DJ switches to the Pro voice from the next break.")
+        XCTAssertEqual(m.confirmation, "Thanks. Your DJ can use the Pro voice from the next break.")
     }
 
     func testNoRecordsThenCallsAccessChangedAndKeepsTheOnDeviceVoice() async {
