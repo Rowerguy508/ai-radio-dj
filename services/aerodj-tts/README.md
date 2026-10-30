@@ -132,6 +132,9 @@ printf %s "$TOKEN" | shasum -a 256 | cut -d' ' -f1   # paste this hex into Verce
   - Caps accept only a plain integer from 1 to 10,000,000. Anything else (empty,
     0, negative, fractional, `Infinity`, too large) uses the default, so a cap can
     never become unlimited.
+- Rate accepts only a plain integer from 1 to 600 by the same rule as the caps.
+  Anything else (`1e9`, `Infinity`, `601`, fractional, empty) uses the default 12,
+  so the rate limit can never be switched off by configuration.
 - Upstream timeout: 15 s.
 
 ### How the daily cap is enforced
@@ -142,6 +145,13 @@ neither. Concurrent requests therefore cannot jointly exceed either cap. The
 reservation is **released (refunded) only when ElevenLabs answers non-2xx**, since
 then nothing was billed. A network error, timeout, or bad audio after a 2xx keeps
 the reservation, because the render may have been billed.
+
+The handler releases a reservation at most once and never retries a failed
+release. `release()` itself is not idempotent yet: releasing the same reservation
+twice would refund it twice and undercount the global ceiling (a `todo` test in
+`test/quota.test.ts` records this). **Per-charge marker and 503-without-Redis for
+install reservations are PR 3 gates (#233).** No retry of a release may be added
+before the per-charge marker lands.
 
 ### Which store backs the limits
 
@@ -183,7 +193,7 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_DAILY_CHAR_CAP` | no | Legacy name, used for the global ceiling when the new name is unset. |
 | `AERODJ_TTS_OWNER_DAILY_CHAR_CAP` | no | Owner bucket cap. Default: the global ceiling. |
 | `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP` | no | Per-install cap. Default 1500. Inert until per-install auth lands. |
-| `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. |
+| `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. Plain integer 1-600; anything else uses 12. |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | yes in Production | Injected by the Upstash Redis integration (Vercel Marketplace, free tier). `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work. HTTPS only. |
 | `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter. Owner decision only; leave unset. |
 
