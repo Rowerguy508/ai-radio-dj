@@ -580,6 +580,10 @@ final class CreatedStationStartTests: XCTestCase {
         var liveRecipe: UUID?
         var starts: [[String]] = []
         var nothingQueued: Bool { queue.isEmpty && !playing }
+        /// How many times `open()` has read `nothingQueued`. The first read is the pre-loop check
+        /// (CreatedStationStart's `guard nothingQueued() else { return .switchesAtBoundary }`), so a
+        /// count of 1 or more means `open()` is past that check and in the wait loop.
+        var nothingQueuedReads = 0
     }
 
     private func makeStation(active: StationConfiguration) async -> StationConfigurationModel {
@@ -607,7 +611,10 @@ final class CreatedStationStartTests: XCTestCase {
                                       return true
                                   },
                                   active: { model.active },
-                                  nothingQueued: { player.nothingQueued },
+                                  nothingQueued: {
+                                      player.nothingQueuedReads += 1
+                                      return player.nothingQueued
+                                  },
                                   start: { items in
                                       player.starts.append(items)
                                       player.queue = items
@@ -702,7 +709,17 @@ final class CreatedStationStartTests: XCTestCase {
         let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1))
 
         let tap = Task { await open(.userTap, starter, model, player) }
-        for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
+        // The follow's build can reach the held catalog call before open() reaches its pre-loop
+        // idle check; flipping the player then makes open() return .switchesAtBoundary (~1 in 40
+        // runs). Wait for both the hold and open()'s first nothingQueued read, so the listener's
+        // song tap lands while open() is waiting in its loop, which is what this test covers.
+        for _ in 0..<500 {
+            if await catalog.isHolding, player.nothingQueuedReads >= 1 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let holding = await catalog.isHolding
+        XCTAssertTrue(holding, "the build is waiting on the catalog")
+        XCTAssertGreaterThanOrEqual(player.nothingQueuedReads, 1, "open() passed its pre-loop idle check and is waiting")
         player.queue = ["searched"]                             // listener tapped a search result meanwhile
         player.playing = true
         await catalog.release()
@@ -851,5 +868,107 @@ final class CreatedStationStartTests: XCTestCase {
         let outcome = await open(.userTap, starter, model, player)
         XCTAssertEqual(outcome, .notStarted(.buildFailed))
         XCTAssertEqual(player.starts, [])
+    }
+}
+
+/// #204 (-Atlas): a handed-out station queue whose MusicKit start fails is put back: the playing
+/// queue keeps its station, the songs are staged again, and the next boundary or Play retries.
+@MainActor
+final class StationHandOffFailureTests: XCTestCase {
+    private let old = station([seed(.artist, "old")])
+    private let new = station([seed(.artist, "a"), seed(.artist, "b")])
+
+    private func switchFeed(_ recorder: QueueEventRecorder = QueueEventRecorder()) async -> StationQueueFeed<String> {
+        let feed = makeFeed(QueueFakeCatalog(), recorder: recorder)
+        feed.queueStarted(for: old)
+        _ = await feed.prepare(new)
+        return feed
+    }
+
+    func testFailedStationSwitchKeepsTheOldStationAndRetriesAtTheNextBoundary() async throws {
+        let recorder = QueueEventRecorder()
+        let feed = await switchFeed(recorder)
+        let first = try XCTUnwrap(feed.takeForBoundary(active: new, playbackMayStart: true))
+        feed.handOffFinished(.failed)
+        XCTAssertEqual(feed.playingKey, StationQueueKey(old), "the queue that still plays belongs to the old station")
+        XCTAssertEqual(feed.stagedCount, first.count, "the station's songs are staged again")
+        XCTAssertEqual(recorder.events.last, .handOffFailed(.songBoundary))
+        let retry = try XCTUnwrap(feed.takeForBoundary(active: new, playbackMayStart: true), "next boundary retries")
+        XCTAssertEqual(retry, first)
+    }
+
+    func testFailedLastSongRefillIsStagedAgainForTheNextTry() async throws {
+        let recorder = QueueEventRecorder()
+        let feed = await refillFeed(recorder: recorder)
+        let queue = ["mine-0", "mine-1", "mine-2"]
+        let refill = try XCTUnwrap(next(feed, after: 1, in: queue))
+        feed.handOffFinished(.failed)
+        XCTAssertEqual(recorder.events.last, .handOffFailed(.refill))
+        XCTAssertNotNil(feed.stagedCount)
+        XCTAssertEqual(feed.playingKey, StationQueueKey(refillStation))
+        XCTAssertEqual(next(feed, after: 1, in: queue), refill, "the same refill can be tried again")
+    }
+
+    func testFailedIdlePlayLetsTheNextPlayRetry() async throws {
+        let feed = makeFeed(QueueFakeCatalog())
+        _ = await feed.prepare(new)
+        let first = try XCTUnwrap(feed.takeForIdleStart(active: new))
+        feed.handOffFinished(.failed)
+        XCTAssertNil(feed.playingKey, "nothing started: no station owns a playing queue")
+        XCTAssertFalse(feed.queueStartReported)
+        XCTAssertEqual(feed.takeForIdleStart(active: new), first, "Play again retries")
+    }
+
+    func testStartedAndSupersededKeepTheHandOff() async throws {
+        for result in [StationHandOffResult.started, .superseded] {
+            let feed = await switchFeed()
+            _ = try XCTUnwrap(feed.takeForBoundary(active: new, playbackMayStart: true))
+            feed.handOffFinished(result)
+            XCTAssertEqual(feed.playingKey, StationQueueKey(new), "\(result)")
+            XCTAssertNil(feed.stagedCount, "\(result): not put back")
+            XCTAssertNil(feed.takeForBoundary(active: new, playbackMayStart: true), "\(result): no repeat hand-off")
+        }
+    }
+
+    func testATapAfterTheHandOffWinsOverItsLateFailure() async throws {
+        let feed = await switchFeed()
+        _ = try XCTUnwrap(feed.takeForBoundary(active: new, playbackMayStart: true))
+        let tapped = station([seed(.artist, "tap")])
+        feed.queueStarted(for: tapped)
+        feed.handOffFinished(.failed)
+        XCTAssertEqual(feed.playingKey, StationQueueKey(tapped), "the old queue is never resurrected over a newer tap")
+        XCTAssertNil(feed.stagedCount)
+    }
+
+    func testAFailureReportsOnceAndNeverOverwritesANewerBuild() async throws {
+        let recorder = QueueEventRecorder()
+        let feed = await switchFeed(recorder)
+        _ = try XCTUnwrap(feed.takeForBoundary(active: new, playbackMayStart: true))
+        let newer = station([seed(.artist, "newer")])
+        _ = await feed.prepare(newer)
+        feed.handOffFinished(.failed)
+        XCTAssertEqual(feed.stagedKey, StationQueueKey(newer), "a newer staged build is kept")
+        XCTAssertEqual(feed.playingKey, StationQueueKey(old))
+        let count = recorder.events.count
+        feed.handOffFinished(.failed)
+        XCTAssertEqual(recorder.events.count, count, "a second report changes nothing")
+    }
+}
+
+/// #204: the boundary fallback decision (pure, no actor).
+final class StationHandOffFallbackTests: XCTestCase {
+    func testBoundaryFallbackLoadsTheOldNextSongOnlyForAFailureWithNothingNewer() {
+        XCTAssertTrue(StationHandOffFallback.loadsOldQueueNext(
+            result: .failed, generationBefore: 4, generationNow: 5, next: 2, oldQueueCount: 3))
+        XCTAssertFalse(StationHandOffFallback.loadsOldQueueNext(
+            result: .superseded, generationBefore: 4, generationNow: 6, next: 2, oldQueueCount: 3))
+        XCTAssertFalse(StationHandOffFallback.loadsOldQueueNext(
+            result: .started, generationBefore: 4, generationNow: 5, next: 2, oldQueueCount: 3))
+        XCTAssertFalse(StationHandOffFallback.loadsOldQueueNext(
+            result: .failed, generationBefore: 4, generationNow: 6, next: 2, oldQueueCount: 3),
+            "a tap or skip after the failed start owns the player")
+        XCTAssertFalse(StationHandOffFallback.loadsOldQueueNext(
+            result: .failed, generationBefore: 4, generationNow: 5, next: 3, oldQueueCount: 3),
+            "no next song in the old queue: today's stop path")
     }
 }

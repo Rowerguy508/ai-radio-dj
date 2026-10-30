@@ -4,12 +4,13 @@ import crypto from 'node:crypto';
 import { defaultDeps, handleTts, selectLimiter, VOICE_SETTINGS, type Deps, type Env, type LogEntry, type TtsRequest } from '../src/handler.js';
 import {
   InMemoryUsageLimiter,
+  OWNER_SUBJECT,
   RATE_SCRIPT,
   RedisUsageLimiter,
-  RELEASE_SCRIPT,
-  RESERVE_SCRIPT,
+  RESERVE2_SCRIPT,
   type UsageLimiter,
 } from '../src/limiter.js';
+import { fakeUpstash } from './redis-lua.js';
 import { ssmlToPlainText } from '../src/ssml.js';
 import apiHandler from '../api/tts.js';
 
@@ -55,11 +56,13 @@ function harness(
     limiter:
       opts.limiter !== undefined
         ? opts.limiter
-        : new InMemoryUsageLimiter({ dailyCharCap: opts.cap ?? 20_000, requestsPerMinute: opts.rate ?? 100 }),
+        : new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: opts.cap ?? 20_000, requestsPerMinute: opts.rate ?? 100 }),
     log: (e) => logs.push(e),
     now: () => Date.UTC(2026, 9, 28, 12),
     timeoutMs: 50,
     requestId: () => 'req-1',
+    // Test-only: these harnesses drive the handler with an in-memory/spy limiter (Fry on #287 gate).
+    testOnlyAllowNonDurableLimiter: true,
   };
   return { deps, logs, calls };
 }
@@ -205,11 +208,11 @@ test('daily character cap returns 429 once exhausted', async () => {
 });
 
 test('daily cap resets on the next UTC day', async () => {
-  const limiter = new InMemoryUsageLimiter({ dailyCharCap: 10, requestsPerMinute: 100 });
+  const limiter = new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 10, requestsPerMinute: 100 });
   const day1 = Date.UTC(2026, 9, 28, 23, 59);
-  assert.ok(await limiter.reserve('k', 10, day1));
-  assert.equal(await limiter.reserve('k', 1, day1), null);
-  assert.ok(await limiter.reserve('k', 1, day1 + 2 * 60_000));
+  assert.equal((await limiter.reserve(OWNER_SUBJECT, 10, day1)).ok, true);
+  assert.equal((await limiter.reserve(OWNER_SUBJECT, 1, day1)).ok, false);
+  assert.equal((await limiter.reserve(OWNER_SUBJECT, 1, day1 + 2 * 60_000)).ok, true);
 });
 
 test('rate limit returns 429 with Retry-After', async () => {
@@ -229,7 +232,9 @@ test('missing ElevenLabs key returns generic 500 without calling upstream', asyn
   const h = harness({ env });
   const res = await handleTts(request(), h.deps);
   assert.equal(res.status, 500);
-  assert.deepEqual(Object.keys(errorBody(res)).sort(), ['error', 'requestId']);
+  // PR 3: every 500 carries the §4.4 `misconfig` contract (was a bare { error, requestId }).
+  assert.deepEqual(errorBody(res), { error: 'Server misconfigured', requestId: 'req-1', reason: 'misconfig', retryAfterSeconds: 3600 });
+  assert.equal(res.headers['Retry-After'], '3600');
   assert.equal(h.calls.length, 0);
 });
 
@@ -411,7 +416,7 @@ test('logs contain only requestId, status and chars; never text, token, key or v
     mock.method(console, m, (...args: unknown[]) => lines.push(args.map(String).join(' '))),
   );
   try {
-    const deps = { ...defaultDeps(baseEnv()), limiter: new InMemoryUsageLimiter({ dailyCharCap: 1e6, requestsPerMinute: 1e6 }) };
+    const deps = { ...defaultDeps(baseEnv()), limiter: new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 1e6, requestsPerMinute: 1e6 }), testOnlyAllowNonDurableLimiter: true as const };
     const ok = { ...deps, fetch: (async () => pcmResponse(22_050)) as typeof fetch };
     await handleTts(request({ text: SECRET_TEXT }), ok);
     await handleTts(request({ text: SECRET_TEXT }, 'Bearer wrong-secret-token'), ok);
@@ -474,39 +479,6 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-/**
- * Minimal Upstash REST stand-in. Each EVAL runs to completion in one synchronous step,
- * like a Lua script in single-threaded Redis, after yielding so requests interleave.
- */
-function fakeUpstash(opts: { status?: number } = {}) {
-  const data = new Map<string, number>();
-  const calls: { url: string; auth: string | null; command: unknown[] }[] = [];
-  const fetchImpl = (async (url: string, init: RequestInit) => {
-    const command = JSON.parse(String(init.body)) as unknown[];
-    calls.push({ url: String(url), auth: new Headers(init.headers).get('authorization'), command });
-    await new Promise((r) => setImmediate(r));
-    if (opts.status && opts.status !== 200) return new Response('{"error":"down"}', { status: opts.status });
-    const [verb, script, numKeys, key, ...args] = command as [string, string, number, string, ...string[]];
-    assert.equal(verb, 'EVAL');
-    assert.equal(numKeys, 1);
-    let result: number;
-    const used = data.get(key) ?? 0;
-    if (script === RATE_SCRIPT) {
-      data.set(key, used + 1);
-      result = used + 1 > Number(args[0]) ? 0 : 1;
-    } else if (script === RESERVE_SCRIPT) {
-      if (used + Number(args[0]) > Number(args[1])) result = -1;
-      else data.set(key, (result = used + Number(args[0])));
-    } else if (script === RELEASE_SCRIPT) {
-      data.set(key, (result = Math.max(0, used - Number(args[0]))));
-    } else {
-      throw new Error('unexpected script');
-    }
-    return new Response(JSON.stringify({ result }), { status: 200 });
-  }) as typeof fetch;
-  return { data, calls, fetchImpl };
-}
-
 const STORE = { url: 'https://store.example.upstash.io', token: 'test-store-token-not-real' };
 const TEXT_600 = 'y'.repeat(600);
 
@@ -531,12 +503,12 @@ test('concurrent requests on two instances sharing the Redis store cannot jointl
   const store = fakeUpstash();
   const gate = deferred();
   const upstream = async () => { await gate.promise; return pcmResponse(22_050); };
-  const options = { dailyCharCap: 600, requestsPerMinute: 100 };
+  const options = { deployment: 'production' as const, dailyCharCap: 600, requestsPerMinute: 100 };
   const h1 = harness({ fetch: upstream, limiter: new RedisUsageLimiter(STORE, options, store.fetchImpl) });
   const h2 = harness({ fetch: upstream, limiter: new RedisUsageLimiter(STORE, options, store.fetchImpl) });
   assert.deepEqual(await concurrentPair(h1, h2, gate), [200, 429]);
   assert.equal(h1.calls.length + h2.calls.length, 1, 'only one request reaches the paid upstream');
-  assert.equal(store.data.get('aerodj-tts:chars:owner:2026-10-28'), 600);
+  assert.equal(store.redis.get('aerodj-tts:chars:owner:production:2026-10-28'), 600);
 });
 
 test('in-memory limiter is per instance: two instances each allow a full cap (why production needs Redis)', async () => {
@@ -556,7 +528,7 @@ test('daily cap 429 carries Retry-After until the next UTC midnight', async () =
 
 test('upstream non-2xx refunds the reservation', async () => {
   let fail = true;
-  const limiter = new InMemoryUsageLimiter({ dailyCharCap: 600, requestsPerMinute: 100 });
+  const limiter = new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 600, requestsPerMinute: 100 });
   const h = harness({ limiter, fetch: async () => (fail ? new Response('nope', { status: 500 }) : pcmResponse(22_050)) });
   assert.equal((await handleTts(request({ text: TEXT_600 }), h.deps)).status, 502);
   assert.equal(limiter.used('owner', h.deps.now()), 0);
@@ -567,10 +539,10 @@ test('upstream non-2xx refunds the reservation', async () => {
 
 test('upstream non-2xx refunds the Redis reservation too', async () => {
   const store = fakeUpstash();
-  const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: 600, requestsPerMinute: 100 }, store.fetchImpl);
+  const limiter = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 600, requestsPerMinute: 100 }, store.fetchImpl);
   const h = harness({ limiter, fetch: async () => new Response('nope', { status: 503 }) });
   assert.equal((await handleTts(request({ text: TEXT_600 }), h.deps)).status, 502);
-  assert.equal(store.data.get('aerodj-tts:chars:owner:2026-10-28'), 0);
+  assert.equal(store.redis.get('aerodj-tts:chars:owner:production:2026-10-28'), 0);
 });
 
 test('network error, timeout and bad audio keep the reservation (may have been billed)', async () => {
@@ -582,7 +554,7 @@ test('network error, timeout and bad audio keep the reservation (may have been b
     [502, (async () => new Response(new Uint8Array(0), { status: 200 })) as typeof fetch],
   ];
   for (const [status, fetchImpl] of cases) {
-    const limiter = new InMemoryUsageLimiter({ dailyCharCap: 600, requestsPerMinute: 100 });
+    const limiter = new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 600, requestsPerMinute: 100 });
     const h = harness({ limiter, fetch: fetchImpl as never });
     assert.equal((await handleTts(request({ text: TEXT_600 }), h.deps)).status, status);
     assert.equal(limiter.used('owner', h.deps.now()), 600, `status ${status} keeps the reservation`);
@@ -591,7 +563,7 @@ test('network error, timeout and bad audio keep the reservation (may have been b
 
 test('rate limit is shared across instances through the Redis store', async () => {
   const store = fakeUpstash();
-  const options = { dailyCharCap: 20_000, requestsPerMinute: 2 };
+  const options = { deployment: 'production' as const, dailyCharCap: 20_000, requestsPerMinute: 2 };
   const a = harness({ limiter: new RedisUsageLimiter(STORE, options, store.fetchImpl) });
   const b = harness({ limiter: new RedisUsageLimiter(STORE, options, store.fetchImpl) });
   assert.equal((await handleTts(request(), a.deps)).status, 200);
@@ -604,7 +576,7 @@ test('rate limit is shared across instances through the Redis store', async () =
 
 test('Redis limiter speaks Upstash REST: bearer store token, one EVAL per operation', async () => {
   const store = fakeUpstash();
-  const h = harness({ limiter: new RedisUsageLimiter(STORE, { dailyCharCap: 20_000, requestsPerMinute: 12 }, store.fetchImpl) });
+  const h = harness({ limiter: new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 20_000, requestsPerMinute: 12 }, store.fetchImpl) });
   assert.equal((await handleTts(request(), h.deps)).status, 200);
   assert.equal(store.calls.length, 2);
   for (const call of store.calls) {
@@ -613,19 +585,35 @@ test('Redis limiter speaks Upstash REST: bearer store token, one EVAL per operat
   }
   assert.equal(store.calls[0].command[1], RATE_SCRIPT);
   assert.equal(store.calls[0].command[3], `aerodj-tts:rate:owner:${Math.floor(h.deps.now() / 60_000)}`);
-  assert.equal(store.calls[1].command[1], RESERVE_SCRIPT);
-  assert.deepEqual(store.calls[1].command.slice(3), ['aerodj-tts:chars:owner:2026-10-28', String('Hello from the DJ booth.'.length), '20000', '172800']);
+  assert.equal(store.calls[1].command[1], RESERVE2_SCRIPT);
+  // One EVAL reserves on the owner bucket AND the global ceiling (owner cap = global cap).
+  assert.deepEqual(store.calls[1].command.slice(2), [
+    2,
+    'aerodj-tts:chars:owner:production:2026-10-28',
+    'aerodj-tts:chars:global:2026-10-28',
+    String('Hello from the DJ booth.'.length),
+    '20000',
+    '20000',
+    '172800',
+  ]);
   assert.ok(!JSON.stringify(store.calls).includes(TOKEN), 'the owner bearer never reaches the store');
 });
 
 test('limiter store failure fails closed with 503 and never calls upstream', async () => {
   const store = fakeUpstash({ status: 500 });
-  const h = harness({ limiter: new RedisUsageLimiter(STORE, { dailyCharCap: 600, requestsPerMinute: 12 }, store.fetchImpl) });
+  const h = harness({ limiter: new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 600, requestsPerMinute: 12 }, store.fetchImpl) });
   const res = await handleTts(request(), h.deps);
   assert.equal(res.status, 503);
+  assert.equal(res.headers['Retry-After'], '30'); // note §4.4: 503 store is 30 s, same as the install path
+  assert.equal(errorBody(res).reason, 'store');
+  assert.equal(errorBody(res).retryAfterSeconds, 30);
   assert.equal(h.calls.length, 0);
+  const unreachableRes = await handleTts(request(), harness({
+    limiter: new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 600, requestsPerMinute: 12 }, (async () => { throw new Error('dns'); }) as typeof fetch),
+  }).deps);
+  assert.equal(unreachableRes.headers['Retry-After'], '30');
   const unreachable = harness({
-    limiter: new RedisUsageLimiter(STORE, { dailyCharCap: 600, requestsPerMinute: 12 }, (async () => { throw new Error('dns'); }) as typeof fetch),
+    limiter: new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 600, requestsPerMinute: 12 }, (async () => { throw new Error('dns'); }) as typeof fetch),
   });
   assert.equal((await handleTts(request(), unreachable.deps)).status, 503);
   assert.equal(unreachable.calls.length, 0);
@@ -633,7 +621,7 @@ test('limiter store failure fails closed with 503 and never calls upstream', asy
 
 test('selectLimiter: Redis when configured; production without a store fails closed unless the owner opts in', async () => {
   assert.ok(selectLimiter({ KV_REST_API_URL: STORE.url, KV_REST_API_TOKEN: STORE.token, VERCEL_ENV: 'production' })?.durable);
-  assert.ok(selectLimiter({ UPSTASH_REDIS_REST_URL: STORE.url, UPSTASH_REDIS_REST_TOKEN: STORE.token })?.durable);
+  assert.ok(selectLimiter({ UPSTASH_REDIS_REST_URL: STORE.url, UPSTASH_REDIS_REST_TOKEN: STORE.token, VERCEL_ENV: 'preview' })?.durable);
   assert.equal(selectLimiter({ KV_REST_API_URL: 'http://plain.example', KV_REST_API_TOKEN: 't', VERCEL_ENV: 'production' }), null);
   assert.equal(selectLimiter({ VERCEL_ENV: 'production' }), null);
   assert.equal(selectLimiter({ VERCEL_ENV: 'production', AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS: 'true' })?.durable, false);
@@ -658,7 +646,8 @@ async function captureUpstreamFailure(upstream: () => Response, text = SECRET_TE
   try {
     const deps = {
       ...defaultDeps(baseEnv()),
-      limiter: new InMemoryUsageLimiter({ dailyCharCap: 1e6, requestsPerMinute: 1e6 }),
+      limiter: new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 1e6, requestsPerMinute: 1e6 }),
+      testOnlyAllowNonDurableLimiter: true as const,
       fetch: (async () => upstream()) as typeof fetch,
     };
     res = await handleTts(request({ text }), deps);
@@ -741,7 +730,7 @@ test('upstream error body is read at most 4 KB: a status beyond the cap is not p
 });
 
 test('upstream failure still returns the same generic 502 body and refunds the reservation', async () => {
-  const limiter = new InMemoryUsageLimiter({ dailyCharCap: 600, requestsPerMinute: 100 });
+  const limiter = new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 600, requestsPerMinute: 100 });
   const h = harness({
     limiter,
     fetch: async () => new Response(JSON.stringify({ detail: { status: 'payment_required', message: 'secret text' } }), { status: 402 }),

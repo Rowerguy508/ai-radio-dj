@@ -17,6 +17,8 @@ struct StationListView: View {
     @State private var showSharedInbox = false
     /// One add-station flow per presentation (nil when closed). Never created in the Test Station.
     @State private var stationCreation: StationCreationModel?
+    /// "Couldn't start that station" (core decides; `StationStartToast` draws it). Row taps only.
+    @State private var startNotice = StationStartNotice()
 
     var body: some View {
         #if DEBUG
@@ -38,6 +40,8 @@ struct StationListView: View {
                          onUserOpenedStation: { id in
                              // Row tap only, never restore. A created station starts now when nothing
                              // is queued, otherwise takes over at the song boundary (CreatedStationStarter).
+                             // Any tap clears the start toast; only this tap's idle-start failure shows it.
+                             let tap = startNotice.beginTap()
                              guard let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes) else {
                                  // HOOK(Atlas, Fry #213 nit 2): a built-in tap cancels a waiting created-station start.
                                  dependencies.stationQueue?.cancelCreatedStationStart()
@@ -45,7 +49,10 @@ struct StationListView: View {
                                  return
                              }
                              if let stationQueue = dependencies.stationQueue {
-                                 await stationQueue.openCreatedStation(.userTap, recipeID: recipeID, studio: dependencies.studio)
+                                 let outcome = await stationQueue.openCreatedStation(.userTap, recipeID: recipeID,
+                                                                                     studio: dependencies.studio)
+                                 // Status read only (never authorize() or a prompt), and only if a toast is due.
+                                 startNotice.finish(tap: tap, outcome: outcome, musicAuthorized: GenreAccess.isAuthorized)
                              } else {
                                  await dependencies.playback.authorize()
                                  _ = await dependencies.studio.applyRecipe(recipeID)
@@ -55,6 +62,9 @@ struct StationListView: View {
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation)
+            // Inside the detail's NavigationStack: the top of the content, below the nav bar,
+            // so it never covers Back or the title. A tap always opens this column. Never takes a tap.
+            .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
         }
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
         .sheet(isPresented: $showSharedInbox) {
@@ -103,15 +113,14 @@ struct StationSplitRoot<Detail: View>: View {
     var onAddStation: (() -> Void)? = nil
     private let detail: (Station) -> Detail
 
-    @State private var selectedStationID: Station.ID? = nil
+    /// The one source of truth for both layouts: the selected station, whether restore has
+    /// run, and what compact width shows. The regular detail and the compact column are both
+    /// derived from it, so a width-class change in either direction keeps the open station.
+    /// The back gesture may leave the list showing; that must not copy the stored id again.
+    @State private var navigation = StationSplitNavigation<Station.ID>()
     @SceneStorage("aerodj.selectedStationID") private var storedStationID = ""
-    /// Set once the stored id has been copied into `selectedStationID` this appearance.
-    /// The back gesture may leave the list showing; that must not copy the id again.
-    @State private var didApplyRestore = false
     /// Regular width shows both columns. Compact uses `preferredCompactColumn`.
     @State private var columnVisibility = NavigationSplitViewVisibility.automatic
-    /// Nothing selected opens on the list. A selection pushes the detail.
-    @State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     /// The scheme around the split. Regular width keeps it; compact forces dark (see `body`).
     @Environment(\.colorScheme) private var systemColorScheme
@@ -130,8 +139,19 @@ struct StationSplitRoot<Detail: View>: View {
 
     private var isCompact: Bool { horizontalSizeClass != .regular }
 
+    private var selectedStationID: Station.ID? { navigation.selectedID }
+
+    /// Derived from `navigation`: the open station whenever one is selected, unless the
+    /// listener went back in compact width. Writes made in regular width are ignored there.
+    private var preferredCompactColumn: Binding<NavigationSplitViewColumn> {
+        Binding(
+            get: { navigation.compactColumn == .detail ? .detail : .sidebar },
+            set: { navigation.compactColumnWritten($0 == .sidebar ? .list : .detail) }
+        )
+    }
+
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
+        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: preferredCompactColumn) {
             stationPicker
             .navigationTitle("AeroDJ")
             // Contain first, so this identifier stays on the list and does not replace the rows.
@@ -189,9 +209,11 @@ struct StationSplitRoot<Detail: View>: View {
         // Created stations arrive when the recipes load, after the first render.
         .onChange(of: stations.map(\.id)) { _, _ in restoreSelection() }
         // Regular is both columns. Compact leaves the visible column to
-        // `preferredCompactColumn`. Visibility never writes the selection.
+        // `preferredCompactColumn`, which `navigation` derives from the selection, so a fold,
+        // rotation or Split View change shows the same open station. Never writes the selection.
         .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
-            columnVisibility = sizeClass == .regular ? .all : .automatic
+            navigation.setRegularWidth(sizeClass == .regular)
+            columnVisibility = navigation.showsBothColumns ? .all : .automatic
         }
     }
 
@@ -248,12 +270,10 @@ struct StationSplitRoot<Detail: View>: View {
                 // Keep the system NavigationSplitView push. Setting the column outside
                 // an animation was skipping the transition on compact width.
                 withAnimation {
-                    selectedStationID = newValue
-                    preferredCompactColumn = .detail
+                    navigation.select(newValue)
                 }
-                didApplyRestore = true
                 storedStationID = newValue.uuidString
-                // Explicit row tap only. `restoreSelection` writes `selectedStationID` directly
+                // Explicit row tap only. `restoreSelection` writes `navigation` directly
                 // and never enters this setter, so restore cannot request Apple Music.
                 if let onUserOpenedStation {
                     Task { await onUserOpenedStation(newValue) }
@@ -262,18 +282,14 @@ struct StationSplitRoot<Detail: View>: View {
         )
     }
 
-    /// Copies the stored station into `@State` once. Playback still starts only from
-    /// `PlaybackActions`. Compact shows that detail.
+    /// Copies the stored station into `navigation` once. Playback still starts only from
+    /// `PlaybackActions`. It opens the station for both width classes, whichever is current, so
+    /// a restore in regular width still shows the station after a fold or rotation.
     ///
     /// Debug launches may pass `-AeroDJRestoreStationID <uuid>`. That string is the stored
     /// value for this path and is not written anywhere else. Release does not compile it.
     private func restoreSelection() {
-        guard !didApplyRestore else { return }
-        guard let id = UUID(uuidString: storedStationRaw),
-              stations.contains(where: { $0.id == id }) else { return }
-        didApplyRestore = true
-        selectedStationID = id
-        if isCompact { preferredCompactColumn = .detail }
+        navigation.restore(UUID(uuidString: storedStationRaw), available: stations.map(\.id))
     }
 
     /// `@SceneStorage` only. In Debug, a launch argument stands in for that stored id.

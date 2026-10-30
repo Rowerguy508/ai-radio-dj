@@ -12,6 +12,10 @@ permissions:
   contents: read
   pull-requests: read # paths-filter lists PR files via the API
 
+# macOS jobs: the owner's self-hosted Mac (labels self-hosted, macOS, aerodj) runs only
+# same-repo pull_request events, and only once the repo variable AERODJ_SELF_HOSTED is '1'.
+# The repo is public, so fork PRs (head repo != this repo), pushes and every other event
+# always use GitHub-hosted macos-latest. testflight.yml stays GitHub-hosted. -Atlas
 jobs:
   changes:
     runs-on: ubuntu-latest
@@ -31,13 +35,15 @@ jobs:
     name: AeroDJCore tests
     needs: changes
     if: needs.changes.outputs.ios == 'true'
-    runs-on: macos-latest
+    runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
       - name: Run core tests
         run: swift test
         working-directory: ios/AeroDJCore
-      - name: Release build excludes the debug test station
+      - name: Fixture scan fails closed (fake DerivedData test)
+        run: ios/scripts/check-release-excludes-preview-fixtures-test.sh
+      - name: Release build excludes the debug test station and PlaybackFixtures
         run: ios/scripts/check-release-excludes-test-station.sh
       - name: Release build cannot enable paid voices
         run: ios/scripts/check-release-disables-paid-voice.sh
@@ -63,7 +69,7 @@ jobs:
     name: iOS simulator build
     needs: changes
     if: needs.changes.outputs.ios == 'true'
-    runs-on: macos-latest
+    runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     env:
       XCODEGEN_VERSION: 2.46.0
       DERIVED_DATA: ios/build/DerivedData
@@ -79,7 +85,20 @@ jobs:
         run: xcodegen generate
         working-directory: ios
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode.app
+        # The self-hosted Mac has no passwordless sudo: it must already have Xcode.app selected. -Atlas
+        env:
+          RUNNER_ENV: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          want=/Applications/Xcode.app/Contents/Developer
+          if [ "$(xcode-select -p)" = "$want" ]; then
+            echo "Xcode already selected: $want"
+          elif [ "$RUNNER_ENV" = "github-hosted" ]; then
+            sudo xcode-select -s /Applications/Xcode.app
+          else
+            echo "::error::Self-hosted runner has $(xcode-select -p) selected; run 'sudo xcode-select -s /Applications/Xcode.app' on the Mac once."
+            exit 1
+          fi
       - name: Ensure Metal toolchain
         run: |
           set -euo pipefail
@@ -145,7 +164,7 @@ jobs:
     name: iOS device build (unsigned)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
-    runs-on: macos-latest
+    runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     env:
       XCODEGEN_VERSION: 2.46.0
       DERIVED_DATA: ios/build/DerivedData-device
@@ -186,8 +205,23 @@ jobs:
               -sdk iphoneos \
               -destination 'generic/platform=iOS' \
               -derivedDataPath "$DERIVED_DATA" \
-              CODE_SIGNING_ALLOWED=NO
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY=''
           done
+      - name: Release device app excludes fixture art, the preview loader and PlaybackFixtures
+        # Same scan as the Release simulator check in runtime-mode, on the unsigned arm64 device
+        # build (Sentinel's #269 nit). The Debug device build is the positive control; a missing
+        # .app or binary fails. Build and binary scan only, not a physical-device run. -Fry
+        run: |
+          for CONFIG in Debug Release; do
+            APP="$DERIVED_DATA/Build/Products/$CONFIG-iphoneos/AeroDJ.app"
+            test -d "$APP" || { echo "::error::$APP missing"; exit 1; }
+            test -f "$APP/AeroDJ" || { echo "::error::$APP/AeroDJ missing"; exit 1; }
+          done
+          ios/scripts/check-release-excludes-preview-fixtures.sh \
+            "$DERIVED_DATA/Build/Products/Debug-iphoneos/AeroDJ.app" \
+            "$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app"
       - name: P0 diagnostics are absent from Release and present only with AERODJ_P0_DIAG
         # TEMPORARY with #121 / #133. Proves the diag build compiles, and that a plain Release
         # (what App Store builds use) carries no P0 diagnostics code. Experiment A (Direct Mode)
@@ -256,7 +290,7 @@ jobs:
     name: Runtime mode on simulator (Debug vs Release)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
-    runs-on: macos-latest
+    runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     env:
       XCODEGEN_VERSION: 2.46.0
       DERIVED_DATA: ios/build/DerivedData-runtime
@@ -311,7 +345,7 @@ jobs:
             "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
             "$DERIVED_DATA/Build/Products/Release-iphonesimulator/AeroDJ.app" \
             "$SIM_UDID"
-      - name: Release app excludes fixture art and preview loader
+      - name: Release app excludes fixture art, the preview loader and PlaybackFixtures
         run: |
           ios/scripts/check-release-excludes-preview-fixtures.sh \
             "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
@@ -331,7 +365,7 @@ jobs:
     name: Studio UI tests and screenshots (closed + open)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
-    runs-on: macos-latest
+    runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     env:
       XCODEGEN_VERSION: 2.46.0
       DERIVED_DATA: ios/build/DerivedData-ui
