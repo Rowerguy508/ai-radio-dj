@@ -126,8 +126,6 @@ describe('Redis refund result is checked (Fry N2, #250)', () => {
     assert.equal(await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: 0 }).fetchImpl).release(reservation()), false);
   });
 
-  // Not listed: `null` and `true`. `eval` coerces with Number(), so they read as 0 and 1.
-  // That is left unchanged in PR 4 and raised in the PR body as an open question.
   for (const result of [2, -1, 0.5, '2', 'x', -0.5, 1e9]) {
     test(`EVAL ${JSON.stringify(result)} → release rejects with LimiterStoreError (not "already refunded")`, async () => {
       const store = evalReturning({ result });
@@ -238,5 +236,69 @@ describe('non-store reserve throw → 500 misconfig, Retry-After 3600 (Sentinel 
     const { res, upstream } = await run(new InMemoryUsageLimiter(OPTIONS));
     assert.equal(res.status, 200);
     assert.equal(upstream, 1);
+  });
+});
+
+// Module-level owner /api/tts runner for the strict-integer table (upstream status configurable).
+async function runTts(limiter: UsageLimiter, upstreamStatus = 200) {
+  const env: Env = { AERODJ_TTS_TOKEN_SHA256: TOKEN_HASH, AERODJ_TTS_VOICE_IDS: VOICE, ELEVENLABS_API_KEY: 'test-elevenlabs-key-not-real' };
+  const req: TtsRequest = { method: 'POST', authorization: `Bearer ${TOKEN}`, body: { upstream: 'elevenlabs', voiceId: VOICE, text: 'Hello from the DJ booth.', format: 'text' } };
+  let upstream = 0;
+  const deps: Deps = {
+    env,
+    fetch: (async () => { upstream++; return new Response(Buffer.alloc(44_100, 1), { status: upstreamStatus }); }) as typeof fetch,
+    limiter, log: () => {}, now: () => NOON, timeoutMs: 50, requestId: () => 'req-1',
+  };
+  const res = await handleTts(req, deps);
+  return { res, upstream };
+}
+
+// ---------------------------------------------------------------------------
+describe('strict integer Redis replies (Fry N2 on #252): no Number() coercion', () => {
+  const BAD: [string, unknown][] = [
+    ['null', null], ['true', true], ['false', false], ["'1'", '1'], ["'1.0'", '1.0'],
+    ['0.5', 0.5], ['NaN', Number.NaN], ['{}', {}], ['missing', undefined],
+  ];
+  // NaN serialises to null over JSON, so it exercises the same nil path a real REST reply would.
+  const fetchFor = (result: unknown) => evalReturning(result === undefined ? {} : { result });
+
+  for (const [name, result] of BAD) {
+    test(`RESERVE2 reply ${name} → install gate 503 store`, async () => {
+      const store = fetchFor(result);
+      assert.deepEqual(await reserveForInstall(new RedisUsageLimiter(STORE, OPTIONS, store.fetchImpl), KEY_ID, 100, NOON), STORE_REFUSAL);
+    });
+    test(`RELEASE2 reply ${name} → release rejects with LimiterStoreError`, async () => {
+      const store = fetchFor(result);
+      await assert.rejects(new RedisUsageLimiter(STORE, OPTIONS, store.fetchImpl).release(reservation()), LimiterStoreError);
+      assert.equal(store.calls(), 1);
+    });
+    test(`owner /api/tts: reserve reply ${name} → 503 store, zero ElevenLabs calls`, async () => {
+      let n = 0;
+      const fetchImpl = (async (_u: unknown, init?: RequestInit) => {
+        n++;
+        void init; // first EVAL is the rate check (real 1), the next is RESERVE2 with the bad reply
+        return n === 1 ? Response.json({ result: 1 }) : Response.json(result === undefined ? {} : { result });
+      }) as typeof fetch;
+      const { res, upstream } = await runTts(new RedisUsageLimiter(STORE, OPTIONS, fetchImpl));
+      assert.equal(res.status, 503);
+      assert.equal(JSON.parse(res.body.toString('utf8')).reason, 'store');
+      assert.equal(upstream, 0);
+    });
+    test(`owner /api/tts: refund reply ${name} after an upstream failure → no extra ElevenLabs call, still fails closed`, async () => {
+      let n = 0;
+      const fetchImpl = (async () => { n++; return n <= 2 ? Response.json({ result: n === 1 ? 1 : 0 }) : Response.json(result === undefined ? {} : { result }); }) as typeof fetch;
+      const { res, upstream } = await runTts(new RedisUsageLimiter(STORE, OPTIONS, fetchImpl), 502);
+      assert.ok(res.status >= 500, `status ${res.status}`);
+      assert.equal(upstream, 1);
+    });
+  }
+
+  test('controls: integer replies 0, 1, -1, -2 still parse', async () => {
+    assert.equal(await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: 1 }).fetchImpl).release(reservation()), true);
+    assert.equal(await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: 0 }).fetchImpl).release(reservation()), false);
+    const r = await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: 0 }).fetchImpl).reserve({ kind: 'install', id: KEY_ID }, 100, NOON);
+    assert.ok(r.ok);
+    const q = await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: -2 }).fetchImpl).reserve({ kind: 'install', id: KEY_ID }, 100, NOON);
+    assert.deepEqual(q, { ok: false, reason: 'global_daily' });
   });
 });

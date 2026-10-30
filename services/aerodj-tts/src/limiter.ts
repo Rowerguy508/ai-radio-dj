@@ -258,6 +258,16 @@ export function dayKeys(bucket: string, day: string): [string, string] {
 
 export class LimiterStoreError extends Error {}
 
+/**
+ * Upstash REST returns a Lua integer reply as a JSON number. Anything else (null from a
+ * nil reply, booleans, floats, strings, objects) is a store error, never coerced: with
+ * Number(), null read as 0 ("already refunded" / reserve success) and true as 1 (Fry N2).
+ */
+export function strictRedisInteger(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new LimiterStoreError('limiter store error');
+  return value;
+}
+
 export interface RedisRestConfig {
   url: string;
   token: string;
@@ -297,9 +307,8 @@ export class RedisUsageLimiter implements UsageLimiter {
       throw new LimiterStoreError('limiter store error');
     }
     const payload = (await response.json().catch(() => null)) as { result?: unknown } | null;
-    const result = Number(payload?.result);
-    if (!payload || 'error' in payload || !Number.isFinite(result)) throw new LimiterStoreError('limiter store error');
-    return result;
+    if (!payload || typeof payload !== 'object' || 'error' in payload) throw new LimiterStoreError('limiter store error');
+    return strictRedisInteger(payload.result);
   }
 
   async allowRequest(bucket: string, now: number): Promise<boolean> {
