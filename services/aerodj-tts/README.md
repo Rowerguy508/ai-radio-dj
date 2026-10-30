@@ -192,6 +192,16 @@ did not reset, so this adds no spend. Install counters (and their 1,500) start f
 within the same unchanged global ceiling. Deploying just after 00:00 UTC is still
 recommended, so the scoped owner and install counters start the day at zero anyway.
 
+**Rate counters per deployment too (#287 N1).** The per-minute request counters are
+scoped the same way: `aerodj-tts:rate:owner:<VERCEL_ENV>:<minute>` and
+`aerodj-tts:rate:install:<VERCEL_ENV>:<sha256>:<minute>` (Pro keys already were:
+`aerodj-tts:rate:pro:<VERCEL_ENV>:<sha256>:<minute>`, unchanged). So Preview traffic never
+uses up Production's owner or install rate. Limits and the 120 s TTL are unchanged, and
+the same unset/unknown `VERCEL_ENV` rule applies (no limiter, 500 `misconfig`, nothing
+fetched). Deploy effect: on the first deploy with this change the owner's current
+one-minute window starts fresh under the new key, so at most one extra minute's worth of
+requests (12 by default) can get through once. Negligible.
+
 **Per-charge refund marker (#233 PR 3, Fry D2).** Every reservation carries a
 server-generated id (`rid`, a random UUID; never from the client). A refund applies
 **at most once per `rid`**: `RELEASE2` first runs

@@ -582,7 +582,7 @@ test('Redis limiter speaks Upstash REST: bearer store token, one EVAL per operat
     assert.equal(call.auth, `Bearer ${STORE.token}`);
   }
   assert.equal(store.calls[0].command[1], RATE_SCRIPT);
-  assert.equal(store.calls[0].command[3], `aerodj-tts:rate:owner:${Math.floor(h.deps.now() / 60_000)}`);
+  assert.equal(store.calls[0].command[3], `aerodj-tts:rate:owner:production:${Math.floor(h.deps.now() / 60_000)}`);
   assert.equal(store.calls[1].command[1], RESERVE2_SCRIPT);
   // One EVAL reserves on the owner bucket AND the global ceiling (owner cap = global cap).
   assert.deepEqual(store.calls[1].command.slice(2), [

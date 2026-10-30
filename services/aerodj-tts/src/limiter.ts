@@ -489,6 +489,27 @@ export function dayKeys(bucket: string, day: string, deployment: Deployment): [s
   return [`${KEY_PREFIX}:chars:${scoped}:${day}`, globalDayKey(day)];
 }
 
+/**
+ * The per-minute request counter for one bucket, scoped by deployment (#287 N1, Fry) like
+ * the day keys: `aerodj-tts:rate:owner:<deployment>:<minute>` and
+ * `aerodj-tts:rate:install:<deployment>:<sha256>:<minute>`, so Preview traffic never uses up
+ * Production's owner or install rate. A Pro bucket already carries its deployment
+ * (`pro:<deployment>:<sha256>`, B3), so its key is unchanged; one from another deployment
+ * is refused (never mixed). Any other bucket throws: no unscoped rate key is ever built.
+ */
+export function rateKey(bucket: string, minute: number, deployment: Deployment): string {
+  if (!isDeployment(deployment)) throw new TypeError('invalid deployment');
+  if (!Number.isSafeInteger(minute) || minute < 0) throw new TypeError('invalid minute');
+  let scoped: string;
+  if (bucket === 'owner') scoped = `owner:${deployment}`;
+  else if (/^install:[0-9a-f]{64}$/.test(bucket)) scoped = `install:${deployment}:${bucket.slice('install:'.length)}`;
+  else if (PRO_BUCKET.test(bucket)) {
+    if (!bucket.startsWith(`pro:${deployment}:`)) throw new TypeError('pro bucket deployment mismatch');
+    scoped = bucket;
+  } else throw new TypeError('invalid rate bucket');
+  return `${KEY_PREFIX}:rate:${scoped}:${minute}`;
+}
+
 export class LimiterStoreError extends Error {
   /** True when the Upstash call hit its time bound (UPSTASH_FETCH_TIMEOUT_MS), not a store reply. */
   constructor(message: string, readonly timedOut = false) {
@@ -598,7 +619,7 @@ export class RedisUsageLimiter implements UsageLimiter {
   }
 
   async allowRequest(bucket: string, now: number, limit: number = this.options.requestsPerMinute): Promise<boolean> {
-    const k = `${KEY_PREFIX}:rate:${bucket}:${utcMinute(now)}`;
+    const k = rateKey(bucket, utcMinute(now), this.deployment);
     const result = await this.eval(RATE_SCRIPT, [k], [limit, MINUTE_TTL_MS]);
     // RATE_SCRIPT returns only 0 (limited) or 1 (allowed); any other integer is a store fault (503), not 429.
     if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
