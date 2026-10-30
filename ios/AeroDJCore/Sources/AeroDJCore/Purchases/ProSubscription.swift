@@ -41,6 +41,20 @@ public enum ProSubscriptionConfig {
     /// the App Store Connect setting; the proxy enforces it (Atlas, #233 PR 2).
     public static let familySharingEnabled = false
 
+    /// A free introductory offer: `numberOfPeriods` periods of `period` (ISO 8601) at no charge.
+    public struct FreeTrial: Equatable, Sendable {
+        public let period: String
+        public let numberOfPeriods: Int
+    }
+
+    /// Owner decision (9:19 PM, relayed by Orion): a 7-day free trial on both Pro products, as
+    /// each one's introductory offer (payment mode free, one 1-week period). Mirrors the
+    /// .storekit file and the App Store Connect offers (owner step). Config checks only: the
+    /// paywall reads StoreKit's `introductoryOffer` and the user's eligibility, never this.
+    /// A trial is an ordinary signed transaction with an expiry, so `ProEntitlementMapper`
+    /// treats it exactly like a paid period (verified, own purchase, not expired or revoked).
+    public static let freeTrial = FreeTrial(period: "P1W", numberOfPeriods: 1)
+
     /// Owner decision (Orion): no grace period. The client display state drops Pro at the
     /// expiry instant. One value so a later decision changes one line; the proxy decides access.
     public static let clientGracePeriodSeconds: TimeInterval = 0

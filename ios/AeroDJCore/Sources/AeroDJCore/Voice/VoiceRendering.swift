@@ -631,7 +631,7 @@ public struct VoiceRenderer: Sendable {
     /// Whether `cue` may be sent to a route that leaves the device (#176). Fail-closed: only a
     /// cue with an explicit non-personal attribution (`.presenter` or `.trackMetadata`) that is
     /// itself a DJ transition with no source item, source kind or provenance is eligible.
-    /// Missing attribution, `.personalContext`, any sourced or briefing cue (Calendar, Share,
+    /// Missing attribution, `.personalContext`, `.stationName` (a created station's name), any sourced or briefing cue (Calendar, Share,
     /// Obsidian, library notes…) or a cue whose fields disagree with its attribution is local-only.
     ///
     /// Track metadata is eligible only when every named track is `.catalog` (Sentinel): a track
@@ -640,7 +640,7 @@ public struct VoiceRenderer: Sendable {
     public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?) -> Bool {
         guard let attribution else { return false }
         switch attribution {
-        case .personalContext: return false
+        case .personalContext, .stationName: return false
         case .trackMetadata(_, let origin): guard origin == .catalog else { return false }
         case .presenter: break
         }

@@ -43,6 +43,7 @@ function opts(over: Partial<StoreKitVerifierOptions> = {}): StoreKitVerifierOpti
     lastSeen: emptyStore,
     install: INSTALL_A,
     roots: [new X509Certificate(chain.rootDer)],
+    allowFamilyShared: false,
     ...over,
   };
 }
@@ -111,12 +112,18 @@ describe('Apple root pin and config', () => {
     assert.equal(STOREKIT_CONFIG.installsPerPurchase, 5);
     assert.equal(STOREKIT_CONFIG.allowSandboxInProduction, false);
     assert.equal(STOREKIT_CONFIG.honorGracePeriod, false);
-    assert.equal(STOREKIT_CONFIG.allowFamilyShared, false);
+    // Family Sharing is no longer a config value: its single setting is the env flag
+    // AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED (default off; test/family-sharing.test.ts).
+    assert.equal(Object.prototype.hasOwnProperty.call(STOREKIT_CONFIG, 'allowFamilyShared'), false);
   });
 
   it('rejects an invalid config', () => {
     assert.throws(() => parseStoreKitConfig({ ...STOREKIT_CONFIG, proProductIds: [] }));
     assert.throws(() => parseStoreKitConfig({ ...STOREKIT_CONFIG, allowFamilyShared: 'false' }));
+    // A leftover config key would be a second, ignored knob: refused whatever its value.
+    assert.throws(() => parseStoreKitConfig({ ...STOREKIT_CONFIG, allowFamilyShared: false }));
+    assert.throws(() => parseStoreKitConfig({ ...STOREKIT_CONFIG, allowFamilyShared: true }));
+    assert.doesNotThrow(() => parseStoreKitConfig({ ...STOREKIT_CONFIG }));
     assert.throws(() => parseStoreKitConfig({ ...STOREKIT_CONFIG, installsPerPurchase: 0 }));
     assert.throws(() => parseStoreKitConfig({ ...STOREKIT_CONFIG, installsPerPurchase: 11 }));
     assert.throws(() => parseStoreKitConfig({ ...STOREKIT_CONFIG, installsPerPurchase: 2.5 }));
@@ -150,9 +157,9 @@ describe('verifySignedTransaction: accepts', () => {
     assert.equal(environmentAllowed('Production', 'production', config), true);
   });
 
-  it('FAMILY_SHARED only when the config allows it', async () => {
+  it('FAMILY_SHARED only when the Family Sharing setting allows it', async () => {
     assert.equal(
-      await reason(good({ inAppOwnershipType: 'FAMILY_SHARED' }), { config: { ...config, allowFamilyShared: true } }),
+      await reason(good({ inAppOwnershipType: 'FAMILY_SHARED' }), { allowFamilyShared: true }),
       'ok',
     );
   });
@@ -209,6 +216,18 @@ describe('verifySignedTransaction: must fail (Sentinel criterion 7)', () => {
     assert.equal(await reason(good({ bundleId: 'com.example.other' })), 'bundle');
   });
 
+  it('wrong bundle: prefix and extension lookalikes are refused (exact match only; Fry N1 on #243)', async () => {
+    // Longer IDs that start with the real one (kills an `startsWith` mutant) ...
+    for (const bundleId of ['com.aerodj.app.evil', 'com.aerodj.app.share', 'com.aerodj.app.phonon', 'com.aerodj.app.pro', 'com.aerodj.app ']) {
+      assert.equal(await reason(good({ bundleId })), 'bundle', bundleId);
+    }
+    // ... and shorter IDs the real one starts with (kills a reversed-prefix mutant).
+    for (const bundleId of ['com.aerodj.ap', 'com.aerodj', '']) {
+      assert.equal(await reason(good({ bundleId })), 'bundle', JSON.stringify(bundleId));
+    }
+    assert.equal(await reason(good({ bundleId: 'COM.AERODJ.APP' })), 'bundle');
+  });
+
   it('product not allowlisted', async () => {
     assert.equal(await reason(good({ productId: 'com.aerodj.app.pro.lifetime' })), 'product');
   });
@@ -226,6 +245,25 @@ describe('verifySignedTransaction: must fail (Sentinel criterion 7)', () => {
     assert.equal(await reason(good({ revocationDate: NOW - DAY, revocationReason: 0 })), 'revoked');
   });
 
+  it('revoked: any present non-null revocationDate is refused, including 0 (Fry N2 on #243)', async () => {
+    // 0 is falsy (kills a truthiness mutant).
+    for (const revocationDate of [0, NOW + DAY, '', false]) {
+      assert.equal(await reason(good({ revocationDate })), 'revoked', JSON.stringify(revocationDate));
+    }
+  });
+
+  it('revocation_null: a null revocationDate is refused with its own reason (Sentinel on PR 3)', async () => {
+    const result = await verifySignedTransaction(good({ revocationDate: null }), opts());
+    assert.equal(result.ok, false);
+    assert.equal(await reason(good({ revocationDate: null })), 'revocation_null');
+  });
+
+  it('revoked: only an absent revocationDate passes (control for the cases above)', async () => {
+    const result = await verifySignedTransaction(good(), opts());
+    assert.equal(result.ok, true);
+    assert.equal('revocationDate' in payload(), false);
+  });
+
   it('sandbox in prod (config default)', () => {
     assert.equal(environmentAllowed('Sandbox', 'production', config), false);
     assert.equal(environmentAllowed('Sandbox', 'nonproduction', config), true);
@@ -239,7 +277,7 @@ describe('verifySignedTransaction: must fail (Sentinel criterion 7)', () => {
 
   it('FAMILY_SHARED or ASSIGNED while Family Sharing is off', async () => {
     assert.equal(await reason(good({ inAppOwnershipType: 'FAMILY_SHARED' })), 'ownership');
-    assert.equal(await reason(good({ inAppOwnershipType: 'ASSIGNED' }), { config: { ...config, allowFamilyShared: true } }), 'ownership');
+    assert.equal(await reason(good({ inAppOwnershipType: 'ASSIGNED' }), { allowFamilyShared: true }), 'ownership');
   });
 
   it('V3: an older signedDate than this install already presented for this purchase', async () => {
