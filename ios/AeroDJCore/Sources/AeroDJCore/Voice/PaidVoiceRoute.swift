@@ -49,26 +49,36 @@ public struct PaidVoice: Sendable {
     /// session credentials on the pinned host. Pro + consent are NOT read here: the observer
     /// starts `.free` and consent is async, so they are enforced per cue by `DJBreakPreparer`
     /// with `access` (live render, render cache and bundled clips alike), and re-checked at take.
-    public static func publicComposition(base: VoiceRenderer, access: ProVoiceAccess, selectedVoiceID: String?,
+    ///
+    /// Age (18+, owner 2026-10-29): `age` has no default. Unless it answers `.adult` at setup the
+    /// route is left out (`.ageNotConfirmed`) and no session is asked, so nothing can reach the
+    /// proxy this launch. The returned `access` also checks the age first on every cue and at take
+    /// (`requiringAdult`), so a "no" or a cleared answer mid-show drops prepared cloud breaks
+    /// through `paidVoiceAccessChanged()`. A new "yes" adds the route on the next launch.
+    public static func publicComposition(base: VoiceRenderer, access: ProVoiceAccess,
+                                         age: any PaidVoiceAgeProviding, selectedVoiceID: String?,
                                          session: any PaidVoiceInstallSessionProviding) -> PaidVoice {
-        publicComposition(base: base, access: access, selectedVoiceID: selectedVoiceID, session: session,
+        publicComposition(base: base, access: access, age: age, selectedVoiceID: selectedVoiceID, session: session,
                           routeCompiledIn: PublicPaidVoiceRoute.compiledIn)
     }
 
     /// `routeCompiledIn` is injectable for `@testable` tests only; the public API takes no switch.
-    static func publicComposition(base: VoiceRenderer, access: ProVoiceAccess, selectedVoiceID: String?,
+    static func publicComposition(base: VoiceRenderer, access: ProVoiceAccess, age: any PaidVoiceAgeProviding,
+                                  selectedVoiceID: String?,
                                   session: any PaidVoiceInstallSessionProviding, routeCompiledIn: Bool,
                                   pinnedHosts: Set<String> = PremiumVoiceRoutes.allowedHosts,
                                   transport: any HTTPTransport = URLSessionTransport()) -> PaidVoice {
-        // The session is not even asked while the route is compiled out.
-        let credentials = routeCompiledIn ? session.installSessionCredentials() : nil
+        let adult = age.paidVoiceAgeAnswer().isAdultConfirmed
+        // The session is not even asked while the route is compiled out or the age is not confirmed.
+        let credentials = routeCompiledIn && adult ? session.installSessionCredentials() : nil
         let composition = PremiumVoiceRoutes.compose(onDevice: base.routes, paidProvidersEnabled: routeCompiledIn,
-                                                     access: setupDeferredToPerCueGate, selectedVoiceID: selectedVoiceID,
+                                                     access: adult ? setupDeferredToPerCueGate : .denied(.ageNotConfirmed),
+                                                     selectedVoiceID: selectedVoiceID,
                                                      credentials: credentials, pinnedHosts: pinnedHosts,
                                                      transport: transport)
         return PaidVoice(renderer: VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
                                                  revocations: base.revocations),
-                         access: access, decision: composition.decision)
+                         access: access.requiringAdult(age), decision: composition.decision)
     }
 
     /// Setup does not decide Pro + consent for the public route (see above); `access` does, per

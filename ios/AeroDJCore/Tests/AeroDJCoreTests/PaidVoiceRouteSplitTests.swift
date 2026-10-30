@@ -107,9 +107,11 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
     }
 
     /// The public composition with the switch forced on (the flagged build), proxy faked.
+    /// `age` is an adult unless a test says otherwise (18+ gate: PaidVoiceAgeGateTests).
     private func publicVoice(_ access: ProVoiceAccess, transport: SpyTransport,
-                             cache: AudioCache = InMemoryAudioCache()) -> PaidVoice {
-        PaidVoice.publicComposition(base: base(cache: cache), access: access, selectedVoiceID: voiceID,
+                             cache: AudioCache = InMemoryAudioCache(),
+                             age: any PaidVoiceAgeProviding = FixedAge(.adult)) -> PaidVoice {
+        PaidVoice.publicComposition(base: base(cache: cache), access: access, age: age, selectedVoiceID: voiceID,
                                     session: FakeSession(), routeCompiledIn: true, transport: transport)
     }
 
@@ -150,7 +152,8 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
         XCTAssertTrue(PublicPaidVoiceRoute.compiledIn)
         XCTAssertEqual(PublicPaidVoiceRoute.buildMarker, "AERODJ_PUBLIC_PAID_ROUTE_BUILD")
         let session = FakeSession()
-        let v = PaidVoice.publicComposition(base: base(), access: .none, selectedVoiceID: voiceID, session: session)
+        let v = PaidVoice.publicComposition(base: base(), access: .none, age: FixedAge(.adult), selectedVoiceID: voiceID,
+                                            session: session)
         XCTAssertEqual(v.decision, .included(catalogIndex: 0))
         XCTAssertEqual(session.reads, 1)
     }
@@ -159,7 +162,8 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
         XCTAssertFalse(PublicPaidVoiceRoute.compiledIn)
         let session = FakeSession()
         for access in [ProVoiceAccess.proWithConsentForTests, .none] {
-            let v = PaidVoice.publicComposition(base: base(), access: access, selectedVoiceID: voiceID, session: session)
+            let v = PaidVoice.publicComposition(base: base(), access: access, age: FixedAge(.adult),
+                                                selectedVoiceID: voiceID, session: session)
             XCTAssertEqual(v.decision, .omitted(.paidDisabled))
             XCTAssertEqual(v.renderer.routes.map(\.providerID), ["device"])
         }
@@ -172,7 +176,7 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
         let on = publicVoice(.none, transport: t)
         XCTAssertEqual(on.decision, .included(catalogIndex: 0))
         XCTAssertEqual(on.renderer.routes.map(\.providerID), [PremiumVoiceRoutes.providerID, "device"])
-        let noSession = PaidVoice.publicComposition(base: base(), access: .none, selectedVoiceID: voiceID,
+        let noSession = PaidVoice.publicComposition(base: base(), access: .none, age: FixedAge(.adult), selectedVoiceID: voiceID,
                                                     session: NoInstallSession(), routeCompiledIn: true)
         XCTAssertEqual(noSession.decision, .omitted(.noCredentials))
         XCTAssertEqual(PaidVoice.onDevice(base()).decision, .omitted(.paidDisabled))

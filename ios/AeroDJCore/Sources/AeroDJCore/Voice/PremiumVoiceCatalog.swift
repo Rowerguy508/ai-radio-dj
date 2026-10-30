@@ -110,7 +110,7 @@ public enum PremiumVoiceRoutes {
     public static let allowedHosts: Set<String> = ["aerodj-tts.vercel.app"]
 
     public enum OmitReason: String, Equatable, Sendable {
-        case paidDisabled, notEntitled, noSelection, unknownVoice, noCredentials, emptyToken, endpointNotAllowed
+        case paidDisabled, ageNotConfirmed, notEntitled, noSelection, unknownVoice, noCredentials, emptyToken, endpointNotAllowed
     }
 
     public enum Decision: Equatable, Sendable {
@@ -144,6 +144,8 @@ public enum PremiumVoiceRoutes {
                                transport: any HTTPTransport = URLSessionTransport()) -> Composition {
         func omit(_ reason: OmitReason) -> Composition { Composition(routes: onDevice, decision: .omitted(reason)) }
         guard paidProvidersEnabled else { return omit(.paidDisabled) }
+        // 18+ (owner, 2026-10-29): no "yes, 18 or older" answer omits the route before anything else.
+        if case .denied(.ageNotConfirmed) = access { return omit(.ageNotConfirmed) }
         guard access.permitsPaidVoice else { return omit(.notEntitled) }
         guard let selectedVoiceID else { return omit(.noSelection) }
         guard let index = PremiumVoiceCatalog.index(ofVoiceID: selectedVoiceID) else { return omit(.unknownVoice) }
