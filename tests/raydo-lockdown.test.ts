@@ -199,6 +199,20 @@ describe('ray-do lockdown middleware', () => {
     }
   });
 
+  // The server decodes or redirects these before routing (see api-route-inventory.test.ts);
+  // whatever pathname reaches the gate, anything that is not a Telegram receiver or the
+  // removed path still needs the admin token.
+  it('gates encoded, case-variant and dot-segment pathnames by default', async () => {
+    for (const path of [
+      '/api%2Fvoices', '/%61pi/voices', '/api/%76oices', '/api/voices%2F', '/API/voices', '/Api/voices',
+      '/api/%74elegram', '/api/Telegram', '/api/telegram%2F', '/api/./voices', '/api/x/../voices', '/apix', '/api-foo',
+    ]) {
+      const req = request('POST', path, { 'x-telegram-bot-api-secret-token': TELEGRAM_SECRET });
+      const response = await middleware(req);
+      expect(response.status, `${path} -> ${req.nextUrl.pathname}`).toBe(401);
+    }
+  });
+
   it('returns 410 for set-webhook for every caller and the handler is gone', async () => {
     const callers: Record<string, string>[] = [
       {},
@@ -225,6 +239,9 @@ describe('ray-do lockdown middleware', () => {
 
   // Fry's N2 on #262: timing cannot be unit-tested, so pin the mechanism instead.
   // A plain `===` swap gives the same answers, so it is caught structurally.
+  // The source pins below are deliberate regex tripwires: reformatting route-gate.ts or
+  // webhook-auth.ts will break them. Update the pattern to the new formatting; do not
+  // loosen it until it passes, or the `===` mutation goes uncaught again.
   it('hashes both sides to fixed-length digests before every compare', async () => {
     const digest = vi.spyOn(crypto.subtle, 'digest');
     try {
