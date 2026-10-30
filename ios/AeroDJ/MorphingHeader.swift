@@ -152,7 +152,7 @@ struct InlineTitleBar: View {
         List(0..<30, id: \.self) { i in
             Text("Row \(i)")
         }
-        .navigationTitle("AeroDJ")
+        .navigationTitle(AppName.display)
         .morphingLargeTitle("Stations", subtitle: "Your AI-hosted radio, on Apple Music")
     }
 }

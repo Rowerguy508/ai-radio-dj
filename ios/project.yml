@@ -44,9 +44,12 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_OBJC_BRIDGING_HEADER: AeroDJ/AeroDJ-Bridging-Header.h
         OTHER_LDFLAGS: "$(inherited) -lz"
-        INFOPLIST_KEY_NSAppleMusicUsageDescription: AeroDJ uses Apple Music to play your station.
+        # Home-screen and Settings name (OnAirly, AppName.display in code). The bundle ID, target,
+        # module, scheme, executable and paths keep the AeroDJ names.
+        INFOPLIST_KEY_CFBundleDisplayName: OnAirly
+        INFOPLIST_KEY_NSAppleMusicUsageDescription: OnAirly uses Apple Music to play your station.
         # UIBackgroundModes (audio) lives in AeroDJ/Info.plist: Xcode doesn't generate it from INFOPLIST_KEY_UIBackgroundModes.
-        INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: AeroDJ reads today's events, read-only, to mention them in your briefing.
+        INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: OnAirly reads today's events, read-only, to mention them in your briefing.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         # Explicit UIApplicationSceneManifest (app-resizability skill, scene lifecycle) with
         # UIApplicationSupportsMultipleScenes = false: one window, because the app has one

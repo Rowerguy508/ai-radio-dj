@@ -19,7 +19,7 @@ public struct StationArtStyle: Equatable, Sendable {
 
     /// Station-level style (the room's atmosphere).
     public static func station(_ station: StationRef?) -> StationArtStyle {
-        let name = station?.name ?? "AeroDJ"
+        let name = station?.name ?? AppName.display
         return make(seed: "station:" + (station?.id ?? name), label: name)
     }
 
