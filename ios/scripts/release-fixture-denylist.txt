@@ -1,0 +1,32 @@
+# Release fixture denylist
+#
+# One literal token per line. Lines starting with # are comments.
+# Both ios/scripts/check-release-excludes-test-station.sh (SwiftPM objects)
+# and ios/scripts/check-release-bundle-fixtures.sh (Release app and share
+# extension) read this file. A match is a fixed substring, not a regular
+# expression.
+#
+# The tokens are fixture type names and fixture markers. They are not ordinary
+# words. "test", "mock", "preview", "fixture", and "station" are not listed,
+# so a production name that uses those words does not fail the check.
+#
+# Positive controls, so a broken scan cannot pass vacuously:
+# - Debug AeroDJCore objects must contain FixtureContextSource.
+# - The Debug AeroDJ executable must contain PlayingScreenPreviewLoader and mockStations.
+# Those two stay in a Debug build when the preview and the mock list are wrapped
+# in #if DEBUG. Release must contain none of the tokens below.
+
+# Debug-only synthetic context source (TestStation.swift, inside #if DEBUG).
+FixtureContextSource
+# Debug-only actor that holds the synthetic calendar, notes, and inbox items.
+TestStationFixtures
+# Provenance prefix on those synthetic items.
+fixture:synthetic/
+# Launch argument and UserDefaults key that turns the debug test station on.
+AeroDJTestStation
+# Preview snapshots compiled into AeroDJCore with no #if DEBUG.
+PlaybackFixtures
+# SwiftUI preview host in the app target. It builds PlayingScreen as the test station.
+PlayingScreenPreviewLoader
+# Hard-coded Morning Calm / Late Night list used as the shipping station list.
+mockStations
