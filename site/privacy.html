@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- TODO(launch): remove noindex once every [owner] marker is resolved and the owner approves publishing. -->
+<meta name="robots" content="noindex">
+<title>Privacy Policy · OnAirly</title>
+<meta name="description" content="How OnAirly handles your data: what stays on your iPhone, and what leaves it.">
+<meta name="theme-color" content="#1C1714">
+<link rel="canonical" href="https://onairly.app/privacy">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="OnAirly">
+<meta property="og:title" content="Privacy Policy · OnAirly">
+<meta property="og:description" content="How OnAirly handles your data: what stays on your iPhone, and what leaves it.">
+<meta property="og:url" content="https://onairly.app/privacy">
+<meta property="og:image" content="https://onairly.app/assets/og-icon-512.jpg">
+<meta property="og:image:width" content="512">
+<meta property="og:image:height" content="512">
+<meta property="og:image:alt" content="The OnAirly app icon: an orange speech bubble wearing cream headphones.">
+<meta name="twitter:card" content="summary">
+<link rel="icon" type="image/png" href="/assets/favicon-64.png">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+<link rel="preload" href="/assets/fonts/PlusJakartaSans-ExtraBold.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/assets/app-icon-512.webp" alt="" width="40" height="40">OnAirly</a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="/">Home</a></li>
+        <li><a href="/privacy" aria-current="page">Privacy</a></li>
+        <li><a href="/support">Support</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<main id="main" class="doc">
+  <div class="wrap narrow">
+    <!-- Copy: docs/site/privacy.md at c7cfa4a (Sentinel, draft PR #261), converted by hand. Do not edit facts here without Sentinel. -->
+    <div class="draft-banner" role="note">
+  <p>Draft, not for publication. Every highlighted [owner] marker and every section marked "Pending owner decision" has to be resolved by the owner before this page goes live.</p>
+</div>
+
+    <h1>Privacy Policy</h1>
+    <p class="meta"><em>Last updated: <mark class="owner">[owner: date]</mark></em></p>
+
+    <section aria-labelledby="p-short">
+      <h2 id="p-short">The short version</h2>
+      <p>OnAirly is a radio DJ that runs on your iPhone. Your calendar, notes, the things you share to OnAirly, your music library and your station settings are read and kept on your device only. There are no ads, no analytics, no tracking and no data brokers in OnAirly, and we don't sell or share your data.</p>
+      <p>There are only two cases where anything leaves your phone, apart from Apple Music itself:</p>
+      <ol>
+        <li>A one-time download of the on-device voice model, which sends no personal information.</li>
+        <li>The optional cloud voice, which is off until you turn it on. <span class="pending">Pending owner decision: paid voice</span></li>
+      </ol>
+    </section>
+
+    <section aria-labelledby="p-device">
+      <h2 id="p-device">What stays on your iPhone</h2>
+      <ul>
+        <li><strong>Calendar.</strong> If you allow it, OnAirly reads events from the calendars you pick so the DJ can mention them. Events are never sent anywhere. Spoken clips that use them are kept for at most 7 days and are deleted when you remove access.</li>
+        <li><strong>Notes and shared items.</strong> Notes files you choose, and text or links you share to OnAirly, stay on your device. Shared items are deleted after 7 days, or right away when you delete them.</li>
+        <li><strong>Your music library and stations.</strong> Library playlists, songs and artists you use as station seeds, and the names you give your stations, stay on your device.</li>
+        <li><strong>On-device voices.</strong> The built-in voices speak entirely on your iPhone.</li>
+      </ul>
+      <p>Personal items, such as calendar events, notes, shared items, library tracks and the station names you type, are never sent off your device, even when the cloud voice is on.</p>
+    </section>
+
+    <section aria-labelledby="p-music">
+      <h2 id="p-music">Apple Music</h2>
+      <p>Playback, search, charts and your library go through Apple's MusicKit under your Apple ID. Apple handles that data under <a href="https://www.apple.com/legal/privacy/">Apple's Privacy Policy</a>. We don't receive your Apple ID.</p>
+    </section>
+
+    <section aria-labelledby="p-model">
+      <h2 id="p-model">Voice model download</h2>
+      <p>To use the on-device "Phonon" voice, OnAirly downloads a voice model file once, over Wi-Fi, from GitHub. The download sends no personal information. As with any download, GitHub can see your device's IP address.</p>
+    </section>
+
+    <section class="is-pending" aria-labelledby="p-cloud">
+      <h2 id="p-cloud">Cloud voice (optional, off by default) <span class="pending">Pending owner decision: paid voice</span></h2>
+      <p>Before any text leaves your phone, OnAirly asks you. Until you tap "Use cloud voice", every voice stays on your device.</p>
+      <p>If you turn it on, the words of each DJ break are sent over an encrypted connection to our voice server, which runs on Vercel. The server passes them on to ElevenLabs, which turns them into audio. Those words are made up of fixed DJ phrasing, the app's name, and the Apple Music catalog song titles and artist names of what you're listening to. Stations built from your own music library always use the on-device voice.</p>
+      <ul>
+        <li><strong>What we don't send:</strong> your name, Apple ID, contacts, location, calendar, notes, shared items, library tracks or the station names you type.</li>
+        <li><strong>Our server's log:</strong> it records a random request ID, the result and the number of characters. It doesn't log the text.</li>
+        <li><strong>Hosting logs:</strong> Vercel keeps standard request logs, which include IP address and app identifier. These logs are kept for up to 30 days. <mark class="owner">[owner: say whether IP address is used for rate limiting.]</mark></li>
+        <li><strong>Usage counters:</strong> daily usage counts, with no text, reset every day. No DJ text is stored on our server.</li>
+        <li><strong>ElevenLabs:</strong> ElevenLabs processes the text and audio under its <a href="https://elevenlabs.io/privacy-policy">privacy policy</a>. By default, ElevenLabs keeps a history of requests. <mark class="owner">[owner: retention, Zero Retention Mode, and whether model training is opted out. Include "We have opted out of ElevenLabs using this data to train its models" only if that is true.]</mark></li>
+        <li><strong>Device check:</strong> when it's enabled, our server keeps a key for your install, which it uses to confirm requests come from a genuine copy of OnAirly and to stop abuse. The key is deleted after 90 days without use and is never stored with the spoken text. <span class="pending">Pending: #256 and enabling App Attest</span></li>
+        <li><strong>Turning it off:</strong> you can turn the cloud voice off at any time in Settings. Nothing more is sent after that, and any queued cloud clips are cancelled.</li>
+      </ul>
+    </section>
+
+    <section class="is-pending" aria-labelledby="p-purchases">
+      <h2 id="p-purchases">Purchases <span class="pending">Pending owner decision: paid voice</span></h2>
+      <p>Payments are handled by Apple through the App Store; we never see your payment details. <mark class="owner">[owner: pending the IAP and PR 6 design: describe what our server keeps to check a purchase, such as a transaction ID and its status, how long it's kept, and that it isn't linked to the spoken text.]</mark></p>
+    </section>
+
+    <section aria-labelledby="p-collect">
+      <h2 id="p-collect">Data we collect</h2>
+      <ul>
+        <li><strong>With the cloud voice off:</strong> none. OnAirly doesn't collect any data.</li>
+        <li><strong>With the cloud voice on:</strong> song and artist names of what you're playing (usage data, not linked to you), used only to generate the voice. <span class="pending">Pending owner decision: paid voice</span> <mark class="owner">[PENDING: label per #245 §3. Add a device identifier if the device check stores one.]</mark></li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="p-children">
+      <h2 id="p-children">Children</h2>
+      <p>OnAirly is rated 12+. The cloud voice is for listeners 18 and older, because ElevenLabs' services aren't directed at people under 18. OnAirly asks you to confirm your age before turning it on, and if you're under 18 every voice stays on your device. <span class="pending">Pending owner decision: paid voice and the age gate</span></p>
+    </section>
+
+    <section aria-labelledby="p-choices">
+      <h2 id="p-choices">Your choices</h2>
+      <p>You can deny or revoke calendar and Apple Music access in iOS Settings, delete shared items in the app, turn the cloud voice off, or delete the app, which removes everything it stored on your device. <mark class="owner">[owner: pending paid voice: how to ask us or ElevenLabs to delete server-side data.]</mark></p>
+    </section>
+
+    <section aria-labelledby="p-changes">
+      <h2 id="p-changes">Changes</h2>
+      <p>We'll update this page, and the notice in the app, before we change anything about what leaves your device.</p>
+    </section>
+
+    <section aria-labelledby="p-contact">
+      <h2 id="p-contact">Contact</h2>
+      <p>Email <a href="mailto:support@onairly.app">support@onairly.app</a>. <mark class="owner">[owner: postal address, if required.]</mark> For help using the app, see <a href="/support">Support</a>.</p>
+    </section>
+  </div>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <p>&copy; 2026 OnAirly. Apple Music is a trademark of Apple Inc.</p>
+    <nav aria-label="Footer">
+      <ul>
+        <li><a href="/privacy">Privacy Policy</a></li>
+        <li><a href="/support">Support</a></li>
+        <li><a href="mailto:support@onairly.app">support@onairly.app</a></li>
+      </ul>
+    </nav>
+  </div>
+</footer>
+</body>
+</html>
