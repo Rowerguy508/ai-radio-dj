@@ -257,7 +257,12 @@ export function dayKeys(bucket: string, day: string): [string, string] {
   return [`${KEY_PREFIX}:chars:${bucket}:${day}`, `${KEY_PREFIX}:chars:${GLOBAL_BUCKET}:${day}`];
 }
 
-export class LimiterStoreError extends Error {}
+export class LimiterStoreError extends Error {
+  /** True when the Upstash call hit its time bound (UPSTASH_FETCH_TIMEOUT_MS), not a store reply. */
+  constructor(message: string, readonly timedOut = false) {
+    super(message);
+  }
+}
 
 /**
  * Upstash REST returns a Lua integer reply as a JSON number. Anything else (null from a
@@ -308,14 +313,14 @@ export class RedisUsageLimiter implements UsageLimiter {
         signal,
       );
     } catch {
-      throw new LimiterStoreError('limiter store unreachable');
+      throw new LimiterStoreError('limiter store unreachable', signal.aborted);
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
       throw new LimiterStoreError('limiter store error');
     }
     const payload = (await untilAborted(response.json(), signal).catch(() => null)) as { result?: unknown } | null;
-    if (!payload || typeof payload !== 'object' || 'error' in payload) throw new LimiterStoreError('limiter store error');
+    if (!payload || typeof payload !== 'object' || 'error' in payload) throw new LimiterStoreError('limiter store error', signal.aborted);
     return strictRedisInteger(payload.result);
   }
 
