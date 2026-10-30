@@ -5,6 +5,12 @@ import Foundation
 // boundary (StationQueueFeed.takeForBoundary). Restoring the selection at launch never
 // authorizes, applies or plays. The app supplies the closures; the decisions live here so they
 // are tested on Linux. Diagnostics are enums and counts only.
+//
+// Latest tap wins (Orion, -Echo): a song or search tap that lands while a created-station tap is
+// still being applied cancels that station's switch at the boundary (`listenerStartedPlayback`).
+// The recipe stays applied: the listener's queue simply belongs to it, as it would had the song
+// been tapped a moment later, so a later idle Play (or the refill before the queue's last song)
+// plays the station. A song tap before the station tap, or a newer station tap, is unaffected.
 
 /// How a station row was opened.
 public enum StationOpenTrigger: String, Equatable, Sendable, CaseIterable {
@@ -49,6 +55,8 @@ public final class CreatedStationStarter<Item: Sendable> {
     private let maxPolls: Int
     private let sleep: @MainActor (Duration) async -> Void
     private var tapGeneration = 0
+    /// The tap generation that was current when the listener last started their own queue.
+    private var listenerStartGeneration: Int?
     /// The created station the last tap applied (Fry #213 nit 3). Cleared by `cancelPending()`
     /// and by a failed apply, so only a station that is still the listener's choice is skipped.
     public private(set) var currentRecipeID: UUID?
@@ -74,6 +82,15 @@ public final class CreatedStationStarter<Item: Sendable> {
         currentRecipeID = nil
     }
 
+    /// The listener started their own queue: a song or search tap, not a station start (the app
+    /// calls this from `MusicKitService.onQueueReplaced` for queues it did not start itself). If a
+    /// created-station tap is still being authorized or applied, it will not switch at the boundary
+    /// (latest tap wins). A tap already applied needs nothing: `queueStarted` gives the listener's
+    /// queue the committed station. Only the tap current now is affected, never a later one.
+    public func listenerStartedPlayback() {
+        listenerStartGeneration = tapGeneration
+    }
+
     /// Opens a created station.
     /// - Parameters:
     ///   - recipeID: the created station's recipe. When it is already current the recipe is not
@@ -85,6 +102,9 @@ public final class CreatedStationStarter<Item: Sendable> {
     ///   - authorize: the music authorization prompt (user taps only).
     ///   - apply: applies the station's recipe (`StudioPresentationModel.applyRecipe`); false if it failed.
     ///   - active: the station's active configuration, read after `apply`.
+    ///   - committed: the committed configuration (pending ?? active,
+    ///     `StationConfigurationModel.committedDisplayed`). Read after `apply` only when the listener
+    ///     started their own queue meanwhile. Defaults to `active`.
     ///   - nothingQueued: true while the player is idle with an empty queue. Read before every start.
     ///   - start: plays the items (the idle-Play path: `StationQueuePlayer.play`).
     @discardableResult
@@ -94,6 +114,7 @@ public final class CreatedStationStarter<Item: Sendable> {
                      authorize: @MainActor () async -> Void,
                      apply: @MainActor () async -> Bool,
                      active: @MainActor () -> StationConfiguration,
+                     committed: (@MainActor () -> StationConfiguration)? = nil,
                      nothingQueued: @MainActor () -> Bool,
                      start: @MainActor ([Item]) async -> Void) async -> CreatedStationOpenOutcome {
         guard trigger == .userTap else { return .restoredOnly }
@@ -109,6 +130,12 @@ public final class CreatedStationStarter<Item: Sendable> {
             }
             guard mine == tapGeneration else { return .notStarted(.superseded) }
             currentRecipeID = recipeID
+        }
+        if listenerStartGeneration == mine {
+            // Latest tap wins: a song or search tap landed after this tap but before its recipe was
+            // committed, so its queue was given the old station. It keeps playing past the boundary.
+            feed.cancelSwitch(keepingListenerQueueFor: committed?() ?? active())
+            return .notStarted(.playbackBegan)
         }
         guard nothingQueued() else { return .switchesAtBoundary }
         let config = active()
