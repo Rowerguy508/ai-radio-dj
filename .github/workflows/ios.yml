@@ -41,7 +41,9 @@ jobs:
       - name: Run core tests
         run: swift test
         working-directory: ios/AeroDJCore
-      - name: Release build excludes the debug test station
+      - name: Fixture scan fails closed (fake DerivedData test)
+        run: ios/scripts/check-release-excludes-preview-fixtures-test.sh
+      - name: Release build excludes the debug test station and PlaybackFixtures
         run: ios/scripts/check-release-excludes-test-station.sh
       - name: Release build cannot enable paid voices
         run: ios/scripts/check-release-disables-paid-voice.sh
@@ -328,7 +330,7 @@ jobs:
             "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
             "$DERIVED_DATA/Build/Products/Release-iphonesimulator/AeroDJ.app" \
             "$SIM_UDID"
-      - name: Release app excludes fixture art and preview loader
+      - name: Release app excludes fixture art, the preview loader and PlaybackFixtures
         run: |
           ios/scripts/check-release-excludes-preview-fixtures.sh \
             "$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app" \
