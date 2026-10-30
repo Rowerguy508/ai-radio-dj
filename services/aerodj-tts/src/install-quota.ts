@@ -1,3 +1,4 @@
+import { MISCONFIG_RETRY_AFTER_SECONDS } from './attest-flags.js';
 import { LimiterStoreError, type ReserveResult, type UsageLimiter } from './limiter.js';
 
 /**
@@ -20,13 +21,27 @@ export const INSTALL_STORE_RETRY_AFTER_SECONDS = 30;
 
 export type InstallReserveResult =
   | ReserveResult
-  | { readonly ok: false; readonly status: 503; readonly reason: 'store'; readonly retryAfterSeconds: number };
+  | { readonly ok: false; readonly status: 503; readonly reason: 'store'; readonly retryAfterSeconds: number }
+  | { readonly ok: false; readonly status: 500; readonly reason: 'misconfig'; readonly retryAfterSeconds: number };
 
 const STORE_REFUSAL = Object.freeze({
   ok: false as const,
   status: 503 as const,
   reason: 'store' as const,
   retryAfterSeconds: INSTALL_STORE_RETRY_AFTER_SECONDS,
+});
+
+/**
+ * Any non-store failure from the limiter (a bug, a bad subject, a broken limiter):
+ * 500 `misconfig` with `Retry-After: 3600`, the same contract as every other server
+ * misconfiguration (note §4.4; Sentinel's #250 nit, PR 4), instead of an uncaught
+ * platform 500. Nothing is reserved on this path, so nothing is spent.
+ */
+const MISCONFIG_REFUSAL = Object.freeze({
+  ok: false as const,
+  status: 500 as const,
+  reason: 'misconfig' as const,
+  retryAfterSeconds: MISCONFIG_RETRY_AFTER_SECONDS,
 });
 
 /** True only for a limiter backed by a store shared by every instance. */
@@ -37,6 +52,7 @@ export function isDurable(limiter: Pick<UsageLimiter, 'durable'> | null | undefi
 /**
  * Reserves `chars` for one install (keyId) and the global ceiling, or refuses.
  * No limiter call at all when the limiter is missing or not durable.
+ * A store error is 503 `store`; any other throw is 500 `misconfig` (never rethrown).
  */
 export async function reserveForInstall(
   limiter: UsageLimiter | null,
@@ -49,6 +65,6 @@ export async function reserveForInstall(
     return await limiter.reserve({ kind: 'install', id: keyId }, chars, now);
   } catch (error) {
     if (error instanceof LimiterStoreError) return STORE_REFUSAL;
-    throw error;
+    return MISCONFIG_REFUSAL;
   }
 }

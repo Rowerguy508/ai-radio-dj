@@ -163,8 +163,12 @@ added it must use its own `topup:{aerodj-tts}:<rid>` marker the same way (note Â
 reservation goes through `reserveForInstall` (`src/install-quota.ts`). Without a
 durable store (`limiter.durable === true`, i.e. Upstash) it refuses with
 **503 `store`, `Retry-After: 30`**, in every environment, and makes no limiter call;
-`AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` does not apply to installs. No request reaches
-an install reservation yet (PR 4 wires it).
+`AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` does not apply to installs. A store error from
+the durable limiter is also 503 `store`; any other throw from `reserve` is **500
+`misconfig`, `Retry-After: 3600`** (PR 4), never a bare platform 500. The owner
+`/api/tts` reserve uses the same mapping (503 `store` with `Retry-After: 60`, else 500
+`misconfig`). No request reaches an install reservation yet (the attested `/api/tts`
+path and PR 3b's `register` wire it).
 
 ### Which store backs the limits
 
