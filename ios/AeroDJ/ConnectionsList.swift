@@ -152,7 +152,7 @@ private struct SourceCard: View {
                 .fixedSize(horizontal: false, vertical: true)
             Text(row.scope)
                 .font(.caption)
-                .foregroundStyle(AeroDJPalette.secondaryText)
+                .foregroundStyle(AeroDJPalette.cardCaptionText)
                 .fixedSize(horizontal: false, vertical: true)
 
             let actions = row.actions
@@ -165,7 +165,7 @@ private struct SourceCard: View {
             ForEach(unavailableReasons(actions), id: \.self) { reason in
                 Label(reason, systemImage: "info.circle")
                     .font(.caption)
-                    .foregroundStyle(AeroDJPalette.secondaryText)
+                    .foregroundStyle(AeroDJPalette.cardCaptionText)
             }
         }
         .padding(14)
