@@ -23,15 +23,24 @@ private actor QueueFakeCatalog: StationSeedCatalog {
     private(set) var asked: [String] = []
     private var gate: CheckedContinuation<Void, Never>?
     private var holdNext = false
+    private var holdWaiters: [CheckedContinuation<Void, Never>] = []
 
     func setFailing(_ value: Bool) { failing = value }
     func holdNextCall() { holdNext = true }
     func release() { gate?.resume(); gate = nil }
     var isHolding: Bool { gate != nil }
+    /// Returns once a call is held on the gate (immediately if one already is). No polling.
+    func untilHolding() async {
+        if gate != nil { return }
+        await withCheckedContinuation { holdWaiters.append($0) }
+    }
 
     private func songs(_ seed: StationSeed, _ tier: String, _ limit: Int) async throws -> [StationCandidate] {
         asked.append("\(tier):\(seed.source.rawValue)")
-        if holdNext { holdNext = false; await withCheckedContinuation { gate = $0 } }
+        if holdNext {
+            holdNext = false
+            await withCheckedContinuation { gate = $0; holdWaiters.forEach { $0.resume() }; holdWaiters = [] }
+        }
         if failing { throw Offline() }
         return (0..<min(limit, 8)).map { n in
             StationCandidate(track: TrackInfo(id: "\(seed.catalogID)-\(tier)-\(n)", title: "Title \(n)",
@@ -579,7 +588,23 @@ final class CreatedStationStartTests: XCTestCase {
         /// Stands in for `StudioPresentationModel.lastAppliedRecipeID`.
         var liveRecipe: UUID?
         var starts: [[String]] = []
-        var nothingQueued: Bool { queue.isEmpty && !playing }
+        /// How many times the starter has read the idle state.
+        private(set) var idleChecks = 0
+        private var idleCheckWaiters: [CheckedContinuation<Void, Never>] = []
+        var nothingQueued: Bool {
+            idleChecks += 1
+            idleCheckWaiters.forEach { $0.resume() }
+            idleCheckWaiters = []
+            return queue.isEmpty && !playing
+        }
+        /// Returns once the starter has read the idle state at least once: the tap is past `apply`
+        /// and will re-read it before any start. The follow's build (an unawaited Task) can reach
+        /// the catalog hold while the tap is still inside `apply`, so `isHolding` alone says nothing
+        /// about where the tap is.
+        func untilIdleChecked() async {
+            if idleChecks > 0 { return }
+            await withCheckedContinuation { idleCheckWaiters.append($0) }
+        }
     }
 
     private func makeStation(active: StationConfiguration) async -> StationConfigurationModel {
@@ -681,7 +706,8 @@ final class CreatedStationStartTests: XCTestCase {
         let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1))
 
         let tap = Task { await open(.userTap, starter, model, player) }
-        for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
+        await player.untilIdleChecked()                         // the tap applied and found nothing queued
+        await catalog.untilHolding()                            // ...and its queue's build is held
         let holding = await catalog.isHolding
         XCTAssertTrue(holding, "the build is waiting on the catalog")
         XCTAssertEqual(player.starts, [], "nothing starts before the queue exists")
@@ -702,7 +728,8 @@ final class CreatedStationStartTests: XCTestCase {
         let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1))
 
         let tap = Task { await open(.userTap, starter, model, player) }
-        for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
+        await player.untilIdleChecked()                         // the tap applied and found nothing queued
+        await catalog.untilHolding()                            // ...and its queue's build is held
         player.queue = ["searched"]                             // listener tapped a search result meanwhile
         player.playing = true
         await catalog.release()
