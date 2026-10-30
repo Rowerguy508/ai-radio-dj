@@ -13,6 +13,16 @@ unauthenticated `app/api/voice`) must not be deployed.
 > and the app-side wiring before anything is deployed. Any deploy needs the
 > owner's OK.
 
+> [!CAUTION]
+> **DEPLOY PRECONDITION: Production MUST have the shared store env set**
+> (`KV_REST_API_URL` + `KV_REST_API_TOKEN`, or `UPSTASH_REDIS_REST_URL` +
+> `UPSTASH_REDIS_REST_TOKEN`). If `ELEVENLABS_API_KEY` is set and the store is not,
+> **every paid voice request returns 500 `misconfig`** (log reason `no_store`) in every
+> `VERCEL_ENV`, Production included, and `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` does not
+> reopen it. A per-instance limiter would spend outside the shared 9,000-char day. Check
+> the store env names before deploying; never give Preview or Development the
+> ElevenLabs key without the store.
+
 ## Contract (matches `ProxyVoiceProvider`)
 
 Request:
@@ -218,9 +228,10 @@ path and PR 3b's `register` wire it).
 | Environment | Store | Hard across instances? |
 | --- | --- | --- |
 | `KV_REST_API_URL` + `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`) set | Upstash Redis over REST; each operation is one Lua script (atomic in Redis) | **Yes** |
-| Not set, outside Vercel Production | in-memory, per instance | No: each instance and cold start has its own counters |
-| Not set, Vercel Production | none: every request returns 500 (fails closed) | n/a |
-| Not set, Vercel Production, `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true` | in-memory, per instance (owner explicitly accepts best-effort) | No |
+| Not set, `ELEVENLABS_API_KEY` set, **any** `VERCEL_ENV` (Production included, best-effort opt-in ignored) | none: every request returns 500 `misconfig` (log reason `no_store`) before any counter write or ElevenLabs call | n/a |
+| Not set, no `ELEVENLABS_API_KEY`, outside Vercel Production | in-memory, per instance (nothing can be spent) | No: each instance and cold start has its own counters |
+| Not set, no `ELEVENLABS_API_KEY`, Vercel Production | none: every request returns 500 (fails closed) | n/a |
+| Not set, no `ELEVENLABS_API_KEY`, Vercel Production, `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true` | in-memory, per instance (owner explicitly accepts best-effort) | No |
 
 Rate counters are fixed one-minute windows in Redis (a burst at a minute boundary
 can reach 2x the per-minute rate) and a sliding window in memory. If the store is
@@ -373,8 +384,8 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_PRO_DAILY_CHARS` | no | Per Pro subscriber daily chars. Default 12000, clamped to the global ceiling. Plain integer 600-10,000,000; anything else makes Pro requests 500 `misconfig`. |
 | `AERODJ_TTS_PRO_RATE_PER_MINUTE` | no | Per Pro subscriber rate. Default 12. Plain integer 1-600; anything else makes Pro requests 500 `misconfig`. |
 | `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED` | no | Family Sharing, **open owner question** (Sentinel's N3 on #264). Unset or exactly `false` (default): only `PURCHASED` counts as Pro; a `FAMILY_SHARED` purchase is refused by the verifier (`ownership`), gets no Pro subject and takes the non-Pro path. Exactly `true`: `FAMILY_SHARED` also counts. Missing or unknown ownership never counts. Anything else (`TRUE`, `1`, empty, spaces) makes Pro requests 500 `misconfig`. Owner decision only; must match the App Store Connect Family Sharing toggle, which Apple does not let you turn off once on. |
-| `KV_REST_API_URL`, `KV_REST_API_TOKEN` | yes in Production | Injected by the Upstash Redis integration (Vercel Marketplace, free tier). `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work. HTTPS only. |
-| `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter (owner path only; never install reservations). Owner decision only; leave unset. |
+| `KV_REST_API_URL`, `KV_REST_API_TOKEN` | **yes wherever `ELEVENLABS_API_KEY` is set** (Production included; without them paid voice is 500 `misconfig`) | Injected by the Upstash Redis integration (Vercel Marketplace, free tier). `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work. HTTPS only. |
+| `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter only when no `ELEVENLABS_API_KEY` is set (nothing can be spent); with the key set and no store it has no effect (500 `misconfig`). Owner decision only; leave unset. |
 | `AERODJ_TTS_PAID_STOP` | no | Master stop. Any value except exactly `false` (including empty) → every paid path and `/api/attest/*` return 503 `disabled`. Unset in normal operation. |
 | `AERODJ_TTS_ATTEST_ENABLED` | no | Attest kill switch. Only exactly `true` enables `/api/attest/*`; anything else is off. Leave unset until the owner enables attestation. |
 | `AERODJ_TTS_CHALLENGE_HMAC_KEY` | before attest is enabled | Server-only. Dedicated key, at least 32 bytes, **created by the owner** and pasted directly into Vercel (Production). Never in chat, repo, CI or builds. |

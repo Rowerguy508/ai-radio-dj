@@ -4,6 +4,7 @@ import XCTest
 final class StationArtTests: XCTestCase {
     let station = StationRef(id: "morning-calm", name: "Morning Calm")
 
+    #if DEBUG // PlaybackFixtures is Debug-only; `swift test -c release` builds this file too.
     func testDeterministicAcrossCalls() {
         let t = PlaybackFixtures.songs[0]
         XCTAssertEqual(StationArtStyle.track(t, on: station), StationArtStyle.track(t, on: station))
@@ -11,7 +12,9 @@ final class StationArtTests: XCTestCase {
         // Pinned value: FNV-1a is stable, so the palette must not drift between releases.
         XCTAssertEqual(StationArtStyle.fnv1a("a"), 0xaf63_dc4c_8601_ec8c)
     }
+    #endif
 
+    #if DEBUG // PlaybackFixtures is Debug-only; `swift test -c release` builds this file too.
     func testTracksDifferButStayInStationFamily() {
         let base = StationArtStyle.station(station)
         let styles = PlaybackFixtures.songs.map { StationArtStyle.track($0, on: station) }
@@ -24,6 +27,7 @@ final class StationArtTests: XCTestCase {
             XCTAssertEqual(s.angle % 45, 0)
         }
     }
+    #endif
 
     func testDifferentStationsGetDifferentRooms() {
         let other = StationArtStyle.station(StationRef(id: "late-night", name: "Late Night"))
