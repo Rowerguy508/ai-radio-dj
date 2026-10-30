@@ -400,8 +400,11 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
     // check at 300 ms and fails closed (Echo, 2ed3ea6); these providers must answer well inside
     // that, from ProEntitlementCache and the stored consent, never after StoreKit.
 
-    /// Well under DJBreakPreparer.paidVoiceTakeCheckTimeout (300 ms), with slack for a loaded CI box.
-    private let fastDecision = 0.1
+    /// Inside the boundary's bound, DJBreakPreparer.paidVoiceTakeCheckTimeout (Echo, #255), in seconds.
+    private var fastDecision: Double {
+        let c = DJBreakPreparer.paidVoiceTakeCheckTimeout.components
+        return Double(c.seconds) + Double(c.attoseconds) / 1e18
+    }
 
     func testDecisionAnswersFromTheCacheWhileAStoreKitRefreshNeverCompletes() async {
         let cache = ProEntitlementCache(.pro(productID: monthly, expiresAt: Date().addingTimeInterval(86_400)))
@@ -412,7 +415,7 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
         let clock = ContinuousClock(), start = clock.now
         let answer = await within(fastDecision) { await access.decision() }
         XCTAssertEqual(answer, .allowed, "answered from the cache, not after the refresh")
-        XCTAssertLessThan(clock.now - start, .milliseconds(100), "well under the 300 ms take-check bound")
+        XCTAssertLessThan(clock.now - start, DJBreakPreparer.paidVoiceTakeCheckTimeout, "inside the take-check bound")
         consent.decline()
         let revoked = await within(fastDecision) { await access.decision() }
         XCTAssertEqual(revoked, .denied(.noConsent), "the stored consent is read per call")
