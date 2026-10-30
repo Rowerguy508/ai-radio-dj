@@ -62,11 +62,11 @@ final class SubscriptionModel: ProEntitlementProviding {
     }
 
     func refreshStatus() async {
-        var transactions: [ProStoreTransaction] = []
+        var transactions: [ProTransactionSnapshot] = []
         var willAutoRenew: Bool?
         for id in ProSubscriptionConfig.productIDs.sorted() {
             guard let result = await Transaction.latest(for: id) else { continue }
-            transactions.append(Self.storeTransaction(result))
+            if let snapshot = Self.snapshot(result) { transactions.append(snapshot) }
             if case .verified(let transaction) = result, transaction.revocationDate == nil,
                let status = await transaction.subscriptionStatus,
                case .verified(let renewal) = status.renewalInfo {
@@ -77,9 +77,9 @@ final class SubscriptionModel: ProEntitlementProviding {
         // active Pro is never missed. The mapper filters and fails closed either way.
         for await result in Transaction.currentEntitlements {
             if case .verified(let t) = result, !ProSubscriptionConfig.productIDs.contains(t.productID) { continue }
-            transactions.append(Self.storeTransaction(result))
+            if let snapshot = Self.snapshot(result) { transactions.append(snapshot) }
         }
-        let state = ProStoreEntitlement.state(for: transactions, now: Date())
+        let state = ProEntitlementMapper.state(for: transactions, now: Date())
         entitlement.set(state)
         status = ProSubscriptionStatus(state: state, willAutoRenew: willAutoRenew,
                                        onlyFamilyShared: ProStoreEntitlement.onlyFamilyShared(transactions))
@@ -87,21 +87,22 @@ final class SubscriptionModel: ProEntitlementProviding {
         log.notice("subscription pro=\(self.status.isPro, privacy: .public)")
     }
 
-    static func storeTransaction(_ result: VerificationResult<Transaction>) -> ProStoreTransaction {
+    /// #244's snapshot, with #244's `ProOwnership`. An ownership type this build doesn't know is
+    /// skipped (fail closed: never counted as Pro); family-shared is dropped by the mapper.
+    static func snapshot(_ result: VerificationResult<Transaction>) -> ProTransactionSnapshot? {
         let (t, verified): (Transaction, Bool) = switch result {
         case .verified(let t): (t, true)
         case .unverified(let t, _): (t, false)
         }
-        let ownership: ProTransactionOwnership = switch t.ownershipType {
-        case .purchased: .purchased
-        case .familyShared: .familyShared
-        default: .other
+        let ownership: ProOwnership
+        switch t.ownershipType {
+        case .purchased: ownership = .purchased
+        case .familyShared: ownership = .familyShared
+        default: return nil
         }
-        return ProStoreTransaction(
-            snapshot: ProTransactionSnapshot(productID: t.productID, purchaseDate: t.purchaseDate,
-                                             expirationDate: t.expirationDate, revocationDate: t.revocationDate,
-                                             isUpgraded: t.isUpgraded, isVerified: verified),
-            ownership: ownership)
+        return ProTransactionSnapshot(productID: t.productID, purchaseDate: t.purchaseDate,
+                                      expirationDate: t.expirationDate, revocationDate: t.revocationDate,
+                                      isUpgraded: t.isUpgraded, isVerified: verified, ownership: ownership)
     }
 
     func loadProducts() async {

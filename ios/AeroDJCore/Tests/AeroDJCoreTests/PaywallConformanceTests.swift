@@ -1,8 +1,8 @@
 import XCTest
 @testable import AeroDJCore
 
-/// The paywall's conformances on top of #244: the StoreKit-side state (cache + family-sharing
-/// filter), the consent store as `PaidVoiceConsentProviding`, the appAccountToken, and the
+/// The paywall's conformances on top of #244: the StoreKit-side state (cache; family sharing is
+/// #244's mapper filter), the consent store as `PaidVoiceConsentProviding`, the appAccountToken, and the
 /// Sentinel checks that are specific to this PR. #244 owns the mapper and gate tests. -Nova
 final class PaywallConformanceTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -10,13 +10,11 @@ final class PaywallConformanceTests: XCTestCase {
     private let yearly = ProSubscriptionConfig.yearlyProductID
 
     private func tx(_ id: String, expiresIn: TimeInterval?, revoked: Bool = false, verified: Bool = true,
-                    ownership: ProTransactionOwnership = .purchased) -> ProStoreTransaction {
-        ProStoreTransaction(
-            snapshot: ProTransactionSnapshot(productID: id, purchaseDate: now.addingTimeInterval(-86_400),
-                                             expirationDate: expiresIn.map(now.addingTimeInterval),
-                                             revocationDate: revoked ? now.addingTimeInterval(-60) : nil,
-                                             isVerified: verified),
-            ownership: ownership)
+                    ownership: ProOwnership = .purchased) -> ProTransactionSnapshot {
+        ProTransactionSnapshot(productID: id, purchaseDate: now.addingTimeInterval(-86_400),
+                               expirationDate: expiresIn.map(now.addingTimeInterval),
+                               revocationDate: revoked ? now.addingTimeInterval(-60) : nil,
+                               isVerified: verified, ownership: ownership)
     }
 
     private func access(_ state: ProEntitlementState, consent: CloudVoiceConsentState) -> ProVoiceAccess {
@@ -77,24 +75,23 @@ final class PaywallConformanceTests: XCTestCase {
 
     func testFamilySharedIsNotPro() {
         let shared = [tx(yearly, expiresIn: 3600, ownership: .familyShared)]
-        XCTAssertEqual(ProStoreEntitlement.state(for: shared, now: now), .free)
+        XCTAssertEqual(ProEntitlementMapper.state(for: shared, now: now), .free)
         XCTAssertTrue(ProStoreEntitlement.onlyFamilyShared(shared))
         XCTAssertEqual(ProSubscriptionStatus(state: .free, onlyFamilyShared: true), .familyShared)
         XCTAssertFalse(ProSubscriptionStatus.familyShared.isPro)
-        XCTAssertEqual(ProStoreEntitlement.state(for: [tx(yearly, expiresIn: 3600, ownership: .other)], now: now), .free)
         // The family member's own purchase still counts.
         let mixed = shared + [tx(monthly, expiresIn: 600)]
-        XCTAssertEqual(ProStoreEntitlement.state(for: mixed, now: now), .pro(productID: monthly, expiresAt: now.addingTimeInterval(600)))
+        XCTAssertEqual(ProEntitlementMapper.state(for: mixed, now: now), .pro(productID: monthly, expiresAt: now.addingTimeInterval(600)))
         XCTAssertFalse(ProStoreEntitlement.onlyFamilyShared(mixed))
         XCTAssertFalse(ProSubscriptionConfig.familySharingEnabled)
     }
 
     func testStoreSideMappingFailsClosed() {
-        XCTAssertEqual(ProStoreEntitlement.state(for: [tx(monthly, expiresIn: 3600, verified: false)], now: now),
+        XCTAssertEqual(ProEntitlementMapper.state(for: [tx(monthly, expiresIn: 3600, verified: false)], now: now),
                        .unverified(productID: monthly))
-        XCTAssertFalse(ProStoreEntitlement.state(for: [tx(monthly, expiresIn: -1)], now: now).showsPro)
-        XCTAssertFalse(ProStoreEntitlement.state(for: [tx(monthly, expiresIn: 3600, revoked: true)], now: now).showsPro)
-        XCTAssertEqual(ProStoreEntitlement.state(for: [], now: now), .free)
+        XCTAssertFalse(ProEntitlementMapper.state(for: [tx(monthly, expiresIn: -1)], now: now).showsPro)
+        XCTAssertFalse(ProEntitlementMapper.state(for: [tx(monthly, expiresIn: 3600, revoked: true)], now: now).showsPro)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [], now: now), .free)
     }
 
     // MARK: Status UI and products

@@ -28,45 +28,17 @@ public enum SubscriptionPeriod: String, Equatable, Sendable, CaseIterable {
     public var title: String { self == .monthly ? "Monthly" : "Yearly" }
 }
 
-/// StoreKit's `Transaction.OwnershipType`, mirrored so the core stays Linux-testable.
-public enum ProTransactionOwnership: Equatable, Sendable {
-    case purchased
-    case familyShared
-    /// A value this build doesn't know. Fail closed: not Pro.
-    case other
-}
-
-/// One StoreKit transaction as the paywall reads it. Carries no transaction ID, original ID,
-/// JWS or appAccountToken, so none can reach a log from here.
-public struct ProStoreTransaction: Equatable, Sendable {
-    public var snapshot: ProTransactionSnapshot
-    public var ownership: ProTransactionOwnership
-
-    public init(snapshot: ProTransactionSnapshot, ownership: ProTransactionOwnership) {
-        self.snapshot = snapshot
-        self.ownership = ownership
-    }
-}
-
+/// Status-copy helper on top of #244. Family Sharing itself lives in #244: `ProTransactionSnapshot`
+/// carries `ProOwnership` and `ProEntitlementMapper` drops family-shared transactions while
+/// `ProSubscriptionConfig.familySharingEnabled` is false (Fry's version; the paywall's own
+/// ownership filter was removed in favor of it). -Nova
 public enum ProStoreEntitlement {
-    /// Family Sharing is off for Pro (`ProSubscriptionConfig.familySharingEnabled`, owner decision,
-    /// matching #244 and the .storekit file), so a family-shared transaction never counts, and
-    /// neither does an ownership type this build doesn't know. The rest is `ProEntitlementMapper`.
-    public static func counts(_ t: ProStoreTransaction) -> Bool {
-        switch t.ownership {
-        case .purchased: true
-        case .familyShared: ProSubscriptionConfig.familySharingEnabled
-        case .other: false
-        }
-    }
-
-    public static func state(for transactions: [ProStoreTransaction], now: Date) -> ProEntitlementState {
-        ProEntitlementMapper.state(for: transactions.filter(counts).map(\.snapshot), now: now)
-    }
-
     /// True when the only Pro transactions on record are family-shared ones (for the status copy).
-    public static func onlyFamilyShared(_ transactions: [ProStoreTransaction]) -> Bool {
-        let known = transactions.filter { ProSubscriptionConfig.productIDs.contains($0.snapshot.productID) }
+    public static func onlyFamilyShared(_ transactions: [ProTransactionSnapshot]) -> Bool {
+        let known = transactions.filter { ProSubscriptionConfig.productIDs.contains($0.productID) }
+        let counts: (ProTransactionSnapshot) -> Bool = {
+            $0.ownership == .purchased || ProSubscriptionConfig.familySharingEnabled
+        }
         return !known.isEmpty && !known.contains(where: counts) && known.contains { $0.ownership == .familyShared }
     }
 }
