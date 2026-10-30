@@ -35,6 +35,25 @@ private actor Gate {
         if arrivedCount > 0 { return }
         await withCheckedContinuation { arrivals.append($0) }
     }
+    /// Resumes anyone still in `arrived()` without counting an arrival, so a waiter whose
+    /// provider was never reached does not stay suspended for the rest of the run.
+    func releaseArrivals() { arrivals.forEach { $0.resume() }; arrivals.removeAll() }
+    var hasArrived: Bool { arrivedCount > 0 }
+}
+
+/// True once the gated provider is reached; false if `render` finishes first without reaching it
+/// (e.g. a regressed gate sent the cue to an earlier, ungated route). Never sleeps or times out:
+/// whichever happens first decides, so a regression fails at once instead of hanging the suite.
+private func reaches<T: Sendable>(_ gate: Gate, before render: Task<T, Never>) async -> Bool {
+    let (events, sink) = AsyncStream.makeStream(of: Bool.self)
+    let arrival = Task { await gate.arrived(); sink.yield(await gate.hasArrived) }
+    let finish = Task { _ = await render.value; sink.yield(false) }
+    var first = events.makeAsyncIterator()
+    let reached = await first.next() ?? false
+    sink.finish()
+    if !reached { await gate.releaseArrivals() }
+    _ = (arrival, finish)
+    return reached
 }
 
 private struct GatedDeviceVoice: VoiceProvider {
@@ -84,11 +103,17 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, revocations: revocations)
     }
 
-    private func outcome(_ preparer: DJBreakPreparer, afterTrack k: Int) async -> DJBreakOutcome {
-        while true {
+    /// Polls for boundary `k`'s outcome. Bounded: every `prepare` here has a 10 s deadline, so
+    /// past 30 s something is wrong; fail instead of spinning until CI kills the job.
+    private func outcome(_ preparer: DJBreakPreparer, afterTrack k: Int,
+                         file: StaticString = #filePath, line: UInt = #line) async -> DJBreakOutcome {
+        let limit = ContinuousClock.now + .seconds(30)
+        while ContinuousClock.now < limit {
             if let result = await preparer.testResult(afterTrack: k) { return result }
             await Task.yield()
         }
+        XCTFail("no outcome for boundary \(k) within 30 s", file: file, line: line)
+        return .skipped(.timedOut)
     }
 
     // 1. Catalog-only station (onDeviceOnly: false), approved personal briefing cue, off-device spy first.
@@ -272,7 +297,13 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
             await r.render(cue, userID: "u", stationID: "s",
                            attribution: .personalContext(itemID: item, source: .calendar, provenance: "test:item"))
         }
-        await gate.arrived()
+        guard await reaches(gate, before: render) else {
+            // Without the per-cue gate the cue is spoken by the cloud route first and the gated
+            // on-device voice is never called: fail now rather than wait on `arrived()` forever.
+            let result = await render.value
+            XCTAssertTrue(spy.received.isEmpty, "personal cue text reached an off-device route")
+            return XCTFail("the render finished without reaching the on-device route: \(result)")
+        }
         await NarrationPurger(cache: cache, preparer: nil, revocations: revocations).purge(sourceItemIDs: [item])
         await gate.open()
         let result = await render.value
