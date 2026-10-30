@@ -21,6 +21,10 @@ struct AeroDJApp: App {
     var body: some Scene {
         WindowGroup {
             StationListView(dependencies: dependencies)
+                // Asks before the first cloud-voice render; the gate itself is in AeroDJCore.
+                .cloudVoiceConsentGate()
+                // StoreKit listener + paywall; the paywall is offered only after consent.
+                .subscriptionPaywallHost()
                 // Starts the one studio and the one DJ session. Station selection and the
                 // MusicKit player stay on the split root below this window.
                 .task { await dependencies.start() }

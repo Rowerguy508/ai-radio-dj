@@ -294,7 +294,7 @@ final class RadioStyleBreakTests: XCTestCase {
         await station.load()
         await station.setPlaybackActivity(.holdingSong)
         let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: voice, voice: djVoice)],
-                                     budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
+                                     budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
         // These tests cover the talk-over hook, so talk-over is on (the default reads the flag: off).
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence(),
                                        talkOverEnabled: { true })
@@ -390,7 +390,7 @@ final class RadioStyleBreakTests: XCTestCase {
         }
         func outcome(_ b: DJBreak) async -> DJBreakOutcome {
             let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: WordVoice(secondsPerWord: 0.6), voice: djVoice)],
-                                         budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
+                                         budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
             let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", talkOverEnabled: { true })
             let done = AsyncStream<Void>.makeStream()
             await preparer.observe { event in
@@ -425,7 +425,7 @@ final class RadioStyleBreakTests: XCTestCase {
     }
 
     private func outcome(_ b: DJBreak, routes: [VoiceRoute], talkOver: Bool = true, onDeviceOnly: Bool = false) async -> DJBreakOutcome {
-        let renderer = VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
+        let renderer = VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", talkOverEnabled: { talkOver })
         let done = AsyncStream<Void>.makeStream()
         await preparer.observe { event in
@@ -637,7 +637,7 @@ final class RadioStyleBreakTests: XCTestCase {
             credentials: PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!, token: "owner-test-token"),
             pinnedHosts: ["aerodj-tts.vercel.app"], transport: transport)
         return VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),
-                             revocations: NarrationRevocations())
+                             revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
     }
 
     private func prepare(_ djBreak: DJBreak, _ r: VoiceRenderer, onDeviceOnly: Bool, talkOver: Bool = true) async -> DJBreakOutcome {

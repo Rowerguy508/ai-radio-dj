@@ -103,7 +103,10 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
 
     private func base(cache: AudioCache = InMemoryAudioCache()) -> VoiceRenderer {
         VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
-                      budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, revocations: NarrationRevocations())
+                      budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, revocations: NarrationRevocations(),
+                      // The render-time consent gate (Nova's consent PR) is granted here, so these
+                      // tests exercise the per-cue ProVoiceAccess gate alone (-Nova, merge fixup).
+                      cloudConsent: .inMemory(.accepted))
     }
 
     /// The public composition with the switch forced on (the flagged build), proxy faked.
@@ -451,7 +454,8 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
                                 cadence: config.cadence(), bundledClips: bundled(access))
         let s = DJBreakSession(preparer: p, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 })
         await s.start()
-        await s.queueStarted(djTracks(8))
+        // Catalog tracks: every line may use the paid voice, so the break is all paid (one voice per break, #267).
+        await s.queueStarted(djTracks(8, origin: .catalog))
         return (s, p, t)
     }
 

@@ -27,12 +27,32 @@ extension PaidVoice {
             paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled,
             access: .ownerTrial, selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
             credentials: OwnerProxyKeychain.load())
+        // Every render still checks the stored cloud-voice consent first (base.cloudConsent);
+        // the compose decision is logged once by PaidVoice.live() (PaidVoiceLog).
         return PaidVoice(renderer: VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
-                                                 revocations: base.revocations),
+                                                 revocations: base.revocations, cloudConsent: base.cloudConsent),
                          access: .buildDefault, decision: composition.decision)
     }
 }
 #endif
+
+extension ProVoiceAccess {
+    /// The Pro + consent gate, DEFINED BUT NOT WIRED (deliberate seam, Fry B1 on #258): nothing
+    /// references `.live` and `PaidVoice.live()` passes `.buildDefault`, so Release keeps paid
+    /// voice locked. Wiring it is a one-line follow-up that needs Sentinel and the owner.
+    /// Owner A/B builds: `buildDefault` (the owner trial, #244 B1). Every other build: the
+    /// paywall's cached client Pro state and the consent sheet's store, so a paid voice would
+    /// need Pro AND consent (both fail closed). -Nova
+    static var live: ProVoiceAccess {
+        #if AERODJ_OWNER_AB
+        return .buildDefault
+        #else
+        // The paywall's client Pro state (written by SubscriptionModel from verified App Store
+        // transactions, Free until then) and the consent sheet's store, asked per use.
+        return ProVoiceAccess(entitlement: ProEntitlementCache.shared, consent: CloudVoiceConsentStore())
+        #endif
+    }
+}
 
 extension View {
     /// Adds the owner voice picker entry in an `AERODJ_OWNER_AB` build; a no-op otherwise.

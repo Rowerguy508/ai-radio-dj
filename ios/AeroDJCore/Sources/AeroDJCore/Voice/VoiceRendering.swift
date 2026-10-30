@@ -208,6 +208,79 @@ public protocol AudioCache: Sendable {
     /// Removes every clip derived from any personal item, whatever its id. For when consent
     /// cannot be checked per item (live mode does not persist consent across launches).
     func purgeAllPersonal() async
+    /// Removes every clip not rendered by one of `providerIDs` (cloud-voice consent revoked, N4:
+    /// cloud and paid clips go, on-device clips stay). Unattributable entries are removed too.
+    func purgeClips(keepingProviders providerIDs: Set<String>) async
+    /// Consent generation (Fry, #258 blocker): bumped by every purge, under the same lock (or
+    /// actor turn) as the purge itself. A renderer reads it when a render starts, so it can tell
+    /// whether any purge ran since, even if consent was granted again afterwards.
+    func consentGeneration() async -> UInt64
+    /// Atomic check-and-store: writes `audio` only if the generation is still `generation` and
+    /// `stillAllowed()` holds, both checked under the same lock (or actor turn) as the write, so
+    /// a purge either runs entirely before the check (the write is refused) or entirely after
+    /// the write (the purge removes it). Nothing is written and then deleted. Returns whether
+    /// it stored.
+    func store(_ audio: CachedAudio, for key: String, ifGeneration generation: UInt64,
+               stillAllowed: @Sendable () -> Bool) async -> Bool
+}
+
+extension AudioCache {
+    /// Test doubles that never hold cloud audio. Both shipping caches implement this.
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {}
+    /// Test doubles that never hold cloud audio: never purged, so the generation never moves.
+    /// Both shipping caches implement this.
+    public func consentGeneration() async -> UInt64 { 0 }
+    /// Test doubles only, and not atomic. Both shipping caches implement this atomically.
+    public func store(_ audio: CachedAudio, for key: String, ifGeneration generation: UInt64,
+                      stillAllowed: @Sendable () -> Bool) async -> Bool {
+        guard await consentGeneration() == generation, stillAllowed() else { return false }
+        await store(audio, for: key)
+        return true
+    }
+}
+
+/// The lock and consent generation shared by every `FileAudioCache` on one directory, so two
+/// copies (or two instances) of the cache serialise their writes and purges together.
+final class FileAudioCacheGate: @unchecked Sendable {
+    private static let registryLock = NSLock()
+    nonisolated(unsafe) private static var registry: [String: FileAudioCacheGate] = [:]
+
+    static func gate(for directory: URL) -> FileAudioCacheGate {
+        let path = key(for: directory)
+        return registryLock.withLock {
+            if let gate = registry[path] { return gate }
+            let gate = FileAudioCacheGate()
+            registry[path] = gate
+            return gate
+        }
+    }
+
+    /// The registry key: the directory with `.`/`..` removed and symlinks resolved (Fry, #258),
+    /// so two paths to one directory share one lock and generation. Only components that exist
+    /// can be resolved, so the deepest existing ancestor is resolved and the rest appended; this
+    /// creates nothing on disk.
+    static func key(for directory: URL) -> String {
+        var existing = directory.standardizedFileURL
+        var rest: [String] = []
+        while !FileManager.default.fileExists(atPath: existing.path), existing.pathComponents.count > 1 {
+            rest.insert(existing.lastPathComponent, at: 0)
+            existing.deleteLastPathComponent()
+        }
+        var resolved = existing.resolvingSymlinksInPath()
+        for component in rest { resolved.appendPathComponent(component) }
+        return resolved.standardizedFileURL.path
+    }
+
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+
+    var current: UInt64 { lock.withLock { generation } }
+
+    /// Runs a purge under the lock, after bumping the generation.
+    func purging(_ body: () -> Void) { lock.withLock { generation &+= 1; body() } }
+
+    /// Runs a write under the lock.
+    func writing<T>(_ body: (_ generation: UInt64) -> T) -> T { lock.withLock { body(generation) } }
 }
 
 /// Enforces the 7-day cap on a schedule, not only when a clip is read: an expired clip that
@@ -274,6 +347,8 @@ public struct AudioCacheSweeper: Sendable {
 
 public actor InMemoryAudioCache: AudioCache {
     private var clips: [String: CachedAudio] = [:]
+    /// Bumped by every purge. Actor-isolated, so the check-and-store below is atomic.
+    private var generation: UInt64 = 0
     public nonisolated let maxAge: TimeInterval
     private let now: @Sendable () -> Date
     public init(maxAge: TimeInterval = AudioCacheRetention.maximum, now: @escaping @Sendable () -> Date = { Date() }) {
@@ -289,17 +364,31 @@ public actor InMemoryAudioCache: AudioCache {
     public func store(_ audio: CachedAudio, for key: String) {
         var stamped = audio; stamped.createdAt = now(); clips[key] = stamped
     }
+    public func consentGeneration() -> UInt64 { generation }
+    /// One actor turn, no suspension: no purge can run between the check and the write.
+    public func store(_ audio: CachedAudio, for key: String, ifGeneration expected: UInt64,
+                      stillAllowed: @Sendable () -> Bool) -> Bool {
+        guard generation == expected, stillAllowed() else { return false }
+        store(audio, for: key)
+        return true
+    }
     public func purge(sourceItemIDs: Set<UUID>) {
+        generation &+= 1
         clips = clips.filter { sourceItemIDs.isDisjoint(with: $0.value.sourceItemIDs) }
     }
     /// A clip stamped later than now (stored while the clock ran ahead) is first re-stamped to
     /// now, so its 7 days run from no later than the first sweep after the clock is corrected.
     public func purgeExpired() {
+        generation &+= 1
         let t = now()
         for (key, clip) in clips where clip.createdAt > t { clips[key]?.createdAt = t }
         clips = clips.filter { t.timeIntervalSince($0.value.createdAt) <= maxAge }
     }
-    public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
+    public func purgeAllPersonal() { generation &+= 1; clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {
+        generation &+= 1
+        clips = clips.filter { providerIDs.contains($0.value.providerID) }
+    }
     public var count: Int { clips.count }
 }
 
@@ -328,6 +417,8 @@ public struct FileAudioCache: AudioCache {
     public let maxAge: TimeInterval
 
     private let now: @Sendable () -> Date
+    /// Shared by every cache on this directory: purges and writes serialise on it.
+    private let gate: FileAudioCacheGate
 
     /// `maxAge` is clamped to `AudioCacheRetention.maximum` (7 days).
     public init(directory: URL, maxAge: TimeInterval = AudioCacheRetention.maximum,
@@ -335,6 +426,7 @@ public struct FileAudioCache: AudioCache {
         self.directory = directory
         self.maxAge = AudioCacheRetention.clamp(maxAge)
         self.now = now
+        self.gate = FileAudioCacheGate.gate(for: directory)
     }
 
     private func url(_ key: String) -> URL { directory.appendingPathComponent("\(key).json") }
@@ -393,23 +485,46 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func purge(sourceItemIDs: Set<UUID>) async {
-        removeGroups { clip in clip.map { !sourceItemIDs.isDisjoint(with: $0.sourceItemIDs) } ?? true }
+        gate.purging { removeGroups { clip in clip.map { !sourceItemIDs.isDisjoint(with: $0.sourceItemIDs) } ?? true } }
     }
 
     public func purgeExpired() async {
-        let t = now()
-        for group in groups() {
-            let clip = group.clip.map { clampingFutureStamp($0, key: group.key) }
-            guard clip.map({ t.timeIntervalSince($0.createdAt) > maxAge }) ?? true else { continue }
-            for file in group.files { try? FileManager.default.removeItem(at: file) }
+        gate.purging {
+            let t = now()
+            for group in groups() {
+                let clip = group.clip.map { clampingFutureStamp($0, key: group.key) }
+                guard clip.map({ t.timeIntervalSince($0.createdAt) > maxAge }) ?? true else { continue }
+                for file in group.files { try? FileManager.default.removeItem(at: file) }
+            }
         }
     }
 
     public func purgeAllPersonal() async {
-        removeGroups { clip in clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
+        gate.purging { removeGroups { clip in clip.map { !$0.sourceItemIDs.isEmpty } ?? true } }
+    }
+
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {
+        gate.purging { removeGroups { clip in clip.map { !providerIDs.contains($0.providerID) } ?? true } }
     }
 
     public func store(_ audio: CachedAudio, for key: String) async {
+        gate.writing { _ in write(audio, for: key) }
+    }
+
+    public func consentGeneration() async -> UInt64 { gate.current }
+
+    /// The generation and `stillAllowed()` are checked under the directory's lock, the same
+    /// lock every purge holds while it bumps the generation and deletes.
+    public func store(_ audio: CachedAudio, for key: String, ifGeneration expected: UInt64,
+                      stillAllowed: @Sendable () -> Bool) async -> Bool {
+        gate.writing { generation in
+            guard generation == expected, stillAllowed() else { return false }
+            write(audio, for: key)
+            return true
+        }
+    }
+
+    private func write(_ audio: CachedAudio, for key: String) {
         var stamped = audio; stamped.createdAt = now()
         guard let data = try? JSONEncoder().encode(stamped) else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -563,13 +678,19 @@ public struct VoiceRenderer: Sendable {
     public let budget: VoiceBudget
     public let cache: any AudioCache
     public let revocations: NarrationRevocations
+    /// Cloud-voice consent, read before every route that is not local and free (per cue, at
+    /// render time). Not granted: those routes are skipped as if absent. Fail-closed default:
+    /// the persisted store, which reads `.undecided` until the listener accepts.
+    public let cloudConsent: CloudVoiceConsentStore
 
     public init(routes: [VoiceRoute], budget: VoiceBudget, cache: any AudioCache,
-                revocations: NarrationRevocations = .shared) {
+                revocations: NarrationRevocations = .shared,
+                cloudConsent: CloudVoiceConsentStore = CloudVoiceConsentStore()) {
         self.routes = routes
         self.budget = budget
         self.cache = cache
         self.revocations = revocations
+        self.cloudConsent = cloudConsent
     }
 
     /// The last route alone (the on-device standard voice), sharing this renderer's budget,
@@ -578,7 +699,8 @@ public struct VoiceRenderer: Sendable {
     /// that ran over its cap; it is a narrowed view, not a second renderer.
     public var lastRouteOnly: VoiceRenderer? {
         guard routes.count > 1, let last = routes.last, last.isLocalAndFree else { return nil }
-        return VoiceRenderer(routes: [last], budget: budget, cache: cache, revocations: revocations)
+        return VoiceRenderer(routes: [last], budget: budget, cache: cache, revocations: revocations,
+                             cloudConsent: cloudConsent)
     }
 
     /// Only the on-device, free routes, in order, sharing this renderer's budget, cache and
@@ -588,11 +710,18 @@ public struct VoiceRenderer: Sendable {
     public var onDeviceOnly: VoiceRenderer? {
         let local = routes.filter(\.isLocalAndFree)
         guard !local.isEmpty else { return nil }
-        return VoiceRenderer(routes: local, budget: budget, cache: cache, revocations: revocations)
+        return VoiceRenderer(routes: local, budget: budget, cache: cache, revocations: revocations,
+                             cloudConsent: cloudConsent)
     }
 
     /// Attempt detail for an off-device or paid route skipped for a local-only cue. Fixed text, no cue text.
     public static let localOnlySkip = "local-only cue: off-device route skipped"
+    /// Attempt detail for an off-device or paid route skipped because cloud-voice consent is not
+    /// stored (undecided, declined or turned off). Fixed text, no cue text.
+    public static let noConsentSkip = "no cloud-voice consent: off-device route skipped"
+    /// Consent was turned off, or a cache purge ran, while this route was rendering: its audio
+    /// is dropped, never cached or played, and the next (on-device) route speaks the line.
+    public static let consentRevokedDiscard = "cloud-voice consent revoked mid-render: clip dropped"
 
     public static func cacheKey(text: String, route: VoiceRoute) -> String {
         SHA256Digest.hex([cacheFormatVersion, route.providerID, route.voice.id, route.acceptsSSML ? "ssml" : "text", text]
@@ -647,6 +776,12 @@ public struct VoiceRenderer: Sendable {
         return cue.kind == .transition && !cue.isContent && cue.source == nil && cue.provenance == nil
     }
 
+    /// Cloud-voice consent revoked (N4): deletes every cached clip that did not come from one of
+    /// this renderer's on-device, free routes, so no cloud or paid audio is replayed from cache.
+    public func purgeCloudClips() async {
+        await cache.purgeClips(keepingProviders: Set(routes.filter(\.isLocalAndFree).map(\.providerID)))
+    }
+
     /// Renders `cue` on the first route that succeeds. Unless `mayLeaveDevice(cue, attribution:)`
     /// holds, only `isLocalAndFree` routes are used: any route that leaves the device or is paid
     /// (even one built without `leavesDevice`) is skipped, never looked up in the cache, reserved
@@ -657,6 +792,9 @@ public struct VoiceRenderer: Sendable {
         var attempts: [VoiceAttempt] = []
         let sources = cue.sourceItemID.map { [$0] } ?? []
         let token = revocations.token()  // before any synthesis: a later purge of `sources` wins
+        // Also before any synthesis (Fry, #258): a cloud clip is stored only if no purge ran
+        // since this point, even one followed by a re-grant.
+        let generation = await cache.consentGeneration()
         if revocations.purgePending(sources) {
             // A purge of this item is still running: render nothing that it could miss.
             return .failure(Failure(reason: .renderFailed, attempts: [VoiceAttempt(providerID: routes.first?.providerID ?? "", result: .cancelled)]))
@@ -669,6 +807,12 @@ public struct VoiceRenderer: Sendable {
                 // Local-only cue: its text never reaches this off-device or paid route, its cache
                 // keys or its budget (Echo: a paid route without `leavesDevice` is not local).
                 attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.localOnlySkip)))
+                continue
+            }
+            if !route.isLocalAndFree && !cloudConsent.isGranted {
+                // No stored cloud-voice consent: the text never reaches this route, its cache keys
+                // or its budget. The on-device route after it speaks the line, so music never waits.
+                attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.noConsentSkip)))
                 continue
             }
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
@@ -708,6 +852,11 @@ public struct VoiceRenderer: Sendable {
                     attempts.append(VoiceAttempt(providerID: route.providerID, result: .overDuration(artifact.durationSeconds)))
                     continue
                 }
+                if !route.isLocalAndFree && !cloudConsent.isGranted {
+                    // Turned off while this request was in flight: drop the cloud clip.
+                    attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.consentRevokedDiscard)))
+                    continue
+                }
                 let audio = CachedAudio(data: artifact.data, seconds: artifact.durationSeconds,
                                         providerID: route.providerID, voiceID: route.voice.id,
                                         sourceItemIDs: cue.sourceItemID.map { [$0] } ?? [])
@@ -716,7 +865,19 @@ public struct VoiceRenderer: Sendable {
                     attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
                     return .failure(Failure(reason: .renderFailed, attempts: attempts))
                 }
-                await cache.store(audio, for: key)
+                if route.isLocalAndFree {
+                    await cache.store(audio, for: key)
+                } else {
+                    // Cloud or paid clip: atomic check-and-store. Refused if any purge ran since
+                    // the render started, or consent is off now; nothing is written, and the next
+                    // (on-device) route speaks the line.
+                    let consent = cloudConsent
+                    guard await cache.store(audio, for: key, ifGeneration: generation,
+                                            stillAllowed: { consent.isGranted }) else {
+                        attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.consentRevokedDiscard)))
+                        continue
+                    }
+                }
                 if revocations.revoked(sources, since: token) {
                     // A purge landed while the write was in flight and may have run before it:
                     // remove what we just wrote. (A purge after the write removes it itself.)

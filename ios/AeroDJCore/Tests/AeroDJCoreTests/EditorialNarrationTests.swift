@@ -272,7 +272,7 @@ final class EditorialNarrationTests: XCTestCase {
         let preparer = DJBreakPreparer(
             renderer: VoiceRenderer(routes: [BetaVoicePolicy.onDeviceRoute(provider: FixedDurationVoice(seconds: 7), voice: djVoice)],
                                     budget: VoiceBudget(dailyCapMicrodollars: 0),
-                                    cache: InMemoryAudioCache()),
+                                    cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted)),
             userID: "u", stationID: "s")
         let settled = expectation(description: "over cap")
         await preparer.observe { event in
@@ -359,7 +359,7 @@ final class EditorialNarrationTests: XCTestCase {
         let paid = VoiceRoute(providerID: "cartesia", provider: SpyVoice(providerID: "cartesia", calls: paidCalls),
                               voice: djVoice, microdollarsPerThousandCharacters: 30_000)
         XCTAssertFalse(BetaVoicePolicy.problems(routes: [paid], dailyCapMicrodollars: 0).isEmpty)
-        let blocked = VoiceRenderer(routes: [paid], budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
+        let blocked = VoiceRenderer(routes: [paid], budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
         let refused = await blocked.render(
             NarrationCue(id: UUID(), order: 0, group: 0, kind: .transition, text: "Good morning.", estimatedSeconds: 1,
                          maxSeconds: 12, sourceItemID: nil, source: nil, provenance: nil),
@@ -624,7 +624,7 @@ final class EditorialNarrationTests: XCTestCase {
     private func onDevice(_ provider: any VoiceProvider) -> VoiceRenderer {
         VoiceRenderer(routes: [BetaVoicePolicy.onDeviceRoute(provider: provider, voice: djVoice)],
                       budget: VoiceBudget(dailyCapMicrodollars: 0),
-                      cache: InMemoryAudioCache())
+                      cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
     }
 
     private func isArtistFocus(_ line: String) -> Bool {

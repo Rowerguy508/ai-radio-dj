@@ -86,6 +86,10 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(voice: paidVoice, userID: "listener", stationID: "default", cadence: DJCadence(),
                                        talkOverEnabled: { DJTalkoverFlag.isEnabled() }, bundledClips: bundledClips)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
+        // Pro and consent changes reach this session (SubscriptionModel, CloudVoiceConsentModel; E1).
+        PaidVoiceAccessRelay.session = djSession
+        // A consent revoke deletes cached cloud clips from the live renderer's cache (N4).
+        PaidVoiceAccessRelay.purgeCloudAudio = { await voice.purgeCloudClips() }
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
