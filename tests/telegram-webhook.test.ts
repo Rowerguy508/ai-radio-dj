@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as control from '@/app/api/telegram/route';
 import * as intake from '@/app/api/webhooks/telegram/route';
 
-const SECRET = 'fixture-webhook-secret';
+const SECRET = 'fixture-webhook-secret-0123456789ab';
 const PHRASE = 'fixture-message-phrase';
 
 function post(url: string, body: unknown, secret?: string) {
@@ -72,6 +72,39 @@ describe('telegram webhook authentication', () => {
     expect(response.status).toBe(200);
     const dumped = JSON.stringify(log.mock.calls) + JSON.stringify(error.mock.calls);
     expect(dumped).not.toContain(PHRASE);
+  });
+
+  it('rejects both receivers when the secret is blank or under 32 chars after trimming', async () => {
+    const short = 'w'.repeat(31);
+    for (const value of ['   ', '\n\t', short, `  ${short}\n`]) {
+      vi.stubEnv('TELEGRAM_WEBHOOK_SECRET', value);
+      for (const presented of [short, value]) {
+        const c = await control.POST(post('http://localhost/api/telegram', {
+          message: { chat: { id: 1 }, text: '/start' },
+        }, presented));
+        const i = await intake.POST(post('http://localhost/api/webhooks/telegram', {
+          message: { from: { id: 7 }, text: PHRASE },
+        }, presented));
+        expect([c.status, i.status], JSON.stringify(value)).toEqual([401, 401]);
+      }
+    }
+  });
+
+  it('accepts both receivers with a 32-char secret, padded in the env or not', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const secret = 'w'.repeat(32);
+    for (const value of [secret, `  ${secret}\n`]) {
+      vi.stubEnv('TELEGRAM_WEBHOOK_SECRET', value);
+      const c = await control.POST(post('http://localhost/api/telegram', {
+        message: { chat: { id: 1 }, text: '/start' },
+      }, secret));
+      expect(c.status, JSON.stringify(value)).toBe(200);
+      const i = await intake.POST(post('http://localhost/api/webhooks/telegram', {
+        message: { from: { id: 7 }, text: PHRASE },
+      }, secret));
+      expect(i.status, JSON.stringify(value)).toBe(200);
+    }
   });
 
   it('does not expose a verify-token GET handler', () => {

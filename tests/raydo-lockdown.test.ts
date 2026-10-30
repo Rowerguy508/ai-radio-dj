@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { middleware } from '@/middleware';
@@ -8,7 +8,7 @@ import { secretMatches } from '@/lib/auth/route-gate';
 import { resetPaidInferenceBudgetForTests } from '@/lib/llm/paid-inference';
 
 const ADMIN_TOKEN = 'fixture-admin-token-0123456789abcdef';
-const TELEGRAM_SECRET = 'fixture-telegram-secret';
+const TELEGRAM_SECRET = 'fixture-telegram-secret-0123456789';
 
 // Every reviewed route (see api-route-inventory.test.ts) that needs the admin token.
 const ADMIN_ROUTES: Array<[string, string]> = [
@@ -111,6 +111,39 @@ describe('ray-do lockdown middleware', () => {
     }
   });
 
+  it('fails closed with 503 when the admin token is blank or short after trimming', async () => {
+    for (const value of [' ', '   ', '\n', ' \t\r\n ', `  ${'x'.repeat(31)}  `, `\n${'x'.repeat(31)}\n`]) {
+      vi.stubEnv('RAY_DO_ADMIN_TOKEN', value);
+      for (const [method, path] of ADMIN_ROUTES) {
+        for (const authorization of ['Bearer x', `Bearer ${'x'.repeat(31)}`, `Bearer ${ADMIN_TOKEN}`]) {
+          const response = await middleware(request(method, path, { authorization }));
+          expect(response.status, `${method} ${path} ${JSON.stringify(value)}`).toBe(503);
+          expect(await response.json()).toEqual({ error: 'misconfig' });
+        }
+      }
+    }
+  });
+
+  it('trims a padded admin token in the env and still matches the exact token', async () => {
+    for (const value of [`  ${ADMIN_TOKEN}  `, `${ADMIN_TOKEN}\n`, `\t${ADMIN_TOKEN}\r\n`]) {
+      vi.stubEnv('RAY_DO_ADMIN_TOKEN', value);
+      for (const [method, path] of ADMIN_ROUTES) {
+        const ok = await middleware(request(method, path, { authorization: `Bearer ${ADMIN_TOKEN}` }));
+        expect(allowed(ok), `${method} ${path} ${JSON.stringify(value)}`).toBe(true);
+        const wrong = await middleware(request(method, path, { authorization: `Bearer ${ADMIN_TOKEN}x` }));
+        expect(wrong.status, `${method} ${path}`).toBe(401);
+      }
+    }
+  });
+
+  it('accepts an admin token of exactly 32 characters after trimming', async () => {
+    const token = 'k'.repeat(32);
+    vi.stubEnv('RAY_DO_ADMIN_TOKEN', ` ${token} `);
+    for (const [method, path] of ADMIN_ROUTES) {
+      expect(allowed(await middleware(request(method, path, { authorization: `Bearer ${token}` }))), path).toBe(true);
+    }
+  });
+
   it('requires the Telegram secret header on the Telegram receivers', async () => {
     for (const path of TELEGRAM_ROUTES) {
       expect((await middleware(request('POST', path))).status, path).toBe(401);
@@ -137,6 +170,35 @@ describe('ray-do lockdown middleware', () => {
     }
   });
 
+  it('fails closed with 503 on the Telegram receivers when the secret is blank or under 32 chars', async () => {
+    const short = 't'.repeat(31);
+    for (const value of [' ', ' \t\n ', short, `  ${short}  `, `${short}\n`]) {
+      vi.stubEnv('TELEGRAM_WEBHOOK_SECRET', value);
+      for (const path of TELEGRAM_ROUTES) {
+        for (const presented of [short, value, TELEGRAM_SECRET]) {
+          const response = await middleware(request('POST', path, { 'x-telegram-bot-api-secret-token': presented }));
+          expect(response.status, `${path} ${JSON.stringify(value)}`).toBe(503);
+          expect(await response.json()).toEqual({ error: 'misconfig' });
+        }
+      }
+    }
+  });
+
+  it('accepts a Telegram secret of exactly 32 chars, padded or not', async () => {
+    const secret = 's'.repeat(32);
+    for (const value of [secret, `  ${secret}  `, `${secret}\n`]) {
+      vi.stubEnv('TELEGRAM_WEBHOOK_SECRET', value);
+      for (const path of TELEGRAM_ROUTES) {
+        expect(allowed(await middleware(request('POST', path, {
+          'x-telegram-bot-api-secret-token': secret,
+        }))), `${path} ${JSON.stringify(value)}`).toBe(true);
+        expect((await middleware(request('POST', path, {
+          'x-telegram-bot-api-secret-token': `${secret}x`,
+        }))).status, path).toBe(401);
+      }
+    }
+  });
+
   it('returns 410 for set-webhook for every caller and the handler is gone', async () => {
     const callers: Record<string, string>[] = [
       {},
@@ -159,6 +221,49 @@ describe('ray-do lockdown middleware', () => {
     expect(await secretMatches('', '')).toBe(false);
     expect(await secretMatches(null, '')).toBe(false);
     expect(await secretMatches(ADMIN_TOKEN, ADMIN_TOKEN)).toBe(true);
+  });
+
+  // Fry's N2 on #262: timing cannot be unit-tested, so pin the mechanism instead.
+  // A plain `===` swap gives the same answers, so it is caught structurally.
+  it('hashes both sides to fixed-length digests before every compare', async () => {
+    const digest = vi.spyOn(crypto.subtle, 'digest');
+    try {
+      for (const provided of ['x', `${ADMIN_TOKEN}x`, ADMIN_TOKEN, null]) {
+        digest.mockClear();
+        await secretMatches(provided, ADMIN_TOKEN);
+        expect(digest, String(provided)).toHaveBeenCalledTimes(2);
+        for (const call of digest.mock.calls) expect(call[0]).toBe('SHA-256');
+        const hashed = digest.mock.calls.map((c) => new TextDecoder().decode(c[1] as Uint8Array)).sort();
+        expect(hashed).toEqual([provided ?? '', ADMIN_TOKEN].sort());
+      }
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it('keeps the constant-time XOR fold and never compares secrets with ==', () => {
+    const source = readFileSync('lib/auth/route-gate.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    const body = /export async function secretMatches[\s\S]*?\n}\n/.exec(source)?.[0] ?? '';
+    expect(body).toMatch(/sha256\(provided \?\? ''\)/);
+    expect(body).toMatch(/sha256\(expected\)/);
+    expect(body).toMatch(/for \(let i = 0; i < wanted\.length; i\+\+\) diff \|= actual\[i\] \^ wanted\[i\];/);
+    expect(body).toMatch(/return diff === 0;/);
+    expect(body).not.toMatch(/\b(provided|expected|actual|wanted)\s*[!=]==?|[!=]==?\s*(provided|expected|actual|wanted)\b/);
+    expect(source).not.toMatch(/\b(provided|expected)\s*[!=]==?\s*(provided|expected)\b/);
+  });
+
+  it('keeps timingSafeEqual over digests in the Telegram handler check', () => {
+    const source = readFileSync('lib/telegram/webhook-auth.ts', 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    expect(source).toMatch(/createHash\('sha256'\)\.update\(provided \?\? '', 'utf8'\)\.digest\(\)/);
+    expect(source).toMatch(/createHash\('sha256'\)\.update\(expected, 'utf8'\)\.digest\(\)/);
+    expect(source).toMatch(/return timingSafeEqual\(actual, wanted\);/);
+    expect(source).not.toMatch(/\b(provided|expected|actual|wanted)\s*[!=]==?|[!=]==?\s*(provided|expected|actual|wanted)\b/);
+  });
+
+  it('never trims the presented credential', async () => {
+    expect(await secretMatches(` ${ADMIN_TOKEN}`, ADMIN_TOKEN)).toBe(false);
+    expect(await secretMatches(`${ADMIN_TOKEN}\n`, ADMIN_TOKEN)).toBe(false);
+    expect(await secretMatches(`${ADMIN_TOKEN} `, ADMIN_TOKEN)).toBe(false);
   });
 });
 
@@ -212,6 +317,18 @@ describe('paid routes repeat the admin check next to the spend', () => {
     vi.stubEnv('RAY_DO_ADMIN_TOKEN', '');
     expect(await both({ authorization: 'Bearer ' })).toEqual([503, 503]);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 when the admin token is whitespace-only and never calls MiniMax', async () => {
+    vi.stubEnv('RAY_DO_ADMIN_TOKEN', ' \t\n ');
+    expect(await both({ authorization: 'Bearer x' })).toEqual([503, 503]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('reaches the provider with the exact token when the env value is padded', async () => {
+    vi.stubEnv('RAY_DO_ADMIN_TOKEN', `  ${ADMIN_TOKEN}\n`);
+    expect(await both({ authorization: `Bearer ${ADMIN_TOKEN}` })).toEqual([200, 200]);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('reaches the provider only with the admin token', async () => {
