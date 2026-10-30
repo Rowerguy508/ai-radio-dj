@@ -54,7 +54,7 @@ final class ProStatusRefresherTests: XCTestCase {
 
         reads.events = []
         clock.advance(3600)
-        let timer = timers.pending[0]
+        guard let timer = timers.pending.first else { return XCTFail("expiry timer armed") }
         timer.cancelled = true
         await timer.fire()
         XCTAssertEqual(reads.events, ["refresh", "paidVoiceAccessChanged"], "refreshStatus(), then one notification")
@@ -75,7 +75,7 @@ final class ProStatusRefresherTests: XCTestCase {
         await refresher.refresh()
         reads.events = []
         clock.advance(1800)
-        let early = timers.pending[0]
+        guard let early = timers.pending.first else { return XCTFail("expiry timer armed") }
         early.cancelled = true
         await early.fire()
         XCTAssertEqual(reads.events, [])
@@ -90,7 +90,8 @@ final class ProStatusRefresherTests: XCTestCase {
         await refresher.refresh()
         reads.events = []
         clock.advance(3600)
-        await timers.pending[0].fire()
+        guard let timer = timers.pending.first else { return XCTFail("expiry timer armed") }
+        await timer.fire()
         XCTAssertEqual(reads.events, ["refresh", "paidVoiceAccessChanged"], "the session re-checks and keeps paid voice")
         XCTAssertEqual(cache.snapshot(), .pro(productID: monthly, expiresAt: renewed))
         XCTAssertEqual(timers.pending.filter { !$0.cancelled }.map(\.date), [renewed])
