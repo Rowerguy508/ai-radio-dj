@@ -335,6 +335,70 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
         XCTAssertEqual(box.lock.withLock { box.value }, .skipped(.cancelled))
     }
 
+    /// Sentinel/Fry (#255): cancelAll() then a re-take of the same boundary inside the wait.
+    /// The old check's deny must not overwrite the new take's result or report a skip.
+    func testRetakeDuringDeniedTakeCheckIsNotOverwritten() async {
+        let consent = HangingConsent()
+        let access = ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: consent)
+        let p = preparer(publicVoice(access, transport: SpyTransport()), bundledAccess: access)
+        let events = DJEventLog()
+        await p.observe { events.add($0) }
+        await p.prepare(twoCueBreak(after: 0), deadline: .seconds(5), onDeviceOnly: false)
+        _ = await ready(p, 0)
+        consent.hang()
+        final class Box: @unchecked Sendable { let lock = NSLock(); var value: DJBreakOutcome? }
+        let box = Box()
+        let take = Task { let r = await p.takeCheckedBreak(afterTrack: 0); box.lock.withLock { box.value = r } }
+        try? await Task.sleep(for: .milliseconds(50))
+        await p.cancelAll()
+        let retake = await p.takeBreak(afterTrack: 0)   // new queue takes the same boundary
+        await take.value
+        XCTAssertEqual(retake, .skipped(.notPlanned))
+        XCTAssertEqual(box.lock.withLock { box.value }, .skipped(.cancelled))
+        let result = await p.testResult(afterTrack: 0)
+        XCTAssertNil(result, "the old deny does not overwrite the new take")
+        XCTAssertFalse(events.all.contains(.skipped(afterTrack: 0, .paidVoiceRevoked)))
+    }
+
+    /// A re-take of the boundary with no cancelAll() (a duplicate boundary report) also
+    /// supersedes the check: the old deny writes and reports nothing over the re-take.
+    func testRetakeWithoutCancelSupersedesTheCheck() async {
+        let consent = HangingConsent()
+        let access = ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: consent)
+        let p = preparer(publicVoice(access, transport: SpyTransport()), bundledAccess: access)
+        let events = DJEventLog()
+        await p.observe { events.add($0) }
+        await p.prepare(twoCueBreak(after: 0), deadline: .seconds(5), onDeviceOnly: false)
+        _ = await ready(p, 0)
+        consent.hang()
+        final class Box: @unchecked Sendable { let lock = NSLock(); var value: DJBreakOutcome? }
+        let box = Box()
+        let take = Task { let r = await p.takeCheckedBreak(afterTrack: 0); box.lock.withLock { box.value = r } }
+        try? await Task.sleep(for: .milliseconds(50))
+        _ = await p.takeBreak(afterTrack: 0)
+        await take.value
+        XCTAssertEqual(box.lock.withLock { box.value }, .skipped(.cancelled))
+        let result = await p.testResult(afterTrack: 0)
+        XCTAssertNil(result)
+        XCTAssertFalse(events.all.contains(.skipped(afterTrack: 0, .paidVoiceRevoked)))
+    }
+
+    /// Same re-take race with an allow answer: the old queue's break is never handed out.
+    func testRetakeDuringAllowedTakeCheckHandsNothingOut() async {
+        let access = ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: SlowConsent(delay: .milliseconds(150)))
+        let p = preparer(publicVoice(access, transport: SpyTransport()), bundledAccess: access)
+        await p.prepare(twoCueBreak(after: 0), deadline: .seconds(5), onDeviceOnly: false)
+        _ = await ready(p, 0)
+        final class Box: @unchecked Sendable { let lock = NSLock(); var value: DJBreakOutcome? }
+        let box = Box()
+        let take = Task { let r = await p.takeCheckedBreak(afterTrack: 0); box.lock.withLock { box.value = r } }
+        try? await Task.sleep(for: .milliseconds(30))
+        await p.cancelAll()
+        _ = await p.takeBreak(afterTrack: 0)
+        await take.value
+        XCTAssertEqual(box.lock.withLock { box.value }, .skipped(.cancelled), "old allow must not hand out .ready")
+    }
+
     /// An answer that arrives in time (well inside the bound) still plays the paid break.
     func testTakeCheckAnsweredInTimeStillPlays() async {
         let access = ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: SlowConsent(delay: .milliseconds(20)))

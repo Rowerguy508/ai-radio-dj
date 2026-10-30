@@ -110,6 +110,10 @@ public actor DJBreakPreparer {
     /// still playing) must not render, and spend on, a second break (-Fry, Sentinel #210).
     /// Cleared with everything else by `cancelAll()` (new queue: indices restart).
     private var taken: Set<Int> = []
+    /// One token per in-flight take check (Sentinel/Fry, #255). A re-take of the boundary or a
+    /// cancelAll() clears it, so a check that finishes after either writes and hands out nothing.
+    private var takeTokens: [Int: UInt64] = [:]
+    private var nextTakeToken: UInt64 = 0
 
     public enum DJBreakEvent: Equatable, Sendable {
         case preparing(afterTrack: Int, includesBriefing: Bool)
@@ -244,7 +248,7 @@ public actor DJBreakPreparer {
     }
 
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
-        defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k); taken.insert(k) }
+        defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k); taken.insert(k); takeTokens[k] = nil }
         guard natural else {
             tasks[k]?.cancel()
             let wasPlanned = tasks[k] != nil || results.removeValue(forKey: k) != nil
@@ -275,12 +279,17 @@ public actor DJBreakPreparer {
         guard case .ready(let ready) = outcome, let paidVoice, ready.clips.contains(where: usesPaidVoice) else {
             return outcome
         }
+        nextTakeToken &+= 1
+        let token = nextTakeToken
+        takeTokens[k] = token
         let permitted = (try? await VoiceRenderer.withTimeout(Self.paidVoiceTakeCheckTimeout) {
             await paidVoice.decision().permitsPaidVoice
         }) ?? false   // timed out or cancelled: fail closed
-        // A cancelAll() during the check (Fry, #255) cleared this queue: write nothing, report
-        // nothing, hand nothing out. A stale result would block prepare at `k` in the next queue.
-        guard taken.contains(k) else { return .skipped(.cancelled) }
+        // A cancelAll() or a re-take of `k` during the check (Fry, Sentinel, #255) superseded it:
+        // write nothing, report nothing, hand nothing out. A stale result would block prepare at
+        // `k` in the next queue or overwrite the new take's result.
+        guard takeTokens[k] == token else { return .skipped(.cancelled) }
+        takeTokens[k] = nil
         guard permitted else {
             results[k] = .skipped(.paidVoiceRevoked)
             emit(.skipped(afterTrack: k, .paidVoiceRevoked))
@@ -331,6 +340,7 @@ public actor DJBreakPreparer {
         openForRearm.removeAll()
         rearmed.removeAll()
         taken.removeAll()
+        takeTokens.removeAll()
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
@@ -350,6 +360,7 @@ public actor DJBreakPreparer {
         // that is the playing song's, and if the talk-over already took it early, a duplicate
         // `onSongStarted(k)` must still never render it a second time.
         taken.formIntersection(kept)
+        takeTokens = takeTokens.filter { kept.contains($0.key) }
         openForRearm.formIntersection(kept)   // a dropped boundary can't be re-armed by a seek
         rearmed.formIntersection(kept)
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
