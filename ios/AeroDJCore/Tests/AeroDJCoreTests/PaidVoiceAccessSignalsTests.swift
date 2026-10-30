@@ -29,6 +29,41 @@ private struct FakeInstallSession: PaidVoiceInstallSessionProviding {
     }
 }
 
+/// Stands in for a StoreKit read that never answers (`Transaction.currentEntitlements` or
+/// `Transaction.latest` stuck on the App Store). Iterating it suspends until cancelled.
+private func storeKitThatNeverAnswers() -> AsyncStream<Int> { AsyncStream { _ in } }
+
+/// A refresh shaped like SubscriptionModel.refreshStatus: reads StoreKit, then sets the cache.
+/// Here the read never completes, so the cache keeps whatever it held.
+private func hungRefresh(_ cache: ProEntitlementCache) -> Task<Void, Never> {
+    Task.detached {
+        for await _ in storeKitThatNeverAnswers() {}
+        if !Task.isCancelled { cache.set(.free) }
+    }
+}
+
+/// Negative control: a provider that waits on the refresh, the shape Sentinel ruled out.
+private struct AwaitsRefreshEntitlement: ProEntitlementProviding {
+    let refresh: Task<Void, Never>
+    let cache: ProEntitlementCache
+    func currentProEntitlement() async -> ProEntitlementState { await refresh.value; return cache.snapshot() }
+}
+
+private final class AnswerOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func claim() -> Bool { lock.withLock { if done { return false }; done = true; return true } }
+}
+
+/// The value of `op`, or nil if it has not answered within `seconds`. Never waits on a hung `op`.
+private func within<T: Sendable>(_ seconds: Double, _ op: @escaping @Sendable () async -> T) async -> T? {
+    let once = AnswerOnce()
+    return await withCheckedContinuation { (c: CheckedContinuation<T?, Never>) in
+        Task.detached { let v = await op(); if once.claim() { c.resume(returning: v) } }
+        Task.detached { try? await Task.sleep(for: .seconds(seconds)); if once.claim() { c.resume(returning: nil) } }
+    }
+}
+
 @MainActor
 final class PaidVoiceAccessSignalsTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -175,6 +210,96 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
         XCTAssertEqual(transport.calls, callsBefore)
     }
 
+    // MARK: decision() answers from cached state (Sentinel on #255). takeCheckedBreak bounds the
+    // check at 300 ms and fails closed (Echo, 2ed3ea6); these providers must answer well inside
+    // that, from ProEntitlementCache and the stored consent, never after StoreKit.
+
+    /// Well under DJBreakPreparer.paidVoiceTakeCheckTimeout (300 ms), with slack for a loaded CI box.
+    private let fastDecision = 0.1
+
+    func testDecisionAnswersFromTheCacheWhileAStoreKitRefreshNeverCompletes() async {
+        let cache = ProEntitlementCache(.pro(productID: monthly, expiresAt: Date().addingTimeInterval(86_400)))
+        let consent = CloudVoiceConsentStore.inMemory(.accepted)
+        let refresh = hungRefresh(cache)
+        defer { refresh.cancel() }
+        let access = ProVoiceAccess(entitlement: cache, consent: consent)
+        let clock = ContinuousClock(), start = clock.now
+        let answer = await within(fastDecision) { await access.decision() }
+        XCTAssertEqual(answer, .allowed, "answered from the cache, not after the refresh")
+        XCTAssertLessThan(clock.now - start, .milliseconds(100), "well under the 300 ms take-check bound")
+        consent.decline()
+        let revoked = await within(fastDecision) { await access.decision() }
+        XCTAssertEqual(revoked, .denied(.noConsent), "the stored consent is read per call")
+    }
+
+    func testDecisionFailsClosedOnAnEmptyOrUnverifiedCacheWhileRefreshing() async {
+        let empty = ProEntitlementCache()   // nothing read from StoreKit yet
+        let refresh = hungRefresh(empty)
+        defer { refresh.cancel() }
+        let granted = CloudVoiceConsentStore.inMemory(.accepted)
+        let none = await within(fastDecision) { await ProVoiceAccess(entitlement: empty, consent: granted).decision() }
+        XCTAssertEqual(none, .denied(.notPro))
+        let unverifiedCache = ProEntitlementCache(.unverified(productID: monthly))
+        let unverified = await within(fastDecision) { await ProVoiceAccess(entitlement: unverifiedCache, consent: granted).decision() }
+        XCTAssertEqual(unverified, .denied(.unverified))
+        let pro = ProEntitlementCache(.pro(productID: monthly, expiresAt: Date().addingTimeInterval(86_400)))
+        let undecided = await within(fastDecision) {
+            await ProVoiceAccess(entitlement: pro, consent: CloudVoiceConsentStore.inMemory()).decision()
+        }
+        XCTAssertEqual(undecided, .denied(.noConsent), "no stored consent is no consent")
+    }
+
+    /// The harness does catch a provider that waits on StoreKit, so the two tests above can fail.
+    func testAProviderThatAwaitsTheRefreshIsCaughtAsHung() async {
+        let cache = ProEntitlementCache(.pro(productID: monthly, expiresAt: Date().addingTimeInterval(86_400)))
+        let refresh = hungRefresh(cache)
+        defer { refresh.cancel() }
+        let access = ProVoiceAccess(entitlement: AwaitsRefreshEntitlement(refresh: refresh, cache: cache),
+                                    consent: CloudVoiceConsentStore.inMemory(.accepted))
+        let answer = await within(0.3) { await access.decision() }
+        XCTAssertNil(answer)
+    }
+
+    /// End to end: the boundary re-check hands out a paid break mid-refresh. A provider that
+    /// waited on StoreKit would hit Echo's 300 ms bound and be skipped, so `.ready` here proves
+    /// the answer came from the cache in time.
+    func testTakeCheckedBreakAnswersWhileAStoreKitRefreshNeverCompletes() async {
+        let cache = ProEntitlementCache(.pro(productID: monthly, expiresAt: Date().addingTimeInterval(86_400)))
+        let store = CloudVoiceConsentStore.inMemory(.accepted)
+        let access = ProVoiceAccess(entitlement: cache, consent: store)
+        let base = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
+                                 budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),
+                                 revocations: NarrationRevocations(), cloudConsent: store)
+        let voice = PaidVoice.publicComposition(base: base, access: access, selectedVoiceID: PremiumVoiceCatalog.voices[0].id,
+                                                session: FakeInstallSession(), routeCompiledIn: true,
+                                                transport: CountingTransport())
+        let config = StationConfiguration(commentary: .frequent)
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
+            consent: StaticIntegrationConsent([:]))
+        await station.load()
+        let preparer = DJBreakPreparer(voice: voice, userID: "u", stationID: "s", cadence: config.cadence())
+        let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 })
+        await session.start()
+        await session.queueStarted(djTracks(8))
+        let boundaries = session.plannedBoundaries
+        guard boundaries.count >= 2 else { return XCTFail("two breaks planned") }
+        for k in boundaries.prefix(2) {
+            await session.songStarted(index: k, remaining: .seconds(180))
+            guard case .ready? = await outcome(preparer, k) else { return XCTFail("break \(k) prepared") }
+        }
+        let refresh = hungRefresh(cache)
+        defer { refresh.cancel() }
+
+        let first = boundaries[0], second = boundaries[1]
+        guard case .ready? = await within(1, { await preparer.takeCheckedBreak(afterTrack: first) }) else {
+            return XCTFail("a paid break is handed out from the cached Pro state, mid-refresh")
+        }
+        cache.set(.free)   // what a completed refresh would write; the hung one never gets there
+        let skipped = await within(1) { await preparer.takeCheckedBreak(afterTrack: second) }
+        XCTAssertEqual(skipped, .skipped(.paidVoiceRevoked), "and skipped once the cache says not Pro")
+    }
+
     private func outcome(_ preparer: DJBreakPreparer, _ k: Int) async -> DJBreakOutcome? {
         for _ in 0..<500 {
             if let r = await preparer.testResult(afterTrack: k) { return r }
@@ -215,6 +340,20 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
         XCTAssertFalse(model.contains("store.accept()"), "a direct write would skip the notification")
         XCTAssertFalse(model.contains("store.decline()"), "a direct write would skip the notification")
         XCTAssertTrue(model.contains("self.signals = signals ?? PaidVoiceConsentSignals(store: store)"))
+    }
+
+    /// The app's providers answer from cached state: the live gate is built on
+    /// ProEntitlementCache.shared and the stored consent, and SubscriptionModel's provider reads
+    /// only the cache snapshot (no StoreKit, no network, no Transaction.currentEntitlements).
+    func testTheAppGateReadsOnlyCachedState() throws {
+        let live = try text("ios/AeroDJ/OwnerVoiceTrial+App.swift")
+            .components(separatedBy: "static var live: ProVoiceAccess {").dropFirst().first?
+            .components(separatedBy: "\n    }\n").first ?? ""
+        XCTAssertTrue(live.contains("ProVoiceAccess(entitlement: ProEntitlementCache.shared, consent: CloudVoiceConsentStore())"))
+        let provider = try text("ios/AeroDJ/Purchases/Subscriptions+App.swift")
+            .components(separatedBy: "nonisolated func currentProEntitlement() async -> ProEntitlementState {").dropFirst().first?
+            .components(separatedBy: "\n    }\n").first ?? "missing"
+        XCTAssertEqual(provider.trimmingCharacters(in: .whitespacesAndNewlines), "entitlement.snapshot()")
     }
 
     func testTheAppRegistersItsBreakSession() throws {

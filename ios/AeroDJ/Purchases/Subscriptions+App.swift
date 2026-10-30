@@ -48,8 +48,10 @@ final class SubscriptionModel: ProEntitlementProviding {
         self.accessChanges = accessChanges ?? ProAccessChangeTracker()
     }
 
+    /// The cached state only, never StoreKit: `takeCheckedBreak` asks this with no time limit
+    /// (Sentinel on #255), so it must answer while a refresh is still waiting on the App Store.
     nonisolated func currentProEntitlement() async -> ProEntitlementState {
-        await entitlement.currentProEntitlement()
+        entitlement.snapshot()
     }
 
     /// Starts listening for purchases, renewals, refunds and restores, then reads the current state.
