@@ -4,6 +4,17 @@
 #
 # Exit 0 = skip the build, exit 1 = build.
 #
+# Only Preview and Development deploys may skip. VERCEL_GIT_PREVIOUS_SHA is the
+# last successful deploy for the branch in ANY environment, so a Production
+# deploy can be handed a Preview deploy's SHA: Orion saw Preview dpl_CuqEdr...
+# build 2b748bd and, ~50 s later, Production of the same 2b748bd skip with "no
+# changes ... since last deploy 2b748bd42a93", leaving Production on old code.
+# This step has no API token (and Vercel settings/env stay untouched), so it
+# cannot tell which environment PREV came from. So VERCEL_ENV=production always
+# builds (fail open), and so does an unset, empty or unknown VERCEL_ENV. The
+# check runs before any git or fetch work. Cost: app-only commits that deploy
+# to Production now build the proxy too, which is harmless (build minutes only).
+#
 # Compares the commit being deployed against VERCEL_GIT_PREVIOUS_SHA, the SHA
 # of the last successful deployment for this project and branch, so a push
 # whose tip commit doesn't touch the proxy still builds when an earlier commit
@@ -54,6 +65,13 @@ is_ancestor() { git merge-base --is-ancestor --end-of-options "$prev" "$head" 2>
 is_shallow() { [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; }
 build() { log "BUILD - $1"; exit 1; }
 skip() { log "SKIP - $1"; exit 0; }
+
+# Before any git work: only preview/development may compare against PREV.
+case "${VERCEL_ENV:-}" in
+  preview|development) ;;
+  production) build "production deploys always build (PREVIOUS_SHA may be a preview deploy)" ;;
+  *) build "VERCEL_ENV is unset, empty or not preview/development/production" ;;
+esac
 
 prev="${VERCEL_GIT_PREVIOUS_SHA:-}"
 [ -n "$prev" ] || build "VERCEL_GIT_PREVIOUS_SHA is unset (first deploy on this branch?)"
