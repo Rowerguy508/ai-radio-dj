@@ -54,15 +54,21 @@ public struct EditorialTone: Equatable, Sendable {
             "That one was {title} by {artist}.",
             "{title}, from {artist}.",
             "Just had {title} there.",
+            "{title} by {artist}.",
         ],
-        // Kept at five lines, in this order. `DJNarrationTests` cycles this pool.
+        // The first five stay in this order. `DJNarrationTests` cycles this pool.
         // One sentence of at most seven words, so it fits `DJCadence.maxClosingSeconds`.
+        // Lines 6-9 are earlier closing lines from this repo's history and a test tone, reused as-is.
         closing: [
             "Here's {nextArtist}, with {nextTitle}.",
             "Here's {nextTitle}, from {nextArtist}.",
             "Next up — {nextArtist}, {nextTitle}.",
             "Here's {nextTitle}.",
             "This is {nextTitle}.",
+            "Coming up: {nextArtist}, {nextTitle}.",
+            "Next, {nextTitle}.",
+            "Up next, {nextTitle} by {nextArtist}.",
+            "Now, {nextTitle}.",
         ],
         artistFocus: [
             "That was {artist}.",
@@ -75,6 +81,7 @@ public struct EditorialTone: Equatable, Sendable {
             "This is {station}.",
             "You're tuned to {station}.",
             "{station} — thanks for listening.",
+            "{station}.",
         ],
         atmosphere: [
             .earlyMorning: ["Quiet start — the day's just getting going.", "Early one. Take it slow."],
@@ -89,6 +96,7 @@ public struct EditorialTone: Equatable, Sendable {
             "Stay right where you are.",
             "We'll keep it rolling.",
             "Thanks for keeping me company.",
+            "Okay — back to the music.",
         ],
         briefingLead: [
             "Let me catch you up.",
