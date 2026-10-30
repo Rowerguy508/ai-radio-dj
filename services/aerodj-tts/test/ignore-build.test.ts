@@ -34,6 +34,7 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_TERMINAL_PROMPT: '0',
 };
 delete GIT_ENV.VERCEL_GIT_PREVIOUS_SHA;
+delete GIT_ENV.VERCEL_ENV;
 
 let tmpRoot = '';
 let counter = 0;
@@ -88,8 +89,14 @@ function newRepo(): string {
 
 interface Result { code: number | null; out: string }
 
+/**
+ * Runs the script as a Preview deploy unless extraEnv sets VERCEL_ENV: only
+ * preview/development ever compare against PREV (Orion's report, see the
+ * 'VERCEL_ENV' describe below). `VERCEL_ENV: undefined` runs it with VERCEL_ENV unset.
+ */
 function run(repo: string, prev: string | undefined, cwdRel = TTS, extraEnv: NodeJS.ProcessEnv = {}): Result {
-  const env: NodeJS.ProcessEnv = { ...GIT_ENV, IGNORE_BUILD_FETCH_TIMEOUT_S: '10', ...extraEnv };
+  const env: NodeJS.ProcessEnv = { ...GIT_ENV, IGNORE_BUILD_FETCH_TIMEOUT_S: '10', VERCEL_ENV: 'preview', ...extraEnv };
+  if (Object.prototype.hasOwnProperty.call(extraEnv, 'VERCEL_ENV') && extraEnv.VERCEL_ENV === undefined) delete env.VERCEL_ENV;
   if (prev !== undefined) env.VERCEL_GIT_PREVIOUS_SHA = prev;
   const r = spawnSync('bash', [SCRIPT], { cwd: path.join(repo, cwdRel), env, encoding: 'utf8', timeout: 30_000 });
   return { code: r.status, out: `${r.stdout}${r.stderr}` };
@@ -303,7 +310,7 @@ describe('vercel-ignore-build.sh', () => {
     fs.mkdirSync(dir, { recursive: true });
     const r = spawnSync('bash', [SCRIPT], {
       cwd: dir,
-      env: { ...GIT_ENV, VERCEL_GIT_PREVIOUS_SHA: '0123456789abcdef0123456789abcdef01234567', GIT_CEILING_DIRECTORIES: tmpRoot },
+      env: { ...GIT_ENV, VERCEL_ENV: 'preview', VERCEL_GIT_PREVIOUS_SHA: '0123456789abcdef0123456789abcdef01234567', GIT_CEILING_DIRECTORIES: tmpRoot },
       encoding: 'utf8',
     });
     expectCode({ code: r.status, out: `${r.stdout}${r.stderr}` }, BUILD, 'no repo');
@@ -622,5 +629,66 @@ describe('vercel-ignore-build.sh', () => {
     const body = fs.readFileSync(path.join(SERVICE_DIR, 'scripts', 'vercel-ignore-build.sh'), 'utf8');
     const code = body.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n');
     assert.doesNotMatch(code, /HEAD(~|\^(?!\{))/, 'no last-commit comparison left in the script');
+  });
+});
+
+describe('vercel-ignore-build.sh: VERCEL_ENV (Orion: PREVIOUS_SHA can be another environment\'s deploy)', () => {
+  const PROD_LINE = 'vercel-ignore-build: BUILD - production deploys always build (PREVIOUS_SHA may be a preview deploy)';
+  const UNKNOWN_LINE = 'vercel-ignore-build: BUILD - VERCEL_ENV is unset, empty or not preview/development/production';
+  const onlyLine = (r: Result) => r.out.split('\n').filter((l) => l.length > 0)[0];
+
+  test('dpl_CuqEdr shape: Preview of X builds, then Production of the same X with PREV = X still builds; Preview with PREV = X skips', () => {
+    const repo = newRepo();
+    const older = git(repo, 'rev-parse', 'HEAD');
+    const x = commit(repo, 'proxy change', { [`${TTS}/src/handler.ts`]: 'export const h = 2;\n' });
+
+    // 1. Preview deploy of X: PREV is the older deploy, the proxy changed -> BUILD.
+    const preview = run(repo, older, TTS, { VERCEL_ENV: 'preview' });
+    expectCode(preview, BUILD, 'preview of X, proxy changed since the older deploy');
+    assert.match(preview.out, /services\/aerodj-tts\/ changed since last deploy/);
+
+    // 2. ~50 s later, Production of the same X: Vercel hands it PREV = X (the preview deploy).
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const prod = run(repo, x, TTS, { ...shimEnv(log), VERCEL_ENV: 'production' });
+    expectCode(prod, BUILD, 'production must not compare against a preview deploy of the same SHA');
+    assert.equal(onlyLine(prod), PROD_LINE);
+    assert.deepEqual(shimCalls(log), [], 'decided before any git or fetch work');
+
+    // 3. A Preview (or Development) run with PREV = X still skips: the diff-based skip is kept there.
+    for (const d of ['preview', 'development']) {
+      const r = run(repo, x, TTS, { VERCEL_ENV: d });
+      expectCode(r, SKIP, `${d} with PREV = HEAD`);
+      assert.match(r.out, new RegExp(`no changes under services/aerodj-tts/ since last deploy ${x.slice(0, 12)}`));
+    }
+  });
+
+  test('Production with an unchanged proxy diff still builds, with no git call (also when PREV is unset or junk)', () => {
+    const repo = newRepo();
+    const prev = git(repo, 'rev-parse', 'HEAD');
+    commit(repo, 'ray-do only', { 'lib/telegram/webhook-auth.ts': 'export const a = 2;\n', 'site/index.html': '<p>2</p>\n' });
+    expectCode(run(repo, prev, TTS, { VERCEL_ENV: 'preview' }), SKIP, 'control: preview skips this diff');
+    expectCode(run(repo, prev, TTS, { VERCEL_ENV: 'development' }), SKIP, 'control: development skips this diff');
+    for (const p of [prev, undefined, 'not-a-sha', `--upload-pack=x;#${'a'.repeat(40)}`]) {
+      const log = path.join(tmpRoot, `shim-${counter++}.log`);
+      const r = run(repo, p, TTS, { ...shimEnv(log), VERCEL_ENV: 'production' });
+      expectCode(r, BUILD, `production, PREV ${JSON.stringify(p)}`);
+      assert.equal(onlyLine(r), PROD_LINE);
+      assert.deepEqual(shimCalls(log), [], 'no git call at all');
+    }
+  });
+
+  test('unset, empty or unknown VERCEL_ENV builds (fail open), with no git call', () => {
+    const repo = newRepo();
+    const prev = git(repo, 'rev-parse', 'HEAD');
+    commit(repo, 'ray-do only', { 'lib/telegram/webhook-auth.ts': 'export const a = 3;\n' });
+    expectCode(run(repo, prev, TTS, { VERCEL_ENV: 'preview' }), SKIP, 'control: preview skips this diff');
+    const values: (string | undefined)[] = [undefined, '', 'Production', 'PRODUCTION', 'Preview', 'prod', 'staging', 'test', ' preview', 'preview ', 'preview\n', 'production\n', 'development;true', '*'];
+    for (const v of values) {
+      const log = path.join(tmpRoot, `shim-${counter++}.log`);
+      const r = run(repo, prev, TTS, { ...shimEnv(log), VERCEL_ENV: v });
+      expectCode(r, BUILD, `VERCEL_ENV ${JSON.stringify(v)}`);
+      assert.equal(onlyLine(r), UNKNOWN_LINE, `VERCEL_ENV ${JSON.stringify(v)}`);
+      assert.deepEqual(shimCalls(log), [], 'no git call at all');
+    }
   });
 });
