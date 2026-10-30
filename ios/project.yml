@@ -31,7 +31,10 @@ targets:
     platform: iOS
     sources:
       - path: AeroDJ
-        excludes: [Info.plist]
+        excludes: [Info.plist, PrivacyInfo.xcprivacy]
+      # Privacy manifest (#333), explicit so it is always in Resources. Checked by ios/scripts/check-privacy-manifests.py.
+      - path: AeroDJ/PrivacyInfo.xcprivacy
+        buildPhase: resources
     dependencies:
       - package: AeroDJCore
       - target: AeroDJShare # embedded into AeroDJ.app/PlugIns
@@ -84,7 +87,10 @@ targets:
     platform: iOS
     sources:
       - path: AeroDJShare
-        excludes: [Info.plist]
+        excludes: [Info.plist, PrivacyInfo.xcprivacy]
+      # Privacy manifest (#333), explicit so it is always in Resources. Checked by ios/scripts/check-privacy-manifests.py.
+      - path: AeroDJShare/PrivacyInfo.xcprivacy
+        buildPhase: resources
     dependencies:
       - package: AeroDJCore
     settings:
