@@ -90,6 +90,8 @@ function harness(o: { limiter?: UsageLimiter; options?: Partial<LimiterOptions>;
     now: () => clock,
     timeoutMs: 50,
     requestId: () => 'req-1',
+    // Test-only: these harnesses drive the handler with an in-memory/spy limiter (Fry on #287 gate).
+    testOnlyAllowNonDurableLimiter: true,
     logRefundLost: (e) => o.lost?.push(e),
   };
   const proCalls = () => up.calls.filter((c) => c.command[1] === PRO_RESERVE_SCRIPT || c.command[1] === PRO_RELEASE_SCRIPT).length;
@@ -404,8 +406,17 @@ describe('Pro allowance: store errors fail closed (503 store, Retry-After 30), n
       await expectStore(harness({ limiter: new RedisUsageLimiter(STORE, opts, f) }));
     });
   }
-  test('a non-durable limiter, or one without reservePro', async () => {
-    await expectStore(harness({ limiter: new InMemoryUsageLimiter(opts) }));
+  test('a non-durable limiter is refused even earlier: 500 no_store (the test-only override is ignored with VERCEL_ENV set)', async () => {
+    // Sentinel's nit on #294: with VERCEL_ENV set the override no longer lets a non-durable
+    // limiter past the no-store gate, so it never reaches the Pro reserve. Zero upstream calls.
+    const h = harness({ limiter: new InMemoryUsageLimiter(opts) });
+    const r = await handleTts(req(await subject()), h.d);
+    assert.equal(r.status, 500);
+    assert.equal(body(r).reason, 'misconfig');
+    assert.deepEqual(h.logs.map((x) => x.reason), ['no_store']);
+    assert.equal(h.upstream(), 0);
+  });
+  test('a durable limiter without reservePro', async () => {
     const inner = new RedisUsageLimiter(STORE, opts, fakeUpstash().fetchImpl);
     const bare: UsageLimiter = { durable: true, allowRequest: (b, n, l) => inner.allowRequest(b, n, l), reserve: (s, c, n) => inner.reserve(s, c, n), release: (r) => inner.release(r) };
     await expectStore(harness({ limiter: bare }));

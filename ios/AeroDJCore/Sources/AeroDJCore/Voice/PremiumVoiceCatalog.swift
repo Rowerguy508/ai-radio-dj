@@ -138,7 +138,8 @@ public enum PremiumVoiceRoutes {
     public static func compose(onDevice: [VoiceRoute], paidProvidersEnabled: Bool, selectedVoiceID: String?,
                                credentials: PremiumProxyCredentials?,
                                pinnedHosts: Set<String> = allowedHosts,
-                               transport: any HTTPTransport = URLSessionTransport()) -> Composition {
+                               transport: any HTTPTransport = URLSessionTransport(),
+                               backoff: PaidVoiceBackoff? = nil) -> Composition {
         func omit(_ reason: OmitReason) -> Composition { Composition(routes: onDevice, decision: .omitted(reason)) }
         guard paidProvidersEnabled else { return omit(.paidDisabled) }
         guard let selectedVoiceID else { return omit(.noSelection) }
@@ -152,7 +153,8 @@ public enum PremiumVoiceRoutes {
         // App-side price is 0: spend is capped upstream (Starter's hard 40k credits, the key's
         // 9k cap) and by the proxy's daily character cap, so the app's $0 VoiceBudget does not block it.
         let route = VoiceRoute(providerID: providerID,
-                               provider: ProxyVoiceProvider(configuration: configuration, transport: transport),
+                               provider: ProxyVoiceProvider(configuration: configuration, transport: transport,
+                                                                  backoff: backoff),
                                voice: VoiceProfile(id: option.id, name: option.displayName),
                                microdollarsPerThousandCharacters: 0, timeout: timeout, acceptsSSML: false,
                                leavesDevice: true)
