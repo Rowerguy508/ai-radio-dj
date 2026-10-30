@@ -120,7 +120,7 @@ A station with seeds (a created station, a recipe, or seeds set in Tune) now dec
 
 ## Connections
 
-`connections.sources` returns three `ConnectionSourceRow`s: Calendar, Obsidian notes, and Shared from Mail & Messages. Each row has:
+`connections.sources` returns three `ConnectionSourceRow`s: Calendar, Markdown notes, and Shared from Mail & Messages. Each row has:
 
 - `status`: the listener's request combined with consent, from `StationConfigurationModel.integrationStatus`
 - `scope`: fixed privacy copy, always shown
