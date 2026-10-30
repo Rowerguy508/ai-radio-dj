@@ -107,15 +107,21 @@ function expectCode(r: Result, code: number, why: string): void {
 
 /**
  * A `git` wrapper first on PATH: logs every call, and can make `fetch` a no-op
- * success (SHIM_FETCH_NOOP) or make `fetch --unshallow` fail (SHIM_FAIL_UNSHALLOW).
+ * success (SHIM_FETCH_NOOP), make `fetch --deepen=N` or `fetch --unshallow` fail
+ * (SHIM_FAIL_DEEPEN, SHIM_FAIL_UNSHALLOW), or make either one hang for N seconds
+ * (SHIM_SLEEP_DEEPEN, SHIM_SLEEP_UNSHALLOW) so the script's timeout has to cut it off.
  */
 let shimDir = '';
-function shimEnv(log: string, opts: { fetchNoop?: boolean; failUnshallow?: boolean } = {}): NodeJS.ProcessEnv {
+interface ShimOpts { fetchNoop?: boolean; failDeepen?: boolean; failUnshallow?: boolean; sleepDeepen?: number; sleepUnshallow?: number }
+function shimEnv(log: string, opts: ShimOpts = {}): NodeJS.ProcessEnv {
   return {
     PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
     SHIM_LOG: log,
     ...(opts.fetchNoop ? { SHIM_FETCH_NOOP: '1' } : {}),
+    ...(opts.failDeepen ? { SHIM_FAIL_DEEPEN: '1' } : {}),
     ...(opts.failUnshallow ? { SHIM_FAIL_UNSHALLOW: '1' } : {}),
+    ...(opts.sleepDeepen ? { SHIM_SLEEP_DEEPEN: String(opts.sleepDeepen) } : {}),
+    ...(opts.sleepUnshallow ? { SHIM_SLEEP_UNSHALLOW: String(opts.sleepUnshallow) } : {}),
   };
 }
 function shimCalls(log: string): string[] {
@@ -135,6 +141,11 @@ before(() => {
       'for a in "$@"; do',
       '  if [ "$a" = fetch ] && [ -n "${SHIM_FETCH_NOOP:-}" ]; then exit 0; fi',
       '  if [ "$a" = --unshallow ] && [ -n "${SHIM_FAIL_UNSHALLOW:-}" ]; then exit 128; fi',
+      '  if [ "$a" = --unshallow ] && [ -n "${SHIM_SLEEP_UNSHALLOW:-}" ]; then exec sleep "$SHIM_SLEEP_UNSHALLOW"; fi',
+      '  case "$a" in --deepen=*)',
+      '    if [ -n "${SHIM_FAIL_DEEPEN:-}" ]; then exit 128; fi',
+      '    if [ -n "${SHIM_SLEEP_DEEPEN:-}" ]; then exec sleep "$SHIM_SLEEP_DEEPEN"; fi ;;',
+      '  esac',
       'done',
       `exec ${JSON.stringify(realGit)} "$@"`,
       '',
@@ -293,9 +304,12 @@ describe('vercel-ignore-build.sh', () => {
     git(repo, 'reset', '-q', '--hard', base);
     commit(repo, 'rewritten', { 'lib/telegram/webhook-auth.ts': 'export const a = 21;\n' });
     git(repo, 'cat-file', '-e', `${prev}^{commit}`); // still in the object store
-    const r = run(repo, prev);
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const r = run(repo, prev, TTS, shimEnv(log));
     expectCode(r, BUILD, 'PREV is no longer in HEAD history');
     assert.match(r.out, /not an ancestor of HEAD/);
+    // A full clone already has all of its history: no --deepen / --unshallow.
+    assert.deepEqual(historyFetches(log), [], 'non-shallow: no history fetch');
   });
 
   test('PREV not an ancestor of HEAD: unrelated orphan history -> BUILD', () => {
@@ -309,13 +323,137 @@ describe('vercel-ignore-build.sh', () => {
     assert.match(r.out, /not an ancestor of HEAD/);
   });
 
-  test('shallow clone, PREV fetched but ancestry unprovable (deepen fails) -> BUILD', () => {
+  test('shallow clone, PREV fetched but ancestry unprovable (--deepen and --unshallow both fail) -> BUILD', () => {
     const { clone, prev } = shallowSetup(false); // only ray-do changed: a guess would skip
     const log = path.join(tmpRoot, `shim-${counter++}.log`);
-    const r = run(clone, prev, TTS, shimEnv(log, { failUnshallow: true }));
+    const r = run(clone, prev, TTS, shimEnv(log, { failDeepen: true, failUnshallow: true }));
     expectCode(r, BUILD, 'cannot prove PREV is an ancestor');
     assert.match(r.out, /not an ancestor of HEAD/);
-    assert.ok(shimCalls(log).some((l) => l.includes('--unshallow')), 'deepen was attempted');
+    assert.deepEqual(historyFetches(log), ['--deepen=50', '--unshallow'], 'deepen first, then the full fetch');
+  });
+
+  /** The history fetches (`--deepen=N` / `--unshallow`) the script made, in order. */
+  function historyFetches(log: string): string[] {
+    return shimCalls(log)
+      .filter((l) => /(^|\s)fetch(\s|$)/.test(l))
+      .map((l) => l.split(' ').find((a) => a.startsWith('--deepen=') || a === '--unshallow'))
+      .filter((a): a is string => a !== undefined);
+  }
+
+  test('--deepen proves ancestry: no --unshallow, real answer (SKIP unchanged / BUILD changed)', () => {
+    for (const [proxyChange, code] of [[false, SKIP], [true, BUILD]] as const) {
+      const { clone, prev } = shallowSetup(proxyChange);
+      const log = path.join(tmpRoot, `shim-${counter++}.log`);
+      const r = run(clone, prev, TTS, shimEnv(log));
+      expectCode(r, code, proxyChange ? 'deepened, proxy changed' : 'deepened, only ray-do changed');
+      assert.deepEqual(historyFetches(log), ['--deepen=50'], 'one cheap deepen, never a full unshallow');
+      // Every history fetch keeps --end-of-options before its revision.
+      for (const l of shimCalls(log).filter((x) => x.includes('--deepen='))) assert.match(l, /--end-of-options origin [0-9a-f]{40}$/);
+    }
+  });
+
+  test('--deepen reaches PREV on a long history: clone stays shallow and --unshallow is never run', () => {
+    const src = newRepo();
+    for (let i = 0; i < 10; i++) commit(src, `old ${i}`, { 'lib/telegram/webhook-auth.ts': `export const a = ${100 + i};\n` });
+    const prev = git(src, 'rev-parse', 'HEAD');
+    for (let i = 0; i < 3; i++) commit(src, `ray-do ${i}`, { 'lib/telegram/webhook-auth.ts': `export const a = ${200 + i};\n` });
+    const bare = path.join(tmpRoot, `bare-${counter++}.git`);
+    git(tmpRoot, 'clone', '-q', '--bare', src, bare);
+    git(bare, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
+    const clone = path.join(tmpRoot, `clone-${counter++}`);
+    git(tmpRoot, 'clone', '-q', '--depth=1', `file://${bare}`, clone);
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    expectCode(run(clone, prev, TTS, { ...shimEnv(log), IGNORE_BUILD_DEEPEN_COMMITS: '5' }), SKIP, 'deepen by 5 reaches PREV (3 below HEAD)');
+    assert.deepEqual(historyFetches(log), ['--deepen=5'], 'ancestry proven: no --unshallow');
+    assert.equal(git(clone, 'rev-parse', '--is-shallow-repository'), 'true', 'the deepen did not need the whole history');
+  });
+
+  test('--deepen too shallow, then --unshallow proves it -> SKIP (unchanged) / BUILD (changed)', () => {
+    for (const [proxyChange, code] of [[false, SKIP], [true, BUILD]] as const) {
+      const { clone, prev } = shallowSetup(proxyChange); // PREV is 3-4 commits below HEAD
+      const log = path.join(tmpRoot, `shim-${counter++}.log`);
+      const r = run(clone, prev, TTS, { ...shimEnv(log), IGNORE_BUILD_DEEPEN_COMMITS: '1' });
+      expectCode(r, code, 'deepen by 1 is not enough; unshallow is');
+      assert.deepEqual(historyFetches(log), ['--deepen=1', '--unshallow']);
+      assert.equal(git(clone, 'rev-parse', '--is-shallow-repository'), 'false');
+    }
+  });
+
+  test('--deepen fails, --unshallow still runs and proves it -> SKIP', () => {
+    const { clone, prev } = shallowSetup(false);
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    expectCode(run(clone, prev, TTS, shimEnv(log, { failDeepen: true })), SKIP, 'fallback to the full fetch');
+    assert.deepEqual(historyFetches(log), ['--deepen=50', '--unshallow']);
+  });
+
+  test('--deepen insufficient and --unshallow fails -> BUILD', () => {
+    const { clone, prev } = shallowSetup(false);
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const r = run(clone, prev, TTS, { ...shimEnv(log, { failUnshallow: true }), IGNORE_BUILD_DEEPEN_COMMITS: '1' });
+    expectCode(r, BUILD, 'still unproven');
+    assert.match(r.out, /not an ancestor of HEAD/);
+    assert.deepEqual(historyFetches(log), ['--deepen=1', '--unshallow']);
+  });
+
+  test('--unshallow that hangs past IGNORE_BUILD_FETCH_TIMEOUT_S is cut off -> BUILD', () => {
+    assert.equal(spawnSync('bash', ['-c', 'command -v timeout'], { encoding: 'utf8' }).status, 0, 'precondition: timeout(1) exists');
+    const { clone, prev } = shallowSetup(false); // a guess would skip
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const started = Date.now();
+    const r = run(clone, prev, TTS, { ...shimEnv(log, { sleepUnshallow: 20 }), IGNORE_BUILD_DEEPEN_COMMITS: '1', IGNORE_BUILD_FETCH_TIMEOUT_S: '1' });
+    const elapsed = Date.now() - started;
+    expectCode(r, BUILD, 'timed-out unshallow leaves ancestry unproven');
+    assert.match(r.out, /not an ancestor of HEAD/);
+    assert.deepEqual(historyFetches(log), ['--deepen=1', '--unshallow']);
+    assert.ok(elapsed < 10_000, `the 1 s bound cut off the 20 s hang (took ${elapsed} ms)`);
+  });
+
+  test('--deepen that hangs is cut off too, and --unshallow still runs -> SKIP', () => {
+    const { clone, prev } = shallowSetup(false);
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const started = Date.now();
+    const r = run(clone, prev, TTS, { ...shimEnv(log, { sleepDeepen: 20 }), IGNORE_BUILD_FETCH_TIMEOUT_S: '2' });
+    expectCode(r, SKIP, 'unshallow after the timed-out deepen');
+    assert.deepEqual(historyFetches(log), ['--deepen=50', '--unshallow']);
+    assert.ok(Date.now() - started < 12_000, 'bounded');
+  });
+
+  test('IGNORE_BUILD_DEEPEN_COMMITS: only a positive integer up to 99999 is used; anything else is 50', () => {
+    for (const [value, used] of [['7', '7'], ['99999', '99999'], ['0', '50'], ['-5', '50'], ['abc', '50'], ['1e3', '50'], ['', '50'], ['100000', '50'], ['5;id', '50'], ['07', '50']]) {
+      const { clone, prev } = shallowSetup(false);
+      const log = path.join(tmpRoot, `shim-${counter++}.log`);
+      expectCode(run(clone, prev, TTS, { ...shimEnv(log), IGNORE_BUILD_DEEPEN_COMMITS: value }), SKIP, `value ${JSON.stringify(value)}`);
+      assert.equal(historyFetches(log)[0], `--deepen=${used}`, `value ${JSON.stringify(value)}`);
+    }
+  });
+
+  test('shallow force-push shape: --deepen fetches all of it, still not an ancestor -> BUILD with no --unshallow', () => {
+    const src = newRepo();
+    const base = git(src, 'rev-parse', 'HEAD');
+    const prev = commit(src, 'deployed, later force-pushed away', { 'lib/telegram/webhook-auth.ts': 'export const a = 40;\n' });
+    git(src, 'branch', 'old-deploy', prev); // keeps PREV fetchable by SHA from the bare remote
+    git(src, 'reset', '-q', '--hard', base);
+    for (let i = 0; i < 3; i++) commit(src, `rewritten ${i}`, { 'lib/telegram/webhook-auth.ts': `export const a = ${41 + i};\n` });
+    const bare = path.join(tmpRoot, `bare-${counter++}.git`);
+    git(tmpRoot, 'clone', '-q', '--bare', src, bare);
+    git(bare, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
+    const clone = path.join(tmpRoot, `clone-${counter++}`);
+    git(tmpRoot, 'clone', '-q', '--depth=1', '--branch', 'main', `file://${bare}`, clone);
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const r = run(clone, prev, TTS, shimEnv(log));
+    expectCode(r, BUILD, 'PREV is not in HEAD history');
+    assert.match(r.out, /not an ancestor of HEAD/);
+    assert.equal(git(clone, 'rev-parse', '--is-shallow-repository'), 'false', 'the deepen reached the root');
+    assert.deepEqual(historyFetches(log), ['--deepen=50'], 'no pointless --unshallow on a complete clone');
+  });
+
+  test('a full (non-shallow) clone never fetches history: ancestry is checked locally', () => {
+    const repo = newRepo();
+    const prev = git(repo, 'rev-parse', 'HEAD');
+    commit(repo, 'ray-do', { 'lib/telegram/webhook-auth.ts': 'export const a = 30;\n' });
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    expectCode(run(repo, prev, TTS, shimEnv(log)), SKIP, 'local history');
+    assert.deepEqual(shimCalls(log).filter((l) => /(^|\s)fetch(\s|$)/.test(l)), []);
   });
 
   test('PREV must be a full lowercase 40-hex SHA: short, uppercase, 64-hex -> BUILD', () => {
