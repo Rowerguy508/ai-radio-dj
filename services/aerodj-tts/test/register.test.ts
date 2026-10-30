@@ -74,7 +74,8 @@ function attest(challenge: string, o: Partial<AttestOptions> = {}) {
   return makeAttestation(CA, { clientDataHash: attestClientDataHash(challenge), ...o });
 }
 function bodyOf(a: { keyId: Buffer; attestationObject: Buffer }, challenge: string, extra: Record<string, unknown> = {}) {
-  return JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge, ...extra });
+  // installId: Fry's contract (lowercase UUID v4); a fresh one per body, so the per-install cap never binds here.
+  return JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge, installId: crypto.randomUUID(), ...extra });
 }
 // Vercel's edge always sets x-vercel-forwarded-for; register refuses a request without
 // it (400 `network`, enroll-caps.test.ts), so every request here carries one.
@@ -90,7 +91,7 @@ function fresh(o: Partial<AttestOptions> = {}) {
 }
 
 describe('POST /api/attest/register: success (note §4.1.2)', () => {
-  test('204; one script writes the key record, the used mark and both enroll counters', async () => {
+  test('204; one script writes the key record, the used mark and all three enroll counters', async () => {
     const h = harness();
     const { a, challenge, body } = fresh();
     const res = await handleRegister(post(body), h.deps);
@@ -116,7 +117,13 @@ describe('POST /api/attest/register: success (note §4.1.2)', () => {
     assert.equal(deviceKeys.length, 1);
     assert.equal(h.redis.data.get(deviceKeys[0]), '1');
     assert.equal(h.redis.expiresAt.get(deviceKeys[0]), NOW + ENROLL_TTL_SECONDS * 1000);
-    assert.equal(h.redis.data.size, 4);
+    // The per-install enroll counter (stacked on #256) is the fifth key.
+    const installKeys = [...h.redis.data.keys()].filter((k) => k.startsWith('nonprod:enrollinst:{aerodj-tts}:'));
+    assert.equal(installKeys.length, 1);
+    assert.equal(h.redis.data.get(installKeys[0]), '1');
+    assert.equal(h.redis.expiresAt.get(installKeys[0]), NOW + ENROLL_TTL_SECONDS * 1000);
+    // Changed expected value: 4 keys at #256 (used, record, enroll, enrolldev); the install counter makes 5.
+    assert.equal(h.redis.data.size, 5);
     assert.deepEqual(h.logs, [{ requestId: 'req-1', status: 204 }]);
   });
   test('a challenge bound to the same keyId is accepted', async () => {
@@ -445,7 +452,7 @@ describe('register: raw body and fields (note §4.1.4)', () => {
     assert.equal(r2.status, 413);
     assert.equal(h.calls.length, 0);
   });
-  test('400 for anything but exactly { keyId, attestationObject, challenge } with strict encodings', async () => {
+  test('400 bad_request for anything but { keyId, attestationObject, challenge } (+ installId) with strict encodings', async () => {
     const { a, challenge } = fresh();
     const good = JSON.parse(bodyOf(a, challenge)) as Record<string, unknown>;
     const b64 = good.attestationObject as string;
