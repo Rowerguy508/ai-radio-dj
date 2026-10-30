@@ -29,6 +29,9 @@ public enum DJBreakSkipReason: String, Codable, Equatable, Sendable, CaseIterabl
     /// Build 18 P0: the system was still holding playback (a call, another app's audio) when
     /// the break would have started, so it was skipped.
     case interrupted
+    /// Pro or paid-voice consent ended (expiry, refund, revocation, withdrawal) after this
+    /// break was prepared with the paid voice or a bundled clip: it is not played (-Echo).
+    case paidVoiceRevoked
 }
 
 /// Audio ready to play at a boundary, in order, with measured durations.
@@ -84,6 +87,10 @@ public actor DJBreakPreparer {
     /// Bundled pre-rendered presenter lines, tried per whole cue before the renderer. Nil or an
     /// empty manifest (build 27) changes nothing.
     private let bundledClips: BundledClipResolver?
+    /// The Pro + consent gate for the paid voice (`ProVoiceGate`), asked once per cue while a
+    /// break renders and again when a prepared break is taken. Nil: no gate (tests whose
+    /// renderer has no paid route). The app passes it through `init(voice:...)` (-Echo).
+    private let paidVoice: ProVoiceAccess?
     private var tasks: [Int: Task<Void, Never>] = [:]
     private var results: [Int: DJBreakOutcome] = [:]
     private var planned: [Int: DJBreak] = [:]
@@ -107,10 +114,19 @@ public actor DJBreakPreparer {
         case skipped(afterTrack: Int, DJBreakSkipReason)
     }
 
-    public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
+    /// The app's init: the renderer and its Pro + consent gate travel together (`PaidVoice`),
+    /// so a renderer with a paid route is never prepared without the per-cue gate (-Echo).
+    public init(voice: PaidVoice, userID: String, stationID: String, cadence: DJCadence = .init(),
                 bundledClips: BundledClipResolver? = nil) {
+        self.init(renderer: voice.renderer, userID: userID, stationID: stationID, cadence: cadence,
+                  bundledClips: bundledClips, paidVoice: voice.access)
+    }
+
+    public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
+                bundledClips: BundledClipResolver? = nil, paidVoice: ProVoiceAccess? = nil) {
         self.renderer = renderer
         self.bundledClips = bundledClips
+        self.paidVoice = paidVoice
         self.userID = userID
         self.stationID = stationID
         // Measured audio. Briefing: 45 s in total, closing line included. Ordinary: the main
@@ -140,14 +156,14 @@ public actor DJBreakPreparer {
         planned[k] = djBreak
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
         let renderer = onDeviceOnly ? self.renderer.onDeviceOnly : self.renderer
-        let userID = userID, stationID = stationID, cap = breakCap(djBreak), bundled = bundledClips
+        let userID = userID, stationID = stationID, cap = breakCap(djBreak), bundled = bundledClips, paid = paidVoice
         tasks[k] = Task {
             let outcome: DJBreakOutcome
             guard let renderer else { self.finish(k, .skipped(.renderFailed)); return }
             do {
                 outcome = try await VoiceRenderer.withTimeout(deadline) {
                     await Self.render(djBreak, renderer: renderer, userID: userID, stationID: stationID, cap: cap,
-                                      bundled: bundled)
+                                      bundled: bundled, paidVoice: paid)
                 }
             } catch {
                 outcome = .skipped(.timedOut)
@@ -232,6 +248,52 @@ public actor DJBreakPreparer {
         return .skipped(.notReadyAtBoundary)
     }
 
+    /// `takeBreak` plus the paid-voice re-check (E1, -Echo): a ready break that carries a
+    /// bundled clip or paid-route audio is handed out only if Pro + consent still allow it now.
+    /// Otherwise it is skipped as `.paidVoiceRevoked` (reported like any skip), never played.
+    /// One gate call, and only for a break that has paid audio. Never touches a break on air.
+    public func takeCheckedBreak(afterTrack k: Int) async -> DJBreakOutcome {
+        let outcome = takeBreak(afterTrack: k)
+        guard case .ready(let ready) = outcome, let paidVoice, ready.clips.contains(where: usesPaidVoice) else {
+            return outcome
+        }
+        guard await paidVoice.decision().permitsPaidVoice else {
+            results[k] = .skipped(.paidVoiceRevoked)
+            emit(.skipped(afterTrack: k, .paidVoiceRevoked))
+            return .skipped(.paidVoiceRevoked)
+        }
+        return outcome
+    }
+
+    /// Pro or consent may have ended (E1, -Echo). If the gate now denies, drops every break
+    /// that is rendering with a paid route available, or is ready with paid or bundled audio,
+    /// and reports each as `.paidVoiceRevoked`; returns those boundaries so the session can
+    /// prepare them again (the per-cue gate then keeps them on-device). Taken breaks (on air)
+    /// are never touched. With access still allowed, nothing changes.
+    public func dropPaidVoiceBreaks() async -> [Int] {
+        guard let paidVoice, await !paidVoice.decision().permitsPaidVoice else { return [] }
+        let mayRenderPaid = renderer.routes.contains { !$0.isLocalAndFree }
+        var dropped: [Int] = []
+        for k in Set(tasks.keys).union(results.keys).sorted() where !taken.contains(k) {
+            let paid: Bool
+            if tasks[k] != nil { paid = mayRenderPaid }
+            else if case .ready(let ready)? = results[k] { paid = ready.clips.contains(where: usesPaidVoice) }
+            else { paid = false }
+            guard paid else { continue }
+            tasks.removeValue(forKey: k)?.cancel()
+            results[k] = nil
+            dropped.append(k)
+            emit(.skipped(afterTrack: k, .paidVoiceRevoked))
+        }
+        return dropped
+    }
+
+    /// Audio from a bundled clip or from a route that is paid or leaves the device.
+    private func usesPaidVoice(_ clip: RenderedClip) -> Bool {
+        clip.audio.providerID == BundledClipResolver.providerID
+            || renderer.routes.contains { !$0.isLocalAndFree && $0.providerID == clip.audio.providerID }
+    }
+
     /// Cancels preparation for boundaries that will not happen (station change, queue replaced, stop).
     /// In-flight renders are cancelled (their cost reservations are released), prepared audio is
     /// discarded, and each dropped break is reported as `.skipped(.cancelled)` so no UI keeps
@@ -293,15 +355,18 @@ public actor DJBreakPreparer {
 
     /// One pooled cap for the whole break (no separate closing cap).
     static func render(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
-                       cap: Double, bundled: BundledClipResolver? = nil) async -> DJBreakOutcome {
+                       cap: Double, bundled: BundledClipResolver? = nil,
+                       paidVoice: ProVoiceAccess? = nil) async -> DJBreakOutcome {
         await render(djBreak, renderer: renderer, userID: userID, stationID: stationID,
-                     cap: BreakCap(main: cap, closingCueID: nil, closing: 0), bundled: bundled)
+                     cap: BreakCap(main: cap, closingCueID: nil, closing: 0), bundled: bundled, paidVoice: paidVoice)
     }
 
     static func render(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
-                       cap: BreakCap, bundled: BundledClipResolver? = nil) async -> DJBreakOutcome {
+                       cap: BreakCap, bundled: BundledClipResolver? = nil,
+                       paidVoice: ProVoiceAccess? = nil) async -> DJBreakOutcome {
         let first: (cues: [NarrationCue], clips: [RenderedClip])
-        switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID, bundled: bundled) {
+        switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID, bundled: bundled,
+                                paidVoice: paidVoice) {
         case .success(let pass): first = pass
         case .failure(let skip): return .skipped(skip.reason)
         }
@@ -314,7 +379,8 @@ public actor DJBreakPreparer {
             return .skipped(.overBreakBudget)
         }
         // The fallback's first route is on-device, so the bundle never resolves on this retry.
-        switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID, bundled: bundled) {
+        switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID, bundled: bundled,
+                                paidVoice: paidVoice) {
         case .success(let retry) where cap.fits(retry.clips): return ready(djBreak, retry)
         case .success: return .skipped(.overBreakBudget)
         case .failure(let skip): return .skipped(skip.reason)  // the retry's own reason (Fry, #158)
@@ -344,15 +410,25 @@ public actor DJBreakPreparer {
                                talkOverCueID: djBreak.talkOverCueID))
     }
 
-    private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
-                                   bundled: BundledClipResolver?) async
+    private static func renderCues(_ djBreak: DJBreak, renderer full: VoiceRenderer, userID: String, stationID: String,
+                                   bundled: BundledClipResolver?, paidVoice: ProVoiceAccess?) async
         -> Result<(cues: [NarrationCue], clips: [RenderedClip]), Skip> {
+        let mayRenderPaid = full.routes.contains { !$0.isLocalAndFree }
         var cues: [NarrationCue] = []
         var clips: [RenderedClip] = []
         for var cue in djBreak.cues {
             // The only cancellation whose result is kept is the preparation deadline: takeBreak,
             // cancelAll and purge record their own outcome first and ignore this one.
             if Task.isCancelled { return .failure(Skip(reason: .timedOut)) }
+            // Paid-voice gate, per cue (-Echo): Pro + consent are asked now, before the bundle,
+            // the cache or any provider. A denial narrows this cue to the on-device routes
+            // (the existing `onDeviceOnly` view, same budget and cache), so neither a bundled
+            // clip, a cached paid clip nor the proxy is used; no on-device route fails closed.
+            var renderer = full
+            if mayRenderPaid, let paidVoice, await !paidVoice.decision().permitsPaidVoice {
+                guard let local = full.onDeviceOnly else { return .failure(Skip(reason: .renderFailed)) }
+                renderer = local
+            }
             // A whole presenter line whose text hash is in the bundle plays the bundled clip, with
             // its measured seconds, and makes no proxy call. Anything else: today's path.
             // (One voice per break, if a later live clip falls to on-device, is a follow-up.)

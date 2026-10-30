@@ -236,6 +236,36 @@ jobs:
           for NEEDLE in P0EventTraceHost P0EventTrace P0PollSampler P0TraceView P0EventTracePanel; do
             LC_ALL=C grep -a -q "$NEEDLE" "$DIAG_BIN" || { echo "::error::$NEEDLE missing from the AERODJ_P0_DIAG build"; exit 1; }
           done
+      - name: Owner proxy credential and the public paid route are absent from Release
+        # #174 blocker 9 split (-Echo). Same Release binary as the P0 grep above. Gate 1: the
+        # owner proxy credential code (Keychain service) is only in AERODJ_OWNER_AB builds.
+        # Gate 2: the public paid route stays compiled out until #233 PRs 3-4
+        # (AERODJ_PUBLIC_PAID_ROUTE, which nothing sets). Positive control: one Release build
+        # with both flags must contain every needle.
+        run: |
+          NEEDLES=(com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)
+          RELEASE_BIN="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
+          test -f "$RELEASE_BIN"
+          for NEEDLE in "${NEEDLES[@]}"; do
+            if LC_ALL=C grep -a -q -F "$NEEDLE" "$RELEASE_BIN"; then
+              echo "::error::$NEEDLE found in a Release build without AERODJ_OWNER_AB / AERODJ_PUBLIC_PAID_ROUTE"
+              exit 1
+            fi
+          done
+          SPLIT_DD="$RUNNER_TEMP/DerivedDataPaidSplit"
+          xcodebuild build \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$SPLIT_DD" \
+            CODE_SIGNING_ALLOWED=NO \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) AERODJ_OWNER_AB AERODJ_PUBLIC_PAID_ROUTE'
+          SPLIT_BIN="$SPLIT_DD/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
+          for NEEDLE in "${NEEDLES[@]}"; do
+            LC_ALL=C grep -a -q -F "$NEEDLE" "$SPLIT_BIN" || { echo "::error::control: $NEEDLE missing from the flagged build"; exit 1; }
+          done
       - name: Owner A/B gate script fails closed (fake xcodebuild test)
         run: ios/scripts/check-owner-ab-build-settings-test.sh
       - name: Owner A/B (AERODJ_OWNER_AB) is absent from Release build settings unless dispatched with owner_ab

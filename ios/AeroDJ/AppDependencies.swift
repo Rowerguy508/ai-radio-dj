@@ -66,7 +66,9 @@ struct AppDependencies {
         )
         let station = StationConfigurationModel(store: FileStationConfigurationStore(fileURL: stationFileURL()),
                                                 consent: composition.consent)
-        let voice = VoiceRenderer.liveDefault()
+        // The launch's voice and its per-cue Pro + consent gate, together (-Echo).
+        let paidVoice = PaidVoice.live()
+        let voice = paidVoice.renderer
         if voice.routes.contains(where: { $0.providerID == PhononModelPin.providerID }) {
             Task { await PhononModelCoordinator.shared.start() }
         }
@@ -78,8 +80,8 @@ struct AppDependencies {
             manifest: .load(contentsOf: Bundle.main.url(forResource: BundledClipManifest.resourceName,
                                                         withExtension: BundledClipManifest.resourceExtension)),
             directory: Bundle.main.resourceURL ?? Bundle.main.bundleURL,
-            access: .live)
-        let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
+            access: paidVoice.access)
+        let preparer = DJBreakPreparer(voice: paidVoice, userID: "listener", stationID: "default", cadence: DJCadence(),
                                        bundledClips: bundledClips)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
