@@ -23,6 +23,8 @@ public enum VoiceRenderError: Error, Equatable, Sendable {
     case notImplemented(String)
     case invalidResponse(String)
     case insecureEndpoint
+    /// The paid proxy route is backing off after a 429 or 5xx (`PaidVoiceBackoff`); no call was made.
+    case suspended
 }
 
 /// One provider in the fallback chain, in preference order.

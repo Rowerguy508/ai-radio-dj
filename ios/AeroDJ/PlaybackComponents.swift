@@ -1100,6 +1100,7 @@ private extension View {
     .background(AeroDJPalette.slab)
 }
 
+#if DEBUG
 #Preview("Errors") {
     VStack(spacing: 16) {
         PlaybackErrorBanner(error: PlaybackError(kind: .notAuthorized, message: "", isRecoverable: false), actions: .preview)
@@ -1110,6 +1111,7 @@ private extension View {
     .padding()
     .background(AeroDJPalette.slab)
 }
+#endif
 
 #if DEBUG
 #Preview("Scrubber") {
