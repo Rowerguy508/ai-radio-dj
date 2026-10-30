@@ -132,12 +132,16 @@ struct BleedNowPlaying: View {
                     StationSoundRow(tags: soundTags, action: onTune)
                 }
             case .nothingPlaying:
-                NowPlayingPlaceholder(content: content, actions: actions)
-                if let search {
-                    StartListeningView(search: search, model: studioSearch)
+                VStack(alignment: .leading, spacing: 12) {
+                    NowPlayingPlaceholder(content: content, actions: actions)
+                    if let search {
+                        StartListeningView(search: search, model: studioSearch)
+                    }
                 }
+                .modifier(BleedStateScrim())
             default:
                 NowPlayingPlaceholder(content: content, actions: actions)
+                    .modifier(BleedStateScrim())
             }
         }
     }
@@ -146,6 +150,25 @@ struct BleedNowPlaying: View {
         PlaybackChromeBar(content: content, snapshot: snapshot, actions: actions, dj: dj,
                           timeSource: timeSource, showsUpNext: showsUpNext,
                           onQueue: onQueue, onTune: onTune, onReview: onReview)
+    }
+}
+
+/// #312: state copy drawn straight on station art (open layout) was ~3.25:1. A slab-coloured
+/// scrim behind it brings light type past 4.5:1 on any art. It is a background with negative
+/// padding, so no frame moves. Only on art (`onSlab`); the accessibility-size column sits on
+/// the system background and is untouched.
+struct BleedStateScrim: ViewModifier {
+    @Environment(\.onSlab) private var onSlab
+
+    func body(content: Content) -> some View {
+        content.background {
+            if onSlab {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(AeroDJPalette.slab.opacity(0.72))
+                    .padding(-10)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 }
 
