@@ -23,6 +23,13 @@ public enum PaidVoiceAccessRelay {
 
     /// The real call, as the default notifier.
     public static let live: PaidVoiceAccessNotify = { await PaidVoiceAccessRelay.notify() }
+
+    /// Deletes cached cloud clips (N4); set once in `AppDependencies.live()` to the live
+    /// renderer's `purgeCloudClips()`. Unset: nothing cached to delete yet.
+    public static var purgeCloudAudio: (@Sendable () async -> Void)?
+
+    /// The real purge, as the default for `PaidVoiceConsentSignals`.
+    public static let livePurge: PaidVoiceAccessNotify = { await PaidVoiceAccessRelay.purgeCloudAudio?() }
 }
 
 /// Cancels one scheduled expiry check.
@@ -103,17 +110,22 @@ public final class ProAccessChangeTracker {
     }
 }
 
-/// The consent sheet's writes. Grant ("Use cloud voice") and revoke ("Keep on-device voice" or
+/// The consent sheet's writes. A revoke also deletes cached cloud clips (N4). Grant ("Use cloud voice") and revoke ("Keep on-device voice" or
 /// the toggle turned off) are written synchronously, as before, and notify when the stored
 /// answer's grant actually flips. Declining when never granted is no change.
 @MainActor
 public final class PaidVoiceConsentSignals {
     private let store: CloudVoiceConsentStore
     private let notify: PaidVoiceAccessNotify
+    private let purgeCloudAudio: PaidVoiceAccessNotify
 
-    public init(store: CloudVoiceConsentStore, notify: @escaping PaidVoiceAccessNotify = PaidVoiceAccessRelay.live) {
+    /// `purgeCloudAudio` runs on a revoke (granted to not granted), before the notification, so
+    /// the re-plan cannot pick a cached cloud clip back up (N4).
+    public init(store: CloudVoiceConsentStore, notify: @escaping PaidVoiceAccessNotify = PaidVoiceAccessRelay.live,
+                purgeCloudAudio: @escaping PaidVoiceAccessNotify = PaidVoiceAccessRelay.livePurge) {
         self.store = store
         self.notify = notify
+        self.purgeCloudAudio = purgeCloudAudio
     }
 
     /// Returns the notification task when access changed (tests await it); nil otherwise.
@@ -128,6 +140,10 @@ public final class PaidVoiceConsentSignals {
         change()
         guard store.isGranted != before else { return nil }
         let notify = self.notify
-        return Task { @MainActor in await notify() }
+        let purge = before ? self.purgeCloudAudio : nil   // revoked: delete cached cloud clips first
+        return Task { @MainActor in
+            if let purge { await purge() }
+            await notify()
+        }
     }
 }

@@ -208,6 +208,14 @@ public protocol AudioCache: Sendable {
     /// Removes every clip derived from any personal item, whatever its id. For when consent
     /// cannot be checked per item (live mode does not persist consent across launches).
     func purgeAllPersonal() async
+    /// Removes every clip not rendered by one of `providerIDs` (cloud-voice consent revoked, N4:
+    /// cloud and paid clips go, on-device clips stay). Unattributable entries are removed too.
+    func purgeClips(keepingProviders providerIDs: Set<String>) async
+}
+
+extension AudioCache {
+    /// Test doubles that never hold cloud audio. Both shipping caches implement this.
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {}
 }
 
 /// Enforces the 7-day cap on a schedule, not only when a clip is read: an expired clip that
@@ -300,6 +308,9 @@ public actor InMemoryAudioCache: AudioCache {
         clips = clips.filter { t.timeIntervalSince($0.value.createdAt) <= maxAge }
     }
     public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {
+        clips = clips.filter { providerIDs.contains($0.value.providerID) }
+    }
     public var count: Int { clips.count }
 }
 
@@ -407,6 +418,10 @@ public struct FileAudioCache: AudioCache {
 
     public func purgeAllPersonal() async {
         removeGroups { clip in clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
+    }
+
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {
+        removeGroups { clip in clip.map { !providerIDs.contains($0.providerID) } ?? true }
     }
 
     public func store(_ audio: CachedAudio, for key: String) async {
@@ -659,6 +674,12 @@ public struct VoiceRenderer: Sendable {
         case .presenter: break
         }
         return cue.kind == .transition && !cue.isContent && cue.source == nil && cue.provenance == nil
+    }
+
+    /// Cloud-voice consent revoked (N4): deletes every cached clip that did not come from one of
+    /// this renderer's on-device, free routes, so no cloud or paid audio is replayed from cache.
+    public func purgeCloudClips() async {
+        await cache.purgeClips(keepingProviders: Set(routes.filter(\.isLocalAndFree).map(\.providerID)))
     }
 
     /// Renders `cue` on the first route that succeeds. Unless `mayLeaveDevice(cue, attribution:)`

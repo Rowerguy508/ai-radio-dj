@@ -545,6 +545,35 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
         XCTAssertEqual(provider.trimmingCharacters(in: .whitespacesAndNewlines), "entitlement.snapshot()")
     }
 
+    /// Deliberate seam (Fry B1 on #258): ProVoiceAccess.live is defined and tested, but the live
+    /// voice still uses .buildDefault, so Release keeps paid voice locked. Wiring .live into
+    /// PaidVoice.live() is a one-line follow-up that needs Sentinel and the owner; it must fail
+    /// this test and update it on purpose.
+    func testPaidVoiceLiveStillUsesBuildDefaultNotTheLiveGate() throws {
+        let live = try text("ios/AeroDJ/PaidVoice+App.swift")
+            .components(separatedBy: "static func live() -> PaidVoice {").dropFirst().first?
+            .components(separatedBy: "\n    }\n").first ?? ""
+        XCTAssertTrue(live.contains("publicComposition(base: base, access: .buildDefault,"))
+        XCTAssertFalse(live.contains(".live"), "the live gate is not wired into PaidVoice.live() yet")
+        // Nowhere else in the app hands the live gate to a composition either.
+        let app = repoRoot.appendingPathComponent("ios/AeroDJ")
+        let files = FileManager.default.enumerator(at: app, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+        for file in files {
+            let code = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
+                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: "\n")
+            XCTAssertFalse(code.contains("access: .live") || code.contains("ProVoiceAccess.live"),
+                           "\(file.lastPathComponent) wires the live gate")
+        }
+    }
+
+    /// N4: the app registers the live renderer's cloud-clip purge for consent revokes.
+    func testTheAppRegistersTheCloudClipPurge() throws {
+        let deps = try text("ios/AeroDJ/AppDependencies.swift")
+        XCTAssertTrue(deps.contains("PaidVoiceAccessRelay.purgeCloudAudio = { await voice.purgeCloudClips() }"))
+        XCTAssertTrue(deps.contains("let voice = paidVoice.renderer"))
+    }
+
     func testTheAppRegistersItsBreakSession() throws {
         let deps = try text("ios/AeroDJ/AppDependencies.swift")
         XCTAssertTrue(deps.contains("PaidVoiceAccessRelay.session = djSession"))
