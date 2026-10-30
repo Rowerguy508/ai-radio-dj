@@ -24,6 +24,7 @@ export interface StoreKitConfig {
   proProductIds: readonly string[];
   installsPerPurchase: number;
   allowSandboxInProduction: boolean;
+  /** Parsed and validated here but not read by this verifier: consumed by PR 6 (entitlement) and PR 7 (notifications). */
   honorGracePeriod: boolean;
   allowFamilyShared: boolean;
 }
@@ -83,6 +84,7 @@ export type StoreKitFailure =
   | 'environment'
   | 'expired'
   | 'revoked'
+  | 'revocation_null'
   | 'ownership'
   | 'stale'
   | 'config';
@@ -216,6 +218,8 @@ export async function verifySignedTransaction(jws: unknown, options: StoreKitVer
   const environment = str('environment');
   if (!environmentAllowed(environment, deployment, config)) return fail('environment');
 
+  // Sentinel: null fails closed with its own code so a real buyer hitting it is distinguishable.
+  if (payload.revocationDate === null) return fail('revocation_null');
   if (payload.revocationDate !== undefined) return fail('revoked');
   if (!(expiresDate > options.now())) return fail('expired');
 

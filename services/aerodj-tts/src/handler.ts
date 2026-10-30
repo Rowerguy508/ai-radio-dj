@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, paidStopped } from './attest-flags.js';
 import { bearerToken, parseTokenHash, tokenMatches } from './auth.js';
 import {
   DEFAULT_GLOBAL_DAILY_CHAR_CAP,
@@ -45,9 +46,10 @@ const SUBJECT_BUCKET = subjectBucket(SUBJECT);
  * Machine-readable refusal reason, sent as `reason` in the error body and logged.
  * Enum only: never text, ids or keys. `rate` = per-minute rate, `install_daily` = this
  * install's daily cap, `owner_daily` = the owner bucket's daily cap, `global_daily` = the global daily ceiling, `store` = limiter
- * store unreachable (fails closed).
+ * store unreachable (fails closed), `disabled` = master stop `AERODJ_TTS_PAID_STOP` (PR 3),
+ * `misconfig` = server configuration missing or invalid (500, PR 3).
  */
-export type ErrorReason = 'rate' | QuotaReason | 'store';
+export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconfig';
 
 /** Retry-After (seconds) for a rate 429 and a store 503: an upper bound for both window types. */
 export const RATE_RETRY_AFTER_SECONDS = 60;
@@ -63,7 +65,7 @@ export interface LogEntry {
   upstreamStatus?: number;
   /** Upstream non-2xx only: allowlisted `detail.status` code, else 'other'. */
   upstreamCode?: string;
-  /** 429 and limiter-store 503 only: the enum refusal reason. */
+  /** 429, 503 and 500 `misconfig` only: the enum refusal reason. */
   reason?: ErrorReason;
 }
 
@@ -289,10 +291,10 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
     };
   };
   /**
-   * 429 / store-503 contract: `Retry-After` (integer seconds >= 1) and a body of
-   * `{ error, requestId, reason, retryAfterSeconds }`: enum and numbers only.
+   * 429 / 503 / 500-misconfig contract: `Retry-After` (integer seconds >= 1) and a body
+   * of `{ error, requestId, reason, retryAfterSeconds }`: enum and numbers only.
    */
-  const refuse = (status: 429 | 503, reason: ErrorReason, retryAfterSeconds: number): TtsResponse => {
+  const refuse = (status: 429 | 500 | 503, reason: ErrorReason, retryAfterSeconds: number): TtsResponse => {
     const seconds = Math.max(1, Math.ceil(retryAfterSeconds));
     deps.log({ requestId, status, chars, reason });
     return {
@@ -307,18 +309,24 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
     };
   };
 
+  // --- Master stop (note §4.7, D1): first, before auth, any limiter call and any upstream call. ---
+  if (paidStopped(deps.env)) return refuse(503, 'disabled', DISABLED_RETRY_AFTER_SECONDS);
+
   if (req.method !== 'POST') return fail(405, { Allow: 'POST' });
+
+  // Server misconfiguration: 500 `misconfig` with Retry-After 3600 (note §4.4).
+  const misconfigured = (): TtsResponse => refuse(500, 'misconfig', MISCONFIG_RETRY_AFTER_SECONDS);
 
   // --- Auth: owner-only bearer token, stored server-side as a SHA-256 hash. ---
   const expectedHash = parseTokenHash(deps.env.AERODJ_TTS_TOKEN_SHA256);
-  if (!expectedHash) return fail(500);
+  if (!expectedHash) return misconfigured();
   const token = bearerToken(req.authorization);
   if (!token || !tokenMatches(token, expectedHash)) return fail(401);
 
   const limiter = deps.limiter;
-  if (!limiter) return fail(500);
+  if (!limiter) return misconfigured();
   const apiKey = deps.env.ELEVENLABS_API_KEY?.trim();
-  if (!apiKey) return fail(500);
+  if (!apiKey) return misconfigured();
 
   const now = deps.now();
   try {

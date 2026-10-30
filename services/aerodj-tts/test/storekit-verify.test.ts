@@ -209,6 +209,18 @@ describe('verifySignedTransaction: must fail (Sentinel criterion 7)', () => {
     assert.equal(await reason(good({ bundleId: 'com.example.other' })), 'bundle');
   });
 
+  it('wrong bundle: prefix and extension lookalikes are refused (exact match only; Fry N1 on #243)', async () => {
+    // Longer IDs that start with the real one (kills an `startsWith` mutant) ...
+    for (const bundleId of ['com.aerodj.app.evil', 'com.aerodj.app.share', 'com.aerodj.app.phonon', 'com.aerodj.app.pro', 'com.aerodj.app ']) {
+      assert.equal(await reason(good({ bundleId })), 'bundle', bundleId);
+    }
+    // ... and shorter IDs the real one starts with (kills a reversed-prefix mutant).
+    for (const bundleId of ['com.aerodj.ap', 'com.aerodj', '']) {
+      assert.equal(await reason(good({ bundleId })), 'bundle', JSON.stringify(bundleId));
+    }
+    assert.equal(await reason(good({ bundleId: 'COM.AERODJ.APP' })), 'bundle');
+  });
+
   it('product not allowlisted', async () => {
     assert.equal(await reason(good({ productId: 'com.aerodj.app.pro.lifetime' })), 'product');
   });
@@ -224,6 +236,25 @@ describe('verifySignedTransaction: must fail (Sentinel criterion 7)', () => {
 
   it('revoked (refunded or removed from Family Sharing)', async () => {
     assert.equal(await reason(good({ revocationDate: NOW - DAY, revocationReason: 0 })), 'revoked');
+  });
+
+  it('revoked: any present non-null revocationDate is refused, including 0 (Fry N2 on #243)', async () => {
+    // 0 is falsy (kills a truthiness mutant).
+    for (const revocationDate of [0, NOW + DAY, '', false]) {
+      assert.equal(await reason(good({ revocationDate })), 'revoked', JSON.stringify(revocationDate));
+    }
+  });
+
+  it('revocation_null: a null revocationDate is refused with its own reason (Sentinel on PR 3)', async () => {
+    const result = await verifySignedTransaction(good({ revocationDate: null }), opts());
+    assert.equal(result.ok, false);
+    assert.equal(await reason(good({ revocationDate: null })), 'revocation_null');
+  });
+
+  it('revoked: only an absent revocationDate passes (control for the cases above)', async () => {
+    const result = await verifySignedTransaction(good(), opts());
+    assert.equal(result.ok, true);
+    assert.equal('revocationDate' in payload(), false);
   });
 
   it('sandbox in prod (config default)', () => {

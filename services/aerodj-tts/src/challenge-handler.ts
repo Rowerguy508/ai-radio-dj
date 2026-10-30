@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { attestEnabled } from './attest-flags.js';
+import { attestEnabled, paidStopped } from './attest-flags.js';
 import { CHALLENGE_TTL_MS, KEY_BOUND_PURPOSES, isPurpose, issueChallenge, parseChallengeKey, parseKeyId } from './challenge.js';
 import { selectChallengeStore, type ChallengeStore } from './challenge-store.js';
 import type { Env } from './handler.js';
@@ -73,6 +73,11 @@ export async function handleChallenge(request: Request, deps: ChallengeDeps): Pr
     );
   };
 
+  // Master stop (note §4.7, D1; PR 3): first, before the method, the attest flag, the key and the store.
+  if (paidStopped(deps.env)) {
+    await request.body?.cancel().catch(() => {});
+    return fail('disabled');
+  }
   if (request.method !== 'POST') {
     deps.log({ requestId, status: 405 });
     await request.body?.cancel().catch(() => {});

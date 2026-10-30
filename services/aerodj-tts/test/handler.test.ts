@@ -230,7 +230,9 @@ test('missing ElevenLabs key returns generic 500 without calling upstream', asyn
   const h = harness({ env });
   const res = await handleTts(request(), h.deps);
   assert.equal(res.status, 500);
-  assert.deepEqual(Object.keys(errorBody(res)).sort(), ['error', 'requestId']);
+  // PR 3: every 500 carries the §4.4 `misconfig` contract (was a bare { error, requestId }).
+  assert.deepEqual(errorBody(res), { error: 'Server misconfigured', requestId: 'req-1', reason: 'misconfig', retryAfterSeconds: 3600 });
+  assert.equal(res.headers['Retry-After'], '3600');
   assert.equal(h.calls.length, 0);
 });
 

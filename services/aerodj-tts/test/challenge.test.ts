@@ -58,6 +58,12 @@ class FakeStore implements ChallengeStore {
     this.used.add(key);
     return true;
   }
+  reads: string[] = [];
+  async isUsed(key: string): Promise<boolean> {
+    this.reads.push(key);
+    if (this.fail) throw new ChallengeStoreError('down');
+    return this.used.has(key);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -478,5 +484,141 @@ describe('raw body (note §4.1.4, Sentinel B4)', () => {
   test('empty body reads as zero bytes', async () => {
     const r = await readRawBody(req(null), 10);
     assert.deepEqual(r, { ok: true, bytes: Buffer.alloc(0) });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR 3 (#233): pinned challenge body cap, 400 challenge_expired, master stop.
+describe('PR 3: challenge endpoint body cap is pinned at 1024 bytes (Fry, #246 mutation survivor)', () => {
+  const ENABLED = { AERODJ_TTS_ATTEST_ENABLED: 'true', AERODJ_TTS_CHALLENGE_HMAC_KEY: KEY_HEX };
+  const deps = (): ChallengeDeps => ({ env: ENABLED, store: new FakeStore(), log: () => {}, now: () => NOW, requestId: () => 'req-1' });
+  /** A valid `{"purpose":"attest"}` body padded with JSON whitespace to exactly `n` bytes. */
+  const padded = (n: number) => {
+    const core = JSON.stringify({ purpose: 'attest' });
+    return core.slice(0, -1) + ' '.repeat(n - core.length) + '}';
+  };
+  const post = (body: string, streamed: boolean) =>
+    new Request('https://proxy.invalid/api/attest/challenge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: streamed ? new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(body)); c.close(); } }) : body,
+      ...(streamed ? { duplex: 'half' } : {}),
+    } as RequestInit);
+
+  test('the constant is 1024 (a literal, not relative to itself)', () => {
+    assert.equal(BODY_CAPS.challenge, 1024);
+  });
+
+  test('exactly 1024 bytes is accepted, 1025 bytes is 413 too_large (declared and streamed)', async () => {
+    assert.equal(Buffer.byteLength(padded(1024)), 1024);
+    assert.equal(Buffer.byteLength(padded(1025)), 1025);
+    for (const streamed of [false, true]) {
+      const ok = await handleChallenge(post(padded(1024), streamed), deps());
+      assert.equal(ok.status, 200, `1024 bytes, streamed=${streamed}`);
+      const big = await handleChallenge(post(padded(1025), streamed), deps());
+      assert.equal(big.status, 413, `1025 bytes, streamed=${streamed}`);
+      assert.equal(((await big.json()) as { reason: string }).reason, 'too_large');
+    }
+  });
+});
+
+describe('PR 3: expired challenge → 400 challenge_expired only when otherwise valid', () => {
+  const LATE = NOW + CHALLENGE_TTL_MS + 1;
+  const run = (store: ChallengeStore | null, challenge: unknown, opts: { sig?: boolean; keyId?: Buffer | null; purpose?: Purpose; now?: number } = {}) => {
+    let sigCalls = 0;
+    const result = verifyAndConsumeChallenge({
+      challenge,
+      purpose: opts.purpose ?? 'tts',
+      keyId: opts.keyId === undefined ? KEY_ID_A : opts.keyId,
+      key: KEY,
+      now: opts.now ?? LATE,
+      store,
+      verifySignature: async () => { sigCalls++; return opts.sig ?? true; },
+    });
+    return { result, sigCalls: () => sigCalls };
+  };
+
+  test('valid MAC, purpose, key and signature, unused, past 120 s → 400 challenge_expired; nothing written', async () => {
+    const store = new FakeStore();
+    const c = issue('tts');
+    const r = run(store, c);
+    assert.deepEqual(await r.result, { ok: false, status: 400, reason: 'challenge_expired' });
+    assert.equal(r.sigCalls(), 1, 'signature is verified before the expired reason is given');
+    assert.equal(store.calls.length, 0, 'an expired challenge is never marked (no write)');
+    assert.deepEqual(store.reads, [usedKey(c)], 'one read-only EXISTS on its used mark');
+  });
+
+  test('the same for attest and ent purposes', async () => {
+    assert.deepEqual(await run(new FakeStore(), issue('attest'), { purpose: 'attest', keyId: null }).result, { ok: false, status: 400, reason: 'challenge_expired' });
+    assert.deepEqual(await run(new FakeStore(), issue('ent'), { purpose: 'ent' }).result, { ok: false, status: 400, reason: 'challenge_expired' });
+  });
+
+  test('boundary: at exactly 120 s it is still valid and consumed', async () => {
+    assert.deepEqual(await run(new FakeStore(), issue('tts'), { now: NOW + CHALLENGE_TTL_MS }).result, { ok: true });
+  });
+
+  test('forged (wrong HMAC key) and expired → 401 assertion, no signature work, no store access', async () => {
+    const store = new FakeStore();
+    const r = run(store, issue('tts', KEY_ID_A, NOW, OTHER_KEY));
+    assert.deepEqual(await r.result, { ok: false, status: 401, reason: 'assertion', detail: 'mac' });
+    assert.equal(r.sigCalls(), 0);
+    assert.equal(store.reads.length + store.calls.length, 0);
+  });
+
+  test('tampered timestamp (MAC no longer matches) → 401 assertion', async () => {
+    const c = issue('tts');
+    const bytes = Buffer.from(c, 'base64url');
+    bytes.writeBigUInt64BE(BigInt(NOW - 10 * CHALLENGE_TTL_MS), 3);
+    const r = run(new FakeStore(), bytes.toString('base64url'), { now: NOW });
+    assert.deepEqual(await r.result, { ok: false, status: 401, reason: 'assertion', detail: 'mac' });
+  });
+
+  test('expired but otherwise bad → 401 assertion: wrong purpose, other keyId, bad version, unbound', async () => {
+    const store = new FakeStore();
+    assert.deepEqual(await run(store, issue('ent')).result, { ok: false, status: 401, reason: 'assertion', detail: 'purpose' });
+    assert.deepEqual(await run(store, issue('tts', KEY_ID_B)).result, { ok: false, status: 401, reason: 'assertion', detail: 'mac' });
+    const badVersion = remac(issue('tts'), (h) => { h[0] = 2; }, KEY_ID_A);
+    assert.deepEqual(await run(store, badVersion).result, { ok: false, status: 401, reason: 'assertion', detail: 'version' });
+    const unbound = issue('attest', null);
+    assert.deepEqual(await run(store, unbound).result, { ok: false, status: 401, reason: 'assertion', detail: 'purpose' });
+    assert.equal(store.reads.length + store.calls.length, 0);
+  });
+
+  test('expired with a bad signature → 401 assertion (signature), no store read', async () => {
+    const store = new FakeStore();
+    const r = run(store, issue('tts'), { sig: false });
+    assert.deepEqual(await r.result, { ok: false, status: 401, reason: 'assertion', detail: 'signature' });
+    assert.equal(store.reads.length, 0);
+  });
+
+  test('reused, then presented after expiry → 401 assertion (reused), never challenge_expired', async () => {
+    const store = new FakeStore();
+    const c = issue('tts');
+    assert.deepEqual(await run(store, c, { now: NOW }).result, { ok: true });
+    assert.deepEqual(await run(store, c).result, { ok: false, status: 401, reason: 'assertion', detail: 'reused' });
+    assert.equal(store.calls.length, 1, 'only the first, in-time use wrote');
+  });
+
+  test('issued in the future stays 401 assertion', async () => {
+    const r = run(new FakeStore(), issue('tts', KEY_ID_A, NOW + CLOCK_SKEW_MS + 1), { now: NOW });
+    assert.deepEqual(await r.result, { ok: false, status: 401, reason: 'assertion', detail: 'future' });
+  });
+
+  test('expired with no durable store, or a store error on the read → 503 store (fail closed)', async () => {
+    assert.deepEqual(await run(null, issue('tts')).result, { ok: false, status: 503, reason: 'store' });
+    const down = new FakeStore();
+    down.fail = true;
+    assert.deepEqual(await run(down, issue('tts')).result, { ok: false, status: 503, reason: 'store' });
+  });
+
+  test('RedisChallengeStore.isUsed sends EXISTS and maps 1/0; anything else throws', async () => {
+    const cfg = { url: 'https://example-upstash.invalid', token: 'test-token-not-real' };
+    const calls: unknown[] = [];
+    const store = (result: unknown) =>
+      new RedisChallengeStore(cfg, (async (_u: string, init: RequestInit) => { calls.push(JSON.parse(String(init.body))); return Response.json({ result }); }) as unknown as typeof fetch);
+    assert.equal(await store(1).isUsed('used:{aerodj-tts}:x'), true);
+    assert.equal(await store(0).isUsed('used:{aerodj-tts}:x'), false);
+    assert.deepEqual(calls[0], ['EXISTS', 'used:{aerodj-tts}:x']);
+    for (const odd of [null, 'OK', 2, '1']) await assert.rejects(store(odd).isUsed('k'), ChallengeStoreError);
   });
 });

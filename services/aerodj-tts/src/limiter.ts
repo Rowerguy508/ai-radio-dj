@@ -50,6 +50,12 @@ export function subjectBucket(subject: Subject): string {
 export const GLOBAL_BUCKET = 'global';
 
 export interface Reservation {
+  /**
+   * Server-generated reservation id (a random UUID, never from the client). A refund is
+   * applied at most once per `rid` (Fry D2, note §4.3): the second `release()` of the
+   * same reservation is a no-op on both limiters.
+   */
+  readonly rid: string;
   /** The subject's own bucket (`owner` or `install:<sha256>`). */
   readonly bucket: string;
   /** UTC day (YYYY-MM-DD) the characters were reserved against. */
@@ -71,8 +77,12 @@ export interface UsageLimiter {
    * the global bucket, or on neither: a refusal changes no counter.
    */
   reserve(subject: Subject, chars: number, now: number): Promise<ReserveResult>;
-  /** Returns a reservation's characters to both of its day's buckets (never below zero). */
-  release(reservation: Reservation): Promise<void>;
+  /**
+   * Returns a reservation's characters to both of its day's buckets (never below zero),
+   * at most once per `reservation.rid`. Resolves true if this call applied the refund,
+   * false if that reservation was already refunded.
+   */
+  release(reservation: Reservation): Promise<boolean>;
 }
 
 export interface LimiterOptions {
@@ -108,6 +118,21 @@ function subjectReason(subject: Subject): QuotaReason {
   return subject.kind === 'owner' ? 'owner_daily' : 'install_daily';
 }
 
+/** Refund-marker lifetime (s): 2 days, the same as the day counters it protects. */
+export const REFUND_MARKER_TTL_SECONDS = 172_800;
+const RID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** A fresh server-side reservation id. */
+export function newReservationId(): string {
+  return crypto.randomUUID();
+}
+
+/** Refund marker key for one reservation (note §4.3): `refund:{aerodj-tts}:<rid>`. */
+export function refundMarkerKey(rid: string): string {
+  if (typeof rid !== 'string' || !RID.test(rid)) throw new TypeError('invalid reservation id');
+  return `refund:{aerodj-tts}:${rid}`;
+}
+
 export function utcDay(now: number): string {
   return new Date(now).toISOString().slice(0, 10);
 }
@@ -120,6 +145,8 @@ export class InMemoryUsageLimiter implements UsageLimiter {
   readonly durable = false;
   private readonly windows = new Map<string, number[]>();
   private readonly spend = new Map<string, { day: string; chars: number }>();
+  /** Refunded reservation ids (per instance), with the day each was reserved against. */
+  private readonly refunded = new Map<string, string>();
 
   constructor(private readonly options: LimiterOptions) {}
 
@@ -145,15 +172,24 @@ export class InMemoryUsageLimiter implements UsageLimiter {
     if (this.used(GLOBAL_BUCKET, now) + chars > this.options.dailyCharCap) return { ok: false, reason: 'global_daily' };
     this.spend.set(bucket, { day, chars: this.used(bucket, now) + chars });
     this.spend.set(GLOBAL_BUCKET, { day, chars: this.used(GLOBAL_BUCKET, now) + chars });
-    return { ok: true, reservation: { bucket, day, chars } };
+    return { ok: true, reservation: { rid: newReservationId(), bucket, day, chars } };
   }
 
-  async release(reservation: Reservation): Promise<void> {
+  async release(reservation: Reservation): Promise<boolean> {
+    // Per-charge refund marker (Fry D2): the same rule as RELEASE2_SCRIPT's SET NX.
+    const marker = refundMarkerKey(reservation.rid);
+    if (this.refunded.has(marker)) return false;
+    this.refunded.set(marker, reservation.day);
+    // Like the Redis marker's 2-day TTL: a marker for a day whose counters are gone can
+    // never matter again, so the set stays bounded on a long-lived instance.
+    const horizon = Date.parse(`${reservation.day}T00:00:00Z`) - REFUND_MARKER_TTL_SECONDS * 1000;
+    for (const [key, day] of this.refunded) if (Date.parse(`${day}T00:00:00Z`) < horizon) this.refunded.delete(key);
     for (const bucket of [reservation.bucket, GLOBAL_BUCKET]) {
       const entry = this.spend.get(bucket);
       if (!entry || entry.day !== reservation.day) continue;
       entry.chars = Math.max(0, entry.chars - reservation.chars);
     }
+    return true;
   }
 
   /** Test/diagnostic helper: characters currently counted for `bucket` today. */
@@ -189,8 +225,15 @@ redis.call('INCRBY', KEYS[2], c)
 redis.call('EXPIRE', KEYS[2], ARGV[4])
 return n`;
 
-/** KEYS[1] = subject day counter, KEYS[2] = global day counter; ARGV = chars. Decrements both, floored at zero, keeping TTLs. */
-export const RELEASE2_SCRIPT = `local c = tonumber(ARGV[1])
+/**
+ * KEYS[1] = subject day counter, KEYS[2] = global day counter, KEYS[3] = refund marker
+ * (`refund:{aerodj-tts}:<rid>`); ARGV = chars, marker ttl s.
+ * At most once per reservation (Fry D2): first `SET marker 1 NX EX ttl`; if the marker
+ * already exists, returns 0 and changes nothing. Otherwise decrements both counters,
+ * floored at zero, keeping their TTLs, and returns 1.
+ */
+export const RELEASE2_SCRIPT = `if not redis.call('SET', KEYS[3], '1', 'NX', 'EX', ARGV[2]) then return 0 end
+local c = tonumber(ARGV[1])
 for i = 1, 2 do
   local used = tonumber(redis.call('GET', KEYS[i]) or '0')
   if used > 0 then
@@ -276,10 +319,16 @@ export class RedisUsageLimiter implements UsageLimiter {
     if (result === -1) return { ok: false, reason: subjectReason(subject) };
     if (result === -2) return { ok: false, reason: 'global_daily' };
     if (result < 0) throw new LimiterStoreError('limiter store error');
-    return { ok: true, reservation: { bucket, day, chars } };
+    return { ok: true, reservation: { rid: newReservationId(), bucket, day, chars } };
   }
 
-  async release(reservation: Reservation): Promise<void> {
-    await this.eval(RELEASE2_SCRIPT, dayKeys(reservation.bucket, reservation.day), [reservation.chars]);
+  async release(reservation: Reservation): Promise<boolean> {
+    const marker = refundMarkerKey(reservation.rid);
+    const result = await this.eval(RELEASE2_SCRIPT, [...dayKeys(reservation.bucket, reservation.day), marker], [
+      reservation.chars,
+      REFUND_MARKER_TTL_SECONDS,
+    ]);
+    if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
+    return result === 1;
   }
 }
