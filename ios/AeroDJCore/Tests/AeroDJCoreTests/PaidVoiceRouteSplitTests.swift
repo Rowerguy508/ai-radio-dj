@@ -60,14 +60,19 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
     private let voiceID = PremiumVoiceCatalog.voices[0].id
     private let productID = ProSubscriptionConfig.monthlyProductID
     private var epoch: Date { Date(timeIntervalSince1970: 0) }
-    private var pro: ProEntitlementState { .pro(productID: productID, expiresAt: nil) }
+    /// Active Pro with a future expiry: #244's call-time gate (a98ca56) denies a `.pro` with
+    /// no expiry date, and ProVoiceAccess asks at the real clock (-Nova, merge fixup).
+    private var pro: ProEntitlementState { .pro(productID: productID, expiresAt: Date().addingTimeInterval(86_400)) }
     private var presenterLine: String { EditorialTone.warm.continuation[0] }
 
     // MARK: fixtures
 
     private func base(cache: AudioCache = InMemoryAudioCache()) -> VoiceRenderer {
         VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
-                      budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, revocations: NarrationRevocations())
+                      budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, revocations: NarrationRevocations(),
+                      // The render-time consent gate (Nova's consent PR) is granted here, so these
+                      // tests exercise the per-cue ProVoiceAccess gate alone (-Nova, merge fixup).
+                      cloudConsent: .inMemory(.accepted))
     }
 
     /// The public composition with the switch forced on (the flagged build), proxy faked.
