@@ -98,7 +98,7 @@ def main():
         start = shell.index('<main id="main" class="doc">')
         end = shell.index("</main>")
         main_html = ('<main id="main" class="doc">\n  <div class="wrap narrow">\n'
-                     f'    <!-- Copy: docs/site/{name}.md from sentinel/site-copy (#261) at 7f61c51, rendered by site/render-copy.py. Do not edit the copy here; change the .md and re-render. -->\n'
+                     f'    <!-- Copy: docs/site/{name}.md from sentinel/site-copy (#261) at bd58531, rendered by site/render-copy.py. Do not edit the copy here; change the .md and re-render. -->\n'
                      f"    {BANNER}\n\n{render(md_path.read_text(), prefix)}\n  </div>\n")
         new = shell[:start] + main_html + shell[end:]
         if check:
