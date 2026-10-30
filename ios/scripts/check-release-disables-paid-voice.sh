@@ -10,11 +10,12 @@
 # - gate 1: the owner proxy credential code (`OwnerProxyAuth`, Keychain service name) is owner-only;
 # - gate 2: the public paid route is compiled OFF until #233 PRs 3-4 (AERODJ_PUBLIC_PAID_ROUTE,
 #   which nothing sets); the flagged build sets it as well, as the positive control.
+# - the owner picker helpers (`PremiumVoicePickerStatus`) are owner-only too.
 # One loop checks every needle in both builds (absent without the flags, present with them).
 set -euo pipefail
 cd "$(dirname "$0")/../AeroDJCore"
 marker='AERODJ_OWNER_AB_VOICE_TRIAL_BUILD'
-needles=(ownerTrial com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)
+needles=(ownerTrial com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD PremiumVoicePickerStatus)
 flagged=.build/owner-ab  # inside the ignored .build/, excluded from the plain scan
 # -ipath: SwiftPM's layout varies (.build/release vs .build/out/Products/Release-*).
 objects() { find "$1" -name '*.o' -ipath '*release*' -path '*AeroDJCore*' ! -path '*Tests*' "${@:2}"; }
@@ -40,5 +41,5 @@ for needle in "${needles[@]}"; do
 done
 swift test -c release --scratch-path "$flagged" -Xswiftc -enable-testing -Xswiftc -DAERODJ_OWNER_AB \
   -Xswiftc -DAERODJ_PUBLIC_PAID_ROUTE \
-  --filter 'PremiumVoicePickerTests.testOwnerABBuildEnablesGate|PaidVoiceRouteSplitTests.testFlaggedBuildCompilesThePublicRouteIn|OwnerTrialIsFlagOnlyTests'
+  --filter 'PremiumVoicePickerTests.(testOwnerABBuildEnablesGate|testEndpointPrefillsDefaultOnlyWhenNoneSaved|testEndpointFooterMatchesComposeDecision|testPendingDecisionMirrorsWhatDoneSaves|testSheetValidationNeverWidensTheAllowlist|testStatusLineShowsOnlyIndexOrReasonCode)|PaidVoiceRouteSplitTests.testFlaggedBuildCompilesThePublicRouteIn|OwnerTrialIsFlagOnlyTests'
 echo "OK: paid voices are off without AERODJ_OWNER_AB and on only with it"

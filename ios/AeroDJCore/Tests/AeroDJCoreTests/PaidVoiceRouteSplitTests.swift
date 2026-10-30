@@ -367,12 +367,12 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
     /// its positive control, in one shared loop.
     func testBothReleaseChecksKeepTheSplitNeedlesAndControls() throws {
         let script = try text("ios/scripts/check-release-disables-paid-voice.sh")
-        XCTAssertTrue(script.contains("needles=(" + Self.trialNeedle + " com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)"))
+        XCTAssertTrue(script.contains("needles=(" + Self.trialNeedle + " com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD PremiumVoicePickerStatus)"))
         XCTAssertEqual(script.components(separatedBy: "\"${needles[@]}\"").count - 1, 2, "plain scan and control")
         XCTAssertTrue(script.contains("-Xswiftc -DAERODJ_OWNER_AB -Xswiftc -DAERODJ_PUBLIC_PAID_ROUTE"))
         XCTAssertTrue(script.contains("PaidVoiceRouteSplitTests.testFlaggedBuildCompilesThePublicRouteIn"))
         let yml = try text(".github/workflows/ios.yml")
-        XCTAssertTrue(yml.contains("NEEDLES=(" + Self.trialNeedle + " com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)"))
+        XCTAssertTrue(yml.contains("NEEDLES=(" + Self.trialNeedle + " com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD PremiumVoicePickerStatus)"))
         XCTAssertEqual(yml.components(separatedBy: "\"${NEEDLES[@]}\"").count - 1, 2, "plain grep and control")
         XCTAssertTrue(yml.contains("SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) AERODJ_OWNER_AB AERODJ_PUBLIC_PAID_ROUTE'"))
         #if AERODJ_OWNER_AB
