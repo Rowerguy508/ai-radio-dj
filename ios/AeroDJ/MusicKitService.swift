@@ -73,10 +73,12 @@ final class MusicKitService: ObservableObject {
     /// the break and before the next song loads: `StationQueuePlayer` returns its start when the
     /// station's music settings changed since this queue began and the station's queue is ready.
     /// Nil, or a nil result, loads the next song of this queue exactly as before.
-    var stationQueueAtBoundary: (@MainActor (_ finishedIndex: Int) -> (@MainActor () async -> Void)?)?
+    var stationQueueAtBoundary: (@MainActor (_ finishedIndex: Int) -> (@MainActor () async -> StationHandOffResult)?)?
     /// Station queue (-Atlas; flagged for Claude): Play with nothing queued starts the station's
     /// queue when it is ready. Nil, or a nil result, keeps the existing "nothing to resume" error.
-    var stationQueueForIdlePlay: (@MainActor () -> (@MainActor () async -> Void)?)?
+    /// #204: a failed start already raised its banner and the feed staged the songs again, so the
+    /// next Play retries; nothing else to do here.
+    var stationQueueForIdlePlay: (@MainActor () -> (@MainActor () async -> StationHandOffResult)?)?
     /// Station queue (-Atlas; flagged for Claude): a new queue replaced the old one (a tap or a station
     /// hand-off), so `StationQueuePlayer` knows which station the playing queue belongs to.
     var onQueueReplaced: (@MainActor () -> Void)?
@@ -279,7 +281,7 @@ final class MusicKitService: ObservableObject {
     func resume() async throws {
         // Station queue (-Atlas; flagged for Claude): an idle Play starts the station when it is ready.
         if queue.isEmpty, let startStation = stationQueueForIdlePlay?() {
-            await startStation()
+            _ = await startStation()
             return
         }
         guard !queue.isEmpty else {
@@ -504,11 +506,23 @@ final class MusicKitService: ObservableObject {
         releaseSongEndHoldIfAllowed(finished: index)
         // Station queue (-Atlas; flagged for Claude): a station change that applied at this boundary
         // replaces the queue here, through the same path as a tap. Otherwise nothing changes.
-        if let startStation = stationQueueAtBoundary?(index) {
-            await startStation()
-            return
-        }
         let next = index + 1
+        var fellBackToOldQueue = false
+        if let startStation = stationQueueAtBoundary?(index) {
+            // #204 (-Atlas): a failed station start used to return here with the new queue unplayed
+            // and the old one gone. Now, if nothing newer happened since (Core's generation check),
+            // the old queue comes back and its next song loads below, exactly as without a station.
+            let oldQueue = queue
+            let generationBefore = attempts.queueGeneration
+            let result = await startStation()
+            guard StationHandOffFallback.loadsOldQueueNext(
+                result: result, generationBefore: generationBefore, generationNow: attempts.queueGeneration,
+                next: next, oldQueueCount: oldQueue.count) else { return }
+            logPlayback(PlaybackLog.stationHandOffFallback(next: next))
+            queue = oldQueue
+            send(.queueStarted(tracks: oldQueue.map(\.info), startIndex: next, station: snapshot.station))
+            fellBackToOldQueue = true
+        }
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.startNextTrack(.indexOK(queue.indices.contains(next)), after: index, queueCount: queue.count, gates: p0Gates)
         #endif
@@ -516,6 +530,16 @@ final class MusicKitService: ObservableObject {
         let attempt = beginAttempt(userChangedQueue: false)
         do {
             try await startTrack(at: next, autoplay: true, attempt: attempt)
+            if fellBackToOldQueue, attempts.isCurrent(attempt) {
+                // The old queue plays on: the failed hand-off's banner no longer applies. A held
+                // (deferred) load leaves `.preparing` honestly, like a refused start.
+                if isPlaying {
+                    lastError = nil
+                    send(.errorCleared)
+                } else {
+                    send(.playbackStartRefused)
+                }
+            }
         } catch MusicKitError.superseded {
             #if AERODJ_P0_DIAG
             P0EventTraceHost.shared.startTrack(.superseded, index: next, queueCount: queue.count, userInitiated: false, gates: p0Gates)
