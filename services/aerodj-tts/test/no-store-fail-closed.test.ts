@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { handleTts, selectLimiter, upstreamKeyConfigured, type Deps, type Env, type LogEntry, type TtsRequest } from '../src/handler.js';
+import { defaultDeps, handleTts, nonDurableOverrideHonoured, selectLimiter, upstreamKeyConfigured, type Deps, type Env, type LogEntry, type ProductionDeps, type TtsRequest } from '../src/handler.js';
 import { InMemoryUsageLimiter, RedisUsageLimiter, type UsageLimiter } from '../src/limiter.js';
 import { proSubjectFromVerified, type ProSubject } from '../src/pro-allowance.js';
 import { fakeUpstash } from './redis-lua.js';
@@ -189,9 +189,89 @@ describe('ElevenLabs key and store both set: unchanged', () => {
     assert.equal((await handleTts(req(), h.d)).status, 200);
   });
 
-  test('the test-only flag is the only way a non-durable limiter renders with a key set', async () => {
-    const h = deps(new InMemoryUsageLimiter({ deployment: 'production', dailyCharCap: 9_000, requestsPerMinute: 600 }), env({ VERCEL_ENV: 'production' }));
-    assert.equal((await handleTts(req(), h.d)).status, 500);
-    assert.equal((await handleTts(req(), { ...h.d, testOnlyAllowNonDurableLimiter: true })).status, 200);
+  test('the test-only flag is the only way a non-durable limiter renders with a key set, and only with no VERCEL_ENV', async () => {
+    await withProcessEnv({ VERCEL_ENV: undefined }, async () => {
+      const h = deps(new InMemoryUsageLimiter({ deployment: 'production', dailyCharCap: 9_000, requestsPerMinute: 600 }), env({ VERCEL_ENV: undefined }));
+      assert.equal((await handleTts(req(), h.d)).status, 500, 'no flag');
+      assert.equal((await handleTts(req(), { ...h.d, testOnlyAllowNonDurableLimiter: true })).status, 200, 'flag, off-platform');
+      const onVercel = { ...h.d, env: env({ VERCEL_ENV: 'production' }), testOnlyAllowNonDurableLimiter: true as const };
+      assert.equal((await handleTts(req(), onVercel)).status, 500, 'flag, VERCEL_ENV production');
+    });
+  });
+});
+
+/** Sets (or, with undefined, deletes) process.env keys for the duration of `fn`, then restores them. */
+async function withProcessEnv<T>(patch: Env, fn: () => Promise<T> | T): Promise<T> {
+  const saved = new Map<string, string | undefined>();
+  for (const [k, v] of Object.entries(patch)) {
+    saved.set(k, process.env[k]);
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+/** Any VERCEL_ENV value counts as "on Vercel": the three real ones, empty and unknown. */
+const ON_VERCEL = ['production', 'preview', 'development', '', 'staging'];
+
+describe("Sentinel's nit on #294: the test-only override can never bypass the no-store gate on Vercel", () => {
+  for (const v of ON_VERCEL) {
+    test(`${label(v)} in deps.env: override ignored, owner and Pro 500 no_store before any counter or upstream call`, async () => {
+      await withProcessEnv({ VERCEL_ENV: undefined }, async () => {
+        const s = spy(new InMemoryUsageLimiter({ deployment: 'production', dailyCharCap: 9_000, requestsPerMinute: 600 }));
+        const h = deps(s.l, env({ VERCEL_ENV: v }));
+        const d: Deps = { ...h.d, testOnlyAllowNonDurableLimiter: true };
+        expectNoStore(await handleTts(req(), d), h.logs.splice(0), 'owner');
+        expectNoStore(await handleTts(req(await subject()), d), h.logs.splice(0), 'Pro');
+        assert.equal(s.calls(), 0, 'no limiter call (no rate or char counter written)');
+        assert.equal(h.upstream(), 0, 'no ElevenLabs call');
+      });
+    });
+
+    test(`${label(v)} only in process.env (deps.env has none): override still ignored, 500 no_store, zero calls`, async () => {
+      await withProcessEnv({ VERCEL_ENV: v }, async () => {
+        const s = spy(new InMemoryUsageLimiter({ deployment: 'production', dailyCharCap: 9_000, requestsPerMinute: 600 }));
+        const h = deps(s.l, env({ VERCEL_ENV: undefined }));
+        const d: Deps = { ...h.d, testOnlyAllowNonDurableLimiter: true };
+        expectNoStore(await handleTts(req(), d), h.logs.splice(0), 'owner');
+        expectNoStore(await handleTts(req(await subject()), d), h.logs.splice(0), 'Pro');
+        assert.equal(s.calls(), 0, 'no limiter call');
+        assert.equal(h.upstream(), 0, 'no ElevenLabs call');
+      });
+    });
+  }
+
+  test('nonDurableOverrideHonoured: true only for the explicit flag with no VERCEL_ENV in deps.env or the runtime env', () => {
+    assert.equal(nonDurableOverrideHonoured({ env: {}, testOnlyAllowNonDurableLimiter: true }, {}), true);
+    assert.equal(nonDurableOverrideHonoured({ env: { VERCEL_ENV: undefined }, testOnlyAllowNonDurableLimiter: true }, { VERCEL_ENV: undefined }), true);
+    assert.equal(nonDurableOverrideHonoured({ env: {} }, {}), false, 'no flag');
+    for (const v of ON_VERCEL) {
+      assert.equal(nonDurableOverrideHonoured({ env: { VERCEL_ENV: v }, testOnlyAllowNonDurableLimiter: true }, {}), false, `deps.env ${label(v)}`);
+      assert.equal(nonDurableOverrideHonoured({ env: {}, testOnlyAllowNonDurableLimiter: true }, { VERCEL_ENV: v }), false, `runtime ${label(v)}`);
+    }
+  });
+
+  test('the production Deps factory never sets the override, and its result cannot be given one', () => {
+    for (const v of [...ON_VERCEL, undefined]) {
+      for (const [name, s] of [...NO_STORE, ['store', { KV_REST_API_URL: STORE.url, KV_REST_API_TOKEN: STORE.token }] as [string, Env]]) {
+        const d = defaultDeps(env({ ...s, VERCEL_ENV: v }));
+        assert.equal(Object.prototype.hasOwnProperty.call(d, 'testOnlyAllowNonDurableLimiter'), false, `${label(v)}, ${name}`);
+        assert.equal(d.testOnlyAllowNonDurableLimiter, undefined);
+        assert.ok(Object.isFrozen(d), 'frozen');
+        assert.throws(() => { (d as unknown as Deps).testOnlyAllowNonDurableLimiter = true; }, TypeError);
+        assert.equal(nonDurableOverrideHonoured(d, {}), false);
+      }
+    }
+    // Type level (checked by `tsc --noEmit`): ProductionDeps cannot carry the flag.
+    // @ts-expect-error ProductionDeps has testOnlyAllowNonDurableLimiter?: never
+    const typed: ProductionDeps = { ...defaultDeps(env()), testOnlyAllowNonDurableLimiter: true };
+    assert.ok(typed);
   });
 });

@@ -178,10 +178,30 @@ export interface Deps {
   logRefundLost?: (entry: RefundLostLog) => void;
   /**
    * TEST-ONLY. Lets a test drive the handler with a non-durable (in-memory or spy) limiter
-   * while ELEVENLABS_API_KEY is set. `defaultDeps` never sets it, so at runtime an upstream
-   * key without the shared store is always 500 `misconfig` (Fry on #287).
+   * while ELEVENLABS_API_KEY is set. Two independent locks keep it off a deployed function
+   * (Sentinel's nit on #294): `defaultDeps` returns `ProductionDeps`, which cannot carry it,
+   * and `nonDurableOverrideHonoured` ignores it whenever VERCEL_ENV is set to anything, in
+   * `deps.env` or in `process.env`. So on Vercel an upstream key without the shared store is
+   * always 500 `misconfig` / `no_store` (Fry on #287).
    */
   testOnlyAllowNonDurableLimiter?: true;
+}
+
+/** The Deps the deployed function gets: the test-only override cannot be set on it. */
+export type ProductionDeps = Readonly<Omit<Deps, 'testOnlyAllowNonDurableLimiter'> & { testOnlyAllowNonDurableLimiter?: never }>;
+
+/**
+ * True only for an explicit test override AND no VERCEL_ENV anywhere. Any VERCEL_ENV value
+ * (production, preview, development, empty or unknown) in `deps.env` or in the process
+ * environment means "running on Vercel", and the override is ignored.
+ */
+export function nonDurableOverrideHonoured(
+  deps: Pick<Deps, 'env' | 'testOnlyAllowNonDurableLimiter'>,
+  runtimeEnv: Env = process.env,
+): boolean {
+  if (deps.testOnlyAllowNonDurableLimiter !== true) return false;
+  if (deps.env.VERCEL_ENV !== undefined || runtimeEnv.VERCEL_ENV !== undefined) return false;
+  return true;
 }
 
 /**
@@ -324,8 +344,9 @@ function defaultLimiter(env: Env): UsageLimiter | null {
   return limiter;
 }
 
-export function defaultDeps(env: Env = process.env): Deps {
-  return {
+export function defaultDeps(env: Env = process.env): ProductionDeps {
+  // Frozen and typed without the test-only override: nothing downstream can switch it on.
+  return Object.freeze({
     env,
     fetch: globalThis.fetch,
     limiter: defaultLimiter(env),
@@ -346,7 +367,7 @@ export function defaultDeps(env: Env = process.env): Deps {
     now: Date.now,
     timeoutMs: UPSTREAM_TIMEOUT_MS,
     requestId: () => crypto.randomUUID(),
-  };
+  });
 }
 
 function parseBody(body: unknown): Record<string, unknown> | null {
@@ -435,7 +456,7 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   // write or upstream call, on every path (owner, Pro) and in every VERCEL_ENV. A per-instance
   // limiter would spend outside the shared daily ceiling. Log reason is the enum `no_store`.
   const noSharedStore = limiter === null ? redisRestConfig(deps.env) === null : limiter.durable !== true;
-  if (apiKey && noSharedStore && deps.testOnlyAllowNonDurableLimiter !== true) {
+  if (apiKey && noSharedStore && !nonDurableOverrideHonoured(deps)) {
     return refuse(500, 'misconfig', MISCONFIG_RETRY_AFTER_SECONDS, 'no_store');
   }
   if (!limiter) return misconfigured();
