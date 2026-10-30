@@ -432,6 +432,57 @@ jobs:
           kill -INT "$REC"; wait "$REC" || true
           ls -la "$SHOTS"/*.mp4
           exit ${STATUS:-0}
+      - name: Rotation UI tests on a Plus/Max iPhone (regular-width landscape)
+        # #285's two rotation tests skip unless landscape is regular width, which needs a
+        # Plus/Max-class phone; the iPhone 16e above is compact in landscape. They run here on
+        # iPhone 17 Pro Max, on the same iOS runtime as that iPhone, so the screenshot
+        # simulator does not change. A missing Pro Max, a skip, or a missing test fails. -Atlas
+        env:
+          MAX_NAME: iPhone 17 Pro Max
+          ROTATION_TESTS: >-
+            testRestoreInRegularLandscapeThenPortraitKeepsStation
+            testRestoreInPortraitThenRegularLandscapeKeepsStation
+        run: |
+          set -euo pipefail
+          RUNTIME=$(xcrun simctl list devices available -j \
+            | jq -r --arg u "$PHONE_UDID" '.devices | to_entries[] | select(any(.value[]; .udid == $u)) | .key')
+          MAX=$(xcrun simctl list devices available -j \
+            | jq -r --arg r "$RUNTIME" --arg n "$MAX_NAME" '[.devices[$r][]? | select(.name == $n)] | first | .udid // empty')
+          if [ -z "$MAX" ]; then
+            echo "::error::No available '$MAX_NAME' simulator on $RUNTIME; the rotation tests cannot run. Available iPhones:"
+            xcrun simctl list devices available | grep iPhone || true
+            exit 1
+          fi
+          xcrun simctl list devices available | grep "$MAX"
+          xcrun simctl shutdown "$PHONE_UDID" 2>/dev/null || true
+          xcrun simctl boot "$MAX" 2>/dev/null || true
+          xcrun simctl bootstatus "$MAX" -b
+          ONLY=()
+          for t in $ROTATION_TESTS; do ONLY+=("-only-testing:AeroDJUITests/StudioScreenTests/$t"); done
+          LOG="$RUNNER_TEMP/rotation.log"
+          set +e
+          ios/scripts/ui-launch-timeout-retry.sh --udid "$MAX" -- \
+            xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$MAX" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath "$RUNNER_TEMP/rotation.xcresult" \
+            "${ONLY[@]}" \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$LOG"
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          xcrun simctl shutdown "$MAX" 2>/dev/null || true
+          test "$STATUS" -eq 0 || exit "$STATUS"
+          # A skip still exits 0: require that each rotation test actually ran and passed.
+          for t in $ROTATION_TESTS; do
+            if grep -q "Test Case '-\[AeroDJUITests.StudioScreenTests $t\]' skipped" "$LOG"; then
+              echo "::error::$t was skipped on $MAX_NAME; it must run on a Plus/Max simulator"; exit 1
+            fi
+            grep -q "Test Case '-\[AeroDJUITests.StudioScreenTests $t\]' passed" "$LOG" \
+              || { echo "::error::$t did not run on $MAX_NAME"; exit 1; }
+            echo "OK: $t ran and passed on $MAX_NAME"
+          done
       - name: UI tests on iPad (open, two-zone Studio)
         run: |
           # One simulator at a time: the iPhone stays booted after its steps, and a cold iPad
@@ -492,4 +543,11 @@ jobs:
         with:
           name: pad-xcresult
           path: ${{ runner.temp }}/pad.xcresult
+          if-no-files-found: warn
+      - name: Upload rotation UI result
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rotation-xcresult
+          path: ${{ runner.temp }}/rotation.xcresult
           if-no-files-found: warn
