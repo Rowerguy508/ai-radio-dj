@@ -54,7 +54,7 @@ final class BlockedSensitivityNoteTests: XCTestCase {
         XCTAssertFalse(row.state.mayBeNarrated)
         XCTAssertFalse(row.mayBeNarrated(at: now))
         XCTAssertEqual(row.sensitivity, .blocked, "the real value, for downstream adapters")
-        XCTAssertEqual(row.description, "Not used: marked private in Obsidian (aerodj-sensitivity: blocked).")
+        XCTAssertEqual(row.description, "Not used: marked private in the note (aerodj-sensitivity: blocked).")
         XCTAssertFalse(row.actions.contains(.approve))
         XCTAssertFalse(row.actions.contains(.readAnyway))
 
