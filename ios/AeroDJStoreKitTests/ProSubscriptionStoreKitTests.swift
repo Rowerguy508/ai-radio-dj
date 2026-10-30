@@ -40,13 +40,53 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         for product in products { XCTAssertEqual(product.type, .autoRenewable, product.id) }
     }
 
+    /// Owner decision (9:19 PM): a 7-day free trial on both Pro products, loaded from the
+    /// .storekit file as each product's introductory offer, and a fresh account is eligible.
+    func testBothProductsLoadWithAOneWeekFreeTrial() async throws {
+        let products = try await Product.products(for: ProSubscriptionConfig.productIDs)
+        XCTAssertEqual(products.count, 2)
+        for product in products {
+            let subscription = try XCTUnwrap(product.subscription, product.id)
+            let offer = try XCTUnwrap(subscription.introductoryOffer, "\(product.id) has no introductory offer")
+            XCTAssertEqual(offer.paymentMode, .freeTrial, product.id)
+            XCTAssertEqual(offer.period.unit, .week, product.id)
+            XCTAssertEqual(offer.period.value, 1, product.id)
+            XCTAssertEqual(offer.periodCount, 1, product.id)
+            XCTAssertEqual(offer.price, 0, product.id)
+            XCTAssertEqual(offer.type, .introductory, product.id)
+            let eligible = await subscription.isEligibleForIntroOffer
+            XCTAssertTrue(eligible, "\(product.id): a fresh session is eligible for the trial")
+        }
+    }
+
+    /// The first purchase on an eligible account is the trial: an `.introductory` transaction
+    /// that maps to `.pro` on the same rules as a paid period (verified, own purchase).
+    func testFreeTrialPurchaseIsIntroductoryAndMapsToPro() async throws {
+        let transaction = try await session.buyProduct(identifier: ProSubscriptionConfig.yearlyProductID)
+        if #available(iOS 17.2, *) {
+            XCTAssertEqual(transaction.offer?.type, .introductory)
+            XCTAssertEqual(transaction.offer?.paymentMode, .freeTrial)
+        } else {
+            XCTAssertEqual(transaction.offerType, .introductory)
+        }
+        XCTAssertEqual(transaction.ownershipType, .purchased)
+        let snapshot = ProEntitlementObserver.snapshot(transaction, isVerified: true)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [snapshot], now: transaction.purchaseDate),
+                       .pro(productID: ProSubscriptionConfig.yearlyProductID, expiresAt: transaction.expirationDate))
+        let unverified = ProEntitlementObserver.snapshot(transaction, isVerified: false)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [unverified], now: transaction.purchaseDate),
+                       .unverified(productID: ProSubscriptionConfig.yearlyProductID))
+    }
+
     func testPurchaseMovesFreeToPro() async throws {
         let o = observer()
         await o.refresh()
         XCTAssertEqual(o.state, .free)
 
         let transaction = try await session.buyProduct(identifier: ProSubscriptionConfig.monthlyProductID)
-        await o.refresh()
+        // C1: this observer already read `free` before the purchase, and StoreKitTest can still
+        // return that pre-purchase answer to the first refresh after it. Poll until Pro shows.
+        try await waitForState(o) { $0.showsPro }
         guard case .pro(let id, let expires) = o.state else { return XCTFail("expected .pro, got \(o.state)") }
         XCTAssertEqual(id, ProSubscriptionConfig.monthlyProductID)
         XCTAssertEqual(expires, transaction.expirationDate)
@@ -84,7 +124,8 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         XCTAssertEqual(id, ProSubscriptionConfig.yearlyProductID)
     }
 
-    /// StoreKitTest applies expiry and refunds asynchronously; poll refresh() briefly.
+    /// StoreKitTest applies purchases (after an earlier refresh), expiry and refunds
+    /// asynchronously; poll refresh() briefly.
     /// The observer is the `ProEntitlementProviding` behind `ProVoiceAccess`: purchase plus consent
     /// opens the paid voice, consent alone never does, and a refund closes it again.
     func testObserverDrivesTheProVoiceGate() async throws {
@@ -94,7 +135,7 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         XCTAssertEqual(before, .denied(.notPro))
 
         let transaction = try await session.buyProduct(identifier: ProSubscriptionConfig.monthlyProductID)
-        await o.refresh()
+        try await waitForState(o) { $0.showsPro } // C1: refreshed before the purchase, so poll
         let bought = await ProVoiceAccess(entitlement: o, consent: GrantedConsent()).decision()
         XCTAssertEqual(bought, .allowed)
         let noConsent = await ProVoiceAccess(entitlement: o, consent: NoPaidVoiceConsent()).decision()
@@ -135,15 +176,35 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         XCTAssertEqual(gate, .denied(.expired))
     }
 
+    /// C1 companion: the Pro wait above is real. With no purchase the same poll never sees Pro,
+    /// so in the two tests that refresh before buying, only the purchase can satisfy it.
+    func testProWaitTimesOutWithoutAPurchase() async throws {
+        let o = observer()
+        await o.refresh()
+        XCTAssertEqual(o.state, .free)
+        let matched = try await pollState(o, timeout: 1) { $0.showsPro }
+        XCTAssertFalse(matched, "the Pro wait passed with no purchase; last \(o.state)")
+        XCTAssertEqual(o.state, .free)
+        let gate = await ProVoiceAccess(entitlement: o, consent: GrantedConsent()).decision()
+        XCTAssertEqual(gate, .denied(.notPro))
+    }
+
     private func waitForState(_ o: ProEntitlementObserver, timeout: TimeInterval = 10,
                               _ matches: (ProEntitlementState) -> Bool) async throws {
+        if try await pollState(o, timeout: timeout, matches) { return }
+        XCTFail("state never matched; last \(o.state)")
+    }
+
+    /// Refreshes until `matches` holds or `timeout` passes; true if it matched.
+    private func pollState(_ o: ProEntitlementObserver, timeout: TimeInterval,
+                           _ matches: (ProEntitlementState) -> Bool) async throws -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             await o.refresh()
-            if matches(o.state) { return }
+            if matches(o.state) { return true }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
-        XCTFail("state never matched; last \(o.state)")
+        return false
     }
 }
 

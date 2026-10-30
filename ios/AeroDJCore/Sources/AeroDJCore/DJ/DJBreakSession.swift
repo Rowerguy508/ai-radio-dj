@@ -617,7 +617,8 @@ public final class DJBreakSession {
             guard cue.sourceItemID == nil, cue.source == nil, !cue.isContent else { return false }
             switch djBreak.attributions[cue.id] {
             case .trackMetadata?, .presenter?: return true
-            case .personalContext?, nil: return false
+            // A created station's name may be the setting that changed: re-plan it (-Atlas).
+            case .personalContext?, .stationName?, nil: return false
             }
         }
         return plain ? djBreak.afterTrack : nil

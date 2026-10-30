@@ -17,6 +17,8 @@ struct StationListView: View {
     @State private var showSharedInbox = false
     /// One add-station flow per presentation (nil when closed). Never created in the Test Station.
     @State private var stationCreation: StationCreationModel?
+    /// "Couldn't start that station" (core decides; `StationStartToast` draws it). Row taps only.
+    @State private var startNotice = StationStartNotice()
 
     var body: some View {
         #if DEBUG
@@ -38,6 +40,8 @@ struct StationListView: View {
                          onUserOpenedStation: { id in
                              // Row tap only, never restore. A created station starts now when nothing
                              // is queued, otherwise takes over at the song boundary (CreatedStationStarter).
+                             // Any tap clears the start toast; only this tap's idle-start failure shows it.
+                             let tap = startNotice.beginTap()
                              guard let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes) else {
                                  // HOOK(Atlas, Fry #213 nit 2): a built-in tap cancels a waiting created-station start.
                                  dependencies.stationQueue?.cancelCreatedStationStart()
@@ -45,7 +49,10 @@ struct StationListView: View {
                                  return
                              }
                              if let stationQueue = dependencies.stationQueue {
-                                 await stationQueue.openCreatedStation(.userTap, recipeID: recipeID, studio: dependencies.studio)
+                                 let outcome = await stationQueue.openCreatedStation(.userTap, recipeID: recipeID,
+                                                                                     studio: dependencies.studio)
+                                 // Status read only (never authorize() or a prompt), and only if a toast is due.
+                                 startNotice.finish(tap: tap, outcome: outcome, musicAuthorized: GenreAccess.isAuthorized)
                              } else {
                                  await dependencies.playback.authorize()
                                  _ = await dependencies.studio.applyRecipe(recipeID)
@@ -55,6 +62,9 @@ struct StationListView: View {
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation)
+            // Inside the detail's NavigationStack: the top of the content, below the nav bar,
+            // so it never covers Back or the title. A tap always opens this column. Never takes a tap.
+            .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
             // Pro voice 18+ step (-Nova): no toolbar item and no sheet unless Pro + consent allow the paid voice.
             .paidVoiceAgeEntry(dependencies.paidVoiceAge)
         }

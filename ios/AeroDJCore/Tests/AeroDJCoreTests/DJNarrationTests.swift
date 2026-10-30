@@ -209,6 +209,8 @@ final class DJNarrationTests: XCTestCase {
                         XCTAssertTrue(ids.allSatisfy { [djTracks(12)[djBreak.afterTrack].id, djTracks(12)[djBreak.afterTrack + 1].id].contains($0) })
                     case .presenter:
                         XCTAssertFalse(cue.text.contains("Song") || cue.text.contains("Artist"), "presenter lines carry no facts")
+                    case .stationName:
+                        XCTFail("the default writer speaks only the built-in brand")
                     }
                 }
             }

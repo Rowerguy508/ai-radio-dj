@@ -19,17 +19,76 @@ final class DJTalkoverTests: XCTestCase {
 
     func testFlagDefaultsOffOutsideOwnerAB() {
         let defaults = UserDefaults(suiteName: "talkover-flag-\(UUID().uuidString)")!
+        XCTAssertFalse(DJTalkoverFlag.isOwnerABBuild, "swift test is not an owner A/B build")
         XCTAssertFalse(DJTalkoverFlag.buildDefault, "swift test is not an owner A/B build")
         XCTAssertFalse(DJTalkoverFlag.isEnabled(defaults: defaults))
-        XCTAssertTrue(DJTalkoverFlag.isEnabled(defaults: defaults, buildDefault: true), "owner A/B turns it on")
+        XCTAssertTrue(DJTalkoverFlag.isEnabled(defaults: defaults, ownerABBuild: true), "owner A/B turns it on")
     }
 
-    func testDefaultsOverrideRollsBackEitherWay() {
+    func testOwnerABToggleRollsBackAndForth() {
         let defaults = UserDefaults(suiteName: "talkover-flag-\(UUID().uuidString)")!
         defaults.set(false, forKey: DJTalkoverFlag.defaultsKey)
-        XCTAssertFalse(DJTalkoverFlag.isEnabled(defaults: defaults, buildDefault: true), "rollback on an owner A/B build")
+        XCTAssertFalse(DJTalkoverFlag.isEnabled(defaults: defaults, ownerABBuild: true), "rollback on an owner A/B build")
         defaults.set(true, forKey: DJTalkoverFlag.defaultsKey)
-        XCTAssertTrue(DJTalkoverFlag.isEnabled(defaults: defaults, buildDefault: false))
+        XCTAssertTrue(DJTalkoverFlag.isEnabled(defaults: defaults, ownerABBuild: true))
+    }
+
+    // Build 26 QA T-15: a normal build installed over an owner A/B build has no toggle, so the
+    // saved ON must not keep it talking over. Ignored, not deleted.
+
+    func testSavedOnIsIgnoredOutsideOwnerAB() {
+        XCTAssertFalse(DJTalkoverFlag.isEnabled(ownerABBuild: false, saved: true))
+        XCTAssertFalse(DJTalkoverFlag.isEnabled(ownerABBuild: false, saved: true, unsetDefault: true))
+        let defaults = UserDefaults(suiteName: "talkover-flag-\(UUID().uuidString)")!
+        defaults.set(true, forKey: DJTalkoverFlag.defaultsKey)
+        XCTAssertFalse(DJTalkoverFlag.isEnabled(defaults: defaults, ownerABBuild: false), "saved ON, normal build")
+        XCTAssertFalse(DJTalkoverFlag.isEnabled(defaults: defaults), "swift test build ignores a saved ON")
+        XCTAssertEqual(defaults.object(forKey: DJTalkoverFlag.defaultsKey) as? Bool, true, "ignored, not deleted")
+    }
+
+    func testOutsideOwnerABEveryInputIsOff() {
+        for saved in [nil, false, true] as [Bool?] {
+            for unset in [false, true] {
+                XCTAssertFalse(DJTalkoverFlag.isEnabled(ownerABBuild: false, saved: saved, unsetDefault: unset),
+                               "saved=\(String(describing: saved)) unset=\(unset)")
+            }
+        }
+    }
+
+    func testOwnerABWithNoSavedValueIsOn() {
+        XCTAssertTrue(DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: nil))
+        let defaults = UserDefaults(suiteName: "talkover-flag-\(UUID().uuidString)")!
+        XCTAssertTrue(DJTalkoverFlag.isEnabled(defaults: defaults, ownerABBuild: true))
+    }
+
+    func testOwnerABWithSavedOffIsOff() {
+        XCTAssertFalse(DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: false))
+    }
+
+    func testOwnerABWithSavedOnIsOn() {
+        XCTAssertTrue(DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: true))
+    }
+
+    /// Echo's nit on #225: the owner A/B toggle shows `saved ?? unsetDefault(isTestStation:)`
+    /// (AppStorage), and that must match what the coordinator decides, live and fixture.
+    func testToggleDisplayMatchesCoordinatorInOwnerAB() {
+        XCTAssertTrue(DJTalkoverFlag.unsetDefault(isTestStation: false), "live: unset shows ON")
+        XCTAssertFalse(DJTalkoverFlag.unsetDefault(isTestStation: true), "fixture: unset shows OFF")
+        for isTestStation in [false, true] {
+            let unset = DJTalkoverFlag.unsetDefault(isTestStation: isTestStation)
+            for saved in [nil, false, true] as [Bool?] {
+                XCTAssertEqual(saved ?? unset,
+                               DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: saved, unsetDefault: unset),
+                               "test=\(isTestStation) saved=\(String(describing: saved))")
+            }
+        }
+    }
+
+    func testFixtureStationIsOffUnlessOwnerABToggleIsExplicitlyOn() {
+        XCTAssertFalse(DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: nil, unsetDefault: false))
+        XCTAssertFalse(DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: false, unsetDefault: false))
+        XCTAssertTrue(DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: true, unsetDefault: false))
+        XCTAssertFalse(DJTalkoverFlag.isEnabled(ownerABBuild: false, saved: true, unsetDefault: false))
     }
 
     func testFlagOffIsAlwaysAHardBreak() {
