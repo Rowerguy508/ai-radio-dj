@@ -110,7 +110,7 @@ public enum PremiumVoiceRoutes {
     public static let allowedHosts: Set<String> = ["aerodj-tts.vercel.app"]
 
     public enum OmitReason: String, Equatable, Sendable {
-        case paidDisabled, noSelection, unknownVoice, noCredentials, emptyToken, endpointNotAllowed
+        case paidDisabled, notEntitled, noSelection, unknownVoice, noCredentials, emptyToken, endpointNotAllowed
     }
 
     public enum Decision: Equatable, Sendable {
@@ -135,12 +135,16 @@ public enum PremiumVoiceRoutes {
     }
 
     /// `[ElevenLabs(selected voice)] + onDevice` when every gate passes, else `onDevice` unchanged.
-    public static func compose(onDevice: [VoiceRoute], paidProvidersEnabled: Bool, selectedVoiceID: String?,
+    /// `access` is the Pro + consent gate (`ProVoiceGate`); it has no default, so every caller
+    /// states it, and a denial omits the route (fail closed).
+    public static func compose(onDevice: [VoiceRoute], paidProvidersEnabled: Bool, access: ProVoiceGate.Decision,
+                               selectedVoiceID: String?,
                                credentials: PremiumProxyCredentials?,
                                pinnedHosts: Set<String> = allowedHosts,
                                transport: any HTTPTransport = URLSessionTransport()) -> Composition {
         func omit(_ reason: OmitReason) -> Composition { Composition(routes: onDevice, decision: .omitted(reason)) }
         guard paidProvidersEnabled else { return omit(.paidDisabled) }
+        guard access.permitsPaidVoice else { return omit(.notEntitled) }
         guard let selectedVoiceID else { return omit(.noSelection) }
         guard let index = PremiumVoiceCatalog.index(ofVoiceID: selectedVoiceID) else { return omit(.unknownVoice) }
         guard let credentials else { return omit(.noCredentials) }
@@ -206,12 +210,12 @@ public enum PremiumVoicePickerStatus {
                                        enteredToken: String, hasSavedToken: Bool) -> PremiumVoiceRoutes.Decision {
         pendingDecision(paidProvidersEnabled: paidProvidersEnabled, selectedVoiceID: selectedVoiceID, endpoint: endpoint,
                         enteredToken: enteredToken, hasSavedToken: hasSavedToken,
-                        pinnedHosts: PremiumVoiceRoutes.allowedHosts)
+                        pinnedHosts: PremiumVoiceRoutes.allowedHosts, access: ProVoiceGate.ownerPickerAccess)
     }
 
     static func pendingDecision(paidProvidersEnabled: Bool, selectedVoiceID: String?, endpoint: String,
                                 enteredToken: String, hasSavedToken: Bool,
-                                pinnedHosts: Set<String>) -> PremiumVoiceRoutes.Decision {
+                                pinnedHosts: Set<String>, access: ProVoiceGate.Decision) -> PremiumVoiceRoutes.Decision {
         let entered = enteredToken.trimmingCharacters(in: .whitespacesAndNewlines)
         // Done: an empty field keeps the saved token; a typed one replaces it (blank deletes it).
         let hasToken = enteredToken.isEmpty ? hasSavedToken : !entered.isEmpty
@@ -219,7 +223,7 @@ public enum PremiumVoicePickerStatus {
             hasToken ? PremiumProxyCredentials(endpoint: url, token: entered.isEmpty ? "saved" : entered) : nil
         }
         return PremiumVoiceRoutes.compose(onDevice: [], paidProvidersEnabled: paidProvidersEnabled,
-                                          selectedVoiceID: selectedVoiceID, credentials: credentials,
+                                          access: access, selectedVoiceID: selectedVoiceID, credentials: credentials,
                                           pinnedHosts: pinnedHosts).decision
     }
 
