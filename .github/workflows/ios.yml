@@ -498,7 +498,9 @@ jobs:
                       open-state-denied-dark open-state-playbackFailed-dark \
                       closed-ax5-dark open-ax5-dark \
                       iphone-landscape iphone-landscape-dark ipad-landscape ipad-landscape-dark \
-                      duo-wide-ready; do
+                      duo-wide-ready \
+                      closed-age-step closed-age-step-dark closed-age-step-large-text \
+                      closed-age-step-yes closed-age-step-no closed-age-step-answered; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
