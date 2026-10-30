@@ -34,6 +34,21 @@ private func mixedTracks(_ n: Int, personal: TrackOrigin) -> [DJTrack] {
     }
 }
 
+/// True when any line of a break that names a personal ("Private") track reached the off-device spy.
+private func sentAnyLine(of breaks: [DJBreak], _ received: [String]) -> Bool {
+    sentAnyLine(breaks.map(\.cues), received)
+}
+
+private func sentAnyLine(of breaks: [PreparedDJBreak], _ received: [String]) -> Bool {
+    sentAnyLine(breaks.map(\.cues), received)
+}
+
+private func sentAnyLine(_ breaks: [[NarrationCue]], _ received: [String]) -> Bool {
+    let lines = Set(breaks.filter { $0.contains { $0.text.contains("Private") } }
+        .flatMap { $0.map { SpeechDelivery.speakable($0.text) } })
+    return received.contains(where: lines.contains)
+}
+
 private func transition(_ text: String) -> NarrationCue {
     NarrationCue(id: UUID(), order: 0, group: -1, kind: .transition, text: text,
                  estimatedSeconds: 3, maxSeconds: 20, sourceItemID: nil, source: nil, provenance: nil)
@@ -136,7 +151,9 @@ final class LibraryTrackProvenanceGateTests: XCTestCase {
             }
         }
         XCTAssertGreaterThan(personalOnDevice, 0, "precondition: \(personal) tracks were named and spoken on-device")
-        XCTAssertTrue(spy.received.contains { $0.contains("Open") }, "catalog track lines still use the cloud voice")
+        // A break with a personal line goes on-device up front: none of its lines, catalog ones
+        // included, makes a cloud request (testAllCatalogQueueStillUsesTheCloudVoice covers the cloud side).
+        XCTAssertFalse(sentAnyLine(of: breaks, spy.received), "a break naming a \(personal) track made a cloud request")
     }
 
     func testLibraryTrackOnACatalogStationNeverReachesTheOffDeviceVoice() async {
@@ -275,7 +292,7 @@ final class LibraryTrackProvenanceSessionTests: XCTestCase {
         await r.session.queueStarted(mixedTracks(12, personal: .library))
         let spoken = await playThrough(r, count: 12)
         assertNoPersonalNameLeft(r, spoken, "prepare path")
-        XCTAssertFalse(r.spy.received.isEmpty, "the catalog station still uses the cloud voice")
+        XCTAssertFalse(sentAnyLine(of: spoken, r.spy.received), "a break naming a library track made a cloud request")
         await r.session.stop()
     }
 

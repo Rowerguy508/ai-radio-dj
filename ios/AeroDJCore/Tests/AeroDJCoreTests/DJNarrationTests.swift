@@ -266,12 +266,17 @@ final class DJNarrationTests: XCTestCase {
         let late = await slow.takeBreak(afterTrack: k)
         XCTAssertEqual(late, .skipped(.timedOut), "a render cut by the deadline is a timeout, never renderFailed")
 
+        // Catalog tracks: every line may use the paid route, so the break reaches the budget (a
+        // break with a local-only line goes on-device up front, and with no on-device route is
+        // skipped as .renderFailed before any paid request).
+        var paidWriter = DJScriptWriter(cadence: .init(talkFraction: 1), seed: 1)
+        let paidBreak = try XCTUnwrap(paidWriter.plan(tracks: djTracks(3, origin: .catalog), briefing: nil, hour: 9).breaks.first)
         let capped = DJBreakPreparer(renderer: djRenderer(paid: DJFakeVoice(id: "cloud"), free: nil, capMicrodollars: 0),
                                      userID: "u", stationID: "s")
-        let capSettled = await settled(capped, afterTrack: k)
-        await capped.prepare(djBreak, deadline: .seconds(10), onDeviceOnly: false)
+        let capSettled = await settled(capped, afterTrack: paidBreak.afterTrack)
+        await capped.prepare(paidBreak, deadline: .seconds(10), onDeviceOnly: false)
         await fulfillment(of: [capSettled], timeout: 10)
-        let cap = await capped.takeBreak(afterTrack: k)
+        let cap = await capped.takeBreak(afterTrack: paidBreak.afterTrack)
         XCTAssertEqual(cap, .skipped(.costCap))
     }
 
@@ -323,7 +328,9 @@ final class DJNarrationTests: XCTestCase {
 
     func testCancelAllReleasesReservationsAndStaleAudioNeverPlays() async throws {
         var w = DJScriptWriter(cadence: .init(talkFraction: 1), seed: 1)
-        let plan = w.plan(tracks: djTracks(8), briefing: nil, hour: 9)
+        // Catalog tracks: the paid route is the only route, so a local-only line would skip the
+        // break up front (no on-device route) instead of leaving a paid render in flight.
+        let plan = w.plan(tracks: djTracks(8, origin: .catalog), briefing: nil, hour: 9)
         let (first, second) = (plan.breaks[0], plan.breaks[1])
         let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000)
         let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "cloud", provider: DJFakeVoice(id: "cloud", delay: .milliseconds(300)),

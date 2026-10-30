@@ -106,9 +106,9 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         XCTAssertEqual(prepared.clips.map(\.audio.providerID), ["device"])
     }
 
-    // 1b. In a mixed break, presenter/metadata lines may go off-device; the personal line may not.
-    // One voice per break (#267): the personal line is on-device, so the whole break is then
-    // re-rendered on-device and plays in that voice.
+    // 1b. A break with a personal line: the personal line may never go off-device, and since a
+    // break plays in one voice (#267), the whole break is routed on-device up front. The presenter
+    // and metadata lines make no cloud request either (no discarded, charged cloud pass).
     func testMixedBreakSendsOnlyTheNonPersonalLinesOffDevice() async {
         let spy = OffDeviceSpy()
         let preparer = DJBreakPreparer(renderer: renderer([cloudRoute(spy), deviceRoute()]), userID: "u", stationID: "s")
@@ -123,7 +123,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         await preparer.prepare(djBreak, deadline: .seconds(10), onDeviceOnly: false)
         let result = await outcome(preparer, afterTrack: 0)
         XCTAssertFalse(spy.received.contains { $0.contains("dentist") }, "personal cue text reached an off-device route")
-        XCTAssertEqual(spy.received.count, 2)
+        XCTAssertEqual(spy.received.count, 0, "no cloud request for a break with a local-only line")
         guard case .ready(let prepared) = result else { return XCTFail("\(result)") }
         XCTAssertEqual(prepared.clips.map(\.audio.providerID), ["device", "device", "device"])
     }
