@@ -57,6 +57,9 @@ final class StationQueuePlayer {
             guard let self else { return }
             if self.ownQueueStarting { self.ownQueueStarting = false; return }
             self.feed.queueStarted(for: self.station.committedDisplayed, songCount: self.music.queue.count)
+            // Latest tap wins (Orion): a song or search tap cancels a created-station tap still
+            // being applied, so that station does not take over at the next boundary.
+            self.createdStart.listenerStartedPlayback()
         }
         music.stationQueueAtBoundary = { [weak self] finishedIndex in
             guard let self,
@@ -87,6 +90,7 @@ final class StationQueuePlayer {
             authorize: { await music.authorize() },
             apply: { if case .success = await studio.applyRecipe(recipeID) { true } else { false } },
             active: { station.active },
+            committed: { self.station.committedDisplayed },
             nothingQueued: { music.queue.isEmpty && !music.isPlaying },
             start: { tracks in _ = await play(tracks) })
         Logger(subsystem: "com.aerodj.app", category: "stationQueue")

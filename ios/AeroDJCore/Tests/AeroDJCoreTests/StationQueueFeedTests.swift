@@ -972,3 +972,241 @@ final class StationHandOffFallbackTests: XCTestCase {
             "no next song in the old queue: today's stop path")
     }
 }
+
+// Latest tap wins (Orion, -Echo): a song or search tap while a created-station tap is pending or
+// building cancels that station's switch at the boundary; the listener's song keeps playing.
+@MainActor
+final class LatestTapWinsTests: XCTestCase {
+    /// Holds `authorize()` open so a song tap can land before the recipe is committed.
+    @MainActor private final class Gate {
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var opened = false
+        var isWaiting: Bool { continuation != nil }
+        func wait() async {
+            guard !opened else { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+        func open() { opened = true; continuation?.resume(); continuation = nil }
+    }
+
+    /// The app around the core: the player, the station model and the feed wired like
+    /// `StationQueuePlayer` (`onQueueReplaced` -> `queueStarted` + `listenerStartedPlayback`).
+    @MainActor private final class App {
+        let model: StationConfigurationModel
+        let feed: StationQueueFeed<String>
+        let starter: CreatedStationStarter<String>
+        let recorder: QueueEventRecorder
+        var queue: [String] = []
+        var playing = false
+        var starts: [[String]] = []
+        var nothingQueued: Bool { queue.isEmpty && !playing }
+
+        init(model: StationConfigurationModel, catalog: QueueFakeCatalog) {
+            self.model = model
+            recorder = QueueEventRecorder()
+            feed = makeFeed(catalog, recorder: recorder)
+            starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1))
+        }
+
+        /// A song or search-result tap: `MusicKitService.play` replaces the queue and reports it.
+        func tapSongs(_ songs: [String]) {
+            queue = songs
+            playing = true
+            feed.queueStarted(for: model.committedDisplayed, songCount: songs.count)
+            starter.listenerStartedPlayback()
+        }
+
+        func tapStation(_ config: StationConfiguration, gate: Gate? = nil) async -> CreatedStationOpenOutcome {
+            await starter.open(.userTap,
+                               recipeID: UUID(),
+                               authorize: { await gate?.wait() },
+                               apply: {
+                                   await self.model.applyRecipe(StationRecipe(name: "Created", configuration: config))
+                                   return true
+                               },
+                               active: { self.model.active },
+                               committed: { self.model.committedDisplayed },
+                               nothingQueued: { self.nothingQueued },
+                               start: { items in
+                                   self.starts.append(items)
+                                   self.queue = items
+                                   self.playing = true
+                                   self.feed.queueStarted(for: self.model.committedDisplayed, songCount: items.count)
+                               })
+        }
+
+        /// The song ends: the model applies pending changes, then the feed decides the next queue.
+        func crossBoundary() async -> [String]? {
+            await model.handle(.songBoundary(afterTrack: 0))
+            let next = feed.takeForBoundary(active: model.active, playbackMayStart: true)
+            if let next { queue = next }
+            return next
+        }
+
+        func waitForStaged(_ config: StationConfiguration) async throws {
+            let key = StationQueueKey(config)
+            for _ in 0..<500 where feed.stagedKey != key { await Task.yield(); try await Task.sleep(nanoseconds: 1_000_000) }
+            XCTAssertEqual(feed.stagedKey, key, "the station's queue is built")
+        }
+    }
+
+    private let old = station([seed(.artist, "old")])
+    private let created = station([seed(.artist, "a")])
+    private let listenerSongs = ["song-1", "song-2", "song-3", "song-4", "song-5"]
+
+    private func makeApp(active: StationConfiguration, playing: Bool,
+                         catalog: QueueFakeCatalog = QueueFakeCatalog()) async -> App {
+        let model = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: active))),
+            consent: StaticIntegrationConsent([:]))
+        await model.load()
+        let app = App(model: model, catalog: catalog)
+        if playing {
+            await model.setPlaybackActivity(.holdingSong)
+            app.queue = ["old-song"]
+            app.playing = true
+            app.feed.queueStarted(for: model.committedDisplayed)   // a queue on the old station
+        }
+        app.feed.follow(model)
+        return app
+    }
+
+    private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
+        for _ in 0..<500 where !condition() { await Task.yield(); try await Task.sleep(nanoseconds: 1_000_000) }
+        XCTAssertTrue(condition())
+    }
+
+    // 1. Orion's scenario: tap a station, tap a song before the station is in, cross the boundary.
+    //    The song tap lands while the station tap is still authorizing/applying, so `queueStarted`
+    //    gave the song's queue the old station. Without the cancel the station takes over here.
+    func testASongTapWhileTheStationTapIsPendingKeepsPlayingPastTheBoundary() async throws {
+        let app = await makeApp(active: old, playing: true)
+        let gate = Gate()
+        let tap = Task { await app.tapStation(created, gate: gate) }
+        try await waitUntil { gate.isWaiting }
+
+        app.tapSongs(listenerSongs)                               // the latest tap
+        gate.open()
+        let outcome = await tap.value
+        XCTAssertEqual(outcome, .notStarted(.playbackBegan))
+        XCTAssertEqual(app.model.displayed.seeds.map(\.catalogID), ["a"], "the station stays selected")
+        try await app.waitForStaged(created)
+
+        let next = await app.crossBoundary()
+        XCTAssertNil(next, "the station is not handed off at the boundary")
+        XCTAssertEqual(app.queue, listenerSongs, "the listener's song keeps playing")
+        XCTAssertEqual(app.model.active.seeds.map(\.catalogID), ["a"], "the recipe is applied, not reverted")
+        XCTAssertTrue(app.recorder.events.contains(.switchCancelledByListener))
+        XCTAssertEqual(app.starts, [])
+
+        // A later idle Play (the listener's queue ended) plays the selected station.
+        app.queue = []
+        app.playing = false
+        XCTAssertEqual(app.feed.takeForIdleStart(active: app.model.active)?.count, 10)
+    }
+
+    // 1b. The same while the station's queue is still building (idle tap, catalog held).
+    func testASongTapWhileTheStationQueueBuildsKeepsPlayingPastTheBoundary() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdNextCall()
+        let app = await makeApp(active: .default, playing: false, catalog: catalog)
+        let tap = Task { await app.tapStation(created) }
+        for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
+        let holding = await catalog.isHolding
+        XCTAssertTrue(holding, "the build is waiting on the catalog")
+
+        app.tapSongs(listenerSongs)
+        await app.model.setPlaybackActivity(.holdingSong)
+        await catalog.release()
+        let outcome = await tap.value
+        XCTAssertEqual(outcome, .notStarted(.playbackBegan))
+        try await app.waitForStaged(created)
+
+        let next = await app.crossBoundary()
+        XCTAssertNil(next, "the station is not handed off at the boundary")
+        XCTAssertEqual(app.queue, listenerSongs)
+        XCTAssertEqual(app.starts, [])
+    }
+
+    // 1c. The same after the station tap already returned `.switchesAtBoundary`.
+    func testASongTapAfterTheTapWhilePlayingKeepsPlayingPastTheBoundary() async throws {
+        let app = await makeApp(active: old, playing: true)
+        let outcome = await app.tapStation(created)
+        XCTAssertEqual(outcome, .switchesAtBoundary)
+        app.tapSongs(listenerSongs)
+        try await app.waitForStaged(created)
+
+        let next = await app.crossBoundary()
+        XCTAssertNil(next)
+        XCTAssertEqual(app.queue, listenerSongs)
+    }
+
+    // 2. Regression (#213): a station tap while playing, with no later tap, still switches at the boundary.
+    func testAStationTapWhilePlayingWithNoLaterTapStillSwitchesAtTheBoundary() async throws {
+        let app = await makeApp(active: old, playing: true)
+        let gate = Gate()
+        let tap = Task { await app.tapStation(created, gate: gate) }
+        try await waitUntil { gate.isWaiting }
+        gate.open()
+        let outcome = await tap.value
+        XCTAssertEqual(outcome, .switchesAtBoundary)
+        try await app.waitForStaged(created)
+
+        let boundary = await app.crossBoundary()
+        let next = try XCTUnwrap(boundary, "the station takes over at the boundary")
+        XCTAssertEqual(next.count, 10)
+        XCTAssertTrue(next.allSatisfy { $0.hasPrefix("a-") })
+        XCTAssertFalse(app.recorder.events.contains(.switchCancelledByListener))
+    }
+
+    // 3. Station tap, song tap (cancels it), then a NEW station tap: the new station still switches.
+    func testANewStationTapAfterTheCancellingSongTapStillSwitches() async throws {
+        let app = await makeApp(active: old, playing: true)
+        let gate = Gate()
+        let first = Task { await app.tapStation(created, gate: gate) }
+        try await waitUntil { gate.isWaiting }
+        app.tapSongs(listenerSongs)
+        gate.open()
+        let firstOutcome = await first.value
+        XCTAssertEqual(firstOutcome, .notStarted(.playbackBegan))
+
+        let other = station([seed(.artist, "b")])
+        let otherOutcome = await app.tapStation(other)
+        XCTAssertEqual(otherOutcome, .switchesAtBoundary)
+        try await app.waitForStaged(other)
+        let boundary = await app.crossBoundary()
+        let next = try XCTUnwrap(boundary, "the newer station takes over at the boundary")
+        XCTAssertTrue(next.allSatisfy { $0.hasPrefix("b-") })
+    }
+
+    // 4. Stale ordering: a song tap that came before the station tap does not cancel it.
+    func testASongTapBeforeTheStationTapDoesNotCancelIt() async throws {
+        let app = await makeApp(active: old, playing: true)
+        app.tapSongs(listenerSongs)                               // earlier than the station tap
+        let gate = Gate()
+        let tap = Task { await app.tapStation(created, gate: gate) }
+        try await waitUntil { gate.isWaiting }
+        gate.open()
+        let outcome = await tap.value
+        XCTAssertEqual(outcome, .switchesAtBoundary)
+        try await app.waitForStaged(created)
+
+        let boundary = await app.crossBoundary()
+        let next = try XCTUnwrap(boundary, "the later station tap wins")
+        XCTAssertTrue(next.allSatisfy { $0.hasPrefix("a-") })
+        XCTAssertFalse(app.recorder.events.contains(.switchCancelledByListener))
+    }
+
+    // The feed's cancel is narrow: nothing before a queue start, nothing when already the same station.
+    func testTheFeedCancelIsANoOpWithoutAListenerQueueOrForTheSameStation() async {
+        let recorder = QueueEventRecorder()
+        let feed = makeFeed(QueueFakeCatalog(), recorder: recorder)
+        feed.cancelSwitch(keepingListenerQueueFor: created)
+        XCTAssertNil(feed.playingKey, "no queue start reported: unknown stays unknown")
+        feed.queueStarted(for: created)
+        feed.cancelSwitch(keepingListenerQueueFor: created)
+        XCTAssertEqual(recorder.events, [])
+        XCTAssertEqual(StationQueueEvent.switchCancelledByListener.diagnostics,
+                       "stationQueue switchCancelled reason=listenerTap")
+    }
+}

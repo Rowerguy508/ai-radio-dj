@@ -107,6 +107,9 @@ public enum StationQueueEvent: Equatable, Sendable {
     case keptCurrentQueue(StationQueueTrigger, StationQueueKeepReason)
     /// #204: the hand-off's start failed; the queue is staged again and the old queue's station kept.
     case handOffFailed(StationQueueTrigger)
+    /// Latest tap wins: a song or search tap landed while a created-station tap was still being
+    /// applied, so the listener's queue keeps playing past the boundary (no switch).
+    case switchCancelledByListener
 
     /// One log line, no content.
     public var diagnostics: String {
@@ -121,6 +124,8 @@ public enum StationQueueEvent: Equatable, Sendable {
             "stationQueue keptCurrent trigger=\(trigger.rawValue) reason=\(reason.rawValue)"
         case let .handOffFailed(trigger):
             "stationQueue handOffFailed trigger=\(trigger.rawValue)"
+        case .switchCancelledByListener:
+            "stationQueue switchCancelled reason=listenerTap"
         }
     }
 }
@@ -278,6 +283,22 @@ public final class StationQueueFeed<Item: Sendable> {
         playingKey = StationQueueKey(committed)
         queueStartReported = true
         if let songCount, songCount <= refillLead { prefetch(committed) }
+    }
+
+    /// Latest tap wins (Orion, -Echo): the listener started their own queue (a song or search tap)
+    /// while a created-station tap was still being applied, so `queueStarted` gave that queue the
+    /// station committed *before* the tap. Gives it `committed` instead, exactly as if the song had
+    /// been tapped just after the change: the next boundary keeps the listener's queue
+    /// (`.sameStation`). Nothing else changes: the station stays committed, its staged queue stays
+    /// for an idle Play, and the refill before the listener's last song still continues with it.
+    /// No-op before any queue start, while a hand-off's start is unreported, or when the playing
+    /// queue already belongs to `committed`.
+    public func cancelSwitch(keepingListenerQueueFor committed: StationConfiguration) {
+        guard queueStartReported, pendingHandOff == nil else { return }
+        let key = StationQueueKey(committed)
+        guard key != playingKey else { return }
+        playingKey = key
+        log(.switchCancelledByListener)
     }
 
     /// The one call at a natural boundary, after the break, before the next song loads. `queue` is
