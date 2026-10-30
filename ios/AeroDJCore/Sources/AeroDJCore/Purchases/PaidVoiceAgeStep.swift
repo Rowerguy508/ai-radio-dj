@@ -40,7 +40,7 @@ public enum PaidVoiceAgeStepCopy {
         switch answer {
         case .adult:
             return paidVoiceOtherwiseAllowed
-                ? "Thanks. Your DJ switches to the Pro voice from the next break."
+                ? "Thanks. Your DJ can use the Pro voice from the next break."
                 : "Saved. The Pro voice also needs an active Pro plan and your OK to use the cloud voice."
         case .notAdult:
             return "Saved. Your DJ uses the on-device voice from now on."
