@@ -40,6 +40,44 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         for product in products { XCTAssertEqual(product.type, .autoRenewable, product.id) }
     }
 
+    /// Owner decision (9:19 PM): a 7-day free trial on both Pro products, loaded from the
+    /// .storekit file as each product's introductory offer, and a fresh account is eligible.
+    func testBothProductsLoadWithAOneWeekFreeTrial() async throws {
+        let products = try await Product.products(for: ProSubscriptionConfig.productIDs)
+        XCTAssertEqual(products.count, 2)
+        for product in products {
+            let subscription = try XCTUnwrap(product.subscription, product.id)
+            let offer = try XCTUnwrap(subscription.introductoryOffer, "\(product.id) has no introductory offer")
+            XCTAssertEqual(offer.paymentMode, .freeTrial, product.id)
+            XCTAssertEqual(offer.period.unit, .week, product.id)
+            XCTAssertEqual(offer.period.value, 1, product.id)
+            XCTAssertEqual(offer.periodCount, 1, product.id)
+            XCTAssertEqual(offer.price, 0, product.id)
+            XCTAssertEqual(offer.type, .introductory, product.id)
+            let eligible = await subscription.isEligibleForIntroOffer
+            XCTAssertTrue(eligible, "\(product.id): a fresh session is eligible for the trial")
+        }
+    }
+
+    /// The first purchase on an eligible account is the trial: an `.introductory` transaction
+    /// that maps to `.pro` on the same rules as a paid period (verified, own purchase).
+    func testFreeTrialPurchaseIsIntroductoryAndMapsToPro() async throws {
+        let transaction = try await session.buyProduct(identifier: ProSubscriptionConfig.yearlyProductID)
+        if #available(iOS 17.2, *) {
+            XCTAssertEqual(transaction.offer?.type, .introductory)
+            XCTAssertEqual(transaction.offer?.paymentMode, .freeTrial)
+        } else {
+            XCTAssertEqual(transaction.offerType, .introductory)
+        }
+        XCTAssertEqual(transaction.ownershipType, .purchased)
+        let snapshot = ProEntitlementObserver.snapshot(transaction, isVerified: true)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [snapshot], now: transaction.purchaseDate),
+                       .pro(productID: ProSubscriptionConfig.yearlyProductID, expiresAt: transaction.expirationDate))
+        let unverified = ProEntitlementObserver.snapshot(transaction, isVerified: false)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [unverified], now: transaction.purchaseDate),
+                       .unverified(productID: ProSubscriptionConfig.yearlyProductID))
+    }
+
     func testPurchaseMovesFreeToPro() async throws {
         let o = observer()
         await o.refresh()
