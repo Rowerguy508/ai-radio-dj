@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Integration tests for the playing screen in the Debug test station's capture mode
 /// (`-AeroDJTestStation YES -AeroDJStudioCapture YES`): the real `PlayingScreen`, the test
@@ -497,6 +498,44 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX5")
         assertReadingOrder(app, title: "Morning Light")
         save(app, isOpenLayout ? "open-ax5-dark" : "closed-ax5-dark")
+    }
+
+    /// iPad support (-Nova): on an iPad at regular width the stacked Studio (accessibility
+    /// sizes) is one centred readable column, `LayoutMetrics.iPadReadableMaxWidth` (640 pt),
+    /// in portrait and landscape, instead of running edge to edge. A regular-width phone
+    /// (Plus/Max landscape, open Duo) keeps the edge-to-edge stack, so this is iPad only.
+    @MainActor
+    func testIPadStackedStudioIsAReadableCentredColumn() throws {
+        try XCTSkipUnless(isOpenLayout, "The stacked Studio needs a regular-width window")
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad,
+                          "iPad only: phones keep the edge-to-edge stacked Studio")
+        let app = launch(segment: "queue", largeText: true)
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let readable: CGFloat = 640, workspacePadding: CGFloat = 16
+        for (orientation, name) in [(UIDeviceOrientation.portrait, "ipad-stacked-readable-portrait"),
+                                    (.landscapeLeft, "ipad-stacked-readable-landscape")] {
+            XCUIDevice.shared.orientation = orientation
+            let stacked = app.descendants(matching: .any)["layout.studioStacked"]
+            XCTAssertTrue(stacked.waitForExistence(timeout: 15),
+                          "layout.studioStacked expected (\(name)):\n\(app.debugDescription)")
+            let window = app.windows.firstMatch
+            let segment = app.segmentedControls["workspace.segment"]
+            XCTAssertTrue(segment.waitForExistence(timeout: 10), "workspace picker (\(name))")
+            // Settled once the frame matches the window's current orientation.
+            guard let frame = settledFrame(of: segment, "workspace.segment (\(name))", isFinal: { f in
+                let w = window.frame
+                return orientation == .portrait ? w.height > w.width : w.width > w.height
+            }) else { return }
+            let windowFrame = window.frame
+            XCTAssertGreaterThan(windowFrame.width, readable, "the window is wider than the column (\(name))")
+            XCTAssertLessThanOrEqual(frame.width, readable - 2 * workspacePadding + 1,
+                                     "workspace stays in the readable column (\(name), \(frame), window \(windowFrame))")
+            XCTAssertEqual(frame.midX, windowFrame.midX, accuracy: 1.5,
+                           "the column is centred (\(name), \(frame), window \(windowFrame))")
+            XCTAssertTrue(app.buttons["transport.playPause"].exists, "transport stays reachable (\(name))")
+            XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, "no two zones at AX sizes")
+            save(app, name)
+        }
     }
 
     // MARK: Duo shell, fold, and rotation
