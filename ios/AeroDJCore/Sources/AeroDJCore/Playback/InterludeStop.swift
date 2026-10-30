@@ -190,21 +190,34 @@ public struct PendingPlayStop: Equatable, Sendable {
 /// The adapter emits `.revoked`. The session records `playbackFinished`, so DJ state
 /// leaves `.ready` without a voice failure. `resumeMusic` is the same `.revoked` policy
 /// `PendingPlayStop.begin` uses.
+///
+/// `audioEvent` (-Fry, F3): the boundary already moved the state machine to `.transition`.
+/// The cancel moves it back to music, as every other unplayed path does. Left in
+/// `.transition`, `isBreakActive` stays true and an interruption that ends later (a call
+/// that arrived before the voice started) never resumes music.
 public struct HeldBoundaryStopCancellation: Equatable, Sendable {
     public var event: DJPresentationEvent
     public var resumeMusic: Bool
+    public var audioEvent: AudioEvent?
 
-    public init(event: DJPresentationEvent, resumeMusic: Bool) {
+    public init(event: DJPresentationEvent, resumeMusic: Bool, audioEvent: AudioEvent? = nil) {
         self.event = event
         self.resumeMusic = resumeMusic
+        self.audioEvent = audioEvent
     }
 }
 
 public enum HeldBoundaryStopReport {
-    public static func cancellation(afterTrack: Int, mayAutoResume: Bool) -> HeldBoundaryStopCancellation {
+    /// `phase` is the state machine's phase when `begin` refused the play (`.transition` at a boundary).
+    public static func cancellation(
+        afterTrack: Int,
+        mayAutoResume: Bool,
+        phase: AudioState = .transition
+    ) -> HeldBoundaryStopCancellation {
         HeldBoundaryStopCancellation(
             event: .playbackFinished(afterTrack: afterTrack),
-            resumeMusic: NarrationResumePolicy.decide(.revoked, mayAutoResume: mayAutoResume, phase: .music).resumeMusic
+            resumeMusic: NarrationResumePolicy.decide(.revoked, mayAutoResume: mayAutoResume, phase: .music).resumeMusic,
+            audioEvent: NarrationResumePolicy.audioEvent(for: phase)
         )
     }
 }
