@@ -391,7 +391,13 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 2. In Vercel, create a **new, separate project** named `aerodj-tts` from this
    repo with **Root Directory = `services/aerodj-tts`**, Framework preset: Other.
    This deploys only `api/tts.ts`, never the legacy root app. `vercel.json` sets
-   an ignore command so the project only builds when this directory changes.
+   an ignore command (`scripts/vercel-ignore-build.sh`) so **Preview and
+   Development** only build when this directory changes. **Production always
+   builds (#292)**: the step can't tell which environment Vercel's previous SHA
+   came from, so an app-only commit deployed to Production now rebuilds the
+   proxy too. That costs build minutes only; the proxy code is unchanged, so
+   don't treat such a build as a proxy change, and don't expect a
+   Production deploy to show "SKIP" in the build log.
    Confirm the production domain is exactly `aerodj-tts.vercel.app` (Vercel adds
    a suffix if the name is taken; the app pin must match it exactly).
 3. Add the Upstash Redis integration (Vercel Marketplace, free tier) to that

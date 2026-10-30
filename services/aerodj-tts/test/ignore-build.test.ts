@@ -5,7 +5,7 @@
  * tip commit. Integration 6307545 (the #273 merge, ray-do only) sat on top of
  * 96aa006 (the #256 merge, proxy changes) in one push, so Production was skipped.
  * The script now diffs VERCEL_GIT_PREVIOUS_SHA (last successful deploy for the
- * branch) against HEAD over services/aerodj-tts/, and fails open (builds) on
+ * branch) against HEAD over services/aerodj-tts/, and fails toward building on
  * anything it can't prove. Exit 0 = skip, exit 1 = build.
  *
  * Each case builds a throwaway git repo shaped like this one and runs the real
@@ -285,7 +285,7 @@ describe('vercel-ignore-build.sh', () => {
     expectCode(run(changed.clone, changed.prev), BUILD, 'fetched PREV, proxy changed');
   });
 
-  test('PREV outside the clone and the fetch fails -> BUILD (fail open)', () => {
+  test('PREV outside the clone and the fetch fails -> BUILD (fails toward building)', () => {
     // Only ray-do changed, so a script that guessed "skip" would be wrong to do so.
     const { clone, prev } = shallowSetup(false);
     git(clone, 'remote', 'set-url', 'origin', `file://${path.join(tmpRoot, 'does-not-exist.git')}`);
@@ -677,7 +677,7 @@ describe('vercel-ignore-build.sh: VERCEL_ENV (Orion: PREVIOUS_SHA can be another
     }
   });
 
-  test('unset, empty or unknown VERCEL_ENV builds (fail open), with no git call', () => {
+  test('unset, empty or unknown VERCEL_ENV builds (fails toward building), with no git call', () => {
     const repo = newRepo();
     const prev = git(repo, 'rev-parse', 'HEAD');
     commit(repo, 'ray-do only', { 'lib/telegram/webhook-auth.ts': 'export const a = 3;\n' });
