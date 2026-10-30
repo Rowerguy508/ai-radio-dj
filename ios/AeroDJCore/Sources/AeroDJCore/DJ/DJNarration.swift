@@ -134,18 +134,31 @@ public struct TemplatePool: Sendable {
         return Self.fill(templates[pick], values)
     }
 
-    /// Replaces `{key}` placeholders; nil if any is missing or empty.
+    /// Replaces `{key}` placeholders; nil if any is missing or empty. Track titles and artists
+    /// go through `SpokenTitle` first, so catalog suffixes ("(Remastered 2011)", "[Explicit]")
+    /// are never read aloud and "(feat. X)" is spoken as "featuring X".
     static func fill(_ template: String, _ values: [String: String]) -> String? {
         var out = ""
         var rest = Substring(template)
         while let open = rest.firstIndex(of: "{") {
             guard let close = rest[open...].firstIndex(of: "}") else { return nil }
             out += rest[..<open]
-            guard let value = values[String(rest[rest.index(after: open)..<close])], !value.isEmpty else { return nil }
+            let key = String(rest[rest.index(after: open)..<close])
+            guard let value = values[key].map({ Self.spoken($0, key: key) }), !value.isEmpty else { return nil }
             out += value
             rest = rest[rest.index(after: close)...]
         }
         return out + rest
+    }
+
+    /// Spoken form of one placeholder value. Only track fields are cleaned; the station name
+    /// is already screened by `EditorialStationName`.
+    static func spoken(_ value: String, key: String) -> String {
+        switch key {
+        case "title", "nextTitle": return SpokenTitle.clean(value)
+        case "artist", "nextArtist": return SpokenTitle.cleanArtist(value)
+        default: return value
+        }
     }
 }
 

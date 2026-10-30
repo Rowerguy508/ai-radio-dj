@@ -10,6 +10,7 @@ import Foundation
 /// Nothing here claims a genre, a year, a chart position, or weather.
 /// A tone can be swapped by handing `DJScriptWriter` another bank; the engine does not change.
 /// Lines use contractions and em dashes for pacing. No SSML: cloud voices get plain text.
+/// The style rules every line follows are on `warm`.
 public struct EditorialTone: Equatable, Sendable {
     /// Names the song that just played. Opens an ordinary break.
     public var backAnnounce: [String]
@@ -45,76 +46,113 @@ public struct EditorialTone: Equatable, Sendable {
         self.greetings = greetings
     }
 
-    /// Default: warm and conversational.
+    /// Default: warm and conversational, in the house style below.
+    ///
+    /// House style (the contract `SpokenScriptLintTests` enforces on every rendered line):
+    /// - Sound like a radio host, not an assistant. Contractions always. Short spoken sentences
+    ///   (12 words at most), fragments welcome ("{artist}. {title}.").
+    /// - Talk up the intro: the closing line is one sentence of seven words or fewer.
+    /// - No assistant phrasing ("Here is", "Let me", "I hope you enjoy", "As an AI"), no
+    ///   list-speak ("First", "Additionally", "Here are"), no hype (`forbiddenHype`).
+    /// - Plain text only: no markdown, emoji, URLs, tags or leftover braces. Titles are spoken
+    ///   through `SpokenTitle`, so catalog suffixes never reach a voice.
+    /// - No facts of our own: no genres, years, chart claims, weather, or clock times.
     public static let warm = EditorialTone(
         backAnnounce: [
-            "That was {title}, from {artist}.",
-            "{artist} there, with {title}.",
-            "You just heard {title} from {artist}.",
-            "That one was {title} by {artist}.",
-            "{title}, from {artist}.",
-            "Just had {title} there.",
-            "{title} by {artist}.",
+            "That's {title} from {artist}.",
+            "{artist} there. {title}.",
+            "That was {artist}, with {title}.",
+            "{artist}. {title}.",
+            "There's {title}, from {artist}.",
+            "{title} there, from {artist}.",
+            "You heard {artist}. That's {title}.",
+            "{artist} with {title}, just now.",
+            "Just had {artist} there. {title}.",
+            "{title}. That's {artist}.",
         ],
-        // The first five stay in this order. `DJNarrationTests` cycles this pool.
-        // One sentence of at most seven words, so it fits `DJCadence.maxClosingSeconds`.
-        // Lines 6-9 are earlier closing lines from this repo's history and a test tone, reused as-is.
+        // Ten lines, one sentence each, at most seven words, so it fits `DJCadence.maxClosingSeconds`
+        // and lands before the vocal. Every line names the next title. `DJNarrationTests` and
+        // `RadioStyleBreakTests` cycle this pool, so its size is a multiple of five.
         closing: [
             "Here's {nextArtist}, with {nextTitle}.",
             "Here's {nextTitle}, from {nextArtist}.",
-            "Next up — {nextArtist}, {nextTitle}.",
-            "Here's {nextTitle}.",
-            "This is {nextTitle}.",
-            "Coming up: {nextArtist}, {nextTitle}.",
-            "Next, {nextTitle}.",
-            "Up next, {nextTitle} by {nextArtist}.",
-            "Now, {nextTitle}.",
+            "This is {nextArtist}, {nextTitle}.",
+            "And this one's {nextTitle}.",
+            "Now, {nextArtist} with {nextTitle}.",
+            "Coming up, {nextTitle} from {nextArtist}.",
+            "Here comes {nextTitle}.",
+            "{nextArtist} now, with {nextTitle}.",
+            "Right now, it's {nextTitle}.",
+            "Next up, it's {nextTitle}.",
         ],
         artistFocus: [
             "That was {artist}.",
             "{artist}, with {title}.",
-            "From {artist}: {title}.",
+            "A little {artist} for you.",
+            "Some {artist} there. {title}.",
+            "That's {artist}.",
+            "{artist}, right there.",
             "One from {artist}.",
+            "Bit of {artist} there.",
         ],
         stationID: [
-            "You're listening to {station} — just you, me, and the music.",
+            "{station}. Stick around.",
+            "You're on {station}.",
             "This is {station}.",
             "You're tuned to {station}.",
-            "{station} — thanks for listening.",
-            "{station}.",
+            "{station}. Glad you're here.",
+            "It's {station}.",
+            "{station}, keeping you company.",
+            "Right here on {station}.",
         ],
         atmosphere: [
-            .earlyMorning: ["Quiet start — the day's just getting going.", "Early one. Take it slow."],
-            .morning: ["Hope the morning's going easy.", "A little while before midday."],
-            .afternoon: ["Middle of the afternoon — hope it's going okay.", "The afternoon's moving along."],
-            .evening: ["Evening's settling in.", "Winding the day down — no rush."],
-            .lateNight: ["Late hours — a quiet stretch of the night.", "Still up this late? Glad you're here."],
+            .earlyMorning: ["Quiet start — no rush.", "Early one. Take it slow.", "Still early. Easy does it.",
+                            "The day's just getting going."],
+            .morning: ["Easy morning stretch.", "Morning's rolling along.", "Ease into it.",
+                       "Plenty of morning left."],
+            .afternoon: ["Easy afternoon stretch.", "Middle of the afternoon.", "Halfway through the day.",
+                         "Afternoon — keep it easy."],
+            .evening: ["Evening's settling in.", "Winding down now. No rush.", "Nice and easy tonight.",
+                       "Evening — take a breath."],
+            .lateNight: ["Late hours. Quiet stretch.", "Still up? Glad you're here.", "Night owls, this one's yours.",
+                         "Late one. Keep it low."],
         ],
         continuation: [
-            "Wherever you're listening, thanks for spending a little time here.",
-            "Plenty more on the way.",
-            "Stay right where you are.",
+            "More on the way.",
+            "Stay right there.",
             "We'll keep it rolling.",
-            "Thanks for keeping me company.",
-            "Okay — back to the music.",
+            "Thanks for hanging out.",
+            "Okay. Back to it.",
+            "Plenty more coming.",
+            "Don't go anywhere.",
+            "Lots more music ahead.",
         ],
         briefingLead: [
-            "Let me catch you up.",
+            "Quick heads-up before the next one.",
             "A couple of things before the next song.",
             "While we're between songs.",
             "Quick one before the next song.",
+            "Real quick, before the music.",
+            "Before we keep going.",
+            "One sec before the next one.",
+            "Something for your day.",
         ],
         briefingOutro: [
-            "That's it from me for now.",
+            "That's it for now.",
             "Okay — back to the music.",
-            "That's all for now.",
+            "That's all from me.",
+            "Alright, more music.",
+            "That's the rundown.",
+            "Done. Back to the tunes.",
+            "Back to the music.",
+            "Okay, on we go.",
         ],
         greetings: [
-            .earlyMorning: ["Early start today.", "Good morning, early riser."],
-            .morning: ["Good morning.", "Morning."],
-            .afternoon: ["Good afternoon.", "Afternoon."],
-            .evening: ["Good evening.", "Evening."],
-            .lateNight: ["Late one tonight.", "Still up? Good."],
+            .earlyMorning: ["Early start today.", "Morning, early riser.", "Up early? Good."],
+            .morning: ["Good morning.", "Morning — let's ease into it.", "Hey, good morning."],
+            .afternoon: ["Good afternoon.", "Afternoon. Glad you're here.", "Hey there, good afternoon."],
+            .evening: ["Good evening.", "Evening. Glad you found us.", "Hey, good evening."],
+            .lateNight: ["Late one tonight.", "Still up? Good.", "Hey, night owl."],
         ]
     )
 
