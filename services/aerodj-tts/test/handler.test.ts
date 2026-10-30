@@ -588,7 +588,7 @@ test('Redis limiter speaks Upstash REST: bearer store token, one EVAL per operat
   assert.deepEqual(store.calls[1].command.slice(2), [
     2,
     'aerodj-tts:chars:owner:production:2026-10-28',
-    'aerodj-tts:chars:global:production:2026-10-28',
+    'aerodj-tts:chars:global:2026-10-28',
     String('Hello from the DJ booth.'.length),
     '20000',
     '20000',

@@ -5,6 +5,7 @@ import {
   DEFAULT_GLOBAL_DAILY_CHAR_CAP,
   DEFAULT_INSTALL_DAILY_CHAR_CAP,
   DEFAULT_REQUESTS_PER_MINUTE,
+  effectiveNonprodCap,
   InMemoryUsageLimiter,
   LimiterStoreError,
   MAX_CONFIGURED_CHAR_CAP,
@@ -254,6 +255,8 @@ export function parseBoundedInt(value: string | undefined, max: number): number 
  * `AERODJ_TTS_DAILY_CHAR_CAP` (so today's owner-set 9,000 keeps applying), else 9,000.
  * Owner bucket: `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`, else the global ceiling.
  * Per install: `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP`, else 1,500.
+ * Preview / Development sub-cap (#287 B1): `AERODJ_TTS_NONPROD_DAILY_CHAR_CAP`, else 1,000,
+ * and never above 1,000 (configurable only downward). Production ignores it.
  */
 export function limiterOptions(env: Env): LimiterOptions {
   const dailyCharCap =
@@ -264,6 +267,9 @@ export function limiterOptions(env: Env): LimiterOptions {
   return {
     dailyCharCap,
     ...(deployment !== null ? { deployment } : {}),
+    ...(deployment !== null && deployment !== 'production'
+      ? { nonprodDailyCharCap: effectiveNonprodCap(parseCharCap(env.AERODJ_TTS_NONPROD_DAILY_CHAR_CAP) ?? undefined) }
+      : {}),
     ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? dailyCharCap,
     installDailyCharCap: parseCharCap(env.AERODJ_TTS_INSTALL_DAILY_CHAR_CAP) ?? DEFAULT_INSTALL_DAILY_CHAR_CAP,
     requestsPerMinute: parseRatePerMinute(env.AERODJ_TTS_RATE_PER_MINUTE) ?? DEFAULT_REQUESTS_PER_MINUTE,
@@ -272,8 +278,9 @@ export function limiterOptions(env: Env): LimiterOptions {
 
 /**
  * Picks the limiter for this environment:
- * - Upstash Redis REST credentials present: durable `RedisUsageLimiter` (hard cap), its day
- *   keys scoped by `VERCEL_ENV` (#264 N5). An unset or unknown `VERCEL_ENV` (the same strict
+ * - Upstash Redis REST credentials present: durable `RedisUsageLimiter` (hard cap), its
+ *   owner/install/Pro day keys scoped by `VERCEL_ENV` (#264 N5), the global key shared by
+ *   every deployment and a 1,000-char sub-cap on Preview/Development (#287 B1). An unset or unknown `VERCEL_ENV` (the same strict
  *   allow-list as the Pro keys, B3) returns null: every request is 500 `misconfig`.
  * - Otherwise, outside Vercel Production: per-instance `InMemoryUsageLimiter`.
  * - Otherwise (Vercel Production, no store): null, so every request fails closed with

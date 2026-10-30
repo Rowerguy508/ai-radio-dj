@@ -125,8 +125,12 @@ printf %s "$TOKEN" | shasum -a 256 | cut -d' ' -f1   # paste this hex into Verce
   for the single owner bearer (the contract carries no device ID, so per-bearer is
   per-owner). 429 `rate` with `Retry-After: 60`.
 - Daily characters, UTC day, two buckets reserved together (all or nothing):
-  - **Global ceiling** across every caller: `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP`, else
-    the legacy `AERODJ_TTS_DAILY_CHAR_CAP`, else **9,000**.
+  - **Global ceiling** across every caller **and every deployment** (one shared key,
+    #287 B1): `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP`, else the legacy
+    `AERODJ_TTS_DAILY_CHAR_CAP`, else **9,000**.
+  - **Preview / Development sub-cap** (#287 B1): a third counter on those
+    deployments only, `AERODJ_TTS_NONPROD_DAILY_CHAR_CAP`, default and maximum
+    **1,000** (can only be lowered).
   - **The caller's own bucket.** Today the only caller is the owner bearer, charged
     to a fixed `owner` bucket: `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`, else the global
     ceiling. Per-install buckets (`AERODJ_TTS_INSTALL_DAILY_CHAR_CAP`, default
@@ -162,14 +166,31 @@ reservation is **released (refunded) only when ElevenLabs answers non-2xx**, sin
 then nothing was billed. A network error, timeout, or bad audio after a 2xx keeps
 the reservation, because the render may have been billed.
 
-**Per deployment (#264 N5).** Every durable day counter carries the deployment from
-`VERCEL_ENV`, like the Pro keys: `aerodj-tts:chars:global:<VERCEL_ENV>:<day>`,
-`aerodj-tts:chars:owner:<VERCEL_ENV>:<day>` and
-`aerodj-tts:chars:install:<VERCEL_ENV>:<sha256>:<day>` (TTL 2 days, unchanged). So
-Preview traffic never spends Production's 9,000 ceiling. With a store configured, a
-`VERCEL_ENV` other than production/preview/development (unset included) selects no
-limiter, so every request is 500 `misconfig`. On the first deploy with this change
-the global and owner counters start fresh under the new keys for that UTC day.
+**Per deployment (#264 N5, #287 B1).** The owner, install and Pro day counters carry
+the deployment from `VERCEL_ENV`: `aerodj-tts:chars:owner:<VERCEL_ENV>:<day>`,
+`aerodj-tts:chars:install:<VERCEL_ENV>:<sha256>:<day>` and the Pro
+`pro:<VERCEL_ENV>:<sha256>` keys, so Preview never uses up Production's owner, install or
+Pro budgets. The **global** ceiling is deliberately NOT per deployment. It is one
+account-wide key, `aerodj-tts:chars:global:<day>`, which is exactly the pre-#287 name, and
+every deployment charges it, so Production, Preview and Development **together** never pass
+9,000 a day, even when they share the same `ELEVENLABS_API_KEY` (Sentinel's B1: a per-env
+global key would have allowed 18,000-27,000). Preview and Development are also charged to
+their own `aerodj-tts:chars:env:<preview|development>:<day>` sub-cap, which defaults to
+1,000 and can only be lowered with `AERODJ_TTS_NONPROD_DAILY_CHAR_CAP`, so a preview can
+spend at most 1,000 of the day's shared 9,000. Hitting it is the same 429 `global_daily` on
+the wire. Production has no sub-cap key. All of these keys use a 2-day TTL, unchanged. With
+a store configured, a `VERCEL_ENV` other than production/preview/development (unset
+included) selects no limiter, so every request is 500 `misconfig`. The account-wide total
+of 9,000 holds as long as Preview/Development don't set a higher
+`AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP` than Production. Even if they do, the sub-caps bound the
+excess to 1,000 each.
+
+**Deploy day.** The global key keeps its pre-#287 name, so a deploy keeps today's global
+count: no reset and no doubling of the 9,000 ceiling. The owner counter moves to
+`owner:production:<day>` and starts fresh, but the owner cap equals the global cap, which
+did not reset, so this adds no spend. Install counters (and their 1,500) start fresh
+within the same unchanged global ceiling. Deploying just after 00:00 UTC is still
+recommended, so the scoped owner and install counters start the day at zero anyway.
 
 **Rate counters per deployment too (#287 N1).** The per-minute request counters are
 scoped the same way: `aerodj-tts:rate:owner:<VERCEL_ENV>:<minute>` and
@@ -357,6 +378,7 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_DAILY_CHAR_CAP` | no | Legacy name, used for the global ceiling when the new name is unset. |
 | `AERODJ_TTS_OWNER_DAILY_CHAR_CAP` | no | Owner bucket cap. Default: the global ceiling. |
 | `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP` | no | Per-install cap. Default 1500. Inert until per-install auth lands. |
+| `AERODJ_TTS_NONPROD_DAILY_CHAR_CAP` | no | Preview/Development daily sub-cap, also charged to the shared global key. Default and maximum 1000 (only lower values apply). Ignored on Production. |
 | `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. Plain integer 1-600; anything else uses 12. |
 | `AERODJ_TTS_PRO_DAILY_CHARS` | no | Per Pro subscriber daily chars. Default 12000, clamped to the global ceiling. Plain integer 600-10,000,000; anything else makes Pro requests 500 `misconfig`. |
 | `AERODJ_TTS_PRO_RATE_PER_MINUTE` | no | Per Pro subscriber rate. Default 12. Plain integer 1-600; anything else makes Pro requests 500 `misconfig`. |
