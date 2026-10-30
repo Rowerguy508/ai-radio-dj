@@ -42,7 +42,7 @@ function world() {
     async register(): Promise<Buffer> {
       const challenge = issueChallenge({ key: KEY, purpose: 'attest', keyId: null, now });
       const a = makeAttestation(CA, { clientDataHash: attestClientDataHash(challenge) });
-      const body = JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge });
+      const body = JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge, installId: crypto.randomUUID() });
       const t = now;
       const res = await handleRegister(new Request('https://proxy.invalid/api/attest/register', { method: 'POST', body, headers: { 'x-vercel-forwarded-for': '203.0.113.7' } }), {
         env: ENV,

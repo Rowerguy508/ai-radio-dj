@@ -277,6 +277,18 @@ handling: no retry, on-device voice; paid voice stays on).
 Limits: devices behind one NAT/CGNAT/office network share the 3; a device that
 changes networks gets 3 more per network.
 
+**Per-install cap (stacked on #256; Orion and Sentinel, 2026-10-29):** the app sends
+`installId` in the register body (Fry's contract: a Keychain UUID v4, lowercase, 36
+characters, register only). A register must pass the network 3/day, the install 3/day
+(`AERODJ_TTS_ENROLL_INSTALL_DAILY_CAP`, default 3, parsed like the device cap) and the
+global 20/day. The counter is `enrollinst:{aerodj-tts}:<day>:<HMAC-SHA256(challenge key,
+install domain ‖ day ‖ installId)>` with the same 2-day TTL; the raw ID is never stored
+or logged. A missing or invalid `installId` is **400 `install`** (no `Retry-After`)
+before any store call, so the challenge is not consumed. The install-cap 429 is the
+same `enroll` body and `Retry-After` as the other two (log detail `install_cap`).
+The install ID is client-chosen, so the network cap stays: rotating IDs on one network
+still hits it.
+
 **Key records slide (owner decision, 2026-10-29):** the 90-day TTL set on register
 is refreshed to 90 days on every successful use (`useAttestKey`, one `EXPIRE`),
 not only on register. A key unused for 90 days expires; its next assertion is 401

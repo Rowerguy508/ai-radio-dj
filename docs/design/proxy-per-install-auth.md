@@ -167,7 +167,9 @@ Accepts `{ keyId, attestationObject, challenge }`. Order:
    per-device sub-cap keys on a day-scoped HMAC of the client network (IPv4,
    or IPv6 /64, from Vercel's `x-vercel-forwarded-for` only; missing or
    unparseable is 400 `network` before the challenge is consumed or any
-   store call, never a shared bucket), checked
+   store call, never a shared bucket), plus a per-install sub-cap of 3/day
+   on a day-scoped HMAC of the app's `installId` (Keychain UUID v4; missing
+   or invalid is 400 `install`, same rules), both checked
    before the global cap so a device-capped request spends no global budget.
    No raw IP is stored or logged (the §4.1.1 "stores no IP" rule holds for
    addresses; the hash lives 2 days). It is a per-network cap: NAT/CGNAT
