@@ -4,6 +4,7 @@
 export const ADMIN_TOKEN_ENV = 'RAY_DO_ADMIN_TOKEN';
 export const TELEGRAM_SECRET_ENV = 'TELEGRAM_WEBHOOK_SECRET';
 export const ADMIN_TOKEN_MIN_LENGTH = 32;
+export const TELEGRAM_SECRET_MIN_LENGTH = 32;
 
 /** Paths that are gone for every caller, authenticated or not. */
 export const REMOVED_API_PATHS: readonly string[] = ['/api/telegram/set-webhook'];
@@ -41,10 +42,24 @@ function normalize(pathname: string): string {
   return trimmed === '' ? '/' : trimmed;
 }
 
-/** Requires `Authorization: Bearer <RAY_DO_ADMIN_TOKEN>`. Unset or short token is a misconfig. */
+/**
+ * The configured secret with surrounding whitespace trimmed, or null when it is unset,
+ * blank after trimming, or shorter than `minLength` after trimming (a misconfig).
+ *
+ * Only the configured value is trimmed: a stray newline pasted into an env var must not
+ * become part of the secret. The presented credential is never trimmed; it is compared
+ * as sent against the trimmed value, in constant time, so " <token>" or "<token>\n" in a
+ * header does not match.
+ */
+export function configuredSecret(name: string, minLength: number): string | null {
+  const value = (process.env[name] ?? '').trim();
+  return value.length >= minLength ? value : null;
+}
+
+/** Requires `Authorization: Bearer <RAY_DO_ADMIN_TOKEN>`. Unset, blank or short (after trim) is a misconfig. */
 export async function adminDecision(headers: Headers): Promise<GateDecision> {
-  const expected = process.env[ADMIN_TOKEN_ENV];
-  if (!expected || expected.length < ADMIN_TOKEN_MIN_LENGTH) {
+  const expected = configuredSecret(ADMIN_TOKEN_ENV, ADMIN_TOKEN_MIN_LENGTH);
+  if (expected === null) {
     return { allow: false, status: 503, error: 'misconfig' };
   }
   if (!(await secretMatches(bearer(headers.get('authorization')), expected))) {
@@ -53,10 +68,10 @@ export async function adminDecision(headers: Headers): Promise<GateDecision> {
   return { allow: true };
 }
 
-/** Requires Telegram's X-Telegram-Bot-Api-Secret-Token. Unset secret is a misconfig. */
+/** Requires Telegram's X-Telegram-Bot-Api-Secret-Token. Unset, blank or short (after trim) is a misconfig. */
 export async function telegramDecision(headers: Headers): Promise<GateDecision> {
-  const expected = process.env[TELEGRAM_SECRET_ENV];
-  if (!expected) {
+  const expected = configuredSecret(TELEGRAM_SECRET_ENV, TELEGRAM_SECRET_MIN_LENGTH);
+  if (expected === null) {
     return { allow: false, status: 503, error: 'misconfig' };
   }
   if (!(await secretMatches(headers.get('x-telegram-bot-api-secret-token'), expected))) {
