@@ -21,6 +21,7 @@ import {
 } from '../src/limiter.js';
 import { reserveForInstall } from '../src/install-quota.js';
 import { fakeUpstash } from './redis-lua.js';
+import { UPSTASH_FETCH_TIMEOUT_MS } from '../src/upstash.js';
 
 const TOKEN = 'test-owner-token-not-a-real-secret';
 const TOKEN_HASH = crypto.createHash('sha256').update(TOKEN).digest('hex');
@@ -362,5 +363,77 @@ describe('#254 review delta: rate replies and the reserve counter (Fry B1, N1, N
       const r = await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: counter }).fetchImpl).reserve({ kind: 'install', id: KEY_ID }, 100, NOON);
       assert.ok(r.ok, `counter ${counter}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('Upstash fetch timeout in the limiter (Sentinel N2 on #256)', () => {
+  const TIMEOUT_MS = 20;
+  // Like real fetch: never answers, rejects when its signal aborts. Records the signal.
+  const honoring = (signals: (AbortSignal | null | undefined)[]) =>
+    ((_url: string, init: RequestInit) => {
+      signals.push(init.signal);
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+      });
+    }) as unknown as typeof fetch;
+  // Never answers and ignores the signal.
+  const ignoring = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+  // Headers arrive, the body never does.
+  const stalledBody = (async () => new Response(new ReadableStream({ start() {} }), { status: 200 })) as unknown as typeof fetch;
+  /** The first `ok` EVALs answer a valid reply (rate 1, then the reserve counter); later ones go to `stall`. */
+  const stallAfter = (ok: number, stall: typeof fetch) => {
+    let n = 0;
+    return (async (url: string, init: RequestInit) => {
+      n++;
+      if (n <= ok) return Response.json({ result: n === 1 ? 1 : TTS_CHARS });
+      return stall(url, init);
+    }) as unknown as typeof fetch;
+  };
+  /** AbortSignal.timeout's timer does not hold the event loop open; this does, for the test only. */
+  async function withKeepAlive(run: () => Promise<void>) {
+    const keepAlive = setTimeout(() => {}, 10_000);
+    try {
+      await run();
+    } finally {
+      clearTimeout(keepAlive);
+    }
+  }
+
+  for (const [stage, ok] of [['rate check', 0], ['reserve', 1]] as const) {
+    test(`owner /api/tts: ${stage} EVAL never finishes → 503 store, Retry-After 30, zero ElevenLabs calls`, { timeout: 5_000 }, () =>
+      withKeepAlive(async () => {
+        const signals: (AbortSignal | null | undefined)[] = [];
+        for (const [name, stall] of [['honoring', honoring(signals)], ['ignoring', ignoring], ['stalledBody', stalledBody]] as const) {
+          const started = Date.now();
+          const { res, upstream } = await runTts(new RedisUsageLimiter(STORE, OPTIONS, stallAfter(ok, stall), TIMEOUT_MS));
+          assert.equal(res.status, 503, name);
+          assert.equal(res.headers['Retry-After'], '30', name);
+          assert.equal(JSON.parse(res.body.toString('utf8')).reason, 'store', name);
+          assert.equal(upstream, 0, `${name}: zero ElevenLabs calls`);
+          assert.ok(Date.now() - started < 1_000, name);
+        }
+        assert.equal(signals.length, 1);
+        assert.ok(signals[0] instanceof AbortSignal);
+        assert.equal(signals[0]!.aborted, true);
+      }));
+  }
+
+  test('install reserve EVAL never finishes → 503 store', { timeout: 5_000 }, () =>
+    withKeepAlive(async () => {
+      for (const stall of [honoring([]), ignoring, stalledBody]) {
+        assert.deepEqual(await reserveForInstall(new RedisUsageLimiter(STORE, OPTIONS, stall, TIMEOUT_MS), KEY_ID, 100, NOON), STORE_REFUSAL);
+      }
+    }));
+
+  test('a refund EVAL that never finishes rejects with LimiterStoreError', { timeout: 5_000 }, () =>
+    withKeepAlive(async () => {
+      for (const stall of [honoring([]), ignoring, stalledBody]) {
+        await assert.rejects(new RedisUsageLimiter(STORE, OPTIONS, stall, TIMEOUT_MS).release(reservation()), LimiterStoreError);
+      }
+    }));
+
+  test('the default Upstash timeout is UPSTASH_FETCH_TIMEOUT_MS (2 s)', () => {
+    assert.equal(UPSTASH_FETCH_TIMEOUT_MS, 2_000);
   });
 });

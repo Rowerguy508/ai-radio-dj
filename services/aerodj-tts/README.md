@@ -182,7 +182,8 @@ path and PR 3b's `register` wire it).
 Rate counters are fixed one-minute windows in Redis (a burst at a minute boundary
 can reach 2x the per-minute rate) and a sliding window in memory. If the store is
 unreachable or errors, the request fails closed with 503 and never reaches
-ElevenLabs.
+ElevenLabs. Each Upstash call is bounded at 2 s (`UPSTASH_FETCH_TIMEOUT_MS`,
+request and body); a store that does not answer in time is the same 503 `store`.
 
 Independent of the limiter, the $0 backstop is the ElevenLabs plan itself (Free
 plan: no overage) plus the restricted key's own credit limit. The owner should

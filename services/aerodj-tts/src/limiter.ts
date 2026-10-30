@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { UPSTASH_FETCH_TIMEOUT_MS, untilAborted } from './upstash.js';
 
 /**
  * Usage limiter: per-minute request rate plus an atomic daily character budget on two
@@ -288,17 +289,24 @@ export class RedisUsageLimiter implements UsageLimiter {
     private readonly config: RedisRestConfig,
     private readonly options: LimiterOptions,
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
+    /** Bound on each Upstash call; a timeout is a LimiterStoreError (503 `store`). */
+    private readonly timeoutMs: number = UPSTASH_FETCH_TIMEOUT_MS,
   ) {}
 
-  /** One EVAL over Upstash's REST API. Any transport or store error throws (the handler fails closed). */
+  /** One EVAL over Upstash's REST API. Any transport or store error, or a timeout, throws (the handler fails closed). */
   private async eval(script: string, keys: string[], args: (string | number)[]): Promise<number> {
+    const signal = AbortSignal.timeout(this.timeoutMs);
     let response: Response;
     try {
-      response = await this.fetchImpl(this.config.url, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(['EVAL', script, keys.length, ...keys, ...args.map(String)]),
-      });
+      response = await untilAborted(
+        this.fetchImpl(this.config.url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(['EVAL', script, keys.length, ...keys, ...args.map(String)]),
+          signal,
+        }),
+        signal,
+      );
     } catch {
       throw new LimiterStoreError('limiter store unreachable');
     }
@@ -306,7 +314,7 @@ export class RedisUsageLimiter implements UsageLimiter {
       await response.body?.cancel().catch(() => {});
       throw new LimiterStoreError('limiter store error');
     }
-    const payload = (await response.json().catch(() => null)) as { result?: unknown } | null;
+    const payload = (await untilAborted(response.json(), signal).catch(() => null)) as { result?: unknown } | null;
     if (!payload || typeof payload !== 'object' || 'error' in payload) throw new LimiterStoreError('limiter store error');
     return strictRedisInteger(payload.result);
   }
