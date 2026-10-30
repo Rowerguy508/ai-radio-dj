@@ -88,11 +88,12 @@ extension AudioSessionPolicy {
     /// `SongEndHold.releases` says so. A route hold and a user pause are never released.
     /// Returns true when it released a hold.
     @discardableResult
-    public mutating func naturalEndReached(interruptionBeganNearEnd: Bool, otherAudioPlaying: Bool,
-                                           secondaryHint: Bool, callActive: Bool) -> Bool {
+    public mutating func naturalEndReached(interruptionBeganNearEnd: Bool, queueFinishedSinceInterruption: Bool,
+                                           otherAudioPlaying: Bool, secondaryHint: Bool, callActive: Bool) -> Bool {
         guard intent.pausedBySystem else { return false }
         guard SongEndHold.releases(interruptionEnded: !interruptionOngoing,
                                    shouldResume: lastEndShouldResume,
+                                   queueFinishedSinceInterruption: queueFinishedSinceInterruption,
                                    otherAudioPlaying: otherAudioPlaying,
                                    secondaryHint: secondaryHint,
                                    callActive: callActive,
@@ -109,16 +110,23 @@ extension AudioSessionPolicy {
 /// The theory (unconfirmed on device): as `ApplicationMusicPlayer`'s one-song queue finishes, the
 /// shared session gets `interruptionBegan` with no matching end, and song 2 is held forever.
 /// The hold is released only when the interruption began in the end window AND no call is
-/// active AND either the interruption has ended with `shouldResume`, or it never ended and nothing
-/// else is playing (`isOtherAudioPlaying == false` and `secondaryAudioShouldBeSilencedHint == false`).
+/// active AND either the interruption has ended with `shouldResume`, or it never ended, MusicKit
+/// itself finished the queue after it began (`queueFinishedSinceInterruption`), and nothing else
+/// is playing (`isOtherAudioPlaying == false` and `secondaryAudioShouldBeSilencedHint == false`).
 /// An end without `shouldResume` holds until the user presses play (Orion). A real call, or
 /// another app's audio (Siri included), keeps song 2 held.
+///
+/// #149 (-Atlas): the two hints alone never release a never-ended interruption. Neither proves it
+/// ended: an interruption that pauses the song in its last 1.5 s, or one that begins during the
+/// break, can have both false. Only MusicKit's own finish (queue cleared, entry changed, or the
+/// playhead rewound to the start) after the interruption began is independent evidence.
 public enum SongEndHold {
-    public static func releases(interruptionEnded: Bool, shouldResume: Bool, otherAudioPlaying: Bool,
+    public static func releases(interruptionEnded: Bool, shouldResume: Bool,
+                                queueFinishedSinceInterruption: Bool, otherAudioPlaying: Bool,
                                 secondaryHint: Bool, callActive: Bool, beganNearEnd: Bool) -> Bool {
         guard beganNearEnd, !callActive else { return false }
         if interruptionEnded { return shouldResume }
-        return !otherAudioPlaying && !secondaryHint
+        return queueFinishedSinceInterruption && !otherAudioPlaying && !secondaryHint
     }
 }
 

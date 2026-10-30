@@ -781,11 +781,13 @@ final class MusicKitService: ObservableObject {
 
     /// Build 18 P0 (-Fry): at a natural end (before the break and song 2) and again in
     /// `startNextTrack`, Core's `SongEndHold` decides whether an interruption that began at the
-    /// song's end may keep holding playback. A call or another app's audio keeps the hold.
+    /// song's end may keep holding playback. A call or another app's audio keeps the hold, and a
+    /// never-ended interruption is released only after MusicKit itself finished the queue (#149).
     private func releaseSongEndHoldIfAllowed(finished: Int) {
         let session = AVAudioSession.sharedInstance()
         guard sessionPolicy.naturalEndReached(
             interruptionBeganNearEnd: boundaries.interruptionBeganNearEnd,
+            queueFinishedSinceInterruption: boundaries.queueFinishedSinceInterruption,
             otherAudioPlaying: session.isOtherAudioPlaying,
             secondaryHint: session.secondaryAudioShouldBeSilencedHint,
             callActive: callActiveNow) else { return }
