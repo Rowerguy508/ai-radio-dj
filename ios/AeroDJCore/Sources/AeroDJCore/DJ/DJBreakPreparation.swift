@@ -380,13 +380,22 @@ public actor DJBreakPreparer {
 
         func fits(_ clips: [RenderedClip]) -> Bool { fit(clips) != .skip }
 
+        /// Wall-clock length of the break for the `whole` cap: every measured clip plus the
+        /// `talkOverGapSeconds` pause before the closing line whenever something plays before it.
+        /// The gap is counted whether or not talk-over is on, so no break runs past `whole`.
+        static func spokenSeconds(_ clips: [RenderedClip], closingCueID: UUID?) -> Double {
+            let gap = clips.count > 1 && closingCueID != nil && clips.last?.cueID == closingCueID
+                ? PreparedDJBreak.talkOverGapSeconds : 0
+            return DJBreakPreparer.measured(clips) + gap
+        }
+
         /// `pass` within every cap, after dropping optional clips (in `optional` order) while it
         /// is over. Never drops a required line (opener, closing). Nil: still over, skip.
         func fitting(_ pass: Pass) -> (pass: Pass, fit: Fit, trimmed: [UUID])? {
             var pass = pass, trimmed: [UUID] = [], queue = optional
             while true {
                 let f = fit(pass.clips)
-                if f != .skip, whole.map({ DJBreakPreparer.measured(pass.clips) <= $0 }) ?? true { return (pass, f, trimmed) }
+                if f != .skip, whole.map({ Self.spokenSeconds(pass.clips, closingCueID: closingCueID) <= $0 }) ?? true { return (pass, f, trimmed) }
                 guard let id = queue.first(where: { id in pass.clips.contains { $0.cueID == id } }) else { return nil }
                 queue.removeAll { $0 == id }
                 pass.cues.removeAll { $0.id == id }
