@@ -219,6 +219,35 @@ jobs:
           for NEEDLE in P0EventTraceHost P0EventTrace P0PollSampler P0TraceView P0EventTracePanel; do
             LC_ALL=C grep -a -q "$NEEDLE" "$DIAG_BIN" || { echo "::error::$NEEDLE missing from the AERODJ_P0_DIAG build"; exit 1; }
           done
+      - name: StudioCapture (App Store capture) strings are absent from Release
+        # StudioCapture.swift is one whole-file #if DEBUG. If that guard goes, these launch-arg
+        # keys and scenario raw values land in Release and this fails. Every needle appears only
+        # in DEBUG code. Not djSpeaking: PlaybackFixtures.djSpeaking ships in AeroDJCore.
+        # Positive control: Debug must contain each one (whole .app, so a Debug dylib counts).
+        # "Graphite Afternoon" is the DEBUG-only carousel preview station. Saffrelle, Brindlemay
+        # and Tallowfield are AeroDJCore test-only fixture names: never in either app, so they
+        # are checked against Release only (no Debug control possible). -Nova
+        run: |
+          DEBUG_APP="$DERIVED_DATA/Build/Products/Debug-iphoneos/AeroDJ.app"
+          RELEASE_APP="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app"
+          test -f "$RELEASE_APP/AeroDJ"
+          test -d "$DEBUG_APP"
+          for NEEDLE in AeroDJStudioCapture AeroDJStudioCaptureScenario AeroDJStudioCaptureDark \
+                        breakToSongHandoff genreBuilder stationListCustom "Graphite Afternoon"; do
+            LC_ALL=C grep -r -a -q -F "$NEEDLE" "$DEBUG_APP" \
+              || { echo "::error::control: $NEEDLE missing from the Debug app, so the Release check would be vacuous"; exit 1; }
+            if LC_ALL=C grep -r -a -q -F "$NEEDLE" "$RELEASE_APP"; then
+              echo "::error::StudioCapture string ($NEEDLE) found in the Release app; keep StudioCapture.swift behind #if DEBUG"
+              exit 1
+            fi
+          done
+          for NEEDLE in Saffrelle Brindlemay Tallowfield; do
+            if LC_ALL=C grep -r -a -q -F "$NEEDLE" "$RELEASE_APP"; then
+              echo "::error::Test-only fixture name ($NEEDLE) found in the Release app"
+              exit 1
+            fi
+          done
+          echo "OK: StudioCapture strings are in Debug and absent from Release; test fixture names absent from Release"
       - name: Owner A/B gate script fails closed (fake xcodebuild test)
         run: ios/scripts/check-owner-ab-build-settings-test.sh
       - name: Owner A/B (AERODJ_OWNER_AB) is absent from Release build settings unless dispatched with owner_ab
