@@ -60,7 +60,8 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
     private let voiceID = PremiumVoiceCatalog.voices[0].id
     private let productID = ProSubscriptionConfig.monthlyProductID
     private var epoch: Date { Date(timeIntervalSince1970: 0) }
-    private var pro: ProEntitlementState { .pro(productID: productID, expiresAt: nil) }
+    /// A live subscription: #244 N1 treats a `.pro` with no or a past expiry as expired at call time.
+    private var pro: ProEntitlementState { .pro(productID: productID, expiresAt: .distantFuture) }
     private var presenterLine: String { EditorialTone.warm.continuation[0] }
 
     // MARK: fixtures
@@ -204,9 +205,10 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
                 else { XCTAssertEqual(o, .skipped(.overBreakBudget), "\(n) words over \(main) s") }
             }
         }
-        // Closing cue: 4 s on its own (10 words fit, 11 do not).
-        for (n, ok) in [(10, true), (11, false)] {
-            let main = cue(words(5), seconds: 60), closing = cue(words(n), seconds: 60)
+        // Closing cue (#249 semantics): within 4 s on its own; over 4 s it plays as an ordinary
+        // line inside the 15 s main budget, and only a break still over that budget is skipped.
+        for (m, n, ok) in [(5, 10, true), (5, 11, true), (26, 11, true), (27, 11, false)] {
+            let main = cue(words(m), seconds: 60), closing = cue(words(n), seconds: 60)
             let b = DJBreak(afterTrack: 0, cues: [main, closing], attributions: [main.id: .presenter, closing.id: .presenter])
             let o = await DJBreakPreparer.render(b, renderer: voice.renderer, userID: "u", stationID: "s",
                                                  cap: .init(main: 15, closingCueID: closing.id, closing: 4), paidVoice: access)
@@ -358,15 +360,19 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
         }
     }
 
-    /// Gate 1 + 2 needles stay in both Release checks, each with its positive control.
+    /// Split like OwnerTrialIsFlagOnlyTests' needle, so this pin is not itself a reference.
+    private static let trialNeedle = "owner" + "Trial"
+
+    /// Gate 1 + 2 needles (and #244's owner trial needle) stay in both Release checks, each with
+    /// its positive control, in one shared loop.
     func testBothReleaseChecksKeepTheSplitNeedlesAndControls() throws {
         let script = try text("ios/scripts/check-release-disables-paid-voice.sh")
-        XCTAssertTrue(script.contains("split_needles=(com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)"))
-        XCTAssertEqual(script.components(separatedBy: "\"${split_needles[@]}\"").count - 1, 2, "plain scan and control")
+        XCTAssertTrue(script.contains("needles=(" + Self.trialNeedle + " com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)"))
+        XCTAssertEqual(script.components(separatedBy: "\"${needles[@]}\"").count - 1, 2, "plain scan and control")
         XCTAssertTrue(script.contains("-Xswiftc -DAERODJ_OWNER_AB -Xswiftc -DAERODJ_PUBLIC_PAID_ROUTE"))
         XCTAssertTrue(script.contains("PaidVoiceRouteSplitTests.testFlaggedBuildCompilesThePublicRouteIn"))
         let yml = try text(".github/workflows/ios.yml")
-        XCTAssertTrue(yml.contains("NEEDLES=(com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)"))
+        XCTAssertTrue(yml.contains("NEEDLES=(" + Self.trialNeedle + " com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)"))
         XCTAssertEqual(yml.components(separatedBy: "\"${NEEDLES[@]}\"").count - 1, 2, "plain grep and control")
         XCTAssertTrue(yml.contains("SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) AERODJ_OWNER_AB AERODJ_PUBLIC_PAID_ROUTE'"))
         #if AERODJ_OWNER_AB

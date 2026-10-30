@@ -7,7 +7,7 @@ import Security
 
 /// Owner-only ElevenLabs A/B wiring. Compiled only with the Swift condition
 /// `AERODJ_OWNER_AB` (TestFlight `owner_ab: true`). Owner-only here: the owner token
-/// (`OwnerProxyKeychain`), the `.ownerTrial` access, the voice picker and the A/B switch.
+/// (`OwnerProxyKeychain`), the owner trial access, the voice picker and the A/B switch.
 /// The paid-voice route and its per-cue Pro + consent gate are build-agnostic
 /// (`PaidVoice+App.swift`, `PaidVoice` in AeroDJCore); every other build gets the public
 /// composition there and `ownerVoiceTrialEntry()` returns the view unchanged (-Echo).
