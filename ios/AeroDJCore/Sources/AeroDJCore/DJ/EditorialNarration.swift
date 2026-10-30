@@ -216,6 +216,8 @@ extension DJSessionPlan {
 /// `carryForward.eligibleNextShow` and nothing else. Revoked or unapproved
 /// input is nil, so the session plans music-only talk.
 public struct ApprovedShowHandoff: Equatable, Sendable {
+    /// True when this show may speak `approved`. Since #332 `LiveQueueBriefing` sets it at any
+    /// time of day while the briefing is on (the name predates that).
     public var isMorningShow: Bool
     /// The handoff the listener approved for this morning. Nil if there is none.
     public var approved: NarrationHandoff?
@@ -231,16 +233,23 @@ public struct ApprovedShowHandoff: Equatable, Sendable {
     /// `carryForward.eligibleNextShow`, so a calendar event or due task omitted
     /// here cannot roll into a later show.
     public var omittedDisabledSection: [NarrationCue]
+    /// Personal updates left out before scheduling (#332): `.dropped(.repeatLimit)` for an
+    /// item that already aired today, `.dropped(.windowPassed)` for a row whose `expiresAt`
+    /// passed. One entry per omitted update. `forQueue()` never speaks them, and they are not
+    /// copied into `carryForward.eligibleNextShow`.
+    public var omittedByLimit: NarrationScheduleReport
 
     public init(isMorningShow: Bool, approved: NarrationHandoff?, revokedOrUnapproved: Bool,
                 carryForward: EditorialCarryForward? = nil, connectionItems: [ConnectionItem] = [],
-                omittedDisabledSection: [NarrationCue] = []) {
+                omittedDisabledSection: [NarrationCue] = [],
+                omittedByLimit: NarrationScheduleReport = NarrationScheduleReport(entries: [])) {
         self.isMorningShow = isMorningShow
         self.approved = approved
         self.revokedOrUnapproved = revokedOrUnapproved
         self.carryForward = carryForward
         self.connectionItems = connectionItems
         self.omittedDisabledSection = omittedDisabledSection
+        self.omittedByLimit = omittedByLimit
     }
 
     /// No briefing. `queueStarted` receives nil.

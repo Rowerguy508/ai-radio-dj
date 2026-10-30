@@ -265,7 +265,10 @@ final class DJSessionEndToEndTests: XCTestCase {
                       DJTrack(id: "3", title: "Holocene", artist: "Bon Iver", origin: .catalog),
                       DJTrack(id: "4", title: "Pink + White", artist: "Frank Ocean", origin: .catalog),
                       DJTrack(id: "5", title: "Vienna", artist: "Billy Joel", origin: .catalog)]
-        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 2), seed: 11)
+        // Opts in to two personal updates in one break (#332 default is 1) so this presentation
+        // check keeps one briefing break and one ordinary break.
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 2, maxPersonalUpdatesPerBreak: 2),
+                                    seed: 11)
         let plan = writer.plan(tracks: tracks, briefing: handoff, hour: newYork.component(.hour, from: fixedNow))
         XCTAssertEqual(plan.breaks.map(\.afterTrack), [0, 3])
         let first = plan.breaks[0], second = plan.breaks[1]
