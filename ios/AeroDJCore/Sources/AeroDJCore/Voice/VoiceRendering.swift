@@ -328,13 +328,24 @@ public struct FileAudioCache: AudioCache {
     public let maxAge: TimeInterval
 
     private let now: @Sendable () -> Date
+    /// Sets the folder's excluded-from-backup flag (src: CacheBackupExclusion.swift).
+    let backupExclusion: any BackupExclusionMarking
+    /// Sink for the content-free line logged when setting that flag fails.
+    let backupExclusionLog: @Sendable (String) -> Void
 
     /// `maxAge` is clamped to `AudioCacheRetention.maximum` (7 days).
+    /// Opening a cache whose folder already exists re-applies the excluded-from-backup flag,
+    /// since a restore can drop it; `store` applies it whenever it (re)creates the folder.
     public init(directory: URL, maxAge: TimeInterval = AudioCacheRetention.maximum,
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                now: @escaping @Sendable () -> Date = { Date() },
+                backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
+                backupExclusionLog: @escaping @Sendable (String) -> Void = CacheBackupExclusionLog.emit) {
         self.directory = directory
         self.maxAge = AudioCacheRetention.clamp(maxAge)
         self.now = now
+        self.backupExclusion = backupExclusion
+        self.backupExclusionLog = backupExclusionLog
+        if FileManager.default.fileExists(atPath: directory.path) { applyBackupExclusion(.open) }
     }
 
     private func url(_ key: String) -> URL { directory.appendingPathComponent("\(key).json") }
@@ -412,7 +423,11 @@ public struct FileAudioCache: AudioCache {
     public func store(_ audio: CachedAudio, for key: String) async {
         var stamped = audio; stamped.createdAt = now()
         guard let data = try? JSONEncoder().encode(stamped) else { return }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: directory.path) {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            // Created or re-created (after a delete): the new folder has no flag yet.
+            applyBackupExclusion(.create)
+        }
         try? ProtectedFile.write(data, to: url(key))
     }
 }
