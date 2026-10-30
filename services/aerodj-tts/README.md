@@ -250,16 +250,38 @@ TestFlight or 4 App Store). CBOR is decoded by a small strict in-repo decoder
 duplicate keys, no trailing bytes). Any failure is **401 `assertion`** and writes
 nothing; the reason enum is logged, never returned.
 
-Then one Redis script: refuse a used challenge (401), refuse if today's verified
-enrollments reached `AERODJ_TTS_ENROLL_DAILY_CAP` (**429 `enroll`**, `Retry-After`
-= seconds to the next UTC midnight; nothing written), mark the challenge used,
+Then one Redis script: refuse a used challenge (401); refuse if today's verified
+enrollments from this device bucket reached `AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP`
+(default **3**), then if today's verified enrollments overall reached
+`AERODJ_TTS_ENROLL_DAILY_CAP` (default **20**) (both **429 `enroll`**, same body,
+`Retry-After` = seconds to the next UTC midnight; nothing written, so a
+device-capped request spends no global budget); mark the challenge used;
 `SET key:{aerodj-tts}:<keyId> NX` with `{ pubKeySpki, counter: 0, env, createdDay,
-revoked: false }` and a 90-day TTL (an existing keyId: 401, record untouched), and
-count the enrollment. An expired but otherwise valid challenge: 400
+revoked: false }` and a 90-day TTL (an existing keyId: 401, record and counters
+untouched); and count the enrollment in both counters (2-day TTL).
+
+**Enroll caps (owner decision, 2026-10-29):** 20 a day overall and 3 a day per
+device. Nothing in the request or the attestation identifies a device across
+re-enrollments (the keyId is new on every `generateKey()`), so the per-device
+bucket is the **client network** as Vercel's edge reports it
+(`x-vercel-forwarded-for`, else `x-real-ip`): the IPv4 address or the IPv6 /64,
+hashed as `HMAC-SHA256(challenge key, domain ‖ UTC day ‖ network)` into
+`enrolldev:{aerodj-tts}:<day>:<hex>`. The address itself is never stored, logged
+or returned, and the day inside the MAC makes buckets unlinkable across days. A
+request with no usable address shares one `unknown` bucket (fails closed).
+Limits: devices behind one NAT/CGNAT/office network share the 3; a device that
+changes networks gets 3 more per network.
+
+**Key records slide (owner decision, 2026-10-29):** the 90-day TTL set on register
+is refreshed to 90 days on every successful use (`useAttestKey`, one `EXPIRE`),
+not only on register. A key unused for 90 days expires; its next assertion is 401
+`assertion` (unknown key) and the app re-attests. A refresh store error or timeout
+is 503 `store` (Retry-After 30). The assertion path (PR 4) calls it after the
+assertion verifies. An expired but otherwise valid challenge: 400
 `challenge_expired`, nothing written.
 
 **Preview never writes what Production trusts:** unless `VERCEL_ENV` is exactly
-`production`, every key (record, enroll counter, used mark) is prefixed `nonprod:`.
+`production`, every key (record, enroll counters, used mark) is prefixed `nonprod:`.
 Test root CAs can be injected by code only, never by env, and only on a Preview or
 Development deployment; anywhere else that is 500 `misconfig`. The assertion path
 that uses the stored key is PR 4.
@@ -295,7 +317,8 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_APPLE_APP_ID_PREFIX` | before attest is enabled | The 10-character App ID prefix from the Apple Developer account (not assumed to equal the Team ID). Public identifier, not a secret. Missing or not `[A-Z0-9]{10}` → register is 500 `misconfig`. |
 | `AERODJ_TTS_BUNDLE_ID` | no | If set, must equal `com.aerodj.app` (from `config/storekit.json`); anything else → 500 `misconfig`. It cannot change the bundle. |
 | `AERODJ_TTS_APP_ATTEST_ENV` | no | Unset or `production`: only the production `aaguid`. `development` also accepts `appattestdevelop` (and validation category 3), **only** on a Preview/Development deployment with no `ELEVENLABS_API_KEY`; anywhere else, or any other value → 500 `misconfig`. |
-| `AERODJ_TTS_ENROLL_DAILY_CAP` | no | Verified enrollments per UTC day (default 20, owner decision). Plain integer 1-100000; anything else uses the default. |
+| `AERODJ_TTS_ENROLL_DAILY_CAP` | no | Verified enrollments per UTC day overall (default 20, owner decision 2026-10-29). Plain integer 1-100000; anything else uses the default. |
+| `AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP` | no | Verified enrollments per UTC day per device bucket (keyed hash of the client network; see above) (default 3, owner decision 2026-10-29). Plain integer 1-1000; anything else uses the default. |
 
 ## Deploy (owner only, after Sentinel's review)
 
@@ -323,8 +346,9 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
    the owner's A/B build**, and the on-device voice remains the fallback.
 7. **Before enabling attestation** (owner, not part of any PR): create
    `AERODJ_TTS_CHALLENGE_HMAC_KEY` (above), and add a **per-IP Vercel Firewall
-   rate-limit rule on `/api/attest/*`** (design note §4.1.1, §12; the function stores
-   no IP, so this limit lives at the edge). Only then set
+   rate-limit rule on `/api/attest/*`** (design note §4.1.1, §12; the function keeps
+   only a day-scoped keyed hash of the network for the enroll sub-cap, never an IP, so
+   the request-rate limit lives at the edge). Only then set
    `AERODJ_TTS_ATTEST_ENABLED=true` and redeploy. This README documents the rule; no
    PR changes Vercel settings.
 8. **Emergency stop:** set `AERODJ_TTS_PAID_STOP=true` (any value but `false`) and

@@ -6,6 +6,7 @@ import {
 } from './app-attest-verify.js';
 import { keyspaceFromEnv, type Keyspace } from './attest-store.js';
 import { parseChallengeKey } from './challenge.js';
+import { DEFAULT_ENROLL_DEVICE_DAILY_CAP, MAX_ENROLL_DEVICE_DAILY_CAP } from './enroll-device.js';
 import { parseBoundedInt, type Env } from './handler.js';
 import { STOREKIT_CONFIG } from './storekit-config.js';
 import { deploymentFromEnv } from './storekit-verify.js';
@@ -24,11 +25,16 @@ import { deploymentFromEnv } from './storekit-verify.js';
  *   aaguid. `development` additionally accepts `appattestdevelop`, and only on
  *   a Preview/Development deployment with no ElevenLabs key set (note §4.1.2:
  *   never on a deployment holding a real key). Anything else → misconfig.
- * - `AERODJ_TTS_ENROLL_DAILY_CAP`: verified enrollments per UTC day, a plain
- *   integer in [1, 100000]; anything else uses the default.
+ * - `AERODJ_TTS_ENROLL_DAILY_CAP`: verified enrollments per UTC day overall, a
+ *   plain integer in [1, 100000]; anything else uses the default of 20 (owner
+ *   decision, 2026-10-29: "Keep 20 a day overall and 3 per device for now").
+ * - `AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP`: verified enrollments per UTC day per
+ *   device bucket (enroll-device.ts: the client network, not a true device id), a
+ *   plain integer in [1, 1000]; anything else uses the default of 3 (same decision).
  * - Test roots (`roots`, injected by code only, never from env) are refused
  *   unless the deployment is Preview/Development.
  */
+/** Owner decision (2026-10-29): 20 verified enrollments a day overall. */
 export const DEFAULT_ENROLL_DAILY_CAP = 20;
 export const MAX_ENROLL_DAILY_CAP = 100_000;
 const APP_ID_PREFIX = /^[A-Z0-9]{10}$/;
@@ -38,6 +44,7 @@ export interface RegisterConfig {
   policy: Omit<AttestationPolicy, 'now'>;
   keyspace: Keyspace;
   enrollCap: number;
+  enrollDeviceCap: number;
 }
 
 export function registerConfig(env: Env, roots?: readonly X509Certificate[]): RegisterConfig | null {
@@ -72,5 +79,7 @@ export function registerConfig(env: Env, roots?: readonly X509Certificate[]): Re
     },
     keyspace: keyspaceFromEnv(env),
     enrollCap: parseBoundedInt(env.AERODJ_TTS_ENROLL_DAILY_CAP, MAX_ENROLL_DAILY_CAP) ?? DEFAULT_ENROLL_DAILY_CAP,
+    enrollDeviceCap:
+      parseBoundedInt(env.AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP, MAX_ENROLL_DEVICE_DAILY_CAP) ?? DEFAULT_ENROLL_DEVICE_DAILY_CAP,
   };
 }

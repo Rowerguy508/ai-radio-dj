@@ -88,7 +88,7 @@ function fresh(o: Partial<AttestOptions> = {}) {
 }
 
 describe('POST /api/attest/register: success (note §4.1.2)', () => {
-  test('204; one script writes the key record, the used mark and the enroll counter', async () => {
+  test('204; one script writes the key record, the used mark and both enroll counters', async () => {
     const h = harness();
     const { a, challenge, body } = fresh();
     const res = await handleRegister(post(body), h.deps);
@@ -109,7 +109,12 @@ describe('POST /api/attest/register: success (note §4.1.2)', () => {
     assert.equal(h.redis.expiresAt.get(enrollKey('nonprod', utcDay(NOW))), NOW + ENROLL_TTL_SECONDS * 1000);
     assert.equal(h.redis.data.get(attestUsedKey('nonprod', challenge)), '1');
     assert.equal(h.redis.expiresAt.get(attestUsedKey('nonprod', challenge)), NOW + USED_TTL_SECONDS * 1000);
-    assert.equal(h.redis.data.size, 3);
+    // The per-device enroll counter (#256 owner decision) is the fourth and last key.
+    const deviceKeys = [...h.redis.data.keys()].filter((k) => k.startsWith('nonprod:enrolldev:{aerodj-tts}:'));
+    assert.equal(deviceKeys.length, 1);
+    assert.equal(h.redis.data.get(deviceKeys[0]), '1');
+    assert.equal(h.redis.expiresAt.get(deviceKeys[0]), NOW + ENROLL_TTL_SECONDS * 1000);
+    assert.equal(h.redis.data.size, 4);
     assert.deepEqual(h.logs, [{ requestId: 'req-1', status: 204 }]);
   });
   test('a challenge bound to the same keyId is accepted', async () => {
@@ -351,7 +356,7 @@ describe('register: gates, config and store (note §4.4, §4.7, §12)', () => {
     assert.equal(registerConfig({ ...BASE_ENV, VERCEL_ENV: 'development' }, [CA.root])!.policy.roots?.length, 1);
   });
   test('503 store (Retry-After 30) without a durable store; nothing else runs', async () => {
-    const nonDurable: AttestStore = { durable: false, isUsed: async () => false, register: async () => 'registered' };
+    const nonDurable: AttestStore = { durable: false, isUsed: async () => false, touchKey: async () => 'refreshed', register: async () => 'registered' };
     for (const store of [null, nonDurable]) {
       const h = harness({}, { store });
       const res = await handleRegister(post(fresh().body), h.deps);

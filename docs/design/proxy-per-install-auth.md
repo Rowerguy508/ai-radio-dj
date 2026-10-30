@@ -163,8 +163,17 @@ Accepts `{ keyId, attestationObject, challenge }`. Order:
    enrollment counter therefore counts only verified attestations. The
    script checks the enroll cap **before** incrementing: a refusal (429
    `enroll`) writes no key record and does not increment the counter.
+   **Caps (owner, 2026-10-29): 20 a day overall, 3 a day per device.** The
+   per-device sub-cap keys on a day-scoped HMAC of the client network (IPv4,
+   or IPv6 /64, from Vercel's `x-vercel-forwarded-for`/`x-real-ip`), checked
+   before the global cap so a device-capped request spends no global budget.
+   No raw IP is stored or logged (the §4.1.1 "stores no IP" rule holds for
+   addresses; the hash lives 2 days). It is a per-network cap: NAT/CGNAT
+   users share it, network-hoppers get more. A true per-device key would need
+   a client contract change (open question for iOS) or DeviceCheck (phase 2).
    Key record: `{ pubKeySpki, counter: 0, env, createdDay, revoked: false }`,
-   90-day sliding TTL. Success returns 204. Unless `VERCEL_ENV` is exactly
+   90-day sliding TTL (owner, 2026-10-29): set on register, refreshed to 90
+   days on every successful use; unused for 90 days → expired → unknown key. Success returns 204. Unless `VERCEL_ENV` is exactly
    `production`, every key this script touches is prefixed `nonprod:`, so a
    Preview deployment sharing the Upstash database never writes a record
    Production trusts (PR 3b).

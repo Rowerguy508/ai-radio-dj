@@ -35,14 +35,29 @@ export function enrollKey(keyspace: Keyspace, day: string): string {
   return `${prefix(keyspace)}enroll:{aerodj-tts}:${day}`;
 }
 
+/**
+ * `enrolldev:{aerodj-tts}:<UTC day>:<hex HMAC>`: verified enrollments per day from one
+ * client network (enroll-device.ts). The bucket is a keyed hash, never an address.
+ * Same `{aerodj-tts}` hash tag, so the register script still touches one slot.
+ */
+export function enrollDeviceKey(keyspace: Keyspace, day: string, bucket: string): string {
+  if (!/^[0-9a-f]{64}$/.test(bucket)) throw new Error('enroll device bucket must be a hex SHA-256');
+  return `${prefix(keyspace)}enrolldev:{aerodj-tts}:${day}:${bucket}`;
+}
+
 /** The challenge's single-use mark (`used:{aerodj-tts}:<sha256>` from #246), in this keyspace. */
 export function attestUsedKey(keyspace: Keyspace, challenge: string): string {
   return `${prefix(keyspace)}${usedKey(challenge)}`;
 }
 
-/** 90-day sliding TTL (note §4.1.2); PR 4 refreshes it on each verified assertion. */
+/**
+ * 90-day sliding TTL (note §4.1.2; owner decision 2026-10-29): set on register and
+ * refreshed on every successful use of the key (`touchKey`, called by the assertion
+ * path after the assertion verifies), not only on register. A key unused for 90 days
+ * expires and its next assertion fails as an unknown key.
+ */
 export const KEY_RECORD_TTL_SECONDS = 90 * 86_400;
-/** The enroll counter outlives its UTC day. */
+/** The enroll counters (global and per device) outlive their UTC day. */
 export const ENROLL_TTL_SECONDS = 2 * 86_400;
 
 export interface KeyRecord {
@@ -57,16 +72,34 @@ export interface RegisterKeys {
   used: string;
   record: string;
   enroll: string;
+  /** Per-device (client network) enroll counter for the same day. */
+  enrollDevice: string;
 }
 
-export type RegisterOutcome = 'registered' | 'reused' | 'duplicate' | 'enroll_cap';
+export interface RegisterOptions {
+  usedTtlSeconds: number;
+  /** Global verified enrollments per UTC day. */
+  enrollCap: number;
+  /** Verified enrollments per UTC day per device bucket. */
+  enrollDeviceCap: number;
+}
+
+/** `touchKey`: the record existed and its TTL is back to 90 days, or no such key (never registered, or expired). */
+export type TouchOutcome = 'refreshed' | 'unknown';
+
+export type RegisterOutcome = 'registered' | 'reused' | 'duplicate' | 'enroll_cap' | 'enroll_device_cap';
 
 export interface AttestStore {
   readonly durable: boolean;
   /** Read-only: is the challenge's single-use mark present? Throws AttestStoreError. */
   isUsed(usedKey: string): Promise<boolean>;
+  /**
+   * Sliding TTL on use: `EXPIRE` the key record to KEY_RECORD_TTL_SECONDS if it
+   * exists. Writes nothing for a missing key. Throws AttestStoreError.
+   */
+  touchKey(recordKey: string): Promise<TouchOutcome>;
   /** The one §4.1.2 step-4 script. Throws AttestStoreError. */
-  register(keys: RegisterKeys, record: KeyRecord, options: { usedTtlSeconds: number; enrollCap: number }): Promise<RegisterOutcome>;
+  register(keys: RegisterKeys, record: KeyRecord, options: RegisterOptions): Promise<RegisterOutcome>;
 }
 
 export class AttestStoreError extends Error {}
@@ -76,14 +109,26 @@ export const IS_USED_SCRIPT = `if redis.call('GET', KEYS[1]) then return 1 end
 return 0`;
 
 /**
- * KEYS: used mark, key record, enroll counter.
- * ARGV: used TTL, record JSON, record TTL, enroll cap, enroll TTL.
- * 1 registered; -1 challenge already used (nothing written); -3 enroll cap
- * reached (checked BEFORE any write: nothing written, challenge not consumed);
- * -2 keyId already registered (record untouched, counter untouched, challenge
- * consumed so the same request cannot be replayed).
+ * KEYS: key record. ARGV: record TTL (seconds). 1 refreshed; 0 no such key (nothing
+ * written: EXPIRE on a missing key is a no-op in Redis).
+ */
+export const TOUCH_KEY_SCRIPT = `if redis.call('EXPIRE', KEYS[1], ARGV[1]) == 1 then return 1 end
+return 0`;
+
+/**
+ * KEYS: used mark, key record, global enroll counter, per-device enroll counter.
+ * ARGV: used TTL, record JSON, record TTL, global cap, enroll TTL, device cap.
+ * 1 registered; -1 challenge already used (nothing written); -4 per-device cap
+ * reached and -3 global cap reached (both checked BEFORE any write: nothing
+ * written, neither counter moves, challenge not consumed; the device cap is
+ * checked first, so a device-capped request never spends global budget and
+ * reports the narrower reason); -2 keyId already registered (record and both
+ * counters untouched, challenge consumed so the same request cannot be replayed).
+ * A success increments both counters and (re)sets both TTLs.
  */
 export const REGISTER_SCRIPT = `if redis.call('GET', KEYS[1]) then return -1 end
+local d = tonumber(redis.call('GET', KEYS[4]) or '0')
+if d >= tonumber(ARGV[6]) then return -4 end
 local n = tonumber(redis.call('GET', KEYS[3]) or '0')
 if n >= tonumber(ARGV[4]) then return -3 end
 if not redis.call('SET', KEYS[2], ARGV[2], 'NX', 'EX', ARGV[3]) then
@@ -93,6 +138,8 @@ end
 redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
 redis.call('INCR', KEYS[3])
 redis.call('EXPIRE', KEYS[3], ARGV[5])
+redis.call('INCR', KEYS[4])
+redis.call('EXPIRE', KEYS[4], ARGV[5])
 return 1`;
 
 export class RedisAttestStore implements AttestStore {
@@ -125,7 +172,8 @@ export class RedisAttestStore implements AttestStore {
       throw new AttestStoreError('store error');
     }
     const payload = (await untilAborted(response.json(), signal).catch(() => null)) as { result?: unknown } | null;
-    if (!payload || typeof payload !== 'object' || 'error' in payload || typeof payload.result !== 'number') {
+    // Strict integer replies only (as in the limiter): a float, string or huge number is a store error.
+    if (!payload || typeof payload !== 'object' || 'error' in payload || typeof payload.result !== 'number' || !Number.isSafeInteger(payload.result)) {
       throw new AttestStoreError('store error');
     }
     return payload.result;
@@ -138,13 +186,21 @@ export class RedisAttestStore implements AttestStore {
     throw new AttestStoreError('store error');
   }
 
-  async register(keys: RegisterKeys, record: KeyRecord, options: { usedTtlSeconds: number; enrollCap: number }): Promise<RegisterOutcome> {
-    const result = await this.eval(REGISTER_SCRIPT, [keys.used, keys.record, keys.enroll], [
+  async touchKey(recordKey: string): Promise<TouchOutcome> {
+    const result = await this.eval(TOUCH_KEY_SCRIPT, [recordKey], [KEY_RECORD_TTL_SECONDS]);
+    if (result === 1) return 'refreshed';
+    if (result === 0) return 'unknown';
+    throw new AttestStoreError('store error');
+  }
+
+  async register(keys: RegisterKeys, record: KeyRecord, options: RegisterOptions): Promise<RegisterOutcome> {
+    const result = await this.eval(REGISTER_SCRIPT, [keys.used, keys.record, keys.enroll, keys.enrollDevice], [
       options.usedTtlSeconds,
       JSON.stringify(record),
       KEY_RECORD_TTL_SECONDS,
       options.enrollCap,
       ENROLL_TTL_SECONDS,
+      options.enrollDeviceCap,
     ]);
     switch (result) {
       case 1:
@@ -155,6 +211,8 @@ export class RedisAttestStore implements AttestStore {
         return 'duplicate';
       case -3:
         return 'enroll_cap';
+      case -4:
+        return 'enroll_device_cap';
       default:
         throw new AttestStoreError('store error');
     }

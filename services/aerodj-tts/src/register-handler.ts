@@ -1,18 +1,26 @@
 import crypto, { type X509Certificate } from 'node:crypto';
 import { attestClientDataHash, MAX_ATTESTATION_BYTES, verifyAttestation, type AttestationFailure } from './app-attest-verify.js';
 import { registerConfig } from './attest-config.js';
-import { attestEnabled, DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, paidStopped } from './attest-flags.js';
+import {
+  attestEnabled,
+  DISABLED_RETRY_AFTER_SECONDS,
+  MISCONFIG_RETRY_AFTER_SECONDS,
+  paidStopped,
+  STORE_RETRY_AFTER_SECONDS,
+} from './attest-flags.js';
 import {
   attestUsedKey,
   AttestStoreError,
+  enrollDeviceKey,
   enrollKey,
   keyRecordKey,
   selectAttestStore,
   type AttestStore,
 } from './attest-store.js';
 import { parseKeyId, USED_TTL_SECONDS, verifyChallenge, type ChallengeFailure } from './challenge.js';
+import { clientNetwork, deviceBucket } from './enroll-device.js';
 import { secondsUntilNextUtcDay, type Env } from './handler.js';
-import { INSTALL_STORE_RETRY_AFTER_SECONDS, isDurable } from './install-quota.js';
+import { isDurable } from './install-quota.js';
 import { utcDay } from './limiter.js';
 import { BODY_CAPS, parseJsonObject, readRawBody } from './raw-body.js';
 
@@ -26,8 +34,12 @@ export type RegisterReason =
   | 'challenge_expired'
   | 'enroll';
 
-/** Why a 401 happened, for logs only (an enum; never sent to the client). */
-export type RegisterDetail = ChallengeFailure | AttestationFailure | 'reused' | 'duplicate';
+/**
+ * Why a 401 happened, or `device_cap` for a 429 refused by the per-device sub-cap
+ * (a global-cap 429 carries no detail). For logs only (an enum; never sent to the
+ * client: both 429s answer the same `enroll` body).
+ */
+export type RegisterDetail = ChallengeFailure | AttestationFailure | 'reused' | 'duplicate' | 'device_cap';
 
 export interface RegisterLogEntry {
   requestId: string;
@@ -62,7 +74,7 @@ const STATUS: Record<RegisterReason, number> = {
 };
 const FIXED_RETRY_AFTER: Partial<Record<RegisterReason, number>> = {
   misconfig: MISCONFIG_RETRY_AFTER_SECONDS,
-  store: INSTALL_STORE_RETRY_AFTER_SECONDS,
+  store: STORE_RETRY_AFTER_SECONDS,
   disabled: DISABLED_RETRY_AFTER_SECONDS,
 };
 const MESSAGES: Record<number, string> = {
@@ -120,11 +132,17 @@ function parseAttestationObject(value: unknown): Buffer | null {
  * stateless challenge, purpose `attest` (401; an otherwise-valid expired one
  * continues) → full attestation verification (401) → expired: read-only
  * used-mark probe (401 reused, else 400 `challenge_expired`, nothing written)
- * → one script: used mark + key `SET NX` + enroll counter, cap checked first
- * (429 `enroll` writes nothing) → 204.
+ * → one script: used mark + key `SET NX` + global and per-device enroll
+ * counters, both caps checked before any write, the per-device cap first
+ * (either 429 `enroll` writes nothing, so a device-capped request spends no
+ * global budget) → 204.
+ *
+ * Caps (owner, 2026-10-29): 20 verified enrollments a day overall, 3 a day per
+ * device bucket. The bucket is a keyed hash of the client network (see
+ * enroll-device.ts for why, and its limits); the address is never stored or logged.
  *
  * A failed check writes nothing. Logs carry enums only: never the keyId,
- * challenge, attestation, header values or body.
+ * challenge, attestation, header values, client address or body.
  */
 export async function handleRegister(request: Request, deps: RegisterDeps): Promise<Response> {
   const requestId = deps.requestId();
@@ -193,8 +211,9 @@ export async function handleRegister(request: Request, deps: RegisterDeps): Prom
       return (await store.isUsed(used)) ? fail('assertion', 'reused') : fail('challenge_expired');
     }
     const day = utcDay(now);
+    const enrollDevice = enrollDeviceKey(config.keyspace, day, deviceBucket(config.challengeKey, day, clientNetwork(request.headers)));
     const outcome = await store.register(
-      { used, record: keyRecordKey(config.keyspace, keyId), enroll: enrollKey(config.keyspace, day) },
+      { used, record: keyRecordKey(config.keyspace, keyId), enroll: enrollKey(config.keyspace, day), enrollDevice },
       {
         pubKeySpki: verified.attestation.publicKeySpki.toString('base64'),
         counter: 0,
@@ -202,7 +221,7 @@ export async function handleRegister(request: Request, deps: RegisterDeps): Prom
         createdDay: day,
         revoked: false,
       },
-      { usedTtlSeconds: USED_TTL_SECONDS, enrollCap: config.enrollCap },
+      { usedTtlSeconds: USED_TTL_SECONDS, enrollCap: config.enrollCap, enrollDeviceCap: config.enrollDeviceCap },
     );
     switch (outcome) {
       case 'registered':
@@ -214,6 +233,9 @@ export async function handleRegister(request: Request, deps: RegisterDeps): Prom
         return fail('assertion', 'duplicate');
       case 'enroll_cap':
         return fail('enroll', undefined, secondsUntilNextUtcDay(now));
+      case 'enroll_device_cap':
+        // Same status, reason and Retry-After as the global cap: no oracle for which one.
+        return fail('enroll', 'device_cap', secondsUntilNextUtcDay(now));
     }
   } catch (error) {
     if (error instanceof AttestStoreError) return fail('store');
