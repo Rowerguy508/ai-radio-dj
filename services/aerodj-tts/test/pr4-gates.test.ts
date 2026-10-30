@@ -239,6 +239,7 @@ describe('non-store reserve throw → 500 misconfig, Retry-After 3600 (Sentinel 
   });
 });
 
+const TTS_CHARS = 'Hello from the DJ booth.'.length;
 // Module-level owner /api/tts runner for the strict-integer table (upstream status configurable).
 async function runTts(limiter: UsageLimiter, upstreamStatus = 200) {
   const env: Env = { AERODJ_TTS_TOKEN_SHA256: TOKEN_HASH, AERODJ_TTS_VOICE_IDS: VOICE, ELEVENLABS_API_KEY: 'test-elevenlabs-key-not-real' };
@@ -286,19 +287,80 @@ describe('strict integer Redis replies (Fry N2 on #252): no Number() coercion', 
     });
     test(`owner /api/tts: refund reply ${name} after an upstream failure → no extra ElevenLabs call, still fails closed`, async () => {
       let n = 0;
-      const fetchImpl = (async () => { n++; return n <= 2 ? Response.json({ result: n === 1 ? 1 : 0 }) : Response.json(result === undefined ? {} : { result }); }) as typeof fetch;
+      const fetchImpl = (async () => { n++; return n <= 2 ? Response.json({ result: n === 1 ? 1 : TTS_CHARS }) : Response.json(result === undefined ? {} : { result }); }) as typeof fetch;
       const { res, upstream } = await runTts(new RedisUsageLimiter(STORE, OPTIONS, fetchImpl), 502);
-      assert.ok(res.status >= 500, `status ${res.status}`);
+      assert.equal(n, 3, 'rate, reserve, then the refund EVAL ran');
+      assert.equal(res.status, 502);
+      // N3: the refund failure is swallowed (reservation kept, cap errs low), so the
+      // response is exactly the upstream 502: no reason, no Retry-After.
+      assert.deepEqual(JSON.parse(res.body.toString('utf8')), { error: 'Upstream error', requestId: 'req-1' });
+      assert.equal(res.headers['Retry-After'], undefined);
       assert.equal(upstream, 1);
     });
   }
 
-  test('controls: integer replies 0, 1, -1, -2 still parse', async () => {
+  test('controls: refund 0/1, reserve counter ≥ chars and -2 still parse', async () => {
     assert.equal(await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: 1 }).fetchImpl).release(reservation()), true);
     assert.equal(await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: 0 }).fetchImpl).release(reservation()), false);
-    const r = await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: 0 }).fetchImpl).reserve({ kind: 'install', id: KEY_ID }, 100, NOON);
+    const r = await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: 100 }).fetchImpl).reserve({ kind: 'install', id: KEY_ID }, 100, NOON);
     assert.ok(r.ok);
     const q = await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: -2 }).fetchImpl).reserve({ kind: 'install', id: KEY_ID }, 100, NOON);
     assert.deepEqual(q, { ok: false, reason: 'global_daily' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('#254 review delta: rate replies and the reserve counter (Fry B1, N1, N2)', () => {
+  /** Rate EVAL answers `rate`; any later EVAL answers a valid reserve. Counts EVALs. */
+  const rateReplying = (rate: unknown) => {
+    let n = 0;
+    const fetchImpl = (async () => { n++; return Response.json(n === 1 ? (rate === undefined ? {} : { result: rate }) : { result: TTS_CHARS }); }) as typeof fetch;
+    return { fetchImpl, evals: () => n };
+  };
+  const expectStore = async (fetchImpl: typeof fetch) => {
+    const { res, upstream } = await runTts(new RedisUsageLimiter(STORE, OPTIONS, fetchImpl));
+    assert.equal(res.status, 503);
+    assert.equal(res.headers['Retry-After'], '30');
+    assert.equal(JSON.parse(res.body.toString('utf8')).reason, 'store');
+    assert.equal(upstream, 0, 'zero ElevenLabs calls');
+  };
+
+  // B1. The install path (reserveForInstall) has no rate check, so only /api/tts applies.
+  for (const [name, rate] of [['null', null], ['true', true], ["'1'", '1'], ['0.5', 0.5], ['{}', {}]] as [string, unknown][]) {
+    test(`B1: rate reply ${name} → /api/tts 503 store, zero ElevenLabs calls, reserve never reached`, async () => {
+      const s = rateReplying(rate);
+      await expectStore(s.fetchImpl);
+      assert.equal(s.evals(), 1);
+      await assert.rejects(new RedisUsageLimiter(STORE, OPTIONS, rateReplying(rate).fetchImpl).allowRequest('owner', NOON), LimiterStoreError);
+    });
+  }
+
+  // N2. An integer outside {0, 1} is a store fault, not a 429.
+  for (const rate of [2, -1]) {
+    test(`N2: rate reply ${rate} → 503 store (not 429), zero ElevenLabs calls`, async () => {
+      await expectStore(rateReplying(rate).fetchImpl);
+    });
+  }
+  test('N2 controls: rate 1 renders (200), rate 0 is 429 rate', async () => {
+    assert.equal((await runTts(new RedisUsageLimiter(STORE, OPTIONS, rateReplying(1).fetchImpl))).res.status, 200);
+    const limited = await runTts(new RedisUsageLimiter(STORE, OPTIONS, rateReplying(0).fetchImpl));
+    assert.equal(limited.res.status, 429);
+    assert.equal(limited.upstream, 0);
+  });
+
+  // N1. Reserve success is the subject counter after INCRBY chars, so it must be ≥ chars.
+  for (const counter of [0, 1, 99, -3]) {
+    test(`N1: reserve counter ${counter} < chars 100 → install 503 store; /api/tts 503 store, zero ElevenLabs calls`, async () => {
+      assert.deepEqual(await reserveForInstall(new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: counter }).fetchImpl), KEY_ID, 100, NOON), STORE_REFUSAL);
+      let n = 0;
+      const ttsCounter = counter === 99 ? TTS_CHARS - 1 : counter;
+      await expectStore((async () => { n++; return Response.json({ result: n === 1 ? 1 : ttsCounter }); }) as typeof fetch);
+    });
+  }
+  test('N1 controls: counter == chars and > chars both succeed', async () => {
+    for (const counter of [100, 5_000]) {
+      const r = await new RedisUsageLimiter(STORE, OPTIONS, evalReturning({ result: counter }).fetchImpl).reserve({ kind: 'install', id: KEY_ID }, 100, NOON);
+      assert.ok(r.ok, `counter ${counter}`);
+    }
   });
 });

@@ -313,7 +313,10 @@ export class RedisUsageLimiter implements UsageLimiter {
 
   async allowRequest(bucket: string, now: number): Promise<boolean> {
     const k = `${KEY_PREFIX}:rate:${bucket}:${utcMinute(now)}`;
-    return (await this.eval(RATE_SCRIPT, [k], [this.options.requestsPerMinute, MINUTE_TTL_MS])) === 1;
+    const result = await this.eval(RATE_SCRIPT, [k], [this.options.requestsPerMinute, MINUTE_TTL_MS]);
+    // RATE_SCRIPT returns only 0 (limited) or 1 (allowed); any other integer is a store fault (503), not 429.
+    if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
+    return result === 1;
   }
 
   async reserve(subject: Subject, chars: number, now: number): Promise<ReserveResult> {
@@ -328,6 +331,9 @@ export class RedisUsageLimiter implements UsageLimiter {
     if (result === -1) return { ok: false, reason: subjectReason(subject) };
     if (result === -2) return { ok: false, reason: 'global_daily' };
     if (result < 0) throw new LimiterStoreError('limiter store error');
+    // Success is the subject counter after INCRBY chars, so it is at least `chars`; less
+    // (0 included) means the store did not apply the reservation.
+    if (result < chars) throw new LimiterStoreError('limiter store error');
     return { ok: true, reservation: { rid: newReservationId(), bucket, day, chars } };
   }
 
