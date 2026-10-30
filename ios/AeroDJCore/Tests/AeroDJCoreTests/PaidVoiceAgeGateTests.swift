@@ -515,6 +515,9 @@ final class PaidVoiceAgeGateTests: XCTestCase {
 
     // MARK: Debug fixture mode (Test Station) never reaches the cloud route
 
+    // `TestStation` is Debug-only, so this test is too; otherwise `swift test -c release`
+    // (check-release-disables-paid-voice.sh) can't compile the test target (Echo B1, #267).
+    #if DEBUG
     func testFixtureModeNeverReachesTheCloudRouteEvenForAnAdultWithConsent() async {
         let t = AgeSpyTransport(), fake = AgeFakeSession()
         let access = ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: FixedConsent(true))
@@ -530,4 +533,5 @@ final class PaidVoiceAgeGateTests: XCTestCase {
         XCTAssertEqual(t.calls, 0, "fixture mode: zero proxy calls")
         XCTAssertEqual(fake.reads, 0, "fixture mode: no install session read")
     }
+    #endif
 }
