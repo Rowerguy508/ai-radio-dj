@@ -59,7 +59,7 @@ Payments are handled by Apple through the App Store; we never see your payment d
 
 ## Children
 
-[owner: age rating. ElevenLabs' minimum age hasn't been verified yet.]
+OnAirly is rated 12+. The cloud voice is for listeners 18 and older, because ElevenLabs' services aren't directed at people under 18. OnAirly asks you to confirm your age before turning it on, and if you're under 18 every voice stays on your device. [PENDING: paid voice and the age gate]
 
 ## Your choices
 
@@ -71,4 +71,4 @@ We'll update this page, and the notice in the app, before we change anything abo
 
 ## Contact
 
-[owner: contact email and postal address.] For help using the app, see [Support](/support).
+Email [support@onairly.app](mailto:support@onairly.app). [owner: postal address, if required.] For help using the app, see [Support](/support).

@@ -5,7 +5,7 @@
 
 ## Contact us
 
-Email [owner: support email]. We aim to reply within [owner: e.g. 2 business days]. Please include your iPhone model, iOS version and OnAirly version, which you can find in Settings. Never send us your Apple ID password or payment details.
+Email [support@onairly.app](mailto:support@onairly.app). We aim to reply within [owner: e.g. 2 business days]. Please include your iPhone model, iOS version and OnAirly version, which you can find in Settings. Never send us your Apple ID password or payment details.
 
 ## Common questions
 
