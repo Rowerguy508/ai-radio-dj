@@ -53,6 +53,37 @@ private final class ScriptedTransport: HTTPTransport, @unchecked Sendable {
     }
 }
 
+/// Suspends in `send` until the calling task is cancelled, then throws like URLSession does.
+/// Lets a test cancel deterministically while the request is in flight.
+private final class HangingTransport: HTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var cancelled = false
+    var callCount: Int { lock.withLock { calls } }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        lock.withLock { calls += 1 }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                let resumeNow: Bool = lock.withLock {
+                    if cancelled { return true }
+                    waiter = c
+                    return false
+                }
+                if resumeNow { c.resume() }
+            }
+        } onCancel: {
+            let c: CheckedContinuation<Void, Never>? = lock.withLock {
+                cancelled = true
+                defer { waiter = nil }
+                return waiter
+            }
+            c?.resume()
+        }
+        throw URLError(.cancelled)
+    }
+}
+
 private final class MemoryBackoffStore: PaidVoiceBackoffStore, @unchecked Sendable {
     private let lock = NSLock()
     private var state: PaidVoiceBackoff.State?
@@ -246,13 +277,22 @@ final class PaidVoiceBackoffTests: XCTestCase {
         XCTAssertEqual(backoff.suspendedUntil(), t0.addingTimeInterval(30))
 
         let other = PaidVoiceBackoff(now: { clock.now })
-        let cancelled = ScriptedTransport([ScriptedResponse(status: 0, error: URLError(.cancelled))])
-        let r = renderer(cancelled, other)
-        let cue = NarrationCue(id: UUID(), order: 1, group: 1, kind: .transition, text: "That was Song 2.",
-                               estimatedSeconds: 2, maxSeconds: 12, sourceItemID: nil, source: nil, provenance: nil)
-        let task = Task { _ = await r.render(cue, userID: "u", stationID: "s", attribution: .presenter) }
+        let hanging = HangingTransport()
+        let device = [VoiceRoute(providerID: "device", provider: LocalVoice(), voice: VoiceProfile(id: "host", name: "Host"))]
+        let c = PremiumVoiceRoutes.compose(onDevice: device, paidProvidersEnabled: true, selectedVoiceID: sawyer,
+                                           credentials: creds, transport: hanging, backoff: other)
+        guard let proxy = c.routes.first(where: { $0.providerID != "device" }) else { return XCTFail("no proxy route") }
+        // Drive the provider directly: the renderer returns on cancellation without waiting for the
+        // provider's catch block, so awaiting it could assert before the backoff is (wrongly) touched.
+        let task = Task {
+            try await proxy.provider.synthesize("That was Song 2.", voice: proxy.voice,
+                                                context: RequestContext(stationID: "s", isReusableGeneric: false))
+        }
+        // Cancel only once the request is in flight, so the cancellation guard is always exercised.
+        while hanging.callCount == 0 { await Task.yield() }
         task.cancel()
-        await task.value
+        _ = await task.result  // the provider's catch block has run by now
+        XCTAssertEqual(hanging.callCount, 1)
         XCTAssertEqual(other.snapshot, PaidVoiceBackoff.State(), "caller cancellation is not a proxy failure")
     }
 
