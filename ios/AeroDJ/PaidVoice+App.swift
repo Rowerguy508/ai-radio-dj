@@ -15,7 +15,8 @@ extension PaidVoice {
         #if AERODJ_OWNER_AB
         let voice = ownerTrial(base: base)
         #else
-        let voice = publicComposition(base: base, access: .buildDefault,
+        // Age answer: this-device-only item (PaidVoiceAgeStore.live, not backed up); no "yes", no cloud voice.
+        let voice = publicComposition(base: base, access: .buildDefault, age: PaidVoiceAgeStore.live,
                                       selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
                                       session: NoInstallSession())
         #endif

@@ -54,7 +54,8 @@ public enum TestStation {
     /// Renderer with free routes only. Paid routes passed in are dropped, never called.
     /// Pass the app's `OnDeviceSpeechProvider` (AVSpeechSynthesizer) route.
     public static func makeRenderer(routes: [VoiceRoute], cache: any AudioCache) -> VoiceRenderer {
-        VoiceRenderer(routes: routes.filter { !$0.isPaid }, budget: makeBudget(), cache: cache)
+        // Local and free only: a $0 cloud route (ElevenLabs proxy, `leavesDevice`) is dropped too.
+        VoiceRenderer(routes: routes.filter(\.isLocalAndFree), budget: makeBudget(), cache: cache)
     }
 
     // MARK: Fixtures

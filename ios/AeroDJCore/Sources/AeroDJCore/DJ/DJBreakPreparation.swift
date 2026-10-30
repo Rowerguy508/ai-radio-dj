@@ -114,6 +114,10 @@ public actor DJBreakPreparer {
     /// cancelAll() clears it, so a check that finishes after either writes and hands out nothing.
     private var takeTokens: [Int: UInt64] = [:]
     private var nextTakeToken: UInt64 = 0
+    /// Boundaries whose ready break was rendered while the paid-voice gate denied at least one
+    /// cue (Nova, #267). After a grant, `releaseBreakPreparedWhileDenied` may let the session
+    /// prepare such a break again so it can use the cloud voice. Re-checked against `results`.
+    private var preparedWhileDenied: Set<Int> = []
 
     public enum DJBreakEvent: Equatable, Sendable {
         case preparing(afterTrack: Int, includesBriefing: Bool)
@@ -172,7 +176,16 @@ public actor DJBreakPreparer {
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
         let renderer = onDeviceOnly ? self.renderer.onDeviceOnly : self.renderer
         let userID = userID, stationID = stationID, cap = breakCap(djBreak).talkOver(talkOverEnabled())
-        let bundled = bundledClips, paid = paidVoice
+        let bundled = bundledClips
+        // Records whether the gate denied a cue of this render (for an upgrade after a grant).
+        let denial = DenialMark()
+        let paid = paidVoice.map { access in
+            ProVoiceAccess(deciding: {
+                let decision = await access.decision()
+                if !decision.permitsPaidVoice { denial.mark() }
+                return decision
+            })
+        }
         tasks[k] = Task {
             let outcome: DJBreakOutcome
             guard let renderer else { self.finish(k, .skipped(.renderFailed)); return }
@@ -184,8 +197,29 @@ public actor DJBreakPreparer {
             } catch {
                 outcome = .skipped(.timedOut)
             }
-            self.finish(k, outcome)
+            self.finish(k, outcome, deniedPaidVoice: denial.marked)
         }
+    }
+
+    /// Access was granted after boundary `k` was prepared on-device because the gate denied
+    /// (Nova, #267: an 18+ "yes", consent or Pro mid-session). If `k` is still untaken, not
+    /// rendering (its result is set), ready with no paid or bundled audio, and the gate now allows the paid voice,
+    /// its result is cleared (no skip is reported) and `true` is returned: the caller prepares
+    /// it again at once. Anything else: `false`, and the on-device break stays as it is.
+    public func releaseBreakPreparedWhileDenied(afterTrack k: Int) async -> Bool {
+        guard let paidVoice, eligibleForUpgrade(k), await paidVoice.decision().permitsPaidVoice,
+              eligibleForUpgrade(k) else { return false }   // again after the await (reentrancy)
+        preparedWhileDenied.remove(k)
+        tasks[k] = nil      // finished (its result is set); `prepare` needs the slot free
+        results[k] = nil
+        return true
+    }
+
+    private func eligibleForUpgrade(_ k: Int) -> Bool {
+        // A set result means the render finished (`finish` stores it; the task handle stays).
+        guard preparedWhileDenied.contains(k), !taken.contains(k),
+              case .ready(let ready)? = results[k] else { return false }
+        return !ready.clips.contains(where: usesPaidVoice)
     }
 
     /// Song scrubbing (-Atlas): a user seek changed the time left before boundary `k`.
@@ -341,6 +375,7 @@ public actor DJBreakPreparer {
         rearmed.removeAll()
         taken.removeAll()
         takeTokens.removeAll()
+        preparedWhileDenied.removeAll()
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
@@ -377,9 +412,10 @@ public actor DJBreakPreparer {
         }
     }
 
-    private func finish(_ k: Int, _ outcome: DJBreakOutcome) {
+    private func finish(_ k: Int, _ outcome: DJBreakOutcome, deniedPaidVoice: Bool = false) {
         guard results[k] == nil, tasks[k] != nil else { return }  // already taken, cancelled or purged
         results[k] = outcome
+        if deniedPaidVoice, case .ready = outcome { preparedWhileDenied.insert(k) } else { preparedWhileDenied.remove(k) }
         switch outcome {
         case .ready(let b): emit(.prepared(afterTrack: k, includesBriefing: b.includesBriefing, seconds: b.measuredSeconds))
         case .skipped(let reason): emit(.skipped(afterTrack: k, reason))
@@ -481,6 +517,7 @@ public actor DJBreakPreparer {
                                    bundled: BundledClipResolver?, paidVoice: ProVoiceAccess?) async
         -> Result<(cues: [NarrationCue], clips: [RenderedClip]), Skip> {
         let mayRenderPaid = full.routes.contains { !$0.isLocalAndFree }
+        var deniedThisBreak = false
         var cues: [NarrationCue] = []
         var clips: [RenderedClip] = []
         for var cue in djBreak.cues {
@@ -491,10 +528,17 @@ public actor DJBreakPreparer {
             // the cache or any provider. A denial narrows this cue to the on-device routes
             // (the existing `onDeviceOnly` view, same budget and cache), so neither a bundled
             // clip, a cached paid clip nor the proxy is used; no on-device route fails closed.
+            // One voice per break for a grant (#267): once a cue of this break was denied, the
+            // rest of the break stays on-device without asking again, so a "yes" (age, consent or
+            // Pro) that lands between cues takes effect at the NEXT break, never mid-break.
+            // A denial is never latched the other way: each cue is still asked while allowed.
             var renderer = full
-            if mayRenderPaid, let paidVoice, await !paidVoice.decision().permitsPaidVoice {
-                guard let local = full.onDeviceOnly else { return .failure(Skip(reason: .renderFailed)) }
-                renderer = local
+            if mayRenderPaid, let paidVoice {
+                if !deniedThisBreak, await !paidVoice.decision().permitsPaidVoice { deniedThisBreak = true }
+                if deniedThisBreak {
+                    guard let local = full.onDeviceOnly else { return .failure(Skip(reason: .renderFailed)) }
+                    renderer = local
+                }
             }
             // A whole presenter line whose text hash is in the bundle plays the bundled clip, with
             // its measured seconds, and makes no proxy call. Anything else: today's path.
@@ -543,4 +587,12 @@ extension DJSessionPlan {
             skipped[entry.cue.id].map { NarrationScheduleEntry(cue: entry.cue, outcome: .dropped($0)) } ?? entry
         })
     }
+}
+
+/// Set once by a render task's gate wrapper; read when that render finishes.
+private final class DenialMark: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func mark() { lock.withLock { value = true } }
+    var marked: Bool { lock.withLock { value } }
 }

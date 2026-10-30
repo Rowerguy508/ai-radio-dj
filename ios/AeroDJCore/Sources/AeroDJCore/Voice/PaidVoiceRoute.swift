@@ -44,39 +44,80 @@ public struct PaidVoice: Sendable {
         self.decision = decision
     }
 
-    /// Every build without the owner A/B flag. The route needs, at setup: the compile-time
-    /// switch (`PublicPaidVoiceRoute.compiledIn`), a selected catalog voice, and per-install
-    /// session credentials on the pinned host. Pro + consent are NOT read here: the observer
-    /// starts `.free` and consent is async, so they are enforced per cue by `DJBreakPreparer`
-    /// with `access` (live render, render cache and bundled clips alike), and re-checked at take.
-    public static func publicComposition(base: VoiceRenderer, access: ProVoiceAccess, selectedVoiceID: String?,
+    /// Every build without the owner A/B flag. At setup the route needs only the compile-time
+    /// switch (`PublicPaidVoiceRoute.compiledIn`) and a selected catalog voice. It is composed
+    /// DEFERRED (`InstallSessionProxyVoiceProvider`): nothing is asked of the install session at
+    /// setup. Age (18+), consent and Pro are decided per cue by `access` (in `DJBreakPreparer`,
+    /// at take, for bundled clips, and again inside the provider), and only an allowed cue asks
+    /// the session for credentials, on the pinned host, before the one proxy request.
+    ///
+    /// Age (18+, owner 2026-10-29): `age` has no default. The returned `access` checks it first
+    /// (`requiringAdult`), so until a "yes" there is no session read and no proxy call. A "yes"
+    /// followed by `paidVoiceAccessChanged()` takes effect at the next cue without a relaunch;
+    /// a "no" or a cleared answer takes effect at once (prepared cloud breaks are dropped).
+    /// `decision` reports `.ageNotConfirmed` when the age was not confirmed at setup (log only).
+    public static func publicComposition(base: VoiceRenderer, access: ProVoiceAccess,
+                                         age: any PaidVoiceAgeProviding, selectedVoiceID: String?,
                                          session: any PaidVoiceInstallSessionProviding) -> PaidVoice {
-        publicComposition(base: base, access: access, selectedVoiceID: selectedVoiceID, session: session,
+        publicComposition(base: base, access: access, age: age, selectedVoiceID: selectedVoiceID, session: session,
                           routeCompiledIn: PublicPaidVoiceRoute.compiledIn)
     }
 
     /// `routeCompiledIn` is injectable for `@testable` tests only; the public API takes no switch.
-    static func publicComposition(base: VoiceRenderer, access: ProVoiceAccess, selectedVoiceID: String?,
+    static func publicComposition(base: VoiceRenderer, access: ProVoiceAccess, age: any PaidVoiceAgeProviding,
+                                  selectedVoiceID: String?,
                                   session: any PaidVoiceInstallSessionProviding, routeCompiledIn: Bool,
                                   pinnedHosts: Set<String> = PremiumVoiceRoutes.allowedHosts,
                                   transport: any HTTPTransport = URLSessionTransport()) -> PaidVoice {
-        // The session is not even asked while the route is compiled out.
-        let credentials = routeCompiledIn ? session.installSessionCredentials() : nil
-        let composition = PremiumVoiceRoutes.compose(onDevice: base.routes, paidProvidersEnabled: routeCompiledIn,
-                                                     access: setupDeferredToPerCueGate, selectedVoiceID: selectedVoiceID,
-                                                     credentials: credentials, pinnedHosts: pinnedHosts,
-                                                     transport: transport)
-        return PaidVoice(renderer: VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
-                                                 revocations: base.revocations),
-                         access: access, decision: composition.decision)
+        let gate = access.requiringAdult(age)
+        func voice(_ routes: [VoiceRoute], _ decision: PremiumVoiceRoutes.Decision) -> PaidVoice {
+            PaidVoice(renderer: VoiceRenderer(routes: routes, budget: base.budget, cache: base.cache,
+                                              revocations: base.revocations),
+                      access: gate, decision: decision)
+        }
+        guard routeCompiledIn else { return voice(base.routes, .omitted(.paidDisabled)) }
+        guard let selectedVoiceID else { return voice(base.routes, .omitted(.noSelection)) }
+        guard let index = PremiumVoiceCatalog.index(ofVoiceID: selectedVoiceID) else {
+            return voice(base.routes, .omitted(.unknownVoice))
+        }
+        let provider = InstallSessionProxyVoiceProvider(session: session, access: gate, pinnedHosts: pinnedHosts,
+                                                        transport: transport)
+        let route = PremiumVoiceRoutes.cloudRoute(PremiumVoiceCatalog.voices[index], provider: provider)
+        let adult = age.paidVoiceAgeAnswer().isAdultConfirmed
+        return voice([route] + base.routes, adult ? .included(catalogIndex: index) : .omitted(.ageNotConfirmed))
     }
 
-    /// Setup does not decide Pro + consent for the public route (see above); `access` does, per
-    /// cue. Only `publicComposition` uses this, and it always returns `access` with the route.
-    static let setupDeferredToPerCueGate: ProVoiceGate.Decision = .allowed
 
     /// On-device only, with the fail-closed gate.
     public static func onDevice(_ base: VoiceRenderer) -> PaidVoice {
         PaidVoice(renderer: base, access: .none, decision: .omitted(.paidDisabled))
+    }
+}
+
+/// The public route's provider, deferred (Nova, #267): it asks the gate (age, then consent, then
+/// Pro) and only then the install session, on every cue that reaches it, so no session read
+/// and no proxy request happen before an allowed cue. Credentials go through the same pinned-host
+/// rule as `PremiumVoiceRoutes.compose` (`proxyConfiguration`). Any refusal throws, and the
+/// renderer falls back to the on-device voice.
+struct InstallSessionProxyVoiceProvider: VoiceProvider {
+    enum Refusal: Error, Equatable { case notAllowed, noCredentials, emptyToken, endpointNotAllowed }
+
+    let session: any PaidVoiceInstallSessionProviding
+    let access: ProVoiceAccess
+    let pinnedHosts: Set<String>
+    let transport: any HTTPTransport
+
+    func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+        // Belt and braces: the preparer already narrowed a denied cue to on-device routes.
+        guard await access.decision().permitsPaidVoice else { throw Refusal.notAllowed }
+        guard let credentials = session.installSessionCredentials() else { throw Refusal.noCredentials }
+        let token = credentials.token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { throw Refusal.emptyToken }
+        guard let configuration = PremiumVoiceRoutes.proxyConfiguration(endpoint: credentials.endpoint, token: token,
+                                                                        pinnedHosts: pinnedHosts) else {
+            throw Refusal.endpointNotAllowed
+        }
+        return try await ProxyVoiceProvider(configuration: configuration, transport: transport)
+            .synthesize(text, voice: voice, context: context)
     }
 }

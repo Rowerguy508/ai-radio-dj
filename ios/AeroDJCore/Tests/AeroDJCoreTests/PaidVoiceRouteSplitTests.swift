@@ -107,9 +107,11 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
     }
 
     /// The public composition with the switch forced on (the flagged build), proxy faked.
+    /// `age` is an adult unless a test says otherwise (18+ gate: PaidVoiceAgeGateTests).
     private func publicVoice(_ access: ProVoiceAccess, transport: SpyTransport,
-                             cache: AudioCache = InMemoryAudioCache()) -> PaidVoice {
-        PaidVoice.publicComposition(base: base(cache: cache), access: access, selectedVoiceID: voiceID,
+                             cache: AudioCache = InMemoryAudioCache(),
+                             age: any PaidVoiceAgeProviding = FixedAge(.adult)) -> PaidVoice {
+        PaidVoice.publicComposition(base: base(cache: cache), access: access, age: age, selectedVoiceID: voiceID,
                                     session: FakeSession(), routeCompiledIn: true, transport: transport)
     }
 
@@ -150,16 +152,18 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
         XCTAssertTrue(PublicPaidVoiceRoute.compiledIn)
         XCTAssertEqual(PublicPaidVoiceRoute.buildMarker, "AERODJ_PUBLIC_PAID_ROUTE_BUILD")
         let session = FakeSession()
-        let v = PaidVoice.publicComposition(base: base(), access: .none, selectedVoiceID: voiceID, session: session)
+        let v = PaidVoice.publicComposition(base: base(), access: .none, age: FixedAge(.adult), selectedVoiceID: voiceID,
+                                            session: session)
         XCTAssertEqual(v.decision, .included(catalogIndex: 0))
-        XCTAssertEqual(session.reads, 1)
+        XCTAssertEqual(session.reads, 0, "deferred (#267): the session is asked at the first allowed cue only")
     }
     #else
     func testPublicRouteIsCompiledOffAndNeverAsksForASession() {
         XCTAssertFalse(PublicPaidVoiceRoute.compiledIn)
         let session = FakeSession()
         for access in [ProVoiceAccess.proWithConsentForTests, .none] {
-            let v = PaidVoice.publicComposition(base: base(), access: access, selectedVoiceID: voiceID, session: session)
+            let v = PaidVoice.publicComposition(base: base(), access: access, age: FixedAge(.adult),
+                                                selectedVoiceID: voiceID, session: session)
             XCTAssertEqual(v.decision, .omitted(.paidDisabled))
             XCTAssertEqual(v.renderer.routes.map(\.providerID), ["device"])
         }
@@ -167,14 +171,23 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
     }
     #endif
 
-    func testPublicCompositionNeedsSessionCredentialsAndCarriesTheGate() {
+    /// #267 (Nova): the route is composed deferred, so missing session credentials no longer
+    /// omit it at setup; they surface at the first allowed cue, which plays on-device with
+    /// zero proxy calls.
+    func testPublicCompositionNeedsSessionCredentialsAndCarriesTheGate() async {
         let t = SpyTransport()
         let on = publicVoice(.none, transport: t)
         XCTAssertEqual(on.decision, .included(catalogIndex: 0))
         XCTAssertEqual(on.renderer.routes.map(\.providerID), [PremiumVoiceRoutes.providerID, "device"])
-        let noSession = PaidVoice.publicComposition(base: base(), access: .none, selectedVoiceID: voiceID,
-                                                    session: NoInstallSession(), routeCompiledIn: true)
-        XCTAssertEqual(noSession.decision, .omitted(.noCredentials))
+        let access = ProVoiceAccess.proWithConsentForTests
+        let noSession = PaidVoice.publicComposition(base: base(), access: access, age: FixedAge(.adult),
+                                                    selectedVoiceID: voiceID, session: NoInstallSession(),
+                                                    routeCompiledIn: true, transport: t)
+        XCTAssertEqual(noSession.renderer.routes.map(\.providerID), [PremiumVoiceRoutes.providerID, "device"])
+        let outcome = await DJBreakPreparer.render(twoCueBreak(), renderer: noSession.renderer, userID: "u", stationID: "s",
+                                                   cap: 15, paidVoice: noSession.access)
+        XCTAssertEqual(providers(outcome), ["device", "device"], "no session credentials: on-device")
+        XCTAssertEqual(t.calls, 0, "no proxy call without session credentials")
         XCTAssertEqual(PaidVoice.onDevice(base()).decision, .omitted(.paidDisabled))
     }
 

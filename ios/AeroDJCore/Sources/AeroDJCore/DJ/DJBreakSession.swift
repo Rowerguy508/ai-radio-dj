@@ -522,16 +522,33 @@ public final class DJBreakSession {
     /// bundled clip are dropped (`.paidVoiceRevoked`) and the upcoming breaks go through the
     /// same re-plan as a personality change (#227); the playing song's break is prepared again
     /// within its time left, and the per-cue gate keeps it on-device. Never stops a break on air
-    /// or the playing song. A grant changes nothing prepared: the next cue's gate allows it.
+    /// or the playing song. A grant: the next cue's gate allows it, and the playing song's
+    /// break, if it was prepared on-device only because the gate denied (Nova, #267: an 18+
+    /// "yes" mid-session), is prepared again when at least `paidVoiceUpgradeLead` is left, so
+    /// the next boundary can use the cloud voice without a relaunch. With less time left, the
+    /// on-device break is kept (music never loses its break to a slower render).
     public func paidVoiceAccessChanged() async {
         let dropped = await preparer.dropPaidVoiceBreaks()
-        guard !dropped.isEmpty, !queueSetupPending else { return }
+        guard !dropped.isEmpty else { return await preparePlayingBreakAgainAfterGrant() }
+        guard !queueSetupPending else { return }
         let current = playing ?? -1
         replan(from: current + 1, keepingThrough: current)
         guard let k = playing, dropped.contains(k), let djBreak = breaks[k],
               let due = playingBoundaryAt, due.index == k,
               let deadline = DJBreakPreparer.deadline(remainingInSong: .seconds(due.at.timeIntervalSince(now())))
         else { return }
+        await prepare(djBreak, deadline: deadline)
+    }
+
+    /// Time the cloud route needs to have a fair chance: its own timeout plus the boundary margin.
+    static let paidVoiceUpgradeLead: Duration = PremiumVoiceRoutes.timeout + .seconds(4)
+
+    private func preparePlayingBreakAgainAfterGrant() async {
+        guard !queueSetupPending, let k = playing, let djBreak = breaks[k],
+              let due = playingBoundaryAt, due.index == k,
+              let deadline = DJBreakPreparer.deadline(remainingInSong: .seconds(due.at.timeIntervalSince(now()))),
+              deadline >= Self.paidVoiceUpgradeLead,
+              await preparer.releaseBreakPreparedWhileDenied(afterTrack: k) else { return }
         await prepare(djBreak, deadline: deadline)
     }
 
