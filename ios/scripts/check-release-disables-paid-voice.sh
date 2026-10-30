@@ -41,5 +41,5 @@ for needle in "${needles[@]}"; do
 done
 swift test -c release --scratch-path "$flagged" -Xswiftc -enable-testing -Xswiftc -DAERODJ_OWNER_AB \
   -Xswiftc -DAERODJ_PUBLIC_PAID_ROUTE \
-  --filter 'PremiumVoicePickerTests.(testOwnerABBuildEnablesGate|testEndpointPrefillsDefaultOnlyWhenNoneSaved|testEndpointFooterMatchesComposeDecision|testPendingDecisionMirrorsWhatDoneSaves|testSheetValidationNeverWidensTheAllowlist|testStatusLineShowsOnlyIndexOrReasonCode)|PaidVoiceRouteSplitTests.testFlaggedBuildCompilesThePublicRouteIn|OwnerTrialIsFlagOnlyTests'
+  --filter 'PremiumVoicePickerTests.(testOwnerABBuildEnablesGate|testEndpointPrefillsDefaultOnlyWhenNoneSaved|testEndpointFooterMatchesComposeDecision|testPendingDecisionMirrorsWhatDoneSaves|testSheetValidationNeverWidensTheAllowlist|testStatusLineShowsOnlyIndexOrReasonCode)|PaidVoiceRouteSplitTests.testFlaggedBuildCompilesThePublicRouteIn|PaidVoiceAgeStepTests.testOwnerABBuildOffersTheStepOnlyForRealProAndConsentNotForTheOwnerTrial|OwnerTrialIsFlagOnlyTests'
 echo "OK: paid voices are off without AERODJ_OWNER_AB and on only with it"
