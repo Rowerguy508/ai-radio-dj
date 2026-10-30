@@ -37,12 +37,13 @@ extension PaidVoice {
 #endif
 
 extension ProVoiceAccess {
-    /// The Pro + consent gate the live app runs with. Owner A/B builds: the owner trial, matching
-    /// the route above. Every other build: the paywall's verified client Pro state and the consent
-    /// sheet's store, so a paid voice needs Pro AND consent (both fail closed).
+    /// The Pro + consent gate the live app runs with. Owner A/B builds: `buildDefault` (the
+    /// owner trial, #244 B1). Every other build: the paywall's verified client Pro state and the
+    /// consent sheet's store, so a paid voice needs Pro AND consent (both fail closed). This
+    /// replaces core's `buildDefault` `.none` placeholder now that the paywall exists (-Nova).
     static var live: ProVoiceAccess {
         #if AERODJ_OWNER_AB
-        return .ownerTrial
+        return .buildDefault
         #else
         // The paywall's client Pro state (written by SubscriptionModel from verified App Store
         // transactions, Free until then) and the consent sheet's store, asked per use.

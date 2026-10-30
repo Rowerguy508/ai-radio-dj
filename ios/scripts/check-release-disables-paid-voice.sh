@@ -8,10 +8,13 @@
 # - gate 1: the owner proxy credential code (`OwnerProxyAuth`, Keychain service name) is owner-only;
 # - gate 2: the public paid route is compiled OFF until #233 PRs 3-4 (AERODJ_PUBLIC_PAID_ROUTE,
 #   which nothing sets); the flagged build sets it as well, as the positive control.
+# The owner trial access (`ownerTrial`, Pro gate bypass, Sentinel B1 on #244) gets the same
+# treatment: absent from Release objects without the flag, present with it.
 set -euo pipefail
 cd "$(dirname "$0")/../AeroDJCore"
 marker='AERODJ_OWNER_AB_VOICE_TRIAL_BUILD'
 split_needles=(com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)
+owner_trial='ownerTrial'
 flagged=.build/owner-ab  # inside the ignored .build/, excluded from the plain scan
 # -ipath: SwiftPM's layout varies (.build/release vs .build/out/Products/Release-*).
 objects() { find "$1" -name '*.o' -ipath '*release*' -path '*AeroDJCore*' ! -path '*Tests*' "${@:2}"; }
@@ -26,7 +29,10 @@ for needle in "${split_needles[@]}"; do
     echo "FAIL: $needle found in a Release build without AERODJ_OWNER_AB / AERODJ_PUBLIC_PAID_ROUTE"; exit 1
   fi
 done
-swift test -c release -Xswiftc -enable-testing --filter 'PremiumVoicePickerTests|PaidVoiceRouteSplitTests'
+if objects .build ! -path "*/owner-ab/*" | xargs grep -la "$owner_trial"; then
+  echo "FAIL: ownerTrial (Pro gate bypass) found in a Release build without AERODJ_OWNER_AB"; exit 1
+fi
+swift test -c release -Xswiftc -enable-testing --filter 'PremiumVoicePickerTests|PaidVoiceRouteSplitTests|OwnerTrialIsFlagOnlyTests'
 
 swift build -c release --scratch-path "$flagged" -Xswiftc -DAERODJ_OWNER_AB -Xswiftc -DAERODJ_PUBLIC_PAID_ROUTE
 objects "$flagged" | xargs grep -la "$marker" >/dev/null \
@@ -35,7 +41,9 @@ for needle in "${split_needles[@]}"; do
   objects "$flagged" | xargs grep -laF "$needle" >/dev/null \
     || { echo "FAIL: control: $needle missing from the flagged build"; exit 1; }
 done
+objects "$flagged" | xargs grep -la "$owner_trial" >/dev/null \
+  || { echo "FAIL: control: ownerTrial missing from the AERODJ_OWNER_AB build"; exit 1; }
 swift test -c release --scratch-path "$flagged" -Xswiftc -enable-testing -Xswiftc -DAERODJ_OWNER_AB \
   -Xswiftc -DAERODJ_PUBLIC_PAID_ROUTE \
-  --filter 'PremiumVoicePickerTests.testOwnerABBuildEnablesGate|PaidVoiceRouteSplitTests.testFlaggedBuildCompilesThePublicRouteIn'
+  --filter 'PremiumVoicePickerTests.testOwnerABBuildEnablesGate|PaidVoiceRouteSplitTests.testFlaggedBuildCompilesThePublicRouteIn|OwnerTrialIsFlagOnlyTests'
 echo "OK: paid voices are off without AERODJ_OWNER_AB and on only with it"

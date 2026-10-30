@@ -15,7 +15,9 @@ import StoreKit
 /// to `ProEntitlementProviding` instead.
 @MainActor
 final class ProEntitlementObserver: ObservableObject, ProEntitlementProviding {
+    /// For the UI. Set at each refresh; the voice gate does not read it (see below).
     @Published private(set) var state: ProEntitlementState = .free
+    private var record = ProEntitlementRecord()
 
     private let productIDs: [String]
     private let now: @Sendable () -> Date
@@ -39,8 +41,10 @@ final class ProEntitlementObserver: ObservableObject, ProEntitlementProviding {
         }
     }
 
+    /// Recomputed now from the last-read transactions' own dates, not the cached `state`, so a
+    /// `.pro` never outlives its expiry between refreshes (Sentinel N1).
     nonisolated func currentProEntitlement() async -> ProEntitlementState {
-        await state
+        await MainActor.run { record.state(now: now()) }
     }
 
     /// Recomputes the state from the latest transaction for each Pro product.
@@ -57,7 +61,8 @@ final class ProEntitlementObserver: ObservableObject, ProEntitlementProviding {
                 snapshots.append(Self.snapshot(transaction, isVerified: false))
             }
         }
-        state = ProEntitlementMapper.state(for: snapshots, now: now())
+        record = ProEntitlementRecord(snapshots)
+        state = record.state(now: now())
     }
 
     /// Restore purchases: syncs with the App Store, then recomputes.
@@ -69,6 +74,7 @@ final class ProEntitlementObserver: ObservableObject, ProEntitlementProviding {
     static func snapshot(_ t: Transaction, isVerified: Bool) -> ProTransactionSnapshot {
         ProTransactionSnapshot(productID: t.productID, purchaseDate: t.purchaseDate,
                                expirationDate: t.expirationDate, revocationDate: t.revocationDate,
-                               isUpgraded: t.isUpgraded, isVerified: isVerified)
+                               isUpgraded: t.isUpgraded, isVerified: isVerified,
+                               ownership: t.ownershipType == .familyShared ? .familyShared : .purchased)
     }
 }

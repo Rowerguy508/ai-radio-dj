@@ -392,7 +392,7 @@ extension BundledClipPlaybackTests {
     }
 
     func testProWithConsentRevokedGetsZeroBundledClips() async {
-        let run = await gatedRun(.testing(.pro(productID: ProSubscriptionConfig.yearlyProductID, expiresAt: nil), consent: false))
+        let run = await gatedRun(.testing(.pro(productID: ProSubscriptionConfig.yearlyProductID, expiresAt: .distantFuture), consent: false))
         XCTAssertFalse(run.providers.contains(BundledClipResolver.providerID))
     }
 
@@ -410,7 +410,7 @@ extension BundledClipPlaybackTests {
     func testConsentWithdrawnMidShowStopsTheNextLookup() async {
         let consent = SwitchableConsent(true)
         let bundled = resolver(manifest([entry(presenterLine)]),
-                               access: ProVoiceAccess(entitlement: FixedEntitlement(.pro(productID: ProSubscriptionConfig.monthlyProductID, expiresAt: nil)),
+                               access: ProVoiceAccess(entitlement: FixedEntitlement(.pro(productID: ProSubscriptionConfig.monthlyProductID, expiresAt: .distantFuture)),
                                                       consent: consent))
         let r = renderer(ProxySpy())
         let first = await bundled.gatedClip(for: cue(presenterLine), attribution: .presenter, renderer: r)
@@ -419,4 +419,62 @@ extension BundledClipPlaybackTests {
         let second = await bundled.gatedClip(for: cue(presenterLine), attribution: .presenter, renderer: r)
         XCTAssertNil(second)
     }
+
+    /// Echo E1: the provider's cache still says Pro, but the expiry has passed. At the lookup
+    /// that is not Pro: zero bundled clips, and no paid route at setup.
+    func testCachedProPastExpiryGetsZeroClipsAndNoPaidRoute() async {
+        let past = Date().addingTimeInterval(-60)
+        let stale = ProVoiceAccess.testing(.pro(productID: ProSubscriptionConfig.monthlyProductID, expiresAt: past), consent: true)
+        let run = await gatedRun(stale)
+        XCTAssertFalse(run.providers.contains(BundledClipResolver.providerID))
+        let decision = await stale.decision()
+        XCTAssertEqual(decision, .denied(.expired))
+        let route = PremiumVoiceRoutes.compose(onDevice: [], paidProvidersEnabled: true, access: decision,
+                                               selectedVoiceID: PremiumVoiceCatalog.voices[0].id,
+                                               credentials: PremiumProxyCredentials(endpoint: URL(string: PremiumVoiceRoutes.defaultEndpoint)!,
+                                                                                    token: "t"))
+        XCTAssertEqual(route.decision, .omitted(.notEntitled))
+        XCTAssertTrue(route.routes.isEmpty)
+    }
+
+    /// Echo E1 / Sentinel N1 through the record the app's observer keeps: read while Pro, asked
+    /// after the expiry (or after a revocation lands in the record), with no refresh between.
+    func testRecordReadWhileProGivesZeroClipsAfterExpiryOrRevocation() async {
+        let clock = ProTestClock(Date())
+        let monthly = ProSubscriptionConfig.monthlyProductID
+        let expires = clock.now.addingTimeInterval(60)
+        let live = ProTransactionSnapshot(productID: monthly, purchaseDate: clock.now.addingTimeInterval(-3600), expirationDate: expires)
+        let access = ProVoiceAccess(entitlement: RecordEntitlement(ProEntitlementRecord([live]), clock: clock),
+                                    consent: FixedConsent(true), now: { clock.now })
+        let before = await gatedRun(access)
+        XCTAssertEqual(before.providers, [BundledClipResolver.providerID], "control: Pro before the expiry")
+        clock.now = expires.addingTimeInterval(1)
+        let after = await gatedRun(access)
+        XCTAssertFalse(after.providers.contains(BundledClipResolver.providerID))
+
+        let revoked = ProTransactionSnapshot(productID: monthly, purchaseDate: live.purchaseDate, expirationDate: Date().addingTimeInterval(86_400),
+                                             revocationDate: Date().addingTimeInterval(-1))
+        let revokedAccess = ProVoiceAccess(entitlement: RecordEntitlement(ProEntitlementRecord([revoked]), clock: ProTestClock(Date())),
+                                           consent: FixedConsent(true))
+        let r = await gatedRun(revokedAccess)
+        XCTAssertFalse(r.providers.contains(BundledClipResolver.providerID))
+    }
+}
+
+final class ProTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    init(_ value: Date) { self.value = value }
+    var now: Date {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
+}
+
+/// Answers like the app's observer: from the record, at call time.
+struct RecordEntitlement: ProEntitlementProviding {
+    let record: ProEntitlementRecord
+    let clock: ProTestClock
+    init(_ record: ProEntitlementRecord, clock: ProTestClock) { self.record = record; self.clock = clock }
+    func currentProEntitlement() async -> ProEntitlementState { record.state(now: clock.now) }
 }

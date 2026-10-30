@@ -44,7 +44,7 @@ final class LibrarySeedVoiceGateTests: XCTestCase {
     }
 
     private func composed(onDevice: [VoiceRoute], transport: RecordingTransport) -> VoiceRenderer {
-        let c = PremiumVoiceRoutes.compose(onDevice: onDevice, paidProvidersEnabled: true, access: .ownerTrial, selectedVoiceID: jade,
+        let c = PremiumVoiceRoutes.compose(onDevice: onDevice, paidProvidersEnabled: true, access: .allowed, selectedVoiceID: jade,
                                            credentials: creds, pinnedHosts: pinned, transport: transport)
         return renderer(c.routes)
     }

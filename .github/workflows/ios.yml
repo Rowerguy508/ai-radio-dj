@@ -218,6 +218,12 @@ jobs:
               exit 1
             fi
           done
+          # Owner trial access (Pro gate bypass) compiles only with AERODJ_OWNER_AB (Sentinel B1, #244).
+          # Positive control: check-release-disables-paid-voice.sh finds it in a flagged build. -Fry
+          if LC_ALL=C grep -a -q ownerTrial "$RELEASE_BIN"; then
+            echo "::error::ownerTrial (Pro gate bypass) found in a Release build without AERODJ_OWNER_AB"
+            exit 1
+          fi
           DIAG_DD="$RUNNER_TEMP/DerivedDataP0Diag"
           xcodebuild build \
             -project ios/AeroDJ.xcodeproj \

@@ -7,8 +7,16 @@
     "noEmit": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["node"],
-    "allowImportingTsExtensions": false
+    "types": [
+      "node"
+    ],
+    "allowImportingTsExtensions": false,
+    "resolveJsonModule": true
   },
-  "include": ["api/**/*.ts", "src/**/*.ts", "test/**/*.ts"]
+  "include": [
+    "api/**/*.ts",
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "config/*.json"
+  ]
 }

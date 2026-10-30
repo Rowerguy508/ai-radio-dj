@@ -34,7 +34,7 @@ final class CountingEntitlement: ProEntitlementProviding, @unchecked Sendable {
 
 extension ProVoiceAccess {
     static let proWithConsentForTests = ProVoiceAccess(
-        entitlement: FixedEntitlement(.pro(productID: ProSubscriptionConfig.monthlyProductID, expiresAt: nil)),
+        entitlement: FixedEntitlement(.pro(productID: ProSubscriptionConfig.monthlyProductID, expiresAt: .distantFuture)),
         consent: FixedConsent(true))
 
     static func testing(_ state: ProEntitlementState, consent: Bool) -> ProVoiceAccess {
@@ -46,35 +46,51 @@ final class ProVoiceGateTests: XCTestCase {
     private let id = ProSubscriptionConfig.monthlyProductID
     private var epoch: Date { Date(timeIntervalSince1970: 0) }
     private var allStates: [ProEntitlementState] {
-        [.free, .pro(productID: id, expiresAt: nil), .unverified(productID: id),
+        [.free, .pro(productID: id, expiresAt: .distantFuture), .unverified(productID: id),
          .expired(productID: id, expiredAt: epoch), .revoked(productID: id, revokedAt: epoch)]
     }
 
     func testOnlyProWithConsentIsAllowed() {
-        XCTAssertEqual(ProVoiceGate.decide(entitlement: .pro(productID: id, expiresAt: nil), paidVoiceConsent: true), .allowed)
-        XCTAssertEqual(ProVoiceGate.decide(entitlement: .free, paidVoiceConsent: true), .denied(.notPro))
-        XCTAssertEqual(ProVoiceGate.decide(entitlement: .unverified(productID: id), paidVoiceConsent: true), .denied(.unverified))
-        XCTAssertEqual(ProVoiceGate.decide(entitlement: .expired(productID: id, expiredAt: epoch), paidVoiceConsent: true), .denied(.expired))
-        XCTAssertEqual(ProVoiceGate.decide(entitlement: .revoked(productID: id, revokedAt: epoch), paidVoiceConsent: true), .denied(.revoked))
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: .pro(productID: id, expiresAt: .distantFuture), paidVoiceConsent: true, now: Date()), .allowed)
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: .free, paidVoiceConsent: true, now: Date()), .denied(.notPro))
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: .unverified(productID: id), paidVoiceConsent: true, now: Date()), .denied(.unverified))
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: .expired(productID: id, expiredAt: epoch), paidVoiceConsent: true, now: Date()), .denied(.expired))
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: .revoked(productID: id, revokedAt: epoch), paidVoiceConsent: true, now: Date()), .denied(.revoked))
     }
 
     /// Consent first: no subscription state stands in for the consent sheet.
     func testWithoutConsentEveryStateIsDeniedForConsent() {
         for state in allStates {
-            XCTAssertEqual(ProVoiceGate.decide(entitlement: state, paidVoiceConsent: false), .denied(.noConsent), "\(state)")
+            XCTAssertEqual(ProVoiceGate.decide(entitlement: state, paidVoiceConsent: false, now: Date()), .denied(.noConsent), "\(state)")
         }
+    }
+
+    /// Echo E1 / Sentinel N1: a `.pro` past its expiry, or with none, is not Pro at the moment
+    /// of the lookup, whatever the provider cached.
+    func testStaleCachedProPastExpiryIsDeniedAtCallTime() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: .pro(productID: id, expiresAt: now.addingTimeInterval(1)),
+                                           paidVoiceConsent: true, now: now), .allowed)
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: .pro(productID: id, expiresAt: now),
+                                           paidVoiceConsent: true, now: now), .denied(.expired))
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: .pro(productID: id, expiresAt: now.addingTimeInterval(-1)),
+                                           paidVoiceConsent: true, now: now), .denied(.expired))
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: .pro(productID: id, expiresAt: nil),
+                                           paidVoiceConsent: true, now: now), .denied(.expired))
     }
 
     func testOnlyAllowedAndOwnerTrialPermitPaidVoice() {
         XCTAssertTrue(ProVoiceGate.Decision.allowed.permitsPaidVoice)
+        #if AERODJ_OWNER_AB
         XCTAssertTrue(ProVoiceGate.Decision.ownerTrial.permitsPaidVoice)
+        #endif
         for denial in [ProVoiceGate.Denial.noConsent, .notPro, .unverified, .expired, .revoked] {
             XCTAssertFalse(ProVoiceGate.Decision.denied(denial).permitsPaidVoice, "\(denial)")
         }
     }
 
     func testAccessAsksConsentFirstAndNeverReadsTheEntitlementWithoutIt() async {
-        let spy = CountingEntitlement(.pro(productID: id, expiresAt: nil))
+        let spy = CountingEntitlement(.pro(productID: id, expiresAt: .distantFuture))
         let refused = await ProVoiceAccess(entitlement: spy, consent: FixedConsent(false)).decision()
         XCTAssertEqual(refused, .denied(.noConsent))
         XCTAssertEqual(spy.reads, 0)
@@ -105,10 +121,12 @@ final class ProVoiceGateTests: XCTestCase {
                                                                         token: "test-token"))
     }
 
-    func testPaidRouteIsSetUpOnlyForProWithConsentOrTheOwnerTrial() {
+    func testPaidRouteIsSetUpOnlyForProWithConsentOrTheOwnerABTrial() {
         XCTAssertEqual(compose(.allowed).decision, .included(catalogIndex: 0))
         XCTAssertEqual(compose(.allowed).routes.first?.providerID, PremiumVoiceRoutes.providerID)
+        #if AERODJ_OWNER_AB
         XCTAssertEqual(compose(.ownerTrial).decision, .included(catalogIndex: 0))
+        #endif
     }
 
     func testFreeNoConsentUnverifiedExpiredOrRevokedGetNoPaidRoute() {
