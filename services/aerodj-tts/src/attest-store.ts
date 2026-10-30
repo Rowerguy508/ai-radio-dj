@@ -45,6 +45,15 @@ export function enrollDeviceKey(keyspace: Keyspace, day: string, bucket: string)
   return `${prefix(keyspace)}enrolldev:{aerodj-tts}:${day}:${bucket}`;
 }
 
+/**
+ * `enrollinst:{aerodj-tts}:<UTC day>:<hex HMAC>`: verified enrollments per day from one
+ * install ID (enroll-install.ts). A keyed hash, never the raw ID. Same hash tag.
+ */
+export function enrollInstallKey(keyspace: Keyspace, day: string, bucket: string): string {
+  if (!/^[0-9a-f]{64}$/.test(bucket)) throw new Error('enroll install bucket must be a hex SHA-256');
+  return `${prefix(keyspace)}enrollinst:{aerodj-tts}:${day}:${bucket}`;
+}
+
 /** The challenge's single-use mark (`used:{aerodj-tts}:<sha256>` from #246), in this keyspace. */
 export function attestUsedKey(keyspace: Keyspace, challenge: string): string {
   return `${prefix(keyspace)}${usedKey(challenge)}`;
@@ -57,7 +66,7 @@ export function attestUsedKey(keyspace: Keyspace, challenge: string): string {
  * expires and its next assertion fails as an unknown key.
  */
 export const KEY_RECORD_TTL_SECONDS = 90 * 86_400;
-/** The enroll counters (global and per device) outlive their UTC day. */
+/** The enroll counters (global, per network and per install) outlive their UTC day. */
 export const ENROLL_TTL_SECONDS = 2 * 86_400;
 
 export interface KeyRecord {
@@ -74,6 +83,8 @@ export interface RegisterKeys {
   enroll: string;
   /** Per-device (client network) enroll counter for the same day. */
   enrollDevice: string;
+  /** Per-install (keyed hash of the app's installId) enroll counter for the same day. */
+  enrollInstall: string;
 }
 
 export interface RegisterOptions {
@@ -82,12 +93,14 @@ export interface RegisterOptions {
   enrollCap: number;
   /** Verified enrollments per UTC day per device bucket. */
   enrollDeviceCap: number;
+  /** Verified enrollments per UTC day per install ID. */
+  enrollInstallCap: number;
 }
 
 /** `touchKey`: the record existed and its TTL is back to 90 days, or no such key (never registered, or expired). */
 export type TouchOutcome = 'refreshed' | 'unknown';
 
-export type RegisterOutcome = 'registered' | 'reused' | 'duplicate' | 'enroll_cap' | 'enroll_device_cap';
+export type RegisterOutcome = 'registered' | 'reused' | 'duplicate' | 'enroll_cap' | 'enroll_device_cap' | 'enroll_install_cap';
 
 export interface AttestStore {
   readonly durable: boolean;
@@ -116,19 +129,23 @@ export const TOUCH_KEY_SCRIPT = `if redis.call('EXPIRE', KEYS[1], ARGV[1]) == 1 
 return 0`;
 
 /**
- * KEYS: used mark, key record, global enroll counter, per-device enroll counter.
- * ARGV: used TTL, record JSON, record TTL, global cap, enroll TTL, device cap.
- * 1 registered; -1 challenge already used (nothing written); -4 per-device cap
- * reached and -3 global cap reached (both checked BEFORE any write: nothing
- * written, neither counter moves, challenge not consumed; the device cap is
- * checked first, so a device-capped request never spends global budget and
- * reports the narrower reason); -2 keyId already registered (record and both
- * counters untouched, challenge consumed so the same request cannot be replayed).
- * A success increments both counters and (re)sets both TTLs.
+ * KEYS: used mark, key record, global enroll counter, per-device (network) enroll
+ * counter, per-install enroll counter.
+ * ARGV: used TTL, record JSON, record TTL, global cap, enroll TTL, device cap,
+ * install cap.
+ * 1 registered; -1 challenge already used (nothing written); -4 per-device
+ * (network) cap, -5 per-install cap and -3 global cap reached (all checked
+ * BEFORE any write, in that order: nothing written, no counter moves, challenge
+ * not consumed; the narrower caps go first, so a capped request never spends
+ * global budget); -2 keyId already registered (record and all counters
+ * untouched, challenge consumed so the same request cannot be replayed).
+ * A success increments all three counters and (re)sets their TTLs.
  */
 export const REGISTER_SCRIPT = `if redis.call('GET', KEYS[1]) then return -1 end
 local d = tonumber(redis.call('GET', KEYS[4]) or '0')
 if d >= tonumber(ARGV[6]) then return -4 end
+local i = tonumber(redis.call('GET', KEYS[5]) or '0')
+if i >= tonumber(ARGV[7]) then return -5 end
 local n = tonumber(redis.call('GET', KEYS[3]) or '0')
 if n >= tonumber(ARGV[4]) then return -3 end
 if not redis.call('SET', KEYS[2], ARGV[2], 'NX', 'EX', ARGV[3]) then
@@ -140,6 +157,8 @@ redis.call('INCR', KEYS[3])
 redis.call('EXPIRE', KEYS[3], ARGV[5])
 redis.call('INCR', KEYS[4])
 redis.call('EXPIRE', KEYS[4], ARGV[5])
+redis.call('INCR', KEYS[5])
+redis.call('EXPIRE', KEYS[5], ARGV[5])
 return 1`;
 
 export class RedisAttestStore implements AttestStore {
@@ -194,13 +213,14 @@ export class RedisAttestStore implements AttestStore {
   }
 
   async register(keys: RegisterKeys, record: KeyRecord, options: RegisterOptions): Promise<RegisterOutcome> {
-    const result = await this.eval(REGISTER_SCRIPT, [keys.used, keys.record, keys.enroll, keys.enrollDevice], [
+    const result = await this.eval(REGISTER_SCRIPT, [keys.used, keys.record, keys.enroll, keys.enrollDevice, keys.enrollInstall], [
       options.usedTtlSeconds,
       JSON.stringify(record),
       KEY_RECORD_TTL_SECONDS,
       options.enrollCap,
       ENROLL_TTL_SECONDS,
       options.enrollDeviceCap,
+      options.enrollInstallCap,
     ]);
     switch (result) {
       case 1:
@@ -213,6 +233,8 @@ export class RedisAttestStore implements AttestStore {
         return 'enroll_cap';
       case -4:
         return 'enroll_device_cap';
+      case -5:
+        return 'enroll_install_cap';
       default:
         throw new AttestStoreError('store error');
     }
