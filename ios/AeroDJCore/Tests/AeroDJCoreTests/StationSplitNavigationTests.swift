@@ -10,6 +10,13 @@ final class StationSplitNavigationTests: XCTestCase {
     private let lateNight = "late-night"
     private var stations: [String] { [morningCalm, lateNight] }
 
+    /// A navigation whose width class arrived through the app's update path.
+    private func navigation(regular: Bool) -> Nav {
+        var nav = Nav()
+        nav.setRegularWidth(regular)
+        return nav
+    }
+
     /// Launch the way `StationSplitRoot` does. SwiftUI may run the width-class `onChange`
     /// (initial) and the restore `.task` in either order, so both orders are checked.
     private func launched(regular: Bool, restoring id: String?, restoreFirst: Bool) -> Nav {
@@ -109,17 +116,51 @@ final class StationSplitNavigationTests: XCTestCase {
     // MARK: Tapped (not restored) stations
 
     func testTappedStationInRegularSurvivesCollapse() {
-        var nav = Nav(isRegularWidth: true)
+        var nav = navigation(regular: true)
         nav.select(lateNight)
         nav.setRegularWidth(false)
         assertOpen(nav, lateNight, "a station opened in regular width stays open in compact")
     }
 
     func testTappedStationInCompactSurvivesExpand() {
-        var nav = Nav(isRegularWidth: false)
+        var nav = navigation(regular: false)
         nav.select(lateNight)
         nav.setRegularWidth(true)
         assertOpen(nav, lateNight, "a station opened in compact width stays open in regular")
+    }
+
+    // MARK: Switching stations (Fry N1 on #285)
+
+    /// Restored A, then a tap on B opens B, in both layouts, and B survives a width change.
+    func testTapAfterRestoreSwitchesStationInBothLayouts() {
+        for regular in [false, true] {
+            var nav = launched(regular: regular, restoring: morningCalm, restoreFirst: true)
+            nav.select(lateNight)
+            assertOpen(nav, lateNight, "tap on B after restoring A (regular \(regular))")
+            nav.setRegularWidth(!regular)
+            assertOpen(nav, lateNight, "B stays open across the width change (regular \(regular))")
+        }
+    }
+
+    /// A open from a tap, then a tap on B opens B, in both layouts.
+    func testTapOnAnotherStationSwitchesInBothLayouts() {
+        for regular in [false, true] {
+            var nav = navigation(regular: regular)
+            nav.select(morningCalm)
+            assertOpen(nav, morningCalm, "A is open (regular \(regular))")
+            nav.select(lateNight)
+            assertOpen(nav, lateNight, "tap on B while A is open (regular \(regular))")
+            nav.setRegularWidth(!regular)
+            assertOpen(nav, lateNight, "B stays open across the width change (regular \(regular))")
+        }
+    }
+
+    /// Back to the carousel from A, then a card tap on B opens B (compact only: regular has no back).
+    func testTapAfterCompactBackOpensTheNewStation() {
+        var nav = launched(regular: false, restoring: morningCalm, restoreFirst: true)
+        nav.compactColumnWritten(.list)
+        nav.select(lateNight)
+        assertOpen(nav, lateNight, "card tap on B after going back from A")
     }
 
     // MARK: No selection
@@ -177,19 +218,19 @@ final class StationSplitNavigationTests: XCTestCase {
     // MARK: Restore rules
 
     func testRestoreAppliesOnceAndNeverOverridesATap() {
-        var nav = Nav(isRegularWidth: true)
+        var nav = navigation(regular: true)
         XCTAssertTrue(nav.restore(morningCalm, available: stations))
         XCTAssertFalse(nav.restore(lateNight, available: stations), "restore applies once")
         XCTAssertEqual(nav.selectedID, morningCalm)
 
-        var tapped = Nav(isRegularWidth: false)
+        var tapped = navigation(regular: false)
         tapped.select(lateNight)
         XCTAssertFalse(tapped.restore(morningCalm, available: stations), "a tap wins over a late restore")
         XCTAssertEqual(tapped.selectedID, lateNight)
     }
 
     func testRestoreWaitsForTheStationToExist() {
-        var nav = Nav(isRegularWidth: true)
+        var nav = navigation(regular: true)
         XCTAssertFalse(nav.restore("created", available: stations), "unknown id is not applied")
         XCTAssertNil(nav.selectedID)
         XCTAssertFalse(nav.didApplyRestore)
@@ -200,7 +241,7 @@ final class StationSplitNavigationTests: XCTestCase {
     }
 
     func testRestoreOfNilDoesNothing() {
-        var nav = Nav(isRegularWidth: false)
+        var nav = navigation(regular: false)
         XCTAssertFalse(nav.restore(nil, available: stations))
         XCTAssertFalse(nav.didApplyRestore)
         XCTAssertEqual(nav.compactColumn, .list)
@@ -220,7 +261,7 @@ final class StationSplitNavigationTests: XCTestCase {
 
     func testShowsBothColumnsFollowsTheWidthClassOnly() {
         var nav = Nav()
-        XCTAssertFalse(nav.showsBothColumns, "unspecified width class is compact")
+        XCTAssertFalse(nav.showsBothColumns, "a new navigation is compact until the width class arrives")
         nav.setRegularWidth(true)
         XCTAssertTrue(nav.showsBothColumns)
         nav.select(morningCalm)
