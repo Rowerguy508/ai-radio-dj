@@ -34,6 +34,28 @@ enum FoldedStyle {
     static let artMinSide: CGFloat = 140
 }
 
+/// Bottom fade on the folded scroll area, accessibility text sizes only (#310). A mask
+/// changes no frame, so layout and hit testing are the same as without it.
+struct FoldedOverflowFade: ViewModifier {
+    static let height: CGFloat = 32
+    let isActive: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isActive {
+            content.mask {
+                VStack(spacing: 0) {
+                    Color.black
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: Self.height)
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
 /// Dark glass through the shared `aeroGlass`: Liquid Glass on iOS 26, the white 8 % fill plus a
 /// 1 px hairline before that, and opaque under Reduce Transparency. Buttons pass `.control`.
 extension View {
@@ -108,16 +130,22 @@ struct FoldedPlayer: View {
 
     /// Phone width: unchanged from wireframe 08 (scrolling upper, pinned controls).
     private func compactBody(in size: CGSize) -> some View {
-        VStack(spacing: 0) {
-            ScrollView(.vertical, showsIndicators: false) {
+        // #310: at accessibility sizes the upper part overflows above the pinned controls.
+        // It still scrolls, but now shows its indicator and fades out at the bottom edge
+        // instead of a hard cut through the title block, and the extra bottom padding lets
+        // the DJ status scroll fully clear of the fade. Default sizes are unchanged.
+        let accessibilityText = typeSize.isAccessibilitySize
+        return VStack(spacing: 0) {
+            ScrollView(.vertical, showsIndicators: accessibilityText) {
                 upper(artSide: artSide(in: size), centered: false)
                     .padding(.horizontal, FoldedStyle.contentInset)
                     .padding(.top, 8)
-                    .padding(.bottom, 16)
+                    .padding(.bottom, accessibilityText ? 16 + FoldedOverflowFade.height : 16)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollContentBackground(.hidden)
+            .modifier(FoldedOverflowFade(isActive: accessibilityText))
             controls(contentInset: FoldedStyle.contentInset, toolbarInset: FoldedStyle.toolbarInset,
                      spacing: 16, balancesTransport: false)
         }
