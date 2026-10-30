@@ -134,7 +134,12 @@ public final class CreatedStationStarter<Item: Sendable> {
         if listenerStartGeneration == mine {
             // Latest tap wins: a song or search tap landed after this tap but before its recipe was
             // committed, so its queue was given the old station. It keeps playing past the boundary.
-            feed.cancelSwitch(keepingListenerQueueFor: committed?() ?? active())
+            // An explicit branch, not `committed?() ?? active()`: that `??` autoclosure captured the
+            // non-escaping `active` in this async function, a suspected trigger of the Xcode 26.6
+            // task-allocator abort ("freed pointer was not the last allocation") in CI. -Echo
+            let keep: StationConfiguration
+            if let committed { keep = committed() } else { keep = active() }
+            feed.cancelSwitch(keepingListenerQueueFor: keep)
             return .notStarted(.playbackBegan)
         }
         guard nothingQueued() else { return .switchesAtBoundary }
