@@ -1,7 +1,6 @@
 /* OnAirly site. Plain CSS, no build step.
-   Colours from the app: --bg = AeroDJPalette.slab, --cream = AeroDJPalette.slabSecondary,
-   --onair = AeroDJPalette.onAirFill (ios/AeroDJ/AeroDJPalette.swift). --accent is sampled
-   from the icon face in ios/AeroDJ/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png. */
+   Colours from the app palette: --bg = slab, --cream = slabSecondary, --onair = onAirFill.
+   --accent is sampled from the app icon face (AppIcon-1024.png). */
 @font-face { font-family: "Plus Jakarta Sans"; src: url("/assets/fonts/PlusJakartaSans-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
 @font-face { font-family: "Plus Jakarta Sans"; src: url("/assets/fonts/PlusJakartaSans-Bold.woff2") format("woff2"); font-weight: 700; font-display: swap; }
 @font-face { font-family: "Plus Jakarta Sans"; src: url("/assets/fonts/PlusJakartaSans-ExtraBold.woff2") format("woff2"); font-weight: 800; font-display: swap; }
@@ -87,8 +86,6 @@ mark.owner { background: var(--pending-bg); color: var(--pending-fg); padding: 0
 .band { background: var(--surface); border-radius: var(--radius); padding: clamp(1.5rem, 4vw, 3rem); }
 .band .grid .card { background: var(--surface-2); }
 
-.draft-banner { background: var(--onair); color: var(--white); border-radius: var(--radius); padding: 1.1rem 1.5rem; margin: 1rem 0 2rem; font-weight: 700; }
-.draft-banner p { margin: 0; }
 .doc { padding-top: 1.5rem; }
 .doc section { background: var(--surface); border-radius: var(--radius); padding: clamp(1.25rem, 3.5vw, 2rem); margin-bottom: 1rem; }
 .doc section.is-pending { background: var(--surface); border: 2px dashed var(--pending-fg); }
