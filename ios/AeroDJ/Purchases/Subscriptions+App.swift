@@ -32,7 +32,8 @@ final class SubscriptionModel: ProEntitlementProviding {
     private(set) var isBusy = false
     var isPaywallPresented = false
 
-    /// What `ProVoiceAccess.live` reads; written only here.
+    /// The paywall's client Pro state (what `ProVoiceAccess.live` would read; not wired yet).
+    /// Written only through `refresher`.
     nonisolated let entitlement: ProEntitlementCache
     private let tokens: AppAccountTokenProvider
     /// Tells the break session when the effective Pro state changes (E1), deduped.
