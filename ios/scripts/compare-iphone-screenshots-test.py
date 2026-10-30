@@ -17,6 +17,7 @@ sys.dont_write_bytecode = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "compare-iphone-screenshots.py")
+GATE = os.path.join(HERE, "snapshot-diff-gate.sh")
 spec = importlib.util.spec_from_file_location("cmp", SCRIPT)
 cmp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cmp)
@@ -107,6 +108,22 @@ def run(base_rows, head_rows, name, ftype=0, head_ftype=None, head_extra=b"", dr
             return subprocess.call([sys.executable, SCRIPT, base, head], stdout=quiet)
 
 
+def gate(base_rows, head_rows, name, labels):
+    """Run snapshot-diff-gate.sh; return (exit code, report text, GITHUB_OUTPUT text)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base, head = os.path.join(tmp, "base"), os.path.join(tmp, "head")
+        os.makedirs(base)
+        os.makedirs(head)
+        write_png(os.path.join(base, name), base_rows, 0)
+        write_png(os.path.join(head, name), head_rows, 0)
+        report, out = os.path.join(tmp, "report.txt"), os.path.join(tmp, "out.txt")
+        env = dict(os.environ, SNAPSHOT_LABELS="\n".join(labels), GITHUB_OUTPUT=out)
+        with open(os.devnull, "w") as quiet:
+            rc = subprocess.call(["bash", GATE, base, head, report], stdout=quiet, env=env)
+        read = lambda p: open(p).read() if os.path.exists(p) else ""
+        return rc, read(report), read(out)
+
+
 def main():
     # Real CI device: iPhone 16e, 1170x2532 @3x, safe-area top 47 pt -> 141 rows.
     check("16e mask is 47pt x 3", cmp.mask_rows(1170, 2532), 141)
@@ -127,6 +144,24 @@ def main():
     check("16e Paeth: change on row 140 ignored", run(base, poke(base, 140), name, ftype=4), 0)
     check("16e Paeth: change on row 141 fails", run(base, poke(base, 141), name, ftype=4), 1)
     check("missing head shot fails", run(base, base, name, drop_head=True), 1)
+
+    # Label escape hatch (snapshot-diff-gate.sh): only the exact label bypasses a real
+    # change; the report is still written and records the bypass.
+    approved = "snapshot-change-approved"
+    changed = poke(base, 141)
+    rc, rep, out = gate(base, changed, name, [])
+    check("gate: change without label fails", rc, 1)
+    check("gate: no-label output bypassed=false", out.strip(), "bypassed=false")
+    rc, rep, out = gate(base, changed, name, ["ios", approved])
+    check("gate: change with label passes", rc, 0)
+    check("gate: label bypass still writes the compare report", "FAIL " + name in rep, True)
+    check("gate: label bypass is recorded in the report", "BYPASSED BY LABEL" in rep, True)
+    check("gate: label output bypassed=true", out.strip(), "bypassed=true")
+    rc, rep, out = gate(base, changed, name, [approved + "-not", "not-" + approved])
+    check("gate: near-miss label names do not bypass", rc, 1)
+    rc, rep, out = gate(base, base, name, [approved])
+    check("gate: label with no change passes", rc, 0)
+    check("gate: label with no change is not a bypass", out.strip(), "bypassed=false")
 
     land = make(h, w)
     lname = "iphone-landscape_iPhone-16e.png"
