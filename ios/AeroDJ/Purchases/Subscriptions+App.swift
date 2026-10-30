@@ -38,6 +38,8 @@ final class SubscriptionModel: ProEntitlementProviding {
     /// Tells the break session when the effective Pro state changes (E1), deduped.
     private let accessChanges: ProAccessChangeTracker
     private var listener: Task<Void, Never>?
+    /// N3 token guard, ordering and the expiry/foreground refreshes (core, tested on Linux).
+    @ObservationIgnored private var refresher: ProStatusRefresher!
     // SEAM (Atlas): `ServerEntitlementHandoff` takes a verified transaction's JWS once the server
     // design (#233) lands. Not wired: no proxy calls here.
     private let log = Logger(subsystem: "com.aerodj.app", category: "subscription")
@@ -48,6 +50,9 @@ final class SubscriptionModel: ProEntitlementProviding {
         self.entitlement = entitlement
         self.tokens = tokens
         self.accessChanges = accessChanges ?? ProAccessChangeTracker()
+        refresher = ProStatusRefresher(cache: entitlement, tracker: self.accessChanges,
+                                       read: { await Self.readStatus() },
+                                       apply: { [weak self] status in self?.apply(status) })
     }
 
     /// The cached state only, never StoreKit: `takeCheckedBreak` asks this with no time limit
@@ -69,7 +74,20 @@ final class SubscriptionModel: ProEntitlementProviding {
         Task { await refreshStatus() }
     }
 
-    func refreshStatus() async {
+    /// Every StoreKit read goes through here (launch, `Transaction.updates`, purchase, restore,
+    /// expiry timer, foreground). Only the latest overlapping call writes the cache (N3).
+    func refreshStatus() async { await refresher.refresh() }
+
+    /// N4: back in the foreground, re-read StoreKit (a lapse or refund while away).
+    func sceneBecameActive() async { await refresher.sceneBecameActive() }
+
+    private func apply(_ status: ProSubscriptionStatus) {
+        self.status = status
+        // Status category only; never IDs, JWS or tokens.
+        log.notice("subscription pro=\(status.isPro, privacy: .public)")
+    }
+
+    private static func readStatus() async -> ProStatusRead {
         var transactions: [ProTransactionSnapshot] = []
         var willAutoRenew: Bool?
         for id in ProSubscriptionConfig.productIDs.sorted() {
@@ -88,13 +106,9 @@ final class SubscriptionModel: ProEntitlementProviding {
             if let snapshot = Self.snapshot(result) { transactions.append(snapshot) }
         }
         let state = ProEntitlementMapper.state(for: transactions, now: Date())
-        entitlement.set(state)
-        status = ProSubscriptionStatus(state: state, willAutoRenew: willAutoRenew,
-                                       onlyFamilyShared: ProStoreEntitlement.onlyFamilyShared(transactions))
-        // Status category only; never IDs, JWS or tokens.
-        log.notice("subscription pro=\(self.status.isPro, privacy: .public)")
-        // After the cache holds the new state, so the session's re-check reads it (E1).
-        await accessChanges.entitlementRead(state, now: Date())
+        return ProStatusRead(state: state,
+                             status: ProSubscriptionStatus(state: state, willAutoRenew: willAutoRenew,
+                                                           onlyFamilyShared: ProStoreEntitlement.onlyFamilyShared(transactions)))
     }
 
     /// #244's snapshot, with #244's `ProOwnership`. An ownership type this build doesn't know is
@@ -211,9 +225,14 @@ extension View {
 
 private struct SubscriptionPaywallHost: ViewModifier {
     @Bindable private var model = SubscriptionModel.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     func body(content: Content) -> some View {
         content
+            // N4 (Sentinel): back in the foreground, re-read StoreKit through the model.
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await model.sceneBecameActive() } }
+            }
             .task {
                 model.start()
                 #if DEBUG

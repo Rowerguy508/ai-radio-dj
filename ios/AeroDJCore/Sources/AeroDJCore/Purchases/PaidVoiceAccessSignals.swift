@@ -61,8 +61,10 @@ public enum PaidVoiceExpiryTimer {
 /// Expiry between refreshes (Fry's recommendation): every read re-arms exactly one timer. A
 /// `.pro` with a future `expiresAt` arms it for that date; any other state (`.free`, `.expired`,
 /// `.unverified`, `.revoked`, `.pro` with no expiry) only cancels the old one. At the date the
-/// tracker re-judges the same state at its clock, so a lapse notifies once (deduped as usual), and
-/// an early wake-up re-arms. A date already past is judged right away by the read itself.
+/// tracker first re-reads StoreKit (`refreshOnExpiry`, i.e. `refreshStatus()`; Sentinel N1) and
+/// then calls `paidVoiceAccessChanged()` exactly once. The refresh's own read does not notify
+/// while the timer is firing, so there is one notification per expiry. An early wake-up re-arms.
+/// A date already past is judged right away by the read itself.
 @MainActor
 public final class ProAccessChangeTracker {
     private var lastPermits = false
@@ -72,6 +74,12 @@ public final class ProAccessChangeTracker {
     private var cancelExpiry: PaidVoiceExpiryCancel?
     /// Bumped on every arm, so a timer that fires after being replaced does nothing.
     private var generation = 0
+    /// True while an expiry fire waits on its refresh: that read updates the state but the fire
+    /// sends the one notification afterwards.
+    private var expiryFiring = false
+    /// Re-reads StoreKit when the timer fires (`ProStatusRefresher` sets it to its `refresh()`).
+    /// nil: the tracker re-judges the cached state at its clock.
+    public var refreshOnExpiry: (@MainActor () async -> Void)?
 
     public init(notify: @escaping PaidVoiceAccessNotify = PaidVoiceAccessRelay.live,
                 schedule: @escaping PaidVoiceExpiryScheduler = PaidVoiceExpiryTimer.live,
@@ -93,6 +101,7 @@ public final class ProAccessChangeTracker {
         let permits = Self.permitsPaidVoice(state, now: now)
         guard permits != lastPermits else { return false }
         lastPermits = permits
+        if expiryFiring { return false }   // the firing timer notifies once after its refresh
         await notify()
         return true
     }
@@ -105,8 +114,25 @@ public final class ProAccessChangeTracker {
         let armed = generation
         cancelExpiry = schedule(expiresAt) { [weak self] in
             guard let self, self.generation == armed else { return }
-            await self.entitlementRead(state, now: self.now())
+            await self.expiryFired(state, at: expiresAt, armed: armed)
         }
+    }
+
+    /// N1: at `.pro`'s expiry, refresh from StoreKit, then notify the session exactly once.
+    private func expiryFired(_ state: ProEntitlementState, at expiresAt: Date, armed: Int) async {
+        let wokeAt = now()
+        guard wokeAt >= expiresAt else { return armExpiry(for: state, now: wokeAt) }   // early wake-up
+        expiryFiring = true
+        if let refreshOnExpiry { await refreshOnExpiry() }
+        expiryFiring = false
+        if generation == armed {
+            // No read landed (no refresher, or a refresh that was superseded or failed): judge the
+            // cached state at the clock, which also clears this timer.
+            let at = now()
+            armExpiry(for: state, now: at)
+            lastPermits = Self.permitsPaidVoice(state, now: at)
+        }
+        await notify()
     }
 }
 
@@ -146,4 +172,61 @@ public final class PaidVoiceConsentSignals {
             await notify()
         }
     }
+}
+
+/// One StoreKit read, as `SubscriptionModel.refreshStatus()` builds it: the entitlement for the
+/// cache and the status card's state. No IDs, JWS or tokens. -Nova
+public struct ProStatusRead: Equatable, Sendable {
+    public let state: ProEntitlementState
+    public let status: ProSubscriptionStatus
+
+    public init(state: ProEntitlementState, status: ProSubscriptionStatus) {
+        self.state = state
+        self.status = status
+    }
+}
+
+/// `SubscriptionModel.refreshStatus()`'s ordering, in core so it is testable on Linux (Sentinel):
+/// - N3: every call takes a token; only the latest call may write the cache, so an older,
+///   overlapping refresh that resolves last can't put a stale `.pro` back.
+/// - Then the status card, then `ProAccessChangeTracker.entitlementRead` (E1, re-arms expiry).
+/// - N1: the tracker's expiry timer calls `refresh()`.
+/// - N4: `sceneBecameActive()` refreshes when the app comes to the foreground.
+@MainActor
+public final class ProStatusRefresher {
+    private let cache: ProEntitlementCache
+    private let tracker: ProAccessChangeTracker
+    private let read: @MainActor () async -> ProStatusRead
+    private let apply: @MainActor (ProSubscriptionStatus) -> Void
+    private let now: @Sendable () -> Date
+    private var latest = 0
+
+    public init(cache: ProEntitlementCache, tracker: ProAccessChangeTracker,
+                now: @escaping @Sendable () -> Date = { Date() },
+                read: @escaping @MainActor () async -> ProStatusRead,
+                apply: @escaping @MainActor (ProSubscriptionStatus) -> Void = { _ in }) {
+        self.cache = cache
+        self.tracker = tracker
+        self.now = now
+        self.read = read
+        self.apply = apply
+        tracker.refreshOnExpiry = { [weak self] in await self?.refresh() }
+    }
+
+    /// Returns false when a newer refresh started while this one was reading (nothing written).
+    @discardableResult
+    public func refresh() async -> Bool {
+        latest += 1
+        let token = latest
+        let result = await read()
+        guard token == latest else { return false }   // N3: a newer refresh owns the cache
+        cache.set(result.state)
+        apply(result.status)
+        // After the cache holds the new state, so the session's re-check reads it (E1).
+        await tracker.entitlementRead(result.state, now: now())
+        return true
+    }
+
+    /// N4: scenePhase `.active` (back in the foreground).
+    public func sceneBecameActive() async { await refresh() }
 }

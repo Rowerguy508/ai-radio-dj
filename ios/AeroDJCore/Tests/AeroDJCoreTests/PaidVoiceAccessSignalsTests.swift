@@ -19,7 +19,9 @@ private final class RevokedBoundaries: @unchecked Sendable {
 }
 
 /// A clock tests move by hand (the tracker's, the cache's and the gate's `now`).
-private final class TestClock: @unchecked Sendable {
+private typealias TestClock = ExpiryTestClock
+
+final class ExpiryTestClock: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Date
     init(_ start: Date) { value = start }
@@ -28,7 +30,7 @@ private final class TestClock: @unchecked Sendable {
 }
 
 /// The expiry scheduler, by hand: records each armed timer; a test fires one when it likes.
-@MainActor private final class ManualExpiryTimers {
+@MainActor final class ManualExpiryTimers {
     final class Timer {
         let date: Date
         let fire: @MainActor @Sendable () async -> Void
@@ -382,8 +384,8 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
     }
 
     func testTheCacheHasOneAppWriterAndItReArms() throws {
-        // The timer is re-armed by entitlementRead, so every cache write must be followed by one
-        // (pinned in testSubscriptionModelNotifiesAfterEveryReadOnceTheCacheIsSet).
+        // The app never writes the cache itself: ProStatusRefresher.refresh() is the one writer,
+        // and it always follows the write with entitlementRead (ProStatusRefresherTests).
         let app = repoRoot.appendingPathComponent("ios/AeroDJ")
         var writers = 0
         let files = FileManager.default.enumerator(at: app, includingPropertiesForKeys: nil)?
@@ -393,7 +395,9 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
             writers += source.components(separatedBy: "entitlement.set(").count - 1
             writers += source.components(separatedBy: "ProEntitlementCache.shared.set(").count - 1
         }
-        XCTAssertEqual(writers, 1, "only SubscriptionModel.refreshStatus writes the cache")
+        XCTAssertEqual(writers, 0, "only ProStatusRefresher.refresh writes the cache")
+        let model = try text("ios/AeroDJ/Purchases/Subscriptions+App.swift")
+        XCTAssertTrue(model.contains("ProStatusRefresher(cache: entitlement, tracker: self.accessChanges,"))
     }
 
     // MARK: decision() answers from cached state (Sentinel on #255). takeCheckedBreak bounds the
@@ -510,12 +514,10 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
 
     func testSubscriptionModelNotifiesAfterEveryReadOnceTheCacheIsSet() throws {
         let model = try text("ios/AeroDJ/Purchases/Subscriptions+App.swift")
-        let refresh = model.components(separatedBy: "func refreshStatus() async {").dropFirst().first?
-            .components(separatedBy: "\n    }\n").first ?? ""
-        guard let set = refresh.range(of: "entitlement.set(state)"),
-              let read = refresh.range(of: "await accessChanges.entitlementRead(state, now: Date())")
-        else { return XCTFail("refreshStatus must set the cache and then report the read") }
-        XCTAssertLessThan(set.lowerBound, read.lowerBound, "the session's re-check must see the new state")
+        // The ordering (token guard, cache set, then entitlementRead) is ProStatusRefresher's,
+        // tested on Linux in ProStatusRefresherTests; the model only delegates to it.
+        XCTAssertTrue(model.contains("func refreshStatus() async { await refresher.refresh() }"))
+        XCTAssertTrue(model.contains("read: { await Self.readStatus() },"))
         // Transaction.updates, purchase and restore all re-read through refreshStatus.
         XCTAssertGreaterThanOrEqual(model.components(separatedBy: "await self?.refreshStatus()").count - 1, 1)
         XCTAssertGreaterThanOrEqual(model.components(separatedBy: "await refreshStatus()").count - 1, 3)
