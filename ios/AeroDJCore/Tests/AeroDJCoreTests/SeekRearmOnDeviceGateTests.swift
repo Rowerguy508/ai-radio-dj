@@ -57,7 +57,8 @@ final class SeekRearmOnDeviceGateTests: XCTestCase {
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence())
         let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 })
         await session.start()
-        await session.queueStarted(djTracks(8))
+        // Catalog tracks: every line may leave the device, so the break is not routed on-device up front.
+        await session.queueStarted(djTracks(8, origin: .catalog))
         XCTAssertEqual(session.plannedBoundaries.first, 0)
         return Rig(session: session, preparer: preparer, calls: calls)
     }

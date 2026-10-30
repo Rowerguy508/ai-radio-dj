@@ -232,7 +232,7 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
         let preparer = DJBreakPreparer(voice: voice, userID: "u", stationID: "s", cadence: config.cadence())
         let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 })
         await session.start()
-        await session.queueStarted(djTracks(8))
+        await session.queueStarted(djTracks(8, origin: .catalog))   // all paid: no line is local-only
         PaidVoiceAccessRelay.session = session
         defer { PaidVoiceAccessRelay.session = nil }
 

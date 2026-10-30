@@ -396,18 +396,28 @@ public actor DJBreakPreparer {
                      cap: BreakCap(main: cap, closingCueID: nil, closing: 0), bundled: bundled, paidVoice: paidVoice)
     }
 
-    static func render(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
+    static func render(_ djBreak: DJBreak, renderer full: VoiceRenderer, userID: String, stationID: String,
                        cap: BreakCap, bundled: BundledClipResolver? = nil,
                        paidVoice: ProVoiceAccess? = nil) async -> DJBreakOutcome {
-        let first: (cues: [NarrationCue], clips: [RenderedClip])
+        // Paid-voice release blocker (Orion, Echo, Sentinel): a break that cannot play in the
+        // cloud voice is routed to the on-device voices BEFORE any cloud request, so no first
+        // pass is rendered in the cloud, charged to the proxy's daily allowance or the global
+        // character cap, and thrown away. No on-device route: skipped, never sent off the device.
+        var renderer = full
+        if upfrontOnDevice(djBreak) != nil {
+            guard let local = full.onDeviceOnly else { return .skipped(.renderFailed) }
+            renderer = local
+        }
+        let first: (cues: [NarrationCue], clips: [RenderedClip], complete: Bool)
         switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID, bundled: bundled,
-                                paidVoice: paidVoice) {
+                                paidVoice: paidVoice, stopWhenDiscarded: cap) {
         case .success(let pass): first = pass
         case .failure(let skip): return .skipped(skip.reason)
         }
-        let firstFit = cap.fit(first.clips)
+        // A pass stopped early is never played: it is mixed or already over the cap.
+        let firstFit = first.complete ? cap.fit(first.clips) : .skip
         let mixed = !speaksInOneVoice(first.clips)
-        if !mixed, firstFit != .skip { return ready(djBreak, first, firstFit) }
+        if !mixed, firstFit != .skip { return ready(djBreak, (first.cues, first.clips), firstFit) }
         // At most ONE whole-break retry, on the last route (the standard on-device voice, $0),
         // for either reason or both:
         // - #267: a break never switches voices. The first pass falls back per cue (a refused
@@ -424,14 +434,34 @@ public actor DJBreakPreparer {
         }
         // The fallback's first route is on-device, so the bundle never resolves on this retry.
         switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID, bundled: bundled,
-                                paidVoice: paidVoice) {
+                                paidVoice: paidVoice, stopWhenDiscarded: nil) {
         case .success(let retry):
             // One route, so one voice; checked anyway, and never retried a second time.
             guard speaksInOneVoice(retry.clips) else { return .skipped(.renderFailed) }
             let retryFit = cap.fit(retry.clips)
-            return retryFit == .skip ? .skipped(.overBreakBudget) : ready(djBreak, retry, retryFit)
+            return retryFit == .skip ? .skipped(.overBreakBudget) : ready(djBreak, (retry.cues, retry.clips), retryFit)
         case .failure(let skip): return .skipped(skip.reason)  // the retry's own reason (Fry, #158)
         }
+    }
+
+    /// Why a break goes straight to the on-device voices, decided from the plan before any
+    /// render. Nil: the break may use the cloud voice.
+    enum UpfrontOnDevice: Equatable, Sendable {
+        /// Owner decision pending (Orion): briefings never get the Pro voice until the owner
+        /// says otherwise. Checked first and on its own, so the rule does not depend on how
+        /// `VoiceRenderer.mayLeaveDevice` treats briefing cues.
+        case briefing
+        /// A line that may not leave the device (personal context, a library or unknown-origin
+        /// track, missing attribution): one voice per break, so the whole break is on-device.
+        case localOnlyLine
+    }
+
+    static func upfrontOnDevice(_ djBreak: DJBreak) -> UpfrontOnDevice? {
+        if djBreak.hasBriefing { return .briefing }
+        if djBreak.cues.contains(where: { !VoiceRenderer.mayLeaveDevice($0, attribution: djBreak.attributions[$0.id]) }) {
+            return .localOnlyLine
+        }
+        return nil
     }
 
     /// The voice a clip is spoken in: provider plus voice id. A bundled clip is the manifest's
@@ -498,10 +528,22 @@ public actor DJBreakPreparer {
                                talkOverCueID: fit == .keepMarker ? djBreak.talkOverCueID : nil))
     }
 
-    private static func renderCues(_ djBreak: DJBreak, renderer full: VoiceRenderer, userID: String, stationID: String,
-                                   bundled: BundledClipResolver?, paidVoice: ProVoiceAccess?) async
-        -> Result<(cues: [NarrationCue], clips: [RenderedClip]), Skip> {
-        let mayRenderPaid = full.routes.contains { !$0.isLocalAndFree }
+    /// Renders every cue in order. With `stopWhenDiscarded` (the first pass), it stops making
+    /// requests as soon as the pass can no longer be played, and returns it with
+    /// `complete == false`, so no further cue reaches the cloud and is charged for a break
+    /// that is thrown away:
+    /// - a clip in another voice than the first (#267: the break would be mixed);
+    /// - the clips other than the closing line already over the main cap (`BreakCap.fit`
+    ///   can only skip from there, since clips only add seconds).
+    /// And once the first clip comes from an on-device route (a cloud refusal, an over-cap
+    /// fallback, a denied paid gate), the rest of the break uses only the on-device routes:
+    /// one voice per break means a later cloud clip would be discarded anyway.
+    private static func renderCues(_ djBreak: DJBreak, renderer start: VoiceRenderer, userID: String, stationID: String,
+                                   bundled: BundledClipResolver?, paidVoice: ProVoiceAccess?,
+                                   stopWhenDiscarded cap: BreakCap?) async
+        -> Result<(cues: [NarrationCue], clips: [RenderedClip], complete: Bool), Skip> {
+        var full = start
+        var mayRenderPaid: Bool { full.routes.contains { !$0.isLocalAndFree } }
         var cues: [NarrationCue] = []
         var clips: [RenderedClip] = []
         for var cue in djBreak.cues {
@@ -534,13 +576,21 @@ public actor DJBreakPreparer {
                 cue.audioCacheKey = clip.cacheKey
                 cues.append(cue)
                 clips.append(clip)
+                guard let cap else { break }
+                if !speaksInOneVoice(clips) { return .success((cues, clips, false)) }
+                if measured(clips.filter { $0.cueID != cap.closingCueID }) > cap.main { return .success((cues, clips, false)) }
+                if clips.count == 1, mayRenderPaid,
+                   full.routes.contains(where: { $0.isLocalAndFree && $0.providerID == clip.audio.providerID }),
+                   let local = full.onDeviceOnly {
+                    full = local
+                }
             case .failure(let failure):
                 // A render cut short by the deadline is a timeout, whichever side of the race
                 // (worker or timer) reports first.
                 return .failure(Skip(reason: Task.isCancelled ? .timedOut : skipReason(failure)))
             }
         }
-        return .success((cues, clips))
+        return .success((cues, clips, true))
     }
 
     static func skipReason(_ failure: VoiceRenderer.Failure) -> DJBreakSkipReason {
