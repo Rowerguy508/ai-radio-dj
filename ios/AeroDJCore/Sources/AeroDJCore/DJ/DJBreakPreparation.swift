@@ -576,13 +576,14 @@ public actor DJBreakPreparer {
                 cue.audioCacheKey = clip.cacheKey
                 cues.append(cue)
                 clips.append(clip)
-                guard let cap else { break }
-                if !speaksInOneVoice(clips) { return .success((cues, clips, false)) }
-                if measured(clips.filter { $0.cueID != cap.closingCueID }) > cap.main { return .success((cues, clips, false)) }
-                if clips.count == 1, mayRenderPaid,
-                   full.routes.contains(where: { $0.isLocalAndFree && $0.providerID == clip.audio.providerID }),
-                   let local = full.onDeviceOnly {
-                    full = local
+                if let cap {
+                    if !speaksInOneVoice(clips) { return .success((cues, clips, false)) }
+                    if measured(clips.filter { $0.cueID != cap.closingCueID }) > cap.main { return .success((cues, clips, false)) }
+                    if clips.count == 1, mayRenderPaid,
+                       full.routes.contains(where: { $0.isLocalAndFree && $0.providerID == clip.audio.providerID }),
+                       let local = full.onDeviceOnly {
+                        full = local
+                    }
                 }
             case .failure(let failure):
                 // A render cut short by the deadline is a timeout, whichever side of the race

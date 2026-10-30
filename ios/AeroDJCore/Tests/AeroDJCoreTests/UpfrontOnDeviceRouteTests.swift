@@ -3,26 +3,41 @@ import XCTest
 
 // Paid-voice release blocker (Orion, Echo, Sentinel, on #258). A break that cannot play in the
 // cloud voice must never render a cloud first pass that is charged and then thrown away.
-// `ProxyLedger` counts the way services/aerodj-tts does (handler.ts, limiter.ts `reservePro`):
-// each accepted `/api/tts` request charges one render (the Pro allowance: 40 breaks x 4 renders)
-// and its characters (the subscriber's cap and the global 9k ceiling); a refusal (429) or an
-// upstream failure (refunded) charges nothing. The client `VoiceBudget` is checked as well, on a
+// `ProxyLedger` counts the way services/aerodj-tts does (handler.ts at integration 2a2b09a,
+// unchanged at 2b748bd): one atomic reserve before the upstream call (handler.ts:445-490) charges
+// one render (the Pro allowance: 40 breaks x 4 = 160, pro-allowance.ts:61-63) and its characters
+// (the subscriber's cap and the global 9k ceiling). A refusal (429, global ceiling first, then the
+// Pro render allowance) changes no counter. An upstream non-2xx is refunded (handler.ts:523-530).
+// A timeout (504) or network error (handler.ts:533-535) and bad audio after a 2xx
+// (handler.ts:543-544) KEEP the charge: the failed cue itself may be billed. The client `VoiceBudget` is checked as well, on a
 // route priced like a paid voice. Fakes only, no sleeps. -Nova
 
 private struct ProxyRefused: Error {}
+/// 504/502 after the reservation: the charge is kept.
+private struct ProxyChargedFailure: Error {}
 
 /// The proxy, as the app sees it: one voice, counted per accepted request.
 private final class ProxyLedger: VoiceProvider, @unchecked Sendable {
     private let lock = NSLock()
     private var requests: [String] = []
     private var charged: [String] = []
+    private var refused: [String] = []
     let globalCharCap: Int
+    /// Pro renders left today (PRO_DAILY_RENDER_ALLOWANCE, 160).
+    let proRenderAllowance: Int
     let seconds: Double
-    /// Requests (1-based) that fail upstream: refunded, so nothing is charged.
+    /// Requests (1-based) that fail upstream with a non-2xx: refunded, so nothing is charged.
     let failing: Set<Int>
-    init(globalCharCap: Int = 9_000, seconds: Double = 2, failing: Set<Int> = []) {
-        self.globalCharCap = globalCharCap; self.seconds = seconds; self.failing = failing
+    /// Requests (1-based) that time out (504), drop (network) or return bad audio after a 2xx:
+    /// the reservation is kept, so the failed request is charged.
+    let chargedFailing: Set<Int>
+    init(globalCharCap: Int = 9_000, proRenderAllowance: Int = 160, seconds: Double = 2,
+         failing: Set<Int> = [], chargedFailing: Set<Int> = []) {
+        self.globalCharCap = globalCharCap; self.proRenderAllowance = proRenderAllowance; self.seconds = seconds
+        self.failing = failing; self.chargedFailing = chargedFailing
     }
+    /// Which limit refused each refused request: "global" or "proRenders".
+    var refusals: [String] { lock.withLock { refused } }
     /// Every request that reached the proxy, accepted or not.
     var sent: [String] { lock.withLock { requests } }
     /// Renders charged to the Pro daily render allowance (PRO_DAILY_RENDER_ALLOWANCE, 160 a UTC
@@ -35,10 +50,14 @@ private final class ProxyLedger: VoiceProvider, @unchecked Sendable {
     func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
         try lock.withLock {
             requests.append(text)
-            // Global ceiling first; any refusal changes no counter.
-            guard charged.reduce(0, { $0 + $1.count }) + text.count <= globalCharCap else { throw ProxyRefused() }
-            guard !failing.contains(requests.count) else { throw ProxyRefused() }   // refunded
+            // Global ceiling first, then the Pro render allowance; a refusal changes no counter.
+            guard charged.reduce(0, { $0 + $1.count }) + text.count <= globalCharCap else {
+                refused.append("global"); throw ProxyRefused()
+            }
+            guard charged.count < proRenderAllowance else { refused.append("proRenders"); throw ProxyRefused() }
+            guard !failing.contains(requests.count) else { throw ProxyRefused() }   // reserved, then refunded
             charged.append(text)
+            if chargedFailing.contains(requests.count) { throw ProxyChargedFailure() }   // reservation kept
         }
         return VoiceArtifact(data: Data("cloud:\(text)".utf8), durationSeconds: seconds, billableUnits: text.count,
                              provider: "cloud", cacheKey: nil)
@@ -227,6 +246,20 @@ final class UpfrontOnDeviceRouteTests: XCTestCase {
         XCTAssertEqual(proxy.chargedTexts, [SpeechDelivery.speakable(djBreak.cues[0].text)])
     }
 
+    /// Sentinel N1: cue 1 times out at the proxy (504) after its reservation, so it is charged
+    /// (handler.ts:533-535 keeps it). The break falls to on-device; cues 2 and 3 make no cloud
+    /// call and cost nothing. Exactly 1 Pro render plus cue 1's characters.
+    func testACue1TimeoutKeepsItsChargeAndTheRestOfTheBreakCostsNothing() async {
+        let proxy = ProxyLedger(chargedFailing: [1]), device = DeviceVoice()
+        let djBreak = cloudBreak()
+        let cue1 = SpeechDelivery.speakable(djBreak.cues[0].text)
+        assertAll(await render(djBreak, renderer(proxy, device)), "device", count: 3)
+        XCTAssertEqual(proxy.sent, [cue1], "cues 2 and 3: no cloud call")
+        XCTAssertEqual(proxy.proRenders, 1, "exactly 1 Pro render: the failed cue 1 itself")
+        XCTAssertEqual(proxy.elevenLabsChars, cue1.count, "exactly cue 1's characters")
+        XCTAssertEqual(device.calls, 3, "one on-device pass, no retry")
+    }
+
     // MARK: 4. over-cap fallback doesn't charge
 
     /// The global character ceiling refuses cue 1 (too long for what is left) but would accept
@@ -236,8 +269,22 @@ final class UpfrontOnDeviceRouteTests: XCTestCase {
         let proxy = ProxyLedger(globalCharCap: 40), device = DeviceVoice()
         assertAll(await render(cloudBreak([long] + short), renderer(proxy, device)), "device", count: 3)
         XCTAssertEqual(proxy.sent.count, 1, "only the refused cue 1 reached the proxy")
+        XCTAssertEqual(proxy.refusals, ["global"])
         XCTAssertEqual(proxy.proRenders, 0)
         XCTAssertEqual(proxy.elevenLabsChars, 0)
+    }
+
+    /// Echo N1: the Pro 160-render allowance is spent (429 `pro_renders`, its own refusal, not
+    /// the global 9k one). Cue 1 is refused without a charge and the break falls back exactly
+    /// like the global refusal: all on-device, no further cloud request.
+    func testProRenderAllowance429ChargesNothingAndFallsBackOnDevice() async {
+        let proxy = ProxyLedger(proRenderAllowance: 0), device = DeviceVoice()
+        assertAll(await render(cloudBreak(), renderer(proxy, device)), "device", count: 3)
+        XCTAssertEqual(proxy.sent.count, 1, "only the refused cue 1 reached the proxy")
+        XCTAssertEqual(proxy.refusals, ["proRenders"], "refused by the Pro render allowance, not the global ceiling")
+        XCTAssertEqual(proxy.proRenders, 0)
+        XCTAssertEqual(proxy.elevenLabsChars, 0)
+        XCTAssertEqual(device.calls, 3, "one on-device pass, no retry")
     }
 
     /// The client budget refuses cue 1 (`.overCostCap`) but has room for the shorter cues.
@@ -262,6 +309,49 @@ final class UpfrontOnDeviceRouteTests: XCTestCase {
     }
 
     // MARK: 5. an all-cloud break still charges exactly once
+
+    /// Sentinel N2: a break of presenter and CATALOG track lines (the attributions the script
+    /// writer gives a catalog queue) is not routed up front and keeps the cloud voice on every
+    /// cue, so a regression that sends every break on-device fails here.
+    func testAnAllCatalogBreakUsesTheCloudVoiceForEveryCue() async {
+        let opener = line("Good evening."), was = line("That was Open Song by Open Artist."),
+            next = line("Next, Open Tune by Open Band.")
+        let djBreak = DJBreak(afterTrack: 0, cues: [opener, was, next],
+                              attributions: [opener.id: .presenter,
+                                             was.id: .trackMetadata(trackIDs: ["c1"], origin: .catalog),
+                                             next.id: .trackMetadata(trackIDs: ["c2"], origin: .catalog)])
+        XCTAssertNil(DJBreakPreparer.upfrontOnDevice(djBreak))
+        let proxy = ProxyLedger(), device = DeviceVoice()
+        let gate = ProVoiceAccess(entitlement: LivePro(), consent: ConsentAfter(denials: 0))
+        assertAll(await render(djBreak, renderer(proxy, device), paidVoice: gate), "cloud", count: 3)
+        XCTAssertEqual(proxy.sent.count, 3, "every catalog and presenter line reached the cloud voice")
+        XCTAssertEqual(proxy.proRenders, 3)
+        XCTAssertEqual(device.calls, 0)
+    }
+
+    /// Sentinel N3 / Echo N3: on a Pro build the routes are [ElevenLabs] + the on-device routes
+    /// in order (PremiumVoiceCatalog.swift:163; on the app, Phonon if enabled, then the best
+    /// Enhanced/Premium voice, then the standard voice). An up-front break uses `onDeviceOnly`,
+    /// all of them in order, so it plays the PRIMARY on-device voice, not the standard
+    /// `lastRouteOnly` voice the old discard-and-retry landed on.
+    func testAnUpfrontBreakOnAProBuildUsesThePrimaryOnDeviceVoice() async {
+        let proxy = ProxyLedger(), primary = DeviceVoice(), standard = DeviceVoice()
+        let r = VoiceRenderer(routes: [VoiceRoute(providerID: "cloud", provider: proxy, voice: cloudVoice, leavesDevice: true),
+                                       VoiceRoute(providerID: "device", provider: primary, voice: VoiceProfile(id: "enhanced", name: "Host")),
+                                       VoiceRoute(providerID: "device", provider: standard, voice: standardVoice)],
+                              budget: VoiceBudget(dailyCapMicrodollars: 0), cache: NoCache(),
+                              revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
+        let library = line("That was Private Song.")
+        var djBreak = cloudBreak()
+        djBreak = DJBreak(afterTrack: 0, cues: djBreak.cues + [library],
+                          attributions: djBreak.attributions.merging([library.id: .trackMetadata(trackIDs: ["p"], origin: .library)]) { $1 })
+        let outcome = await render(djBreak, r)
+        guard case .ready(let b) = outcome else { return XCTFail("expected ready, got \(outcome)") }
+        XCTAssertEqual(b.clips.map(\.audio.voiceID), Array(repeating: "enhanced", count: 4), "the primary on-device voice")
+        XCTAssertEqual(primary.calls, 4)
+        XCTAssertEqual(standard.calls, 0)
+        XCTAssertEqual(proxy.sent.count, 0)
+    }
 
     func testAnAllCloudBreakStillChargesExactlyOnce() async {
         let proxy = ProxyLedger(), device = DeviceVoice()
