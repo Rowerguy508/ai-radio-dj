@@ -169,7 +169,7 @@ export function parseRatePerMinute(value: string | undefined): number | null {
   return parseBoundedInt(value, MAX_CONFIGURED_REQUESTS_PER_MINUTE);
 }
 
-function parseBoundedInt(value: string | undefined, max: number): number | null {
+export function parseBoundedInt(value: string | undefined, max: number): number | null {
   const trimmed = value?.trim();
   if (!trimmed || !/^\d{1,9}$/.test(trimmed)) return null;
   const n = Number(trimmed);

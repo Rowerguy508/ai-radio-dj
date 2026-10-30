@@ -143,7 +143,9 @@ Accepts `{ keyId, attestationObject, challenge }`. Order:
 1. Body cap 16 KB on raw bytes, before parsing (413 `too_large`).
 2. Stateless challenge check, purpose `attest` (no Redis).
 3. Full verification per Apple ("Validating apps that connect to your
-   server"): `clientDataHash = SHA256(challenge)`;
+   server"): `clientDataHash = SHA256(challenge)`, over the UTF-8 bytes of the
+   challenge string exactly as returned (not its base64url-decoded bytes; Fry
+   #246 rec. 3);
    `nonce = SHA256(authData ‖ clientDataHash)` equals the value at OID
    `1.2.840.113635.100.8.2`; x5c chain to the pinned **Apple App Attestation
    Root CA** verified without the system trust store, with validity dates;
@@ -162,7 +164,10 @@ Accepts `{ keyId, attestationObject, challenge }`. Order:
    script checks the enroll cap **before** incrementing: a refusal (429
    `enroll`) writes no key record and does not increment the counter.
    Key record: `{ pubKeySpki, counter: 0, env, createdDay, revoked: false }`,
-   90-day sliding TTL. Success returns 204.
+   90-day sliding TTL. Success returns 204. Unless `VERCEL_ENV` is exactly
+   `production`, every key this script touches is prefixed `nonprod:`, so a
+   Preview deployment sharing the Upstash database never writes a record
+   Production trusts (PR 3b).
 
 #### 4.1.3 `POST /api/tts` and `POST /api/entitlement` (assertion-signed)
 

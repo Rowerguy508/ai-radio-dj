@@ -220,6 +220,43 @@ request's signature all verify, and that was never used, is refused with
 again, at most once per cue. A forged, tampered, wrong-purpose, reused or
 badly signed challenge is **401 `assertion`**.
 
+### `POST /api/attest/register` (#233 PR 3b, note §4.1.2)
+
+Body `{ keyId, attestationObject, challenge }`: `keyId` is the 44-character
+standard-base64 key ID from `DCAppAttestService.generateKey`, `attestationObject`
+the standard-base64 CBOR from `attestKey`, `challenge` a purpose-`attest` challenge
+from `/api/attest/challenge`. The app must call `attestKey` with
+**`clientDataHash = SHA256(UTF-8 bytes of the challenge string)`**. Success is
+**204** with no body. Same gates as the challenge endpoint (PAID_STOP first, then
+405, then the attest flag), then config (500 `misconfig`), then a durable store
+(503 `store`, `Retry-After: 30`, no in-memory fallback in any environment), then a
+**16 KiB raw-body cap** (413).
+
+Verification is offline, against the pinned **Apple App Attestation Root CA**
+(`src/apple-app-attest-root-ca.ts`), never the system trust store: x5c chain and
+validity dates, nonce `SHA256(authData ‖ clientDataHash)` at OID
+`1.2.840.113635.100.8.2`, `keyId = SHA256(public key) = credentialId`,
+`rpIdHash = SHA256("<AppIDPrefix>.com.aerodj.app")`, `counter = 0`, production
+`aaguid`, the COSE key, and on iOS 27+ the validation category (Production: 2
+TestFlight or 4 App Store). CBOR is decoded by a small strict in-repo decoder
+(`src/cbor.ts`: definite lengths, depth 4, 16 items, no tags or floats, no
+duplicate keys, no trailing bytes). Any failure is **401 `assertion`** and writes
+nothing; the reason enum is logged, never returned.
+
+Then one Redis script: refuse a used challenge (401), refuse if today's verified
+enrollments reached `AERODJ_TTS_ENROLL_DAILY_CAP` (**429 `enroll`**, `Retry-After`
+= seconds to the next UTC midnight; nothing written), mark the challenge used,
+`SET key:{aerodj-tts}:<keyId> NX` with `{ pubKeySpki, counter: 0, env, createdDay,
+revoked: false }` and a 90-day TTL (an existing keyId: 401, record untouched), and
+count the enrollment. An expired but otherwise valid challenge: 400
+`challenge_expired`, nothing written.
+
+**Preview never writes what Production trusts:** unless `VERCEL_ENV` is exactly
+`production`, every key (record, enroll counter, used mark) is prefixed `nonprod:`.
+Test root CAs can be injected by code only, never by env, and only on a Preview or
+Development deployment; anywhere else that is 500 `misconfig`. The assertion path
+that uses the stored key is PR 4.
+
 ## Logging and privacy
 
 Each request logs exactly one JSON line: `{ requestId, status, chars }`.
@@ -248,6 +285,10 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_PAID_STOP` | no | Master stop. Any value except exactly `false` (including empty) → every paid path and `/api/attest/*` return 503 `disabled`. Unset in normal operation. |
 | `AERODJ_TTS_ATTEST_ENABLED` | no | Attest kill switch. Only exactly `true` enables `/api/attest/*`; anything else is off. Leave unset until the owner enables attestation. |
 | `AERODJ_TTS_CHALLENGE_HMAC_KEY` | before attest is enabled | Server-only. Dedicated key, at least 32 bytes, **created by the owner** and pasted directly into Vercel (Production). Never in chat, repo, CI or builds. |
+| `AERODJ_TTS_APPLE_APP_ID_PREFIX` | before attest is enabled | The 10-character App ID prefix from the Apple Developer account (not assumed to equal the Team ID). Public identifier, not a secret. Missing or not `[A-Z0-9]{10}` → register is 500 `misconfig`. |
+| `AERODJ_TTS_BUNDLE_ID` | no | If set, must equal `com.aerodj.app` (from `config/storekit.json`); anything else → 500 `misconfig`. It cannot change the bundle. |
+| `AERODJ_TTS_APP_ATTEST_ENV` | no | Unset or `production`: only the production `aaguid`. `development` also accepts `appattestdevelop` (and validation category 3), **only** on a Preview/Development deployment with no `ELEVENLABS_API_KEY`; anywhere else, or any other value → 500 `misconfig`. |
+| `AERODJ_TTS_ENROLL_DAILY_CAP` | no | Verified enrollments per UTC day (default 20, owner decision). Plain integer 1-100000; anything else uses the default. |
 
 ## Deploy (owner only, after Sentinel's review)
 
