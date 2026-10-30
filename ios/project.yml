@@ -41,6 +41,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app
+        # Universal: iPhone (1) and iPad (2). v1 ships on both (owner, 2026-10-29). XcodeGen's
+        # iOS preset already sets this; it is spelled out so the app can't silently lose iPad
+        # if presets change. All configs inherit base. scripts/check-universal-app-settings.sh
+        # checks this file; CI checks the built UIDeviceFamily.
+        TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_OBJC_BRIDGING_HEADER: AeroDJ/AeroDJ-Bridging-Header.h
         OTHER_LDFLAGS: "$(inherited) -lz"
