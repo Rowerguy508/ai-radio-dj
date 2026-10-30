@@ -76,8 +76,10 @@ final class StationQueuePlayer {
     /// A created-station row was opened (Orion, #213). User tap: authorize, apply the recipe, and when
     /// the player is idle with nothing queued start the station on the idle-Play path, waiting a
     /// bounded time for its queue; while something plays it switches at the song boundary.
-    /// Restore: nothing. Logs the outcome as an enum only.
-    func openCreatedStation(_ trigger: StationOpenTrigger, recipeID: UUID, studio: StudioPresentationModel) async {
+    /// Restore: nothing. Logs the outcome as an enum only and returns it (the list's start toast).
+    @discardableResult
+    func openCreatedStation(_ trigger: StationOpenTrigger, recipeID: UUID,
+                            studio: StudioPresentationModel) async -> CreatedStationOpenOutcome {
         let outcome = await createdStart.open(
             trigger,
             recipeID: recipeID,
@@ -89,6 +91,7 @@ final class StationQueuePlayer {
             start: { tracks in _ = await play(tracks) })
         Logger(subsystem: "com.aerodj.app", category: "stationQueue")
             .notice("createdStationOpen \(String(describing: outcome), privacy: .public)")
+        return outcome
     }
 
     /// A built-in station row was tapped (Fry #213 nit 2): a created-station tap still waiting for
