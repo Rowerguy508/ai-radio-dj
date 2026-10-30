@@ -91,11 +91,18 @@ public final class DJBreakSession {
     /// Each boundary re-checks them against `now` (expiry), independent of `refresh()`.
     private var sources: [UUID: ConnectionItem] = [:]
     private let now: () -> Date
+    /// Once-a-day briefing marker. Marked only when a briefing break's audio actually starts
+    /// (`playbackStarted`), never when it is planned or handed out, so a briefing that is
+    /// skipped, fails or is cut can still run later that day. The app passes `.standard`;
+    /// the default is a fresh in-memory ledger (tests, Test Station).
+    public let briefingDays: BriefingDayLedger
 
     public init(preparer: DJBreakPreparer, station: StationConfigurationModel, dj: DJPresentationStore,
                 base: DJCadence = .init(), seed: UInt64 = .random(in: .min ... .max),
                 hour: @escaping () -> Int = { Calendar.current.component(.hour, from: Date()) },
-                now: @escaping () -> Date = { Date() }) {
+                now: @escaping () -> Date = { Date() },
+                briefingDays: BriefingDayLedger = .inMemory()) {
+        self.briefingDays = briefingDays
         self.preparer = preparer
         self.now = now
         self.station = station
@@ -433,7 +440,11 @@ public final class DJBreakSession {
     }
 
     /// Player audio callbacks. `playbackStarted` only once DJ audio is actually audible.
-    public func playbackStarted(afterTrack k: Int) { dj.send(.playbackStarted(afterTrack: k)) }
+    public func playbackStarted(afterTrack k: Int) {
+        // The briefing is "done for today" only once its audio is actually audible.
+        if let live = onAir, live.afterTrack == k, live.includesBriefing { briefingDays.markBriefedToday() }
+        dj.send(.playbackStarted(afterTrack: k))
+    }
     public func playbackFinished(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFinished(afterTrack: k)) }
     public func playbackFailed(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFailed(afterTrack: k)) }
 

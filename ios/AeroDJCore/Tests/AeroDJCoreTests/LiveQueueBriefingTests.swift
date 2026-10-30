@@ -62,7 +62,7 @@ final class LiveQueueBriefingTests: XCTestCase {
             ConnectionItem(id: pendingID, integration: .calendar, title: "Pending sync", state: .pendingApproval),
         ], preferences: preferences())
         let now = morning
-        let provider = LiveQueueBriefing.provider(studio: studio, now: { now }, calendar: calendar)
+        let provider = LiveQueueBriefing.provider(studio: studio, days: .inMemory(), now: { now }, calendar: calendar)
         XCTAssertNil(provider().forQueue(), "read at play time: nothing approved yet")
 
         studio.items += [
@@ -98,7 +98,7 @@ final class LiveQueueBriefingTests: XCTestCase {
             preferences: preferences(),
             sensitivityByItemID: [id: .blocked])
         let now = morning
-        let queued = LiveQueueBriefing.provider(studio: studio, now: { now }, calendar: calendar)().forQueue()
+        let queued = LiveQueueBriefing.provider(studio: studio, days: .inMemory(), now: { now }, calendar: calendar)().forQueue()
         let content = queued?.cues.filter(\.isContent) ?? []
         let spoken = queued?.cues.map(\.text).joined(separator: " ") ?? ""
         XCTAssertTrue(content.isEmpty, spoken)
@@ -148,17 +148,24 @@ final class LiveQueueBriefingTests: XCTestCase {
             items: [ConnectionItem(id: id, integration: .obsidian, title: "Unclassified note", state: .approved)],
             preferences: preferences())
         let now = morning
-        let queued = LiveQueueBriefing.provider(studio: studio, now: { now }, calendar: calendar)().forQueue()
+        let queued = LiveQueueBriefing.provider(studio: studio, days: .inMemory(), now: { now }, calendar: calendar)().forQueue()
         let content = queued?.cues.filter(\.isContent) ?? []
         let spoken = queued?.cues.map(\.text).joined(separator: " ") ?? ""
         XCTAssertTrue(content.isEmpty, spoken)
         XCTAssertFalse(spoken.contains("Unclassified note"), spoken)
     }
 
+    /// Once a day at any hour (owner, Oct 29): the afternoon is no longer quiet by itself;
+    /// a day that was already briefed is.
     func testLaterShowAndDisabledBriefingStayQuiet() async throws {
-        let items = [ConnectionItem(id: UUID(), integration: .calendar, title: "Design review", state: .approved)]
+        let id = UUID()
+        let items = [ConnectionItem(id: id, integration: .calendar, title: "Design review", state: .approved)]
         let on = preferences()
-        XCTAssertNil(LiveQueueBriefing.handoff(items: items, preferences: on, now: afternoon, calendar: calendar).forQueue())
+        XCTAssertNil(LiveQueueBriefing.handoff(items: items, preferences: on, now: afternoon, calendar: calendar,
+                                               briefedToday: true, sensitivityByItemID: [id: .low]).forQueue())
+        XCTAssertNotNil(LiveQueueBriefing.handoff(items: items, preferences: on, now: afternoon, calendar: calendar,
+                                                  sensitivityByItemID: [id: .low]).forQueue(),
+                        "not briefed yet today: the afternoon briefs")
         let off = preferences(enabled: false)
         let disabled = LiveQueueBriefing.handoff(items: items, preferences: off, now: morning, calendar: calendar)
         XCTAssertNil(disabled.forQueue())

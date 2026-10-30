@@ -352,6 +352,13 @@ public struct ConnectionItem: Equatable, Sendable, Identifiable {
     public var description: String { state.description }
     public var actions: [ConnectionAction] { state.actions(for: integration) }
 
+    /// The one sensitivity map: each row's own source sensitivity keyed by row id. Rows without a
+    /// value are left out, never defaulted, so every reader treats them as `.blocked`.
+    /// `ConnectionsModel.sensitivityByItemID` and the live briefing both use it (Nigel's report).
+    public static func sensitivityMap(_ items: [ConnectionItem]) -> [UUID: Sensitivity] {
+        Dictionary(items.compactMap { row in row.sensitivity.map { (row.id, $0) } }, uniquingKeysWith: { a, _ in a })
+    }
+
     /// Whether the DJ may narrate it at `now`: its last known state is `.approved` and it has
     /// not expired since, by the same rule as `ConnectionItemState.resolve` (`expiresAt <= now`
     /// is expired). Used at song boundaries, where no `refresh()` has re-resolved the state.
@@ -615,9 +622,8 @@ public final class ConnectionsModel {
 
     /// Each row's own source sensitivity, keyed by row id (the same id briefing adapters use).
     /// Rows without a value are left out, never defaulted (#75's adapter treats missing as blocked).
-    public var sensitivityByItemID: [UUID: Sensitivity] {
-        Dictionary(items.compactMap { row in row.sensitivity.map { (row.id, $0) } }, uniquingKeysWith: { a, _ in a })
-    }
+    /// Built by `ConnectionItem.sensitivityMap`, the one builder the live briefing also reads.
+    public var sensitivityByItemID: [UUID: Sensitivity] { ConnectionItem.sensitivityMap(items) }
 
     // MARK: Intents
 
