@@ -22,7 +22,8 @@ final class AppDisplayNameTests: XCTestCase {
     }
 
     /// No string literal in the app, share extension or core copy names AeroDJ as a word.
-    /// Allowed: identifiers such as "AeroDJ.cache…" keys, and DJ/ (Echo's spoken scripts, which keep
+    /// Allowed: identifiers such as "AeroDJ.cache…" keys, lines marked `// not user-visible:`
+    /// (hash seeds), and DJ/ (Echo's spoken scripts, which keep
     /// their station name until the owner decides).
     func testNoUserVisibleAeroDJLiterals() throws {
         let roots = ["AeroDJ", "AeroDJShare", "AeroDJCore/Sources/AeroDJCore"].map { iosDir.appendingPathComponent($0) }
@@ -36,7 +37,8 @@ final class AppDisplayNameTests: XCTestCase {
                 if url.path.contains("/AeroDJCore/DJ/") { continue }
                 let source = try String(contentsOf: url, encoding: .utf8)
                 for (n, line) in source.components(separatedBy: "\n").enumerated()
-                where !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") {
+                where !line.trimmingCharacters(in: .whitespaces).hasPrefix("//")
+                    && !line.contains("// not user-visible:") {
                     let range = NSRange(line.startIndex..., in: line)
                     if literal.firstMatch(in: line, range: range) != nil {
                         offenders.append("\(url.lastPathComponent):\(n + 1)")

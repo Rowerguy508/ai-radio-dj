@@ -30,6 +30,19 @@ final class StationArtTests: XCTestCase {
         XCTAssertNotEqual(other.hues[0], StationArtStyle.station(station).hues[0])
     }
 
+    /// OnAirly rename (-Nova): the no-station art keeps its pre-rename palette, angle and rings
+    /// (same hash seed), so idle screens don't change colour. Only the monogram follows the name.
+    func testNoStationArtKeepsItsPaletteAndShowsTheDisplayInitial() {
+        let none = StationArtStyle.station(nil)
+        let before = StationArtStyle.make(seed: "station:" + "AeroDJ", label: "AeroDJ") // not user-visible: pre-rename pin
+        XCTAssertEqual(none.hues, before.hues)
+        XCTAssertEqual(none.saturation, before.saturation)
+        XCTAssertEqual(none.brightness, before.brightness)
+        XCTAssertEqual(none.angle, before.angle)
+        XCTAssertEqual(none.rings, before.rings)
+        XCTAssertEqual(none.monogram, "O")
+    }
+
     func testMonogram() {
         XCTAssertEqual(StationArtStyle.monogram("Morning Light"), "ML")
         XCTAssertEqual(StationArtStyle.monogram("golden"), "G")
