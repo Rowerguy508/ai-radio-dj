@@ -23,7 +23,7 @@ public struct StationSplitNavigation<ID: Hashable & Sendable>: Equatable, Sendab
     /// The open station. Width-class changes never write it.
     public private(set) var selectedID: ID?
     /// Whether the window currently has a regular width class. Nil (`unspecified`) is compact.
-    public private(set) var isRegularWidth: Bool
+    public private(set) var isRegularWidth = false
     /// What compact width shows. Only a back gesture in compact width moves it to `.list`
     /// while a station is selected.
     private var compactColumnChoice: StationSplitColumn = .list
@@ -31,9 +31,9 @@ public struct StationSplitNavigation<ID: Hashable & Sendable>: Equatable, Sendab
     /// (the list arriving, the stored id changing) never overrides either.
     public private(set) var didApplyRestore = false
 
-    public init(isRegularWidth: Bool = false) {
-        self.isRegularWidth = isRegularWidth
-    }
+    /// Starts compact with nothing selected. The width class arrives through
+    /// `setRegularWidth`, the same path the view's `onChange(initial:)` uses.
+    public init() {}
 
     /// The column compact width shows: the open station whenever one is selected, unless the
     /// listener went back to the list in compact width.
