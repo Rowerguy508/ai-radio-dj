@@ -100,6 +100,19 @@ export interface VerifiedTransaction {
   appAccountToken?: string;
 }
 
+/**
+ * Brand for transactions this module verified (Sentinel's B2 on #264). Module-private:
+ * only `verifySignedTransaction` adds to it, and the branded object is frozen, so a
+ * hand-built `{ originalTransactionId }` (or a branded one edited afterwards) never passes
+ * `isVerifiedTransaction`.
+ */
+const VERIFIED = new WeakSet<object>();
+
+/** True only for the frozen transaction object `verifySignedTransaction` returned. */
+export function isVerifiedTransaction(value: unknown): value is VerifiedTransaction {
+  return typeof value === 'object' && value !== null && VERIFIED.has(value);
+}
+
 /** `new`: newer than anything this install presented for this purchase; `repost`: equal `signedDate` (idempotent, no upsert). */
 export type Freshness = 'new' | 'repost';
 
@@ -239,18 +252,16 @@ export async function verifySignedTransaction(jws: unknown, options: StoreKitVer
   if (last !== undefined && signedDate < last) return fail('stale');
   const freshness: Freshness = last !== undefined && signedDate === last ? 'repost' : 'new';
 
-  return {
-    ok: true,
-    freshness,
-    transaction: {
-      originalTransactionId,
-      transactionId,
-      productId,
-      environment: environment as 'Production' | 'Sandbox',
-      inAppOwnershipType: ownership as 'PURCHASED' | 'FAMILY_SHARED',
-      expiresDate,
-      signedDate,
-      ...(typeof appAccountToken === 'string' ? { appAccountToken } : {}),
-    },
-  };
+  const transaction: VerifiedTransaction = Object.freeze({
+    originalTransactionId,
+    transactionId,
+    productId,
+    environment: environment as 'Production' | 'Sandbox',
+    inAppOwnershipType: ownership as 'PURCHASED' | 'FAMILY_SHARED',
+    expiresDate,
+    signedDate,
+    ...(typeof appAccountToken === 'string' ? { appAccountToken } : {}),
+  });
+  VERIFIED.add(transaction);
+  return { ok: true, freshness, transaction };
 }

@@ -50,6 +50,63 @@ export function subjectBucket(subject: Subject): string {
 
 export const GLOBAL_BUCKET = 'global';
 
+/** `pro:<production|preview|development>:<sha256 hex>` (src/pro-allowance.ts, Sentinel's B3). */
+export const PRO_BUCKET = /^pro:(production|preview|development):[0-9a-f]{64}$/;
+
+/**
+ * One verified Pro render (#264). Charged to the Pro purchase's OWN buckets, never the
+ * owner's or an install's (Sentinel's B1): its render counter, its char counter (cap
+ * clamped to the global ceiling) and the shared global ceiling, in ONE atomic step.
+ */
+export interface ProCharge {
+  /** `pro:<deployment>:<sha256(originalTransactionId)>`, from `proBucket`. */
+  readonly bucket: string;
+  readonly chars: number;
+  /** Configured per-subscriber daily chars (`AERODJ_TTS_PRO_DAILY_CHARS`); clamped by `effectiveProCharCap`. */
+  readonly charCap: number;
+  /** Renders per UTC day (`PRO_DAILY_RENDER_ALLOWANCE`). */
+  readonly renderAllowance: number;
+}
+
+/** Why a Pro reservation was refused: global ceiling, render allowance, or the subscriber's char cap. */
+export type ProRefusal = 'global_daily' | 'pro_renders' | 'pro_chars';
+
+export type ProReserveResult =
+  | { readonly ok: true; readonly reservation: ProReservation }
+  | { readonly ok: false; readonly reason: ProRefusal };
+
+export interface ProReservation {
+  readonly rid: string;
+  readonly bucket: string;
+  readonly day: string;
+  readonly chars: number;
+}
+
+/**
+ * The subscriber's effective daily char cap: the configured value clamped to the global
+ * ceiling (Orion): 12,000 configured with 9,000 global is 9,000; a lower value wins.
+ */
+export function effectiveProCharCap(configured: number, globalCap: number): number {
+  return Math.min(configured, globalCap);
+}
+
+function checkProCharge(p: ProCharge): void {
+  if (typeof p.bucket !== 'string' || !PRO_BUCKET.test(p.bucket)) throw new TypeError('invalid pro bucket');
+  for (const n of [p.chars, p.charCap, p.renderAllowance]) {
+    if (!Number.isSafeInteger(n) || n < 1) throw new TypeError('invalid pro charge');
+  }
+}
+
+/** [global chars, Pro chars, Pro renders] day counters for one Pro bucket. */
+export function proDayKeys(bucket: string, day: string): [string, string, string] {
+  if (!PRO_BUCKET.test(bucket)) throw new TypeError('invalid pro bucket');
+  return [
+    `aerodj-tts:chars:${GLOBAL_BUCKET}:${day}`,
+    `aerodj-tts:chars:${bucket}:${day}`,
+    `aerodj-tts:renders:${bucket}:${day}`,
+  ];
+}
+
 export interface Reservation {
   /**
    * Server-generated reservation id (a random UUID, never from the client). A refund is
@@ -71,8 +128,8 @@ export type ReserveResult =
 export interface UsageLimiter {
   /** True when backed by a store shared by every instance. */
   readonly durable: boolean;
-  /** Counts one request for `bucket`; false if over the per-minute rate. */
-  allowRequest(bucket: string, now: number): Promise<boolean>;
+  /** Counts one request for `bucket`; false if over the per-minute rate (`limit`, default the configured rate). */
+  allowRequest(bucket: string, now: number, limit?: number): Promise<boolean>;
   /**
    * Atomically reserves `chars` of today's (UTC) budget on BOTH the subject's bucket and
    * the global bucket, or on neither: a refusal changes no counter.
@@ -84,6 +141,15 @@ export interface UsageLimiter {
    * false if that reservation was already refunded.
    */
   release(reservation: Reservation): Promise<boolean>;
+  /**
+   * Pro only (#264): ONE atomic check-and-add, in this order: the global ceiling first
+   * (Sentinel), then the render allowance, then the subscriber's (clamped) char cap. Any
+   * refusal changes NO counter. Optional so older test doubles stay valid; the handler
+   * treats a limiter without it (or a non-durable one) as 503 `store`.
+   */
+  reservePro?(charge: ProCharge, now: number): Promise<ProReserveResult>;
+  /** Returns a Pro reservation's chars (global and Pro) and its render, at most once per `rid`. */
+  releasePro?(reservation: ProReservation): Promise<boolean>;
 }
 
 export interface LimiterOptions {
@@ -154,9 +220,9 @@ export class InMemoryUsageLimiter implements UsageLimiter {
   // Every method mutates state synchronously, before any await, so each call is
   // atomic with respect to other requests on the same instance.
 
-  async allowRequest(bucket: string, now: number): Promise<boolean> {
+  async allowRequest(bucket: string, now: number, limit: number = this.options.requestsPerMinute): Promise<boolean> {
     const recent = (this.windows.get(bucket) ?? []).filter((t) => now - t < 60_000);
-    if (recent.length >= this.options.requestsPerMinute) {
+    if (recent.length >= limit) {
       this.windows.set(bucket, recent);
       return false;
     }
@@ -189,6 +255,33 @@ export class InMemoryUsageLimiter implements UsageLimiter {
       const entry = this.spend.get(bucket);
       if (!entry || entry.day !== reservation.day) continue;
       entry.chars = Math.max(0, entry.chars - reservation.chars);
+    }
+    return true;
+  }
+
+  async reservePro(charge: ProCharge, now: number): Promise<ProReserveResult> {
+    checkProCharge(charge);
+    const day = utcDay(now);
+    const renders = `renders:${charge.bucket}`;
+    // Same order as PRO_RESERVE_SCRIPT.
+    if (this.used(GLOBAL_BUCKET, now) + charge.chars > this.options.dailyCharCap) return { ok: false, reason: 'global_daily' };
+    if (this.used(renders, now) >= charge.renderAllowance) return { ok: false, reason: 'pro_renders' };
+    if (this.used(charge.bucket, now) + charge.chars > effectiveProCharCap(charge.charCap, this.options.dailyCharCap)) {
+      return { ok: false, reason: 'pro_chars' };
+    }
+    this.spend.set(GLOBAL_BUCKET, { day, chars: this.used(GLOBAL_BUCKET, now) + charge.chars });
+    this.spend.set(charge.bucket, { day, chars: this.used(charge.bucket, now) + charge.chars });
+    this.spend.set(renders, { day, chars: this.used(renders, now) + 1 });
+    return { ok: true, reservation: { rid: newReservationId(), bucket: charge.bucket, day, chars: charge.chars } };
+  }
+
+  async releasePro(reservation: ProReservation): Promise<boolean> {
+    const marker = refundMarkerKey(reservation.rid);
+    if (this.refunded.has(marker)) return false;
+    this.refunded.set(marker, reservation.day);
+    for (const [bucket, by] of [[GLOBAL_BUCKET, reservation.chars], [reservation.bucket, reservation.chars], [`renders:${reservation.bucket}`, 1]] as const) {
+      const entry = this.spend.get(bucket);
+      if (entry && entry.day === reservation.day) entry.chars = Math.max(0, entry.chars - by);
     }
     return true;
   }
@@ -239,6 +332,47 @@ for i = 1, 2 do
   local used = tonumber(redis.call('GET', KEYS[i]) or '0')
   if used > 0 then
     local n = used - c
+    if n < 0 then n = 0 end
+    redis.call('SET', KEYS[i], n, 'KEEPTTL')
+  end
+end
+return 1`;
+
+/**
+ * Pro reserve (#264). KEYS[1] = global chars, KEYS[2] = Pro chars, KEYS[3] = Pro renders;
+ * ARGV = chars, global cap, effective Pro char cap, render allowance, ttl s.
+ * Order: global ceiling (-2), then render allowance (-4), then Pro char cap (-3); a refusal
+ * changes NO counter. Otherwise adds chars to both char counters and 1 to the render
+ * counter, sets their TTLs, and returns the new render count (1..allowance).
+ */
+export const PRO_RESERVE_SCRIPT = `local c = tonumber(ARGV[1])
+local g = tonumber(redis.call('GET', KEYS[1]) or '0')
+if g + c > tonumber(ARGV[2]) then return -2 end
+local r = tonumber(redis.call('GET', KEYS[3]) or '0')
+if r >= tonumber(ARGV[4]) then return -4 end
+local p = tonumber(redis.call('GET', KEYS[2]) or '0')
+if p + c > tonumber(ARGV[3]) then return -3 end
+redis.call('INCRBY', KEYS[1], c)
+redis.call('EXPIRE', KEYS[1], ARGV[5])
+redis.call('INCRBY', KEYS[2], c)
+redis.call('EXPIRE', KEYS[2], ARGV[5])
+local n = redis.call('INCR', KEYS[3])
+redis.call('EXPIRE', KEYS[3], ARGV[5])
+return n`;
+
+/**
+ * KEYS[1..3] as PRO_RESERVE_SCRIPT, KEYS[4] = refund marker; ARGV = chars, marker ttl s.
+ * At most once per reservation (SET NX); then chars off both char counters and 1 off the
+ * render counter, each floored at zero, keeping TTLs. Returns 1, or 0 if already refunded.
+ */
+export const PRO_RELEASE_SCRIPT = `if not redis.call('SET', KEYS[4], '1', 'NX', 'EX', ARGV[2]) then return 0 end
+local c = tonumber(ARGV[1])
+for i = 1, 3 do
+  local by = c
+  if i == 3 then by = 1 end
+  local used = tonumber(redis.call('GET', KEYS[i]) or '0')
+  if used > 0 then
+    local n = used - by
     if n < 0 then n = 0 end
     redis.call('SET', KEYS[i], n, 'KEEPTTL')
   end
@@ -350,9 +484,9 @@ export class RedisUsageLimiter implements UsageLimiter {
     return upstashEval(this.config, this.fetchImpl, this.timeoutMs, script, keys, args);
   }
 
-  async allowRequest(bucket: string, now: number): Promise<boolean> {
+  async allowRequest(bucket: string, now: number, limit: number = this.options.requestsPerMinute): Promise<boolean> {
     const k = `${KEY_PREFIX}:rate:${bucket}:${utcMinute(now)}`;
-    const result = await this.eval(RATE_SCRIPT, [k], [this.options.requestsPerMinute, MINUTE_TTL_MS]);
+    const result = await this.eval(RATE_SCRIPT, [k], [limit, MINUTE_TTL_MS]);
     // RATE_SCRIPT returns only 0 (limited) or 1 (allowed); any other integer is a store fault (503), not 429.
     if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
     return result === 1;
@@ -382,6 +516,31 @@ export class RedisUsageLimiter implements UsageLimiter {
       reservation.chars,
       REFUND_MARKER_TTL_SECONDS,
     ]);
+    if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
+    return result === 1;
+  }
+
+  async reservePro(charge: ProCharge, now: number): Promise<ProReserveResult> {
+    checkProCharge(charge);
+    const day = utcDay(now);
+    const result = await this.eval(PRO_RESERVE_SCRIPT, proDayKeys(charge.bucket, day), [
+      charge.chars,
+      this.options.dailyCharCap,
+      effectiveProCharCap(charge.charCap, this.options.dailyCharCap),
+      charge.renderAllowance,
+      DAY_TTL_SECONDS,
+    ]);
+    if (result === -2) return { ok: false, reason: 'global_daily' };
+    if (result === -4) return { ok: false, reason: 'pro_renders' };
+    if (result === -3) return { ok: false, reason: 'pro_chars' };
+    // Success is the new render count, 1..allowance; anything else is a store fault (503), never a grant.
+    if (result < 1 || result > charge.renderAllowance) throw new LimiterStoreError('limiter store error');
+    return { ok: true, reservation: { rid: newReservationId(), bucket: charge.bucket, day, chars: charge.chars } };
+  }
+
+  async releasePro(reservation: ProReservation): Promise<boolean> {
+    const keys = [...proDayKeys(reservation.bucket, reservation.day), refundMarkerKey(reservation.rid)];
+    const result = await this.eval(PRO_RELEASE_SCRIPT, keys, [reservation.chars, REFUND_MARKER_TTL_SECONDS]);
     if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
     return result === 1;
   }

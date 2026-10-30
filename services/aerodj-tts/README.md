@@ -63,6 +63,7 @@ a body of enums and numbers only:
 | 429 | `owner_daily` | seconds until 00:00 UTC |
 | 429 | `install_daily` | seconds until 00:00 UTC (not reachable until per-install auth lands) |
 | 429 | `global_daily` | seconds until 00:00 UTC |
+| 429 | `daily_allowance` | seconds until 00:00 UTC (verified Pro only, not reachable until PR 6 wires Pro: 160 renders or the Pro char cap used up; the log says `daily_allowance` or `pro_chars`) |
 | 503 | `store` | 30 |
 | 503 | `disabled` (master stop, below) | 3600 |
 | 500 | `misconfig` | 3600 |
@@ -135,6 +136,16 @@ printf %s "$TOKEN" | shasum -a 256 | cut -d' ' -f1   # paste this hex into Verce
   - Caps accept only a plain integer from 1 to 10,000,000. Anything else (empty,
     0, negative, fractional, `Infinity`, too large) uses the default, so a cap can
     never become unlimited.
+- **Verified Pro** (`src/pro-allowance.ts`; inert until PR 6 sets `verifiedPro` from a
+  JWS that `verifySignedTransaction` verified, never from the body or a header). Charged
+  to the purchase's own buckets `pro:<VERCEL_ENV>:<sha256(originalTransactionId)>`, never
+  the owner's or an install's, so the per-install 1,500 cap does not apply. One atomic
+  step, in order: global ceiling (`global_daily`), then 160 renders a day (40 breaks x 4),
+  then the Pro char cap `AERODJ_TTS_PRO_DAILY_CHARS` (default 12,000, clamped to the
+  global ceiling, so 9,000 today); either Pro limit answers 429 `daily_allowance`. Own
+  rate bucket `AERODJ_TTS_PRO_RATE_PER_MINUTE` (default 12). Unlike the owner settings,
+  an invalid Pro value or a `VERCEL_ENV` other than production/preview/development makes
+  a Pro request 500 `misconfig`; the owner path is unaffected. Durable store only.
 - Rate accepts only a plain integer from 1 to 600 by the same rule as the caps.
   Anything else (`1e9`, `Infinity`, `601`, fractional, empty) uses the default 12,
   so the rate limit can never be switched off by configuration.
@@ -248,6 +259,8 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_OWNER_DAILY_CHAR_CAP` | no | Owner bucket cap. Default: the global ceiling. |
 | `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP` | no | Per-install cap. Default 1500. Inert until per-install auth lands. |
 | `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. Plain integer 1-600; anything else uses 12. |
+| `AERODJ_TTS_PRO_DAILY_CHARS` | no | Per Pro subscriber daily chars. Default 12000, clamped to the global ceiling. Plain integer 600-10,000,000; anything else makes Pro requests 500 `misconfig`. |
+| `AERODJ_TTS_PRO_RATE_PER_MINUTE` | no | Per Pro subscriber rate. Default 12. Plain integer 1-600; anything else makes Pro requests 500 `misconfig`. |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | yes in Production | Injected by the Upstash Redis integration (Vercel Marketplace, free tier). `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work. HTTPS only. |
 | `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter (owner path only; never install reservations). Owner decision only; leave unset. |
 | `AERODJ_TTS_PAID_STOP` | no | Master stop. Any value except exactly `false` (including empty) → every paid path and `/api/attest/*` return 503 `disabled`. Unset in normal operation. |
