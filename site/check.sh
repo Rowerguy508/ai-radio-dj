@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Static checks for site/: every internal link and asset resolves, in-page anchors exist,
-# vercel.json parses, and nothing secret-looking is committed. No network, no build.
+# vercel.json parses, no [owner]/[PENDING] marker is visible, and nothing secret-looking is committed. No network, no build.
 # Usage: site/check.sh   (from anywhere)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -51,6 +51,12 @@ python3 -c 'import json,sys; d=json.load(open("vercel.json")); sys.exit(0 if d.g
 # privacy.html and support.html must match Sentinel's docs/site/*.md word for word.
 python3 render-copy.py --check >/dev/null || err "privacy/support out of date with docs/site/*.md (run site/render-copy.py)"
 
+# No [owner] or [PENDING] marker may show on the live site: visible text and shown attributes
+# of every page, case-insensitive, entity-decoded, and across tags (see markers.py).
+if ! marker_hits="$(python3 markers.py)"; then
+  err "$(printf '%s\n' "$marker_hits" | grep -c .) visible [owner]/[PENDING] marker(s):"; printf '%s\n' "$marker_hits" | sed 's/^/  /'
+fi
+
 # Secret-looking strings in text files (fonts and images skipped).
 secret_re='(sk-[A-Za-z0-9_-]{16,}|sk_(live|test)_[A-Za-z0-9]{10,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}|(api[_-]?key|secret|token|password|bearer)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9_\-]{12,})'
 if grep -rIniE --exclude=check.sh "$secret_re" . >/dev/null; then
@@ -58,6 +64,6 @@ if grep -rIniE --exclude=check.sh "$secret_re" . >/dev/null; then
 fi
 
 if [ "$fail" -eq 0 ]; then
-  echo "OK: $(ls *.html | wc -l) pages, $links internal/external refs checked, routes /, /privacy, /support and 404 present, vercel.json cleanUrls, privacy/support match docs/site/*.md, no secret-looking strings."
+  echo "OK: $(ls *.html | wc -l) pages, $links internal/external refs checked, routes /, /privacy, /support and 404 present, vercel.json cleanUrls, privacy/support match docs/site/*.md, no visible [owner]/[PENDING] markers, no secret-looking strings."
 fi
 exit "$fail"
