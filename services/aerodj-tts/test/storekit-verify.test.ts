@@ -238,11 +238,17 @@ describe('verifySignedTransaction: must fail (Sentinel criterion 7)', () => {
     assert.equal(await reason(good({ revocationDate: NOW - DAY, revocationReason: 0 })), 'revoked');
   });
 
-  it('revoked: any present revocationDate is refused, including 0 and null (Fry N2 on #243)', async () => {
-    // 0 is falsy (kills a truthiness mutant); null kills a `!== null` / `!= null` mutant.
-    for (const revocationDate of [0, null, NOW + DAY, '', false]) {
+  it('revoked: any present non-null revocationDate is refused, including 0 (Fry N2 on #243)', async () => {
+    // 0 is falsy (kills a truthiness mutant).
+    for (const revocationDate of [0, NOW + DAY, '', false]) {
       assert.equal(await reason(good({ revocationDate })), 'revoked', JSON.stringify(revocationDate));
     }
+  });
+
+  it('revocation_null: a null revocationDate is refused with its own reason (Sentinel on PR 3)', async () => {
+    const result = await verifySignedTransaction(good({ revocationDate: null }), opts());
+    assert.equal(result.ok, false);
+    assert.equal(await reason(good({ revocationDate: null })), 'revocation_null');
   });
 
   it('revoked: only an absent revocationDate passes (control for the cases above)', async () => {

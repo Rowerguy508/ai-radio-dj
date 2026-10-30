@@ -12,13 +12,13 @@ export function attestEnabled(env: Env): boolean {
 
 /**
  * Master stop for every paid path, owner included (note §4.7, Fry D1; PR 3).
- * Fails closed: ANY non-empty value except exactly `false` stops (a typo stops
- * rather than runs). Unset, empty, or exactly `false` = normal. Checked first,
+ * Fails closed: ANY value except exactly `false` (including empty) stops (a typo stops
+ * rather than runs). Only unset or exactly `false` = normal. Checked first,
  * before auth, any limiter or store call and any ElevenLabs call.
  */
 export function paidStopped(env: Env): boolean {
   const value = env.AERODJ_TTS_PAID_STOP;
-  return value !== undefined && value !== '' && value !== 'false';
+  return value !== undefined && value !== 'false';
 }
 
 /** `Retry-After` (s) for 503 `disabled` and 500 `misconfig` (note §4.4). */

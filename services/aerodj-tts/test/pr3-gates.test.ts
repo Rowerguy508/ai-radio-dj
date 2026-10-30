@@ -23,10 +23,10 @@ const NOON = Date.UTC(2026, 9, 29, 12);
 const KEY_HEX = crypto.createHash('sha256').update('pr3 test challenge key, not a secret').digest('hex');
 const KEY_ID = crypto.createHash('sha256').update('install A').digest('base64');
 
-/** Values that must STOP (fail closed: any non-empty value except exactly `false`). */
-const STOP_VALUES = ['true', '1', 'yes', 'TRUE', 'False', 'FALSE', 'false ', ' false', ' ', 'no', 'off', '0'];
+/** Values that must STOP (fail closed: any value except exactly `false`, including empty). */
+const STOP_VALUES = ['', 'true', '1', 'yes', 'TRUE', 'False', 'FALSE', 'false ', ' false', ' ', 'no', 'off', '0'];
 /** Values that must NOT stop. */
-const RUN_VALUES: (string | undefined)[] = [undefined, '', 'false'];
+const RUN_VALUES: (string | undefined)[] = [undefined, 'false'];
 
 const env = (o: Env = {}): Env => ({
   AERODJ_TTS_TOKEN_SHA256: TOKEN_HASH,
@@ -78,7 +78,7 @@ const body = (res: { body: Buffer }) => JSON.parse(res.body.toString('utf8')) as
 
 // ---------------------------------------------------------------------------
 describe('AERODJ_TTS_PAID_STOP master stop (note §4.7, Fry D1)', () => {
-  test('paidStopped: any non-empty value except exactly `false` stops; unset, empty, `false` run', () => {
+  test('paidStopped: any value except exactly `false` stops (incl. empty); only unset and `false` run (Sentinel)', () => {
     for (const v of STOP_VALUES) assert.equal(paidStopped({ AERODJ_TTS_PAID_STOP: v }), true, JSON.stringify(v));
     for (const v of RUN_VALUES) assert.equal(paidStopped({ AERODJ_TTS_PAID_STOP: v }), false, JSON.stringify(v));
     assert.equal(paidStopped({}), false);
@@ -125,7 +125,7 @@ describe('AERODJ_TTS_PAID_STOP master stop (note §4.7, Fry D1)', () => {
     assert.equal(store.calls.length, 0);
   });
 
-  test('unset, empty or exactly `false`: normal behaviour (200, one render)', async () => {
+  test('unset or exactly `false`: normal behaviour (200, one render)', async () => {
     for (const v of RUN_VALUES) {
       const h = harness({ env: env({ AERODJ_TTS_PAID_STOP: v }) });
       const res = await handleTts(req(), h.deps);
@@ -178,7 +178,7 @@ describe('AERODJ_TTS_PAID_STOP master stop (note §4.7, Fry D1)', () => {
       }
     });
 
-    test('unset, empty or exactly `false`: the challenge is issued as before', async () => {
+    test('unset or exactly `false`: the challenge is issued as before', async () => {
       for (const v of RUN_VALUES) {
         const { res } = await run({ ...ENABLED, AERODJ_TTS_PAID_STOP: v });
         assert.equal(res.status, 200, JSON.stringify(v));

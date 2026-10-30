@@ -191,9 +191,9 @@ endpoints (`/api/attest/*`). It is checked **first**, before the method, auth, a
 limiter or Redis call and any ElevenLabs call. Stopped → `503`, `reason: "disabled"`,
 `Retry-After: 3600`.
 
-It fails closed: **any non-empty value except exactly `false` stops** (`true`, `1`,
-`TRUE`, `False`, `false ` with a space, and typos all stop). Unset, empty, or exactly
-`false` → normal behaviour. Like every env change on Vercel, it takes effect only on
+It fails closed: **any value except exactly `false` stops, including empty** (`true`, `1`,
+`TRUE`, `False`, `false ` with a space, and typos all stop). Only unset or exactly
+`false` → normal behaviour (Sentinel confirmed). Like every env change on Vercel, it takes effect only on
 the next deployment: set it, then redeploy Production.
 
 ## Attestation endpoints (off by default; #233 PRs 2-4)
@@ -245,7 +245,7 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. Plain integer 1-600; anything else uses 12. |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | yes in Production | Injected by the Upstash Redis integration (Vercel Marketplace, free tier). `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work. HTTPS only. |
 | `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter (owner path only; never install reservations). Owner decision only; leave unset. |
-| `AERODJ_TTS_PAID_STOP` | no | Master stop. Any non-empty value except exactly `false` → every paid path and `/api/attest/*` return 503 `disabled`. Unset in normal operation. |
+| `AERODJ_TTS_PAID_STOP` | no | Master stop. Any value except exactly `false` (including empty) → every paid path and `/api/attest/*` return 503 `disabled`. Unset in normal operation. |
 | `AERODJ_TTS_ATTEST_ENABLED` | no | Attest kill switch. Only exactly `true` enables `/api/attest/*`; anything else is off. Leave unset until the owner enables attestation. |
 | `AERODJ_TTS_CHALLENGE_HMAC_KEY` | before attest is enabled | Server-only. Dedicated key, at least 32 bytes, **created by the owner** and pasted directly into Vercel (Production). Never in chat, repo, CI or builds. |
 

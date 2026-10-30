@@ -398,7 +398,7 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
   key at ElevenLabs stops spend even without a redeploy. **From PR 3** that 500
   carries `reason: misconfig` and `Retry-After: 3600` (§4.4).
 - **PR 3 adds an explicit master stop for every path, owner included:**
-  `AERODJ_TTS_PAID_STOP`. Any non-empty value except exactly `false` stops
+  `AERODJ_TTS_PAID_STOP`. Any value except exactly `false` (including empty) stops
   (fail closed: a typo stops rather than runs). Stopped → 503 `disabled`,
   `Retry-After: 3600`, checked **first** (before auth, any limiter or Redis
   call and any ElevenLabs call). Test (PR 3): with the flag set, the
