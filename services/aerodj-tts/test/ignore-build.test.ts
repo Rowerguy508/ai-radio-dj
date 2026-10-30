@@ -88,8 +88,8 @@ function newRepo(): string {
 
 interface Result { code: number | null; out: string }
 
-function run(repo: string, prev: string | undefined, cwdRel = TTS): Result {
-  const env: NodeJS.ProcessEnv = { ...GIT_ENV, IGNORE_BUILD_FETCH_TIMEOUT_S: '10' };
+function run(repo: string, prev: string | undefined, cwdRel = TTS, extraEnv: NodeJS.ProcessEnv = {}): Result {
+  const env: NodeJS.ProcessEnv = { ...GIT_ENV, IGNORE_BUILD_FETCH_TIMEOUT_S: '10', ...extraEnv };
   if (prev !== undefined) env.VERCEL_GIT_PREVIOUS_SHA = prev;
   const r = spawnSync('bash', [SCRIPT], { cwd: path.join(repo, cwdRel), env, encoding: 'utf8', timeout: 30_000 });
   return { code: r.status, out: `${r.stdout}${r.stderr}` };
@@ -105,8 +105,42 @@ function expectCode(r: Result, code: number, why: string): void {
   assert.match(lines[0], code === BUILD ? /^vercel-ignore-build: BUILD - / : /^vercel-ignore-build: SKIP - /);
 }
 
+/**
+ * A `git` wrapper first on PATH: logs every call, and can make `fetch` a no-op
+ * success (SHIM_FETCH_NOOP) or make `fetch --unshallow` fail (SHIM_FAIL_UNSHALLOW).
+ */
+let shimDir = '';
+function shimEnv(log: string, opts: { fetchNoop?: boolean; failUnshallow?: boolean } = {}): NodeJS.ProcessEnv {
+  return {
+    PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    SHIM_LOG: log,
+    ...(opts.fetchNoop ? { SHIM_FETCH_NOOP: '1' } : {}),
+    ...(opts.failUnshallow ? { SHIM_FAIL_UNSHALLOW: '1' } : {}),
+  };
+}
+function shimCalls(log: string): string[] {
+  return fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter((l) => l.length > 0) : [];
+}
+
 before(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tts-ignore-build-'));
+  const realGit = execFileSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  shimDir = path.join(tmpRoot, 'shim');
+  fs.mkdirSync(shimDir);
+  fs.writeFileSync(
+    path.join(shimDir, 'git'),
+    [
+      '#!/usr/bin/env bash',
+      'printf "%s\\n" "$*" >> "$SHIM_LOG"',
+      'for a in "$@"; do',
+      '  if [ "$a" = fetch ] && [ -n "${SHIM_FETCH_NOOP:-}" ]; then exit 0; fi',
+      '  if [ "$a" = --unshallow ] && [ -n "${SHIM_FAIL_UNSHALLOW:-}" ]; then exit 128; fi',
+      'done',
+      `exec ${JSON.stringify(realGit)} "$@"`,
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
 });
 after(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
@@ -248,6 +282,116 @@ describe('vercel-ignore-build.sh', () => {
       encoding: 'utf8',
     });
     expectCode({ code: r.status, out: `${r.stdout}${r.stderr}` }, BUILD, 'no repo');
+  });
+
+  test('PREV not an ancestor of HEAD: force-push shape -> BUILD', () => {
+    const repo = newRepo();
+    const base = git(repo, 'rev-parse', 'HEAD');
+    // PREV was deployed, then main was rewritten from base. The proxy tree is
+    // identical on both sides, so only the ancestry check stands between this and a skip.
+    const prev = commit(repo, 'deployed, later force-pushed away', { 'lib/telegram/webhook-auth.ts': 'export const a = 20;\n' });
+    git(repo, 'reset', '-q', '--hard', base);
+    commit(repo, 'rewritten', { 'lib/telegram/webhook-auth.ts': 'export const a = 21;\n' });
+    git(repo, 'cat-file', '-e', `${prev}^{commit}`); // still in the object store
+    const r = run(repo, prev);
+    expectCode(r, BUILD, 'PREV is no longer in HEAD history');
+    assert.match(r.out, /not an ancestor of HEAD/);
+  });
+
+  test('PREV not an ancestor of HEAD: unrelated orphan history -> BUILD', () => {
+    const repo = newRepo();
+    git(repo, 'checkout', '-q', '--orphan', 'other');
+    git(repo, 'commit', '-q', '-m', 'orphan with an identical tree');
+    const prev = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'checkout', '-q', 'main');
+    const r = run(repo, prev);
+    expectCode(r, BUILD, 'PREV shares no history with HEAD');
+    assert.match(r.out, /not an ancestor of HEAD/);
+  });
+
+  test('shallow clone, PREV fetched but ancestry unprovable (deepen fails) -> BUILD', () => {
+    const { clone, prev } = shallowSetup(false); // only ray-do changed: a guess would skip
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const r = run(clone, prev, TTS, shimEnv(log, { failUnshallow: true }));
+    expectCode(r, BUILD, 'cannot prove PREV is an ancestor');
+    assert.match(r.out, /not an ancestor of HEAD/);
+    assert.ok(shimCalls(log).some((l) => l.includes('--unshallow')), 'deepen was attempted');
+  });
+
+  test('PREV must be a full lowercase 40-hex SHA: short, uppercase, 64-hex -> BUILD', () => {
+    const repo = newRepo();
+    commit(repo, 'ray-do only', { 'lib/telegram/webhook-auth.ts': 'export const a = 22;\n' });
+    const prev = git(repo, 'rev-parse', 'HEAD~1'); // a valid answer would be SKIP
+    expectCode(run(repo, prev), SKIP, 'control: the full SHA skips');
+    expectCode(run(repo, prev.slice(0, 7)), BUILD, '7-char abbreviation');
+    expectCode(run(repo, prev.slice(0, 12)), BUILD, '12-char abbreviation');
+    expectCode(run(repo, prev.slice(0, 39)), BUILD, '39 chars');
+    expectCode(run(repo, prev.toUpperCase()), BUILD, 'uppercase');
+    expectCode(run(repo, `${prev}${prev.slice(0, 24)}`), BUILD, '64 hex');
+  });
+
+  test('a ref named like a SHA cannot cause a skip', () => {
+    const repo = newRepo();
+    commit(repo, 'proxy', { [`${TTS}/src/handler.ts`]: 'export const h = 23;\n' });
+    // Fry's repro: a branch named like a short SHA, at HEAD (diff would be empty).
+    git(repo, 'branch', 'abcdef1', 'HEAD');
+    expectCode(run(repo, 'abcdef1'), BUILD, 'short-SHA-shaped branch name');
+    // A full 40-hex name is read as an object, never as the ref of the same name.
+    const fake = 'abcdef1abcdef1abcdef1abcdef1abcdef1abcde';
+    git(repo, 'update-ref', `refs/heads/${fake}`, 'HEAD');
+    git(repo, 'update-ref', `refs/tags/${fake}`, 'HEAD');
+    expectCode(run(repo, fake), BUILD, 'full-SHA-shaped ref names, no such object');
+  });
+
+  test('option-like PREV -> BUILD and never reaches git fetch', () => {
+    const repo = newRepo();
+    const marker = path.join(tmpRoot, `pwned-${counter++}`);
+    const hex = '0123456789abcdef0123456789abcdef01234567';
+    const values = [
+      `--upload-pack=touch ${marker};#${hex}`,
+      `--upload-pack=touch${'${IFS}'}${marker}`,
+      `${hex}\n--upload-pack=touch ${marker}`,
+      `--end-of-options`,
+      `-${hex.slice(1)}`,
+    ];
+    for (const v of values) {
+      const log = path.join(tmpRoot, `shim-${counter++}.log`);
+      expectCode(run(repo, v, TTS, shimEnv(log)), BUILD, `option-like PREV ${JSON.stringify(v)}`);
+      assert.deepEqual(shimCalls(log).filter((l) => /(^|\s)fetch(\s|$)/.test(l)), [], 'no git fetch');
+      assert.ok(!fs.existsSync(marker), 'nothing executed');
+    }
+  });
+
+  test('PREV still missing after a fetch that "succeeds" -> BUILD', () => {
+    const repo = newRepo();
+    commit(repo, 'ray-do only', { 'lib/telegram/webhook-auth.ts': 'export const a = 24;\n' });
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const r = run(repo, '0123456789abcdef0123456789abcdef01234567', TTS, shimEnv(log, { fetchNoop: true }));
+    expectCode(r, BUILD, 'fetch exit 0 but no object');
+    assert.match(r.out, /still missing after fetch/);
+  });
+
+  test('HEAD cannot be resolved (unborn branch) -> BUILD', () => {
+    const repo = path.join(tmpRoot, `unborn-${counter++}`);
+    fs.mkdirSync(path.join(repo, TTS), { recursive: true });
+    git(repo, 'init', '-q', '-b', 'main');
+    const r = run(repo, '0123456789abcdef0123456789abcdef01234567');
+    expectCode(r, BUILD, 'no commits');
+    assert.match(r.out, /cannot resolve HEAD/);
+  });
+
+  test('services/aerodj-tts/vercel.json gone from HEAD (folder renamed) -> BUILD', () => {
+    const repo = newRepo();
+    git(repo, 'mv', TTS, 'services/onairly-tts');
+    git(repo, 'commit', '-q', '-m', 'rename the proxy folder');
+    const prev = git(repo, 'rev-parse', 'HEAD'); // deployed after the rename
+    commit(repo, 'proxy change in the new folder', { 'services/onairly-tts/src/handler.ts': 'export const h = 25;\n' });
+    // The old pathspec now matches nothing on either side, so a bare diff would skip.
+    const bare = spawnSync('git', ['diff', '--quiet', prev, 'HEAD', '--', `:(top)${TTS}/`], { cwd: repo, env: GIT_ENV });
+    assert.equal(bare.status, 0, 'precondition: the diff alone would skip');
+    const r = run(repo, prev, '.');
+    expectCode(r, BUILD, 'watched folder no longer exists');
+    assert.match(r.out, /vercel\.json is not at HEAD/);
   });
 
   test('vercel.json points ignoreCommand at the script, not the last-commit diff', () => {
