@@ -62,6 +62,12 @@ jobs:
       - name: Run core tests
         run: swift test
         working-directory: ios/AeroDJCore
+      - name: iPad support and iPhone guard (static)
+        # Universal app settings, and the iPhone layout tokens/gates pinned for iPad support. -Nova
+        run: |
+          bash ios/scripts/check-universal-app-settings.sh
+          bash ios/scripts/check-iphone-compact-path.sh
+          bash ios/scripts/check-iphone-compact-path-test.sh
 
   simulator-build:
     name: iOS simulator build
@@ -142,6 +148,13 @@ jobs:
             | grep -qw 'audio' || { echo "UIBackgroundModes lost audio"; exit 1; }
           /usr/libexec/PlistBuddy -c 'Print :NSCalendarsFullAccessUsageDescription' "$PLIST" \
             | grep -q '.' || { echo "NSCalendarsFullAccessUsageDescription missing"; exit 1; }
+          # Universal app (iPad support, -Nova): device families 1 and 2, all four iPad orientations.
+          fam=$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$PLIST")
+          grep -qw 1 <<<"$fam" && grep -qw 2 <<<"$fam" || { echo "UIDeviceFamily is not iPhone+iPad: $fam"; exit 1; }
+          ori=$(/usr/libexec/PlistBuddy -c 'Print :UISupportedInterfaceOrientations~ipad' "$PLIST")
+          for o in Portrait PortraitUpsideDown LandscapeLeft LandscapeRight; do
+            grep -qw "UIInterfaceOrientation$o" <<<"$ori" || { echo "iPad orientation $o missing"; exit 1; }
+          done
       - name: Pick an available iPhone simulator
         run: |
           UDID=$(xcrun simctl list devices available -j \
