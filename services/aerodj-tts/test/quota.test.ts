@@ -81,7 +81,7 @@ function limiters(options: LimiterOptions): [string, UsageLimiter, FakeRedis | n
 }
 
 const ownerKey = `aerodj-tts:chars:owner:production:${DAY}`;
-const globalKey = `aerodj-tts:chars:global:production:${DAY}`;
+const globalKey = `aerodj-tts:chars:global:${DAY}`;
 const installKey = (s: Subject) => `aerodj-tts:chars:${subjectBucket(s).replace(/^install:/, 'install:production:')}:${DAY}`;
 const isRefundMarker = (key: string | undefined) => typeof key === 'string' && key.startsWith('refund:{aerodj-tts}:');
 const counterSets = (redis: FakeRedis) => redis.commands.filter((c) => c[0] === 'SET' && !isRefundMarker(c[1]));
@@ -380,7 +380,7 @@ test('both buckets reset at 00:00 UTC; day keys carry a 2-day TTL', async () => 
     assert.equal((await limiter.reserve(A, 600, next)).ok, true, `${name}: install resets`);
     assert.equal((await limiter.reserve(B, 400, next)).ok, true, `${name}: global resets`);
     if (redis) {
-      assert.equal(redis.get(`aerodj-tts:chars:global:production:2026-10-29`), 1_000);
+      assert.equal(redis.get(`aerodj-tts:chars:global:2026-10-29`), 1_000);
       for (const cmd of redis.commands.filter((c) => c[0] === 'EXPIRE')) assert.equal(cmd[2], '172800');
     }
   }
