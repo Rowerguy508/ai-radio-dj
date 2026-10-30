@@ -205,8 +205,23 @@ jobs:
               -sdk iphoneos \
               -destination 'generic/platform=iOS' \
               -derivedDataPath "$DERIVED_DATA" \
-              CODE_SIGNING_ALLOWED=NO
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY=''
           done
+      - name: Release device app excludes fixture art, the preview loader and PlaybackFixtures
+        # Same scan as the Release simulator check in runtime-mode, on the unsigned arm64 device
+        # build (Sentinel's #269 nit). The Debug device build is the positive control; a missing
+        # .app or binary fails. Build and binary scan only, not a physical-device run. -Fry
+        run: |
+          for CONFIG in Debug Release; do
+            APP="$DERIVED_DATA/Build/Products/$CONFIG-iphoneos/AeroDJ.app"
+            test -d "$APP" || { echo "::error::$APP missing"; exit 1; }
+            test -f "$APP/AeroDJ" || { echo "::error::$APP/AeroDJ missing"; exit 1; }
+          done
+          ios/scripts/check-release-excludes-preview-fixtures.sh \
+            "$DERIVED_DATA/Build/Products/Debug-iphoneos/AeroDJ.app" \
+            "$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app"
       - name: P0 diagnostics are absent from Release and present only with AERODJ_P0_DIAG
         # TEMPORARY with #121 / #133. Proves the diag build compiles, and that a plain Release
         # (what App Store builds use) carries no P0 diagnostics code. Experiment A (Direct Mode)
