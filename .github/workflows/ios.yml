@@ -151,7 +151,10 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST" | grep -qx 'com.aerodj.app' \
             || { echo "bundle ID changed"; exit 1; }
           for key in NSAppleMusicUsageDescription NSCalendarsFullAccessUsageDescription; do
-            if /usr/libexec/PlistBuddy -c "Print :$key" "$PLIST" | grep -q 'AeroDJ'; then
+            VALUE=$(/usr/libexec/PlistBuddy -c "Print :$key" "$PLIST" 2>/dev/null) \
+              || { echo "$key missing"; exit 1; }
+            test -n "$VALUE" || { echo "$key is empty"; exit 1; }
+            if printf '%s' "$VALUE" | grep -q 'AeroDJ'; then
               echo "$key still names AeroDJ"; exit 1
             fi
           done
