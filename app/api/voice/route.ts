@@ -5,13 +5,19 @@ import {
   reservePaidCharacters,
   resolveSpeed,
 } from '@/lib/llm/paid-inference';
+import { adminDecision } from '@/lib/auth/route-gate';
 
 // MiniMax T2A v2 API for text-to-speech.
-// Off in production unless ENABLE_PAID_INFERENCE=true.
+// Off in production unless ENABLE_PAID_INFERENCE=true, and always needs RAY_DO_ADMIN_TOKEN.
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID();
   if (!paidRoutesEnabled()) {
     return NextResponse.json({ error: 'Not found', requestId }, { status: 404 });
+  }
+  // Middleware already requires the admin token; this repeats it next to the spend.
+  const auth = await adminDecision(request.headers);
+  if (!auth.allow) {
+    return NextResponse.json({ error: auth.error, requestId }, { status: auth.status });
   }
 
   try {

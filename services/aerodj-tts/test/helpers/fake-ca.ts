@@ -5,7 +5,8 @@
  */
 import crypto, { type KeyObject } from 'node:crypto';
 
-const enc = {
+/** Minimal DER encoder (test-only). */
+export const enc = {
   tlv(tag: number, body: Buffer): Buffer {
     const n = body.length;
     const len =
@@ -59,6 +60,8 @@ export interface CertSpec {
   publicKey: KeyObject;
   ca: boolean;
   markerOids?: string[];
+  /** Extra extensions: `value` is the extnValue contents (DER), wrapped in an OCTET STRING here. */
+  extensions?: { oid: string; value: Buffer }[];
   notBefore?: Date;
   notAfter?: Date;
   serial?: number;
@@ -70,6 +73,7 @@ export function makeCert(spec: CertSpec): Buffer {
   const exts = [
     enc.seq(enc.oid('2.5.29.19'), enc.bool(true), enc.octet(spec.ca ? enc.seq(enc.bool(true)) : enc.seq())),
     ...(spec.markerOids ?? []).map((oid) => enc.seq(enc.oid(oid), enc.octet(enc.null()))),
+    ...(spec.extensions ?? []).map((e) => enc.seq(enc.oid(e.oid), enc.octet(e.value))),
   ];
   const tbs = enc.seq(
     enc.ctx(0, enc.int(2)),
