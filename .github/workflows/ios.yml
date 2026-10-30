@@ -130,6 +130,9 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" \
             | grep -qx 'com.apple.share-services'
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" | grep -qx 'com.aerodj.app.share'
+          # Share sheet shows the app's display name (AppName.display).
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APPEX/Info.plist" | grep -qx 'OnAirly' \
+            || { echo "share extension display name is not OnAirly"; exit 1; }
           # #333: both privacy manifests must be bundled, not just present in the repo.
           for M in "$APPEX/../../PrivacyInfo.xcprivacy" "$APPEX/PrivacyInfo.xcprivacy"; do
             test -f "$M" || { echo "PrivacyInfo.xcprivacy not bundled: $M"; exit 1; }
@@ -151,6 +154,19 @@ jobs:
             | grep -qw 'audio' || { echo "UIBackgroundModes lost audio"; exit 1; }
           /usr/libexec/PlistBuddy -c 'Print :NSCalendarsFullAccessUsageDescription' "$PLIST" \
             | grep -q '.' || { echo "NSCalendarsFullAccessUsageDescription missing"; exit 1; }
+          # Display name: OnAirly on the home screen; the bundle ID stays com.aerodj.app.
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST" | grep -qx 'OnAirly' \
+            || { echo "CFBundleDisplayName is not OnAirly"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST" | grep -qx 'com.aerodj.app' \
+            || { echo "bundle ID changed"; exit 1; }
+          for key in NSAppleMusicUsageDescription NSCalendarsFullAccessUsageDescription; do
+            VALUE=$(/usr/libexec/PlistBuddy -c "Print :$key" "$PLIST" 2>/dev/null) \
+              || { echo "$key missing"; exit 1; }
+            test -n "$VALUE" || { echo "$key is empty"; exit 1; }
+            if printf '%s' "$VALUE" | grep -q 'AeroDJ'; then
+              echo "$key still names AeroDJ"; exit 1
+            fi
+          done
       - name: Pick an available iPhone simulator
         run: |
           UDID=$(xcrun simctl list devices available -j \
