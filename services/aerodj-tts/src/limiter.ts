@@ -50,6 +50,20 @@ export function subjectBucket(subject: Subject): string {
 
 export const GLOBAL_BUCKET = 'global';
 
+/**
+ * The Vercel deployment the owner, install and Pro day counters are scoped by (#264 N5,
+ * Fry), the same strict allow-list as the Pro keys (Sentinel's B3, `proDeployment`), so
+ * Preview and Production never share an owner, install or Pro budget. The GLOBAL ceiling
+ * is NOT scoped (#287 B1, Sentinel): it is one account-wide key, because every deployment
+ * may carry the same ElevenLabs key. Non-production deployments also get their own low
+ * sub-cap (`envDayKey`, `DEFAULT_NONPROD_DAILY_CHAR_CAP`).
+ */
+export type Deployment = 'production' | 'preview' | 'development';
+
+export function isDeployment(value: unknown): value is Deployment {
+  return value === 'production' || value === 'preview' || value === 'development';
+}
+
 /** `pro:<production|preview|development>:<sha256 hex>` (src/pro-allowance.ts, Sentinel's B3). */
 export const PRO_BUCKET = /^pro:(production|preview|development):[0-9a-f]{64}$/;
 
@@ -97,11 +111,48 @@ function checkProCharge(p: ProCharge): void {
   }
 }
 
-/** [global chars, Pro chars, Pro renders] day counters for one Pro bucket. */
-export function proDayKeys(bucket: string, day: string): [string, string, string] {
+/**
+ * The account-wide global day counter, shared by EVERY deployment (#287 B1, Sentinel):
+ * `aerodj-tts:chars:global:<day>`, exactly the pre-#287 name, so a deploy keeps today's
+ * count and Production + Preview + Development together never pass the global ceiling.
+ */
+export function globalDayKey(day: string): string {
+  return `aerodj-tts:chars:${GLOBAL_BUCKET}:${day}`;
+}
+
+/** Default and maximum daily sub-cap for each non-production deployment (#287 B1). */
+export const DEFAULT_NONPROD_DAILY_CHAR_CAP = 1_000;
+
+/**
+ * The non-production sub-cap counter (#287 B1): `aerodj-tts:chars:env:<preview|development>:<day>`.
+ * Every Preview / Development reservation is ALSO charged to the shared global key, so
+ * this only lowers what a non-production deployment can spend. Production has no sub-cap
+ * key (null): its ceiling is the global one.
+ */
+export function envDayKey(deployment: Deployment, day: string): string | null {
+  if (!isDeployment(deployment)) throw new TypeError('invalid deployment');
+  return deployment === 'production' ? null : `aerodj-tts:chars:env:${deployment}:${day}`;
+}
+
+/**
+ * The sub-cap a non-production deployment actually gets: the configured value, but never
+ * above `DEFAULT_NONPROD_DAILY_CHAR_CAP` (configurable only downward). Anything that is
+ * not a positive safe integer is the default.
+ */
+export function effectiveNonprodCap(configured: number | undefined): number {
+  if (configured === undefined || !Number.isSafeInteger(configured) || configured < 1) return DEFAULT_NONPROD_DAILY_CHAR_CAP;
+  return Math.min(configured, DEFAULT_NONPROD_DAILY_CHAR_CAP);
+}
+
+/**
+ * [global chars, Pro chars, Pro renders] day counters for one Pro bucket. The global key is
+ * the limiter's deployment; a Pro bucket from another deployment is refused (never mixed).
+ */
+export function proDayKeys(bucket: string, day: string, deployment: Deployment): [string, string, string] {
   if (!PRO_BUCKET.test(bucket)) throw new TypeError('invalid pro bucket');
+  if (!isDeployment(deployment) || !bucket.startsWith(`pro:${deployment}:`)) throw new TypeError('pro bucket deployment mismatch');
   return [
-    `aerodj-tts:chars:${GLOBAL_BUCKET}:${day}`,
+    globalDayKey(day),
     `aerodj-tts:chars:${bucket}:${day}`,
     `aerodj-tts:renders:${bucket}:${day}`,
   ];
@@ -153,8 +204,22 @@ export interface UsageLimiter {
 }
 
 export interface LimiterOptions {
-  /** Global daily ceiling across every caller (owner and installs together). */
+  /** Global daily ceiling across every caller AND every deployment (one shared key, #287 B1). */
   dailyCharCap: number;
+  /**
+   * Daily sub-cap for a Preview or Development deployment (#287 B1), charged on top of the
+   * shared global key. Default and maximum `DEFAULT_NONPROD_DAILY_CHAR_CAP`; ignored on
+   * Production and by the in-memory limiter.
+   */
+  nonprodDailyCharCap?: number;
+  /**
+   * Required by `RedisUsageLimiter` (it throws without a valid one): the deployment every
+   * durable day key is scoped by. `limiterOptions` reads it from `VERCEL_ENV` via
+   * `proDeployment`; unset or unknown leaves it undefined, and `selectLimiter` then returns
+   * null (500 `misconfig`, the same fail-closed answer as B3). The in-memory limiter is
+   * per instance (nothing shared), so it ignores this.
+   */
+  deployment?: Deployment;
   /** Daily cap for the owner bucket. Default: the global ceiling. */
   ownerDailyCharCap?: number;
   /** Daily cap for one install's bucket. Default `DEFAULT_INSTALL_DAILY_CHAR_CAP`. */
@@ -302,52 +367,69 @@ if n > tonumber(ARGV[1]) then return 0 end
 return 1`;
 
 /**
- * KEYS[1] = subject day counter, KEYS[2] = global day counter;
- * ARGV = chars, subject cap, global cap, ttl s.
+ * KEYS[1] = subject day counter, KEYS[2] = global day counter (shared by every deployment),
+ * optional KEYS[3] = non-production sub-cap counter (#287 B1);
+ * ARGV = chars, subject cap, global cap, ttl s, [sub-cap].
  * All-or-nothing: returns -1 if the subject's cap would be exceeded, -2 if the global
- * ceiling would be, and changes NO counter in either case. Otherwise increments both and
- * returns the subject's new total.
+ * ceiling would be, -5 if the sub-cap would be, and changes NO counter in any case.
+ * Otherwise increments every counter and returns the subject's new total.
  */
 export const RESERVE2_SCRIPT = `local c = tonumber(ARGV[1])
 local used = tonumber(redis.call('GET', KEYS[1]) or '0')
 if used + c > tonumber(ARGV[2]) then return -1 end
 local total = tonumber(redis.call('GET', KEYS[2]) or '0')
 if total + c > tonumber(ARGV[3]) then return -2 end
+if KEYS[3] then
+  local e = tonumber(redis.call('GET', KEYS[3]) or '0')
+  if e + c > tonumber(ARGV[5]) then return -5 end
+end
 local n = redis.call('INCRBY', KEYS[1], c)
 redis.call('EXPIRE', KEYS[1], ARGV[4])
 redis.call('INCRBY', KEYS[2], c)
 redis.call('EXPIRE', KEYS[2], ARGV[4])
+if KEYS[3] then
+  redis.call('INCRBY', KEYS[3], c)
+  redis.call('EXPIRE', KEYS[3], ARGV[4])
+end
 return n`;
 
 /**
  * KEYS[1] = subject day counter, KEYS[2] = global day counter, KEYS[3] = refund marker
- * (`refund:{aerodj-tts}:<rid>`); ARGV = chars, marker ttl s.
+ * (`refund:{aerodj-tts}:<rid>`), optional KEYS[4] = non-production sub-cap counter;
+ * ARGV = chars, marker ttl s.
  * At most once per reservation (Fry D2): first `SET marker 1 NX EX ttl`; if the marker
- * already exists, returns 0 and changes nothing. Otherwise decrements both counters,
+ * already exists, returns 0 and changes nothing. Otherwise decrements every counter,
  * floored at zero, keeping their TTLs, and returns 1.
  */
 export const RELEASE2_SCRIPT = `if not redis.call('SET', KEYS[3], '1', 'NX', 'EX', ARGV[2]) then return 0 end
 local c = tonumber(ARGV[1])
-for i = 1, 2 do
+for _, i in ipairs({1, 2, 4}) do
+  if KEYS[i] then
   local used = tonumber(redis.call('GET', KEYS[i]) or '0')
   if used > 0 then
     local n = used - c
     if n < 0 then n = 0 end
     redis.call('SET', KEYS[i], n, 'KEEPTTL')
   end
+  end
 end
 return 1`;
 
 /**
- * Pro reserve (#264). KEYS[1] = global chars, KEYS[2] = Pro chars, KEYS[3] = Pro renders;
- * ARGV = chars, global cap, effective Pro char cap, render allowance, ttl s.
- * Order: global ceiling (-2), then render allowance (-4), then Pro char cap (-3); a refusal
- * changes NO counter. Otherwise adds chars to both char counters and 1 to the render
- * counter, sets their TTLs, and returns the new render count (1..allowance).
+ * Pro reserve (#264). KEYS[1] = global chars (shared by every deployment), KEYS[2] = Pro
+ * chars, KEYS[3] = Pro renders, optional KEYS[4] = non-production sub-cap (#287 B1);
+ * ARGV = chars, global cap, effective Pro char cap, render allowance, ttl s, [sub-cap].
+ * Order: global ceiling (-2), sub-cap (-5), then render allowance (-4), then Pro char cap
+ * (-3); a refusal changes NO counter. Otherwise adds chars to every char counter and 1 to
+ * the render counter, sets their TTLs, and returns the new render count (1..allowance).
  */
 export const PRO_RESERVE_SCRIPT = `local c = tonumber(ARGV[1])
 local g = tonumber(redis.call('GET', KEYS[1]) or '0')
 if g + c > tonumber(ARGV[2]) then return -2 end
+if KEYS[4] then
+  local e = tonumber(redis.call('GET', KEYS[4]) or '0')
+  if e + c > tonumber(ARGV[6]) then return -5 end
+end
 local r = tonumber(redis.call('GET', KEYS[3]) or '0')
 if r >= tonumber(ARGV[4]) then return -4 end
 local p = tonumber(redis.call('GET', KEYS[2]) or '0')
@@ -356,18 +438,24 @@ redis.call('INCRBY', KEYS[1], c)
 redis.call('EXPIRE', KEYS[1], ARGV[5])
 redis.call('INCRBY', KEYS[2], c)
 redis.call('EXPIRE', KEYS[2], ARGV[5])
+if KEYS[4] then
+  redis.call('INCRBY', KEYS[4], c)
+  redis.call('EXPIRE', KEYS[4], ARGV[5])
+end
 local n = redis.call('INCR', KEYS[3])
 redis.call('EXPIRE', KEYS[3], ARGV[5])
 return n`;
 
 /**
- * KEYS[1..3] as PRO_RESERVE_SCRIPT, KEYS[4] = refund marker; ARGV = chars, marker ttl s.
- * At most once per reservation (SET NX); then chars off both char counters and 1 off the
+ * KEYS[1..3] as PRO_RESERVE_SCRIPT, KEYS[4] = refund marker, optional KEYS[5] = the
+ * non-production sub-cap; ARGV = chars, marker ttl s.
+ * At most once per reservation (SET NX); then chars off every char counter and 1 off the
  * render counter, each floored at zero, keeping TTLs. Returns 1, or 0 if already refunded.
  */
 export const PRO_RELEASE_SCRIPT = `if not redis.call('SET', KEYS[4], '1', 'NX', 'EX', ARGV[2]) then return 0 end
 local c = tonumber(ARGV[1])
-for i = 1, 3 do
+for _, i in ipairs({1, 2, 3, 5}) do
+  if KEYS[i] then
   local by = c
   if i == 3 then by = 1 end
   local used = tonumber(redis.call('GET', KEYS[i]) or '0')
@@ -375,6 +463,7 @@ for i = 1, 3 do
     local n = used - by
     if n < 0 then n = 0 end
     redis.call('SET', KEYS[i], n, 'KEEPTTL')
+  end
   end
 end
 return 1`;
@@ -384,11 +473,20 @@ const DAY_TTL_SECONDS = 2 * 24 * 60 * 60;
 const MINUTE_TTL_MS = 120_000;
 
 /**
- * [subject, global] day counters. The owner key is unchanged from the single-bucket
- * limiter (`aerodj-tts:chars:owner:<day>`), so a deploy keeps today's owner count.
+ * [subject, global] day counters. The subject key is scoped by deployment (#264 N5):
+ * `aerodj-tts:chars:owner:<deployment>:<day>`, `aerodj-tts:chars:install:<deployment>:<sha256>:<day>`.
+ * The global key is the shared account-wide `aerodj-tts:chars:global:<day>` (#287 B1, the
+ * pre-#287 name), so a deploy keeps today's global count. The owner key is new in N5, so
+ * on the first deploy the owner's count starts fresh for that UTC day; the owner cap is the
+ * global cap, which did not reset, so that adds no spend.
  */
-export function dayKeys(bucket: string, day: string): [string, string] {
-  return [`${KEY_PREFIX}:chars:${bucket}:${day}`, `${KEY_PREFIX}:chars:${GLOBAL_BUCKET}:${day}`];
+export function dayKeys(bucket: string, day: string, deployment: Deployment): [string, string] {
+  if (!isDeployment(deployment)) throw new TypeError('invalid deployment');
+  let scoped: string;
+  if (bucket === 'owner') scoped = `owner:${deployment}`;
+  else if (/^install:[0-9a-f]{64}$/.test(bucket)) scoped = `install:${deployment}:${bucket.slice('install:'.length)}`;
+  else throw new TypeError('invalid subject bucket');
+  return [`${KEY_PREFIX}:chars:${scoped}:${day}`, globalDayKey(day)];
 }
 
 export class LimiterStoreError extends Error {
@@ -470,6 +568,10 @@ export async function upstashEval(
 
 export class RedisUsageLimiter implements UsageLimiter {
   readonly durable = true;
+  /** Scopes every subject and Pro day key (#264 N5); validated here so no key is ever built without one. */
+  private readonly deployment: Deployment;
+  /** Non-production sub-cap (#287 B1); null on Production. */
+  private readonly nonprodCap: number | null;
 
   constructor(
     private readonly config: RedisRestConfig,
@@ -477,7 +579,18 @@ export class RedisUsageLimiter implements UsageLimiter {
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
     /** Bound on each Upstash call; a timeout is a LimiterStoreError (503 `store`). */
     private readonly timeoutMs: number = UPSTASH_FETCH_TIMEOUT_MS,
-  ) {}
+  ) {
+    if (!isDeployment(options.deployment)) throw new TypeError('invalid deployment');
+    this.deployment = options.deployment;
+    this.nonprodCap = options.deployment === 'production' ? null : effectiveNonprodCap(options.nonprodDailyCharCap);
+  }
+
+  /** The sub-cap key and cap for `day`, or [] on Production (#287 B1). */
+  private subCap(day: string): { keys: string[]; args: number[] } {
+    const key = envDayKey(this.deployment, day);
+    if (key === null || this.nonprodCap === null) return { keys: [], args: [] };
+    return { keys: [key], args: [this.nonprodCap] };
+  }
 
   /** One EVAL over Upstash's REST API. Any transport or store error, or a timeout, throws (the handler fails closed). */
   private eval(script: string, keys: string[], args: (string | number)[]): Promise<number> {
@@ -495,14 +608,18 @@ export class RedisUsageLimiter implements UsageLimiter {
   async reserve(subject: Subject, chars: number, now: number): Promise<ReserveResult> {
     const day = utcDay(now);
     const bucket = subjectBucket(subject);
-    const result = await this.eval(RESERVE2_SCRIPT, dayKeys(bucket, day), [
+    const sub = this.subCap(day);
+    const result = await this.eval(RESERVE2_SCRIPT, [...dayKeys(bucket, day, this.deployment), ...sub.keys], [
       chars,
       subjectCap(subject, this.options),
       this.options.dailyCharCap,
       DAY_TTL_SECONDS,
+      ...sub.args,
     ]);
     if (result === -1) return { ok: false, reason: subjectReason(subject) };
-    if (result === -2) return { ok: false, reason: 'global_daily' };
+    // -5: this non-production deployment's sub-cap; on the wire it is the global ceiling.
+    // On Production no sub-cap key is sent, so a -5 there is a store fault (503), never a 429.
+    if (result === -2 || (result === -5 && this.nonprodCap !== null)) return { ok: false, reason: 'global_daily' };
     if (result < 0) throw new LimiterStoreError('limiter store error');
     // Success is the subject counter after INCRBY chars, so it is at least `chars`; less
     // (0 included) means the store did not apply the reservation.
@@ -512,7 +629,8 @@ export class RedisUsageLimiter implements UsageLimiter {
 
   async release(reservation: Reservation): Promise<boolean> {
     const marker = refundMarkerKey(reservation.rid);
-    const result = await this.eval(RELEASE2_SCRIPT, [...dayKeys(reservation.bucket, reservation.day), marker], [
+    const sub = this.subCap(reservation.day);
+    const result = await this.eval(RELEASE2_SCRIPT, [...dayKeys(reservation.bucket, reservation.day, this.deployment), marker, ...sub.keys], [
       reservation.chars,
       REFUND_MARKER_TTL_SECONDS,
     ]);
@@ -523,14 +641,16 @@ export class RedisUsageLimiter implements UsageLimiter {
   async reservePro(charge: ProCharge, now: number): Promise<ProReserveResult> {
     checkProCharge(charge);
     const day = utcDay(now);
-    const result = await this.eval(PRO_RESERVE_SCRIPT, proDayKeys(charge.bucket, day), [
+    const sub = this.subCap(day);
+    const result = await this.eval(PRO_RESERVE_SCRIPT, [...proDayKeys(charge.bucket, day, this.deployment), ...sub.keys], [
       charge.chars,
       this.options.dailyCharCap,
       effectiveProCharCap(charge.charCap, this.options.dailyCharCap),
       charge.renderAllowance,
       DAY_TTL_SECONDS,
+      ...sub.args,
     ]);
-    if (result === -2) return { ok: false, reason: 'global_daily' };
+    if (result === -2 || (result === -5 && this.nonprodCap !== null)) return { ok: false, reason: 'global_daily' };
     if (result === -4) return { ok: false, reason: 'pro_renders' };
     if (result === -3) return { ok: false, reason: 'pro_chars' };
     // Success is the new render count, 1..allowance; anything else is a store fault (503), never a grant.
@@ -539,7 +659,7 @@ export class RedisUsageLimiter implements UsageLimiter {
   }
 
   async releasePro(reservation: ProReservation): Promise<boolean> {
-    const keys = [...proDayKeys(reservation.bucket, reservation.day), refundMarkerKey(reservation.rid)];
+    const keys = [...proDayKeys(reservation.bucket, reservation.day, this.deployment), refundMarkerKey(reservation.rid), ...this.subCap(reservation.day).keys];
     const result = await this.eval(PRO_RELEASE_SCRIPT, keys, [reservation.chars, REFUND_MARKER_TTL_SECONDS]);
     if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
     return result === 1;
