@@ -48,6 +48,9 @@ for p in /privacy /support / ; do [ -n "$(resolve "$p")" ] || err "route $p miss
 [ -f 404.html ] || err "404.html missing"
 python3 -c 'import json,sys; d=json.load(open("vercel.json")); sys.exit(0 if d.get("cleanUrls") is True else 1)' || err "vercel.json invalid or cleanUrls not true"
 
+# privacy.html and support.html must match Sentinel's docs/site/*.md word for word.
+python3 render-copy.py --check >/dev/null || err "privacy/support out of date with docs/site/*.md (run site/render-copy.py)"
+
 # Secret-looking strings in text files (fonts and images skipped).
 secret_re='(sk-[A-Za-z0-9_-]{16,}|sk_(live|test)_[A-Za-z0-9]{10,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}|(api[_-]?key|secret|token|password|bearer)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9_\-]{12,})'
 if grep -rIniE --exclude=check.sh "$secret_re" . >/dev/null; then
@@ -55,6 +58,6 @@ if grep -rIniE --exclude=check.sh "$secret_re" . >/dev/null; then
 fi
 
 if [ "$fail" -eq 0 ]; then
-  echo "OK: $(ls *.html | wc -l) pages, $links internal/external refs checked, routes /, /privacy, /support and 404 present, vercel.json cleanUrls, no secret-looking strings."
+  echo "OK: $(ls *.html | wc -l) pages, $links internal/external refs checked, routes /, /privacy, /support and 404 present, vercel.json cleanUrls, privacy/support match docs/site/*.md, no secret-looking strings."
 fi
 exit "$fail"
