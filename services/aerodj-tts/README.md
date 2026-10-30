@@ -162,6 +162,15 @@ reservation is **released (refunded) only when ElevenLabs answers non-2xx**, sin
 then nothing was billed. A network error, timeout, or bad audio after a 2xx keeps
 the reservation, because the render may have been billed.
 
+**Per deployment (#264 N5).** Every durable day counter carries the deployment from
+`VERCEL_ENV`, like the Pro keys: `aerodj-tts:chars:global:<VERCEL_ENV>:<day>`,
+`aerodj-tts:chars:owner:<VERCEL_ENV>:<day>` and
+`aerodj-tts:chars:install:<VERCEL_ENV>:<sha256>:<day>` (TTL 2 days, unchanged). So
+Preview traffic never spends Production's 9,000 ceiling. With a store configured, a
+`VERCEL_ENV` other than production/preview/development (unset included) selects no
+limiter, so every request is 500 `misconfig`. On the first deploy with this change
+the global and owner counters start fresh under the new keys for that UTC day.
+
 **Per-charge refund marker (#233 PR 3, Fry D2).** Every reservation carries a
 server-generated id (`rid`, a random UUID; never from the client). A refund applies
 **at most once per `rid`**: `RELEASE2` first runs

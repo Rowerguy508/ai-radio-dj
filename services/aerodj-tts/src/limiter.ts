@@ -50,6 +50,17 @@ export function subjectBucket(subject: Subject): string {
 
 export const GLOBAL_BUCKET = 'global';
 
+/**
+ * The Vercel deployment every durable day counter is scoped by (#264 N5, Fry), the same
+ * strict allow-list as the Pro keys (Sentinel's B3, `proDeployment`): so Preview and
+ * Production never share a global ceiling, an owner budget or an install budget.
+ */
+export type Deployment = 'production' | 'preview' | 'development';
+
+export function isDeployment(value: unknown): value is Deployment {
+  return value === 'production' || value === 'preview' || value === 'development';
+}
+
 /** `pro:<production|preview|development>:<sha256 hex>` (src/pro-allowance.ts, Sentinel's B3). */
 export const PRO_BUCKET = /^pro:(production|preview|development):[0-9a-f]{64}$/;
 
@@ -97,11 +108,21 @@ function checkProCharge(p: ProCharge): void {
   }
 }
 
-/** [global chars, Pro chars, Pro renders] day counters for one Pro bucket. */
-export function proDayKeys(bucket: string, day: string): [string, string, string] {
+/** The global day counter for one deployment: `aerodj-tts:chars:global:<deployment>:<day>` (#264 N5). */
+export function globalDayKey(deployment: Deployment, day: string): string {
+  if (!isDeployment(deployment)) throw new TypeError('invalid deployment');
+  return `aerodj-tts:chars:${GLOBAL_BUCKET}:${deployment}:${day}`;
+}
+
+/**
+ * [global chars, Pro chars, Pro renders] day counters for one Pro bucket. The global key is
+ * the limiter's deployment; a Pro bucket from another deployment is refused (never mixed).
+ */
+export function proDayKeys(bucket: string, day: string, deployment: Deployment): [string, string, string] {
   if (!PRO_BUCKET.test(bucket)) throw new TypeError('invalid pro bucket');
+  if (!isDeployment(deployment) || !bucket.startsWith(`pro:${deployment}:`)) throw new TypeError('pro bucket deployment mismatch');
   return [
-    `aerodj-tts:chars:${GLOBAL_BUCKET}:${day}`,
+    globalDayKey(deployment, day),
     `aerodj-tts:chars:${bucket}:${day}`,
     `aerodj-tts:renders:${bucket}:${day}`,
   ];
@@ -153,8 +174,16 @@ export interface UsageLimiter {
 }
 
 export interface LimiterOptions {
-  /** Global daily ceiling across every caller (owner and installs together). */
+  /** Global daily ceiling across every caller (owner and installs together), per deployment. */
   dailyCharCap: number;
+  /**
+   * Required by `RedisUsageLimiter` (it throws without a valid one): the deployment every
+   * durable day key is scoped by. `limiterOptions` reads it from `VERCEL_ENV` via
+   * `proDeployment`; unset or unknown leaves it undefined, and `selectLimiter` then returns
+   * null (500 `misconfig`, the same fail-closed answer as B3). The in-memory limiter is
+   * per instance (nothing shared), so it ignores this.
+   */
+  deployment?: Deployment;
   /** Daily cap for the owner bucket. Default: the global ceiling. */
   ownerDailyCharCap?: number;
   /** Daily cap for one install's bucket. Default `DEFAULT_INSTALL_DAILY_CHAR_CAP`. */
@@ -384,11 +413,19 @@ const DAY_TTL_SECONDS = 2 * 24 * 60 * 60;
 const MINUTE_TTL_MS = 120_000;
 
 /**
- * [subject, global] day counters. The owner key is unchanged from the single-bucket
- * limiter (`aerodj-tts:chars:owner:<day>`), so a deploy keeps today's owner count.
+ * [subject, global] day counters, both scoped by deployment (#264 N5):
+ * `aerodj-tts:chars:owner:<deployment>:<day>`, `aerodj-tts:chars:install:<deployment>:<sha256>:<day>`
+ * and `aerodj-tts:chars:global:<deployment>:<day>`. Before N5 the owner and global keys had
+ * no deployment, so Preview and Production shared one owner budget and one global ceiling;
+ * on the first deploy with N5 both start fresh under the new keys for that UTC day.
  */
-export function dayKeys(bucket: string, day: string): [string, string] {
-  return [`${KEY_PREFIX}:chars:${bucket}:${day}`, `${KEY_PREFIX}:chars:${GLOBAL_BUCKET}:${day}`];
+export function dayKeys(bucket: string, day: string, deployment: Deployment): [string, string] {
+  if (!isDeployment(deployment)) throw new TypeError('invalid deployment');
+  let scoped: string;
+  if (bucket === 'owner') scoped = `owner:${deployment}`;
+  else if (/^install:[0-9a-f]{64}$/.test(bucket)) scoped = `install:${deployment}:${bucket.slice('install:'.length)}`;
+  else throw new TypeError('invalid subject bucket');
+  return [`${KEY_PREFIX}:chars:${scoped}:${day}`, globalDayKey(deployment, day)];
 }
 
 export class LimiterStoreError extends Error {
@@ -470,6 +507,8 @@ export async function upstashEval(
 
 export class RedisUsageLimiter implements UsageLimiter {
   readonly durable = true;
+  /** Scopes every day key (#264 N5); validated here so no key is ever built without one. */
+  private readonly deployment: Deployment;
 
   constructor(
     private readonly config: RedisRestConfig,
@@ -477,7 +516,10 @@ export class RedisUsageLimiter implements UsageLimiter {
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
     /** Bound on each Upstash call; a timeout is a LimiterStoreError (503 `store`). */
     private readonly timeoutMs: number = UPSTASH_FETCH_TIMEOUT_MS,
-  ) {}
+  ) {
+    if (!isDeployment(options.deployment)) throw new TypeError('invalid deployment');
+    this.deployment = options.deployment;
+  }
 
   /** One EVAL over Upstash's REST API. Any transport or store error, or a timeout, throws (the handler fails closed). */
   private eval(script: string, keys: string[], args: (string | number)[]): Promise<number> {
@@ -495,7 +537,7 @@ export class RedisUsageLimiter implements UsageLimiter {
   async reserve(subject: Subject, chars: number, now: number): Promise<ReserveResult> {
     const day = utcDay(now);
     const bucket = subjectBucket(subject);
-    const result = await this.eval(RESERVE2_SCRIPT, dayKeys(bucket, day), [
+    const result = await this.eval(RESERVE2_SCRIPT, dayKeys(bucket, day, this.deployment), [
       chars,
       subjectCap(subject, this.options),
       this.options.dailyCharCap,
@@ -512,7 +554,7 @@ export class RedisUsageLimiter implements UsageLimiter {
 
   async release(reservation: Reservation): Promise<boolean> {
     const marker = refundMarkerKey(reservation.rid);
-    const result = await this.eval(RELEASE2_SCRIPT, [...dayKeys(reservation.bucket, reservation.day), marker], [
+    const result = await this.eval(RELEASE2_SCRIPT, [...dayKeys(reservation.bucket, reservation.day, this.deployment), marker], [
       reservation.chars,
       REFUND_MARKER_TTL_SECONDS,
     ]);
@@ -523,7 +565,7 @@ export class RedisUsageLimiter implements UsageLimiter {
   async reservePro(charge: ProCharge, now: number): Promise<ProReserveResult> {
     checkProCharge(charge);
     const day = utcDay(now);
-    const result = await this.eval(PRO_RESERVE_SCRIPT, proDayKeys(charge.bucket, day), [
+    const result = await this.eval(PRO_RESERVE_SCRIPT, proDayKeys(charge.bucket, day, this.deployment), [
       charge.chars,
       this.options.dailyCharCap,
       effectiveProCharCap(charge.charCap, this.options.dailyCharCap),
@@ -539,7 +581,7 @@ export class RedisUsageLimiter implements UsageLimiter {
   }
 
   async releasePro(reservation: ProReservation): Promise<boolean> {
-    const keys = [...proDayKeys(reservation.bucket, reservation.day), refundMarkerKey(reservation.rid)];
+    const keys = [...proDayKeys(reservation.bucket, reservation.day, this.deployment), refundMarkerKey(reservation.rid)];
     const result = await this.eval(PRO_RELEASE_SCRIPT, keys, [reservation.chars, REFUND_MARKER_TTL_SECONDS]);
     if (result !== 0 && result !== 1) throw new LimiterStoreError('limiter store error');
     return result === 1;

@@ -41,7 +41,7 @@ const ENV: Env = {
 };
 const sha = (s: string) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const keys = (otid: string) => {
-  const [global, chars, renders] = proDayKeys(`pro:production:${sha(otid)}`, DAY);
+  const [global, chars, renders] = proDayKeys(`pro:production:${sha(otid)}`, DAY, 'production');
   return { global, chars, renders };
 };
 const pcm = () => new Response(Buffer.alloc(22_050 * 2, 1), { status: 200, headers: { 'Content-Type': 'audio/pcm' } });
@@ -61,7 +61,7 @@ function harness(o: { options?: Partial<LimiterOptions>; env?: Env; upstream?: (
   const d: Deps = {
     env: { ...ENV, ...o.env },
     fetch: (async () => { upstreamCalls++; return (o.upstream ?? pcm)(); }) as typeof fetch,
-    limiter: new RedisUsageLimiter(STORE, { dailyCharCap: BIG, requestsPerMinute: 600, ...o.options }, up.fetchImpl),
+    limiter: new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: BIG, requestsPerMinute: 600, ...o.options }, up.fetchImpl),
     log: (e) => logs.push(e),
     now: () => NOON,
     timeoutMs: 50,
@@ -110,7 +110,7 @@ describe('Pro char cap: clamp to the global ceiling (Orion)', () => {
   });
 
   test('12,000 configured with 9,000 global: the script is handed 9,000; 9,000 succeed, the next char is refused', async () => {
-    const h = harness({ options: { dailyCharCap: 9_000 } });
+    const h = harness({ options: { deployment: 'production' as const, dailyCharCap: 9_000 } });
     const A = await subject();
     await spend(h, A, 9_000);
     const proArgs = h.calls.find((c) => c.command[1] === PRO_RESERVE_SCRIPT)?.command;
@@ -174,7 +174,7 @@ describe('Pro char cap: enforcement (default 12,000, global raised so the cap it
   test('store error on the Pro reserve: 503 store, Retry-After 30, no upstream call', async () => {
     const up = fakeUpstash({ status: 500 });
     const h = harness();
-    h.d.limiter = new RedisUsageLimiter(STORE, { dailyCharCap: BIG, requestsPerMinute: 600 }, up.fetchImpl);
+    h.d.limiter = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: BIG, requestsPerMinute: 600 }, up.fetchImpl);
     const r = await handleTts(req(await subject(), 10), h.d);
     assert.equal(r.status, 503);
     assert.equal(r.headers['Retry-After'], '30');
@@ -194,7 +194,7 @@ describe('Per-install bypass: verified Pro only (Orion, Nigel; Sentinel conditio
   });
 
   test('an unverified install is still capped at 1,500 (limiter level; PR 6 picks install vs Pro)', async () => {
-    const limiter = new RedisUsageLimiter(STORE, { dailyCharCap: BIG, requestsPerMinute: 600 }, fakeUpstash().fetchImpl);
+    const limiter = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: BIG, requestsPerMinute: 600 }, fakeUpstash().fetchImpl);
     const install = { kind: 'install' as const, id: 'a'.repeat(64) };
     assert.equal((await limiter.reserve(install, 1_500, NOON)).ok, true);
     assert.deepEqual(await limiter.reserve(install, 1, NOON), { ok: false, reason: 'install_daily' });
@@ -211,7 +211,7 @@ describe('Per-install bypass: verified Pro only (Orion, Nigel; Sentinel conditio
   });
 
   test('the global ceiling still stops a verified Pro subject (429 global_daily, no Pro counter moves)', async () => {
-    const h = harness({ options: { dailyCharCap: 2_000 } });
+    const h = harness({ options: { deployment: 'production' as const, dailyCharCap: 2_000 } });
     await spend(h, undefined, 1_800);
     const A = await subject();
     const r = await handleTts(req(A, 300), h.d);

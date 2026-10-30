@@ -260,8 +260,10 @@ export function limiterOptions(env: Env): LimiterOptions {
     parseCharCap(env.AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP) ??
     parseCharCap(env.AERODJ_TTS_DAILY_CHAR_CAP) ??
     DEFAULT_GLOBAL_DAILY_CHAR_CAP;
+  const deployment = proDeployment(env);
   return {
     dailyCharCap,
+    ...(deployment !== null ? { deployment } : {}),
     ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? dailyCharCap,
     installDailyCharCap: parseCharCap(env.AERODJ_TTS_INSTALL_DAILY_CHAR_CAP) ?? DEFAULT_INSTALL_DAILY_CHAR_CAP,
     requestsPerMinute: parseRatePerMinute(env.AERODJ_TTS_RATE_PER_MINUTE) ?? DEFAULT_REQUESTS_PER_MINUTE,
@@ -270,7 +272,9 @@ export function limiterOptions(env: Env): LimiterOptions {
 
 /**
  * Picks the limiter for this environment:
- * - Upstash Redis REST credentials present: durable `RedisUsageLimiter` (hard cap).
+ * - Upstash Redis REST credentials present: durable `RedisUsageLimiter` (hard cap), its day
+ *   keys scoped by `VERCEL_ENV` (#264 N5). An unset or unknown `VERCEL_ENV` (the same strict
+ *   allow-list as the Pro keys, B3) returns null: every request is 500 `misconfig`.
  * - Otherwise, outside Vercel Production: per-instance `InMemoryUsageLimiter`.
  * - Otherwise (Vercel Production, no store): null, so every request fails closed with
  *   500, unless the owner explicitly accepts best-effort limits with
@@ -278,7 +282,10 @@ export function limiterOptions(env: Env): LimiterOptions {
  */
 export function selectLimiter(env: Env, fetchImpl: typeof fetch = globalThis.fetch): UsageLimiter | null {
   const redis = redisRestConfig(env);
-  if (redis) return new RedisUsageLimiter(redis, limiterOptions(env), fetchImpl);
+  if (redis) {
+    const options = limiterOptions(env);
+    return options.deployment === undefined ? null : new RedisUsageLimiter(redis, options, fetchImpl);
+  }
   const production = env.VERCEL_ENV === 'production';
   if (production && env.AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS?.trim() !== 'true') return null;
   return new InMemoryUsageLimiter(limiterOptions(env));
