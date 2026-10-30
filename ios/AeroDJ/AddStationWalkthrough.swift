@@ -761,7 +761,7 @@ private struct PreviewSeedSearch: StationSeedSearching {
             return [StationSeedSearchResult(seed: StationSeed(kind: .playlist, catalogID: "pl.1", name: "[TEST] Sunday Slow"),
                                             subtitle: "Apple Music")]
         }
-        return ["Khruangbin", "Bonobo", "Little Dragon", "Tycho", "Nujabes", "Men I Trust"].enumerated().map {
+        return ["Orbitelle", "sleepyfern", "Noelle Ashby", "Lucía Arenas", "The Theo Marlow Quartet", "Jalen Prospero"].enumerated().map {
             StationSeedSearchResult(seed: StationSeed(kind: .artist, catalogID: "\(100 + $0.offset)", name: "[TEST] \($0.element)"))
         }
     }

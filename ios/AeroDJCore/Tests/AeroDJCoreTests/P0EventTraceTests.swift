@@ -225,12 +225,12 @@ final class P0EventTraceTests: XCTestCase {
     /// Sentinel / Orion merge gate: real-looking track and route strings go through every
     /// entry point that can carry one, and none appears in any rendered row.
     func testNoTrackOrRouteStringReachesAnyRow() {
-        let title = "Bohemian Rhapsody"
-        let artist = "Queen"
+        let title = "Marmalade Switchback"
+        let artist = "Tallowfield"
         let catalogID = "1440857781"
         let libraryID = "i.abc123"
         let port = "AirPods Pro"
-        let forbidden = [title, artist, catalogID, libraryID, port, "Rhapsody", "abc123", "AirPods"]
+        let forbidden = [title, artist, catalogID, libraryID, port, "Switchback", "abc123", "AirPods"]
         var trace = P0EventTrace()
         var interpreter = BoundaryInterpreter()
         let feeds: [PlaybackObservation] = [

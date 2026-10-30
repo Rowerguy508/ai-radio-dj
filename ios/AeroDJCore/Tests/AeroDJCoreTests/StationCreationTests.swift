@@ -89,13 +89,13 @@ final class StationCreationRequestTests: XCTestCase {
     }
 
     func testSuggestedNames() {
-        XCTAssertEqual(StationCreationRequest(source: .artists([seed(.artist, "1", "Björk")])).suggestedName, "Björk Radio")
+        XCTAssertEqual(StationCreationRequest(source: .artists([seed(.artist, "1", "Ylvöra")])).suggestedName, "Ylvöra Radio")
         XCTAssertEqual(StationCreationRequest(source: .artists([seed(.artist, "1", "A"), seed(.artist, "2", "B")])).suggestedName,
                        "A & B Radio")
         XCTAssertEqual(StationCreationRequest(source: .artists([seed(.artist, "1", "A"), seed(.artist, "2", "B"),
                                                                 seed(.artist, "3", "C")])).suggestedName, "A & Friends Radio")
         XCTAssertEqual(StationCreationRequest(source: .genre(seed(.genre, "21", "Rock"))).suggestedName, "Rock Radio")
-        XCTAssertEqual(StationCreationRequest(source: .playlist(seed(.playlist, "p", "Chill Mix"))).suggestedName, "Chill Mix")
+        XCTAssertEqual(StationCreationRequest(source: .playlist(seed(.playlist, "p", "Kettle Hours"))).suggestedName, "Kettle Hours")
         XCTAssertNil(StationCreationRequest(source: .artists([])).suggestedName)
         let long = String(repeating: "x", count: 80)
         let fitted = StationCreationRequest(source: .artists([seed(.artist, "1", long)])).suggestedName

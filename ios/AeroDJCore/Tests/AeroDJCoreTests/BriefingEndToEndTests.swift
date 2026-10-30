@@ -260,11 +260,11 @@ final class DJSessionEndToEndTests: XCTestCase {
         XCTAssertEqual(handoff.cues.filter(\.isContent).count, 2)
 
         // Real MusicKit metadata for the queue; seeded session.
-        let tracks = [DJTrack(id: "1", title: "Harvest Moon", artist: "Neil Young", origin: .catalog),
-                      DJTrack(id: "2", title: "Dreams", artist: "Fleetwood Mac", origin: .catalog),
-                      DJTrack(id: "3", title: "Holocene", artist: "Bon Iver", origin: .catalog),
-                      DJTrack(id: "4", title: "Pink + White", artist: "Frank Ocean", origin: .catalog),
-                      DJTrack(id: "5", title: "Vienna", artist: "Billy Joel", origin: .catalog)]
+        let tracks = [DJTrack(id: "1", title: "Tin Roof Almanac", artist: "Hollis Brannock", origin: .catalog),
+                      DJTrack(id: "2", title: "Bubblegum Gravity", artist: "Sunny Varga", origin: .catalog),
+                      DJTrack(id: "3", title: "Gravel Road Gospel", artist: "Wyatt Callahan", origin: .catalog),
+                      DJTrack(id: "4", title: "Late Fees & Lullabies", artist: "Jalen Prospero", origin: .catalog),
+                      DJTrack(id: "5", title: "Thunder on the Interstate", artist: "Ironwood Junction", origin: .catalog)]
         var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 2), seed: 11)
         let plan = writer.plan(tracks: tracks, briefing: handoff, hour: newYork.component(.hour, from: fixedNow))
         XCTAssertEqual(plan.breaks.map(\.afterTrack), [0, 3])
@@ -272,7 +272,7 @@ final class DJSessionEndToEndTests: XCTestCase {
         XCTAssertEqual(Set(first.briefingCueIDs), Set(handoff.cues.filter(\.isContent).map(\.id)), "briefing woven into the first break")
         let spoken = plan.breaks.flatMap(\.cues).map(\.text).joined(separator: " ")
         XCTAssertFalse(spoken.contains("Therapy") || spoken.contains("Secret"), "only approved context")
-        XCTAssertTrue(spoken.contains("Dreams") || spoken.contains("Harvest Moon"))
+        XCTAssertTrue(spoken.contains("Bubblegum Gravity") || spoken.contains("Tin Roof Almanac"))
 
         // Presentation model fed only by real events.
         let model = PresentationBox()
