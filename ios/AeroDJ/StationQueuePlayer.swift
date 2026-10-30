@@ -90,7 +90,7 @@ final class StationQueuePlayer {
             authorize: { await music.authorize() },
             apply: { if case .success = await studio.applyRecipe(recipeID) { true } else { false } },
             active: { station.active },
-            committed: { station.committedDisplayed },
+            committed: { self.station.committedDisplayed },
             nothingQueued: { music.queue.isEmpty && !music.isPlaying },
             start: { tracks in _ = await play(tracks) })
         Logger(subsystem: "com.aerodj.app", category: "stationQueue")
