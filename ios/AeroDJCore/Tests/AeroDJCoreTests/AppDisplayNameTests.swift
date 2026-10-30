@@ -14,6 +14,12 @@ final class AppDisplayNameTests: XCTestCase {
         XCTAssertEqual(AppName.display, "OnAirly")
     }
 
+    /// Station IDs name the app as OnAirly, and the brand stays fixed phrasing (`.presenter`).
+    func testBuiltInStationNameIsTheDisplayName() {
+        XCTAssertEqual(DJScriptWriter.builtInStationName, AppName.display)
+        XCTAssertEqual(DJScriptWriter().stationName, "OnAirly")
+    }
+
     func testCoreCopyUsesTheConstant() {
         XCTAssertEqual(NowPlayingContent.needsAuthorization.detail,
                        "OnAirly needs permission before it can play from Apple Music.")
@@ -22,9 +28,8 @@ final class AppDisplayNameTests: XCTestCase {
     }
 
     /// No string literal in the app, share extension or core copy names AeroDJ as a word.
-    /// Allowed: identifiers such as "AeroDJ.cache…" keys, lines marked `// not user-visible:`
-    /// (hash seeds), and DJ/ (Echo's spoken scripts, which keep
-    /// their station name until the owner decides).
+    /// Allowed: identifiers such as "AeroDJ.cache…" keys and lines marked `// not user-visible:`
+    /// (hash seeds). DJ/ (spoken scripts) is scanned too: on-air station IDs say OnAirly.
     func testNoUserVisibleAeroDJLiterals() throws {
         let roots = ["AeroDJ", "AeroDJShare", "AeroDJCore/Sources/AeroDJCore"].map { iosDir.appendingPathComponent($0) }
         let literal = try NSRegularExpression(pattern: #""[^"\n]*\bAeroDJ\b(?![.\-])[^"\n]*""#)
@@ -34,7 +39,6 @@ final class AppDisplayNameTests: XCTestCase {
                 XCTFail("missing \(root.path)"); continue
             }
             for case let url as URL in walker where url.pathExtension == "swift" {
-                if url.path.contains("/AeroDJCore/DJ/") { continue }
                 let source = try String(contentsOf: url, encoding: .utf8)
                 for (n, line) in source.components(separatedBy: "\n").enumerated()
                 where !line.trimmingCharacters(in: .whitespaces).hasPrefix("//")

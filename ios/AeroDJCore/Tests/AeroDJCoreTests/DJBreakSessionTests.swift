@@ -296,6 +296,30 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertEqual(r.station.active.cadence().talkFraction, 0.15)
     }
 
+    /// OnAirly rename (-Nova): breaks written by `replan` (the queue plan and a mid-queue
+    /// re-plan after a cadence change) name the app as OnAirly in station IDs, attributed as
+    /// fixed presenter phrasing, and never say AeroDJ.
+    func testReplannedStationIDsSayOnAirly() async {
+        let r = await rig()
+        await r.session.queueStarted(djTracks(90))
+        let first = r.session.testPlannedBreaks
+        XCTAssertFalse(first.isEmpty)
+
+        await r.station.setCommentary(.chatty)          // cadence change: re-plans after the playing song
+        await r.station.saveChanges()
+        await r.session.songStarted(index: 3, remaining: .seconds(180))
+        let replanned = r.session.testPlannedBreaks.filter { $0.key > 3 }
+        XCTAssertNotEqual(replanned.keys.sorted(), first.keys.filter { $0 > 3 }.sorted(), "the suffix was re-planned")
+
+        for (label, plan) in [("queue plan", first), ("re-plan", replanned)] {
+            let cues = plan.values.flatMap { b in b.cues.map { ($0, b.attributions[$0.id]) } }
+            XCTAssertFalse(cues.contains { $0.0.text.contains("AeroDJ") }, "\(label) never says AeroDJ")
+            let ids = cues.filter { $0.0.text.contains("OnAirly") }
+            XCTAssertFalse(ids.isEmpty, "\(label) has an OnAirly station ID")
+            XCTAssertTrue(ids.allSatisfy { $0.1 == .presenter }, "\(label): the brand is presenter phrasing")
+        }
+    }
+
     func testTurningCommentaryOffDropsPreparedSpeechImmediately() async {
         let r = await rig()
         await r.session.queueStarted(djTracks(12))
