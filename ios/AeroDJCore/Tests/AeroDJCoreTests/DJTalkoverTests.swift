@@ -69,6 +69,21 @@ final class DJTalkoverTests: XCTestCase {
         XCTAssertTrue(DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: true))
     }
 
+    /// Echo's nit on #225: the owner A/B toggle shows `saved ?? unsetDefault(isTestStation:)`
+    /// (AppStorage), and that must match what the coordinator decides, live and fixture.
+    func testToggleDisplayMatchesCoordinatorInOwnerAB() {
+        XCTAssertTrue(DJTalkoverFlag.unsetDefault(isTestStation: false), "live: unset shows ON")
+        XCTAssertFalse(DJTalkoverFlag.unsetDefault(isTestStation: true), "fixture: unset shows OFF")
+        for isTestStation in [false, true] {
+            let unset = DJTalkoverFlag.unsetDefault(isTestStation: isTestStation)
+            for saved in [nil, false, true] as [Bool?] {
+                XCTAssertEqual(saved ?? unset,
+                               DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: saved, unsetDefault: unset),
+                               "test=\(isTestStation) saved=\(String(describing: saved))")
+            }
+        }
+    }
+
     func testFixtureStationIsOffUnlessOwnerABToggleIsExplicitlyOn() {
         XCTAssertFalse(DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: nil, unsetDefault: false))
         XCTAssertFalse(DJTalkoverFlag.isEnabled(ownerABBuild: true, saved: false, unsetDefault: false))
