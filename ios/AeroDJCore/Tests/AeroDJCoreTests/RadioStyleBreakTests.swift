@@ -113,7 +113,7 @@ final class RadioStyleBreakTests: XCTestCase {
     func testEveryTalkBreakEndsWithItsOwnClosingCueForTheNextTrack() {
         var sawStation = false, sawAtmosphere = false, sawContinuation = false
         for seed in UInt64(0)..<300 {
-            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "OnAirly")
             let plan = writer.plan(tracks: tracks, briefing: nil, hour: [7, 15, 21, 23][Int(seed % 4)])
             XCTAssertFalse(plan.breaks.isEmpty)
             for djBreak in plan.breaks {
@@ -132,7 +132,7 @@ final class RadioStyleBreakTests: XCTestCase {
                 XCTAssertFalse(main.contains { $0.text.contains(next.title) && $0.id != closing.id
                     && djBreak.attributions[$0.id] != .presenter && !$0.text.contains(tracks[djBreak.afterTrack].title) })
                 for cue in main {
-                    if EditorialTone.warm.stationID.contains(where: { $0.replacingOccurrences(of: "{station}", with: "AeroDJ") == cue.text }) { sawStation = true }
+                    if EditorialTone.warm.stationID.contains(where: { $0.replacingOccurrences(of: "{station}", with: "OnAirly") == cue.text }) { sawStation = true }
                     if EditorialTone.warm.atmosphere.values.joined().contains(cue.text) { sawAtmosphere = true }
                     if EditorialTone.warm.continuation.contains(cue.text) { sawContinuation = true }
                 }
@@ -148,7 +148,7 @@ final class RadioStyleBreakTests: XCTestCase {
         XCTAssertEqual(cadence.maxBriefingBreakSeconds, 45)
         XCTAssertEqual(cadence.talkFraction, 0.3)
         for seed in UInt64(0)..<200 {
-            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "OnAirly")
             for djBreak in writer.plan(tracks: djTracks(40), briefing: nil, hour: 15).breaks {
                 XCTAssertLessThanOrEqual(djBreak.mainSeconds, 15)
                 XCTAssertLessThanOrEqual(djBreak.closingSeconds, 4)
@@ -157,7 +157,7 @@ final class RadioStyleBreakTests: XCTestCase {
         }
         // A tight main cap drops the continuation and color first; the break still airs.
         var tight = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1, maxTransitionSeconds: 3),
-                                   seed: 5, stationName: "AeroDJ")
+                                   seed: 5, stationName: "OnAirly")
         for djBreak in tight.plan(tracks: tracks, briefing: nil, hour: 23).breaks {
             XCTAssertLessThanOrEqual(djBreak.mainSeconds, 3)
             XCTAssertNotNil(djBreak.talkOverCueID)
@@ -168,7 +168,7 @@ final class RadioStyleBreakTests: XCTestCase {
         var tone = EditorialTone.warm
         tone.closing = ["Coming up after this one, here is {nextTitle} by {nextArtist}, a song from the queue."]
         var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 3,
-                                    stationName: "AeroDJ", tone: tone)
+                                    stationName: "OnAirly", tone: tone)
         let plan = writer.plan(tracks: tracks, briefing: nil, hour: 15)
         XCTAssertFalse(plan.breaks.isEmpty)
         for djBreak in plan.breaks {
@@ -185,7 +185,7 @@ final class RadioStyleBreakTests: XCTestCase {
             stationID: ["{station}."], atmosphere: [:], continuation: ["Okay."], briefingLead: ["Quickly."],
             briefingOutro: ["Done."], greetings: [:])
         var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 4,
-                                    stationName: "AeroDJ", tone: tone)
+                                    stationName: "OnAirly", tone: tone)
         let plan = writer.plan(tracks: tracks, briefing: nil, hour: 15)
         XCTAssertFalse(plan.breaks.isEmpty)
         for djBreak in plan.breaks {
@@ -198,7 +198,7 @@ final class RadioStyleBreakTests: XCTestCase {
     func testPoolsDoNotRepeatUntilExhausted() {
         // Same title/artist everywhere, so the text identifies the template.
         let same = (0..<40).map { DJTrack(id: "s\($0)", title: "Tune", artist: "Band") }
-        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 8, stationName: "AeroDJ")
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 8, stationName: "OnAirly")
         let breaks = writer.plan(tracks: same, briefing: nil, hour: 15).breaks
         let closings = breaks.map { $0.cues.last!.text }
         let n = EditorialTone.warm.closing.count
@@ -220,7 +220,7 @@ final class RadioStyleBreakTests: XCTestCase {
                          estimatedSeconds: 8, maxSeconds: 16, sourceItemID: item, source: .obsidian, provenance: "n:\(i)")
         }
         let handoff = NarrationHandoff(cues: cues, maxSpokenSeconds: 120, experienceSeconds: 600)
-        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "AeroDJ")
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "OnAirly")
         let plan = writer.plan(tracks: djTracks(10), briefing: handoff, hour: 8)
         let briefing = plan.breaks.filter(\.hasBriefing)
         XCTAssertFalse(briefing.isEmpty)
@@ -631,7 +631,7 @@ final class RadioStyleBreakTests: XCTestCase {
     }
 
     func testLibrarySeededClosingNeverReachesTheOffDeviceRouteWhileMainCuesAreCloudEligible() async throws {
-        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "AeroDJ")
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "OnAirly")
         // Catalog-origin copies of the fixture: only `.catalog` track lines are cloud-eligible
         // (Sentinel, library provenance gate); `tracks` keeps the fail-closed `.unknown` default.
         let catalogTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artist, origin: .catalog) }

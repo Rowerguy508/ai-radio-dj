@@ -19,9 +19,14 @@ public struct StationArtStyle: Equatable, Sendable {
 
     /// Station-level style (the room's atmosphere).
     public static func station(_ station: StationRef?) -> StationArtStyle {
-        let name = station?.name ?? "AeroDJ"
-        return make(seed: "station:" + (station?.id ?? name), label: name)
+        guard let station else { return make(seed: noStationSeed, label: AppName.display) }
+        return make(seed: "station:" + station.id, label: station.name)
     }
+
+    /// Hash seed for the no-station art. Kept from before the OnAirly rename so the palette,
+    /// angle and rings don't move; only the monogram follows `AppName.display`.
+    static let noStationSeed = "station:" + "AeroDJ" // not user-visible: hash seed
+
 
     /// Fallback cover for one track on one station: the station's hue family, varied per track,
     /// so a queue of artwork-less songs still reads as one station but each song is distinct.

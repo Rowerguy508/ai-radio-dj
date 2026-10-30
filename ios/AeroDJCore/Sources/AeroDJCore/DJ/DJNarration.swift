@@ -199,8 +199,9 @@ public struct DJSessionPlan: Equatable, Sendable {
 /// Plans a session: where the DJ talks and what it says. State (template pools,
 /// RNG) lives for the whole listening session so phrasing does not repeat.
 public struct DJScriptWriter: Sendable {
-    /// The app's own brand. The only station name a station ID may treat as fixed phrasing.
-    public static let builtInStationName = "AeroDJ"
+    /// The app's own brand (`AppName.display`, OnAirly). The only station name a station ID may
+    /// treat as fixed phrasing.
+    public static let builtInStationName = AppName.display
     public var cadence: DJCadence
     /// Spoken in station IDs. Unusable names (empty, braces, instruction-shaped) are skipped.
     public var stationName: String
