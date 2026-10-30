@@ -35,7 +35,7 @@ final class StationArtTests: XCTestCase {
     }
 
     func testMonogram() {
-        XCTAssertEqual(StationArtStyle.monogram("Morning Light"), "ML")
+        XCTAssertEqual(StationArtStyle.monogram("Bakery Lights on Fennimore"), "BL")
         XCTAssertEqual(StationArtStyle.monogram("golden"), "G")
         XCTAssertEqual(StationArtStyle.monogram("(I Can't Get No) Satisfaction"), "IC")
         XCTAssertEqual(StationArtStyle.monogram("   "), "♪")

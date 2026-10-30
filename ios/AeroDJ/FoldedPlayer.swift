@@ -498,34 +498,55 @@ private struct FoldedStatusCapsule: View {
 }
 
 /// The only amber on screen. Drawn only in `.speaking`; the timer counts from the moment this
-/// view saw that state.
+/// view saw that state. Debug capture (`djSpeaking`) pins the timer instead, so a screenshot
+/// or the App Store video always reads the same time (`StudioCapture.onAirElapsed`).
 private struct FoldedOnAirPill: View {
     @State private var startedAt = Date()
+    #if DEBUG
+    @Environment(\.studioCaptureOnAirElapsed) private var captureElapsed
+    #endif
 
     var body: some View {
-        TimelineView(.periodic(from: startedAt, by: 1)) { context in
-            let elapsed = max(0, context.date.timeIntervalSince(startedAt))
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(FoldedStyle.onAirAmber)
-                    .frame(width: 8, height: 8)
-                    .accessibilityHidden(true)
-                Text("ON AIR")
-                    .font(.caption.weight(.bold))
-                    .tracking(1.4)
-                    .foregroundStyle(FoldedStyle.onAirAmber)
-                Text(PlaybackTimeFormat.label(elapsed))
-                    .font(.subheadline.weight(.medium).monospacedDigit())
-                    .foregroundStyle(FoldedStyle.onAirTimer)
+        Group {
+            #if DEBUG
+            if let captureElapsed {
+                pill(elapsed: captureElapsed)
+            } else {
+                live
             }
-            .padding(.horizontal, 14)
-            .frame(minHeight: 32)
-            .background(FoldedStyle.onAirAmber.opacity(0.14), in: Capsule())
-            .overlay(Capsule().strokeBorder(FoldedStyle.onAirAmber.opacity(0.55), lineWidth: 1))
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("On Air, \(PlaybackTimeFormat.label(elapsed))")
+            #else
+            live
+            #endif
         }
         .accessibilityIdentifier("dj.onAir")
+    }
+
+    private var live: some View {
+        TimelineView(.periodic(from: startedAt, by: 1)) { context in
+            pill(elapsed: max(0, context.date.timeIntervalSince(startedAt)))
+        }
+    }
+
+    private func pill(elapsed: TimeInterval) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(FoldedStyle.onAirAmber)
+                .frame(width: 8, height: 8)
+                .accessibilityHidden(true)
+            Text("ON AIR")
+                .font(.caption.weight(.bold))
+                .tracking(1.4)
+                .foregroundStyle(FoldedStyle.onAirAmber)
+            Text(PlaybackTimeFormat.label(elapsed))
+                .font(.subheadline.weight(.medium).monospacedDigit())
+                .foregroundStyle(FoldedStyle.onAirTimer)
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 32)
+        .background(FoldedStyle.onAirAmber.opacity(0.14), in: Capsule())
+        .overlay(Capsule().strokeBorder(FoldedStyle.onAirAmber.opacity(0.55), lineWidth: 1))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("On Air, \(PlaybackTimeFormat.label(elapsed))")
     }
 }
 

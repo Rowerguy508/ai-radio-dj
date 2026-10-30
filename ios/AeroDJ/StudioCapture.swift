@@ -21,6 +21,33 @@ enum StudioCapture {
     /// `duoWideReady`: the stand-in for the unfolded Duo's split-view detail. The UI test
     /// (`testDuoWideListenPlayerIsOneCentredColumn`) checks the same 640 × 820 pt.
     static let duoWideContainerSize = CGSize(width: 640, height: 820)
+    /// `djSpeaking`: the ON AIR pill's timer is pinned here instead of counting from the
+    /// moment the pill appeared, so every capture and video take reads 0:04.
+    static let onAirElapsed: TimeInterval = 4
+
+    /// `breakToSongHandoff`: the break after song one has finished (`playbackFinished`) and
+    /// song two is playing with song three queued. The same songs as `PlaybackFixtures`.
+    static let handoffSnapshot = PlaybackSnapshot(
+        station: PlaybackFixtures.station,
+        nowPlaying: PlaybackFixtures.songs[1],
+        upNext: [PlaybackFixtures.songs[2]],
+        transport: .playing,
+        dj: .idle
+    )
+
+    /// `stationListCustom`: one created (+) station after the built-ins. A genre recipe with a
+    /// fixed id and date, read through `CreatedStations` like the live list, and never written
+    /// to the recipe store.
+    static let createdStationRecipe = StationRecipe(
+        id: UUID(uuidString: "B06E5F54-8293-4EAF-8031-4C5D6E7F8091")!,
+        name: "Night Bus Electronic",
+        configuration: StationConfiguration(seeds: [StationSeed(kind: .genre, catalogID: "7", name: "Electronic")]),
+        createdAt: Date(timeIntervalSince1970: 1_790_000_000)
+    )
+
+    /// `genreBuilder`: the genre already picked on the add-station pick step. One of
+    /// `StaticGenreProvider.fixture`'s rows, so its row shows the checkmark.
+    static let pickedGenre = StationSeed(kind: .genre, catalogID: "7", name: "Electronic")
 
     static func isRequested(mode: AppRuntimeMode, defaults: UserDefaults = .standard) -> Bool {
         mode == .testStation && defaults.bool(forKey: defaultsKey)
@@ -64,20 +91,37 @@ enum StudioCaptureScenario: String {
     /// container: below the Studio switch but wider than any phone in portrait, like the
     /// unfolded Duo's split-view detail (owner, build 25). Needs a window at least that big.
     case duoWideReady
+    /// App Store video (build 27). The DJ is on air between songs one and two
+    /// (`PlaybackFixtures.djSpeaking`), reached through `breakReady` then `playbackStarted`, the
+    /// same events the audio player sends. The ON AIR timer is pinned (`onAirElapsed`).
+    case djSpeaking
+    /// App Store video (build 27). The moment after that break: `playbackFinished` has ended
+    /// On Air and song two is playing from 0:03 (`handoffSnapshot`).
+    case breakToSongHandoff
+    /// App Store video (build 27). The add-station walkthrough's genre pick step, listing
+    /// `StaticGenreProvider.fixture` (no MusicKit, no authorization) with one genre picked.
+    /// Nothing is saved: the capture never taps Next.
+    case genreBuilder
+    /// App Store video (build 27). The station picker with the built-ins plus one created
+    /// station (`createdStationRecipe`): the carousel at compact width, the list at regular.
+    /// Local selection only; nothing restores, searches or plays.
+    case stationListCustom
 
     var access: PlaybackAccess {
         switch self {
         case .loading: .checking
         case .denied: .denied
-        case .stations, .resize, .resizeTune, .shell: .authorized
+        case .stations, .resize, .resizeTune, .shell, .genreBuilder, .stationListCustom: .authorized
         default: .authorized
         }
     }
 
     var snapshot: PlaybackSnapshot {
         switch self {
-        case .empty, .loading, .denied, .stations, .resize: PlaybackFixtures.stopped
+        case .empty, .loading, .denied, .stations, .resize, .genreBuilder, .stationListCustom: PlaybackFixtures.stopped
         case .error: PlaybackFixtures.recoverableError
+        case .djSpeaking: PlaybackFixtures.djSpeaking
+        case .breakToSongHandoff: StudioCapture.handoffSnapshot
         default: PlaybackFixtures.playing
         }
     }
@@ -90,6 +134,16 @@ enum StudioCaptureScenario: String {
         case .resize: .queue
         case .stations, .shell: nil
         default: nil
+        }
+    }
+
+    /// Fixed progress for a playing scenario, nil when nothing plays. Song two has only just
+    /// started in the break scenarios; every other playing scenario keeps 1:12 of 3:45.
+    @MainActor var timeSource: PlaybackTimeSource? {
+        switch self {
+        case .djSpeaking: return .songStart(elapsed: 0)
+        case .breakToSongHandoff: return .songStart(elapsed: 3)
+        default: return snapshot.transport == .playing ? PlaybackTimeSource.fixture : nil
         }
     }
 }
@@ -135,6 +189,10 @@ struct StudioCaptureView: View {
                     .accessibilityIdentifier("capture.shell")
             } else if scenario == .duoWideReady {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario == .genreBuilder {
+                GenreBuilderCapture(studio: dependencies.studio)
+            } else if scenario == .stationListCustom {
+                CreatedStationListCapture()
             } else {
                 NavigationStack {
                     if showsProbe {
@@ -144,7 +202,7 @@ struct StudioCaptureView: View {
                                       snapshot: scenario.snapshot, actions: .preview,
                                       search: scenario == .empty ? .counting : .captureOffline,
                                       studio: dependencies.studio, isTestStation: true,
-                                      timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
+                                      timeSource: scenario.timeSource)
                     }
                 }
             }
@@ -165,6 +223,7 @@ struct StudioCaptureView: View {
             }
         }
         .preferredColorScheme(UserDefaults.standard.bool(forKey: StudioCapture.darkKey) ? .dark : nil)
+        .environment(\.studioCaptureOnAirElapsed, loaded && scenario == .djSpeaking ? StudioCapture.onAirElapsed : nil)
         .task {
             // The app root's task starts Studio (b39d15f). Wait for that load to finish rather
             // than loading again: a second load would overwrite the scenario's edits below.
@@ -196,6 +255,14 @@ struct StudioCaptureView: View {
                 studio.dj.send(.playbackFailed(afterTrack: 0))
             case .breakReady, .duoWideReady:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
+            case .djSpeaking:
+                // Speaking only ever comes from playbackStarted (DJPresentationModel).
+                studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 8))
+                studio.dj.send(.playbackStarted(afterTrack: 0))
+            case .breakToSongHandoff:
+                studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 8))
+                studio.dj.send(.playbackStarted(afterTrack: 0))
+                studio.dj.send(.playbackFinished(afterTrack: 0))
             case .config, .resizeTune:
                 // Fry #110: Save while holding schedules pending until a safe boundary.
                 // Idle Save would apply immediately ("Saved…"), which breaks
@@ -283,6 +350,101 @@ private struct StationListCapture: View {
             Text("Choose a station")
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("split.placeholder")
+        }
+    }
+}
+
+/// `genreBuilder`: the real add-station walkthrough on its pick step for a genre station, over
+/// `StaticGenreProvider.fixture`. Its seed search is offline (`CaptureOfflineSeedSearch`), so no
+/// step can reach Apple Music, and Cancel / Done do nothing. The model is built once, before the
+/// first frame, with `pickedGenre` already picked.
+private struct GenreBuilderCapture: View {
+    let studio: StudioPresentationModel
+    @State private var creation: StationCreationModel?
+
+    var body: some View {
+        Group {
+            if let creation {
+                AddStationWalkthroughView(studio: studio, creation: creation,
+                                          initialStep: .picks, initialKind: .genre) {}
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("capture.genreBuilder")
+            } else {
+                Color.clear
+            }
+        }
+        .onAppear {
+            guard creation == nil else { return }
+            let model = StationCreationModel(studio: studio, search: CaptureOfflineSeedSearch(), kind: .genre,
+                                             genres: StaticGenreProvider.fixture)
+            model.toggle(StudioCapture.pickedGenre)
+            creation = model
+        }
+    }
+}
+
+/// Capture only: catalog and library search that never leaves the device. Genres come from
+/// the walkthrough's `GenreProviding` (`StaticGenreProvider.fixture`), not from here.
+private struct CaptureOfflineSeedSearch: StationSeedSearching {
+    func searchSeeds(_ term: String, kinds: Set<StationSeedKind>, limit: Int) async throws -> [StationSeedSearchResult] {
+        throw CancellationError()
+    }
+
+    func genreSeeds(matching query: String) async throws -> [StationSeedSearchResult] { [] }
+
+    func libraryPlaylistSeeds(limit: Int) async throws -> [StationSeedSearchResult] { [] }
+}
+
+/// `stationListCustom`: the built-ins plus `createdStationRecipe`, drawn like the live picker
+/// (`StationSplitRoot.stationPicker`): the arc carousel at compact width, the sidebar list at
+/// regular, under the same morphing "Stations" header. Like `StationListCapture` the selection
+/// is local and never stored or restored, and a tap does nothing, so nothing can play.
+private struct CreatedStationListCapture: View {
+    @State private var compactColumn = NavigationSplitViewColumn.sidebar
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) private var systemColorScheme
+
+    private var stations: [Station] {
+        Station.defaultStations
+            + CreatedStations.entries(from: [StudioCapture.createdStationRecipe]).map(Station.init(created:))
+    }
+
+    private var isCompact: Bool { horizontalSizeClass != .regular }
+
+    var body: some View {
+        NavigationSplitView(preferredCompactColumn: $compactColumn) {
+            picker
+                .navigationTitle("AeroDJ")
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("split.sidebar")
+                .morphingLargeTitle("Stations", subtitle: "Your AI-hosted radio, on Apple Music")
+                .environment(\.colorScheme, isCompact ? .dark : systemColorScheme)
+                .toolbarColorScheme(isCompact ? .dark : nil, for: .navigationBar)
+        } detail: {
+            Text("Choose a station")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("split.placeholder")
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+
+    @ViewBuilder
+    private var picker: some View {
+        if isCompact {
+            StationCarousel(stations: stations, selectedID: nil) { _ in }
+        } else {
+            List(stations) { station in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(station.name).font(.headline).lineLimit(1)
+                    if let description = station.description {
+                        Text(description).font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
+                            .lineLimit(2)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("stations.row.\(station.id.uuidString)")
+            }
         }
     }
 }
@@ -413,6 +575,27 @@ extension MusicSearch {
     /// Capture only: the real search UI with no Apple Music behind it. Searching reports
     /// "isn't available" instead of inventing results.
     static let captureOffline = MusicSearch(search: { _ in throw CancellationError() }, play: { _, _ in })
+}
+
+extension PlaybackTimeSource {
+    /// Capture only: a song that has just started, `elapsed` seconds into 3:18. Fixed, so the
+    /// scrubber never moves between frames.
+    static func songStart(elapsed: TimeInterval) -> PlaybackTimeSource {
+        PlaybackTimeSource(elapsed: { elapsed }, duration: { 198 }, isPlaying: { true })
+    }
+}
+
+private struct StudioCaptureOnAirElapsedKey: EnvironmentKey {
+    static let defaultValue: TimeInterval? = nil
+}
+
+extension EnvironmentValues {
+    /// Debug capture only: a fixed ON AIR timer (`StudioCapture.onAirElapsed`). Nil, the
+    /// default everywhere else, keeps the live timer.
+    var studioCaptureOnAirElapsed: TimeInterval? {
+        get { self[StudioCaptureOnAirElapsedKey.self] }
+        set { self[StudioCaptureOnAirElapsedKey.self] = newValue }
+    }
 }
 
 /// The segment a capture run starts on, read by `PlayingScreen` once.

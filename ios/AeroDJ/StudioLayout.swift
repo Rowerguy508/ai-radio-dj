@@ -221,7 +221,7 @@ struct QueueList: View {
     @ViewBuilder
     private func row(_ track: TrackInfo, isNowPlaying: Bool, index: Int?) -> some View {
         // The hero already speaks this song. Repeating the title here makes a shorter
-        // "Morning Light" below the transport, and a containing element still exposes it.
+        // "Bakery Lights on Fennimore" below the transport, and a containing element still exposes it.
         let repeatsHeroTitle = isNowPlaying && typeSize.isAccessibilitySize
         HStack(spacing: 12) {
             ArtworkView(track: track, size: 44)

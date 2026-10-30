@@ -9,9 +9,9 @@ public enum PlaybackFixtures {
     public static let station = StationRef(id: "morning-calm", name: "Morning Calm")
 
     public static let songs: [TrackInfo] = [
-        TrackInfo(id: "1", title: "Morning Light", artistName: "The Calm Collective"),
-        TrackInfo(id: "2", title: "Slow Burn", artistName: "Neon Harbor"),
-        TrackInfo(id: "3", title: "Golden Hour", artistName: "Paper Satellites"),
+        TrackInfo(id: "1", title: "Bakery Lights on Fennimore", artistName: "sleepyfern"),
+        TrackInfo(id: "2", title: "Cardamom Overcoat", artistName: "Noelle Ashby"),
+        TrackInfo(id: "3", title: "Toast at Pier Eleven", artistName: "Larkspur Avenue"),
     ]
 
     /// Playing song one, with song two queued. Used for compact and studio layouts.
@@ -29,7 +29,7 @@ public enum PlaybackFixtures {
         nowPlaying: songs[1],
         upNext: [songs[2]],
         transport: .playing,
-        dj: .speaking(line: "That was Morning Light. Here comes Slow Burn.")
+        dj: .speaking(line: "That was Bakery Lights on Fennimore. Here comes Cardamom Overcoat.")
     )
 
     public static let paused = PlaybackSnapshot(

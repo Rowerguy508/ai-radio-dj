@@ -102,7 +102,7 @@ final class StudioScreenTests: XCTestCase {
         let app = launch()
         XCTAssertTrue(app.otherElements["layout.compact"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.otherElements["layout.studio"].exists)
-        XCTAssertTrue(shows(app, "Morning Light"), "Now Playing shows the fixture song")
+        XCTAssertTrue(shows(app, "Bakery Lights on Fennimore"), "Now Playing shows the fixture song")
         XCTAssertTrue(shows(app, "TEST STATION"), "Capture mode is always labelled")
         XCTAssertTrue(app.buttons["transport.playPause"].isHittable)
         XCTAssertTrue(app.buttons["transport.skip"].isHittable)
@@ -112,7 +112,7 @@ final class StudioScreenTests: XCTestCase {
 
         app.buttons["queue.affordance"].tap()
         XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
-        XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
+        XCTAssertTrue(shows(app, "Cardamom Overcoat"), "Up Next shows the fixture queue")
         save(app, "closed-queue-sheet")
     }
 
@@ -129,7 +129,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(zoneA.frame.width, 320)
         XCTAssertGreaterThanOrEqual(zoneB.frame.width, 340)
         XCTAssertTrue(app.buttons["transport.playPause"].isHittable, "Now Playing stays in Zone A")
-        XCTAssertTrue(shows(app, "Slow Burn"))
+        XCTAssertTrue(shows(app, "Cardamom Overcoat"))
         save(app, "open-studio-queue")
     }
 
@@ -177,7 +177,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
                       "\(layout) expected at accessibility text size:\n\(app.debugDescription)")
         if isOpenLayout { XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, "no two zones at AX sizes") }
-        XCTAssertTrue(shows(app, "Morning Light"))
+        XCTAssertTrue(shows(app, "Bakery Lights on Fennimore"))
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX sizes")
         save(app, isOpenLayout ? "open-large-text" : "closed-large-text")
@@ -210,8 +210,8 @@ final class StudioScreenTests: XCTestCase {
             // Any element type: without a track the container may not surface as "other".
             XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15), c.scenario)
             XCTAssertTrue(shows(app, c.expect), "\(c.scenario) shows \(c.expect)")
-            if c.scenario == "error" { assertReadingOrder(app, title: "Slow Burn", status: "DJ voice unavailable") }
-            if c.scenario == "playbackFailed" { assertReadingOrder(app, title: "Morning Light", status: "couldn't play") }
+            if c.scenario == "error" { assertReadingOrder(app, title: "Cardamom Overcoat", status: "DJ voice unavailable") }
+            if c.scenario == "playbackFailed" { assertReadingOrder(app, title: "Bakery Lights on Fennimore", status: "couldn't play") }
             // Transport appears only when there is a session it can control.
             XCTAssertEqual(app.buttons["transport.playPause"].exists, c.transport, c.scenario)
             if c.scenario == "denied" { XCTAssertTrue(app.buttons["Open Settings"].exists) }
@@ -255,7 +255,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(app.otherElements["layout.compact"].waitForExistence(timeout: 15))
         app.buttons["queue.affordance"].tap()
         XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
-        XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
+        XCTAssertTrue(shows(app, "Cardamom Overcoat"), "Up Next shows the fixture queue")
         save(app, "closed-queue-sheet-dark")
     }
 
@@ -264,7 +264,7 @@ final class StudioScreenTests: XCTestCase {
         try XCTSkipUnless(isOpenLayout, "Open layout is checked on an iPad-width simulator")
         let app = launch(segment: "queue", dark: true)
         XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
-        XCTAssertTrue(shows(app, "Slow Burn"))
+        XCTAssertTrue(shows(app, "Cardamom Overcoat"))
         save(app, "open-studio-queue-dark")
     }
 
@@ -293,7 +293,7 @@ final class StudioScreenTests: XCTestCase {
         let calm = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS[c] %@", "Morning Calm")).firstMatch
         XCTAssertTrue(calm.waitForExistence(timeout: 15), "Fixture station list")
         XCTAssertTrue(shows(app, "Late Night"))
-        XCTAssertFalse(shows(app, "Morning Light"), "The station list is not the player")
+        XCTAssertFalse(shows(app, "Bakery Lights on Fennimore"), "The station list is not the player")
         save(app, isOpenLayout ? "open-station-list-dark" : "closed-station-list-dark")
     }
 
@@ -458,7 +458,7 @@ final class StudioScreenTests: XCTestCase {
         let layout = isOpenLayout ? "layout.studio" : "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
                       "ready capture did not show \(layout):\n\(app.debugDescription)")
-        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
+        XCTAssertTrue(shows(app, "Bakery Lights on Fennimore"), "The song stays on screen")
         // `shows` reads XCUIElement.label, which is the visible text and the accessibility label.
         if isOpenLayout {
             XCTAssertFalse(shows(app, "break"), ".ready must not expose break text in visible text or the accessibility label")
@@ -471,6 +471,81 @@ final class StudioScreenTests: XCTestCase {
         save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-line")
     }
 
+    // MARK: App Store video scenarios (build 27)
+
+    /// The DJ is on air between songs one and two: `PlaybackFixtures.djSpeaking`, reached through
+    /// `breakReady` then `playbackStarted`. The folded ON AIR timer is pinned at 0:04
+    /// (`StudioCapture.onAirElapsed`), so this frame never changes between runs.
+    @MainActor
+    func testDJSpeakingCapture() throws {
+        let app = launch(scenario: "djSpeaking", reduceMotion: true)
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(shows(app, "Cardamom Overcoat"), "Song two is on screen while the DJ talks")
+        XCTAssertTrue(shows(app, "On Air"), "Speaking is the one On Air state\n\(app.debugDescription)")
+        if !isOpenLayout {
+            let pill = app.descendants(matching: .any)["dj.onAir"]
+            XCTAssertTrue(pill.waitForExistence(timeout: 5), app.debugDescription)
+            XCTAssertEqual(pill.label, "On Air, 0:04", "The capture pins the ON AIR timer")
+            _ = settledFrame(of: pill, "ON AIR pill")
+        }
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        save(app, isOpenLayout ? "open-dj-speaking" : "closed-dj-speaking")
+    }
+
+    /// The break after song one has finished (`playbackFinished`): On Air is gone and song two
+    /// plays from a fixed 0:03.
+    @MainActor
+    func testBreakToSongHandoffCapture() throws {
+        let app = launch(scenario: "breakToSongHandoff", reduceMotion: true)
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(shows(app, "Cardamom Overcoat"), "Song two is now playing")
+        XCTAssertFalse(shows(app, "On Air"), "A finished break is never On Air\n\(app.debugDescription)")
+        XCTAssertFalse(app.descendants(matching: .any)["dj.onAir"].exists)
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        save(app, isOpenLayout ? "open-break-handoff" : "closed-break-handoff")
+    }
+
+    /// The add-station genre step over `StaticGenreProvider.fixture`: genres listed without
+    /// Apple Music, Electronic already picked, and nothing asks for access.
+    @MainActor
+    func testGenreBuilderCapture() throws {
+        let app = launch(scenario: "genreBuilder", reduceMotion: true)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["capture.genreBuilder"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(any["addStation.step.2"].waitForExistence(timeout: 5), app.debugDescription)
+        let picked = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Electronic")).firstMatch
+        XCTAssertTrue(picked.waitForExistence(timeout: 10), "The fixture genres load\n\(app.debugDescription)")
+        XCTAssertEqual(picked.value as? String, "Picked")
+        XCTAssertTrue(app.buttons["Remove Electronic"].exists, "The picked chip shows")
+        XCTAssertTrue(shows(app, "Jazz"))
+        XCTAssertFalse(any["addStation.genres.connect"].exists, "Fixture genres never need Apple Music")
+        // The rows pop in one after another; screenshot only once the first one holds still.
+        let first = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Pop")).firstMatch
+        XCTAssertTrue(first.waitForExistence(timeout: 5), app.debugDescription)
+        _ = settledFrame(of: first, "first genre row")
+        _ = settledFrame(of: picked, "picked genre row")
+        save(app, isOpenLayout ? "open-genre-builder" : "closed-genre-builder")
+    }
+
+    /// The station picker with a created station after the built-ins. Nothing is selected or
+    /// restored, and it is not the player.
+    @MainActor
+    func testStationListCustomCapture() throws {
+        let app = launch(scenario: "stationListCustom", reduceMotion: true)
+        let any = app.descendants(matching: .any)
+        let created = any.matching(NSPredicate(format: "label CONTAINS[c] %@", "Night Bus Electronic")).firstMatch
+        XCTAssertTrue(created.waitForExistence(timeout: 15), "Created station fixture\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Morning Calm"))
+        XCTAssertTrue(shows(app, "Late Night"))
+        XCTAssertTrue(shows(app, "Your genre station"), "Created rows use the fixed seed-kind summary")
+        XCTAssertFalse(shows(app, "Bakery Lights on Fennimore"), "The station list is not the player")
+        let calm = any.matching(NSPredicate(format: "label CONTAINS[c] %@", "Morning Calm")).firstMatch
+        _ = settledFrame(of: calm, "first station")
+        save(app, isOpenLayout ? "open-station-list-custom" : "closed-station-list-custom")
+    }
+
     @MainActor
     func testAX5LightAppearance() throws {
         let app = launch(contentSize: Self.ax5)
@@ -480,10 +555,10 @@ final class StudioScreenTests: XCTestCase {
         if isOpenLayout {
             XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, "no two zones at AX sizes")
         }
-        XCTAssertTrue(shows(app, "Morning Light"))
+        XCTAssertTrue(shows(app, "Bakery Lights on Fennimore"))
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX5")
-        assertReadingOrder(app, title: "Morning Light")
+        assertReadingOrder(app, title: "Bakery Lights on Fennimore")
         save(app, isOpenLayout ? "open-ax5" : "closed-ax5")
     }
 
@@ -496,10 +571,10 @@ final class StudioScreenTests: XCTestCase {
         if isOpenLayout {
             XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, "no two zones at AX sizes")
         }
-        XCTAssertTrue(shows(app, "Morning Light"))
+        XCTAssertTrue(shows(app, "Bakery Lights on Fennimore"))
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX5")
-        assertReadingOrder(app, title: "Morning Light")
+        assertReadingOrder(app, title: "Bakery Lights on Fennimore")
         save(app, isOpenLayout ? "open-ax5-dark" : "closed-ax5-dark")
     }
 
@@ -512,7 +587,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
         let sidebar = app.descendants(matching: .any)["split.sidebar"]
         XCTAssertTrue(sidebar.waitForExistence(timeout: 15), app.debugDescription)
-        XCTAssertFalse(contains(sidebar, "Morning Light"), "The sidebar keeps no now-playing copy\n\(app.debugDescription)")
+        XCTAssertFalse(contains(sidebar, "Bakery Lights on Fennimore"), "The sidebar keeps no now-playing copy\n\(app.debugDescription)")
         XCTAssertFalse(contains(sidebar, "On Air"), "The sidebar keeps no DJ state\n\(app.debugDescription)")
         let calm = stationRow(sidebar, named: "Morning Calm")
         XCTAssertTrue(calm.waitForExistence(timeout: 5), app.debugDescription)
@@ -523,7 +598,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(appeared.waitForExistence(timeout: 5), "The detail holds the one shared studio model\n\(app.debugDescription)")
         XCTAssertEqual(modelIdentifiers(app).count, 1, "The detail holds the one shared studio model\n\(app.debugDescription)")
         if sidebar.exists {
-            XCTAssertFalse(contains(sidebar, "Morning Light"), app.debugDescription)
+            XCTAssertFalse(contains(sidebar, "Bakery Lights on Fennimore"), app.debugDescription)
         }
         XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
     }
@@ -565,7 +640,7 @@ final class StudioScreenTests: XCTestCase {
                        "Authorized restore does not show Allow\n\(granted.debugDescription)")
         XCTAssertFalse(shows(granted, "Connecting to Apple Music"),
                        "Authorized restore is not Connecting\n\(granted.debugDescription)")
-        XCTAssertTrue(shows(granted, "Morning Light") || granted.buttons["transport.playPause"].exists,
+        XCTAssertTrue(shows(granted, "Bakery Lights on Fennimore") || granted.buttons["transport.playPause"].exists,
                       "Authorized restore reaches a ready playing state\n\(granted.debugDescription)")
         XCTAssertEqual(authorizeCount(granted), "0",
                        "Authorized restore must not call request()\n\(granted.debugDescription)")
@@ -594,7 +669,7 @@ final class StudioScreenTests: XCTestCase {
             let row = stationRow(sidebar, named: "Morning Calm")
             XCTAssertTrue(row.waitForExistence(timeout: 5), app.debugDescription)
             XCTAssertTrue(row.isSelected, "Morning Calm is selected\n\(app.debugDescription)")
-            XCTAssertFalse(contains(sidebar, "Morning Light"), "The sidebar keeps no now-playing copy\n\(app.debugDescription)")
+            XCTAssertFalse(contains(sidebar, "Bakery Lights on Fennimore"), "The sidebar keeps no now-playing copy\n\(app.debugDescription)")
         } else {
             XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 5),
                           "Compact shows the restored detail\n\(app.debugDescription)")
@@ -722,7 +797,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(rotated.waitForExistence(timeout: 10))
         XCTAssertEqual(rotated.value as? String, "violet")
         XCTAssertTrue(app.buttons["transport.playPause"].exists, "Playback stays up across rotation")
-        XCTAssertTrue(shows(app, "Morning Light"))
+        XCTAssertTrue(shows(app, "Bakery Lights on Fennimore"))
         let segments = app.segmentedControls["workspace.segment"]
         if segments.exists {
             XCTAssertTrue(segments.buttons["Queue"].isSelected)
@@ -737,7 +812,7 @@ final class StudioScreenTests: XCTestCase {
         let layout = isOpenLayout ? "layout.studio" : "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
         XCUIDevice.shared.orientation = .landscapeLeft
-        XCTAssertTrue(shows(app, "Morning Light"))
+        XCTAssertTrue(shows(app, "Bakery Lights on Fennimore"))
         XCTAssertTrue(app.buttons["transport.playPause"].waitForExistence(timeout: 10))
         save(app, isOpenLayout ? "ipad-landscape-dark" : "iphone-landscape-dark")
     }
@@ -749,7 +824,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
         XCTAssertTrue(app.descendants(matching: .any)["motion.reduced"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["transport.playPause"].exists)
-        assertReadingOrder(app, title: "Morning Light")
+        assertReadingOrder(app, title: "Bakery Lights on Fennimore")
     }
 
     /// Compact empty state: submit search shows fixture results and does not play.
@@ -767,7 +842,7 @@ final class StudioScreenTests: XCTestCase {
         let result = app.descendants(matching: .any)["search.result.1"]
         XCTAssertTrue(result.waitForExistence(timeout: 10),
                       "Fixture search results appear after submit\n\(app.debugDescription)")
-        XCTAssertTrue(shows(app, "Morning Light"), app.debugDescription)
+        XCTAssertTrue(shows(app, "Bakery Lights on Fennimore"), app.debugDescription)
         let calls = callLabel(app)
         XCTAssertTrue(calls.hasPrefix("0/"), "Search must not play: \(calls)\n\(app.debugDescription)")
         XCTAssertNotEqual(calls, "0/0", "Submit records a search: \(calls)")

@@ -242,7 +242,7 @@ private enum StationCarouselPreview {
         Station(id: UUID(uuidString: "9E4C3D32-6071-4C8D-AE1F-2A3B4C5D6E7F")!,
                 name: "Sunday Paper", description: "Bright, chatty, a little nosy"),
         Station(id: UUID(uuidString: "AF5D4E43-7182-4D9E-BF20-3B4C5D6E7F80")!,
-                name: "Deep Focus", description: "Says almost nothing"),
+                name: "Quiet Shift", description: "Says almost nothing"),
     ]
 }
 #endif
