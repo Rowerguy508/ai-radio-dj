@@ -1,6 +1,7 @@
 # OnAirly Privacy Policy (DRAFT)
 
 > **Draft for the owner. Do not publish until every [owner] and [PENDING] marker is resolved.**
+> Before publishing, strip this whole header and every bracketed marker from the page.
 > Sources: #174 `docs/privacy/disclosure-copy.md` and `data-flows.md`, and #245 `app-store-privacy-label-v1.md`.
 > The facts are re-checked against the release build before publishing. Sections marked
 > [PENDING: paid voice] depend on the owner's ElevenLabs decisions (#245 §6) and must not go live
@@ -11,7 +12,7 @@
 > network code, purchases) stays inside a [PENDING] block and must not appear on the live page until
 > it ships. The Phonon download is marked [PENDING: Phonon]: AeroDJPhonon isn't embedded in current
 > builds (ITMS-90755) and needs iOS 18.
-> Never mention the legacy web app or Telegram here; `ray-do` is a separate product that is still being locked down.
+> Never mention the legacy web app or Telegram here.
 
 _Last updated: [owner: date]_
 
@@ -28,10 +29,11 @@ Apart from Apple Music itself, nothing leaves your device.
 
 ## What stays on your device
 
-- **Calendar.** If you allow it, OnAirly reads events from the calendars you pick so the DJ can mention them. Events are never sent anywhere. Spoken clips that use them are kept for at most 7 days and are deleted when you remove access.
-- **Markdown notes and shared items.** Markdown notes (.md files you pick), and text or links you share to OnAirly, stay on your device. For each note, OnAirly keeps only a link to the file and its name, and reads the text when it's needed; the text isn't saved. Shared items are deleted after 7 days, or right away when you delete them.
+- **Calendar.** If you allow it, OnAirly reads events from the calendars you pick so the DJ can mention them. Events are never sent anywhere. Spoken clips that use them expire after 7 days and are deleted when you remove access.
+- **Markdown notes and shared items.** Markdown notes (.md files you pick), and text or links you share to OnAirly, stay on your device. For each note, OnAirly keeps only a link to the file and its name, and reads the text when it's needed; the note's text isn't saved. Shared items are deleted after 7 days, or right away when you delete them. Spoken clips made from a note or a shared item expire after 7 days, and are deleted when you stop using the note or delete the item.
 - **Your music library and stations.** Library playlists, songs and artists you use as station seeds, and the names you give your stations, stay on your device.
 - **On-device voices.** The built-in voices speak entirely on your device.
+- **Spoken clips.** So the DJ doesn't have to make the same clip twice, OnAirly saves the audio of what it says on your device, protected by iOS Data Protection. Only the audio is saved, not the written text. A clip is never played once it's 7 days old, and it's deleted the next time OnAirly runs (the app checks when it starts and every hour while it's open). Clips made from your calendar, Markdown notes or shared items are also deleted each time OnAirly starts, and right away when you stop using that source or delete the item. Like other app data, saved clips can be included in your iCloud or computer backups.
 
 Personal items, such as calendar events, Markdown notes, shared items, library tracks and the station names you type, are never sent off your device. [PENDING: paid voice, add when it ships:] This holds even when the cloud voice is on.
 
@@ -47,7 +49,7 @@ Not in current builds; publish only if the Phonon voice ships (it needs iOS 18 o
 
 Before any text leaves your device, OnAirly asks you. Until you tap "Use cloud voice", every voice stays on your device.
 
-If you turn it on, the words of each DJ break are sent over an encrypted connection to our voice server, which runs on Vercel. The server passes them on to ElevenLabs, which turns them into audio. Those words are made up of fixed DJ phrasing, the app's name, and the Apple Music catalog song titles and artist names of what you're listening to. Stations built from your own music library always use the on-device voice.
+If you turn it on, the words of each DJ break are sent over an encrypted connection to our voice server, which runs on Vercel. The server passes them on to ElevenLabs, which turns them into audio. Those words are made up of fixed DJ phrasing, the app's name, and the Apple Music catalog song titles and artist names of what you're listening to. Stations built from your own music library always use the on-device voice. Audio that comes back from the cloud voice is saved on your device like any other spoken clip, with the same 7-day limit.
 
 - **What we don't send:** your name, Apple ID, contacts, location, calendar, notes, shared items, library tracks or the station names you type.
 - **Our server's log:** it records a random request ID, the result and the number of characters. It doesn't log the text.
