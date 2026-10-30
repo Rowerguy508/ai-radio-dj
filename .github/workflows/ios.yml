@@ -236,6 +236,23 @@ jobs:
           for NEEDLE in P0EventTraceHost P0EventTrace P0PollSampler P0TraceView P0EventTracePanel; do
             LC_ALL=C grep -a -q "$NEEDLE" "$DIAG_BIN" || { echo "::error::$NEEDLE missing from the AERODJ_P0_DIAG build"; exit 1; }
           done
+      - name: UI-test animation freeze is absent from Release and present in Debug
+        # -AERODJ_UITEST_DISABLE_ANIMATIONS is honoured only by DEBUG-only code
+        # (CaptureMotionFreeze, UITestAnimationFreezePolicy). Release must not contain it;
+        # the Debug app must, so the check can't pass vacuously. -Atlas
+        run: |
+          RELEASE_APP="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app"
+          DEBUG_APP="$DERIVED_DATA/Build/Products/Debug-iphoneos/AeroDJ.app"
+          test -d "$RELEASE_APP" && test -d "$DEBUG_APP"
+          for NEEDLE in CaptureMotionFreeze aerodjFreeze_ UITestAnimationFreezePolicy AERODJ_UITEST_DISABLE_ANIMATIONS; do
+            if LC_ALL=C grep -r -a -q "$NEEDLE" "$RELEASE_APP"; then
+              echo "::error::UI-test animation freeze ($NEEDLE) found in the Release app"
+              exit 1
+            fi
+            LC_ALL=C grep -r -a -q "$NEEDLE" "$DEBUG_APP" \
+              || { echo "::error::control: $NEEDLE missing from the Debug app"; exit 1; }
+          done
+          echo "OK: Release app has no UI-test animation freeze; Debug app has it"
       - name: Owner A/B gate script fails closed (fake xcodebuild test)
         run: ios/scripts/check-owner-ab-build-settings-test.sh
       - name: Owner A/B (AERODJ_OWNER_AB) is absent from Release build settings unless dispatched with owner_ab
@@ -404,8 +421,11 @@ jobs:
       - name: UI tests on iPhone (closed, compact player)
         run: |
           mkdir -p "$SHOTS"
-          xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$PHONE_UDID" -b
+          # Clean simulator (no app or data from an earlier run), the same as the baseline
+          # capture gets, so the head and base shots start from the same state. -Atlas
+          ios/scripts/reset-simulator-app-state.sh "$PHONE_UDID"
+          ios/scripts/override-status-bar.sh "$PHONE_UDID"
+          ios/scripts/settle-simulator-keyboard.sh "$PHONE_UDID"
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
@@ -418,6 +438,8 @@ jobs:
         run: |
           xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$PHONE_UDID" -b
+          ios/scripts/override-status-bar.sh "$PHONE_UDID"
+          ios/scripts/settle-simulator-keyboard.sh "$PHONE_UDID"
           xcrun simctl io "$PHONE_UDID" recordVideo --codec h264 --force "$SHOTS/walkthrough-closed.mp4" &
           REC=$!
           sleep 2
@@ -441,6 +463,8 @@ jobs:
           xcrun simctl shutdown "$PHONE_UDID" 2>/dev/null || true
           xcrun simctl boot "$PAD_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$PAD_UDID" -b
+          ios/scripts/override-status-bar.sh "$PAD_UDID"
+          ios/scripts/settle-simulator-keyboard.sh "$PAD_UDID"
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PAD_UDID" -- \
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
@@ -470,6 +494,83 @@ jobs:
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
+      - name: Screenshot compare and label-gate tests (status-bar mask)
+        if: github.event_name == 'pull_request'
+        run: python3 ios/scripts/compare-iphone-screenshots-test.py
+      - name: iPhone screenshots at the PR base (baseline)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHOTS: ${{ runner.temp }}/base-screenshots
+        run: |
+          # Same runner, same iPhone simulator, same status-bar override: only the code
+          # differs. Base UI-test failures are a warning here; the PR's own steps above gate.
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git worktree prune
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          # The head launches its UI tests with -AERODJ_UITEST_DISABLE_ANIMATIONS. A base from
+          # before #289 lacks that freeze, so overlay exactly the freeze files (head's diff
+          # against the base, nothing else) onto the base checkout. Once the base has the
+          # freeze, the base is built untouched.
+          FREEZE_FILES=(
+            ios/AeroDJ/CaptureMotionFreeze.swift
+            ios/AeroDJ/AeroDJApp.swift
+            ios/AeroDJUITests/StudioScreenTests.swift
+            ios/AeroDJCore/Sources/AeroDJCore/Runtime/UITestAnimationFreezePolicy.swift
+          )
+          if [ -f "$RUNNER_TEMP/base/ios/AeroDJ/CaptureMotionFreeze.swift" ]; then
+            echo "Base already has the animation freeze; building it unchanged"
+          else
+            git diff --binary "$BASE_SHA" HEAD -- "${FREEZE_FILES[@]}" > "$RUNNER_TEMP/freeze-overlay.patch"
+            git -C "$RUNNER_TEMP/base" apply --whitespace=nowarn "$RUNNER_TEMP/freeze-overlay.patch" \
+              || { echo "::error::Could not overlay the animation freeze onto the base ($BASE_SHA)"; exit 1; }
+            echo "::notice::Base predates the animation freeze; overlaid $(grep -c '^diff --git' "$RUNNER_TEMP/freeze-overlay.patch") freeze file(s) onto it"
+            git -C "$RUNNER_TEMP/base" diff --stat
+          fi
+          (cd "$RUNNER_TEMP/base/ios" && xcodegen generate)
+          xcodebuild build-for-testing \
+            -project "$RUNNER_TEMP/base/ios/AeroDJ.xcodeproj" \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData-ui-base" \
+            CODE_SIGNING_ALLOWED=NO
+          mkdir -p "$BASE_SHOTS"
+          xcrun simctl shutdown "$PAD_UDID" 2>/dev/null || true
+          # The head's UI tests ran on this simulator first and left app state behind (their
+          # 'violet' search text showed in the base's closed-state-empty and closed-queue-sheet,
+          # iOS 41000805007). Erase it so the base starts from the same clean state as the head.
+          ios/scripts/reset-simulator-app-state.sh "$PHONE_UDID"
+          ios/scripts/override-status-bar.sh "$PHONE_UDID"
+          ios/scripts/settle-simulator-keyboard.sh "$PHONE_UDID"
+          ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
+            env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$BASE_SHOTS" xcodebuild test-without-building \
+            -project "$RUNNER_TEMP/base/ios/AeroDJ.xcodeproj" \
+            -scheme AeroDJStudioUI \
+            -destination "id=$PHONE_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData-ui-base" \
+            -resultBundlePath "$RUNNER_TEMP/base-phone.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            || echo "::warning::iPhone UI tests failed at the base ($BASE_SHA); comparing the screenshots they wrote"
+          ls -la "$BASE_SHOTS"
+      - name: iPhone screenshots match the base (status bar masked)
+        id: snapshot-gate
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          # Escape hatch: the label snapshot-change-approved lets an intended iPhone UI
+          # change through (the compare still runs and its report is uploaded). This
+          # workflow does not trigger on `labeled`, so after adding the label re-run this
+          # job. A re-run reuses the original event payload, so read the PR's labels live.
+          if ! SNAPSHOT_LABELS=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name'); then
+            echo "::warning::Could not read the PR's current labels; using the labels from the triggering event"
+            SNAPSHOT_LABELS=$(jq -r '.[]' <<<"$EVENT_LABELS")
+          fi
+          export SNAPSHOT_LABELS
+          ios/scripts/snapshot-diff-gate.sh \
+            "$RUNNER_TEMP/base-screenshots" "$SHOTS" "$SHOTS/iphone-compare.txt"
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -478,6 +579,14 @@ jobs:
           path: |
             studio-screenshots/*.png
             studio-screenshots/*.mp4
+            studio-screenshots/iphone-compare.txt
+          if-no-files-found: warn
+      - name: Upload base iPhone screenshots
+        if: github.event_name == 'pull_request' && (failure() || steps.snapshot-gate.outputs.bypassed == 'true')
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-screenshots
+          path: ${{ runner.temp }}/base-screenshots/*.png
           if-no-files-found: warn
       - name: Upload iPhone UI result
         if: failure()

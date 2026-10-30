@@ -33,6 +33,10 @@ final class StudioScreenTests: XCTestCase {
                           musicAuthStatus: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
+        // Pixel-stable screenshots for CI's masked diff; the recorded walkthrough keeps motion.
+        if ProcessInfo.processInfo.environment["STUDIO_WALKTHROUGH"] != "1" {
+            app.launchArguments += ["-AERODJ_UITEST_DISABLE_ANIMATIONS", "YES"]
+        }
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
         if let scenario { app.launchArguments += ["-AeroDJStudioCaptureScenario", scenario] }
         if let contentSize {
