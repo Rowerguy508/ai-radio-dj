@@ -296,7 +296,7 @@ final class MusicKitService: ObservableObject {
         let attempt = beginAttempt(userChangedQueue: false)
         armPlaybackConfirmTimeout(for: attempt)
         do {
-            guard try await playIfStillAllowed() else {
+            guard try await playIfStillAllowed(attempt: attempt) else {
                 guard attempts.isCurrent(attempt) else { return }
                 cancelPlaybackConfirmTimeout()
                 // Never left a preparing state without a hold: we only send userResumed after
@@ -372,7 +372,7 @@ final class MusicKitService: ObservableObject {
         let attempt = beginAttempt(userChangedQueue: false)
         do {
             armPlaybackConfirmTimeout(for: attempt)
-            guard try await playIfStillAllowed() else {
+            guard try await playIfStillAllowed(attempt: attempt) else {
                 guard attempts.isCurrent(attempt) else { return }
                 cancelPlaybackConfirmTimeout()
                 send(.playbackStartRefused)
@@ -465,7 +465,7 @@ final class MusicKitService: ObservableObject {
             }
         }
         do {
-            let started = try await playIfStillAllowed()
+            let started = try await playIfStillAllowed(attempt: attempt)
             guard attempts.isCurrent(attempt) else { throw MusicKitError.superseded }
             guard started else {
                 armDeferredStart(index)
@@ -915,34 +915,45 @@ final class MusicKitService: ObservableObject {
 
     /// `prepareToPlay()`, then `play()` (MusicKit activates the session). After `play()` returns, a hold that
     /// landed during the await pauses again and does not count as a resume.
-    private func playIfStillAllowed() async throws -> Bool {
+    /// #143 (-Atlas): `attempt` is the start that called this. Core's `AttemptPlaySequence` checks it
+    /// still owns the shared player after `prepareToPlay()` (before `play()`) and after `play()`
+    /// (before any pause or `isPlaying` change). A newer attempt's queue is never played, paused or
+    /// marked by an older one: the stale attempt throws `MusicKitError.superseded`.
+    private func playIfStillAllowed(attempt: PlaybackAttemptID) async throws -> Bool {
         try activateAudioSessionForPlayback()
-        do {
-            try await player.prepareToPlay()
-        } catch {
-            logPlaybackError("prepareToPlay", error)
-            throw error
-        }
-        let playAttempt = attempts.current
-        if let playAttempt { selfStartGate.playCalled(playAttempt, at: ProcessInfo.processInfo.systemUptime) }
-        do {
-            try await player.play()
-            if let playAttempt { selfStartGate.playReturned(playAttempt, at: ProcessInfo.processInfo.systemUptime) }
-        } catch {
-            logPlaybackError("player.play", error)
-            throw error
-        }
-        let decision = PlaybackStartGuard.afterPlay(
-            mayAutoResume: sessionPolicy.mayAutoResume,
-            userWantsPlayback: sessionPolicy.userWantsPlayback
-        )
-        guard decision == .keepPlaying else {
-            player.pause()
+        let outcome = try await AttemptPlaySequence.run(
+            attempt: attempt,
+            current: { attempts.current },
+            prepare: {
+                do {
+                    try await player.prepareToPlay()
+                } catch {
+                    logPlaybackError("prepareToPlay", error)
+                    throw error
+                }
+            },
+            willPlay: { selfStartGate.playCalled(attempt, at: ProcessInfo.processInfo.systemUptime) },
+            play: {
+                do {
+                    try await player.play()
+                } catch {
+                    logPlaybackError("player.play", error)
+                    throw error
+                }
+            },
+            didPlay: { selfStartGate.playReturned(attempt, at: ProcessInfo.processInfo.systemUptime) },
+            gates: { (sessionPolicy.mayAutoResume, sessionPolicy.userWantsPlayback) },
+            pause: { player.pause() })
+        switch outcome {
+        case .superseded:
+            throw MusicKitError.superseded
+        case .pausedBecauseHeld:
             isPlaying = false
             return false
+        case .playing:
+            isPlaying = true
+            return true
         }
-        isPlaying = true
-        return true
     }
 
     /// Activates the session right before playback starts, so launching the app does not stop
