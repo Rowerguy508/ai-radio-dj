@@ -130,6 +130,11 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" \
             | grep -qx 'com.apple.share-services'
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" | grep -qx 'com.aerodj.app.share'
+          # #333: both privacy manifests must be bundled, not just present in the repo.
+          for M in "$APPEX/../../PrivacyInfo.xcprivacy" "$APPEX/PrivacyInfo.xcprivacy"; do
+            test -f "$M" || { echo "PrivacyInfo.xcprivacy not bundled: $M"; exit 1; }
+            plutil -lint "$M"
+          done
       - name: Verify single-window scene manifest
         # app-resizability: the app declares UIApplicationSceneManifest, and one window only
         # (one app-scoped DJ session). No UIRequiresFullScreen opt-out.
