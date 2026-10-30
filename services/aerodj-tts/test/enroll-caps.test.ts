@@ -53,11 +53,22 @@ function request(ip: string | null, now = NOW, header = 'x-vercel-forwarded-for'
   const body = JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge });
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (ip !== null) headers[header] = ip;
-  return { req: new Request(URL_, { method: 'POST', body, headers }), a, challenge };
+  return { req: new Request(URL_, { method: 'POST', body, headers }), a, challenge, body };
 }
+/** Headers with no usable edge address: absent, spoofable-only, or not an IP. */
+const JUNK: Record<string, string>[] = [
+  {},
+  { 'x-real-ip': '203.0.113.7' },
+  { 'x-forwarded-for': '203.0.113.7' },
+  { 'x-vercel-forwarded-for': 'not-an-ip' },
+  { 'x-vercel-forwarded-for': '203.0.113.256' },
+  { 'x-vercel-forwarded-for': 'fe80::1%en0' },
+  { 'x-vercel-forwarded-for': '' },
+  { 'x-vercel-forwarded-for': ', 203.0.113.7' },
+];
 const reasonOf = async (res: Response) => ((await res.json()) as { reason?: string }).reason;
 const devKey = (ip: string, day = DAY) =>
-  enrollDeviceKey('nonprod', day, deviceBucket(KEY, day, clientNetwork(new Headers({ 'x-vercel-forwarded-for': ip }))));
+  enrollDeviceKey('nonprod', day, deviceBucket(KEY, day, clientNetwork(new Headers({ 'x-vercel-forwarded-for': ip }))!));
 
 describe('enroll caps: owner decision 20/day overall, 3/day per device', () => {
   test('defaults are final: 20 global, 3 per device', () => {
@@ -212,11 +223,13 @@ describe('enroll caps: the device key (privacy and layout)', () => {
     assert.notEqual(deviceBucket(KEY, DAY, n), deviceBucket(KEY, DAY, 'v4:203.0.113.8'));
     assert.notEqual(deviceBucket(KEY, DAY, n), crypto.createHash('sha256').update(n).digest('hex'));
   });
-  test('clientNetwork: IPv4, IPv6 /64, mapped IPv4, first entry only, Vercel headers only, unknown fails closed', () => {
+  test('clientNetwork: IPv4, IPv6 /64, mapped IPv4, first entry only, x-vercel-forwarded-for only, else null', () => {
     const net = (h: Record<string, string>) => clientNetwork(new Headers(h));
     assert.equal(net({ 'x-vercel-forwarded-for': '203.0.113.7' }), 'v4:203.0.113.7');
     assert.equal(net({ 'x-vercel-forwarded-for': ' 203.0.113.7 , 10.0.0.1' }), 'v4:203.0.113.7');
-    assert.equal(net({ 'x-real-ip': '203.0.113.7' }), 'v4:203.0.113.7');
+    // Changed expected value (Sentinel's #256 condition: the edge header only): x-real-ip
+    // alone was 'v4:203.0.113.7' at 1f07f7a; it is no longer read, so it is null.
+    assert.equal(net({ 'x-real-ip': '203.0.113.7' }), null);
     assert.equal(net({ 'x-vercel-forwarded-for': '203.0.113.7', 'x-real-ip': '198.51.100.1' }), 'v4:203.0.113.7');
     assert.equal(net({ 'x-vercel-forwarded-for': '::ffff:203.0.113.7' }), 'v4:203.0.113.7');
     assert.equal(net({ 'x-vercel-forwarded-for': '2001:db8:1:2:aaaa:bbbb:cccc:dddd' }), 'v6:2001:db8:1:2');
@@ -224,11 +237,9 @@ describe('enroll caps: the device key (privacy and layout)', () => {
     assert.equal(net({ 'x-vercel-forwarded-for': '2001:db8::' }), 'v6:2001:db8:0:0');
     assert.equal(net({ 'x-vercel-forwarded-for': '::1' }), 'v6:0:0:0:0');
     assert.equal(net({ 'x-vercel-forwarded-for': '64:ff9b::203.0.113.7' }), 'v6:64:ff9b:0:0');
-    // Plain x-forwarded-for is not read; junk and absent headers share one bucket.
-    const junk: Record<string, string>[] = [{}, { 'x-forwarded-for': '203.0.113.7' }, { 'x-vercel-forwarded-for': 'not-an-ip' }, { 'x-vercel-forwarded-for': '203.0.113.256' }, { 'x-vercel-forwarded-for': 'fe80::1%en0' }, { 'x-vercel-forwarded-for': '' }];
-    for (const h of junk) {
-      assert.equal(net(h), 'unknown', JSON.stringify(h));
-    }
+    // Changed expected value: absent, spoofable or junk headers were the shared 'unknown'
+    // bucket at 1f07f7a; now null, and register refuses them (400 network) instead.
+    for (const h of JUNK) assert.equal(net(h), null, JSON.stringify(h));
   });
   test('rotating IPv6 interface ids inside one /64 does not escape the cap', async () => {
     const h = harness();
@@ -236,10 +247,51 @@ describe('enroll caps: the device key (privacy and layout)', () => {
     assert.equal((await handleRegister(request('2001:db8:5:6:ffff::4').req, h.deps)).status, 429);
     assert.equal((await handleRegister(request('2001:db8:5:7::1').req, h.deps)).status, 204, 'another /64 is another bucket');
   });
-  test('no address header: one shared unknown bucket, capped at 3 (fails closed, not open)', async () => {
+  // Replaces "no address header: one shared unknown bucket, capped at 3" (1f07f7a):
+  // Sentinel's condition is that a missing edge header fails closed, with no shared bucket.
+  test('no usable x-vercel-forwarded-for: 400 network, no Retry-After, no store call, challenge not consumed', async () => {
     const h = harness();
-    for (let i = 0; i < 3; i++) assert.equal((await handleRegister(request(null).req, h.deps)).status, 204);
-    assert.equal((await handleRegister(request(null).req, h.deps)).status, 429);
-    assert.equal((await handleRegister(request('203.0.113.7', NOW, 'x-forwarded-for').req, h.deps)).status, 429, 'spoofable header ignored');
+    for (const [i, hdrs] of JUNK.entries()) {
+      const { body } = request(null);
+      const callsBefore = h.calls.length;
+      const dataBefore = new Map(h.redis.data);
+      const res = await handleRegister(new Request(URL_, { method: 'POST', body, headers: { 'Content-Type': 'application/json', ...hdrs } }), h.deps);
+      const label = JSON.stringify(hdrs);
+      assert.equal(res.status, 400, label);
+      assert.deepEqual(await res.json(), { error: 'Bad request', requestId: 'req-1', reason: 'network' }, label);
+      assert.equal(res.headers.get('retry-after'), null, label);
+      assert.equal(h.calls.length, callsBefore, `${label}: no Upstash command at all`);
+      assert.deepEqual(h.redis.data, dataBefore, `${label}: nothing written`);
+      assert.deepEqual(h.logs.at(-1), { requestId: 'req-1', status: 400, reason: 'network' }, label);
+      // The same challenge still enrolls once the edge header is present: it was not consumed.
+      const retry = await handleRegister(new Request(URL_, { method: 'POST', body, headers: { 'x-vercel-forwarded-for': `203.0.113.${60 + i}` } }), h.deps);
+      assert.equal(retry.status, 204, `${label}: challenge unconsumed`);
+    }
+    assert.equal(h.redis.data.get(enrollKey('nonprod', DAY)), String(JUNK.length), 'only the retries counted');
+  });
+  test('x-real-ip alone is not an address: 400 network even when it is a valid IP', async () => {
+    const h = harness();
+    const res = await handleRegister(request('203.0.113.7', NOW, 'x-real-ip').req, h.deps);
+    assert.equal(res.status, 400);
+    assert.equal(await reasonOf(res), 'network');
+    assert.equal(h.calls.length, 0);
+  });
+  test('an expired challenge without the edge header is refused before the used-mark probe', async () => {
+    const h = harness();
+    const old = NOW - 121_000;
+    const { body } = request(null, old);
+    const res = await handleRegister(new Request(URL_, { method: 'POST', body }), h.deps);
+    assert.equal(res.status, 400);
+    assert.equal(await reasonOf(res), 'network');
+    assert.equal(h.calls.length, 0, 'no isUsed read either');
+  });
+  test('IPv4, IPv6 /64 and mapped IPv4 each enroll and count in their own bucket; mapped v4 shares the v4 bucket', async () => {
+    const h = harness();
+    assert.equal((await handleRegister(request('198.51.100.9').req, h.deps)).status, 204);
+    assert.equal((await handleRegister(request('::ffff:198.51.100.9').req, h.deps)).status, 204);
+    assert.equal(h.redis.data.get(devKey('198.51.100.9')), '2', 'mapped IPv4 is the same network');
+    assert.equal((await handleRegister(request('2001:db8:9:9::1').req, h.deps)).status, 204);
+    assert.equal((await handleRegister(request('2001:db8:9:9:abcd::2').req, h.deps)).status, 204);
+    assert.equal(h.redis.data.get(devKey('2001:db8:9:9::77')), '2', 'same /64');
   });
 });

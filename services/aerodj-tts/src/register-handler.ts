@@ -32,6 +32,7 @@ export type RegisterReason =
   | 'disabled'
   | 'assertion'
   | 'challenge_expired'
+  | 'network'
   | 'enroll';
 
 /**
@@ -65,6 +66,7 @@ export interface RegisterDeps {
 const STATUS: Record<RegisterReason, number> = {
   bad_request: 400,
   challenge_expired: 400,
+  network: 400,
   assertion: 401,
   too_large: 413,
   enroll: 429,
@@ -132,7 +134,9 @@ function parseAttestationObject(value: unknown): Buffer | null {
  * stateless challenge, purpose `attest` (401; an otherwise-valid expired one
  * continues) → full attestation verification (401) → expired: read-only
  * used-mark probe (401 reused, else 400 `challenge_expired`, nothing written)
- * → one script: used mark + key `SET NX` + global and per-device enroll
+ * → client network from `x-vercel-forwarded-for` (missing or unparseable: 400
+ * `network`, no Retry-After, before the used-mark probe or the script, so the
+ * challenge is not consumed and no counter is read or written) → one script: used mark + key `SET NX` + global and per-device enroll
  * counters, both caps checked before any write, the per-device cap first
  * (either 429 `enroll` writes nothing, so a device-capped request spends no
  * global budget) → 204.
@@ -205,13 +209,18 @@ export async function handleRegister(request: Request, deps: RegisterDeps): Prom
   );
   if (!verified.ok) return fail(verified.reason === 'config' ? 'misconfig' : 'assertion', verified.reason === 'config' ? undefined : verified.reason);
 
+  // Fail closed, before any store call: no edge address means no device bucket,
+  // never a shared fallback bucket. The log carries the reason enum only.
+  const network = clientNetwork(request.headers);
+  if (network === null) return fail('network');
+
   const used = attestUsedKey(config.keyspace, challenge);
   try {
     if (expired) {
       return (await store.isUsed(used)) ? fail('assertion', 'reused') : fail('challenge_expired');
     }
     const day = utcDay(now);
-    const enrollDevice = enrollDeviceKey(config.keyspace, day, deviceBucket(config.challengeKey, day, clientNetwork(request.headers)));
+    const enrollDevice = enrollDeviceKey(config.keyspace, day, deviceBucket(config.challengeKey, day, network));
     const outcome = await store.register(
       { used, record: keyRecordKey(config.keyspace, keyId), enroll: enrollKey(config.keyspace, day), enrollDevice },
       {

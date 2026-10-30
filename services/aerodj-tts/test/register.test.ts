@@ -76,8 +76,10 @@ function attest(challenge: string, o: Partial<AttestOptions> = {}) {
 function bodyOf(a: { keyId: Buffer; attestationObject: Buffer }, challenge: string, extra: Record<string, unknown> = {}) {
   return JSON.stringify({ keyId: a.keyId.toString('base64'), attestationObject: a.attestationObject.toString('base64'), challenge, ...extra });
 }
+// Vercel's edge always sets x-vercel-forwarded-for; register refuses a request without
+// it (400 `network`, enroll-caps.test.ts), so every request here carries one.
 const post = (body: string, headers: Record<string, string> = {}) =>
-  new Request(URL_, { method: 'POST', body, headers: { 'Content-Type': 'application/json', ...headers } });
+  new Request(URL_, { method: 'POST', body, headers: { 'Content-Type': 'application/json', 'x-vercel-forwarded-for': '203.0.113.50', ...headers } });
 async function reasonOf(res: Response): Promise<string | undefined> {
   return ((await res.json()) as { reason?: string }).reason;
 }

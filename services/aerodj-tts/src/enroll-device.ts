@@ -15,12 +15,15 @@ import { isIP } from 'node:net';
  * - the app sends no install or vendor identifier, and adding one would be a client
  *   contract change (an open question for iOS, not made here).
  *
- * So the sub-cap keys on the **client network** as Vercel's edge reports it
- * (`x-vercel-forwarded-for`, else `x-real-ip`; Vercel overwrites both, so a client
- * cannot choose them): the IPv4 address, or the IPv6 /64 (one device's usual
- * allocation, so rotating privacy addresses inside it does not escape the cap). A
- * request with no parseable address shares one `unknown` bucket, which fails closed
- * (3 a day for all of them) instead of open.
+ * So the sub-cap keys on the **client network** as Vercel's edge reports it, read
+ * from `x-vercel-forwarded-for` only (Vercel docs, "Request headers": identical to
+ * `x-forwarded-for`, which Vercel overwrites to prevent spoofing, and unlike it not
+ * rewritten by a proxy in front of Vercel). `x-real-ip` and `x-forwarded-for` are
+ * never read (Sentinel's condition on #256: the edge header only). The value is the
+ * IPv4 address, or the IPv6 /64 (one device's usual allocation, so rotating privacy
+ * addresses inside it does not escape the cap). A missing or unparseable header is
+ * `null`, and register refuses it (400 `network`) before the challenge is consumed
+ * or any counter is read or written: it fails closed, with no shared bucket.
  *
  * Limits, stated plainly: this is a per-network cap, not a true per-device cap.
  * Devices behind one NAT, CGNAT or office Wi-Fi share 3 a day; one device that
@@ -37,7 +40,6 @@ export const DEFAULT_ENROLL_DEVICE_DAILY_CAP = 3;
 export const MAX_ENROLL_DEVICE_DAILY_CAP = 1_000;
 
 const DOMAIN = Buffer.from('onairly-enroll-device-v1\0', 'utf8');
-const UNKNOWN = 'unknown';
 
 function ipv4Octets(ip: string): number[] | null {
   if (isIP(ip) !== 4) return null;
@@ -67,17 +69,18 @@ function ipv6Groups(ip: string): number[] | null {
 }
 
 /**
- * Canonical network string for the sub-cap: `v4:a.b.c.d`, `v6:<first 4 groups>`
- * (the /64), or `unknown`. IPv4-mapped IPv6 (`::ffff:a.b.c.d`) counts as the IPv4.
- * Only the first entry of a comma-separated header is used.
+ * Canonical network string for the sub-cap: `v4:a.b.c.d` or `v6:<first 4 groups>`
+ * (the /64); `null` when `x-vercel-forwarded-for` is missing or its first entry is
+ * not an IP address (the caller fails closed). IPv4-mapped IPv6 (`::ffff:a.b.c.d`)
+ * counts as the IPv4. Only the first entry of a comma-separated header is used.
  */
-export function clientNetwork(headers: Headers): string {
-  const raw = headers.get('x-vercel-forwarded-for') ?? headers.get('x-real-ip');
+export function clientNetwork(headers: Headers): string | null {
+  const raw = headers.get('x-vercel-forwarded-for');
   const first = raw?.split(',')[0]?.trim() ?? '';
   const v4 = ipv4Octets(first);
   if (v4) return `v4:${v4.join('.')}`;
   const g = ipv6Groups(first);
-  if (!g) return UNKNOWN;
+  if (!g) return null;
   if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) {
     return `v4:${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`;
   }

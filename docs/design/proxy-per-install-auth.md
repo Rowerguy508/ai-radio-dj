@@ -165,7 +165,9 @@ Accepts `{ keyId, attestationObject, challenge }`. Order:
    `enroll`) writes no key record and does not increment the counter.
    **Caps (owner, 2026-10-29): 20 a day overall, 3 a day per device.** The
    per-device sub-cap keys on a day-scoped HMAC of the client network (IPv4,
-   or IPv6 /64, from Vercel's `x-vercel-forwarded-for`/`x-real-ip`), checked
+   or IPv6 /64, from Vercel's `x-vercel-forwarded-for` only; missing or
+   unparseable is 400 `network` before the challenge is consumed or any
+   store call, never a shared bucket), checked
    before the global cap so a device-capped request spends no global budget.
    No raw IP is stored or logged (the §4.1.1 "stores no IP" rule holds for
    addresses; the hash lives 2 days). It is a per-network cap: NAT/CGNAT

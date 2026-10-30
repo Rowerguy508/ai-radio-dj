@@ -264,11 +264,16 @@ untouched); and count the enrollment in both counters (2-day TTL).
 device. Nothing in the request or the attestation identifies a device across
 re-enrollments (the keyId is new on every `generateKey()`), so the per-device
 bucket is the **client network** as Vercel's edge reports it
-(`x-vercel-forwarded-for`, else `x-real-ip`): the IPv4 address or the IPv6 /64,
+(`x-vercel-forwarded-for` only; `x-real-ip` and `x-forwarded-for` are never read):
+the IPv4 address or the IPv6 /64,
 hashed as `HMAC-SHA256(challenge key, domain ‖ UTC day ‖ network)` into
 `enrolldev:{aerodj-tts}:<day>:<hex>`. The address itself is never stored, logged
 or returned, and the day inside the MAC makes buckets unlinkable across days. A
-request with no usable address shares one `unknown` bucket (fails closed).
+request with a missing or unparseable `x-vercel-forwarded-for` is refused with
+**400 `network`** (no `Retry-After`; the log carries only the reason enum) before
+the challenge is consumed or any store call is made, so it fails closed with no
+shared bucket. The app treats it like any other unlisted 400 reason (`bad_request`
+handling: no retry, on-device voice; paid voice stays on).
 Limits: devices behind one NAT/CGNAT/office network share the 3; a device that
 changes networks gets 3 more per network.
 
