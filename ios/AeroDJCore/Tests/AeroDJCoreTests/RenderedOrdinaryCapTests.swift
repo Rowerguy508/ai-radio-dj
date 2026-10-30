@@ -35,13 +35,13 @@ final class RenderedOrdinaryCapTests: XCTestCase {
         return (b, cues[0].id, cues[1].id, cues[2].id, cues[3].id)
     }
 
-    private func prepare(_ djBreak: DJBreak, _ seconds: [String: Double]) async -> DJBreakOutcome {
+    private func prepare(_ djBreak: DJBreak, _ seconds: [String: Double], talkOver: Bool = true) async -> DJBreakOutcome {
         let route = VoiceRoute(providerID: "avspeech", provider: TimedVoice(seconds: seconds),
                                voice: VoiceProfile(id: "standard", name: "Host"), timeout: .milliseconds(500), acceptsSSML: false)
         let renderer = VoiceRenderer(routes: [route], budget: VoiceBudget(dailyCapMicrodollars: 0),
                                      cache: InMemoryAudioCache(), revocations: NarrationRevocations())
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: DJCadence(),
-                                       talkOverEnabled: { true })
+                                       talkOverEnabled: { talkOver })
         let events = Events(expectation(description: "finished"))
         await preparer.observe { event in
             switch event {
@@ -92,10 +92,29 @@ final class RenderedOrdinaryCapTests: XCTestCase {
 
     func testABreakWithin12IsUntouched() async {
         let (b, _, _, _, _) = ordinaryBreak()
-        let outcome = await prepare(b, ["Opener": 4, "Color": 2, "Cont": 2, "Closing": 4])   // exactly 12 s
+        let outcome = await prepare(b, ["Opener": 4, "Color": 2, "Cont": 2, "Closing": 3.7])   // 11.7 s + 0.3 s gap = 12 s
         guard case .ready(let ready) = outcome else { return XCTFail("12 s fits: \(outcome)") }
         XCTAssertEqual(ready.cues.map(\.id), b.cues.map(\.id))
         XCTAssertEqual(ready.trimmedCueIDs, [])
+    }
+
+    /// The 0.3 s pause before the closing line counts toward 12 s (Fry, Orion on #320): 12.0 s of
+    /// clips plays as 12.3 s, so it trims, with talk-over on or off.
+    func testThePauseBeforeTheClosingLineCountsTowardTheCap() async {
+        for talkOver in [true, false] {
+            let (b, opener, color, cont, closing) = ordinaryBreak()
+            let outcome = await prepare(b, ["Opener": 4, "Color": 2, "Cont": 2, "Closing": 4], talkOver: talkOver)
+            guard case .ready(let ready) = outcome else { return XCTFail("trims, not skips: \(outcome)") }
+            XCTAssertEqual(ready.cues.map(\.id), [opener, color, closing], "talkOver=\(talkOver)")
+            XCTAssertEqual(ready.trimmedCueIDs, [cont], "talkOver=\(talkOver)")
+            XCTAssertLessThanOrEqual(ready.measuredSeconds + PreparedDJBreak.talkOverGapSeconds, 12)
+        }
+    }
+
+    func testOpenerPlusClosingThatFitOnlyWithoutThePauseIsSkipped() async {
+        let (b, _, _, _, _) = ordinaryBreak()
+        let outcome = await prepare(b, ["Opener": 8, "Color": 1, "Cont": 1, "Closing": 3.9], talkOver: false)   // 11.9 + 0.3
+        XCTAssertEqual(outcome, .skipped(.overBreakBudget))
     }
 
     func testBriefingBreaksKeepTheir45SecondLimit() async {
