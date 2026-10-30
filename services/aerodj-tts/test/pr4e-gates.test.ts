@@ -16,7 +16,7 @@ const TOKEN = 'test-owner-token-not-a-real-secret';
 const TOKEN_HASH = crypto.createHash('sha256').update(TOKEN).digest('hex');
 const VOICE = 'voiceAllowed123';
 const STORE = { url: 'https://store.example.upstash.io', token: 'test-store-token-not-real' };
-const OPTIONS = { dailyCharCap: 9_000, requestsPerMinute: 100 };
+const OPTIONS = { deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 };
 const NOON = Date.UTC(2026, 9, 29, 12);
 const TEXT = 'Hello from the DJ booth.';
 const ENV: Env = { AERODJ_TTS_TOKEN_SHA256: TOKEN_HASH, AERODJ_TTS_VOICE_IDS: VOICE, ELEVENLABS_API_KEY: 'test-elevenlabs-key-not-real' };
@@ -55,7 +55,7 @@ describe('Upstash timeout default is pinned and used (Fry nit on #256/#257)', ()
 
   for (const [name, make] of [
     ['new RedisUsageLimiter(store, options, fetch)', (f: typeof fetch) => new RedisUsageLimiter(STORE, OPTIONS, f)],
-    ['selectLimiter(env, fetch)', (f: typeof fetch) => selectLimiter({ KV_REST_API_URL: STORE.url, KV_REST_API_TOKEN: STORE.token }, f)!],
+    ['selectLimiter(env, fetch)', (f: typeof fetch) => selectLimiter({ KV_REST_API_URL: STORE.url, KV_REST_API_TOKEN: STORE.token, VERCEL_ENV: 'production' }, f)!],
   ] as const) {
     test(`${name}: a stalled EVAL is pending at 1800 ms and 503 store by 2600 ms`, { timeout: 10_000 }, () =>
       withKeepAlive(async () => {
