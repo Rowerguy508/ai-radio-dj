@@ -110,9 +110,11 @@ function expectCode(r: Result, code: number, why: string): void {
  * success (SHIM_FETCH_NOOP), make `fetch --deepen=N` or `fetch --unshallow` fail
  * (SHIM_FAIL_DEEPEN, SHIM_FAIL_UNSHALLOW), or make either one hang for N seconds
  * (SHIM_SLEEP_DEEPEN, SHIM_SLEEP_UNSHALLOW) so the script's timeout has to cut it off.
+ * A `timeout` wrapper next to it records the bound each fetch got (SHIM_TIMEOUT_LOG)
+ * and then runs the real timeout(1).
  */
 let shimDir = '';
-interface ShimOpts { fetchNoop?: boolean; failDeepen?: boolean; failUnshallow?: boolean; sleepDeepen?: number; sleepUnshallow?: number }
+interface ShimOpts { fetchNoop?: boolean; failDeepen?: boolean; failUnshallow?: boolean; sleepDeepen?: number; sleepUnshallow?: number; timeoutLog?: string }
 function shimEnv(log: string, opts: ShimOpts = {}): NodeJS.ProcessEnv {
   return {
     PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
@@ -122,6 +124,7 @@ function shimEnv(log: string, opts: ShimOpts = {}): NodeJS.ProcessEnv {
     ...(opts.failUnshallow ? { SHIM_FAIL_UNSHALLOW: '1' } : {}),
     ...(opts.sleepDeepen ? { SHIM_SLEEP_DEEPEN: String(opts.sleepDeepen) } : {}),
     ...(opts.sleepUnshallow ? { SHIM_SLEEP_UNSHALLOW: String(opts.sleepUnshallow) } : {}),
+    ...(opts.timeoutLog ? { SHIM_TIMEOUT_LOG: opts.timeoutLog } : {}),
   };
 }
 function shimCalls(log: string): string[] {
@@ -131,6 +134,7 @@ function shimCalls(log: string): string[] {
 before(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tts-ignore-build-'));
   const realGit = execFileSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const realTimeout = execFileSync('bash', ['-c', 'command -v timeout'], { encoding: 'utf8' }).trim();
   shimDir = path.join(tmpRoot, 'shim');
   fs.mkdirSync(shimDir);
   fs.writeFileSync(
@@ -148,6 +152,16 @@ before(() => {
       '  esac',
       'done',
       `exec ${JSON.stringify(realGit)} "$@"`,
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(shimDir, 'timeout'),
+    [
+      '#!/usr/bin/env bash',
+      'if [ -n "${SHIM_TIMEOUT_LOG:-}" ]; then printf "%s\\n" "$1" >> "$SHIM_TIMEOUT_LOG"; fi',
+      `exec ${JSON.stringify(realTimeout)} "$@"`,
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -425,6 +439,50 @@ describe('vercel-ignore-build.sh', () => {
       expectCode(run(clone, prev, TTS, { ...shimEnv(log), IGNORE_BUILD_DEEPEN_COMMITS: value }), SKIP, `value ${JSON.stringify(value)}`);
       assert.equal(historyFetches(log)[0], `--deepen=${used}`, `value ${JSON.stringify(value)}`);
     }
+  });
+
+  test('IGNORE_BUILD_FETCH_TIMEOUT_S: only a positive integer up to 300 is used; anything else (0 included) is 20', () => {
+    for (const [value, used] of [
+      ['1', '1'], ['7', '7'], ['20', '20'], ['300', '300'],
+      ['0', '20'], ['00', '20'], ['-5', '20'], ['abc', '20'], ['1.5', '20'], ['1e3', '20'], ['', '20'], [' 5', '20'],
+      ['5s', '20'], ['5;id', '20'], ['07', '20'], ['301', '20'], ['999', '20'], ['1000', '20'], ['99999999999999999999', '20'],
+    ]) {
+      const { clone, prev } = shallowSetup(false);
+      const log = path.join(tmpRoot, `shim-${counter++}.log`);
+      const tlog = path.join(tmpRoot, `timeout-${counter++}.log`);
+      // PREV is outside the clone and --deepen=1 is too shallow, so all three fetches run
+      // (PREV, --deepen, --unshallow) and each one gets the same bound.
+      const r = run(clone, prev, TTS, { ...shimEnv(log, { timeoutLog: tlog }), IGNORE_BUILD_DEEPEN_COMMITS: '1', IGNORE_BUILD_FETCH_TIMEOUT_S: value });
+      expectCode(r, SKIP, `value ${JSON.stringify(value)}`);
+      assert.deepEqual(historyFetches(log), ['--deepen=1', '--unshallow'], `value ${JSON.stringify(value)}`);
+      assert.deepEqual(shimCalls(tlog), [used, used, used], `value ${JSON.stringify(value)}`);
+    }
+  });
+
+  test('IGNORE_BUILD_FETCH_TIMEOUT_S unset: every fetch, the PREV fetch included, gets the 20 s default', () => {
+    const { clone, prev } = shallowSetup(false); // PREV outside the clone: fetched first
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const tlog = path.join(tmpRoot, `timeout-${counter++}.log`);
+    const env = { ...shimEnv(log, { timeoutLog: tlog }), IGNORE_BUILD_DEEPEN_COMMITS: '1', IGNORE_BUILD_FETCH_TIMEOUT_S: undefined };
+    const r = run(clone, prev, TTS, env);
+    expectCode(r, SKIP, 'unset timeout');
+    const calls = shimCalls(tlog);
+    assert.deepEqual(calls, ['20', '20', '20']);
+  });
+
+  test('IGNORE_BUILD_FETCH_TIMEOUT_S=0 still bounds a hanging fetch (default 20 s, not unbounded) -> BUILD', () => {
+    const { clone, prev } = shallowSetup(false); // a guess would skip
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    const tlog = path.join(tmpRoot, `timeout-${counter++}.log`);
+    const started = Date.now();
+    const r = run(clone, prev, TTS, { ...shimEnv(log, { sleepUnshallow: 60, timeoutLog: tlog }), IGNORE_BUILD_DEEPEN_COMMITS: '1', IGNORE_BUILD_FETCH_TIMEOUT_S: '0' });
+    const elapsed = Date.now() - started;
+    assert.notEqual(r.code, null, `the script itself was killed by the test's 30 s guard: the 60 s hang was not bounded (${elapsed} ms)`);
+    expectCode(r, BUILD, 'timed-out unshallow leaves ancestry unproven');
+    assert.match(r.out, /not an ancestor of HEAD/);
+    assert.deepEqual(historyFetches(log), ['--deepen=1', '--unshallow']);
+    assert.deepEqual(shimCalls(tlog), ['20', '20', '20']);
+    assert.ok(elapsed >= 19_000 && elapsed < 29_000, `cut off at the 20 s default (took ${elapsed} ms)`);
   });
 
   test('shallow force-push shape: --deepen fetches all of it, still not an ancestor -> BUILD with no --unshallow', () => {

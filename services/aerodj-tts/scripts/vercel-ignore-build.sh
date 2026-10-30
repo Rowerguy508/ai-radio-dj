@@ -24,7 +24,9 @@
 # gone from HEAD, or any git error.
 #
 # Every fetch is bounded by IGNORE_BUILD_FETCH_TIMEOUT_S (default 20 s) when
-# `timeout` exists; a fetch that times out counts as failed.
+# `timeout` exists; a fetch that times out counts as failed. Only 1-300 is used
+# (digits only, no leading 0): anything else, 0 included (`timeout 0` would turn
+# the bound off), falls back to 20 (#288 nit, Fry).
 #
 # Vercel runs this from the project's Root Directory (services/aerodj-tts).
 # The proxy is self-contained (own package.json, lockfile, tsconfig and
@@ -34,6 +36,7 @@ set -u
 
 WATCH_PATHS=(":(top)services/aerodj-tts/")
 FETCH_TIMEOUT_S="${IGNORE_BUILD_FETCH_TIMEOUT_S:-20}"
+{ [[ "$FETCH_TIMEOUT_S" =~ ^[1-9][0-9]{0,2}$ ]] && (( FETCH_TIMEOUT_S <= 300 )); } || FETCH_TIMEOUT_S=20
 # Commits to deepen the shallow clone by before a full --unshallow (Sentinel's
 # #279 nit): most deploys are a few commits apart, so this is usually enough
 # and much cheaper. 1-99999 (digits only, no leading 0); anything else uses 50.
