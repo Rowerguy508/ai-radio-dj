@@ -39,6 +39,43 @@ private final class LogSink: @unchecked Sendable {
     func append(_ e: AttestClient.LogEntry) { lock.withLock { lines.append(e) } }
 }
 
+/// Storage with scripted reads and add result (the Keychain's answers, without a Keychain).
+private final class ScriptedStorage: AttestInstallIDStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var reads: [AttestInstallIDRead]
+    private let add: AttestInstallIDAdd
+    private(set) var adds = 0, replaces = 0
+    init(reads: [AttestInstallIDRead], add: AttestInstallIDAdd = .added) { self.reads = reads; self.add = add }
+    func readInstallID() -> AttestInstallIDRead { lock.withLock { reads.count > 1 ? reads.removeFirst() : reads[0] } }
+    func addInstallID(_ value: String) -> AttestInstallIDAdd { lock.withLock { adds += 1; return add } }
+    func replaceInstallID(_ value: String) -> Bool { lock.withLock { replaces += 1; return true } }
+}
+
+/// Storage that can't detect a duplicate (every add overwrites) and reads slowly, so only
+/// `AttestInstallID`'s own lock keeps two first calls from making two IDs.
+private final class RacyStorage: AttestInstallIDStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String?
+    func readInstallID() -> AttestInstallIDRead {
+        let v = lock.withLock { value }
+        usleep(2_000)
+        return v.map { .found($0) } ?? .notFound
+    }
+    func addInstallID(_ value: String) -> AttestInstallIDAdd {
+        usleep(1_000)
+        lock.withLock { self.value = value }
+        return .added
+    }
+    func replaceInstallID(_ value: String) -> Bool { lock.withLock { self.value = value }; return true }
+}
+
+private final class ResultsBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String?] = []
+    var values: [String?] { lock.withLock { items } }
+    func append(_ v: String?) { lock.withLock { items.append(v) } }
+}
+
 final class AttestInstallIDTests: XCTestCase {
     private let base = URL(string: "https://aerodj-tts.vercel.app")!
     private let v4 = "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -61,7 +98,7 @@ final class AttestInstallIDTests: XCTestCase {
         XCTAssertEqual(AttestInstallID(storage: storage).current(), a, "same ID from a new instance (a relaunch)")
         let id = AttestInstallID(storage: storage)
         XCTAssertEqual((0..<20).map { _ in id.current() }, Array(repeating: a, count: 20))
-        XCTAssertEqual(storage.readInstallID(), a?.rawValue, "stored once")
+        XCTAssertEqual(storage.stored, a?.rawValue, "stored once")
     }
 
     func testInstallIDIsALowercase36CharacterRandomV4() {
@@ -89,7 +126,7 @@ final class AttestInstallIDTests: XCTestCase {
         let fixed = UUID(uuidString: "0f8fad5b-d9cb-469f-a165-70867728950e")!
         let replaced = AttestInstallID(storage: storage, generate: { fixed }).current()
         XCTAssertEqual(replaced?.rawValue, "0f8fad5b-d9cb-469f-a165-70867728950e")
-        XCTAssertEqual(storage.readInstallID(), "0f8fad5b-d9cb-469f-a165-70867728950e")
+        XCTAssertEqual(storage.stored, "0f8fad5b-d9cb-469f-a165-70867728950e", "replaced in place")
 
         let t = AttestSpyTransport()
         let c = client(t, AttestInstallID(storage: InMemoryAttestInstallIDStorage(failsWrites: true)))
@@ -108,6 +145,95 @@ final class AttestInstallIDTests: XCTestCase {
         XCTAssertTrue(source.contains("generate: @escaping @Sendable () -> UUID = { UUID() }"), "random UUID only")
     }
 
+    // MARK: Keychain errors never rotate the ID (Atlas N1)
+
+    func testAReadErrorNeverCreatesOverwritesOrSendsAnID() async {
+        let existing = "6ba7b810-9dad-41d1-80b4-00c04fd430c8"
+        let storage = InMemoryAttestInstallIDStorage(existing)
+        storage.readFails = true   // e.g. errSecInteractionNotAllowed before first unlock
+        let id = AttestInstallID(storage: storage)
+        XCTAssertNil(id.current())
+        XCTAssertEqual(storage.stored, existing, "the stored ID is untouched")
+        let t = AttestSpyTransport()
+        let r = await client(t, id).register(keyId: "k", attestationObject: "a", challenge: "c")
+        XCTAssertEqual(r.failureValue?.reason, .noInstallID)
+        XCTAssertEqual(r.failureValue?.isQuiet, true)
+        XCTAssertTrue(t.requests.isEmpty, "nothing sent")
+        storage.readFails = false
+        XCTAssertEqual(id.current()?.rawValue, existing, "after unlock: the same ID as before")
+
+        let scripted = ScriptedStorage(reads: [.failed])
+        XCTAssertNil(AttestInstallID(storage: scripted).current())
+        XCTAssertEqual(scripted.adds + scripted.replaces, 0, "a read error writes nothing")
+    }
+
+    func testCreateOnlyOnNotFoundAndADuplicateAddIsReadAgain() {
+        let other = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        let dup = ScriptedStorage(reads: [.notFound, .found(other)], add: .duplicate)
+        XCTAssertEqual(AttestInstallID(storage: dup).current()?.rawValue, other, "someone else created it: use theirs")
+        XCTAssertEqual(dup.adds, 1)
+        let dupThenError = ScriptedStorage(reads: [.notFound, .failed], add: .duplicate)
+        XCTAssertNil(AttestInstallID(storage: dupThenError).current())
+        let addFails = ScriptedStorage(reads: [.notFound], add: .failed)
+        XCTAssertNil(AttestInstallID(storage: addFails).current())
+        XCTAssertEqual(addFails.replaces, 0, "a failed add never falls back to overwriting")
+    }
+
+    func testTheWriteIsReadBack() {
+        let other = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        // The add (or replace) reports success but the item reads back as something else.
+        XCTAssertNil(AttestInstallID(storage: InMemoryAttestInstallIDStorage(readBack: other)).current(), "added, read back differs")
+        let afterAdd = ScriptedStorage(reads: [.notFound, .notFound])
+        XCTAssertNil(AttestInstallID(storage: afterAdd).current(), "added, then not found")
+        let replaced = ScriptedStorage(reads: [.found("NOT-A-V4"), .found(other)])
+        XCTAssertNil(AttestInstallID(storage: replaced).current(), "replaced, read back differs")
+        XCTAssertEqual(replaced.replaces, 1)
+    }
+
+    func testTwoConcurrentFirstCallsGetOneID() {
+        for _ in 0..<5 {
+            let id = AttestInstallID(storage: RacyStorage())
+            let box = ResultsBox()
+            DispatchQueue.concurrentPerform(iterations: 8) { _ in box.append(id.current()?.rawValue) }
+            let got = box.values
+            XCTAssertEqual(got.count, 8)
+            XCTAssertNotNil(got.first ?? nil)
+            XCTAssertEqual(Set(got).count, 1, "one ID for every first call: \(got.map { $0 == nil ? "nil" : "id" })")
+        }
+    }
+
+    /// Sentinel N2: one shared instance, so concurrent first-run callers anywhere in the app
+    /// get one ID (on Linux the shared instance is in-memory; on iOS it is the Keychain item).
+    func testConcurrentFirstCallsThroughTheSharedInstanceGetOneID() {
+        XCTAssertTrue(AttestInstallID.live() === AttestInstallID.shared)
+        XCTAssertTrue(AttestInstallID.live() === AttestInstallID.live(), "never a second instance")
+        let box = ResultsBox()
+        DispatchQueue.concurrentPerform(iterations: 16) { _ in box.append(AttestInstallID.live().current()?.rawValue) }
+        XCTAssertEqual(box.values.count, 16)
+        XCTAssertEqual(Set(box.values).count, 1)
+        XCTAssertNotNil(box.values.first ?? nil)
+    }
+
+    func testKeychainCodeNeverDeletesAndMapsOnlyNotFoundToCreate() throws {
+        let code = try self.source("Attest/AttestInstallID.swift").split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: "\n")
+        XCTAssertFalse(code.contains("SecItemDelete"), "the ID is never deleted")
+        // The read mapping (compiled only with Security; checked as source on Linux): exactly one
+        // status means "create", every other one is a failure.
+        XCTAssertTrue(code.contains("case errSecItemNotFound: return .notFound\n        default: return .failed"))
+        let keychain = code.components(separatedBy: "public struct KeychainAttestInstallIDStorage").dropFirst().first?
+            .components(separatedBy: "#endif").first ?? ""
+        XCTAssertEqual(keychain.components(separatedBy: "return .notFound").count - 1, 1, "only errSecItemNotFound")
+        XCTAssertFalse(keychain.contains("SecItemDelete"))
+        XCTAssertTrue(code.contains("case errSecDuplicateItem: return .duplicate"))
+        #if canImport(Security)
+        XCTAssertEqual(KeychainAttestInstallIDStorage.read(status: errSecInteractionNotAllowed, data: nil), .failed)
+        XCTAssertEqual(KeychainAttestInstallIDStorage.read(status: errSecItemNotFound, data: nil), .notFound)
+        XCTAssertEqual(KeychainAttestInstallIDStorage.read(status: errSecSuccess, data: Data("x".utf8)), .found("x"))
+        XCTAssertEqual(KeychainAttestInstallIDStorage.read(status: errSecSuccess, data: nil), .failed)
+        #endif
+    }
+
     // MARK: Keychain
 
     func testLiveStorageIsAThisDeviceOnlyKeychainItem() throws {
@@ -118,7 +244,9 @@ final class AttestInstallIDTests: XCTestCase {
         XCTAssertTrue(code.contains("{ kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly }"))
         XCTAssertTrue(code.contains("q[kSecAttrAccessible as String] = accessibility"))
         XCTAssertTrue(code.contains("kSecAttrSynchronizable as String: kCFBooleanFalse"))
-        XCTAssertTrue(code.contains("AttestInstallID(storage: KeychainAttestInstallIDStorage())"), "live() uses the Keychain")
+        XCTAssertTrue(code.contains("AttestInstallID(storage: KeychainAttestInstallIDStorage())"), "shared uses the Keychain")
+        XCTAssertTrue(code.contains("public static func live() -> AttestInstallID { shared }"), "live() is the shared instance")
+        XCTAssertEqual(code.components(separatedBy: "AttestInstallID(storage: KeychainAttestInstallIDStorage())").count - 1, 1, "one live instance")
         for banned in ["kSecAttrAccessibleAlways", "kSecAttrAccessibleAfterFirstUnlock }", "kSecAttrAccessibleWhenUnlocked }"] {
             XCTAssertFalse(code.contains(banned), banned)
         }
@@ -243,6 +371,10 @@ final class AttestInstallIDTests: XCTestCase {
         let down = AttestSpyTransport(); down.throwsError = true
         let offline = await client(down).register(keyId: "k", attestationObject: "a", challenge: "c")
         XCTAssertEqual(offline.failureValue, AttestClient.Failure(reason: .transport, status: nil, retryAfterSeconds: nil))
+        XCTAssertEqual(down.requests.count, 1, "a transport failure is not resent (Atlas N2)")
+        let downChallenge = AttestSpyTransport(); downChallenge.throwsError = true
+        _ = await client(downChallenge).challenge()
+        XCTAssertEqual(downChallenge.requests.count, 1, "nor is a challenge")
     }
 
     func testTheClientOnlyTalksToThePinnedHostOverHTTPS() {
