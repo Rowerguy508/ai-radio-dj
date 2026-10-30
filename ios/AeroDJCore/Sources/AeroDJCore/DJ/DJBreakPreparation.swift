@@ -278,6 +278,9 @@ public actor DJBreakPreparer {
         let permitted = (try? await VoiceRenderer.withTimeout(Self.paidVoiceTakeCheckTimeout) {
             await paidVoice.decision().permitsPaidVoice
         }) ?? false   // timed out or cancelled: fail closed
+        // A cancelAll() during the check (Fry, #255) cleared this queue: write nothing, report
+        // nothing, hand nothing out. A stale result would block prepare at `k` in the next queue.
+        guard taken.contains(k) else { return .skipped(.cancelled) }
         guard permitted else {
             results[k] = .skipped(.paidVoiceRevoked)
             emit(.skipped(afterTrack: k, .paidVoiceRevoked))

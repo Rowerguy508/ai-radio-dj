@@ -290,6 +290,48 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
         XCTAssertEqual(again, .skipped(.paidVoiceRevoked))
     }
 
+    /// Fry (#255 B1): cancelAll() while the take check waits. The check writes no stale
+    /// `.paidVoiceRevoked`, reports no skip after the cancel, and boundary 0 prepares again.
+    func testCancelDuringTakeCheckLeavesNoStaleResult() async {
+        let consent = HangingConsent()
+        let access = ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: consent)
+        let p = preparer(publicVoice(access, transport: SpyTransport()), bundledAccess: access)
+        let events = DJEventLog()
+        await p.observe { events.add($0) }
+        await p.prepare(twoCueBreak(after: 0), deadline: .seconds(5), onDeviceOnly: false)
+        _ = await ready(p, 0)
+        consent.hang()
+        final class Box: @unchecked Sendable { let lock = NSLock(); var value: DJBreakOutcome? }
+        let box = Box()
+        let take = Task { let r = await p.takeCheckedBreak(afterTrack: 0); box.lock.withLock { box.value = r } }
+        try? await Task.sleep(for: .milliseconds(50))
+        await p.cancelAll()
+        await take.value
+        XCTAssertEqual(box.lock.withLock { box.value }, .skipped(.cancelled))
+        let stale = await p.testResult(afterTrack: 0)
+        XCTAssertNil(stale, "no stale result after cancelAll")
+        XCTAssertFalse(events.all.contains(.skipped(afterTrack: 0, .paidVoiceRevoked)), "no skip reported after the cancel")
+        await p.prepare(twoCueBreak(after: 0), deadline: .seconds(5), onDeviceOnly: false)
+        let inFlight = await p.testInFlight
+        let result = await p.testResult(afterTrack: 0)
+        XCTAssertTrue(inFlight.contains(0) || result != nil, "boundary 0 prepares in the next queue")
+    }
+
+    /// Same race with an answer that allows paid voice: a cancelled break is never handed out.
+    func testCancelDuringAllowedTakeCheckHandsNothingOut() async {
+        let access = ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: SlowConsent(delay: .milliseconds(150)))
+        let p = preparer(publicVoice(access, transport: SpyTransport()), bundledAccess: access)
+        await p.prepare(twoCueBreak(after: 0), deadline: .seconds(5), onDeviceOnly: false)
+        _ = await ready(p, 0)
+        final class Box: @unchecked Sendable { let lock = NSLock(); var value: DJBreakOutcome? }
+        let box = Box()
+        let take = Task { let r = await p.takeCheckedBreak(afterTrack: 0); box.lock.withLock { box.value = r } }
+        try? await Task.sleep(for: .milliseconds(30))
+        await p.cancelAll()
+        await take.value
+        XCTAssertEqual(box.lock.withLock { box.value }, .skipped(.cancelled))
+    }
+
     /// An answer that arrives in time (well inside the bound) still plays the paid break.
     func testTakeCheckAnsweredInTimeStillPlays() async {
         let access = ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: SlowConsent(delay: .milliseconds(20)))
