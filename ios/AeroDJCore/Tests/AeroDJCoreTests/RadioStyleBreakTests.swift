@@ -603,13 +603,13 @@ final class RadioStyleBreakTests: XCTestCase {
 
     // MARK: Library gate (Sentinel #154/#176): the closing never reaches the off-device route
 
-    private let jade = "g7LVvkPWALzPxOQbF6OE"
+    private let juniper = "aMSt68OGf4xUZAnLpTU8"
     private func composed(_ transport: RecordingTransport) -> VoiceRenderer {
         let device = ["premium", "standard"].map {
             VoiceRoute(providerID: "avspeech", provider: DeviceVoice(), voice: VoiceProfile(id: $0, name: "Host"))
         }
         let c = PremiumVoiceRoutes.compose(
-            onDevice: device, paidProvidersEnabled: true, selectedVoiceID: jade,
+            onDevice: device, paidProvidersEnabled: true, selectedVoiceID: juniper,
             credentials: PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!, token: "owner-test-token"),
             pinnedHosts: ["aerodj-tts.vercel.app"], transport: transport)
         return VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),

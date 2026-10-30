@@ -19,25 +19,27 @@ public struct PremiumVoiceOption: Equatable, Sendable, Identifiable {
     }
 }
 
-/// The owner-approved lineup (2026-10-28): four ElevenLabs replacement voices.
-///
-/// IDs and descriptions are from ElevenLabs' public docs (replacement table),
-/// https://elevenlabs.io/docs/help-center/product/voices/my-voices/what-are-default-voices
-/// That page says the old Default voices expire 2026-12-31 and that these new voices
-/// "you will be able to use forever"; it states no account-age limit for them.
-/// The proxy's `AERODJ_TTS_VOICE_IDS` must list exactly `allowlistCSV`.
+/// The owner-approved lineup (2026-10-30, replacing the 2026-10-28 Sawyer/Lawrence/Talia/Jade set):
+/// five ElevenLabs Voice Library voices the owner picked from public listings
+/// (json2video.com/ai-voices/elevenlabs/voices/<id>/). Most are community voices whose
+/// creators can change or remove them; Warren is ElevenLabs' own.
+/// The proxy's `AERODJ_TTS_VOICE_IDS` must include every `allowlistCSV` ID (it may also keep
+/// retired IDs while older TestFlight builds still select them).
 public enum PremiumVoiceCatalog {
     /// The one place the lineup is defined (keep `PremiumVoicePickerTests` in step, and
-    /// update the proxy's AERODJ_TTS_VOICE_IDS to the new `allowlistCSV`).
+    /// update the proxy's AERODJ_TTS_VOICE_IDS to include the new `allowlistCSV`).
+    /// Nathan is first, so it leads the picker.
     public static let voices: [PremiumVoiceOption] = [
-        PremiumVoiceOption(id: "8dEUmyPMdDdK91vboYih", displayName: "Sawyer",
-                           description: "Midnight Storyteller", upstream: .elevenlabs),
-        PremiumVoiceOption(id: "ktkP7Nsj67dw2zcplQYt", displayName: "Lawrence",
-                           description: "Bright and Informative", upstream: .elevenlabs),
-        PremiumVoiceOption(id: "OZ0L6eISlOejga3XjDFt", displayName: "Talia",
-                           description: "Warm Soft Guide", upstream: .elevenlabs),
-        PremiumVoiceOption(id: "g7LVvkPWALzPxOQbF6OE", displayName: "Jade",
-                           description: "Upbeat and Natural", upstream: .elevenlabs),
+        PremiumVoiceOption(id: "x70vRnQBMBu4FAYhjJbO", displayName: "Nathan",
+                           description: "Virtual Radio Host", upstream: .elevenlabs),
+        PremiumVoiceOption(id: "7QN34D2r3hCNwbOYIeK0", displayName: "Warren",
+                           description: "Effortless and Cool", upstream: .elevenlabs),
+        PremiumVoiceOption(id: "aMSt68OGf4xUZAnLpTU8", displayName: "Juniper",
+                           description: "Grounded and Professional", upstream: .elevenlabs),
+        PremiumVoiceOption(id: "OYTbf65OHHFELVut7v2H", displayName: "Hope",
+                           description: "Natural, Clear and Calm", upstream: .elevenlabs),
+        PremiumVoiceOption(id: "kdnRe2koJdOK4Ovxn2DI", displayName: "Eryn",
+                           description: "Genuine, Friendly and Natural", upstream: .elevenlabs),
     ]
 
     /// The value for the proxy's `AERODJ_TTS_VOICE_IDS`.
