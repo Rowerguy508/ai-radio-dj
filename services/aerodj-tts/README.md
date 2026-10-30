@@ -44,7 +44,7 @@ never echo user input or the upstream response:
 | 405 | any method other than POST |
 | 429 | per-minute rate limit or a daily character cap reached (`Retry-After` and `reason` set, see below) |
 | 500 | server misconfigured (token hash or ElevenLabs key unset, or Production without a durable limiter store; `Retry-After: 3600`, `reason: "misconfig"`) |
-| 503 | limiter store unreachable or erroring (fails closed; `Retry-After: 60`, `reason: "store"`), or the master stop `AERODJ_TTS_PAID_STOP` is set (`Retry-After: 3600`, `reason: "disabled"`) |
+| 503 | limiter store unreachable or erroring (fails closed; `Retry-After: 30`, `reason: "store"`), or the master stop `AERODJ_TTS_PAID_STOP` is set (`Retry-After: 3600`, `reason: "disabled"`) |
 | 502 | upstream non-2xx, network error, empty or oversized audio |
 | 504 | upstream took longer than 15 s (AbortController) |
 
@@ -63,7 +63,7 @@ a body of enums and numbers only:
 | 429 | `owner_daily` | seconds until 00:00 UTC |
 | 429 | `install_daily` | seconds until 00:00 UTC (not reachable until per-install auth lands) |
 | 429 | `global_daily` | seconds until 00:00 UTC |
-| 503 | `store` | 60 |
+| 503 | `store` | 30 |
 | 503 | `disabled` (master stop, below) | 3600 |
 | 500 | `misconfig` | 3600 |
 
@@ -166,7 +166,7 @@ durable store (`limiter.durable === true`, i.e. Upstash) it refuses with
 `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` does not apply to installs. A store error from
 the durable limiter is also 503 `store`; any other throw from `reserve` is **500
 `misconfig`, `Retry-After: 3600`** (PR 4), never a bare platform 500. The owner
-`/api/tts` reserve uses the same mapping (503 `store` with `Retry-After: 60`, else 500
+`/api/tts` reserve uses the same mapping (503 `store` with `Retry-After: 30`, else 500
 `misconfig`). No request reaches an install reservation yet (the attested `/api/tts`
 path and PR 3b's `register` wire it).
 

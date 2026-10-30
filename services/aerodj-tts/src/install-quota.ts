@@ -1,4 +1,4 @@
-import { MISCONFIG_RETRY_AFTER_SECONDS } from './attest-flags.js';
+import { MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS } from './attest-flags.js';
 import { LimiterStoreError, type ReserveResult, type UsageLimiter } from './limiter.js';
 
 /**
@@ -17,7 +17,7 @@ import { LimiterStoreError, type ReserveResult, type UsageLimiter } from './limi
  */
 
 /** `Retry-After` for 503 `store` on the attest/install paths (note §4.4 table). */
-export const INSTALL_STORE_RETRY_AFTER_SECONDS = 30;
+export const INSTALL_STORE_RETRY_AFTER_SECONDS = STORE_RETRY_AFTER_SECONDS;
 
 export type InstallReserveResult =
   | ReserveResult

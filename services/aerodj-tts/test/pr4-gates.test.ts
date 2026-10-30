@@ -225,10 +225,11 @@ describe('non-store reserve throw → 500 misconfig, Retry-After 3600 (Sentinel 
     });
   }
 
-  test('owner /api/tts: reserve throws LimiterStoreError → still 503 store (Retry-After 60), zero ElevenLabs calls', async () => {
+  test('owner /api/tts: reserve throws LimiterStoreError → still 503 store (Retry-After 30, note §4.4), zero ElevenLabs calls', async () => {
     const { res, upstream } = await run(throwing(new LimiterStoreError('x')));
     assert.equal(res.status, 503);
-    assert.equal(res.headers['Retry-After'], '60');
+    assert.equal(res.headers['Retry-After'], '30');
+    assert.deepEqual(JSON.parse(res.body.toString('utf8')).retryAfterSeconds, 30);
     assert.equal(JSON.parse(res.body.toString('utf8')).reason, 'store');
     assert.equal(upstream, 0);
   });

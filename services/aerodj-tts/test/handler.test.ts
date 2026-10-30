@@ -602,7 +602,14 @@ test('limiter store failure fails closed with 503 and never calls upstream', asy
   const h = harness({ limiter: new RedisUsageLimiter(STORE, { dailyCharCap: 600, requestsPerMinute: 12 }, store.fetchImpl) });
   const res = await handleTts(request(), h.deps);
   assert.equal(res.status, 503);
+  assert.equal(res.headers['Retry-After'], '30'); // note §4.4: 503 store is 30 s, same as the install path
+  assert.equal(errorBody(res).reason, 'store');
+  assert.equal(errorBody(res).retryAfterSeconds, 30);
   assert.equal(h.calls.length, 0);
+  const unreachableRes = await handleTts(request(), harness({
+    limiter: new RedisUsageLimiter(STORE, { dailyCharCap: 600, requestsPerMinute: 12 }, (async () => { throw new Error('dns'); }) as typeof fetch),
+  }).deps);
+  assert.equal(unreachableRes.headers['Retry-After'], '30');
   const unreachable = harness({
     limiter: new RedisUsageLimiter(STORE, { dailyCharCap: 600, requestsPerMinute: 12 }, (async () => { throw new Error('dns'); }) as typeof fetch),
   });
