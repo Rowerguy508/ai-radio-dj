@@ -26,7 +26,6 @@ export interface StoreKitConfig {
   allowSandboxInProduction: boolean;
   /** Parsed and validated here but not read by this verifier: consumed by PR 6 (entitlement) and PR 7 (notifications). */
   honorGracePeriod: boolean;
-  allowFamilyShared: boolean;
 }
 
 /**
@@ -66,6 +65,11 @@ export interface StoreKitVerifierOptions {
   lastSeen: LastSeenStore;
   /** Opaque install identity (the attested keyId) the last-seen check is keyed on. */
   install: string;
+  /**
+   * Family Sharing: `proAllowFamilyShared(env)` (src/pro-allowance.ts), the single setting
+   * `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED`. Anything but exactly `true` refuses FAMILY_SHARED.
+   */
+  allowFamilyShared: boolean;
   /**
    * Test-only root override. Refused (`config`) when `deployment === 'production'`,
    * so a fake CA can never be wired into Production; defaults to Apple Root CA - G3.
@@ -236,8 +240,9 @@ export async function verifySignedTransaction(jws: unknown, options: StoreKitVer
   if (payload.revocationDate !== undefined) return fail('revoked');
   if (!(expiresDate > options.now())) return fail('expired');
 
+  // Only PURCHASED, or FAMILY_SHARED when the setting is exactly true; missing/unknown never.
   const ownership = str('inAppOwnershipType');
-  if (!(ownership === 'PURCHASED' || (ownership === 'FAMILY_SHARED' && config.allowFamilyShared))) {
+  if (!(ownership === 'PURCHASED' || (ownership === 'FAMILY_SHARED' && options.allowFamilyShared === true))) {
     return fail('ownership');
   }
 

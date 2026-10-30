@@ -19,7 +19,7 @@ import {
   type Reservation,
   type UsageLimiter,
 } from './limiter.js';
-import { isVerifiedProSubject, PRO_DAILY_RENDER_ALLOWANCE, proBucket, proDeployment, type ProSubject } from './pro-allowance.js';
+import { isVerifiedProSubject, PRO_DAILY_RENDER_ALLOWANCE, proAllowFamilyShared, proBucket, proDeployment, type ProSubject } from './pro-allowance.js';
 import { ssmlToPlainText } from './ssml.js';
 import { pcmToWav, sampleCount, SAMPLE_RATE } from './wav.js';
 
@@ -411,7 +411,10 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
     const deployment = proDeployment(deps.env);
     const charCap = proDailyChars(deps.env);
     const rate = proRatePerMinute(deps.env);
-    if (deployment === null || charCap === null || rate === null) return misconfigured();
+    // Family Sharing flag: validated here too, so a typo is 500 misconfig on the Pro path
+    // even before PR 6 reads it for verification (the owner path never reads it).
+    const familyShared = proAllowFamilyShared(deps.env);
+    if (deployment === null || charCap === null || rate === null || familyShared === null) return misconfigured();
     pro = { bucket: proBucket(req.verifiedPro, deployment), charCap, rate };
   }
 

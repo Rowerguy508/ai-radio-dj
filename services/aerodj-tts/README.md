@@ -146,6 +146,8 @@ printf %s "$TOKEN" | shasum -a 256 | cut -d' ' -f1   # paste this hex into Verce
   rate bucket `AERODJ_TTS_PRO_RATE_PER_MINUTE` (default 12). Unlike the owner settings,
   an invalid Pro value or a `VERCEL_ENV` other than production/preview/development makes
   a Pro request 500 `misconfig`; the owner path is unaffected. Durable store only.
+  Family Sharing fails closed until the owner decides: only `PURCHASED` counts as Pro
+  unless `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED` is exactly `true` (the single setting).
 - Rate accepts only a plain integer from 1 to 600 by the same rule as the caps.
   Anything else (`1e9`, `Infinity`, `601`, fractional, empty) uses the default 12,
   so the rate limit can never be switched off by configuration.
@@ -261,6 +263,7 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. Plain integer 1-600; anything else uses 12. |
 | `AERODJ_TTS_PRO_DAILY_CHARS` | no | Per Pro subscriber daily chars. Default 12000, clamped to the global ceiling. Plain integer 600-10,000,000; anything else makes Pro requests 500 `misconfig`. |
 | `AERODJ_TTS_PRO_RATE_PER_MINUTE` | no | Per Pro subscriber rate. Default 12. Plain integer 1-600; anything else makes Pro requests 500 `misconfig`. |
+| `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED` | no | Family Sharing, **open owner question** (Sentinel's N3 on #264). Unset or exactly `false` (default): only `PURCHASED` counts as Pro; a `FAMILY_SHARED` purchase is refused by the verifier (`ownership`), gets no Pro subject and takes the non-Pro path. Exactly `true`: `FAMILY_SHARED` also counts. Missing or unknown ownership never counts. Anything else (`TRUE`, `1`, empty, spaces) makes Pro requests 500 `misconfig`. Owner decision only; must match the App Store Connect Family Sharing toggle, which Apple does not let you turn off once on. |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | yes in Production | Injected by the Upstash Redis integration (Vercel Marketplace, free tier). `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work. HTTPS only. |
 | `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter (owner path only; never install reservations). Owner decision only; leave unset. |
 | `AERODJ_TTS_PAID_STOP` | no | Master stop. Any value except exactly `false` (including empty) → every paid path and `/api/attest/*` return 503 `disabled`. Unset in normal operation. |
