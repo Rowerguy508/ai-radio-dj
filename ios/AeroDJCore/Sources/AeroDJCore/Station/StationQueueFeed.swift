@@ -105,6 +105,8 @@ public enum StationQueueEvent: Equatable, Sendable {
     case notBuilt(StationQueueSkip, failedLookups: Int)
     case handedOff(StationQueueTrigger, songs: Int)
     case keptCurrentQueue(StationQueueTrigger, StationQueueKeepReason)
+    /// #204: the hand-off's start failed; the queue is staged again and the old queue's station kept.
+    case handOffFailed(StationQueueTrigger)
 
     /// One log line, no content.
     public var diagnostics: String {
@@ -117,7 +119,32 @@ public enum StationQueueEvent: Equatable, Sendable {
             "stationQueue handedOff trigger=\(trigger.rawValue) songs=\(songs)"
         case let .keptCurrentQueue(trigger, reason):
             "stationQueue keptCurrent trigger=\(trigger.rawValue) reason=\(reason.rawValue)"
+        case let .handOffFailed(trigger):
+            "stationQueue handOffFailed trigger=\(trigger.rawValue)"
         }
+    }
+}
+
+/// #204 (-Atlas): how a handed-out station queue's start ended. The app maps its start: success,
+/// or a held start that loaded the queue and waits for the hold, is `.started`; a newer tap, skip or
+/// resume that replaced it is `.superseded`; any other throw is `.failed`.
+public enum StationHandOffResult: String, Equatable, Sendable, CaseIterable {
+    case started
+    case failed
+    case superseded
+}
+
+/// #204 (-Atlas): at a natural boundary, after the station's start returned. A failed start
+/// (nothing newer since) loads the old queue's next song, exactly what the boundary would have
+/// loaded without a station, so music does not strand. The station start itself bumps the queue
+/// generation once (`MusicKitService.play`); any further bump is a newer tap or skip, which owns
+/// the player, so nothing old is resurrected.
+public enum StationHandOffFallback {
+    public static func loadsOldQueueNext(result: StationHandOffResult, generationBefore: Int,
+                                         generationNow: Int, next: Int, oldQueueCount: Int) -> Bool {
+        guard result == .failed else { return false }
+        guard generationNow == generationBefore + 1 else { return false }
+        return next >= 0 && next < oldQueueCount
     }
 }
 
@@ -154,6 +181,16 @@ public final class StationQueueFeed<Item: Sendable> {
     public private(set) var queueStartReported = false
     private var observedKey: StationQueueKey?
     private var observing = false
+    /// #204: the last hand-off, until its start reports. A failed start puts it back.
+    private var pendingHandOff: PendingHandOff?
+
+    private struct PendingHandOff {
+        let trigger: StationQueueTrigger
+        let key: StationQueueKey
+        let items: [Item]
+        let previousKey: StationQueueKey?
+        let previousReported: Bool
+    }
 
     /// - Parameters:
     ///   - materialize: candidates -> playable items, in order; drops what it cannot play.
@@ -236,6 +273,8 @@ public final class StationQueueFeed<Item: Sendable> {
     /// station change saved before the tap does not replace the tapped songs at the next boundary.
     /// `songCount` is the new queue's length: a short queue starts building its refill now.
     public func queueStarted(for committed: StationConfiguration, songCount: Int? = nil) {
+        // A newer queue (a tap) owns playback: an earlier hand-off's late failure restores nothing.
+        pendingHandOff = nil
         playingKey = StationQueueKey(committed)
         queueStartReported = true
         if let songCount, songCount <= refillLead { prefetch(committed) }
@@ -275,6 +314,8 @@ public final class StationQueueFeed<Item: Sendable> {
             prefetch(active)
             return keep(.refill, .notReady)
         }
+        pendingHandOff = PendingHandOff(trigger: .refill, key: key, items: ready.items,
+                                        previousKey: playingKey, previousReported: queueStartReported)
         staged = nil
         playingKey = key
         let refill = [lastSong] + fresh
@@ -321,10 +362,26 @@ public final class StationQueueFeed<Item: Sendable> {
             prefetch(active)
             return keep(trigger, .notReady)
         }
+        pendingHandOff = PendingHandOff(trigger: trigger, key: key, items: ready.items,
+                                        previousKey: playingKey, previousReported: queueStartReported)
         staged = nil
         playingKey = key
         log(.handedOff(trigger, songs: ready.items.count))
         return ready.items
+    }
+
+    /// #204 (-Atlas): the start of the queue just handed out reported. `.failed` puts the hand-off
+    /// back: the playing queue keeps its own station (`playingKey`) and the station's songs are
+    /// staged again (unless a newer build is already staged), so the next boundary or Play retries.
+    /// `.started` and `.superseded` keep the hand-off. A queue start reported since (a tap) wins.
+    public func handOffFinished(_ result: StationHandOffResult) {
+        guard let handOff = pendingHandOff else { return }
+        pendingHandOff = nil
+        guard result == .failed else { return }
+        playingKey = handOff.previousKey
+        queueStartReported = handOff.previousReported
+        if staged == nil { staged = (handOff.key, handOff.items) }
+        log(.handOffFailed(handOff.trigger))
     }
 
     private func keep(_ trigger: StationQueueTrigger, _ reason: StationQueueKeepReason) -> [Item]? {
