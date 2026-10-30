@@ -46,6 +46,13 @@ public enum ProSubscriptionConfig {
     public static let clientGracePeriodSeconds: TimeInterval = 0
 }
 
+/// StoreKit's `Transaction.OwnershipType`, kept so the client mirrors the proxy's
+/// `allowFamilyShared: false` (Atlas, #244): a family-shared transaction is not Pro while
+/// `ProSubscriptionConfig.familySharingEnabled` is false.
+public enum ProOwnership: String, Equatable, Sendable {
+    case purchased, familyShared
+}
+
 /// A StoreKit transaction reduced to the fields the client-side display state needs.
 /// The app maps StoreKit's `.unverified` results with `isVerified: false`; they never count as
 /// Pro (fail closed).
@@ -58,15 +65,19 @@ public struct ProTransactionSnapshot: Equatable, Sendable {
     public let isUpgraded: Bool
     /// False when StoreKit returned `.unverified` for it. An unverified transaction never shows Pro.
     public let isVerified: Bool
+    /// Purchased by this Apple ID, or shared to it by a family organizer.
+    public let ownership: ProOwnership
 
     public init(productID: String, purchaseDate: Date, expirationDate: Date?,
-                revocationDate: Date? = nil, isUpgraded: Bool = false, isVerified: Bool = true) {
+                revocationDate: Date? = nil, isUpgraded: Bool = false, isVerified: Bool = true,
+                ownership: ProOwnership = .purchased) {
         self.productID = productID
         self.purchaseDate = purchaseDate
         self.expirationDate = expirationDate
         self.revocationDate = revocationDate
         self.isUpgraded = isUpgraded
         self.isVerified = isVerified
+        self.ownership = ownership
     }
 }
 
@@ -106,8 +117,13 @@ public enum ProEntitlementMapper {
     /// - Nothing on record is `.free`.
     public static func state(for transactions: [ProTransactionSnapshot], now: Date,
                              knownProductIDs: Set<String> = ProSubscriptionConfig.productIDs,
-                             gracePeriodSeconds: TimeInterval = ProSubscriptionConfig.clientGracePeriodSeconds) -> ProEntitlementState {
-        let known = transactions.filter { knownProductIDs.contains($0.productID) }
+                             gracePeriodSeconds: TimeInterval = ProSubscriptionConfig.clientGracePeriodSeconds,
+                             familySharingEnabled: Bool = ProSubscriptionConfig.familySharingEnabled) -> ProEntitlementState {
+        // Family-shared transactions are dropped like unknown products while Family Sharing is
+        // off, so they read as free, never Pro (fail closed, matching the proxy).
+        let known = transactions.filter {
+            knownProductIDs.contains($0.productID) && (familySharingEnabled || $0.ownership == .purchased)
+        }
         let pro = known.filter(\.isVerified)
         if pro.isEmpty, let first = known.first { return .unverified(productID: first.productID) }
         let active = pro.filter { t in
@@ -123,5 +139,21 @@ public enum ProEntitlementMapper {
             return .revoked(productID: latest.productID, revokedAt: revoked)
         }
         return .expired(productID: latest.productID, expiredAt: latest.expirationDate ?? latest.purchaseDate)
+    }
+}
+
+/// The transactions last read from StoreKit. Its state is recomputed from their own expiration
+/// and revocation dates at the moment of asking, never a cached result, so a `.pro` read before
+/// an expiry is not `.pro` after it even if no refresh or `Transaction.updates` event came
+/// (Sentinel N1, #244). Revocations arrive through `Transaction.updates`, which re-reads.
+public struct ProEntitlementRecord: Equatable, Sendable {
+    public private(set) var transactions: [ProTransactionSnapshot]
+
+    public init(_ transactions: [ProTransactionSnapshot] = []) {
+        self.transactions = transactions
+    }
+
+    public func state(now: Date) -> ProEntitlementState {
+        ProEntitlementMapper.state(for: transactions, now: now)
     }
 }

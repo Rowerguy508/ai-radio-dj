@@ -153,6 +153,46 @@ final class ProEntitlementMapperTests: XCTestCase {
                        "an unverified active one never beats a verified history")
     }
 
+    /// Atlas's contract nit: the proxy rejects FAMILY_SHARED (`allowFamilyShared: false`), so the
+    /// client never shows it as Pro either while Family Sharing is off.
+    func testFamilySharedIsNotProWhileFamilySharingIsOff() {
+        let shared = ProTransactionSnapshot(productID: yearly, purchaseDate: now.addingTimeInterval(-60),
+                                            expirationDate: now.addingTimeInterval(300 * 86_400), ownership: .familyShared)
+        XCTAssertFalse(ProSubscriptionConfig.familySharingEnabled)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [shared], now: now), .free)
+        XCTAssertEqual(ProVoiceGate.decide(entitlement: ProEntitlementMapper.state(for: [shared], now: now),
+                                           paidVoiceConsent: true, now: now), .denied(.notPro))
+        // Its own purchase still counts, and the shared one never beats it.
+        let own = tx(monthly, bought: -3600, expires: 86_400)
+        XCTAssertEqual(ProEntitlementMapper.state(for: [shared, own], now: now),
+                       .pro(productID: monthly, expiresAt: now.addingTimeInterval(86_400)))
+        // The one config value is what decides: turned on, the same transaction would be Pro.
+        XCTAssertTrue(ProEntitlementMapper.state(for: [shared], now: now, familySharingEnabled: true).showsPro)
+    }
+
+    /// Sentinel N1: what was `.pro` when read is not `.pro` once its expiry passes, with no
+    /// re-read in between; and a revocation in the record wins at once.
+    func testRecordIsRecomputedAtCallTimeNotCached() {
+        let expires = now.addingTimeInterval(60)
+        let record = ProEntitlementRecord([tx(monthly, bought: -3600, expires: 60)])
+        XCTAssertEqual(record.state(now: now), .pro(productID: monthly, expiresAt: expires))
+        XCTAssertEqual(record.state(now: expires), .expired(productID: monthly, expiredAt: expires))
+        XCTAssertEqual(record.state(now: expires.addingTimeInterval(86_400)), .expired(productID: monthly, expiredAt: expires))
+        XCTAssertEqual(ProEntitlementRecord().state(now: now), .free)
+        let revoked = ProEntitlementRecord([tx(monthly, bought: -3600, expires: 86_400, revoked: -1)])
+        XCTAssertEqual(revoked.state(now: now), .revoked(productID: monthly, revokedAt: now.addingTimeInterval(-1)))
+    }
+
+    /// The app's provider answers from the record at call time, never from its cached `state`.
+    func testObserverAnswersTheGateFromTheRecordAtCallTime() throws {
+        let file = RepoPaths.app.appendingPathComponent("Purchases/ProEntitlementObserver.swift")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        let body = try XCTUnwrap(text.range(of: "func currentProEntitlement()").map { String(text[$0.upperBound...].prefix(160)) })
+        XCTAssertTrue(body.contains("record.state(now: now())"), body)
+        XCTAssertFalse(body.contains("await state"), "a cached .pro would outlive its expiry")
+        XCTAssertFalse(body.contains("return state"))
+    }
+
     func testNoGracePeriodByDefaultAndTheGraceIsOneValue() {
         let t = tx(monthly, bought: -3600, expires: -1)
         XCTAssertFalse(ProEntitlementMapper.state(for: [t], now: now).showsPro)

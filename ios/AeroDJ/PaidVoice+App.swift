@@ -15,7 +15,7 @@ extension PaidVoice {
         #if AERODJ_OWNER_AB
         let voice = ownerTrial(base: base)
         #else
-        let voice = publicComposition(base: base, access: .live,
+        let voice = publicComposition(base: base, access: .buildDefault,
                                       selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
                                       session: NoInstallSession())
         #endif

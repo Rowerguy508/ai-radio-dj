@@ -20,7 +20,7 @@ import Security
 #if AERODJ_OWNER_AB
 extension PaidVoice {
     /// The owner A/B composition: owner token from the Keychain, the owner trial decision at
-    /// setup, and `ProVoiceAccess.live` (the owner trial in this build) as the per-cue gate.
+    /// setup, and `ProVoiceAccess.buildDefault` (the owner trial in this build) as the per-cue gate.
     static func ownerTrial(base: VoiceRenderer) -> PaidVoice {
         let composition = PremiumVoiceRoutes.compose(
             onDevice: base.routes,
@@ -29,24 +29,10 @@ extension PaidVoice {
             credentials: OwnerProxyKeychain.load())
         return PaidVoice(renderer: VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
                                                  revocations: base.revocations),
-                         access: .live, decision: composition.decision)
+                         access: .buildDefault, decision: composition.decision)
     }
 }
 #endif
-
-extension ProVoiceAccess {
-    /// The Pro + consent gate the live app runs with. Owner A/B builds: the owner trial, matching
-    /// the route above. Every other build: `.none` (free, no consent), so nothing paid resolves
-    /// until the paywall (Nova) and the consent sheet provide real `ProEntitlementProviding` and
-    /// `PaidVoiceConsentProviding` conformers.
-    static var live: ProVoiceAccess {
-        #if AERODJ_OWNER_AB
-        return .ownerTrial
-        #else
-        return .none
-        #endif
-    }
-}
 
 extension View {
     /// Adds the owner voice picker entry in an `AERODJ_OWNER_AB` build; a no-op otherwise.

@@ -236,14 +236,15 @@ jobs:
           for NEEDLE in P0EventTraceHost P0EventTrace P0PollSampler P0TraceView P0EventTracePanel; do
             LC_ALL=C grep -a -q "$NEEDLE" "$DIAG_BIN" || { echo "::error::$NEEDLE missing from the AERODJ_P0_DIAG build"; exit 1; }
           done
-      - name: Owner proxy credential and the public paid route are absent from Release
+      - name: Owner trial, owner proxy credential and the public paid route are absent from Release
+        # ownerTrial (Pro gate bypass) compiles only with AERODJ_OWNER_AB (Sentinel B1, #244, -Fry).
         # #174 blocker 9 split (-Echo). Same Release binary as the P0 grep above. Gate 1: the
         # owner proxy credential code (Keychain service) is only in AERODJ_OWNER_AB builds.
         # Gate 2: the public paid route stays compiled out until #233 PRs 3-4
         # (AERODJ_PUBLIC_PAID_ROUTE, which nothing sets). Positive control: one Release build
         # with both flags must contain every needle.
         run: |
-          NEEDLES=(com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)
+          NEEDLES=(ownerTrial com.aerodj.owner-ab.tts-proxy AERODJ_PUBLIC_PAID_ROUTE_BUILD)
           RELEASE_BIN="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app/AeroDJ"
           test -f "$RELEASE_BIN"
           for NEEDLE in "${NEEDLES[@]}"; do
