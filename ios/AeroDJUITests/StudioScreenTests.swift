@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Integration tests for the playing screen in the Debug test station's capture mode
 /// (`-AeroDJTestStation YES -AeroDJStudioCapture YES`): the real `PlayingScreen`, the test
@@ -17,20 +18,23 @@ final class StudioScreenTests: XCTestCase {
     private func launch(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
                         dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                         restoreStationID: String? = nil,
-                        musicAuthStatus: String? = nil) -> XCUIApplication {
+                        musicAuthStatus: String? = nil,
+                        orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
         // Probe the layout before this test's own launch: the probe launches and terminates
         // its own app, so it must never run while the test's app is up.
         _ = isOpenLayout
         return startApp(segment: segment, scenario: scenario, largeText: largeText, dark: dark,
                         contentSize: contentSize, reduceMotion: reduceMotion,
-                        restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus)
+                        restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus,
+                        orientation: orientation)
     }
 
     @MainActor
     private func startApp(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
                           dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                           restoreStationID: String? = nil,
-                          musicAuthStatus: String? = nil) -> XCUIApplication {
+                          musicAuthStatus: String? = nil,
+                          orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
@@ -49,7 +53,7 @@ final class StudioScreenTests: XCTestCase {
         if let musicAuthStatus {
             app.launchArguments += ["-AeroDJMusicAuthStatus", musicAuthStatus]
         }
-        XCUIDevice.shared.orientation = .portrait
+        XCUIDevice.shared.orientation = orientation
         app.launch()
         // The capture view loads the station before rendering. Never screenshot on a timer:
         // wait for loading to end, and fail by name if the capture could not set up.
@@ -326,6 +330,126 @@ final class StudioScreenTests: XCTestCase {
         }
     }
 
+    /// Owner, build 25 on the unfolded Duo: the listen player in a wide, compact-class container
+    /// (640 pt, below the Studio switch) is one centred column. Play/Pause and the ready line
+    /// sit on the column's centre line, the scrubber, the Playing-from chip and ⋯ share its
+    /// edges, and the controls follow the DJ line without a large gap.
+    ///
+    /// Fry, #207: never screenshot before the layout settles. The test waits for the window and
+    /// the 640 × 820 container (`capture.duoContainer`) to hold their final frames, for the
+    /// column (`folded.wideColumn`) to hold a stable frame at the column width, and for every
+    /// spinner to go, then checks the column is centred in the window before saving.
+    ///
+    /// Run 40919120200: `folded.wideColumn`'s accessibility frame came back 376 pt while the
+    /// drawn column (art rule → `columnMinWidth` 360 pt), the scrubber track and the toolbar
+    /// were all 360 pt (230–590 pt in the failure recording). SwiftUI sizes a `.contain`
+    /// container's accessibility frame from its children, not from `.frame(width:)`, so it is
+    /// 8 pt wider each side than the layout. The edges are therefore measured on the toolbar,
+    /// whose station chip is `maxWidth: .infinity` and so spans the drawn column exactly;
+    /// the accessibility frame is used only for settling and centring.
+    @MainActor
+    func testDuoWideListenPlayerIsOneCentredColumn() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoWideReady")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+
+        // Final window and container size first: everything below is measured inside them.
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window\n\(app.debugDescription)")
+        let windowFrame = try XCTUnwrap(settledFrame(of: window, "window"))
+        let container = any["capture.duoContainer"]
+        XCTAssertTrue(container.waitForExistence(timeout: 5), "Duo container missing\n\(app.debugDescription)")
+        let box = try XCTUnwrap(settledFrame(of: container, "Duo container") {
+            abs($0.width - 640) <= 1 && abs($0.height - 820) <= 1
+        }, "container never settled at 640 × 820 pt: \(container.frame)")
+        XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box),
+                      "container \(box) outside window \(windowFrame)")
+
+        // Column: exists, holds still, and is as wide as the column rule allows in 640 pt
+        // (FoldedColumnLayout: 360…min(640 − 2 × 32, 560) = 560), plus the accessibility
+        // frame's slack (see `DuoWideColumn`).
+        let column = any["folded.wideColumn"]
+        XCTAssertTrue(column.waitForExistence(timeout: 10), "wide column missing\n\(app.debugDescription)")
+        let col = try XCTUnwrap(settledFrame(of: column, "wide column") {
+            $0.width >= DuoWideColumn.minWidth - 1 && $0.width <= DuoWideColumn.maxWidth + DuoWideColumn.accessibilitySlack
+        }, "wide column never settled at a column width: \(column.frame)")
+
+        // No spinner anywhere in the app (the Play/Pause face, art or queue loading).
+        let spinners = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"),
+                                                 object: app.activityIndicators)
+        XCTAssertEqual(XCTWaiter().wait(for: [spinners], timeout: 10), .completed,
+                       "a spinner is still showing\n\(app.debugDescription)")
+
+        let play = app.buttons["transport.playPause"]
+        let ready = any["dj.ready"]
+        let scrubber = any["playback.progress"]
+        let chip = any["station.title"]
+        let more = any["folded.more"]
+        let tune = app.buttons["transport.tune"]   // wide: Tune is only in the toolbar
+        for (name, element) in [("play", play), ("ready", ready), ("scrubber", scrubber),
+                                ("chip", chip), ("more", more), ("tune", tune)] {
+            XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing\n\(app.debugDescription)")
+        }
+        // The drawn column: chip leading edge to Tune's trailing edge.
+        let edges = (minX: chip.frame.minX, maxX: tune.frame.maxX)
+        let drawn = edges.maxX - edges.minX
+        let frames = "column(ax) \(col) drawn \(edges) scrubber \(scrubber.frame) chip \(chip.frame) "
+            + "tune \(tune.frame) more \(more.frame) play \(play.frame) ready \(ready.frame)"
+        XCTAssertGreaterThanOrEqual(drawn, DuoWideColumn.minWidth - 1, "column below the minimum: \(frames)")
+        XCTAssertLessThanOrEqual(drawn, DuoWideColumn.maxWidth + 1, "column above the cap: \(frames)")
+        XCTAssertLessThanOrEqual(drawn, col.width + 1, "drawn column wider than its container: \(frames)")
+        XCTAssertEqual(col.midX, box.midX, accuracy: 2, "column centred in the container")
+        XCTAssertEqual(col.midX, windowFrame.midX, accuracy: 2, "column centred in the window")
+        let midX = col.midX
+        XCTAssertEqual((edges.minX + edges.maxX) / 2, midX, accuracy: 2, "toolbar centred: \(frames)")
+        XCTAssertEqual(scrubber.frame.minX, edges.minX, accuracy: 2, "scrubber on the column's leading edge: \(frames)")
+        XCTAssertEqual(scrubber.frame.maxX, edges.maxX, accuracy: 2, "scrubber on the column's trailing edge: \(frames)")
+        XCTAssertEqual(play.frame.midX, midX, accuracy: 2, "Play/Pause on the column centre: \(frames)")
+        XCTAssertEqual(ready.frame.midX, midX, accuracy: 2, "DJ line centred: \(frames)")
+        XCTAssertEqual(scrubber.frame.midX, midX, accuracy: 2, "scrubber centred: \(frames)")
+        XCTAssertEqual(more.frame.maxX, edges.maxX, accuracy: 2, "⋯ on the column edge: \(frames)")
+        XCTAssertLessThanOrEqual(scrubber.frame.minY - ready.frame.maxY, 48, "no gap under the DJ line: \(frames)")
+        // Re-check nothing moved while the assertions ran, then capture.
+        XCTAssertEqual(column.frame.midX, col.midX, accuracy: 0.5, "column moved before the screenshot")
+        XCTAssertEqual(container.frame.width, box.width, accuracy: 0.5, "container resized before the screenshot")
+        save(app, "duo-wide-ready")
+    }
+
+    /// `FoldedColumnLayout` in a 640 pt container (the UI tests don't link AeroDJCore):
+    /// 360…min(640 − 2 × 32, 560). `accessibilitySlack`: the column's `.contain` frame can be
+    /// up to 8 pt wider each side than the drawn column (run 40919120200: 376 for 360).
+    private enum DuoWideColumn {
+        static let minWidth: CGFloat = 360
+        static let maxWidth: CGFloat = 560
+        static let accessibilitySlack: CGFloat = 2 * 8 + 1
+    }
+
+    /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and
+    /// accepted by `isFinal`; nil after `timeout`. Polls on the run loop, never a fixed sleep
+    /// before a screenshot.
+    @MainActor
+    private func settledFrame(of element: XCUIElement, _ name: String, timeout: TimeInterval = 10,
+                              poll: TimeInterval = 0.25,
+                              isFinal: (CGRect) -> Bool = { _ in true }) -> CGRect? {
+        func same(_ a: CGRect, _ b: CGRect) -> Bool {
+            abs(a.minX - b.minX) <= 0.5 && abs(a.minY - b.minY) <= 0.5
+                && abs(a.width - b.width) <= 0.5 && abs(a.height - b.height) <= 0.5
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        var last: CGRect?
+        while Date() < deadline {
+            let frame = element.exists ? element.frame : .null
+            if !frame.isNull, !frame.isEmpty, isFinal(frame), let last, same(last, frame) {
+                return frame
+            }
+            last = (frame.isNull || frame.isEmpty || !isFinal(frame)) ? nil : frame
+            RunLoop.current.run(until: Date().addingTimeInterval(poll))
+        }
+        XCTFail("\(name) frame did not settle within \(timeout) s (last \(element.frame))")
+        return nil
+    }
+
     /// Open (Studio): `.ready` must not print the break headline or its VoiceOver detail.
     /// Folded: a quiet, static "DJ break after this song" line shows instead (Fry, #161).
     @MainActor
@@ -476,6 +600,62 @@ final class StudioScreenTests: XCTestCase {
                           "Compact shows the restored detail\n\(app.debugDescription)")
         }
         XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
+    }
+
+    // MARK: Width-class change keeps the restored station (Fry, #280 review)
+
+    /// Whether the station split in `app` is in regular width: the sidebar is the station list.
+    /// Compact width draws the carousel instead (`StationSplitRoot.stationPicker`).
+    @MainActor
+    private func splitIsRegular(_ app: XCUIApplication) -> Bool {
+        let row = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "stations.row.")).firstMatch
+        return row.waitForExistence(timeout: 5) && !app.descendants(matching: .any)["stations.carousel"].exists
+    }
+
+    @MainActor
+    private func assertRestoredStationVisible(_ app: XCUIApplication, _ name: String, _ message: String,
+                                              file: StaticString = #filePath, line: UInt = #line) {
+        let title = app.descendants(matching: .any)["station.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "\(message): station detail missing\n\(visibleIdentifiers(app))",
+                      file: file, line: line)
+        XCTAssertTrue(title.label.contains(name), "\(message): wrong station \(title.label)", file: file, line: line)
+        XCTAssertTrue(title.isHittable, "\(message): station detail is not on screen\n\(visibleIdentifiers(app))",
+                      file: file, line: line)
+        XCTAssertFalse(app.descendants(matching: .any)["split.placeholder"].exists, message, file: file, line: line)
+        XCTAssertEqual(callLabel(app), "0/0", "\(message): a width change must not search or play", file: file, line: line)
+    }
+
+    /// (b) A Max-class phone in landscape is regular width. Restore there, rotate to portrait
+    /// (compact): the station stays open instead of the carousel. Skips where landscape is
+    /// still compact (smaller phones) and on iPad, where rotation keeps the width class.
+    @MainActor
+    func testRestoreInRegularLandscapeThenPortraitKeepsStation() throws {
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom == .pad, "iPad rotation does not change the width class")
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let app = startApp(scenario: "shell", restoreStationID: morningCalm, orientation: .landscapeLeft)
+        try XCTSkipUnless(splitIsRegular(app), "Landscape is compact on this phone; needs a Plus/Max-class simulator")
+        assertRestoredStationVisible(app, "Morning Calm", "regular landscape restore")
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 10),
+                      "Portrait is the compact player\n\(visibleIdentifiers(app))")
+        assertRestoredStationVisible(app, "Morning Calm", "rotating to portrait")
+    }
+
+    /// (c) The reverse: restore in portrait (compact), rotate to regular landscape, and back.
+    @MainActor
+    func testRestoreInPortraitThenRegularLandscapeKeepsStation() throws {
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom == .pad, "iPad rotation does not change the width class")
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let app = startApp(scenario: "shell", restoreStationID: morningCalm)
+        assertRestoredStationVisible(app, "Morning Calm", "compact portrait restore")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        try XCTSkipUnless(splitIsRegular(app), "Landscape is compact on this phone; needs a Plus/Max-class simulator")
+        assertRestoredStationVisible(app, "Morning Calm", "rotating to regular landscape")
+        XCUIDevice.shared.orientation = .portrait
+        assertRestoredStationVisible(app, "Morning Calm", "rotating back to portrait")
     }
 
     /// Widening from compact to regular keeps the search text and the studio identity, and counts no calls.

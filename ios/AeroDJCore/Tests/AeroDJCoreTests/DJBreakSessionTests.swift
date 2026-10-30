@@ -108,7 +108,8 @@ final class DJBreakSessionTests: XCTestCase {
         let prepared = try XCTUnwrap(handed)
         XCTAssertNil(r.session.lastNoBreak, "a handed-out break leaves no skip reason")
         XCTAssertFalse(prepared.clips.isEmpty)
-        XCTAssertLessThanOrEqual(prepared.measuredSeconds, 12, "routine cap")
+        // Radio-style (Echo): routine cap is 15 s main + 4 s talk-over closing line (was 12).
+        XCTAssertLessThanOrEqual(prepared.measuredSeconds, 15 + 4, "routine cap")
         XCTAssertTrue(prepared.clips.allSatisfy { $0.audio.providerID == "device" }, "$0 on-device voice")
         r.session.playbackStarted(afterTrack: 0)
         XCTAssertTrue(r.dj.studioState.isOnAir, "On Air only after the player confirms audio")
@@ -119,6 +120,107 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertNil(nothing, "no break planned: music continues at once")
         XCTAssertEqual(r.session.lastNoBreak?.reason, .notPlanned)
         XCTAssertEqual(r.session.lastNoBreak?.cadencePlanned, false, "the cadence chose silence here")
+    }
+
+    /// DJ talk-over (-Fry): the peek never takes the break, and a dropped talk-over leaves the
+    /// Studio idle (not a voice failure) and clears On Air.
+    func testTalkoverPeekLeavesTheBreakAndADropGoesIdle() async throws {
+        let r = await rig()
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready before the boundary")
+        let ready = await r.session.breakIsReady(afterTrack: 0)
+        XCTAssertTrue(ready)
+        let again = await r.session.breakIsReady(afterTrack: 0)
+        XCTAssertTrue(again, "peeking does not take it")
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        let taken = try XCTUnwrap(handed)
+        XCTAssertFalse(taken.clips.isEmpty)
+        let afterTake = await r.session.breakIsReady(afterTrack: 0)
+        XCTAssertFalse(afterTake)
+        r.session.talkoverDropped(afterTrack: 0)
+        XCTAssertEqual(r.dj.studioState, .idle)
+        XCTAssertFalse(r.dj.studioState.isOnAir)
+        let none = await r.session.breakIsReady(afterTrack: 1)
+        XCTAssertFalse(none, "nothing planned there")
+    }
+
+    /// Sentinel (#210): the talk-over takes boundary k early, while song k still plays. A
+    /// duplicate `songStarted(k)` after that take must not prepare (render, spend) a second
+    /// break: exactly one prepare for the boundary.
+    func testDuplicateSongStartAfterEarlyTakeNeverPreparesASecondBreak() async throws {
+        final class PrepareSpy: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _count = 0
+            var count: Int { lock.withLock { _count } }
+            func hit() { lock.withLock { _count += 1 } }
+        }
+        let spy = PrepareSpy()
+        let r = await rig()
+        await r.preparer.observe { event in
+            if case .preparing(afterTrack: 0, _) = event { spy.hit() }
+        }
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready before the boundary")
+        let early = await r.session.naturalBoundary(afterTrack: 0)   // the talk-over's early take
+        XCTAssertNotNil(early)
+        await r.session.songStarted(index: 0, remaining: .seconds(8)) // duplicate start report
+        await r.session.songStarted(index: 0, remaining: .seconds(60))
+        await r.session.songSeeked(index: 0, remaining: .seconds(120)) // and no seek re-arm either
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(spy.count, 1, "one prepare for boundary 0, never a second render")
+        let taken = await r.preparer.testTaken(afterTrack: 0)
+        XCTAssertTrue(taken)
+        let ready = await r.session.breakIsReady(afterTrack: 0)
+        XCTAssertFalse(ready)
+        // A new queue starts over: boundary 0 of that queue prepares again.
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ spy.count == 2 }, "the new queue's boundary 0 prepares")
+    }
+
+    /// Sentinel #210: a station change (`cancelAll(except:)`) clears stale taken marks like a new
+    /// queue does, keeps the mark on the kept (playing) boundary, and a new station's boundary k
+    /// prepares exactly once, even with a duplicate song start after its take.
+    func testStationChangeAfterATakeClearsStaleMarksAndTheNewStationPreparesOnce() async throws {
+        final class PrepareSpy: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _count = 0
+            var count: Int { lock.withLock { _count } }
+            func hit() { lock.withLock { _count += 1 } }
+        }
+        let spy = PrepareSpy()
+        let r = await rig()
+        await r.preparer.observe { event in
+            if case .preparing(afterTrack: 0, _) = event { spy.hit() }
+        }
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready before the boundary")
+        let early = await r.session.naturalBoundary(afterTrack: 0)   // the talk-over's early take
+        XCTAssertNotNil(early)
+        // A change that keeps the playing song's plain break: its taken mark stays.
+        await r.preparer.cancelAll(except: [0])
+        let keptMark = await r.preparer.testTaken(afterTrack: 0)
+        XCTAssertTrue(keptMark, "the kept boundary stays taken")
+        await r.session.songStarted(index: 0, remaining: .seconds(8)) // duplicate start report
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(spy.count, 1, "still one prepare for the taken boundary")
+        // A change that keeps another boundary: the stale mark on 0 is cleared.
+        await r.preparer.cancelAll(except: [3])
+        let staleMark = await r.preparer.testTaken(afterTrack: 0)
+        XCTAssertFalse(staleMark, "a stale mark does not survive a station change")
+        // The new station: its boundary 0 prepares exactly once.
+        await r.session.queueStarted(djTracks(8))
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await until({ spy.count == 2 }, "the new station's boundary 0 prepares")
+        await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready in the new station")
+        let again = await r.session.naturalBoundary(afterTrack: 0)
+        XCTAssertNotNil(again, "the new station's boundary 0 is not suppressed")
+        await r.session.songStarted(index: 0, remaining: .seconds(8))
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(spy.count, 2, "exactly once in the new station")
     }
 
     func testLateOrCutBreaksAreSkippedAndNeverWait() async {
@@ -192,6 +294,30 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertNotNil(played, "the break prepared for the playing song is untouched")
         XCTAssertEqual(r.station.active.commentary, .rare, "applied at the song boundary")
         XCTAssertEqual(r.station.active.cadence().talkFraction, 0.15)
+    }
+
+    /// OnAirly rename (-Nova): breaks written by `replan` (the queue plan and a mid-queue
+    /// re-plan after a cadence change) name the app as OnAirly in station IDs, attributed as
+    /// fixed presenter phrasing, and never say AeroDJ.
+    func testReplannedStationIDsSayOnAirly() async {
+        let r = await rig()
+        await r.session.queueStarted(djTracks(90))
+        let first = r.session.testPlannedBreaks
+        XCTAssertFalse(first.isEmpty)
+
+        await r.station.setCommentary(.chatty)          // cadence change: re-plans after the playing song
+        await r.station.saveChanges()
+        await r.session.songStarted(index: 3, remaining: .seconds(180))
+        let replanned = r.session.testPlannedBreaks.filter { $0.key > 3 }
+        XCTAssertNotEqual(replanned.keys.sorted(), first.keys.filter { $0 > 3 }.sorted(), "the suffix was re-planned")
+
+        for (label, plan) in [("queue plan", first), ("re-plan", replanned)] {
+            let cues = plan.values.flatMap { b in b.cues.map { ($0, b.attributions[$0.id]) } }
+            XCTAssertFalse(cues.contains { $0.0.text.contains("AeroDJ") }, "\(label) never says AeroDJ")
+            let ids = cues.filter { $0.0.text.contains("OnAirly") }
+            XCTAssertFalse(ids.isEmpty, "\(label) has an OnAirly station ID")
+            XCTAssertTrue(ids.allSatisfy { $0.1 == .presenter }, "\(label): the brand is presenter phrasing")
+        }
     }
 
     func testTurningCommentaryOffDropsPreparedSpeechImmediately() async {

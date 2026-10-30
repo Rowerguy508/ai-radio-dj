@@ -29,7 +29,7 @@ private struct DeviceVoice: VoiceProvider {
 }
 
 final class LibrarySeedVoiceGateTests: XCTestCase {
-    private let jade = "g7LVvkPWALzPxOQbF6OE"
+    private let juniper = "aMSt68OGf4xUZAnLpTU8"
     private let pinned: Set<String> = ["aerodj-tts.vercel.app"]
     private let creds = PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!,
                                                 token: "owner-test-token")
@@ -44,7 +44,7 @@ final class LibrarySeedVoiceGateTests: XCTestCase {
     }
 
     private func composed(onDevice: [VoiceRoute], transport: RecordingTransport) -> VoiceRenderer {
-        let c = PremiumVoiceRoutes.compose(onDevice: onDevice, paidProvidersEnabled: true, selectedVoiceID: jade,
+        let c = PremiumVoiceRoutes.compose(onDevice: onDevice, paidProvidersEnabled: true, selectedVoiceID: juniper,
                                            credentials: creds, pinnedHosts: pinned, transport: transport)
         return renderer(c.routes)
     }

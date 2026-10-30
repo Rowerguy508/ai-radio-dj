@@ -52,7 +52,7 @@ An edit never restarts or changes the song that is playing. See `station-configu
 
 ### Honest copy
 
-- **Personality:** `DJPersonality.honestDescription`. A preset currently changes **only the maximum length of a plain DJ break**: 12 s, or 6 s for `minimal`. It doesn't change the voice or the words, so the UI must not describe presets as different voices or styles.
+- **Personality:** `DJPersonality.honestDescription`. A preset currently changes **only the maximum length of a plain DJ break**: 15 s for the main segment (plus a separate 4 s closing line), or 6 s for `minimal`. It doesn't change the voice or the words, so the UI must not describe presets as different voices or styles.
 - **Talk:** `CommentaryFrequency.honestDescription`. The percentage is the share actually delivered (`DJCadence.expectedTalkShare`). The spacing rule caps it at 33%, so `frequent` (0.45) shows "about 33%". The beta default is `occasional` (30%).
 
 ### Station recipes
@@ -217,7 +217,7 @@ Live playback talks to **one** object, `DJBreakSession` (`DJ/DJBreakSession.swif
 | Stop | `await session.stop()` | Everything prepared is dropped. |
 
 **Caps:**
-- A routine break is at most 12 s (6 s for `minimal`). A briefing break is at most 45 s.
+- A routine break's main segment is at most 15 s (6 s for `minimal`), and its closing line at most 4 s. A briefing break is at most 45 s.
 - Measured audio over the cap is skipped (`overBreakBudget`). So are late renders (`timedOut` / `notReadyAtBoundary`) and failed or undecodable audio (the player calls `playbackFailed`).
 - Music never waits for speech.
 

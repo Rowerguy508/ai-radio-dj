@@ -23,6 +23,8 @@ import OSLog
 @MainActor
 final class StationQueuePlayer {
     let feed: StationQueueFeed<Track>
+    /// Created-station row taps (core, tested on Linux): idle with nothing queued starts the station.
+    private let createdStart: CreatedStationStarter<Track>
     private let music: MusicKitService
     private let station: StationConfigurationModel
     private let djSession: DJBreakSession
@@ -46,6 +48,7 @@ final class StationQueuePlayer {
                 return Set(queue.prefix(current + 1).map(\.id))
             },
             log: { event in log.notice("\(event.diagnostics, privacy: .public)") })
+        createdStart = CreatedStationStarter(feed: feed)
     }
 
     /// Installs the three hooks and starts following the station. Call once, at launch.
@@ -70,12 +73,50 @@ final class StationQueuePlayer {
         feed.follow(station)
     }
 
+    /// A created-station row was opened (Orion, #213). User tap: authorize, apply the recipe, and when
+    /// the player is idle with nothing queued start the station on the idle-Play path, waiting a
+    /// bounded time for its queue; while something plays it switches at the song boundary.
+    /// Restore: nothing. Logs the outcome as an enum only and returns it (the list's start toast).
+    @discardableResult
+    func openCreatedStation(_ trigger: StationOpenTrigger, recipeID: UUID,
+                            studio: StudioPresentationModel) async -> CreatedStationOpenOutcome {
+        let outcome = await createdStart.open(
+            trigger,
+            recipeID: recipeID,
+            liveRecipeID: { studio.lastAppliedRecipeID },
+            authorize: { await music.authorize() },
+            apply: { if case .success = await studio.applyRecipe(recipeID) { true } else { false } },
+            active: { station.active },
+            nothingQueued: { music.queue.isEmpty && !music.isPlaying },
+            start: { tracks in _ = await play(tracks) })
+        Logger(subsystem: "com.aerodj.app", category: "stationQueue")
+            .notice("createdStationOpen \(String(describing: outcome), privacy: .public)")
+        return outcome
+    }
+
+    /// A built-in station row was tapped (Fry #213 nit 2): a created-station tap still waiting for
+    /// its queue does not start.
+    func cancelCreatedStationStart() {
+        createdStart.cancelPending()
+    }
+
     /// Same order as a song tap (#116): the DJ session reserves the new queue before play, so a
     /// song start reported during play belongs to it. `play` raises its own snapshot error.
-    private func play(_ tracks: [Track]) async {
-        let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName) }
+    /// #204 (-Atlas): the start's outcome is no longer discarded. The feed puts a failed hand-off
+    /// back (the playing queue keeps its station, the songs are staged again for a retry), and the
+    /// caller gets the typed result: a failed boundary hand-off falls back to the old queue's next
+    /// song. A held start (`.onHold`: the queue is loaded and waits for the hold) counts as started.
+    private func play(_ tracks: [Track]) async -> StationHandOffResult {
+        let result = await start(tracks)
+        feed.handOffFinished(result)
+        return result
+    }
+
+    private func start(_ tracks: [Track]) async -> StationHandOffResult {
+        let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName, origin: $0.origin) }
         let stationRef = music.snapshot.station
-        _ = try? await TapPlaySequence.run(
+        do {
+            try await TapPlaySequence.run(
             reserve: { djSession.reserveQueueSetup() },
             play: {
                 ownQueueStarting = true
@@ -86,5 +127,13 @@ final class StationQueuePlayer {
                 djSession.beginQueueInBackground(reservation, djTracks)
             },
             release: { djSession.releaseQueueSetup($0) })
+            return .started
+        } catch MusicKitError.superseded {
+            return .superseded
+        } catch let MusicKitError.playbackFailed(message) where message == PlaybackFailureCopy.message(for: .onHold) {
+            return .started
+        } catch {
+            return .failed
+        }
     }
 }

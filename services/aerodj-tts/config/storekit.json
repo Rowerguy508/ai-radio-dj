@@ -1,0 +1,7 @@
+{
+  "bundleId": "com.aerodj.app",
+  "proProductIds": ["com.aerodj.app.pro.monthly", "com.aerodj.app.pro.yearly"],
+  "installsPerPurchase": 5,
+  "allowSandboxInProduction": false,
+  "honorGracePeriod": false
+}

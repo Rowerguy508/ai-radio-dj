@@ -117,7 +117,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         let djBreak = DJBreak(afterTrack: 0, cues: [lead, cue, intro],
                               attributions: [lead.id: .presenter,
                                              cue.id: .personalContext(itemID: item, source: .calendar, provenance: "test:item"),
-                                             intro.id: .trackMetadata(trackIDs: ["t2"])])
+                                             intro.id: .trackMetadata(trackIDs: ["t2"], origin: .catalog)])
         await preparer.prepare(djBreak, deadline: .seconds(10), onDeviceOnly: false)
         let result = await outcome(preparer, afterTrack: 0)
         XCTAssertFalse(spy.received.contains { $0.contains("dentist") }, "personal cue text reached an off-device route")
@@ -150,7 +150,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
     func testGenericMetadataAndPresenterCuesMayUseTheOffDeviceRoute() async {
         let spy = OffDeviceSpy()
         let r = renderer([cloudRoute(spy), deviceRoute()])
-        let meta = await r.render(transitionCue(), userID: "u", stationID: "s", attribution: .trackMetadata(trackIDs: ["t1"]))
+        let meta = await r.render(transitionCue(), userID: "u", stationID: "s", attribution: .trackMetadata(trackIDs: ["t1"], origin: .catalog))
         XCTAssertEqual(try? meta.get().audio.providerID, "cloud")
         let presenter = await r.render(transitionCue("Good afternoon."), userID: "u", stationID: "s", attribution: .presenter)
         XCTAssertEqual(try? presenter.get().audio.providerID, "cloud")
@@ -216,7 +216,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         XCTAssertTrue(spy.received.isEmpty)
 
         // Control: an eligible generic line may still use the paid route.
-        let generic = await r.render(transitionCue(), userID: "u", stationID: "s", attribution: .trackMetadata(trackIDs: ["t1"]))
+        let generic = await r.render(transitionCue(), userID: "u", stationID: "s", attribution: .trackMetadata(trackIDs: ["t1"], origin: .catalog))
         XCTAssertEqual(try? generic.get().audio.providerID, "paid")
     }
 

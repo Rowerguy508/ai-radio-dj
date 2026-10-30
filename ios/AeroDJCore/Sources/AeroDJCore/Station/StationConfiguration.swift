@@ -121,7 +121,8 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
             minSongsBetweenBreaks: everySong ? 0 : base.minSongsBetweenBreaks,
             maxTransitionSeconds: min(base.maxTransitionSeconds, personality.maxTransitionSeconds),
             maxBriefingBreakSeconds: base.maxBriefingBreakSeconds,
-            allowsBackToBack: everySong
+            allowsBackToBack: everySong,
+            maxClosingSeconds: base.maxClosingSeconds
         )
     }
 
@@ -187,10 +188,11 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
 public enum DJPersonality: String, Codable, Sendable, CaseIterable {
     case warm, upbeat, laidBack, minimal
 
-    /// Upper bound for a plain (non-briefing) transition. `minimal` keeps it short.
+    /// Upper bound for a plain break's main segment (the talk-over closing line has its own
+    /// `DJCadence.maxClosingSeconds`). `minimal` keeps it short.
     public var maxTransitionSeconds: Int {
         switch self {
-        case .warm, .upbeat, .laidBack: 12
+        case .warm, .upbeat, .laidBack: 15
         case .minimal: 6
         }
     }
