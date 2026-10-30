@@ -60,14 +60,35 @@ public enum CacheBackupExclusionLog {
     }
 }
 
+/// Whether this cache may write to disk. Shared by every copy of a `FileAudioCache` value, so
+/// a failure seen by one copy closes the folder for all of them for the rest of the session.
+final class CacheDiskGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _closed = false
+    var isClosed: Bool { lock.withLock { _closed } }
+    func close() { lock.withLock { _closed = true } }
+}
+
 extension FileAudioCache {
-    /// Marks the cache folder excluded from backup. Never throws: a failure is logged (content-free)
-    /// and the cache keeps working, so playback is never affected.
-    func applyBackupExclusion(_ moment: CacheBackupExclusionLog.Moment) {
+    /// Marks the cache folder excluded from backup and reads the flag back. Returns false (after a
+    /// content-free log line) when the mark throws or the read-back reports the folder is not
+    /// excluded. A nil read-back (Linux, no such resource value) counts as excluded.
+    ///
+    /// Fail closed: on false the caller closes the disk for this session, so no clip is written
+    /// to a folder that may be backed up. Playback keeps working from memory, and the next open
+    /// tries the mark again.
+    @discardableResult
+    func applyBackupExclusion(_ moment: CacheBackupExclusionLog.Moment) -> Bool {
         do {
             try backupExclusion.markExcluded(directory)
         } catch {
             backupExclusionLog(CacheBackupExclusionLog.message(moment))
+            return false
         }
+        if backupExclusion.isExcluded(directory) == false {
+            backupExclusionLog(CacheBackupExclusionLog.message(moment))
+            return false
+        }
+        return true
     }
 }

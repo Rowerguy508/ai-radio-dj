@@ -332,10 +332,16 @@ public struct FileAudioCache: AudioCache {
     let backupExclusion: any BackupExclusionMarking
     /// Sink for the content-free line logged when setting that flag fails.
     let backupExclusionLog: @Sendable (String) -> Void
+    /// Closed when the folder cannot be marked excluded: nothing more is written to disk this session.
+    let diskGate = CacheDiskGate()
+    /// Serves clips stored while the disk is closed, so playback is unaffected (session only).
+    let memoryFallback: InMemoryAudioCache
 
     /// `maxAge` is clamped to `AudioCacheRetention.maximum` (7 days).
     /// Opening a cache whose folder already exists re-applies the excluded-from-backup flag,
     /// since a restore can drop it; `store` applies it whenever it (re)creates the folder.
+    /// Fail closed: if the flag cannot be set (or reads back unset) on open, every personal clip
+    /// in the folder is deleted, and on any failure nothing more is written to disk this session.
     public init(directory: URL, maxAge: TimeInterval = AudioCacheRetention.maximum,
                 now: @escaping @Sendable () -> Date = { Date() },
                 backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
@@ -345,7 +351,11 @@ public struct FileAudioCache: AudioCache {
         self.now = now
         self.backupExclusion = backupExclusion
         self.backupExclusionLog = backupExclusionLog
-        if FileManager.default.fileExists(atPath: directory.path) { applyBackupExclusion(.open) }
+        self.memoryFallback = InMemoryAudioCache(maxAge: maxAge, now: now)
+        if FileManager.default.fileExists(atPath: directory.path), !applyBackupExclusion(.open) {
+            diskGate.close()
+            removePersonalGroups()
+        }
     }
 
     private func url(_ key: String) -> URL { directory.appendingPathComponent("\(key).json") }
@@ -355,6 +365,7 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func audio(for key: String) async -> CachedAudio? {
+        if let held = await memoryFallback.audio(for: key) { return held }
         guard let clip = read(url(key)).map({ clampingFutureStamp($0, key: key) }) else { return nil }
         guard now().timeIntervalSince(clip.createdAt) <= maxAge else {
             remove(group: key)
@@ -386,7 +397,7 @@ public struct FileAudioCache: AudioCache {
         guard clip.createdAt > t else { return clip }
         var clamped = clip
         clamped.createdAt = t
-        if let data = try? JSONEncoder().encode(clamped) { try? ProtectedFile.write(data, to: url(key)) }
+        if !diskGate.isClosed, let data = try? JSONEncoder().encode(clamped) { try? ProtectedFile.write(data, to: url(key)) }
         return clamped
     }
 
@@ -404,10 +415,12 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func purge(sourceItemIDs: Set<UUID>) async {
+        await memoryFallback.purge(sourceItemIDs: sourceItemIDs)
         removeGroups { clip in clip.map { !sourceItemIDs.isDisjoint(with: $0.sourceItemIDs) } ?? true }
     }
 
     public func purgeExpired() async {
+        await memoryFallback.purgeExpired()
         let t = now()
         for group in groups() {
             let clip = group.clip.map { clampingFutureStamp($0, key: group.key) }
@@ -417,16 +430,28 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func purgeAllPersonal() async {
+        await memoryFallback.purgeAllPersonal()
+        removePersonalGroups()
+    }
+
+    /// Personal and unattributable files (the same rule as `purgeAllPersonal`), synchronously.
+    private func removePersonalGroups() {
         removeGroups { clip in clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
     }
 
+    /// Fail closed: if the folder could not be marked excluded from backup (on open, or now when
+    /// creating it), the clip is held in memory for this session and nothing is written to disk.
     public func store(_ audio: CachedAudio, for key: String) async {
+        guard !diskGate.isClosed else { return await memoryFallback.store(audio, for: key) }
         var stamped = audio; stamped.createdAt = now()
         guard let data = try? JSONEncoder().encode(stamped) else { return }
         if !FileManager.default.fileExists(atPath: directory.path) {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             // Created or re-created (after a delete): the new folder has no flag yet.
-            applyBackupExclusion(.create)
+            guard applyBackupExclusion(.create) else {
+                diskGate.close()
+                return await memoryFallback.store(audio, for: key)
+            }
         }
         try? ProtectedFile.write(data, to: url(key))
     }
