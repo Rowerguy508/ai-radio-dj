@@ -46,7 +46,7 @@ If you turn it on, the words of each DJ break are sent over an encrypted connect
 - **Hosting logs:** Vercel keeps standard request logs, which include IP address and app identifier. These logs are kept for up to 30 days. [owner: say whether IP address is used for rate limiting.]
 - **Usage counters:** daily usage counts, with no text, reset every day. No DJ text is stored on our server.
 - **ElevenLabs:** ElevenLabs processes the text and audio under its [privacy policy](https://elevenlabs.io/privacy-policy). By default, ElevenLabs keeps a history of requests. [owner: retention, Zero Retention Mode, and whether model training is opted out. Include "We have opted out of ElevenLabs using this data to train its models" only if that is true.]
-- **Device check:** when it's enabled, our server keeps a key for your install, which it uses to confirm requests come from a genuine copy of OnAirly and to stop abuse. The key is deleted after 90 days without use and is never stored with the spoken text. [PENDING: #256 and enabling App Attest]
+- **Device check:** when it's enabled, our server keeps a key for your install, which it uses to confirm requests come from a genuine copy of OnAirly and to stop abuse. The key is deleted after 90 days without use and is never stored with the spoken text. To limit sign-ups from one network, the server also keeps a one-way code made from your IP address and the date. That code can't be turned back into your IP address, is never stored with your key or the spoken text, and expires within 2 days. [PENDING: #256 and enabling App Attest]
 - **Turning it off:** you can turn the cloud voice off at any time in Settings. Nothing more is sent after that, and any queued cloud clips are cancelled.
 
 ## Purchases [PENDING: paid voice]
@@ -60,7 +60,7 @@ Payments are handled by Apple through the App Store; we never see your payment d
 
 ## Children
 
-OnAirly is rated 12+. The cloud voice is for listeners 18 and older, because ElevenLabs' services aren't directed at people under 18. OnAirly asks you to confirm your age before turning it on, and if you're under 18 every voice stays on your device. [PENDING: paid voice and the age gate]
+OnAirly is rated 13+. The cloud voice is for listeners 18 and older, because ElevenLabs' services aren't directed at people under 18. OnAirly asks you to confirm your age before turning it on, and if you're under 18 every voice stays on your device. [PENDING: paid voice and the age gate]
 
 ## Your choices
 
