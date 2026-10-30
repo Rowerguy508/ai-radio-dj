@@ -66,7 +66,7 @@ final class SubscriptionModel: ProEntitlementProviding {
     func start() {
         guard listener == nil else { return }
         listener = Task { [weak self] in
-            for await update in Transaction.updates {
+            for await update in StoreKit.Transaction.updates {
                 // Finish only verified transactions; an unverified one grants nothing.
                 if case .verified(let transaction) = update { await transaction.finish() }
                 await self?.refreshStatus()
@@ -92,7 +92,7 @@ final class SubscriptionModel: ProEntitlementProviding {
         var transactions: [ProTransactionSnapshot] = []
         var willAutoRenew: Bool?
         for id in ProSubscriptionConfig.productIDs.sorted() {
-            guard let result = await Transaction.latest(for: id) else { continue }
+            guard let result = await StoreKit.Transaction.latest(for: id) else { continue }
             if let snapshot = Self.snapshot(result) { transactions.append(snapshot) }
             if case .verified(let transaction) = result, transaction.revocationDate == nil,
                let status = await transaction.subscriptionStatus,
@@ -102,7 +102,7 @@ final class SubscriptionModel: ProEntitlementProviding {
         }
         // Plus the current entitlements (active, verified-or-not, possibly family-shared), so an
         // active Pro is never missed. The mapper filters and fails closed either way.
-        for await result in Transaction.currentEntitlements {
+        for await result in StoreKit.Transaction.currentEntitlements {
             if case .verified(let t) = result, !ProSubscriptionConfig.productIDs.contains(t.productID) { continue }
             if let snapshot = Self.snapshot(result) { transactions.append(snapshot) }
         }
@@ -114,8 +114,8 @@ final class SubscriptionModel: ProEntitlementProviding {
 
     /// #244's snapshot, with #244's `ProOwnership`. An ownership type this build doesn't know is
     /// skipped (fail closed: never counted as Pro); family-shared is dropped by the mapper.
-    static func snapshot(_ result: VerificationResult<Transaction>) -> ProTransactionSnapshot? {
-        let (t, verified): (Transaction, Bool) = switch result {
+    static func snapshot(_ result: VerificationResult<StoreKit.Transaction>) -> ProTransactionSnapshot? {
+        let (t, verified): (StoreKit.Transaction, Bool) = switch result {
         case .verified(let t): (t, true)
         case .unverified(let t, _): (t, false)
         }
@@ -134,8 +134,8 @@ final class SubscriptionModel: ProEntitlementProviding {
         guard products.isEmpty else { return }
         prices = .loading
         do {
-            let loaded = try await Product.products(for: SubscriptionPeriod.paywallOrder)
-            products = SubscriptionPeriod.paywallOrder.compactMap { id in loaded.first { $0.id == id } }
+            let loaded = try await Product.products(for: AeroDJCore.SubscriptionPeriod.paywallOrder)
+            products = AeroDJCore.SubscriptionPeriod.paywallOrder.compactMap { id in loaded.first { $0.id == id } }
             for product in products {
                 introEligible[product.id] = await product.subscription?.isEligibleForIntroOffer ?? false
             }
@@ -198,11 +198,11 @@ final class SubscriptionModel: ProEntitlementProviding {
         }
     }
 
-    func plan(for product: Product) -> SubscriptionPeriod? { SubscriptionPeriod(productID: product.id) }
+    func plan(for product: Product) -> AeroDJCore.SubscriptionPeriod? { AeroDJCore.SubscriptionPeriod(productID: product.id) }
 
     /// "7 days free, then <displayPrice>/month" from the product's own intro offer, or nil when it
     /// has no free trial or the user isn't eligible (then only the plain price shows). -Nova
-    func trialLine(for product: Product, period: SubscriptionPeriod) -> String? {
+    func trialLine(for product: Product, period: AeroDJCore.SubscriptionPeriod) -> String? {
         let offer = product.subscription?.introductoryOffer.flatMap { intro -> PaywallIntroOffer? in
             let unit: PaywallIntroOffer.Unit
             switch intro.period.unit {
