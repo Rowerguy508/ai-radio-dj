@@ -363,7 +363,8 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
         }
         let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 })
         await session.start()
-        await session.queueStarted(djTracks(8))
+        // Catalog tracks: every line may use the paid voice, so the break is all paid (one voice per break, #267).
+        await session.queueStarted(djTracks(8, origin: .catalog))
         let (tracker, timers) = expiryTracker(clock) { await session.paidVoiceAccessChanged() }
         await tracker.entitlementRead(cache.snapshot(), now: clock.now)   // SubscriptionModel's read after set
 
@@ -474,7 +475,8 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
         let preparer = DJBreakPreparer(voice: voice, userID: "u", stationID: "s", cadence: config.cadence())
         let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 })
         await session.start()
-        await session.queueStarted(djTracks(8))
+        // Catalog tracks: every line may use the paid voice, so the break is all paid (one voice per break, #267).
+        await session.queueStarted(djTracks(8, origin: .catalog))
         let boundaries = session.plannedBoundaries
         guard boundaries.count >= 2 else { return XCTFail("two breaks planned") }
         for k in boundaries.prefix(2) {

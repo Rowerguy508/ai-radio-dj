@@ -107,6 +107,8 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
     }
 
     // 1b. In a mixed break, presenter/metadata lines may go off-device; the personal line may not.
+    // One voice per break (#267): the personal line is on-device, so the whole break is then
+    // re-rendered on-device and plays in that voice.
     func testMixedBreakSendsOnlyTheNonPersonalLinesOffDevice() async {
         let spy = OffDeviceSpy()
         let preparer = DJBreakPreparer(renderer: renderer([cloudRoute(spy), deviceRoute()]), userID: "u", stationID: "s")
@@ -123,7 +125,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         XCTAssertFalse(spy.received.contains { $0.contains("dentist") }, "personal cue text reached an off-device route")
         XCTAssertEqual(spy.received.count, 2)
         guard case .ready(let prepared) = result else { return XCTFail("\(result)") }
-        XCTAssertEqual(prepared.clips.map(\.audio.providerID), ["cloud", "device", "cloud"])
+        XCTAssertEqual(prepared.clips.map(\.audio.providerID), ["device", "device", "device"])
     }
 
     // 2. Missing attribution: local only, on the direct path, the handoff path and the break path.

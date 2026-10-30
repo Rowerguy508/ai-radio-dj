@@ -215,4 +215,66 @@ final class CloudClipMidRenderPurgeTests: XCTestCase {
         let none = await a.audio(for: "k")
         XCTAssertNil(none)
     }
+
+    /// Fry's nit on #258: the file cache checks the generation and consent under the directory's
+    /// lock. A purge started (through another cache on the directory) while `stillAllowed()` runs
+    /// cannot finish until the write is done; it then bumps the generation.
+    func testFileCacheChecksTheGenerationAndConsentUnderTheLock() async {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("midrender-\(UUID().uuidString)")
+        dirs.append(dir)
+        let a = FileAudioCache(directory: dir), b = FileAudioCache(directory: dir)
+        let flags = LockFlags()
+        let expected = await a.consentGeneration()
+        let stored = await a.store(clip(), for: "k", ifGeneration: expected, stillAllowed: {
+            flags.purge = Task.detached {
+                await b.purgeClips(keepingProviders: ["cloud"])   // keeps the clip: only order matters
+                flags.purgeDone = true
+            }
+            Thread.sleep(forTimeInterval: 0.2)   // ample time for an unlocked purge to finish
+            flags.doneDuringCheck = flags.purgeDone
+            return true
+        })
+        await flags.purge?.value
+        XCTAssertTrue(stored)
+        XCTAssertFalse(flags.doneDuringCheck, "a purge finished while the check ran: the check is not under the lock")
+        let after = await a.consentGeneration()
+        XCTAssertEqual(after, expected &+ 1, "the purge ran after the write, and bumped the generation")
+        let stale = await a.store(clip(), for: "k2", ifGeneration: expected, stillAllowed: { true })
+        XCTAssertFalse(stale)
+    }
+
+    /// Fry's nit on #258: two caches that reach one directory through a symlink (or `..`) share
+    /// one lock and generation.
+    func testFileCachesThroughASymlinkShareTheGeneration() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("midrender-\(UUID().uuidString)")
+        dirs.append(base)
+        let real = base.appendingPathComponent("real"), link = base.appendingPathComponent("link")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let dotted = link.appendingPathComponent("sub").appendingPathComponent("..")
+        // A cache directory that does not exist yet, below the symlink, resolves too.
+        let notYet = (real.appendingPathComponent("cache"), link.appendingPathComponent("cache"))
+        XCTAssertTrue(FileAudioCacheGate.gate(for: real) === FileAudioCacheGate.gate(for: link))
+        XCTAssertTrue(FileAudioCacheGate.gate(for: real) === FileAudioCacheGate.gate(for: dotted))
+        XCTAssertTrue(FileAudioCacheGate.gate(for: notYet.0) === FileAudioCacheGate.gate(for: notYet.1))
+        for (x, y) in [(real, link), (link, real), (notYet.1, notYet.0)] {
+            let a = FileAudioCache(directory: x), b = FileAudioCache(directory: y)
+            let before = await a.consentGeneration()
+            await b.purgeClips(keepingProviders: [])
+            let seen = await a.consentGeneration()
+            XCTAssertNotEqual(seen, before, "\(y.lastPathComponent) purge bumps \(x.lastPathComponent)")
+            let stale = await a.store(clip(), for: "k", ifGeneration: before, stillAllowed: { true })
+            XCTAssertFalse(stale, "a stale write through \(x.lastPathComponent) is refused")
+            let none = await b.audio(for: "k")
+            XCTAssertNil(none)
+        }
+    }
+}
+
+private final class LockFlags: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _purge: Task<Void, Never>?, _done = false, _during = false
+    var purge: Task<Void, Never>? { get { lock.withLock { _purge } } set { lock.withLock { _purge = newValue } } }
+    var purgeDone: Bool { get { lock.withLock { _done } } set { lock.withLock { _done = newValue } } }
+    var doneDuringCheck: Bool { get { lock.withLock { _during } } set { lock.withLock { _during = newValue } } }
 }

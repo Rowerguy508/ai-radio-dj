@@ -454,7 +454,8 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
                                 cadence: config.cadence(), bundledClips: bundled(access))
         let s = DJBreakSession(preparer: p, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 })
         await s.start()
-        await s.queueStarted(djTracks(8))
+        // Catalog tracks: every line may use the paid voice, so the break is all paid (one voice per break, #267).
+        await s.queueStarted(djTracks(8, origin: .catalog))
         return (s, p, t)
     }
 

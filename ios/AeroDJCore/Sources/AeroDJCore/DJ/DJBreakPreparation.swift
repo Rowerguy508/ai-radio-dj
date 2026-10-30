@@ -406,23 +406,44 @@ public actor DJBreakPreparer {
         case .failure(let skip): return .skipped(skip.reason)
         }
         let firstFit = cap.fit(first.clips)
-        if firstFit != .skip { return ready(djBreak, first, firstFit) }
-        // Build 20: each cue can fit its own cap in a slower Enhanced or Premium voice while the
-        // whole break runs past the cadence cap. Re-render the whole break once on the last route
-        // (the standard on-device voice, $0), so every cue is in one voice, before skipping it.
+        let mixed = !speaksInOneVoice(first.clips)
+        if !mixed, firstFit != .skip { return ready(djBreak, first, firstFit) }
+        // At most ONE whole-break retry, on the last route (the standard on-device voice, $0),
+        // for either reason or both:
+        // - #267: a break never switches voices. The first pass falls back per cue (a refused
+        //   cloud write, a 429 or other provider failure, the per-cue paid gate denying mid-break,
+        //   an Enhanced voice failing), so its clips can be in two voices. Then every cue is
+        //   rendered again in the on-device voice.
+        // - Build 20: each cue can fit its own cap in a slower Enhanced or Premium voice while the
+        //   whole break runs past the cadence cap.
+        // Without such a route (or with the first pass already all on it), the break is skipped.
+        let skip: DJBreakSkipReason = mixed ? .renderFailed : .overBreakBudget
         guard let fallback = renderer.lastRouteOnly, let last = fallback.routes.first,
               !first.clips.allSatisfy({ $0.audio.providerID == last.providerID && $0.audio.voiceID == last.voice.id }) else {
-            return .skipped(.overBreakBudget)
+            return .skipped(skip)
         }
         // The fallback's first route is on-device, so the bundle never resolves on this retry.
         switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID, bundled: bundled,
                                 paidVoice: paidVoice) {
         case .success(let retry):
+            // One route, so one voice; checked anyway, and never retried a second time.
+            guard speaksInOneVoice(retry.clips) else { return .skipped(.renderFailed) }
             let retryFit = cap.fit(retry.clips)
             return retryFit == .skip ? .skipped(.overBreakBudget) : ready(djBreak, retry, retryFit)
         case .failure(let skip): return .skipped(skip.reason)  // the retry's own reason (Fry, #158)
         }
     }
+
+    /// The voice a clip is spoken in: provider plus voice id. A bundled clip is the manifest's
+    /// ElevenLabs voice (`BundledClipResolver` hits only when the first route is that voice), so
+    /// it counts as the live ElevenLabs route in the same voice id.
+    static func voice(of clip: RenderedClip) -> String {
+        let provider = clip.audio.providerID == BundledClipResolver.providerID ? PremiumVoiceRoutes.providerID : clip.audio.providerID
+        return provider + "\u{1F}" + clip.audio.voiceID
+    }
+
+    /// True when every clip is in one voice (#267: a break never switches voices).
+    static func speaksInOneVoice(_ clips: [RenderedClip]) -> Bool { Set(clips.map(voice(of:))).count <= 1 }
 
     private struct Skip: Error { let reason: DJBreakSkipReason }
 
@@ -497,8 +518,8 @@ public actor DJBreakPreparer {
                 renderer = local
             }
             // A whole presenter line whose text hash is in the bundle plays the bundled clip, with
-            // its measured seconds, and makes no proxy call. Anything else: today's path.
-            // (One voice per break, if a later live clip falls to on-device, is a follow-up.)
+            // its measured seconds, and makes no proxy call. Anything else: today's path. If a
+            // later cue falls to another voice, `render` re-renders the whole break on-device.
             // Pro + consent are checked per cue inside gatedClip (fail closed).
             let resolved = await bundled?.gatedClip(for: cue, attribution: djBreak.attributions[cue.id], renderer: renderer)
             let result: Result<RenderedClip, VoiceRenderer.Failure>

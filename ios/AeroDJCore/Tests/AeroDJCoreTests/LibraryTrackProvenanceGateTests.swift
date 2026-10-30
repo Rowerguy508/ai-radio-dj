@@ -194,7 +194,7 @@ final class LibraryTrackProvenanceGateTests: XCTestCase {
     }
 
     /// A hand-built break whose last ("up next" / closing) cue names a library track: that cue is
-    /// local while the presenter line before it may still use the cloud voice (mixed-voice break).
+    /// local, so the break plays on-device in one voice (#267); the library track never reaches the cloud.
     func testClosingCueNamingALibraryTrackStaysLocalWhileMainMayUseCloud() async {
         let spy = ProvenanceSpy()
         let tracks = [DJTrack(id: "c0", title: "Open Song", artist: "Open Artist", origin: .catalog),
@@ -208,7 +208,7 @@ final class LibraryTrackProvenanceGateTests: XCTestCase {
             closing.id: SpokenAttribution.trackMetadata(trackIDs: ["p1"]).resolvingTrackOrigins(in: tracks),
         ]
         let ready = await prepareAll([DJBreak(afterTrack: 0, cues: [main, back, closing], attributions: attributions)], spy: spy)
-        XCTAssertEqual(ready.first?.clips.map(\.audio.providerID), ["cloud", "cloud", "device"])
+        XCTAssertEqual(ready.first?.clips.map(\.audio.providerID), ["device", "device", "device"])
         XCTAssertFalse(spy.received.contains { $0.contains("Private") })
     }
 }

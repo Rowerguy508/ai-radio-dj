@@ -246,13 +246,29 @@ final class FileAudioCacheGate: @unchecked Sendable {
     nonisolated(unsafe) private static var registry: [String: FileAudioCacheGate] = [:]
 
     static func gate(for directory: URL) -> FileAudioCacheGate {
-        let path = directory.standardizedFileURL.path
+        let path = key(for: directory)
         return registryLock.withLock {
             if let gate = registry[path] { return gate }
             let gate = FileAudioCacheGate()
             registry[path] = gate
             return gate
         }
+    }
+
+    /// The registry key: the directory with `.`/`..` removed and symlinks resolved (Fry, #258),
+    /// so two paths to one directory share one lock and generation. Only components that exist
+    /// can be resolved, so the deepest existing ancestor is resolved and the rest appended; this
+    /// creates nothing on disk.
+    static func key(for directory: URL) -> String {
+        var existing = directory.standardizedFileURL
+        var rest: [String] = []
+        while !FileManager.default.fileExists(atPath: existing.path), existing.pathComponents.count > 1 {
+            rest.insert(existing.lastPathComponent, at: 0)
+            existing.deleteLastPathComponent()
+        }
+        var resolved = existing.resolvingSymlinksInPath()
+        for component in rest { resolved.appendPathComponent(component) }
+        return resolved.standardizedFileURL.path
     }
 
     private let lock = NSLock()
