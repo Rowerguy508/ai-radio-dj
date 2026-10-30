@@ -39,7 +39,8 @@ struct AppDependencies {
     func start() async {
         await studio.start()
         await djSession.start()
-        stationQueue?.start()
+        // #332: station starts read the same briefing provider as a song tap.
+        stationQueue?.start(briefing: LiveQueueBriefing.provider(studio: studio))
     }
 
     static func make(defaults: UserDefaults = .standard) -> AppDependencies {

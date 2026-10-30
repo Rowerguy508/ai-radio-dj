@@ -15,7 +15,9 @@ import OSLog
 /// - `MusicKitService.stationQueueForIdlePlay`: Play with nothing queued starts the station.
 /// - `MusicKitService.onQueueReplaced`: every new queue belongs to the station committed then.
 /// A hand-off starts like a song tap (`TapPlaySequence`: reserve, play, then break prep), so the
-/// DJ session plans breaks for the new songs. Station queues carry no briefing handoff.
+/// DJ session plans breaks for the new songs. A station START (idle Play, or a created-station
+/// row opened while idle) may carry one personal update (#332, `StationStartBriefing`); a boundary
+/// hand-off carries no briefing handoff.
 ///
 /// Fallbacks: no seeds, an empty pool, a failed fetch, no playable song, a queue not ready yet, or a
 /// held start all keep the current queue (or Play's existing message). Never an empty queue.
@@ -31,6 +33,9 @@ final class StationQueuePlayer {
     /// Set only between this type's `music.play` call and its synchronous queue assignment, so the
     /// hand-off's own queue keeps the key the feed gave it (a change saved meanwhile still applies).
     private var ownQueueStarting = false
+    /// The song tap's briefing provider (`LiveQueueBriefing.provider`), read when a station starts.
+    /// Nil until `start(briefing:)`: no personal update (fails closed).
+    private var briefing: (@MainActor () -> ApprovedShowHandoff)?
 
     init(music: MusicKitService, station: StationConfigurationModel, djSession: DJBreakSession,
          source: MusicCatalogSeedSource = MusicCatalogSeedSource()) {
@@ -52,7 +57,9 @@ final class StationQueuePlayer {
     }
 
     /// Installs the three hooks and starts following the station. Call once, at launch.
-    func start() {
+    /// `briefing` is the same provider a song tap uses; only station starts read it (#332).
+    func start(briefing: (@MainActor () -> ApprovedShowHandoff)? = nil) {
+        self.briefing = briefing
         music.onQueueReplaced = { [weak self] in
             guard let self else { return }
             if self.ownQueueStarting { self.ownQueueStarting = false; return }
@@ -64,11 +71,11 @@ final class StationQueuePlayer {
                                                           active: self.station.active,
                                                           playbackMayStart: self.music.mayAutoResume,
                                                           sameSong: { $0.id == $1.id }) else { return nil }
-            return { await self.play(tracks) }
+            return { await self.play(tracks, .boundary) }
         }
         music.stationQueueForIdlePlay = { [weak self] in
             guard let self, let tracks = self.feed.takeForIdleStart(active: self.station.active) else { return nil }
-            return { await self.play(tracks) }
+            return { await self.play(tracks, .idlePlayStart) }
         }
         feed.follow(station)
     }
@@ -88,7 +95,7 @@ final class StationQueuePlayer {
             apply: { if case .success = await studio.applyRecipe(recipeID) { true } else { false } },
             active: { station.active },
             nothingQueued: { music.queue.isEmpty && !music.isPlaying },
-            start: { tracks in _ = await play(tracks) })
+            start: { tracks in _ = await play(tracks, .createdStationStart) })
         Logger(subsystem: "com.aerodj.app", category: "stationQueue")
             .notice("createdStationOpen \(String(describing: outcome), privacy: .public)")
         return outcome
@@ -106,14 +113,16 @@ final class StationQueuePlayer {
     /// back (the playing queue keeps its station, the songs are staged again for a retry), and the
     /// caller gets the typed result: a failed boundary hand-off falls back to the old queue's next
     /// song. A held start (`.onHold`: the queue is loaded and waits for the hold) counts as started.
-    private func play(_ tracks: [Track]) async -> StationHandOffResult {
-        let result = await start(tracks)
+    private func play(_ tracks: [Track], _ kind: StationHandOffKind) async -> StationHandOffResult {
+        let result = await start(tracks, kind)
         feed.handOffFinished(result)
         return result
     }
 
-    private func start(_ tracks: [Track]) async -> StationHandOffResult {
+    private func start(_ tracks: [Track], _ kind: StationHandOffKind) async -> StationHandOffResult {
         let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName, origin: $0.origin) }
+        // #332: read at start time, like a song tap; consent runs inside (`forQueue()`).
+        let offer = StationStartBriefing.offer(for: kind, briefing: briefing)
         let stationRef = music.snapshot.station
         do {
             try await TapPlaySequence.run(
@@ -124,7 +133,8 @@ final class StationQueuePlayer {
                 try await music.play(tracks, station: stationRef)
             },
             scheduleBreakPrep: { reservation in
-                djSession.beginQueueInBackground(reservation, djTracks)
+                djSession.beginQueueInBackground(reservation, djTracks,
+                                                 briefing: offer.briefing, sources: offer.sources)
             },
             release: { djSession.releaseQueueSetup($0) })
             return .started
