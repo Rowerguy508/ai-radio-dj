@@ -287,6 +287,53 @@ export function redisRestConfig(env: Record<string, string | undefined>): RedisR
   return { url: url.replace(/\/+$/, ''), token };
 }
 
+/**
+ * One EVAL over Upstash's REST API, bounded by `timeoutMs` from request to parsed body.
+ * Any transport or store error, a non-integer reply or a timeout throws LimiterStoreError
+ * (the handler fails closed with 503 `store`). Shared by the usage limiter and the Pro
+ * allowance so both keep the same timeout, strict-integer and error rules.
+ */
+export async function upstashEval(
+  config: RedisRestConfig,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+  script: string,
+  keys: string[],
+  args: (string | number)[],
+): Promise<number> {
+  const signal = AbortSignal.timeout(timeoutMs);
+  let response: Response;
+  try {
+    response = await untilAborted(
+      fetchImpl(config.url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(['EVAL', script, keys.length, ...keys, ...args.map(String)]),
+        signal,
+      }),
+      signal,
+    );
+  } catch {
+    throw new LimiterStoreError('limiter store unreachable', signal.aborted);
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new LimiterStoreError('limiter store error');
+  }
+  let payload: { result?: unknown } | null;
+  try {
+    payload = (await untilAborted(response.json(), signal)) as { result?: unknown } | null;
+  } catch {
+    // The same bound covers the body read: a body cut off by it is a timeout, exactly
+    // like a fetch cut off by it (Fry's nit on #259); a body that fails on its own
+    // (bad JSON, stream error) is a store error.
+    throw new LimiterStoreError('limiter store error', signal.aborted);
+  }
+  // A reply that arrived in full is never a timeout, whatever its shape.
+  if (!payload || typeof payload !== 'object' || 'error' in payload) throw new LimiterStoreError('limiter store error');
+  return strictRedisInteger(payload.result);
+}
+
 export class RedisUsageLimiter implements UsageLimiter {
   readonly durable = true;
 
@@ -299,38 +346,8 @@ export class RedisUsageLimiter implements UsageLimiter {
   ) {}
 
   /** One EVAL over Upstash's REST API. Any transport or store error, or a timeout, throws (the handler fails closed). */
-  private async eval(script: string, keys: string[], args: (string | number)[]): Promise<number> {
-    const signal = AbortSignal.timeout(this.timeoutMs);
-    let response: Response;
-    try {
-      response = await untilAborted(
-        this.fetchImpl(this.config.url, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(['EVAL', script, keys.length, ...keys, ...args.map(String)]),
-          signal,
-        }),
-        signal,
-      );
-    } catch {
-      throw new LimiterStoreError('limiter store unreachable', signal.aborted);
-    }
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => {});
-      throw new LimiterStoreError('limiter store error');
-    }
-    let payload: { result?: unknown } | null;
-    try {
-      payload = (await untilAborted(response.json(), signal)) as { result?: unknown } | null;
-    } catch {
-      // The same bound covers the body read: a body cut off by it is a timeout, exactly
-      // like a fetch cut off by it (Fry's nit on #259); a body that fails on its own
-      // (bad JSON, stream error) is a store error.
-      throw new LimiterStoreError('limiter store error', signal.aborted);
-    }
-    // A reply that arrived in full is never a timeout, whatever its shape.
-    if (!payload || typeof payload !== 'object' || 'error' in payload) throw new LimiterStoreError('limiter store error');
-    return strictRedisInteger(payload.result);
+  private eval(script: string, keys: string[], args: (string | number)[]): Promise<number> {
+    return upstashEval(this.config, this.fetchImpl, this.timeoutMs, script, keys, args);
   }
 
   async allowRequest(bucket: string, now: number): Promise<boolean> {

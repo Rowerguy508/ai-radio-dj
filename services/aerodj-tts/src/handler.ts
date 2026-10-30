@@ -18,6 +18,7 @@ import {
   type Reservation,
   type UsageLimiter,
 } from './limiter.js';
+import { isVerifiedProSubject, RedisProAllowance, type ProAllowanceStore, type ProReservation, type ProSubject } from './pro-allowance.js';
 import { ssmlToPlainText } from './ssml.js';
 import { pcmToWav, sampleCount, SAMPLE_RATE } from './wav.js';
 
@@ -47,9 +48,11 @@ const SUBJECT_BUCKET = subjectBucket(SUBJECT);
  * Enum only: never text, ids or keys. `rate` = per-minute rate, `install_daily` = this
  * install's daily cap, `owner_daily` = the owner bucket's daily cap, `global_daily` = the global daily ceiling, `store` = limiter
  * store unreachable (fails closed), `disabled` = master stop `AERODJ_TTS_PAID_STOP` (PR 3),
- * `misconfig` = server configuration missing or invalid (500, PR 3).
+ * `misconfig` = server configuration missing or invalid (500, PR 3), `daily_allowance` = this
+ * Pro purchase's daily render allowance is used up (429 until the next 00:00 UTC; the app
+ * switches to the on-device voice quietly, see src/pro-allowance.ts).
  */
-export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconfig';
+export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconfig' | 'daily_allowance';
 
 /** Retry-After (seconds) for a rate 429 and a store 503: an upper bound for both window types. */
 export const RATE_RETRY_AFTER_SECONDS = 60;
@@ -127,6 +130,11 @@ export interface Deps {
   requestId: () => string;
   /** Lost-refund log (Fry's nit on #257); defaults to one console.log JSON line. */
   logRefundLost?: (entry: RefundLostLog) => void;
+  /**
+   * Pro daily allowance store (src/pro-allowance.ts). Read only for a request carrying
+   * `verifiedPro`; must be durable, else that request fails closed with 503 `store`.
+   */
+  proAllowance?: ProAllowanceStore | null;
 }
 
 /**
@@ -148,6 +156,12 @@ export interface TtsRequest {
   authorization: string | undefined;
   /** Parsed JSON object, raw JSON string/Buffer, or undefined. */
   body: unknown;
+  /**
+   * The Pro purchase this request is charged to, set ONLY by server code from a JWS it
+   * verified (`proSubjectFromVerified`, PR 6 wires it). Never read from the body or a
+   * header: api/tts.ts does not set it, so today's owner path never touches the allowance.
+   */
+  verifiedPro?: ProSubject;
 }
 
 export interface TtsResponse {
@@ -234,6 +248,11 @@ function defaultLimiter(env: Env): UsageLimiter | null {
   return limiter;
 }
 
+function defaultProAllowance(env: Env): ProAllowanceStore | null {
+  const redis = redisRestConfig(env);
+  return redis ? new RedisProAllowance(redis) : null;
+}
+
 export function defaultDeps(env: Env = process.env): Deps {
   return {
     env,
@@ -254,6 +273,7 @@ export function defaultDeps(env: Env = process.env): Deps {
         }),
       ),
     now: Date.now,
+    proAllowance: defaultProAllowance(env),
     timeoutMs: UPSTREAM_TIMEOUT_MS,
     requestId: () => crypto.randomUUID(),
   };
@@ -368,14 +388,40 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   if (text.length === 0 || text.length > maxChars) return fail(400);
   chars = text.length;
 
+  // --- Pro daily allowance (src/pro-allowance.ts): after the 600-char cap, before the char
+  // budget and before any upstream call. Only a server-minted ProSubject counts. ---
+  let proHeld: ProReservation | undefined;
+  if (req.verifiedPro !== undefined) {
+    if (!isVerifiedProSubject(req.verifiedPro)) return misconfigured();
+    const store = deps.proAllowance;
+    // Durable only (Sentinel B3): no per-instance fallback for a paid allowance.
+    if (!store || store.durable !== true) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+    try {
+      const result = await store.reserve(req.verifiedPro, now);
+      if (!result.ok) return refuse(429, 'daily_allowance', secondsUntilNextUtcDay(now));
+      proHeld = result.reservation;
+    } catch (error) {
+      if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+      return misconfigured();
+    }
+  }
+  /** Returns the Pro render when nothing was rendered or billed. A failed return keeps it spent (errs on spending less). */
+  const refundPro = async (): Promise<void> => {
+    if (proHeld) await deps.proAllowance?.release(proHeld).catch(() => {});
+  };
+
   // Atomic reserve-before-render: the characters count against today's cap before the
   // upstream call, so concurrent requests cannot jointly exceed it.
   let reservation: Reservation;
   try {
     const result = await limiter.reserve(SUBJECT, chars, now);
-    if (!result.ok) return refuse(429, result.reason, secondsUntilNextUtcDay(now));
+    if (!result.ok) {
+      await refundPro();
+      return refuse(429, result.reason, secondsUntilNextUtcDay(now));
+    }
     reservation = result.reservation;
   } catch (error) {
+    await refundPro();
     if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
     // Any other reserve failure is a server fault, not a store outage: 500 `misconfig`
     // with Retry-After 3600 (note §4.4; Sentinel's #250 nit), before any upstream call.
@@ -414,6 +460,7 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
       // Neither the body nor detail.message reaches the logs or the response.
       const upstreamCode = await upstreamErrorCode(upstream);
       await refund();
+      await refundPro();
       return fail(502, {}, { upstreamStatus: upstream.status, upstreamCode });
     }
     upstreamCost = upstream.headers.get('character-cost');
