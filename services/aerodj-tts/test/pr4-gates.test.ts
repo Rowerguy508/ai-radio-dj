@@ -27,7 +27,7 @@ const TOKEN = 'test-owner-token-not-a-real-secret';
 const TOKEN_HASH = crypto.createHash('sha256').update(TOKEN).digest('hex');
 const VOICE = 'voiceAllowed123';
 const STORE = { url: 'https://store.example.upstash.io', token: 'test-store-token-not-real' };
-const OPTIONS = { dailyCharCap: 9_000, requestsPerMinute: 100 };
+const OPTIONS = { deployment: 'production' as const, dailyCharCap: 9_000, requestsPerMinute: 100 };
 const NOON = Date.UTC(2026, 9, 29, 12);
 const DAY = '2026-10-29';
 const KEY_ID = crypto.createHash('sha256').update('install A').digest('base64');
@@ -86,7 +86,7 @@ describe('install reserve without Redis → 503 store (Sentinel, #250)', () => {
 
   test('control: a configured store selects the durable limiter and the same gate reserves', async () => {
     const store = fakeUpstash();
-    const selected = selectLimiter({ KV_REST_API_URL: STORE.url, KV_REST_API_TOKEN: STORE.token }, store.fetchImpl);
+    const selected = selectLimiter({ KV_REST_API_URL: STORE.url, KV_REST_API_TOKEN: STORE.token, VERCEL_ENV: 'production' }, store.fetchImpl);
     assert.ok(selected instanceof RedisUsageLimiter);
     const r = await reserveForInstall(selected, KEY_ID, 100, NOON);
     assert.equal(r.ok, true);
