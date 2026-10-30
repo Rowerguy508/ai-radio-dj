@@ -10,7 +10,8 @@ import Foundation
 ///
 /// Policy (the app half of the #233 §4.4 error contract):
 /// - **429**: the `reason` in the JSON error body picks the wait.
-///   - `install_daily` / `global_daily`: until `Retry-After`, or the next UTC midnight without one.
+///   - `install_daily` / `global_daily` / `daily_allowance`: until `Retry-After`, or the next UTC
+///     midnight without one. Labelled `dailyCap`.
 ///   - `rate` / `enroll`: `Retry-After`, or 60 s without one.
 ///   - missing or unknown reason: `Retry-After`, or the next UTC midnight (treated as the daily cap).
 ///   Every 429 wait is clamped to [60 s, 24 h]. A 429 is persisted.
@@ -27,7 +28,7 @@ import Foundation
 public final class PaidVoiceBackoff: @unchecked Sendable {
     public enum Reason: String, Codable, Equatable, Sendable {
         case rateLimited, serverError
-        /// 429 `install_daily` / `global_daily`.
+        /// 429 `install_daily` / `global_daily` / `daily_allowance`.
         case dailyCap
         /// 503 `disabled` (the proxy's kill switch).
         case disabled
@@ -38,6 +39,8 @@ public final class PaidVoiceBackoff: @unchecked Sendable {
         case rate, enroll, store, disabled, reattest, assertion
         case installDaily = "install_daily"
         case globalDaily = "global_daily"
+        /// 429: this Pro purchase's daily render allowance is used up (proxy `handler.ts`, until 00:00 UTC).
+        case dailyAllowance = "daily_allowance"
 
         /// Reads `reason` from a small JSON error body. Nil for a large, non-JSON or unknown body.
         public static func parse(_ body: Data) -> ProxyErrorReason? {
@@ -108,7 +111,8 @@ public final class PaidVoiceBackoff: @unchecked Sendable {
     public func recordRateLimited(retryAfter: String?, reason: ProxyErrorReason? = nil) {
         let at = now()
         let wait = Self.rateLimitWait(retryAfter: retryAfter, reason: reason, now: at)
-        let kind: Reason = (reason == .installDaily || reason == .globalDaily) ? .dailyCap : .rateLimited
+        let kind: Reason = (reason == .installDaily || reason == .globalDaily || reason == .dailyAllowance)
+            ? .dailyCap : .rateLimited
         update { state in
             state.suspendedUntil = at.addingTimeInterval(wait)
             state.reason = kind
