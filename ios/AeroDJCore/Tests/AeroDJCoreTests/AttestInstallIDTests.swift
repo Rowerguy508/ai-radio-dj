@@ -179,6 +179,31 @@ final class AttestInstallIDTests: XCTestCase {
         XCTAssertEqual(addFails.replaces, 0, "a failed add never falls back to overwriting")
     }
 
+    func testADuplicateAddThatReadsBackAnInvalidValueReturnsNil() async {
+        // Atlas N1 (#277): another writer won the add but stored something that isn't a lowercase v4.
+        for bad in ["NOT-A-V4", "6BA7B810-9DAD-41D1-80B4-00C04FD430C8", "6ba7b810-9dad-11d1-80b4-00c04fd430c8", ""] {
+            let dup = ScriptedStorage(reads: [.notFound, .found(bad)], add: .duplicate)
+            let id = AttestInstallID(storage: dup)
+            XCTAssertNil(id.current(), "duplicate, read back \(bad.debugDescription): not sent")
+            XCTAssertEqual(dup.adds, 1)
+            XCTAssertEqual(dup.replaces, 0, "the duplicate path never overwrites the other writer's item")
+            let t = AttestSpyTransport()
+            let r = await client(t, id).register(keyId: "k", attestationObject: "a", challenge: "c")
+            XCTAssertEqual(r.failureValue?.reason, .noInstallID)
+            XCTAssertTrue(t.requests.isEmpty, "nothing sent")
+        }
+    }
+
+    func testInMemoryTestHooksAreNotPublic() throws {
+        // Atlas N2 (#277): shipped code can't flip the fake's hooks.
+        let code = try self.source("Attest/AttestInstallID.swift")
+        for hook in ["public var readFails", "public var stored", "public init(_ value: String? = nil, failsWrites",
+                     "public init(_ value: String?"] {
+            XCTAssertFalse(code.contains(hook), hook)
+        }
+        XCTAssertTrue(code.contains("public convenience init() { self.init(nil) }"))
+    }
+
     func testTheWriteIsReadBack() {
         let other = "0f8fad5b-d9cb-469f-a165-70867728950e"
         // The add (or replace) reports success but the item reads back as something else.

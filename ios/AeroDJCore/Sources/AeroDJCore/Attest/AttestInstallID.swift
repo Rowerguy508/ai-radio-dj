@@ -30,18 +30,26 @@ public protocol AttestInstallIDStorage: Sendable {
 public final class InMemoryAttestInstallIDStorage: AttestInstallIDStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var value: String?
-    /// Test hooks: a read error, failing writes, or a read-back that differs from what was written.
-    public var readFails = false
+    private var failsReads = false
     private let failsWrites: Bool
     private let readBack: String?
-    public init(_ value: String? = nil, failsWrites: Bool = false, readBack: String? = nil) {
+    /// The only public initializer: plain in-memory storage, no test hooks.
+    public convenience init() { self.init(nil) }
+    /// Test hooks (internal, `@testable` only; Atlas N2, #277): a pre-stored value, failing writes,
+    /// or a read-back that differs from what was written. Shipped code can't set them.
+    init(_ value: String? = nil, failsWrites: Bool = false, readBack: String? = nil) {
         self.value = value; self.failsWrites = failsWrites; self.readBack = readBack
     }
-    /// The raw stored value (tests).
-    public var stored: String? { lock.withLock { value } }
+    /// Test hook: every read fails (e.g. before first unlock). Read and written under the lock.
+    var readFails: Bool {
+        get { lock.withLock { failsReads } }
+        set { lock.withLock { failsReads = newValue } }
+    }
+    /// The raw stored value (test hook).
+    var stored: String? { lock.withLock { value } }
     public func readInstallID() -> AttestInstallIDRead {
         lock.withLock {
-            if readFails { return .failed }
+            if failsReads { return .failed }
             guard let value else { return .notFound }
             return .found(readBack ?? value)
         }
