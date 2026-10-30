@@ -618,6 +618,8 @@ public final class DJBreakSession {
     var testLastSongStartRemaining: Duration?
     /// Test hook: the planned boundaries.
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
+    /// Test hook: the planned breaks by boundary (what `replan` wrote).
+    var testPlannedBreaks: [Int: DJBreak] { breaks }
     /// Test hook: background tap setup has not finished planning.
     var testQueueSetupPending: Bool { queueSetupPending }
     /// Test hook (#116): the song start held until the new queue is planned.

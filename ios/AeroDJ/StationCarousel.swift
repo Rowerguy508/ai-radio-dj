@@ -217,7 +217,7 @@ struct StationCarouselCard: View {
 #Preview("Carousel, nothing selected") {
     NavigationStack {
         StationCarousel(stations: Station.defaultStations, selectedID: nil, onSelect: { _ in })
-            .navigationTitle("AeroDJ")
+            .navigationTitle(AppName.display)
     }
 }
 
@@ -225,14 +225,14 @@ struct StationCarouselCard: View {
     NavigationStack {
         StationCarousel(stations: Station.defaultStations + StationCarouselPreview.extra,
                         selectedID: Station.lateNightID, onSelect: { _ in })
-            .navigationTitle("AeroDJ")
+            .navigationTitle(AppName.display)
     }
 }
 
 #Preview("Carousel, accessibility text") {
     NavigationStack {
         StationCarousel(stations: Station.defaultStations, selectedID: Station.morningCalmID, onSelect: { _ in })
-            .navigationTitle("AeroDJ")
+            .navigationTitle(AppName.display)
     }
     .dynamicTypeSize(.accessibility2)
 }
