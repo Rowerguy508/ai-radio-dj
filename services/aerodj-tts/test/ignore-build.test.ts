@@ -439,6 +439,12 @@ describe('vercel-ignore-build.sh', () => {
     git(bare, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
     const clone = path.join(tmpRoot, `clone-${counter++}`);
     git(tmpRoot, 'clone', '-q', '--depth=1', '--branch', 'main', `file://${bare}`, clone);
+    // Bring PREV and its full history in up front (no depth), so the only shallow
+    // boundary left is HEAD's and a --deepen that reaches the root completes the
+    // clone on every git version (a by-SHA PREV fetch may leave its own boundary).
+    git(clone, 'fetch', '-q', 'origin', 'old-deploy');
+    git(clone, 'cat-file', '-e', `${prev}^{commit}`);
+    assert.equal(git(clone, 'rev-parse', '--is-shallow-repository'), 'true', 'precondition: still shallow at HEAD');
     const log = path.join(tmpRoot, `shim-${counter++}.log`);
     const r = run(clone, prev, TTS, shimEnv(log));
     expectCode(r, BUILD, 'PREV is not in HEAD history');
