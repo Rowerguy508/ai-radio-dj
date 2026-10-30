@@ -421,8 +421,9 @@ jobs:
       - name: UI tests on iPhone (closed, compact player)
         run: |
           mkdir -p "$SHOTS"
-          xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$PHONE_UDID" -b
+          # Clean simulator (no app or data from an earlier run), the same as the baseline
+          # capture gets, so the head and base shots start from the same state. -Atlas
+          ios/scripts/reset-simulator-app-state.sh "$PHONE_UDID"
           ios/scripts/override-status-bar.sh "$PHONE_UDID"
           ios/scripts/settle-simulator-keyboard.sh "$PHONE_UDID"
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
@@ -535,8 +536,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
           mkdir -p "$BASE_SHOTS"
           xcrun simctl shutdown "$PAD_UDID" 2>/dev/null || true
-          xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$PHONE_UDID" -b
+          # The head's UI tests ran on this simulator first and left app state behind (their
+          # 'violet' search text showed in the base's closed-state-empty and closed-queue-sheet,
+          # iOS 41000805007). Erase it so the base starts from the same clean state as the head.
+          ios/scripts/reset-simulator-app-state.sh "$PHONE_UDID"
           ios/scripts/override-status-bar.sh "$PHONE_UDID"
           ios/scripts/settle-simulator-keyboard.sh "$PHONE_UDID"
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
