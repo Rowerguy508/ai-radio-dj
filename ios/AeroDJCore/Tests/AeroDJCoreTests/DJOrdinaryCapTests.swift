@@ -85,7 +85,10 @@ final class DJOrdinaryCapTests: XCTestCase {
 
     func testTheDefaultCapIsTwelveAndStationCadenceCarriesIt() {
         XCTAssertEqual(DJCadence().maxOrdinaryBreakSeconds, 12)
+        #if DEBUG
+        // TestStation exists only in DEBUG builds; the release check compiles these tests without it.
         XCTAssertEqual(TestStation.configuration.cadence().maxOrdinaryBreakSeconds, 12)
         XCTAssertEqual(TestStation.configuration.cadence(base: DJCadence(maxOrdinaryBreakSeconds: 10)).maxOrdinaryBreakSeconds, 10)
+        #endif
     }
 }
