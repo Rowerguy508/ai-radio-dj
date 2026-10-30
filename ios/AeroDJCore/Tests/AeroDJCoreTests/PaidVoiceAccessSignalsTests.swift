@@ -11,6 +11,42 @@ import XCTest
 
 @MainActor private final class Counter { var count = 0 }
 
+private final class RevokedBoundaries: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Int] = []
+    func add(_ k: Int) { lock.withLock { values.append(k) } }
+    var all: [Int] { lock.withLock { values } }
+}
+
+/// A clock tests move by hand (the tracker's, the cache's and the gate's `now`).
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    init(_ start: Date) { value = start }
+    var now: Date { lock.withLock { value } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { value = value.addingTimeInterval(seconds) } }
+}
+
+/// The expiry scheduler, by hand: records each armed timer; a test fires one when it likes.
+@MainActor private final class ManualExpiryTimers {
+    final class Timer {
+        let date: Date
+        let fire: @MainActor @Sendable () async -> Void
+        var cancelled = false
+        init(date: Date, fire: @escaping @MainActor @Sendable () async -> Void) { self.date = date; self.fire = fire }
+    }
+    private(set) var all: [Timer] = []
+    var pending: [Timer] { all.filter { !$0.cancelled } }
+
+    var scheduler: PaidVoiceExpiryScheduler {
+        { [self] date, fire in
+            let timer = Timer(date: date, fire: fire)
+            all.append(timer)
+            return { timer.cancelled = true }
+        }
+    }
+}
+
 /// Proxy transport stand-in: counts requests, answers with fake audio.
 private final class CountingTransport: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
@@ -76,7 +112,8 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
 
     private func tracker() -> (ProAccessChangeTracker, Counter) {
         let counter = Counter()
-        return (ProAccessChangeTracker(notify: { counter.count += 1 }), counter)
+        return (ProAccessChangeTracker(notify: { counter.count += 1 }, schedule: ManualExpiryTimers().scheduler,
+                                       now: { [now] in now }), counter)
     }
 
     private func signals(_ store: CloudVoiceConsentStore) -> (PaidVoiceConsentSignals, Counter) {
@@ -208,6 +245,155 @@ final class PaidVoiceAccessSignalsTests: XCTestCase {
         guard case .ready(let ready)? = replanned else { return XCTFail("the break is prepared again") }
         XCTAssertTrue(ready.clips.allSatisfy { $0.audio.providerID == "device" }, "and on-device")
         XCTAssertEqual(transport.calls, callsBefore)
+    }
+
+    // MARK: Expiry between refreshes (one timer, re-armed on every cache write; Fry's recommendation)
+
+    private func expiryTracker(_ clock: TestClock, _ notify: @escaping PaidVoiceAccessNotify)
+        -> (ProAccessChangeTracker, ManualExpiryTimers) {
+        let timers = ManualExpiryTimers()
+        return (ProAccessChangeTracker(notify: notify, schedule: timers.scheduler, now: { clock.now }), timers)
+    }
+
+    func testExpiryFiresOnceAtTheDate() async {
+        let clock = TestClock(now), counter = Counter()
+        let (t, timers) = expiryTracker(clock) { counter.count += 1 }
+        let expiry = now.addingTimeInterval(3600)
+        await t.entitlementRead(.pro(productID: monthly, expiresAt: expiry), now: clock.now)
+        XCTAssertEqual(counter.count, 1, "Free to Pro")
+        XCTAssertEqual(timers.pending.map(\.date), [expiry], "exactly one timer, at the expiry")
+
+        clock.advance(1800)   // an early wake-up: still Pro, nothing reported, re-armed for the same date
+        let early = timers.pending[0]
+        early.cancelled = true
+        await early.fire()
+        XCTAssertEqual(counter.count, 1)
+        XCTAssertEqual(timers.pending.map(\.date), [expiry])
+
+        clock.advance(1800)
+        let atExpiry = timers.pending[0]
+        atExpiry.cancelled = true
+        await atExpiry.fire()
+        XCTAssertEqual(counter.count, 2, "the lapse is reported once, at the date")
+        XCTAssertTrue(timers.pending.isEmpty, "a lapsed Pro arms nothing")
+        await atExpiry.fire()
+        await early.fire()
+        XCTAssertEqual(counter.count, 2, "replaced timers do nothing")
+    }
+
+    func testRenewalBeforeExpiryCancelsAndReArms() async {
+        let clock = TestClock(now), counter = Counter()
+        let (t, timers) = expiryTracker(clock) { counter.count += 1 }
+        let first = now.addingTimeInterval(3600), renewed = now.addingTimeInterval(3600 + 30 * 86_400)
+        await t.entitlementRead(.pro(productID: monthly, expiresAt: first), now: clock.now)
+        let old = timers.pending[0]
+        clock.advance(3000)
+        await t.entitlementRead(.pro(productID: monthly, expiresAt: renewed), now: clock.now)
+        XCTAssertTrue(old.cancelled, "the renewal cancels the old timer")
+        XCTAssertEqual(timers.pending.map(\.date), [renewed], "and arms one at the new date")
+        clock.advance(600)    // past the old date
+        await old.fire()      // even if a cancelled timer still ran
+        XCTAssertEqual(counter.count, 1, "the old date reports nothing")
+        clock.advance(30 * 86_400)
+        let current = timers.pending[0]
+        current.cancelled = true
+        await current.fire()
+        XCTAssertEqual(counter.count, 2, "the renewed date does")
+    }
+
+    func testDowngradeCancelsTheTimer() async {
+        let clock = TestClock(now), counter = Counter()
+        let (t, timers) = expiryTracker(clock) { counter.count += 1 }
+        let states: [ProEntitlementState] = [.free, .expired(productID: monthly, expiredAt: now),
+                                             .unverified(productID: monthly), .revoked(productID: monthly, revokedAt: now),
+                                             .pro(productID: monthly, expiresAt: nil)]
+        for state in states {
+            await t.entitlementRead(.pro(productID: monthly, expiresAt: now.addingTimeInterval(3600)), now: clock.now)
+            let armed = timers.pending
+            XCTAssertEqual(armed.count, 1)
+            await t.entitlementRead(state, now: clock.now)
+            XCTAssertTrue(armed.allSatisfy(\.cancelled), "\(state) cancels")
+            XCTAssertTrue(timers.pending.isEmpty, "\(state) arms nothing")
+            let before = counter.count
+            clock.advance(7200)
+            for timer in armed { await timer.fire() }
+            XCTAssertEqual(counter.count, before, "\(state): a cancelled timer reports nothing")
+            clock.advance(-7200)
+        }
+    }
+
+    func testAnExpiryAlreadyPastIsJudgedRightAway() async {
+        let clock = TestClock(now), counter = Counter()
+        let (t, timers) = expiryTracker(clock) { counter.count += 1 }
+        await t.entitlementRead(.pro(productID: monthly, expiresAt: now.addingTimeInterval(60)), now: clock.now)
+        clock.advance(120)    // the app was asleep past the date; the next read carries the same state
+        await t.entitlementRead(.pro(productID: monthly, expiresAt: now.addingTimeInterval(60)), now: clock.now)
+        XCTAssertEqual(counter.count, 2, "reported right away")
+        XCTAssertTrue(timers.pending.isEmpty, "nothing armed for a past date")
+        await t.entitlementRead(.pro(productID: monthly, expiresAt: now.addingTimeInterval(60)), now: clock.now)
+        XCTAssertEqual(counter.count, 2, "already reported: a no-op")
+    }
+
+    /// End to end: a paid break prepared while Pro is dropped when the expiry timer fires, and
+    /// the session re-prepares it on-device with no further proxy call.
+    func testAPreparedPaidBreakIsSkippedAfterTheExpiryNotification() async {
+        let start = Date()
+        let clock = TestClock(start)
+        let expiry = start.addingTimeInterval(3600)
+        let cache = ProEntitlementCache(.pro(productID: monthly, expiresAt: expiry), now: { clock.now })
+        let store = CloudVoiceConsentStore.inMemory(.accepted)
+        let access = ProVoiceAccess(entitlement: cache, consent: store, now: { clock.now })
+        let transport = CountingTransport()
+        let base = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
+                                 budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),
+                                 revocations: NarrationRevocations(), cloudConsent: store)
+        let voice = PaidVoice.publicComposition(base: base, access: access, selectedVoiceID: PremiumVoiceCatalog.voices[0].id,
+                                                session: FakeInstallSession(), routeCompiledIn: true, transport: transport)
+        let config = StationConfiguration(commentary: .frequent)
+        let station = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
+            consent: StaticIntegrationConsent([:]))
+        await station.load()
+        let preparer = DJBreakPreparer(voice: voice, userID: "u", stationID: "s", cadence: config.cadence())
+        let revoked = RevokedBoundaries()
+        await preparer.observe { event in
+            if case .skipped(let k, .paidVoiceRevoked) = event { revoked.add(k) }
+        }
+        let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 1, hour: { 14 })
+        await session.start()
+        await session.queueStarted(djTracks(8))
+        let (tracker, timers) = expiryTracker(clock) { await session.paidVoiceAccessChanged() }
+        await tracker.entitlementRead(cache.snapshot(), now: clock.now)   // SubscriptionModel's read after set
+
+        guard let k = session.plannedBoundaries.first else { return XCTFail("no break planned") }
+        await session.songStarted(index: k, remaining: .seconds(180))
+        guard case .ready(let paid)? = await outcome(preparer, k) else { return XCTFail("prepared") }
+        XCTAssertTrue(paid.clips.contains { $0.audio.providerID != "device" }, "with the paid route while Pro")
+        XCTAssertTrue(revoked.all.isEmpty)
+        let callsBefore = transport.calls
+
+        clock.advance(3600)   // Pro lapses between refreshes; no StoreKit read happens
+        guard let timer = timers.pending.first, timer.date == expiry else { return XCTFail("expiry timer armed") }
+        await timer.fire()
+        XCTAssertEqual(revoked.all, [k], "the prepared paid break is skipped as paidVoiceRevoked")
+        guard case .ready(let replanned)? = await outcome(preparer, k) else { return XCTFail("prepared again") }
+        XCTAssertTrue(replanned.clips.allSatisfy { $0.audio.providerID == "device" }, "on-device")
+        XCTAssertEqual(transport.calls, callsBefore, "no proxy call after the lapse")
+    }
+
+    func testTheCacheHasOneAppWriterAndItReArms() throws {
+        // The timer is re-armed by entitlementRead, so every cache write must be followed by one
+        // (pinned in testSubscriptionModelNotifiesAfterEveryReadOnceTheCacheIsSet).
+        let app = repoRoot.appendingPathComponent("ios/AeroDJ")
+        var writers = 0
+        let files = FileManager.default.enumerator(at: app, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+        for file in files {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            writers += source.components(separatedBy: "entitlement.set(").count - 1
+            writers += source.components(separatedBy: "ProEntitlementCache.shared.set(").count - 1
+        }
+        XCTAssertEqual(writers, 1, "only SubscriptionModel.refreshStatus writes the cache")
     }
 
     // MARK: decision() answers from cached state (Sentinel on #255). takeCheckedBreak bounds the

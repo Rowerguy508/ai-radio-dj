@@ -3,8 +3,9 @@ import Foundation
 // E1 wiring (Echo's split, #244 review): the paywall and the consent sheet tell the break
 // session when paid-voice access really changes, through `DJBreakSession.paidVoiceAccessChanged()`.
 // The session drops prepared paid breaks and re-plans on-device if access is now denied; a grant
-// changes nothing prepared. The boundary re-check (`takeCheckedBreak`) stays the backstop when no
-// signal comes (e.g. an expiry between refreshes). Nothing here reads or logs transaction IDs,
+// changes nothing prepared. An expiry between refreshes is reported by the tracker's one-shot
+// expiry timer (Fry's recommendation); the boundary re-check (`takeCheckedBreak`) stays the
+// backstop. Nothing here reads or logs transaction IDs,
 // JWS or the appAccountToken: it sees only the mapped `ProEntitlementState`. -Nova
 
 /// The notification. Injected so tests can observe it; the default is the real call.
@@ -24,17 +25,53 @@ public enum PaidVoiceAccessRelay {
     public static let live: PaidVoiceAccessNotify = { await PaidVoiceAccessRelay.notify() }
 }
 
+/// Cancels one scheduled expiry check.
+public typealias PaidVoiceExpiryCancel = @MainActor () -> Void
+
+/// Runs `fire` once at `date` (or right away if it has passed) unless cancelled first. Injected so
+/// Linux tests drive the clock by hand; `live` sleeps in a Task. Never touches StoreKit.
+public typealias PaidVoiceExpiryScheduler =
+    @MainActor (_ date: Date, _ fire: @escaping @MainActor @Sendable () async -> Void) -> PaidVoiceExpiryCancel
+
+public enum PaidVoiceExpiryTimer {
+    @MainActor
+    public static let live: PaidVoiceExpiryScheduler = { date, fire in
+        let task = Task { @MainActor in
+            let wait = date.timeIntervalSinceNow
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            guard !Task.isCancelled else { return }
+            await fire()
+        }
+        return { task.cancel() }
+    }
+}
+
 /// Deduplicates the paywall's StoreKit reads: notifies only when the *effective* Pro state
 /// changes, i.e. whether `ProVoiceGate` would let this entitlement use a paid voice (with
 /// consent). A renewal (`.pro` to a later `.pro`), or `.free` to `.expired`/`.unverified`/family-
 /// shared, is no change. Starts at "not Pro", matching `ProEntitlementCache`'s `.free`.
+///
+/// Expiry between refreshes (Fry's recommendation): every read re-arms exactly one timer. A
+/// `.pro` with a future `expiresAt` arms it for that date; any other state (`.free`, `.expired`,
+/// `.unverified`, `.revoked`, `.pro` with no expiry) only cancels the old one. At the date the
+/// tracker re-judges the same state at its clock, so a lapse notifies once (deduped as usual), and
+/// an early wake-up re-arms. A date already past is judged right away by the read itself.
 @MainActor
 public final class ProAccessChangeTracker {
     private var lastPermits = false
     private let notify: PaidVoiceAccessNotify
+    private let schedule: PaidVoiceExpiryScheduler
+    private let now: @Sendable () -> Date
+    private var cancelExpiry: PaidVoiceExpiryCancel?
+    /// Bumped on every arm, so a timer that fires after being replaced does nothing.
+    private var generation = 0
 
-    public init(notify: @escaping PaidVoiceAccessNotify = PaidVoiceAccessRelay.live) {
+    public init(notify: @escaping PaidVoiceAccessNotify = PaidVoiceAccessRelay.live,
+                schedule: @escaping PaidVoiceExpiryScheduler = PaidVoiceExpiryTimer.live,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.notify = notify
+        self.schedule = schedule
+        self.now = now
     }
 
     public static func permitsPaidVoice(_ state: ProEntitlementState, now: Date) -> Bool {
@@ -45,11 +82,24 @@ public final class ProAccessChangeTracker {
     /// new state is in `ProEntitlementCache`. Returns true when it notified.
     @discardableResult
     public func entitlementRead(_ state: ProEntitlementState, now: Date) async -> Bool {
+        armExpiry(for: state, now: now)
         let permits = Self.permitsPaidVoice(state, now: now)
         guard permits != lastPermits else { return false }
         lastPermits = permits
         await notify()
         return true
+    }
+
+    private func armExpiry(for state: ProEntitlementState, now: Date) {
+        cancelExpiry?()
+        cancelExpiry = nil
+        generation += 1
+        guard case .pro(_, let expiresAt?) = state, expiresAt > now else { return }
+        let armed = generation
+        cancelExpiry = schedule(expiresAt) { [weak self] in
+            guard let self, self.generation == armed else { return }
+            await self.entitlementRead(state, now: self.now())
+        }
     }
 }
 
