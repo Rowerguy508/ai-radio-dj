@@ -20,6 +20,7 @@ import { CHALLENGE_TTL_MS, issueChallenge, usedKey, USED_TTL_SECONDS } from '../
 import { secondsUntilNextUtcDay, type Env } from '../src/handler.js';
 import { utcDay } from '../src/limiter.js';
 import { handleRegister, type RegisterDeps, type RegisterLogEntry } from '../src/register-handler.js';
+import { UPSTASH_FETCH_TIMEOUT_MS } from '../src/upstash.js';
 import registerEndpoint from '../api/attest/register.js';
 import { AAGUID_DEV, makeAttestCa, makeAttestation, TEST_APP_ID_PREFIX, type AttestOptions } from './helpers/fake-appattest.js';
 import { FakeRedis, fakeUpstash } from './redis-lua.js';
@@ -381,6 +382,43 @@ describe('register: gates, config and store (note §4.4, §4.7, §12)', () => {
     const odd = (async () => new Response(JSON.stringify({ result: 7 }))) as unknown as typeof fetch;
     const h2 = harness({}, { store: new RedisAttestStore({ url: 'https://u.invalid', token: 't' }, odd) });
     assert.equal((await handleRegister(post(fresh().body), h2.deps)).status, 503);
+  });
+  test('an Upstash call that never finishes times out: 503 store (Retry-After 30)', { timeout: 5_000 }, async () => {
+    // AbortSignal.timeout's timer does not hold the event loop open; this does, for the test only.
+    const keepAlive = setTimeout(() => {}, 10_000);
+    try {
+      const TIMEOUT_MS = 20;
+      const signals: (AbortSignal | null | undefined)[] = [];
+      // Like real fetch: never answers, rejects when its signal aborts.
+      const honoring = ((_url: string, init: RequestInit) => {
+        signals.push(init.signal);
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+        });
+      }) as unknown as typeof fetch;
+      // Never answers and ignores the signal.
+      const ignoring = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+      // Headers arrive, the body never does.
+      const stalledBody = (async () =>
+        new Response(new ReadableStream({ start() {} }), { status: 200 })) as unknown as typeof fetch;
+      for (const [name, fetchImpl] of [['honoring', honoring], ['ignoring', ignoring], ['stalledBody', stalledBody]] as const) {
+        const h = harness({}, { store: new RedisAttestStore({ url: 'https://u.invalid', token: 't' }, fetchImpl, TIMEOUT_MS) });
+        const started = Date.now();
+        const res = await handleRegister(post(fresh().body), h.deps);
+        assert.equal(res.status, 503, name);
+        assert.equal(await reasonOf(res), 'store', name);
+        assert.equal(res.headers.get('retry-after'), '30', name);
+        assert.ok(Date.now() - started < 1_000, name);
+      }
+      assert.equal(signals.length, 1);
+      assert.ok(signals[0] instanceof AbortSignal);
+      assert.equal(signals[0]!.aborted, true);
+    } finally {
+      clearTimeout(keepAlive);
+    }
+  });
+  test('the default Upstash timeout is UPSTASH_FETCH_TIMEOUT_MS (2 s)', () => {
+    assert.equal(UPSTASH_FETCH_TIMEOUT_MS, 2_000);
   });
 });
 

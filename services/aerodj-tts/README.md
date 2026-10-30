@@ -231,6 +231,8 @@ from `/api/attest/challenge`. The app must call `attestKey` with
 405, then the attest flag), then config (500 `misconfig`), then a durable store
 (503 `store`, `Retry-After: 30`, no in-memory fallback in any environment), then a
 **16 KiB raw-body cap** (413).
+Each key-store call to Upstash is bounded at 2 s (`UPSTASH_FETCH_TIMEOUT_MS`,
+request and body); a store that does not answer in time is 503 `store` too.
 
 Verification is offline, against the pinned **Apple App Attestation Root CA**
 (`src/apple-app-attest-root-ca.ts`), never the system trust store: x5c chain and

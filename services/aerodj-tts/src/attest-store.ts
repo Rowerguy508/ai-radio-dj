@@ -1,6 +1,7 @@
 import { usedKey } from './challenge.js';
 import type { Env } from './handler.js';
 import { redisRestConfig, type RedisRestConfig } from './limiter.js';
+import { UPSTASH_FETCH_TIMEOUT_MS, untilAborted } from './upstash.js';
 
 /**
  * Durable App Attest key store (note §4.1.2 step 4, §4.3). Upstash only: there
@@ -99,16 +100,23 @@ export class RedisAttestStore implements AttestStore {
   constructor(
     private readonly config: RedisRestConfig,
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
+    /** Bound on each Upstash call; a timeout is a store error (503 `store`). */
+    private readonly timeoutMs: number = UPSTASH_FETCH_TIMEOUT_MS,
   ) {}
 
   private async eval(script: string, keys: string[], args: (string | number)[]): Promise<number> {
+    const signal = AbortSignal.timeout(this.timeoutMs);
     let response: Response;
     try {
-      response = await this.fetchImpl(this.config.url, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(['EVAL', script, keys.length, ...keys, ...args.map(String)]),
-      });
+      response = await untilAborted(
+        this.fetchImpl(this.config.url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(['EVAL', script, keys.length, ...keys, ...args.map(String)]),
+          signal,
+        }),
+        signal,
+      );
     } catch {
       throw new AttestStoreError('store unreachable');
     }
@@ -116,7 +124,7 @@ export class RedisAttestStore implements AttestStore {
       await response.body?.cancel().catch(() => {});
       throw new AttestStoreError('store error');
     }
-    const payload = (await response.json().catch(() => null)) as { result?: unknown } | null;
+    const payload = (await untilAborted(response.json(), signal).catch(() => null)) as { result?: unknown } | null;
     if (!payload || typeof payload !== 'object' || 'error' in payload || typeof payload.result !== 'number') {
       throw new AttestStoreError('store error');
     }

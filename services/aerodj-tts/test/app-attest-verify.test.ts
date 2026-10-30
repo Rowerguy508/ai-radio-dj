@@ -240,6 +240,19 @@ describe('Fake-CA attestations: each check on its own', () => {
     const r = verifyAttestation({ keyId: a.keyId, attestationObject: a.attestationObject, clientDataHash: attestClientDataHash('other') }, policy());
     assert.deepEqual(r, { ok: false, reason: 'nonce' });
   });
+  test('nonce: every byte is compared (flip only byte 0, only byte 31)', () => {
+    // A fixed credential key makes authData, and so the expected nonce, the same for each attestation.
+    const credKey = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const base = makeAttestation(CA, { clientDataHash: CDH, credKey });
+    const expected = crypto.createHash('sha256').update(base.authData).update(CDH).digest();
+    // Control: the exact expected nonce, passed explicitly, verifies.
+    assert.equal(reason({ credKey, nonce: Buffer.from(expected) }), 'ok');
+    for (const index of [0, 31]) {
+      const flipped = Buffer.from(expected);
+      flipped[index] ^= 0x01;
+      assert.equal(reason({ credKey, nonce: flipped }), 'nonce', `byte ${index}`);
+    }
+  });
   test('keyId must be SHA256 of the credCert public key', () => {
     const wrong = crypto.createHash('sha256').update('someone else').digest();
     // credentialId is set to the same wrong id, so only the key-id check can catch it.
