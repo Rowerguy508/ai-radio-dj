@@ -134,6 +134,58 @@ final class StationStartBriefingTests: XCTestCase {
         XCTAssertEqual(aired.first?.sourceItemID, f.ids[0])
     }
 
+    // MARK: - Boundary hand-offs through the real feed (Orion, #332)
+
+    private func feedStation(_ id: String) -> StationConfiguration {
+        var c = StationConfiguration.default
+        c.seeds = [StationSeed(kind: .artist, catalogID: id, name: "Station \(id)", source: .catalog)]
+        c.reach = .related
+        return c.validated()
+    }
+
+    private func feed() -> StationQueueFeed<String> {
+        StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: StartFakeCatalog()),
+                                 materialize: { $0.map(\.id) }, options: .init(limit: 10), day: { 42 },
+                                 recentlyPlayed: { [] }, refillLead: 3, log: { _ in })
+    }
+
+    /// The kind the player derives right after `queueForNextSong` hands out a queue.
+    private func boundaryKind(_ feed: StationQueueFeed<String>, after finished: Int, in queue: [String],
+                              active: StationConfiguration) throws -> StationHandOffKind {
+        _ = try XCTUnwrap(feed.queueForNextSong(after: finished, in: queue, active: active,
+                                                playbackMayStart: true, sameSong: ==), "a hand-off happened")
+        return StationHandOffKind(boundaryHandOff: feed.pendingHandOffTrigger)
+    }
+
+    func testBoundaryTakeoverByADifferentStationOffersExactlyOneUpdate() async throws {
+        let feed = feed()
+        let a = feedStation("a"), b = feedStation("b")
+        feed.queueStarted(for: a)
+        _ = await feed.prepare(b)
+        let kind = try boundaryKind(feed, after: 0, in: ["a-0", "a-1", "a-2", "a-3", "a-4", "a-5"], active: b)
+        XCTAssertEqual(kind, .stationSwitchAtBoundary)
+        let f = threeApproved()
+        let offer = StationStartBriefing.offer(for: kind, briefing: { f.handoff })
+        XCTAssertEqual(try XCTUnwrap(offer.briefing).cues.filter(\.isContent).map(\.sourceItemID), [f.ids[0]])
+        let aired = try await startBreakContent(offer)
+        XCTAssertEqual(aired.map(\.sourceItemID), [f.ids[0]], "exactly one update on the takeover's first break")
+    }
+
+    func testBoundaryRefillOnTheSameStationOffersNone() async throws {
+        let feed = feed()
+        let a = feedStation("a")
+        feed.queueStarted(for: a)
+        _ = await feed.prepare(a)
+        let kind = try boundaryKind(feed, after: 1, in: ["mine-0", "mine-1", "mine-2"], active: a)
+        XCTAssertEqual(feed.pendingHandOffTrigger, .refill)
+        XCTAssertEqual(kind, .boundary)
+        var reads = 0
+        let f = threeApproved()
+        XCTAssertEqual(StationStartBriefing.offer(for: kind, briefing: { reads += 1; return f.handoff }), .none)
+        XCTAssertEqual(reads, 0)
+        XCTAssertEqual(StationHandOffKind(boundaryHandOff: nil), .boundary, "unknown trigger fails closed")
+    }
+
     func testStartBreakAfterABoundaryHandOffHasNoPersonalUpdate() async throws {
         let f = threeApproved()
         let aired = try await startBreakContent(StationStartBriefing.offer(for: .boundary, briefing: { f.handoff }))
@@ -162,4 +214,16 @@ private struct StartPacedVoice: VoiceProvider {
         return VoiceArtifact(data: Data(text.utf8), durationSeconds: Double(words) * 0.4,
                              billableUnits: 0, provider: "device", cacheKey: nil)
     }
+}
+
+private struct StartFakeCatalog: StationSeedCatalog {
+    private func songs(_ seed: StationSeed, _ tier: String, _ limit: Int) -> [StationCandidate] {
+        (0..<min(limit, 8)).map { n in
+            StationCandidate(track: TrackInfo(id: "\(seed.catalogID)-\(tier)-\(n)", title: "Title \(n)",
+                                              artistName: "\(seed.catalogID)-artist-\(tier)-\(n % 3)"))
+        }
+    }
+    func coreSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] { songs(seed, "core", limit) }
+    func relatedSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] { songs(seed, "related", limit) }
+    func broadSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] { songs(seed, "broad", limit) }
 }

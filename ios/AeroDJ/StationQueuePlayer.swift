@@ -16,8 +16,8 @@ import OSLog
 /// - `MusicKitService.onQueueReplaced`: every new queue belongs to the station committed then.
 /// A hand-off starts like a song tap (`TapPlaySequence`: reserve, play, then break prep), so the
 /// DJ session plans breaks for the new songs. A station START (idle Play, or a created-station
-/// row opened while idle) may carry one personal update (#332, `StationStartBriefing`); a boundary
-/// hand-off carries no briefing handoff.
+/// row opened while idle, or a different station taking over at a song boundary) may carry one
+/// personal update (#332, `StationStartBriefing`); a same-station refill carries none.
 ///
 /// Fallbacks: no seeds, an empty pool, a failed fetch, no playable song, a queue not ready yet, or a
 /// held start all keep the current queue (or Play's existing message). Never an empty queue.
@@ -71,7 +71,9 @@ final class StationQueuePlayer {
                                                           active: self.station.active,
                                                           playbackMayStart: self.music.mayAutoResume,
                                                           sameSong: { $0.id == $1.id }) else { return nil }
-            return { await self.play(tracks, .boundary) }
+            // #332: a station switch at the boundary is a start; a same-station refill is not.
+            let kind = StationHandOffKind(boundaryHandOff: self.feed.pendingHandOffTrigger)
+            return { await self.play(tracks, kind) }
         }
         music.stationQueueForIdlePlay = { [weak self] in
             guard let self, let tracks = self.feed.takeForIdleStart(active: self.station.active) else { return nil }

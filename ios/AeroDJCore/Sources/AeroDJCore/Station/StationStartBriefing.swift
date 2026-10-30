@@ -10,8 +10,8 @@ import Foundation
 // time of day, once-a-day repeat limits and time-sensitive expiry belong to the briefing
 // planner (Echo, #332 Core side). Consent stays fail-closed through `ApprovedShowHandoff.forQueue()`,
 // and `DJBreakSession.queueStarted` re-checks every cue against its source row, so nothing here
-// can widen what may be narrated. A boundary hand-off (refill, or a station change taking over at
-// a song boundary) keeps today's behavior: no briefing handoff.
+// can widen what may be narrated. A different station taking over at a song boundary also counts
+// as a start (Orion, #332). A same-station refill keeps today's behavior: no briefing handoff.
 
 /// Which station hand-off is starting a queue.
 public enum StationHandOffKind: String, Equatable, Sendable, CaseIterable {
@@ -19,11 +19,22 @@ public enum StationHandOffKind: String, Equatable, Sendable, CaseIterable {
     case idlePlayStart
     /// A created-station row was opened while idle (`CreatedStationStarter.open`).
     case createdStationStart
-    /// A refill or replacement at a natural song boundary (`stationQueueAtBoundary`).
+    /// A different station's queue taking over at a natural song boundary (`takeForBoundary`:
+    /// the playing queue's station key changed). Counts as a station start.
+    case stationSwitchAtBoundary
+    /// A same-station refill at the boundary before the last song, or any boundary hand-off whose
+    /// trigger is unknown. Not a start.
     case boundary
 
     /// Only a station start may carry a personal update.
     public var isStationStart: Bool { self != .boundary }
+
+    /// The kind of a boundary hand-off, from `StationQueueFeed.pendingHandOffTrigger` read right
+    /// after `queueForNextSong` returned a queue. Only `.songBoundary` (a station switch) is a
+    /// start; `.refill`, nil or anything else fails closed to `.boundary`.
+    public init(boundaryHandOff trigger: StationQueueTrigger?) {
+        self = trigger == .songBoundary ? .stationSwitchAtBoundary : .boundary
+    }
 }
 
 /// What a station hand-off passes to `DJBreakSession.beginQueueInBackground`.
