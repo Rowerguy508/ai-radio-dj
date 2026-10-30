@@ -236,6 +236,23 @@ jobs:
           for NEEDLE in P0EventTraceHost P0EventTrace P0PollSampler P0TraceView P0EventTracePanel; do
             LC_ALL=C grep -a -q "$NEEDLE" "$DIAG_BIN" || { echo "::error::$NEEDLE missing from the AERODJ_P0_DIAG build"; exit 1; }
           done
+      - name: UI-test animation freeze is absent from Release and present in Debug
+        # -AERODJ_UITEST_DISABLE_ANIMATIONS is honoured only by DEBUG-only code
+        # (CaptureMotionFreeze, UITestAnimationFreezePolicy). Release must not contain it;
+        # the Debug app must, so the check can't pass vacuously. -Atlas
+        run: |
+          RELEASE_APP="$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app"
+          DEBUG_APP="$DERIVED_DATA/Build/Products/Debug-iphoneos/AeroDJ.app"
+          test -d "$RELEASE_APP" && test -d "$DEBUG_APP"
+          for NEEDLE in CaptureMotionFreeze aerodjFreeze_ UITestAnimationFreezePolicy AERODJ_UITEST_DISABLE_ANIMATIONS; do
+            if LC_ALL=C grep -r -a -q "$NEEDLE" "$RELEASE_APP"; then
+              echo "::error::UI-test animation freeze ($NEEDLE) found in the Release app"
+              exit 1
+            fi
+            LC_ALL=C grep -r -a -q "$NEEDLE" "$DEBUG_APP" \
+              || { echo "::error::control: $NEEDLE missing from the Debug app"; exit 1; }
+          done
+          echo "OK: Release app has no UI-test animation freeze; Debug app has it"
       - name: Owner A/B gate script fails closed (fake xcodebuild test)
         run: ios/scripts/check-owner-ab-build-settings-test.sh
       - name: Owner A/B (AERODJ_OWNER_AB) is absent from Release build settings unless dispatched with owner_ab
@@ -407,6 +424,7 @@ jobs:
           xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$PHONE_UDID" -b
           ios/scripts/override-status-bar.sh "$PHONE_UDID"
+          ios/scripts/settle-simulator-keyboard.sh "$PHONE_UDID"
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
@@ -420,6 +438,7 @@ jobs:
           xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$PHONE_UDID" -b
           ios/scripts/override-status-bar.sh "$PHONE_UDID"
+          ios/scripts/settle-simulator-keyboard.sh "$PHONE_UDID"
           xcrun simctl io "$PHONE_UDID" recordVideo --codec h264 --force "$SHOTS/walkthrough-closed.mp4" &
           REC=$!
           sleep 2
@@ -444,6 +463,7 @@ jobs:
           xcrun simctl boot "$PAD_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$PAD_UDID" -b
           ios/scripts/override-status-bar.sh "$PAD_UDID"
+          ios/scripts/settle-simulator-keyboard.sh "$PAD_UDID"
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PAD_UDID" -- \
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
@@ -487,6 +507,25 @@ jobs:
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           git worktree prune
           git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          # The head launches its UI tests with -AERODJ_UITEST_DISABLE_ANIMATIONS. A base from
+          # before #289 lacks that freeze, so overlay exactly the freeze files (head's diff
+          # against the base, nothing else) onto the base checkout. Once the base has the
+          # freeze, the base is built untouched.
+          FREEZE_FILES=(
+            ios/AeroDJ/CaptureMotionFreeze.swift
+            ios/AeroDJ/AeroDJApp.swift
+            ios/AeroDJUITests/StudioScreenTests.swift
+            ios/AeroDJCore/Sources/AeroDJCore/Runtime/UITestAnimationFreezePolicy.swift
+          )
+          if [ -f "$RUNNER_TEMP/base/ios/AeroDJ/CaptureMotionFreeze.swift" ]; then
+            echo "Base already has the animation freeze; building it unchanged"
+          else
+            git diff --binary "$BASE_SHA" HEAD -- "${FREEZE_FILES[@]}" > "$RUNNER_TEMP/freeze-overlay.patch"
+            git -C "$RUNNER_TEMP/base" apply --whitespace=nowarn "$RUNNER_TEMP/freeze-overlay.patch" \
+              || { echo "::error::Could not overlay the animation freeze onto the base ($BASE_SHA)"; exit 1; }
+            echo "::notice::Base predates the animation freeze; overlaid $(grep -c '^diff --git' "$RUNNER_TEMP/freeze-overlay.patch") freeze file(s) onto it"
+            git -C "$RUNNER_TEMP/base" diff --stat
+          fi
           (cd "$RUNNER_TEMP/base/ios" && xcodegen generate)
           xcodebuild build-for-testing \
             -project "$RUNNER_TEMP/base/ios/AeroDJ.xcodeproj" \
@@ -499,6 +538,7 @@ jobs:
           xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$PHONE_UDID" -b
           ios/scripts/override-status-bar.sh "$PHONE_UDID"
+          ios/scripts/settle-simulator-keyboard.sh "$PHONE_UDID"
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
             env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$BASE_SHOTS" xcodebuild test-without-building \
             -project "$RUNNER_TEMP/base/ios/AeroDJ.xcodeproj" \
