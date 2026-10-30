@@ -51,13 +51,20 @@ public struct ProxyVoiceProvider: VoiceProvider {
 
     public let configuration: Configuration
     private let transport: any HTTPTransport
+    /// Optional 429 / 5xx backoff. Nil keeps the old behavior: every call goes to the proxy.
+    public let backoff: PaidVoiceBackoff?
 
-    public init(configuration: Configuration, transport: any HTTPTransport = URLSessionTransport()) {
+    public init(configuration: Configuration, transport: any HTTPTransport = URLSessionTransport(),
+                backoff: PaidVoiceBackoff? = nil) {
         self.configuration = configuration
         self.transport = transport
+        self.backoff = backoff
     }
 
     public func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+        // Suspended after a 429 or 5xx: fail before the token read or any network call, so
+        // `VoiceRenderer` goes straight to the next (on-device) route.
+        if backoff?.suspendedUntil() != nil { throw VoiceRenderError.suspended }
         var request = URLRequest(url: configuration.endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 15
@@ -67,7 +74,27 @@ public struct ProxyVoiceProvider: VoiceProvider {
             "upstream": configuration.upstream.rawValue, "voiceId": voice.id, "text": text,
             "format": text.hasPrefix("<speak>") ? "ssml" : "text", "stationId": context.stationID,
         ])
-        let (data, response) = try await transport.send(request)
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+            (data, response) = try await transport.send(request)
+        } catch {
+            // Caller cancellation or our own timeout (which cancels this task) is not a proxy failure.
+            if !(error is CancellationError) && !Task.isCancelled { backoff?.recordServerFailure() }
+            throw error
+        }
+        switch response.statusCode {
+        case 200: break  // counted as a success only once the audio below is validated
+        case 401: backoff?.recordUnauthorized()
+        case 429:
+            backoff?.recordRateLimited(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
+                                       reason: PaidVoiceBackoff.ProxyErrorReason.parse(data))
+        case 503:
+            backoff?.recordServiceUnavailable(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
+                                              reason: PaidVoiceBackoff.ProxyErrorReason.parse(data))
+        case 500...599: backoff?.recordServerFailure()
+        default: break
+        }
         guard response.statusCode == 200 else { throw VoiceRenderError.invalidResponse("status \(response.statusCode)") }
         guard let type = response.value(forHTTPHeaderField: "Content-Type")?.lowercased(), type.hasPrefix("audio/") else {
             throw VoiceRenderError.invalidResponse("content type")
@@ -77,6 +104,7 @@ public struct ProxyVoiceProvider: VoiceProvider {
               seconds.isFinite, seconds > 0, seconds <= 600 else {
             throw VoiceRenderError.invalidResponse("duration")
         }
+        backoff?.recordSuccess()
         let billed = response.value(forHTTPHeaderField: "X-Billed-Characters").flatMap(Int.init) ?? text.count
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: billed,
                              provider: configuration.upstream.rawValue, cacheKey: nil)

@@ -5,6 +5,7 @@ import {
   DEFAULT_GLOBAL_DAILY_CHAR_CAP,
   DEFAULT_INSTALL_DAILY_CHAR_CAP,
   DEFAULT_REQUESTS_PER_MINUTE,
+  effectiveNonprodCap,
   InMemoryUsageLimiter,
   LimiterStoreError,
   MAX_CONFIGURED_CHAR_CAP,
@@ -14,10 +15,12 @@ import {
   redisRestConfig,
   subjectBucket,
   type LimiterOptions,
+  type ProReservation,
   type QuotaReason,
   type Reservation,
   type UsageLimiter,
 } from './limiter.js';
+import { isVerifiedProSubject, PRO_DAILY_RENDER_ALLOWANCE, proAllowFamilyShared, proBucket, proDeployment, type ProSubject } from './pro-allowance.js';
 import { ssmlToPlainText } from './ssml.js';
 import { pcmToWav, sampleCount, SAMPLE_RATE } from './wav.js';
 
@@ -47,9 +50,55 @@ const SUBJECT_BUCKET = subjectBucket(SUBJECT);
  * Enum only: never text, ids or keys. `rate` = per-minute rate, `install_daily` = this
  * install's daily cap, `owner_daily` = the owner bucket's daily cap, `global_daily` = the global daily ceiling, `store` = limiter
  * store unreachable (fails closed), `disabled` = master stop `AERODJ_TTS_PAID_STOP` (PR 3),
- * `misconfig` = server configuration missing or invalid (500, PR 3).
+ * `misconfig` = server configuration missing or invalid (500, PR 3), `daily_allowance` = this
+ * Pro purchase's daily render allowance is used up (429 until the next 00:00 UTC; the app
+ * switches to the on-device voice quietly, see src/pro-allowance.ts).
  */
-export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconfig';
+export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconfig' | 'daily_allowance';
+/** Server-log reasons: the wire reasons, plus `pro_chars` (a Pro char-cap 429 that answers `daily_allowance`). */
+/**
+ * Log-only refinements of a wire reason. `no_store` (Fry on #287): ElevenLabs key set but no
+ * shared store, so the 500 `misconfig` was the no-store gate.
+ */
+export type LogReason = ErrorReason | 'pro_chars' | 'no_store';
+
+/**
+ * A verified Pro request is charged to its OWN subject (Sentinel's B1 on #264), never the
+ * owner's or an install's: its own char bucket and its own per-minute rate bucket, plus
+ * the shared global ceiling, which still applies to everyone and is checked FIRST, in the
+ * same atomic step (Sentinel), so a full global ceiling refuses a Pro request with
+ * `global_daily` and moves no Pro counter. So the per-install char cap
+ * (1,500/day) does not apply to Pro (Orion and Nigel: it would contradict 40 breaks a day).
+ *
+ * Char cap: env `AERODJ_TTS_PRO_DAILY_CHARS`, default 12,000 (owner-confirmed default),
+ * effective value clamped to the global ceiling (`effectiveProCharCap`), so 9,000 today.
+ * Without it, 160 renders x 600 chars would be 96k chars for one subscriber.
+ * Rate: env `AERODJ_TTS_PRO_RATE_PER_MINUTE`, default 12/min (the same default as the
+ * owner): a break is at most 4 renders, so 12/min fits 3 breaks a minute, far above 160 a day.
+ * Both: unset = default; set, a plain decimal integer in range, else the Pro path answers
+ * 500 `misconfig` (a typo never widens or silently replaces the owner's number). The owner
+ * path reads neither.
+ */
+export const DEFAULT_PRO_DAILY_CHARS = 12_000;
+/** At least one full-length request (the 600-char default per-request cap) must fit. */
+export const MIN_PRO_DAILY_CHARS = 600;
+
+/** The Pro daily char cap, or null when the env value is set but invalid (500 misconfig). */
+export function proDailyChars(env: Env): number | null {
+  const raw = env.AERODJ_TTS_PRO_DAILY_CHARS;
+  if (raw === undefined) return DEFAULT_PRO_DAILY_CHARS;
+  const n = parseCharCap(raw);
+  return n !== null && n >= MIN_PRO_DAILY_CHARS ? n : null;
+}
+
+export const DEFAULT_PRO_REQUESTS_PER_MINUTE = DEFAULT_REQUESTS_PER_MINUTE;
+
+/** The Pro per-minute rate, or null when the env value is set but invalid (500 misconfig). */
+export function proRatePerMinute(env: Env): number | null {
+  const raw = env.AERODJ_TTS_PRO_RATE_PER_MINUTE;
+  if (raw === undefined) return DEFAULT_PRO_REQUESTS_PER_MINUTE;
+  return parseRatePerMinute(raw);
+}
 
 /** Retry-After (seconds) for a rate 429 and a store 503: an upper bound for both window types. */
 export const RATE_RETRY_AFTER_SECONDS = 60;
@@ -66,7 +115,7 @@ export interface LogEntry {
   /** Upstream non-2xx only: allowlisted `detail.status` code, else 'other'. */
   upstreamCode?: string;
   /** 429, 503 and 500 `misconfig` only: the enum refusal reason. */
-  reason?: ErrorReason;
+  reason?: LogReason;
 }
 
 /** Bytes of an upstream error body read for `detail.status`; the rest is discarded. */
@@ -127,6 +176,32 @@ export interface Deps {
   requestId: () => string;
   /** Lost-refund log (Fry's nit on #257); defaults to one console.log JSON line. */
   logRefundLost?: (entry: RefundLostLog) => void;
+  /**
+   * TEST-ONLY. Lets a test drive the handler with a non-durable (in-memory or spy) limiter
+   * while ELEVENLABS_API_KEY is set. Two independent locks keep it off a deployed function
+   * (Sentinel's nit on #294): `defaultDeps` returns `ProductionDeps`, which cannot carry it,
+   * and `nonDurableOverrideHonoured` ignores it whenever VERCEL_ENV is set to anything, in
+   * `deps.env` or in `process.env`. So on Vercel an upstream key without the shared store is
+   * always 500 `misconfig` / `no_store` (Fry on #287).
+   */
+  testOnlyAllowNonDurableLimiter?: true;
+}
+
+/** The Deps the deployed function gets: the test-only override cannot be set on it. */
+export type ProductionDeps = Readonly<Omit<Deps, 'testOnlyAllowNonDurableLimiter'> & { testOnlyAllowNonDurableLimiter?: never }>;
+
+/**
+ * True only for an explicit test override AND no VERCEL_ENV anywhere. Any VERCEL_ENV value
+ * (production, preview, development, empty or unknown) in `deps.env` or in the process
+ * environment means "running on Vercel", and the override is ignored.
+ */
+export function nonDurableOverrideHonoured(
+  deps: Pick<Deps, 'env' | 'testOnlyAllowNonDurableLimiter'>,
+  runtimeEnv: Env = process.env,
+): boolean {
+  if (deps.testOnlyAllowNonDurableLimiter !== true) return false;
+  if (deps.env.VERCEL_ENV !== undefined || runtimeEnv.VERCEL_ENV !== undefined) return false;
+  return true;
 }
 
 /**
@@ -137,10 +212,17 @@ export interface RefundLostLog {
   event: 'refund_lost';
   reason: 'store' | 'timeout';
   chars: number;
+  /**
+   * `pro_render`: the lost refund was a Pro reservation (its chars and its render; Fry's N1 on #264).
+   * Absent for a char refund, so that line keeps its #259 shape. Never a bucket or id.
+   */
+  kind?: 'pro_render';
 }
 
 export const logRefundLostToConsole = (entry: RefundLostLog): void => {
-  console.log(JSON.stringify({ event: entry.event, reason: entry.reason, chars: entry.chars }));
+  console.log(
+    JSON.stringify({ event: entry.event, reason: entry.reason, chars: entry.chars, ...(entry.kind === 'pro_render' ? { kind: entry.kind } : {}) }),
+  );
 };
 
 export interface TtsRequest {
@@ -148,6 +230,12 @@ export interface TtsRequest {
   authorization: string | undefined;
   /** Parsed JSON object, raw JSON string/Buffer, or undefined. */
   body: unknown;
+  /**
+   * The Pro purchase this request is charged to, set ONLY by server code from a JWS it
+   * verified (`proSubjectFromVerified`, PR 6 wires it). Never read from the body or a
+   * header: api/tts.ts does not set it, so today's owner path never touches the allowance.
+   */
+  verifiedPro?: ProSubject;
 }
 
 export interface TtsResponse {
@@ -185,7 +273,7 @@ export function parseRatePerMinute(value: string | undefined): number | null {
   return parseBoundedInt(value, MAX_CONFIGURED_REQUESTS_PER_MINUTE);
 }
 
-function parseBoundedInt(value: string | undefined, max: number): number | null {
+export function parseBoundedInt(value: string | undefined, max: number): number | null {
   const trimmed = value?.trim();
   if (!trimmed || !/^\d{1,9}$/.test(trimmed)) return null;
   const n = Number(trimmed);
@@ -197,14 +285,21 @@ function parseBoundedInt(value: string | undefined, max: number): number | null 
  * `AERODJ_TTS_DAILY_CHAR_CAP` (so today's owner-set 9,000 keeps applying), else 9,000.
  * Owner bucket: `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`, else the global ceiling.
  * Per install: `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP`, else 1,500.
+ * Preview / Development sub-cap (#287 B1): `AERODJ_TTS_NONPROD_DAILY_CHAR_CAP`, else 1,000,
+ * and never above 1,000 (configurable only downward). Production ignores it.
  */
 export function limiterOptions(env: Env): LimiterOptions {
   const dailyCharCap =
     parseCharCap(env.AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP) ??
     parseCharCap(env.AERODJ_TTS_DAILY_CHAR_CAP) ??
     DEFAULT_GLOBAL_DAILY_CHAR_CAP;
+  const deployment = proDeployment(env);
   return {
     dailyCharCap,
+    ...(deployment !== null ? { deployment } : {}),
+    ...(deployment !== null && deployment !== 'production'
+      ? { nonprodDailyCharCap: effectiveNonprodCap(parseCharCap(env.AERODJ_TTS_NONPROD_DAILY_CHAR_CAP) ?? undefined) }
+      : {}),
     ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? dailyCharCap,
     installDailyCharCap: parseCharCap(env.AERODJ_TTS_INSTALL_DAILY_CHAR_CAP) ?? DEFAULT_INSTALL_DAILY_CHAR_CAP,
     requestsPerMinute: parseRatePerMinute(env.AERODJ_TTS_RATE_PER_MINUTE) ?? DEFAULT_REQUESTS_PER_MINUTE,
@@ -213,18 +308,33 @@ export function limiterOptions(env: Env): LimiterOptions {
 
 /**
  * Picks the limiter for this environment:
- * - Upstash Redis REST credentials present: durable `RedisUsageLimiter` (hard cap).
- * - Otherwise, outside Vercel Production: per-instance `InMemoryUsageLimiter`.
- * - Otherwise (Vercel Production, no store): null, so every request fails closed with
- *   500, unless the owner explicitly accepts best-effort limits with
- *   `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true`.
+ * - Upstash Redis REST credentials present: durable `RedisUsageLimiter` (hard cap), its
+ *   owner/install/Pro day keys scoped by `VERCEL_ENV` (#264 N5), the global key shared by
+ *   every deployment and a 1,000-char sub-cap on Preview/Development (#287 B1). An unset or unknown `VERCEL_ENV` (the same strict
+ *   allow-list as the Pro keys, B3) returns null: every request is 500 `misconfig`.
+ * - No store but `ELEVENLABS_API_KEY` set, in ANY `VERCEL_ENV` (production included, and
+ *   regardless of `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS`): null, so every request is 500
+ *   `misconfig` (Fry on #287: a per-instance limiter would spend outside the shared 9,000).
+ * - Otherwise (no store, no upstream key, so nothing can be spent), outside Vercel
+ *   Production: per-instance `InMemoryUsageLimiter`.
+ * - Otherwise (Vercel Production, no store, no key): null, unless the owner explicitly
+ *   accepts best-effort limits with `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true`.
  */
 export function selectLimiter(env: Env, fetchImpl: typeof fetch = globalThis.fetch): UsageLimiter | null {
   const redis = redisRestConfig(env);
-  if (redis) return new RedisUsageLimiter(redis, limiterOptions(env), fetchImpl);
+  if (redis) {
+    const options = limiterOptions(env);
+    return options.deployment === undefined ? null : new RedisUsageLimiter(redis, options, fetchImpl);
+  }
+  if (upstreamKeyConfigured(env)) return null;
   const production = env.VERCEL_ENV === 'production';
   if (production && env.AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS?.trim() !== 'true') return null;
   return new InMemoryUsageLimiter(limiterOptions(env));
+}
+
+/** ELEVENLABS_API_KEY is set (non-blank): something could be spent. */
+export function upstreamKeyConfigured(env: Env): boolean {
+  return (env.ELEVENLABS_API_KEY ?? '').trim() !== '';
 }
 
 function defaultLimiter(env: Env): UsageLimiter | null {
@@ -234,8 +344,9 @@ function defaultLimiter(env: Env): UsageLimiter | null {
   return limiter;
 }
 
-export function defaultDeps(env: Env = process.env): Deps {
-  return {
+export function defaultDeps(env: Env = process.env): ProductionDeps {
+  // Frozen and typed without the test-only override: nothing downstream can switch it on.
+  return Object.freeze({
     env,
     fetch: globalThis.fetch,
     limiter: defaultLimiter(env),
@@ -256,7 +367,7 @@ export function defaultDeps(env: Env = process.env): Deps {
     now: Date.now,
     timeoutMs: UPSTREAM_TIMEOUT_MS,
     requestId: () => crypto.randomUUID(),
-  };
+  });
 }
 
 function parseBody(body: unknown): Record<string, unknown> | null {
@@ -310,9 +421,9 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
    * 429 / 503 / 500-misconfig contract: `Retry-After` (integer seconds >= 1) and a body
    * of `{ error, requestId, reason, retryAfterSeconds }`: enum and numbers only.
    */
-  const refuse = (status: 429 | 500 | 503, reason: ErrorReason, retryAfterSeconds: number): TtsResponse => {
+  const refuse = (status: 429 | 500 | 503, reason: ErrorReason, retryAfterSeconds: number, logReason: LogReason = reason): TtsResponse => {
     const seconds = Math.max(1, Math.ceil(retryAfterSeconds));
-    deps.log({ requestId, status, chars, reason });
+    deps.log({ requestId, status, chars, reason: logReason });
     return {
       status,
       headers: {
@@ -340,13 +451,37 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   if (!token || !tokenMatches(token, expectedHash)) return fail(401);
 
   const limiter = deps.limiter;
-  if (!limiter) return misconfigured();
   const apiKey = deps.env.ELEVENLABS_API_KEY?.trim();
+  // No shared store while the ElevenLabs key is set (Fry on #287): 500 before any counter
+  // write or upstream call, on every path (owner, Pro) and in every VERCEL_ENV. A per-instance
+  // limiter would spend outside the shared daily ceiling. Log reason is the enum `no_store`.
+  const noSharedStore = limiter === null ? redisRestConfig(deps.env) === null : limiter.durable !== true;
+  if (apiKey && noSharedStore && !nonDurableOverrideHonoured(deps)) {
+    return refuse(500, 'misconfig', MISCONFIG_RETRY_AFTER_SECONDS, 'no_store');
+  }
+  if (!limiter) return misconfigured();
   if (!apiKey) return misconfigured();
 
   const now = deps.now();
+
+  // --- Pro identity (src/pro-allowance.ts): only a server-minted ProSubject, never a body
+  // field or header. Its deployment, char cap and rate come from env, strictly. ---
+  let pro: { bucket: string; charCap: number; rate: number } | undefined;
+  if (req.verifiedPro !== undefined) {
+    if (!isVerifiedProSubject(req.verifiedPro)) return misconfigured();
+    const deployment = proDeployment(deps.env);
+    const charCap = proDailyChars(deps.env);
+    const rate = proRatePerMinute(deps.env);
+    // Family Sharing flag: validated here too, so a typo is 500 misconfig on the Pro path
+    // even before PR 6 reads it for verification (the owner path never reads it).
+    const familyShared = proAllowFamilyShared(deps.env);
+    if (deployment === null || charCap === null || rate === null || familyShared === null) return misconfigured();
+    pro = { bucket: proBucket(req.verifiedPro, deployment), charCap, rate };
+  }
+
   try {
-    if (!(await limiter.allowRequest(SUBJECT_BUCKET, now))) return refuse(429, 'rate', RATE_RETRY_AFTER_SECONDS);
+    const allowed = pro ? await limiter.allowRequest(pro.bucket, now, pro.rate) : await limiter.allowRequest(SUBJECT_BUCKET, now);
+    if (!allowed) return refuse(429, 'rate', RATE_RETRY_AFTER_SECONDS);
   } catch (error) {
     if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
     throw error;
@@ -368,27 +503,65 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   if (text.length === 0 || text.length > maxChars) return fail(400);
   chars = text.length;
 
-  // Atomic reserve-before-render: the characters count against today's cap before the
-  // upstream call, so concurrent requests cannot jointly exceed it.
-  let reservation: Reservation;
-  try {
-    const result = await limiter.reserve(SUBJECT, chars, now);
-    if (!result.ok) return refuse(429, result.reason, secondsUntilNextUtcDay(now));
-    reservation = result.reservation;
-  } catch (error) {
-    if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
-    // Any other reserve failure is a server fault, not a store outage: 500 `misconfig`
-    // with Retry-After 3600 (note §4.4; Sentinel's #250 nit), before any upstream call.
-    return misconfigured();
+  // --- Daily budgets: atomic reserve-before-render, so concurrent requests cannot jointly
+  // exceed a cap. After the 600-char cap, before any upstream call. ---
+  let release: () => Promise<boolean>;
+  let held: { chars: number; kind?: 'pro_render' };
+  if (pro) {
+    // Verified Pro (#264): ONE atomic step on the Pro purchase's own buckets plus the global
+    // ceiling, never the owner's or an install's (so no per-install 1,500 cap). Order inside
+    // it: global ceiling, then the 160-render allowance, then the subscriber's char cap
+    // (clamped to global). Any refusal changes no counter. Durable store only.
+    if (limiter.durable !== true || !limiter.reservePro || !limiter.releasePro) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+    const releasePro = limiter.releasePro.bind(limiter);
+    let reservation: ProReservation;
+    try {
+      const result = await limiter.reservePro(
+        { bucket: pro.bucket, chars, charCap: pro.charCap, renderAllowance: PRO_DAILY_RENDER_ALLOWANCE },
+        now,
+      );
+      if (!result.ok) {
+        // Render allowance or own char cap: one wire contract, `daily_allowance` until 00:00
+        // UTC (the app switches to on-device quietly); only the log tells them apart.
+        if (result.reason === 'pro_renders') return refuse(429, 'daily_allowance', secondsUntilNextUtcDay(now));
+        if (result.reason === 'pro_chars') return refuse(429, 'daily_allowance', secondsUntilNextUtcDay(now), 'pro_chars');
+        return refuse(429, 'global_daily', secondsUntilNextUtcDay(now));
+      }
+      reservation = result.reservation;
+    } catch (error) {
+      if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+      return misconfigured();
+    }
+    release = () => releasePro(reservation);
+    held = { chars: reservation.chars, kind: 'pro_render' };
+  } else {
+    let reservation: Reservation;
+    try {
+      const result = await limiter.reserve(SUBJECT, chars, now);
+      if (!result.ok) return refuse(429, result.reason, secondsUntilNextUtcDay(now));
+      reservation = result.reservation;
+    } catch (error) {
+      if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+      // Any other reserve failure is a server fault, not a store outage: 500 `misconfig`
+      // with Retry-After 3600 (note §4.4; Sentinel's #250 nit), before any upstream call.
+      return misconfigured();
+    }
+    release = () => limiter.release(reservation);
+    held = { chars: reservation.chars };
   }
-  const held = reservation;
   // Refund only when the upstream definitely did not bill (it answered non-2xx).
-  // Network errors, timeouts and bad audio after a 2xx keep the reservation: the
-  // render may have been billed, so the cap errs on the side of spending less.
+  // Network errors, timeouts and bad audio after a 2xx keep the reservation (chars and,
+  // for Pro, the render): it may have been billed, so the caps err on spending less.
+  // A failed refund logs one enum-only `refund_lost` line (`kind: 'pro_render'` for Pro, Fry's N1).
   const refund = async (): Promise<void> => {
-    await limiter.release(held).catch((error: unknown) => {
+    await release().catch((error: unknown) => {
       const timedOut = error instanceof LimiterStoreError && error.timedOut;
-      (deps.logRefundLost ?? logRefundLostToConsole)({ event: 'refund_lost', reason: timedOut ? 'timeout' : 'store', chars: held.chars });
+      (deps.logRefundLost ?? logRefundLostToConsole)({
+        event: 'refund_lost',
+        reason: timedOut ? 'timeout' : 'store',
+        chars: held.chars,
+        ...(held.kind ? { kind: held.kind } : {}),
+      });
     });
   };
 
@@ -413,6 +586,7 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
       // Read at most 4 KB for the allowlisted detail.status code, then drop the body.
       // Neither the body nor detail.message reaches the logs or the response.
       const upstreamCode = await upstreamErrorCode(upstream);
+      // One refund (one Upstash bound) covers chars and, for Pro, the render (Fry's N4).
       await refund();
       return fail(502, {}, { upstreamStatus: upstream.status, upstreamCode });
     }
