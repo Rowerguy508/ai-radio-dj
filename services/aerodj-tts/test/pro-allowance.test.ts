@@ -90,6 +90,8 @@ function harness(o: { limiter?: UsageLimiter; options?: Partial<LimiterOptions>;
     now: () => clock,
     timeoutMs: 50,
     requestId: () => 'req-1',
+    // Test-only: these harnesses drive the handler with an in-memory/spy limiter (Fry on #287 gate).
+    testOnlyAllowNonDurableLimiter: true,
     logRefundLost: (e) => o.lost?.push(e),
   };
   const proCalls = () => up.calls.filter((c) => c.command[1] === PRO_RESERVE_SCRIPT || c.command[1] === PRO_RELEASE_SCRIPT).length;

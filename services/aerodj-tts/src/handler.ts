@@ -56,7 +56,11 @@ const SUBJECT_BUCKET = subjectBucket(SUBJECT);
  */
 export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconfig' | 'daily_allowance';
 /** Server-log reasons: the wire reasons, plus `pro_chars` (a Pro char-cap 429 that answers `daily_allowance`). */
-export type LogReason = ErrorReason | 'pro_chars';
+/**
+ * Log-only refinements of a wire reason. `no_store` (Fry on #287): ElevenLabs key set but no
+ * shared store, so the 500 `misconfig` was the no-store gate.
+ */
+export type LogReason = ErrorReason | 'pro_chars' | 'no_store';
 
 /**
  * A verified Pro request is charged to its OWN subject (Sentinel's B1 on #264), never the
@@ -172,6 +176,12 @@ export interface Deps {
   requestId: () => string;
   /** Lost-refund log (Fry's nit on #257); defaults to one console.log JSON line. */
   logRefundLost?: (entry: RefundLostLog) => void;
+  /**
+   * TEST-ONLY. Lets a test drive the handler with a non-durable (in-memory or spy) limiter
+   * while ELEVENLABS_API_KEY is set. `defaultDeps` never sets it, so at runtime an upstream
+   * key without the shared store is always 500 `misconfig` (Fry on #287).
+   */
+  testOnlyAllowNonDurableLimiter?: true;
 }
 
 /**
@@ -282,10 +292,13 @@ export function limiterOptions(env: Env): LimiterOptions {
  *   owner/install/Pro day keys scoped by `VERCEL_ENV` (#264 N5), the global key shared by
  *   every deployment and a 1,000-char sub-cap on Preview/Development (#287 B1). An unset or unknown `VERCEL_ENV` (the same strict
  *   allow-list as the Pro keys, B3) returns null: every request is 500 `misconfig`.
- * - Otherwise, outside Vercel Production: per-instance `InMemoryUsageLimiter`.
- * - Otherwise (Vercel Production, no store): null, so every request fails closed with
- *   500, unless the owner explicitly accepts best-effort limits with
- *   `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true`.
+ * - No store but `ELEVENLABS_API_KEY` set, in ANY `VERCEL_ENV` (production included, and
+ *   regardless of `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS`): null, so every request is 500
+ *   `misconfig` (Fry on #287: a per-instance limiter would spend outside the shared 9,000).
+ * - Otherwise (no store, no upstream key, so nothing can be spent), outside Vercel
+ *   Production: per-instance `InMemoryUsageLimiter`.
+ * - Otherwise (Vercel Production, no store, no key): null, unless the owner explicitly
+ *   accepts best-effort limits with `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true`.
  */
 export function selectLimiter(env: Env, fetchImpl: typeof fetch = globalThis.fetch): UsageLimiter | null {
   const redis = redisRestConfig(env);
@@ -293,9 +306,15 @@ export function selectLimiter(env: Env, fetchImpl: typeof fetch = globalThis.fet
     const options = limiterOptions(env);
     return options.deployment === undefined ? null : new RedisUsageLimiter(redis, options, fetchImpl);
   }
+  if (upstreamKeyConfigured(env)) return null;
   const production = env.VERCEL_ENV === 'production';
   if (production && env.AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS?.trim() !== 'true') return null;
   return new InMemoryUsageLimiter(limiterOptions(env));
+}
+
+/** ELEVENLABS_API_KEY is set (non-blank): something could be spent. */
+export function upstreamKeyConfigured(env: Env): boolean {
+  return (env.ELEVENLABS_API_KEY ?? '').trim() !== '';
 }
 
 function defaultLimiter(env: Env): UsageLimiter | null {
@@ -411,8 +430,15 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   if (!token || !tokenMatches(token, expectedHash)) return fail(401);
 
   const limiter = deps.limiter;
-  if (!limiter) return misconfigured();
   const apiKey = deps.env.ELEVENLABS_API_KEY?.trim();
+  // No shared store while the ElevenLabs key is set (Fry on #287): 500 before any counter
+  // write or upstream call, on every path (owner, Pro) and in every VERCEL_ENV. A per-instance
+  // limiter would spend outside the shared daily ceiling. Log reason is the enum `no_store`.
+  const noSharedStore = limiter === null ? redisRestConfig(deps.env) === null : limiter.durable !== true;
+  if (apiKey && noSharedStore && deps.testOnlyAllowNonDurableLimiter !== true) {
+    return refuse(500, 'misconfig', MISCONFIG_RETRY_AFTER_SECONDS, 'no_store');
+  }
+  if (!limiter) return misconfigured();
   if (!apiKey) return misconfigured();
 
   const now = deps.now();
