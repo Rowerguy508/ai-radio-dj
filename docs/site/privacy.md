@@ -43,9 +43,10 @@ If you turn it on, the words of each DJ break are sent over an encrypted connect
 
 - **What we don't send:** your name, Apple ID, contacts, location, calendar, notes, shared items, library tracks or the station names you type.
 - **Our server's log:** it records a random request ID, the result and the number of characters. It doesn't log the text.
-- **Hosting logs:** Vercel keeps standard request logs, which include IP address and app identifier, for [owner: retention for the team's plan]. [owner: say whether IP address is used for rate limiting.]
+- **Hosting logs:** Vercel keeps standard request logs, which include IP address and app identifier. These logs are kept for up to 30 days. [owner: say whether IP address is used for rate limiting.]
+- **Usage counters:** daily usage counts, with no text, reset every day. No DJ text is stored on our server.
 - **ElevenLabs:** ElevenLabs processes the text and audio under its [privacy policy](https://elevenlabs.io/privacy-policy). By default, ElevenLabs keeps a history of requests. [owner: retention, Zero Retention Mode, and whether model training is opted out. Include "We have opted out of ElevenLabs using this data to train its models" only if that is true.]
-- **Device check:** [owner, pending #256: if App Attest is enabled, describe the per-install key the server stores to stop abuse, how long it is kept, and that it is never stored with the spoken text.]
+- **Device check:** when it's enabled, our server keeps a key for your install, which it uses to confirm requests come from a genuine copy of OnAirly and to stop abuse. The key is deleted after 90 days without use and is never stored with the spoken text. [PENDING: #256 and enabling App Attest]
 - **Turning it off:** you can turn the cloud voice off at any time in Settings. Nothing more is sent after that, and any queued cloud clips are cancelled.
 
 ## Purchases [PENDING: paid voice]
