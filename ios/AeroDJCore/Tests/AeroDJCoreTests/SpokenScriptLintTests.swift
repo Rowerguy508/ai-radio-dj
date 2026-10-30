@@ -134,6 +134,28 @@ final class SpokenScriptLintTests: XCTestCase {
         XCTAssertGreaterThan(spokenLines, 3_000)
     }
 
+    /// The shipped default: the built-in station name, every raw pool line, and whole sessions
+    /// planned with the writer's default name never say the old brand.
+    func testShippedDefaultsNeverSayTheOldBrand() {
+        XCTAssertEqual(DJScriptWriter.builtInStationName, "OnAirly")
+        XCTAssertFalse(Self.problems(DJScriptWriter.builtInStationName).contains("old brand"))
+        for line in EditorialTone.warm.allLines {
+            XCTAssertFalse(line.localizedCaseInsensitiveContains("aerodj"), line)
+            XCTAssertFalse(line.localizedCaseInsensitiveContains("aero dj"), line)
+        }
+        var sawStationID = false
+        for seed in UInt64(1)...40 {
+            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed)
+            for djBreak in writer.plan(tracks: djTracks(24), briefing: nil, hour: [8, 15, 22][Int(seed % 3)]).breaks {
+                for cue in djBreak.cues {
+                    assertClean(cue.text, "default writer seed \(seed)")
+                    if cue.text.contains("OnAirly") { sawStationID = true }
+                }
+            }
+        }
+        XCTAssertTrue(sawStationID, "station IDs air with the real name")
+    }
+
     // MARK: SpokenTitle
 
     func testSpokenTitleDropsCatalogSuffixesAndSpeaksFeaturedArtists() {
