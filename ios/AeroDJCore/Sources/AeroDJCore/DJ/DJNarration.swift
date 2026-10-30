@@ -151,6 +151,10 @@ public enum SpokenAttribution: Equatable, Sendable {
     case personalContext(itemID: UUID, source: ContextSourceKind, provenance: String)
     /// Fixed presenter phrasing with no facts (greeting, lead-in).
     case presenter
+    /// A station ID that speaks a station name other than the built-in brand
+    /// (`DJScriptWriter.builtInStationName`). A created station's name was typed by the listener,
+    /// so it is personal and stays on-device (Sentinel, build 26 sweep). -Atlas
+    case stationName
 }
 
 /// One planned break at a natural song boundary.
@@ -182,6 +186,8 @@ public struct DJSessionPlan: Equatable, Sendable {
 /// Plans a session: where the DJ talks and what it says. State (template pools,
 /// RNG) lives for the whole listening session so phrasing does not repeat.
 public struct DJScriptWriter: Sendable {
+    /// The app's own brand. The only station name a station ID may treat as fixed phrasing.
+    public static let builtInStationName = "AeroDJ"
     public var cadence: DJCadence
     /// Spoken in station IDs. Unusable names (empty, braces, instruction-shaped) are skipped.
     public var stationName: String
@@ -204,7 +210,7 @@ public struct DJScriptWriter: Sendable {
     private var greetings: [DayPart: TemplatePool]
     private var hasGreeted = false
 
-    public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = "AeroDJ",
+    public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = DJScriptWriter.builtInStationName,
                 tone: EditorialTone = .warm) {
         self.cadence = cadence
         self.stationName = stationName
@@ -391,7 +397,8 @@ public struct DJScriptWriter: Sendable {
         case .station:
             guard let name = EditorialStationName.usable(station),
                   let line = stationIDs.next(filling: ["station": name], using: &phrasing) else { return nil }
-            return (line, .presenter)
+            // Only the built-in brand is fixed phrasing; any other name is the listener's own words.
+            return (line, name == Self.builtInStationName ? .presenter : .stationName)
         case .atmosphere:
             guard let line = atmosphere[dayPart]?.next(filling: [:], using: &phrasing) else { return nil }
             return (line, .presenter)
