@@ -366,6 +366,26 @@ describe('vercel-ignore-build.sh', () => {
     }
   });
 
+  test('every --end-of-options the header promises is on the real git call (PREV fetch, --deepen, --unshallow, merge-base, diff)', () => {
+    // Sentinel's #288 N1: dropping it from --unshallow or from the final diff survived.
+    const { clone, prev } = shallowSetup(false); // PREV outside the clone; --deepen=1 too shallow -> all three fetches
+    const log = path.join(tmpRoot, `shim-${counter++}.log`);
+    expectCode(run(clone, prev, TTS, { ...shimEnv(log), IGNORE_BUILD_DEEPEN_COMMITS: '1' }), SKIP, 'every call ran');
+    const calls = shimCalls(log);
+    const hex = '[0-9a-f]{40}';
+    const expectEvery = (what: string, pick: (l: string) => boolean, shape: RegExp, min = 1) => {
+      const lines = calls.filter(pick);
+      assert.ok(lines.length >= min, `${what}: expected at least ${min} call(s), got ${lines.length}\n${calls.join('\n')}`);
+      for (const l of lines) assert.match(l, shape, what);
+    };
+    const isFetch = (l: string) => /(^|\s)fetch(\s|$)/.test(l);
+    expectEvery('PREV fetch', (l) => isFetch(l) && l.includes('--depth=1'), new RegExp(`--depth=1 --end-of-options origin ${prev}$`));
+    expectEvery('--deepen fetch', (l) => isFetch(l) && l.includes('--deepen='), new RegExp(`--deepen=1 --end-of-options origin ${hex}$`));
+    expectEvery('--unshallow fetch', (l) => isFetch(l) && l.includes('--unshallow'), new RegExp(`--unshallow --end-of-options origin ${hex}$`));
+    expectEvery('merge-base', (l) => /(^|\s)merge-base(\s|$)/.test(l), new RegExp(`^merge-base --is-ancestor --end-of-options ${prev} ${hex}$`), 2);
+    expectEvery('diff', (l) => /^diff(\s|$)/.test(l), new RegExp(`^diff --quiet --end-of-options ${prev} ${hex} -- `));
+  });
+
   test('--deepen reaches PREV on a long history: clone stays shallow and --unshallow is never run', () => {
     const src = newRepo();
     for (let i = 0; i < 10; i++) commit(src, `old ${i}`, { 'lib/telegram/webhook-auth.ts': `export const a = ${100 + i};\n` });
