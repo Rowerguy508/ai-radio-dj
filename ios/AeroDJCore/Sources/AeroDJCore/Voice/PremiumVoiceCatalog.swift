@@ -154,15 +154,19 @@ public enum PremiumVoiceRoutes {
         guard !token.isEmpty else { return omit(.emptyToken) }
         guard let configuration = proxyConfiguration(endpoint: credentials.endpoint, token: token,
                                                      pinnedHosts: pinnedHosts) else { return omit(.endpointNotAllowed) }
-        let option = PremiumVoiceCatalog.voices[index]
+        let route = cloudRoute(PremiumVoiceCatalog.voices[index],
+                               provider: ProxyVoiceProvider(configuration: configuration, transport: transport))
+        return Composition(routes: [route] + onDevice, decision: .included(catalogIndex: index))
+    }
+
+    /// The one ElevenLabs `VoiceRoute` shape, for `compose` and the deferred public route.
+    static func cloudRoute(_ option: PremiumVoiceOption, provider: any VoiceProvider) -> VoiceRoute {
         // App-side price is 0: spend is capped upstream (Starter's hard 40k credits, the key's
         // 9k cap) and by the proxy's daily character cap, so the app's $0 VoiceBudget does not block it.
-        let route = VoiceRoute(providerID: providerID,
-                               provider: ProxyVoiceProvider(configuration: configuration, transport: transport),
-                               voice: VoiceProfile(id: option.id, name: option.displayName),
-                               microdollarsPerThousandCharacters: 0, timeout: timeout, acceptsSSML: false,
-                               leavesDevice: true)
-        return Composition(routes: [route] + onDevice, decision: .included(catalogIndex: index))
+        VoiceRoute(providerID: providerID, provider: provider,
+                   voice: VoiceProfile(id: option.id, name: option.displayName),
+                   microdollarsPerThousandCharacters: 0, timeout: timeout, acceptsSSML: false,
+                   leavesDevice: true)
     }
 
     /// The one endpoint rule `compose` applies: exact pinned host, then HTTPS and no userinfo
