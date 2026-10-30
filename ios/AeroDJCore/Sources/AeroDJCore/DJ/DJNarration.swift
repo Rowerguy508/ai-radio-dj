@@ -61,16 +61,29 @@ public struct DJCadence: Equatable, Sendable {
     /// Cap for a break that carries briefing cues. Durable notes that do not fit
     /// may be offered next show; time-sensitive cues are dropped, not deferred.
     public var maxBriefingBreakSeconds: Int
+    /// Personal updates (approved briefing content cues) one break may carry (#332). Updates
+    /// past the first wait for the next break; at the end of the queue the usual outcomes apply
+    /// (a durable note is deferred, a calendar event or due task is dropped, never carried).
+    /// At least 1. The 45 s briefing cap still bounds the break.
+    public var maxPersonalUpdatesPerBreak: Int
+
+    /// #332 default: one personal update per break.
+    public static let defaultMaxPersonalUpdatesPerBreak = 1
+    /// #332 default: each personal update airs at most once per local calendar day
+    /// (`PersonalUpdateLedger`, keyed by source item id).
+    public static let defaultPersonalUpdatePlaysPerDay = 1
 
     public init(talkFraction: Double = 0.3, minSongsBetweenBreaks: Int = 2,
                 maxTransitionSeconds: Int = 15, maxBriefingBreakSeconds: Int = 45,
-                allowsBackToBack: Bool = false, maxClosingSeconds: Int = 4) {
+                allowsBackToBack: Bool = false, maxClosingSeconds: Int = 4,
+                maxPersonalUpdatesPerBreak: Int = DJCadence.defaultMaxPersonalUpdatesPerBreak) {
         self.talkFraction = min(max(talkFraction, 0), 1)
         self.allowsBackToBack = allowsBackToBack
         self.minSongsBetweenBreaks = max(allowsBackToBack ? 0 : 1, minSongsBetweenBreaks)
         self.maxTransitionSeconds = maxTransitionSeconds
         self.maxClosingSeconds = max(0, maxClosingSeconds)
         self.maxBriefingBreakSeconds = maxBriefingBreakSeconds
+        self.maxPersonalUpdatesPerBreak = max(1, maxPersonalUpdatesPerBreak)
     }
 
     /// Share of boundaries with a break that the planner actually delivers over a long session
@@ -295,7 +308,8 @@ public struct DJScriptWriter: Sendable {
                     let leadCue = add(lead, .presenter)
                     spent += leadCue.plannedSeconds
                     var taken: [NarrationCue] = []
-                    while let cue = pending.first, spent + cue.plannedSeconds <= limit {
+                    while let cue = pending.first, taken.count < cadence.maxPersonalUpdatesPerBreak,
+                          spent + cue.plannedSeconds <= limit {
                         taken.append(cue); spent += cue.plannedSeconds; pending.removeFirst()
                     }
                     if taken.isEmpty, let cue = pending.first, cue.plannedSeconds + leadCue.plannedSeconds > limit {

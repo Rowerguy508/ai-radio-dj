@@ -398,8 +398,8 @@ final class DJBreakSessionTests: XCTestCase {
         XCTAssertFalse(cached.contains { $0.sourceItemIDs.contains(item) }, "cached narration purged")
     }
 
-    /// Approved morning briefing passed through `ApprovedShowHandoff.forQueue()` airs once,
-    /// at the first eligible boundary. Revoked and unapproved input airs no personal text.
+    /// Approved morning briefing passed through `ApprovedShowHandoff.forQueue()` airs once:
+    /// the first update at the first eligible boundary, the next one at the next break (#332). Revoked and unapproved input airs no personal text.
     /// A later show is given only `carryForward.eligibleNextShow`.
     func testApprovedBriefingAirsOnceAndRevokedBriefingNeverAirs() async throws {
         let reviewID = UUID()
@@ -443,14 +443,15 @@ final class DJBreakSessionTests: XCTestCase {
         await show.session.queueStarted(djTracks(8), briefing: approved.forQueue(), sources: approved.connectionItems)
         XCTAssertEqual(show.session.plannedBoundaries.first, 0, "first eligible boundary")
         let firstIDs = try await airedContentIDs(show, after: 0)
-        XCTAssertEqual(firstIDs.filter { $0 == review.id }.count, 1)
-        XCTAssertEqual(firstIDs.filter { $0 == note.id }.count, 1)
+        // #332: one personal update per break. The first airs at the first boundary, the
+        // second at the next personal break; each exactly once in the show.
+        XCTAssertEqual(firstIDs, [review.id])
         var laterIDs: [UUID] = []
         for boundary in show.session.plannedBoundaries where boundary != 0 {
             laterIDs += try await airedContentIDs(show, after: boundary)
         }
         XCTAssertFalse(laterIDs.contains(review.id))
-        XCTAssertFalse(laterIDs.contains(note.id))
+        XCTAssertEqual(laterIDs.filter { $0 == note.id }.count, 1)
 
         for blocked in [revoked.forQueue(), unapproved.forQueue()] {
             let quiet = await rig()
