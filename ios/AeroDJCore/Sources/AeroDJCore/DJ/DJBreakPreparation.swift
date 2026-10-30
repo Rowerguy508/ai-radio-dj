@@ -260,16 +260,25 @@ public actor DJBreakPreparer {
         return .skipped(.notReadyAtBoundary)
     }
 
+    /// How long the boundary waits for Pro + consent before skipping a paid or bundled break.
+    static let paidVoiceTakeCheckTimeout: Duration = .milliseconds(300)
+
     /// `takeBreak` plus the paid-voice re-check (E1, -Echo): a ready break that carries a
     /// bundled clip or paid-route audio is handed out only if Pro + consent still allow it now.
     /// Otherwise it is skipped as `.paidVoiceRevoked` (reported like any skip), never played.
     /// One gate call, and only for a break that has paid audio. Never touches a break on air.
+    ///
+    /// The check is bounded by `paidVoiceTakeCheckTimeout` (Sentinel, #255): music never waits
+    /// on a provider. No answer in time fails closed, the same `.paidVoiceRevoked` skip.
     public func takeCheckedBreak(afterTrack k: Int) async -> DJBreakOutcome {
         let outcome = takeBreak(afterTrack: k)
         guard case .ready(let ready) = outcome, let paidVoice, ready.clips.contains(where: usesPaidVoice) else {
             return outcome
         }
-        guard await paidVoice.decision().permitsPaidVoice else {
+        let permitted = (try? await VoiceRenderer.withTimeout(Self.paidVoiceTakeCheckTimeout) {
+            await paidVoice.decision().permitsPaidVoice
+        }) ?? false   // timed out or cancelled: fail closed
+        guard permitted else {
             results[k] = .skipped(.paidVoiceRevoked)
             emit(.skipped(afterTrack: k, .paidVoiceRevoked))
             return .skipped(.paidVoiceRevoked)
