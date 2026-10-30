@@ -62,6 +62,16 @@ if grep -lE 'name="robots"[^>]*noindex|draft-banner' *.html >/dev/null; then
   err "noindex or draft banner still present in: $(grep -lE 'name="robots"[^>]*noindex|draft-banner' *.html | tr '\n' ' ')"
 fi
 
+# No visible "TODO" on any served page (same visible-text scan as markers.py: text and shown attributes).
+todo_hits="$(python3 -c '
+import sys, markers
+from pathlib import Path
+for f in sorted(Path(".").glob("*.html")):
+    text, _ = markers.visible(f.read_text(encoding="utf-8"))
+    if "TODO" in text.upper(): print(f)
+')"
+[ -z "$todo_hits" ] || err "visible TODO text in: $(echo $todo_hits)"
+
 # Secret-looking strings in text files (fonts and images skipped).
 secret_re='(sk-[A-Za-z0-9_-]{16,}|sk_(live|test)_[A-Za-z0-9]{10,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}|(api[_-]?key|secret|token|password|bearer)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9_\-]{12,})'
 if grep -rIniE --exclude=check.sh "$secret_re" . >/dev/null; then
@@ -69,6 +79,6 @@ if grep -rIniE --exclude=check.sh "$secret_re" . >/dev/null; then
 fi
 
 if [ "$fail" -eq 0 ]; then
-  echo "OK: $(ls *.html | wc -l) pages, $links internal/external refs checked, routes /, /privacy, /support and 404 present, vercel.json cleanUrls, privacy/support match docs/site/*.md, no visible [owner]/[PENDING] markers, no noindex or draft banner, no secret-looking strings."
+  echo "OK: $(ls *.html | wc -l) pages, $links internal/external refs checked, routes /, /privacy, /support and 404 present, vercel.json cleanUrls, privacy/support match docs/site/*.md, no visible [owner]/[PENDING] markers, no noindex or draft banner, no visible TODO, no secret-looking strings."
 fi
 exit "$fail"
