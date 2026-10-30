@@ -5,11 +5,12 @@ import * as voiceRoute from '@/app/api/voice/route';
 import { resetPaidInferenceBudgetForTests } from '@/lib/llm/paid-inference';
 
 const UPSTREAM_MARKER = 'fixture-upstream-body';
+const ADMIN_TOKEN = 'fixture-admin-token-0123456789abcdef';
 
 function post(url: string, body: unknown) {
   return new NextRequest(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
     body: JSON.stringify(body),
   });
 }
@@ -32,6 +33,7 @@ describe('paid inference routes', () => {
   beforeEach(() => {
     resetPaidInferenceBudgetForTests();
     vi.stubEnv('MINIMAX_API_KEY', 'fixture-minimax-key');
+    vi.stubEnv('RAY_DO_ADMIN_TOKEN', ADMIN_TOKEN);
     vi.stubEnv('ENABLE_PAID_INFERENCE', '');
     vi.stubEnv('PAID_INFERENCE_DAILY_CHAR_BUDGET', '6000');
     vi.stubEnv('NODE_ENV', 'test');
