@@ -42,6 +42,41 @@ private final class SwitchableEntitlement: ProEntitlementProviding, @unchecked S
     func currentProEntitlement() async -> ProEntitlementState { lock.withLock { current } }
 }
 
+/// Consent that answers `true` until `hang()`, then never answers (and ignores cancellation).
+private final class HangingConsent: PaidVoiceConsentProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var hanging = false
+    private var parked: [CheckedContinuation<Bool, Never>] = []
+    func hang() { lock.withLock { hanging = true } }
+    func hasPaidVoiceConsent() async -> Bool {
+        guard lock.withLock({ hanging }) else { return true }
+        return await withCheckedContinuation { c in lock.withLock { parked.append(c) } }
+    }
+}
+
+/// Consent that answers `true` after `delay` (in time for the take check when small).
+private struct SlowConsent: PaidVoiceConsentProviding {
+    let delay: Duration
+    func hasPaidVoiceConsent() async -> Bool {
+        try? await Task.sleep(for: delay)
+        return true
+    }
+}
+
+/// Runs the take in an unstructured task and waits at most `bound` (test-side, so a missing
+/// timeout fails instead of hanging the suite). Nil: no answer within the bound.
+private func boundedTake(_ p: DJBreakPreparer, _ k: Int, bound: Duration = .seconds(2)) async -> DJBreakOutcome? {
+    final class Box: @unchecked Sendable { let lock = NSLock(); var value: DJBreakOutcome? }
+    let box = Box()
+    Task { let r = await p.takeCheckedBreak(afterTrack: k); box.lock.withLock { box.value = r } }
+    let clock = ContinuousClock(), end = clock.now.advanced(by: bound)
+    while clock.now < end {
+        if let r = box.lock.withLock({ box.value }) { return r }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return nil
+}
+
 /// The Keychain service name the script and ios.yml look for (OwnerProxyAuth is owner-only).
 private enum OwnerProxyAuthNeedle {
     static let value = "com.aerodj.owner-ab.tts-proxy"
@@ -231,6 +266,39 @@ final class PaidVoiceRouteSplitTests: XCTestCase {
         let taken = await p.takeCheckedBreak(afterTrack: 0)
         XCTAssertEqual(taken, .skipped(.paidVoiceRevoked))
         XCTAssertTrue(events.all.contains(.skipped(afterTrack: 0, .paidVoiceRevoked)))
+    }
+
+    /// Sentinel (#255): a provider that never answers cannot stall the boundary. The paid break
+    /// is skipped as `.paidVoiceRevoked` within the bound, reported, and nothing paid plays.
+    func testTakeCheckThatNeverAnswersFailsClosedWithinTheBound() async {
+        let consent = HangingConsent()
+        let access = ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: consent)
+        let p = preparer(publicVoice(access, transport: SpyTransport()), bundledAccess: access)
+        let events = DJEventLog()
+        await p.observe { events.add($0) }
+        await p.prepare(twoCueBreak(after: 0), deadline: .seconds(5), onDeviceOnly: false)
+        let r0 = await ready(p, 0)
+        XCTAssertEqual(providers(r0), [BundledClipResolver.providerID, PremiumVoiceRoutes.providerID])
+        consent.hang()
+        let start = ContinuousClock.now
+        let taken = await boundedTake(p, 0)
+        XCTAssertEqual(taken, .skipped(.paidVoiceRevoked), "no answer: fail closed, not hang")
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(1), "bounded by paidVoiceTakeCheckTimeout")
+        XCTAssertTrue(events.all.contains(.skipped(afterTrack: 0, .paidVoiceRevoked)))
+        // The skip is final: the paid break is not handed out afterwards.
+        let again = await p.takeBreak(afterTrack: 0)
+        XCTAssertEqual(again, .skipped(.paidVoiceRevoked))
+    }
+
+    /// An answer that arrives in time (well inside the bound) still plays the paid break.
+    func testTakeCheckAnsweredInTimeStillPlays() async {
+        let access = ProVoiceAccess(entitlement: FixedEntitlement(pro), consent: SlowConsent(delay: .milliseconds(20)))
+        let p = preparer(publicVoice(access, transport: SpyTransport()), bundledAccess: access)
+        await p.prepare(twoCueBreak(after: 0), deadline: .seconds(5), onDeviceOnly: false)
+        _ = await ready(p, 0)
+        let taken = await boundedTake(p, 0)
+        XCTAssertEqual(providers(taken), [BundledClipResolver.providerID, PremiumVoiceRoutes.providerID])
+        XCTAssertLessThan(DJBreakPreparer.paidVoiceTakeCheckTimeout, .seconds(1), "a short bound")
     }
 
     func testTakeHandsOutAllowedAndOnDeviceBreaks() async {
