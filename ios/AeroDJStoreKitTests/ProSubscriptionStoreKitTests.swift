@@ -84,7 +84,9 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         XCTAssertEqual(o.state, .free)
 
         let transaction = try await session.buyProduct(identifier: ProSubscriptionConfig.monthlyProductID)
-        await o.refresh()
+        // C1: this observer already read `free` before the purchase, and StoreKitTest can still
+        // return that pre-purchase answer to the first refresh after it. Poll until Pro shows.
+        try await waitForState(o) { $0.showsPro }
         guard case .pro(let id, let expires) = o.state else { return XCTFail("expected .pro, got \(o.state)") }
         XCTAssertEqual(id, ProSubscriptionConfig.monthlyProductID)
         XCTAssertEqual(expires, transaction.expirationDate)
@@ -122,7 +124,8 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         XCTAssertEqual(id, ProSubscriptionConfig.yearlyProductID)
     }
 
-    /// StoreKitTest applies expiry and refunds asynchronously; poll refresh() briefly.
+    /// StoreKitTest applies purchases (after an earlier refresh), expiry and refunds
+    /// asynchronously; poll refresh() briefly.
     /// The observer is the `ProEntitlementProviding` behind `ProVoiceAccess`: purchase plus consent
     /// opens the paid voice, consent alone never does, and a refund closes it again.
     func testObserverDrivesTheProVoiceGate() async throws {
@@ -132,7 +135,7 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         XCTAssertEqual(before, .denied(.notPro))
 
         let transaction = try await session.buyProduct(identifier: ProSubscriptionConfig.monthlyProductID)
-        await o.refresh()
+        try await waitForState(o) { $0.showsPro } // C1: refreshed before the purchase, so poll
         let bought = await ProVoiceAccess(entitlement: o, consent: GrantedConsent()).decision()
         XCTAssertEqual(bought, .allowed)
         let noConsent = await ProVoiceAccess(entitlement: o, consent: NoPaidVoiceConsent()).decision()
@@ -173,15 +176,35 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         XCTAssertEqual(gate, .denied(.expired))
     }
 
+    /// C1 companion: the Pro wait above is real. With no purchase the same poll never sees Pro,
+    /// so in the two tests that refresh before buying, only the purchase can satisfy it.
+    func testProWaitTimesOutWithoutAPurchase() async throws {
+        let o = observer()
+        await o.refresh()
+        XCTAssertEqual(o.state, .free)
+        let matched = try await pollState(o, timeout: 1) { $0.showsPro }
+        XCTAssertFalse(matched, "the Pro wait passed with no purchase; last \(o.state)")
+        XCTAssertEqual(o.state, .free)
+        let gate = await ProVoiceAccess(entitlement: o, consent: GrantedConsent()).decision()
+        XCTAssertEqual(gate, .denied(.notPro))
+    }
+
     private func waitForState(_ o: ProEntitlementObserver, timeout: TimeInterval = 10,
                               _ matches: (ProEntitlementState) -> Bool) async throws {
+        if try await pollState(o, timeout: timeout, matches) { return }
+        XCTFail("state never matched; last \(o.state)")
+    }
+
+    /// Refreshes until `matches` holds or `timeout` passes; true if it matched.
+    private func pollState(_ o: ProEntitlementObserver, timeout: TimeInterval,
+                           _ matches: (ProEntitlementState) -> Bool) async throws -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             await o.refresh()
-            if matches(o.state) { return }
+            if matches(o.state) { return true }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
-        XCTFail("state never matched; last \(o.state)")
+        return false
     }
 }
 
