@@ -7,6 +7,7 @@ import {
 import { keyspaceFromEnv, type Keyspace } from './attest-store.js';
 import { parseChallengeKey } from './challenge.js';
 import { DEFAULT_ENROLL_DEVICE_DAILY_CAP, MAX_ENROLL_DEVICE_DAILY_CAP } from './enroll-device.js';
+import { DEFAULT_ENROLL_INSTALL_DAILY_CAP, MAX_ENROLL_INSTALL_DAILY_CAP } from './enroll-install.js';
 import { parseBoundedInt, type Env } from './handler.js';
 import { STOREKIT_CONFIG } from './storekit-config.js';
 import { deploymentFromEnv } from './storekit-verify.js';
@@ -31,6 +32,9 @@ import { deploymentFromEnv } from './storekit-verify.js';
  * - `AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP`: verified enrollments per UTC day per
  *   device bucket (enroll-device.ts: the client network, not a true device id), a
  *   plain integer in [1, 1000]; anything else uses the default of 3 (same decision).
+ * - `AERODJ_TTS_ENROLL_INSTALL_DAILY_CAP`: verified enrollments per UTC day per
+ *   install ID (enroll-install.ts: the app's Keychain UUID, checked alongside the
+ *   network cap), parsed exactly like the device cap: [1, 1000], else 3.
  * - Test roots (`roots`, injected by code only, never from env) are refused
  *   unless the deployment is Preview/Development.
  */
@@ -45,6 +49,7 @@ export interface RegisterConfig {
   keyspace: Keyspace;
   enrollCap: number;
   enrollDeviceCap: number;
+  enrollInstallCap: number;
 }
 
 export function registerConfig(env: Env, roots?: readonly X509Certificate[]): RegisterConfig | null {
@@ -81,5 +86,7 @@ export function registerConfig(env: Env, roots?: readonly X509Certificate[]): Re
     enrollCap: parseBoundedInt(env.AERODJ_TTS_ENROLL_DAILY_CAP, MAX_ENROLL_DAILY_CAP) ?? DEFAULT_ENROLL_DAILY_CAP,
     enrollDeviceCap:
       parseBoundedInt(env.AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP, MAX_ENROLL_DEVICE_DAILY_CAP) ?? DEFAULT_ENROLL_DEVICE_DAILY_CAP,
+    enrollInstallCap:
+      parseBoundedInt(env.AERODJ_TTS_ENROLL_INSTALL_DAILY_CAP, MAX_ENROLL_INSTALL_DAILY_CAP) ?? DEFAULT_ENROLL_INSTALL_DAILY_CAP,
   };
 }
