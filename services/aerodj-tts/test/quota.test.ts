@@ -417,7 +417,7 @@ test('global 429 through the handler: reason global_daily when installs already 
   assert.equal(h.upstream(), 0);
 });
 
-test('rate 429 and store 503 carry reason and Retry-After 60', async () => {
+test('rate 429 and store 503 carry reason and Retry-After 60 (rate) and 30 (store, note §4.4)', async () => {
   const rate = deps(new InMemoryUsageLimiter({ dailyCharCap: 9_000, requestsPerMinute: 1 }));
   assert.equal((await handleTts(req('hi'), rate.d)).status, 200);
   const limited = await handleTts(req('hi'), rate.d);
@@ -429,8 +429,8 @@ test('rate 429 and store 503 carry reason and Retry-After 60', async () => {
   const store = deps(new RedisUsageLimiter(STORE, limiterOptions({}), down.fetchImpl));
   const res = await handleTts(req('hi'), store.d);
   assert.equal(res.status, 503);
-  assert.equal(res.headers['Retry-After'], '60');
-  assert.deepEqual(body(res), { error: 'Service unavailable', requestId: 'req-1', reason: 'store', retryAfterSeconds: 60 });
+  assert.equal(res.headers['Retry-After'], '30');
+  assert.deepEqual(body(res), { error: 'Service unavailable', requestId: 'req-1', reason: 'store', retryAfterSeconds: 30 });
   assert.equal(store.upstream(), 0);
 });
 
@@ -458,7 +458,7 @@ test('a store error at reserve (after the rate check passed) fails closed: 503 s
     const res = await handleTts(req('hi'), h.d);
     assert.equal(reserveCalls, 1, `${name}: the rate check passed and reserve was attempted`);
     assert.equal(res.status, 503, name);
-    assert.deepEqual(body(res), { error: 'Service unavailable', requestId: 'req-1', reason: 'store', retryAfterSeconds: 60 }, name);
+    assert.deepEqual(body(res), { error: 'Service unavailable', requestId: 'req-1', reason: 'store', retryAfterSeconds: 30 }, name);
     assert.equal(h.upstream(), 0, `${name}: upstream never called`);
     assert.equal(store.redis.commands.some((c) => c[0] === 'INCRBY'), false, `${name}: nothing reserved`);
   }

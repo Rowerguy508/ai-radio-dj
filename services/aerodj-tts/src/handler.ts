@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, paidStopped } from './attest-flags.js';
+import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS, paidStopped } from './attest-flags.js';
 import { bearerToken, parseTokenHash, tokenMatches } from './auth.js';
 import {
   DEFAULT_GLOBAL_DAILY_CHAR_CAP,
@@ -53,7 +53,7 @@ export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconf
 
 /** Retry-After (seconds) for a rate 429 and a store 503: an upper bound for both window types. */
 export const RATE_RETRY_AFTER_SECONDS = 60;
-export const STORE_RETRY_AFTER_SECONDS = 60;
+export { STORE_RETRY_AFTER_SECONDS };
 
 export type Env = Record<string, string | undefined>;
 
