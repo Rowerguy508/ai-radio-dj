@@ -319,8 +319,17 @@ export class RedisUsageLimiter implements UsageLimiter {
       await response.body?.cancel().catch(() => {});
       throw new LimiterStoreError('limiter store error');
     }
-    const payload = (await untilAborted(response.json(), signal).catch(() => null)) as { result?: unknown } | null;
-    if (!payload || typeof payload !== 'object' || 'error' in payload) throw new LimiterStoreError('limiter store error', signal.aborted);
+    let payload: { result?: unknown } | null;
+    try {
+      payload = (await untilAborted(response.json(), signal)) as { result?: unknown } | null;
+    } catch {
+      // The same bound covers the body read: a body cut off by it is a timeout, exactly
+      // like a fetch cut off by it (Fry's nit on #259); a body that fails on its own
+      // (bad JSON, stream error) is a store error.
+      throw new LimiterStoreError('limiter store error', signal.aborted);
+    }
+    // A reply that arrived in full is never a timeout, whatever its shape.
+    if (!payload || typeof payload !== 'object' || 'error' in payload) throw new LimiterStoreError('limiter store error');
     return strictRedisInteger(payload.result);
   }
 
