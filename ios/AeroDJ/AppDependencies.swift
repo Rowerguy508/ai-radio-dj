@@ -66,7 +66,9 @@ struct AppDependencies {
         )
         let station = StationConfigurationModel(store: FileStationConfigurationStore(fileURL: stationFileURL()),
                                                 consent: composition.consent)
-        let voice = VoiceRenderer.liveDefault()
+        // The launch's voice and its per-cue Pro + consent gate, together (-Echo).
+        let paidVoice = PaidVoice.live()
+        let voice = paidVoice.renderer
         if voice.routes.contains(where: { $0.providerID == PhononModelPin.providerID }) {
             Task { await PhononModelCoordinator.shared.start() }
         }
@@ -78,12 +80,11 @@ struct AppDependencies {
             manifest: .load(contentsOf: Bundle.main.url(forResource: BundledClipManifest.resourceName,
                                                         withExtension: BundledClipManifest.resourceExtension)),
             directory: Bundle.main.resourceURL ?? Bundle.main.bundleURL,
-            access: .buildDefault)
+            access: paidVoice.access)
         // The 4 s closing cap applies only while talk-over is on: the same flag the coordinator
         // reads (DIAG override, else the AERODJ_OWNER_AB build default). P0 build 26, -Fry.
-        let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
-                                       talkOverEnabled: { DJTalkoverFlag.isEnabled() },
-                                       bundledClips: bundledClips)
+        let preparer = DJBreakPreparer(voice: paidVoice, userID: "listener", stationID: "default", cadence: DJCadence(),
+                                       talkOverEnabled: { DJTalkoverFlag.isEnabled() }, bundledClips: bundledClips)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)

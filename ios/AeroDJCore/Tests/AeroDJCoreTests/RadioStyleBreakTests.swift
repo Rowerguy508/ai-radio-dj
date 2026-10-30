@@ -496,6 +496,30 @@ final class RadioStyleBreakTests: XCTestCase {
                     voice: VoiceProfile(id: "standard", name: "Host"))]
     }
 
+    /// The app's `init(voice:)` (paid-route split, -Echo) forwards #249's talk-over flag: the
+    /// 4 s marker survives only while it is on.
+    func testVoiceInitForwardsTheTalkOverFlag() async {
+        let main = cue("A short main segment.", maxSeconds: 30), closing = cue("Here's Song one, from Artist one.")
+        let b = talkOverBreak(main: main, closing: closing)
+        for on in [true, false] {
+            let renderer = VoiceRenderer(routes: scripted(main, closing, 6, 3), budget: VoiceBudget(dailyCapMicrodollars: 0),
+                                         cache: InMemoryAudioCache())
+            let preparer = DJBreakPreparer(voice: PaidVoice(renderer: renderer, access: .none, decision: .omitted(.paidDisabled)),
+                                           userID: "u", stationID: "s", talkOverEnabled: { on })
+            let done = AsyncStream<Void>.makeStream()
+            await preparer.observe { event in
+                if case .preparing = event { return }
+                done.continuation.yield()
+            }
+            await preparer.prepare(b, deadline: .seconds(5), onDeviceOnly: false)
+            for await _ in done.stream { break }
+            guard case .ready(let ready) = await preparer.takeCheckedBreak(afterTrack: 0) else {
+                return XCTFail("a 6 + 3 s break plays, talk-over \(on)")
+            }
+            XCTAssertEqual(ready.talkOverCueID, on ? closing.id : nil, "talk-over \(on)")
+        }
+    }
+
     func testFiveSecondClosingLineWithTalkOverOffGivesAReadyBreak() async throws {
         let main = cue("A short main segment.", maxSeconds: 30), closing = cue("Here's Song one, from Artist one.")
         // The planner marked the closing line for talk-over (its estimate fit 4 s); it measures 5 s.

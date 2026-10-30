@@ -227,6 +227,10 @@ final class PremiumVoicePickerTests: XCTestCase {
 
     // MARK: Picker sheet status (display only)
 
+    // Owner-only helpers (`PremiumVoicePickerStatus` compiles only with AERODJ_OWNER_AB). These
+    // run in the flagged build of check-release-disables-paid-voice.sh and in owner A/B CI. -Echo
+    #if AERODJ_OWNER_AB
+
     func testEndpointPrefillsDefaultOnlyWhenNoneSaved() {
         XCTAssertEqual(PremiumVoiceRoutes.defaultEndpoint, "https://aerodj-tts.vercel.app/api/tts")
         XCTAssertEqual(PremiumVoicePickerStatus.initialEndpoint(saved: nil), PremiumVoiceRoutes.defaultEndpoint)
@@ -303,6 +307,7 @@ final class PremiumVoicePickerTests: XCTestCase {
         XCTAssertEqual(PremiumVoicePickerStatus.statusLine(.omitted(.endpointNotAllowed)),
                        "Premium: omitted (endpointNotAllowed)")
     }
+    #endif
 
     // MARK: Captions
 

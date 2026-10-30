@@ -173,11 +173,15 @@ public enum PremiumVoiceRoutes {
     }
 }
 
+#if AERODJ_OWNER_AB
 /// Display-only helpers for the owner picker sheet. They mirror what Done saves
 /// (trimmed endpoint, typed token replaces the saved one) and never read or return a token.
 /// They only READ `PremiumVoiceRoutes.allowedHosts` (a `let`): the public API takes no host
 /// list, so the app has no way to widen the pin. The `pinnedHosts:` overloads are internal,
 /// for `@testable` tests only.
+/// Owner-only, like the picker sheet that calls them (`OwnerVoiceTrial+App.swift`): compiled
+/// only with `AERODJ_OWNER_AB`, so Release carries no picker code (Release needle
+/// `PremiumVoicePickerStatus` in check-release-disables-paid-voice.sh and ios.yml, -Echo).
 public enum PremiumVoicePickerStatus {
     /// The endpoint field's initial value: the saved endpoint, else `PremiumVoiceRoutes.defaultEndpoint`.
     public static func initialEndpoint(saved: String?) -> String {
@@ -241,3 +245,4 @@ public enum PremiumVoicePickerStatus {
         return trimmed.isEmpty ? nil : URL(string: trimmed)
     }
 }
+#endif
