@@ -16,6 +16,7 @@ import {
   PRO_RESERVE_SCRIPT,
   RESERVE2_SCRIPT,
   RedisUsageLimiter,
+  isDeployment,
   proDayKeys,
   type LimiterOptions,
   type UsageLimiter,
@@ -56,10 +57,10 @@ const sha = (s: string) => crypto.createHash('sha256').update(s, 'utf8').digest(
 const PRO_A = `pro:production:${sha(OTID_A)}`;
 const PRO_B = `pro:production:${sha(OTID_B)}`;
 const keys = (bucket: string, day = DAY) => {
-  const [global, chars, renders] = proDayKeys(bucket, day);
+  const [global, chars, renders] = proDayKeys(bucket, day, deploymentOf(bucket.split(':')[1]));
   return { global, chars, renders };
 };
-const OWNER_KEY = `aerodj-tts:chars:owner:${DAY}`;
+const OWNER_KEY = `aerodj-tts:chars:owner:production:${DAY}`;
 
 const pcm = () => new Response(Buffer.alloc(22_050 * 2, 1), { status: 200, headers: { 'Content-Type': 'audio/pcm' } });
 const body = (r: { body: Buffer }) => JSON.parse(r.body.toString('utf8')) as Record<string, unknown>;
@@ -69,10 +70,13 @@ function req(pro: ProSubject | undefined, text = TEXT, extra: Record<string, unk
   return { method: 'POST', authorization: `Bearer ${TOKEN}`, body: { upstream: 'elevenlabs', voiceId: VOICE, text, format: 'text', ...extra }, verifiedPro: pro };
 }
 
+/** The limiter's deployment follows the harness env (as `selectLimiter` does); default production. */
+const deploymentOf = (v: string | undefined) => (isDeployment(v) ? v : 'production');
+
 function harness(o: { limiter?: UsageLimiter; options?: Partial<LimiterOptions>; upstream?: (url?: unknown, init?: RequestInit) => Promise<Response>; env?: Env; lost?: RefundLostLog[]; redis?: FakeRedis } = {}) {
   let clock = NOON;
   const up = fakeUpstash({ redis: o.redis ?? new FakeRedis(() => clock) });
-  const limiter = o.limiter ?? new RedisUsageLimiter(STORE, { dailyCharCap: BIG, requestsPerMinute: 600, ...o.options }, up.fetchImpl);
+  const limiter = o.limiter ?? new RedisUsageLimiter(STORE, { deployment: deploymentOf(o.env?.VERCEL_ENV), dailyCharCap: BIG, requestsPerMinute: 600, ...o.options }, up.fetchImpl);
   const logs: LogEntry[] = [];
   let upstreamCalls = 0;
   const d: Deps = {
@@ -212,7 +216,7 @@ describe('Pro allowance: handler (redis, real Lua)', () => {
 
 describe('Pro: the global ceiling is checked BEFORE the Pro reserve (Sentinel)', () => {
   test('global at its limit: a verified Pro request gets 429 global_daily and no Pro counter changes', async () => {
-    const h = harness({ options: { dailyCharCap: TEXT.length } });
+    const h = harness({ options: { deployment: 'production' as const, dailyCharCap: TEXT.length } });
     assert.equal((await run(h, undefined, 1))[0], 200, 'the owner fills the global ceiling');
     const A = await subject();
     const r = await handleTts(req(A), h.d);
@@ -375,7 +379,7 @@ describe('Pro allowance: store errors fail closed (503 store, Retry-After 30), n
     assert.equal(body(r).reason, 'store');
     assert.equal(h.upstream(), 0);
   };
-  const opts: LimiterOptions = { dailyCharCap: BIG, requestsPerMinute: 600 };
+  const opts: LimiterOptions = { deployment: 'production' as const, dailyCharCap: BIG, requestsPerMinute: 600 };
   test('store HTTP 500', async () => {
     await expectStore(harness({ limiter: new RedisUsageLimiter(STORE, opts, fakeUpstash({ status: 500 }).fetchImpl) }));
   });
@@ -427,8 +431,8 @@ describe('Pro allowance: scripts and limiters', () => {
   });
 
   for (const [name, make] of [
-    ['redis', () => new RedisUsageLimiter(STORE, { dailyCharCap: 1_000, requestsPerMinute: 600 }, fakeUpstash().fetchImpl)],
-    ['in-memory', () => new InMemoryUsageLimiter({ dailyCharCap: 1_000, requestsPerMinute: 600 })],
+    ['redis', () => new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 1_000, requestsPerMinute: 600 }, fakeUpstash().fetchImpl)],
+    ['in-memory', () => new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 1_000, requestsPerMinute: 600 })],
   ] as const) {
     test(`${name}: exact render allowance, per-purchase scope, once-only release, next UTC day`, async () => {
       const l = make();
@@ -493,7 +497,7 @@ describe("Pro allowance: Fry's nits on #264", () => {
   ] as const) {
     test(`N1: a failed Pro refund (${name}) logs refund_lost reason ${reason}, kind pro_render, no ids`, async () => {
       const lost: RefundLostLog[] = [];
-      const inner = new RedisUsageLimiter(STORE, { dailyCharCap: BIG, requestsPerMinute: 600 }, fakeUpstash().fetchImpl);
+      const inner = new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: BIG, requestsPerMinute: 600 }, fakeUpstash().fetchImpl);
       const limiter: UsageLimiter = {
         durable: true,
         allowRequest: (b, n, l) => inner.allowRequest(b, n, l),
