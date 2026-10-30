@@ -163,6 +163,38 @@ final class StationSplitNavigationTests: XCTestCase {
         assertOpen(nav, lateNight, "card tap on B after going back from A")
     }
 
+    // MARK: Orion's rule on #285: after a collapse, show what the wide layout showed
+
+    /// Open a station in the narrow layout, go back to the carousel, widen, collapse. The back
+    /// keeps the selection, so the wide detail shows that station, and the collapse lands on it.
+    func testNarrowOpenBackWidenCollapseLandsOnTheWideDetailStation() {
+        var nav = navigation(regular: false)
+        nav.select(lateNight)
+        nav.compactColumnWritten(.list) // back to the carousel
+        XCTAssertEqual(nav.compactColumn, .list, "back shows the carousel")
+        XCTAssertEqual(nav.selectedID, lateNight, "back keeps the selection")
+        nav.setRegularWidth(true) // widen
+        XCTAssertTrue(nav.showsBothColumns)
+        XCTAssertEqual(nav.selectedID, lateNight, "the wide detail pane shows the selected station")
+        XCTAssertTrue(nav.isStationVisible, "the wide detail pane shows the selected station")
+        nav.setRegularWidth(false) // collapse
+        assertOpen(nav, lateNight, "the collapse lands on the station the wide detail showed")
+    }
+
+    /// Companion with nothing selected: the wide detail is empty and the collapse lands on the carousel.
+    func testNoSelectionWidenCollapseLandsOnTheCarousel() {
+        var nav = navigation(regular: false)
+        XCTAssertEqual(nav.compactColumn, .list)
+        nav.setRegularWidth(true) // widen
+        XCTAssertTrue(nav.showsBothColumns)
+        XCTAssertNil(nav.selectedID, "the wide detail pane is empty (placeholder)")
+        XCTAssertFalse(nav.isStationVisible)
+        nav.setRegularWidth(false) // collapse
+        XCTAssertNil(nav.selectedID)
+        XCTAssertEqual(nav.compactColumn, .list, "the collapse lands on the carousel")
+        XCTAssertFalse(nav.isStationVisible)
+    }
+
     // MARK: No selection
 
     func testNoSelectionShowsListInBothDirections() {
