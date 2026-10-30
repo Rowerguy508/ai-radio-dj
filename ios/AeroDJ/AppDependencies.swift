@@ -72,7 +72,10 @@ struct AppDependencies {
         }
         let dj = DJPresentationStore()
         // One preparer per launch: revoking a source purges prepared breaks as well as cached audio.
-        let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence())
+        // The 4 s closing cap applies only while talk-over is on: the same flag the coordinator
+        // reads (DIAG override, else the AERODJ_OWNER_AB build default). P0 build 26, -Fry.
+        let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
+                                       talkOverEnabled: { DJTalkoverFlag.isEnabled() })
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
@@ -125,13 +128,16 @@ struct AppDependencies {
         let voice = TestStation.makeRenderer(routes: VoiceRoute.onDeviceRoutes(),
                                              cache: InMemoryAudioCache(maxAge: TestStation.cacheRetention))
         let dj = DJPresentationStore()
+        // Fixture mode: talk-over is OFF regardless of the build, as for the coordinator below.
         let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,
-                                       cadence: TestStation.cadence)
+                                       cadence: TestStation.cadence,
+                                       talkOverEnabled: { DJTalkoverFlag.isEnabled(buildDefault: false) })
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
-        // Fixture mode: talk-over is OFF regardless of the build (an explicit override still wins).
+        // Fixture mode: talk-over is OFF unless an owner A/B build's toggle was explicitly set ON.
+        // Outside an owner A/B build it is OFF whatever was saved (DJTalkoverFlag).
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession,
-                                           buildDefault: false)
+                                           unsetDefault: DJTalkoverFlag.unsetDefault(isTestStation: true))
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
