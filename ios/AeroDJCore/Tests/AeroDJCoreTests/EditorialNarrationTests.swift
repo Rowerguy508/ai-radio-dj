@@ -407,13 +407,15 @@ final class EditorialNarrationTests: XCTestCase {
             ["Midnight City, from M83.", "Stay right where you are.", "Here's Billy Joel, with Vienna."],
             ["Just had Dreams there.", "This is Pink + White."],
         ])
+        // #332: one personal update per break, so the note gets the next break of its own.
         XCTAssertEqual(showPlan.breaks.map { $0.cues.map(\.text) }, [
             ["Good morning.", "While we're between songs.",
              "You've got Design review at 9:30 AM. Bring the notes. From your calendar.",
-             "You've also got Grocery list. Milk and bread. From your notes.",
              "That's all for now.", "Next up — Beach House, Myth."],
-            ["M83 there, with Midnight City.", "This is Vienna."],
-            ["You just heard Dreams from Fleetwood Mac.", "Stay right where you are.", "Here's Frank Ocean, with Pink + White."],
+            ["M83 there, with Midnight City.", "Quick one before the next song.",
+             "You've also got Grocery list. Milk and bread. From your notes.",
+             "That's it from me for now.", "This is Vienna."],
+            ["That one was Dreams by Fleetwood Mac.", "Here's Pink + White, from Frank Ocean."],
         ])
         for djBreak in musicPlan.breaks + showPlan.breaks {
             XCTAssertEqual(djBreak.talkOverCueID, djBreak.cues.last?.id, "the closing line is the talk-over cue")
@@ -421,8 +423,9 @@ final class EditorialNarrationTests: XCTestCase {
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[0].cues.map(\.text)), 4)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[1].cues.map(\.text)), 6)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[2].cues.map(\.text)), 4)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 19)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 14)
         XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 45)
+        XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[1].cues.map(\.text)), 45)
 
         // Afternoon: back-announce, station ID, continuation, closing.
         var station = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "AeroDJ")
@@ -602,7 +605,10 @@ final class EditorialNarrationTests: XCTestCase {
             XCTAssertNil(all.range(of: #"\blive\b"#, options: [.regularExpression, .caseInsensitive]), all)
         }
 
-        var aired = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 11, stationName: "AeroDJ")
+        // Both updates in one break (opt-in above the #332 default of 1), so this checks the
+        // spoken text of each without depending on queue length.
+        var aired = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1, maxPersonalUpdatesPerBreak: 2),
+                                   seed: 11, stationName: "AeroDJ")
         let briefingText = aired.plan(tracks: named, briefing: script.handoff(maxSpokenSeconds: 150), hour: 8)
             .breaks.filter(\.hasBriefing).flatMap { $0.cues.map(\.text) }.joined(separator: " ")
         XCTAssertTrue(briefingText.contains("Design review"))

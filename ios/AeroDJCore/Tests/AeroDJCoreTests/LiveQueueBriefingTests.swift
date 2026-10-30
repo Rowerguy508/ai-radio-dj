@@ -155,10 +155,17 @@ final class LiveQueueBriefingTests: XCTestCase {
         XCTAssertFalse(spoken.contains("Unclassified note"), spoken)
     }
 
-    func testLaterShowAndDisabledBriefingStayQuiet() async throws {
-        let items = [ConnectionItem(id: UUID(), integration: .calendar, title: "Design review", state: .approved)]
+    /// #332: the afternoon is no longer gated by the 07:00–09:00 window. A row with a known
+    /// sensitivity airs at 3 PM; unknown sensitivity and briefing off still stay quiet.
+    func testAfternoonAirsAndUnknownSensitivityOrDisabledBriefingStayQuiet() async throws {
+        let id = UUID()
+        let items = [ConnectionItem(id: id, integration: .calendar, title: "Design review", state: .approved)]
         let on = preferences()
-        XCTAssertNil(LiveQueueBriefing.handoff(items: items, preferences: on, now: afternoon, calendar: calendar).forQueue())
+        XCTAssertNil(LiveQueueBriefing.handoff(items: items, preferences: on, now: afternoon, calendar: calendar).forQueue(),
+                     "unknown sensitivity is blocked by the engine")
+        let afternoonShow = LiveQueueBriefing.handoff(items: items, preferences: on, now: afternoon, calendar: calendar,
+                                                      sensitivityByItemID: [id: .low])
+        XCTAssertEqual(afternoonShow.forQueue()?.cues.filter(\.isContent).map(\.sourceItemID), [id])
         let off = preferences(enabled: false)
         let disabled = LiveQueueBriefing.handoff(items: items, preferences: off, now: morning, calendar: calendar)
         XCTAssertNil(disabled.forQueue())
