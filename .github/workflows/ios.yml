@@ -224,6 +224,9 @@ jobs:
             /usr/libexec/PlistBuddy -c 'Print :NSPrivacyAccessedAPITypes' "$APP/PrivacyInfo.xcprivacy" \
               | grep -q 'NSPrivacyAccessedAPICategoryUserDefaults' \
               || { echo "::error::$CONFIG app manifest lost the UserDefaults declaration"; exit 1; }
+            # #277's Keychain installId: Device ID, not linked, not tracking, App Functionality only.
+            plutil -convert json -o - "$APP/PrivacyInfo.xcprivacy" | python3 -c 'import json,sys;d=json.load(sys.stdin);t=[x for x in d.get("NSPrivacyCollectedDataTypes",[]) if x.get("NSPrivacyCollectedDataType")=="NSPrivacyCollectedDataTypeDeviceID"];assert len(t)==1 and t[0].get("NSPrivacyCollectedDataTypeLinked") is False and t[0].get("NSPrivacyCollectedDataTypeTracking") is False and t[0].get("NSPrivacyCollectedDataTypePurposes")==["NSPrivacyCollectedDataTypePurposeAppFunctionality"]' \
+              || { echo "::error::$CONFIG app manifest must declare Device ID (installId) once: not linked, not tracking, App Functionality"; exit 1; }
           done
           # The extension's manifest declares no required-reason API. Warn (not fail) if the
           # Release appex binary starts referencing one, so the manifest gets updated.

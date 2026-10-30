@@ -43,7 +43,7 @@ If the owner gets Zero Retention Mode and the proxy sends `enable_logging=false`
 | Data type | Collected? | Linked to the user? | Tracking? | Purpose | Reasoning and evidence |
 |---|---|---|---|---|---|
 | **Usage Data → Product Interaction** (catalog song titles and artists in DJ lines) | **Yes** (ElevenLabs history) | **No** | No | App Functionality | Music listening data sent for TTS and retained by default (§1, §2). No identifier reaches ElevenLabs (`handler.ts:293-297`); requests come from the proxy with the owner's key. Stays "not linked" only while the proxy never forwards or logs a per-user/per-install ID **together with text**. |
-| **Identifiers → Device ID** | **Depends on Atlas's proxy-auth design** (App Attest / DeviceCheck, per-install quotas) | Yes, if stored | No | App Functionality (fraud prevention, quotas) | A per-install key or ID kept server-side for quotas or revocation is "other device-level ID" kept longer than one request. Declare it when that PR lands. If only an opaque, unlinkable token is checked and nothing per-install is stored, answer No. **Owner decision 7.** |
+| **Identifiers → Device ID** (#277 `installId`) | **Yes** (declared in `ios/AeroDJ/PrivacyInfo.xcprivacy`) | **No** | No | App Functionality (fraud prevention: enroll caps) | A random UUID v4 in a ThisDeviceOnly Keychain item, sent only in the `/api/attest/register` body. The proxy never stores or logs the ID; it keeps only `HMAC-SHA256(K, domain ‖ day ‖ installId)` as a 3/day enroll counter key that expires after 2 days (`enroll-install.ts`, `ENROLL_TTL_SECONDS`). No account and no user identity, so not linked. Revisit if the ID is ever sent with text, an IAP transaction ID or another identifier. |
 | **User Content → Other User Content** | **No** | — | — | — | No user-generated text leaves the device: typed station names, notes, calendar and shared items are local-only (§1). Re-check if any typed text becomes cloud-eligible. |
 | **Diagnostics → Other Diagnostic Data** | **No** | — | — | — | The proxy log has no text and no identifier (`handler.ts:165-173`). Keep it that way. |
 | IP address in Vercel platform logs | **Owner decision 8** | — | No | — | Apple: "Declare the relevant data types based on how you use IP address". If used only transiently by the platform and not for rate limiting or analytics, it is commonly treated as not collected. Unverified with Apple. |
@@ -51,7 +51,7 @@ If the owner gets Zero Retention Mode and the proxy sends `enable_logging=false`
 
 **Tracking:** No. No ad SDK, no IDFA or ATT, no data broker (grep for `ASIdentifierManager`, `ATTrackingManager`, `AdSupport`, analytics SDKs: none).
 
-**Resulting label:** "Data Not Linked to You: Usage Data (Product Interaction)". Add "Data Linked to You: Identifiers (Device ID)" if the per-install auth stores an ID.
+**Resulting label:** "Data Not Linked to You: Usage Data (Product Interaction)". With #277: "Data Not Linked to You: Usage Data (Product Interaction), Identifiers (Device ID)".
 
 The privacy policy and consent sheet (Nova) should say: song and artist names of what you are playing are sent to our server and to ElevenLabs to make the DJ voice; ElevenLabs may keep them (and, unless the account opts out, use them to improve its models).
 
