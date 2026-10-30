@@ -84,6 +84,8 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(voice: paidVoice, userID: "listener", stationID: "default", cadence: DJCadence(),
                                        bundledClips: bundledClips)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
+        // Pro and consent changes reach this session (SubscriptionModel, CloudVoiceConsentModel; E1).
+        PaidVoiceAccessRelay.session = djSession
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)

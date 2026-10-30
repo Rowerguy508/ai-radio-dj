@@ -33,15 +33,19 @@ final class SubscriptionModel: ProEntitlementProviding {
     /// What `ProVoiceAccess.live` reads; written only here.
     nonisolated let entitlement: ProEntitlementCache
     private let tokens: AppAccountTokenProvider
+    /// Tells the break session when the effective Pro state changes (E1), deduped.
+    private let accessChanges: ProAccessChangeTracker
     private var listener: Task<Void, Never>?
     // SEAM (Atlas): `ServerEntitlementHandoff` takes a verified transaction's JWS once the server
     // design (#233) lands. Not wired: no proxy calls here.
     private let log = Logger(subsystem: "com.aerodj.app", category: "subscription")
 
     init(entitlement: ProEntitlementCache = .shared,
-         tokens: AppAccountTokenProvider = AppAccountTokenProvider(store: KeychainAppAccountTokenStore())) {
+         tokens: AppAccountTokenProvider = AppAccountTokenProvider(store: KeychainAppAccountTokenStore()),
+         accessChanges: ProAccessChangeTracker? = nil) {
         self.entitlement = entitlement
         self.tokens = tokens
+        self.accessChanges = accessChanges ?? ProAccessChangeTracker()
     }
 
     nonisolated func currentProEntitlement() async -> ProEntitlementState {
@@ -85,6 +89,8 @@ final class SubscriptionModel: ProEntitlementProviding {
                                        onlyFamilyShared: ProStoreEntitlement.onlyFamilyShared(transactions))
         // Status category only; never IDs, JWS or tokens.
         log.notice("subscription pro=\(self.status.isPro, privacy: .public)")
+        // After the cache holds the new state, so the session's re-check reads it (E1).
+        await accessChanges.entitlementRead(state, now: Date())
     }
 
     /// #244's snapshot, with #244's `ProOwnership`. An ownership type this build doesn't know is

@@ -12,6 +12,8 @@ final class CloudVoiceConsentModel {
     static let shared = CloudVoiceConsentModel()
 
     private let store: CloudVoiceConsentStore
+    /// Grant and revoke go through here, so the break session hears of each (E1).
+    private let signals: PaidVoiceConsentSignals
     private(set) var state: CloudVoiceConsentState
     /// True only when this build can use a cloud voice and one is selected.
     private(set) var isCloudVoiceOffered: Bool
@@ -20,8 +22,9 @@ final class CloudVoiceConsentModel {
     /// the next launch or a different pick, so unrelated settings writes don't re-open the sheet.
     private var unansweredVoiceID: String?
 
-    init(store: CloudVoiceConsentStore = CloudVoiceConsentStore()) {
+    init(store: CloudVoiceConsentStore = CloudVoiceConsentStore(), signals: PaidVoiceConsentSignals? = nil) {
         self.store = store
+        self.signals = signals ?? PaidVoiceConsentSignals(store: store)
         self.state = store.state
         self.isCloudVoiceOffered = false
         refresh()
@@ -47,7 +50,7 @@ final class CloudVoiceConsentModel {
     }
 
     func accept() {
-        store.accept()
+        signals.accept()
         state = store.state
         isSheetPresented = false
         // Consent first, then (Free only) the Pro offer, once the consent sheet has closed.
@@ -58,7 +61,7 @@ final class CloudVoiceConsentModel {
     }
 
     func decline() {
-        store.decline()
+        signals.decline()
         state = store.state
         isSheetPresented = false
     }
