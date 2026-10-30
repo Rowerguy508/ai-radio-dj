@@ -259,7 +259,7 @@ describe('install reservations require a durable store (note §4.3, Sentinel B3;
     assert.deepEqual(over, { ok: false, reason: 'install_daily' });
   });
 
-  test('durable limiter whose store is down → 503 store; other errors are not swallowed', async () => {
+  test('durable limiter whose store is down → 503 store; other errors are 500 misconfig (PR 4), not rethrown', async () => {
     const down = new RedisUsageLimiter(STORE, { dailyCharCap: 9_000, requestsPerMinute: 100 }, fakeUpstash({ status: 500 }).fetchImpl);
     assert.deepEqual(await reserveForInstall(down, KEY_ID, 100, NOON), STORE_REFUSAL);
     const broken: UsageLimiter = {
@@ -268,7 +268,8 @@ describe('install reservations require a durable store (note §4.3, Sentinel B3;
       reserve: async () => { throw new TypeError('bug'); },
       release: async () => true,
     };
-    await assert.rejects(reserveForInstall(broken, KEY_ID, 100, NOON), TypeError);
+    // PR 4 (Sentinel's #250 nit): a non-store throw maps to 500 misconfig instead of a bare platform 500.
+    assert.deepEqual(await reserveForInstall(broken, KEY_ID, 100, NOON), { ok: false, status: 500, reason: 'misconfig', retryAfterSeconds: 3600 });
     const storeErr: UsageLimiter = { ...broken, reserve: async () => { throw new LimiterStoreError('x'); } };
     assert.deepEqual(await reserveForInstall(storeErr, KEY_ID, 100, NOON), STORE_REFUSAL);
   });

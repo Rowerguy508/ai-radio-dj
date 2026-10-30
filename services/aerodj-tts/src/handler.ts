@@ -361,7 +361,9 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
     reservation = result.reservation;
   } catch (error) {
     if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
-    throw error;
+    // Any other reserve failure is a server fault, not a store outage: 500 `misconfig`
+    // with Retry-After 3600 (note §4.4; Sentinel's #250 nit), before any upstream call.
+    return misconfigured();
   }
   const held = reservation;
   // Refund only when the upstream definitely did not bill (it answered non-2xx).
