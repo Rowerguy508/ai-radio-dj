@@ -35,8 +35,8 @@ const BASE: Env = {
   VERCEL_ENV: 'production',
 };
 const sha = (s: string) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
-const RENDERS = proDayKeys(`pro:production:${sha(OTID)}`, DAY)[2];
-const OWNER_KEY = `aerodj-tts:chars:owner:${DAY}`;
+const RENDERS = proDayKeys(`pro:production:${sha(OTID)}`, DAY, 'production')[2];
+const OWNER_KEY = `aerodj-tts:chars:owner:production:${DAY}`;
 const BAD_FLAGS = ['', 'TRUE', 'True', 'FALSE', '1', '0', 'yes', 'on', ' true', 'true ', 'false\n', '"true"'];
 
 const pcm = () => new Response(Buffer.alloc(22_050 * 2, 1), { status: 200, headers: { 'Content-Type': 'audio/pcm' } });
@@ -47,7 +47,7 @@ function harness(env: Env = {}) {
   const d: Deps = {
     env: { ...BASE, ...env },
     fetch: (async () => pcm()) as unknown as typeof fetch,
-    limiter: new RedisUsageLimiter(STORE, { dailyCharCap: 10_000_000, requestsPerMinute: 600 }, up.fetchImpl),
+    limiter: new RedisUsageLimiter(STORE, { deployment: 'production' as const, dailyCharCap: 10_000_000, requestsPerMinute: 600 }, up.fetchImpl),
     log: () => {},
     now: () => NOON,
     timeoutMs: 50,
