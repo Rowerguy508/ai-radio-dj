@@ -1262,6 +1262,13 @@ enum MusicKitError: LocalizedError {
     case playbackFailed(message: String)
     /// A newer tap, resume or skip replaced this start. Not an error to show.
     case superseded
+
+    /// #145: the held start (`HeldStartPolicy.deferAndReport` in `startTrack`): the new queue is
+    /// loaded and its start waits for the hold, so the tap's DJ queue must be kept, not released.
+    static func isLoadedButDeferred(_ error: any Error) -> Bool {
+        guard case let .playbackFailed(message)? = error as? MusicKitError else { return false }
+        return message == PlaybackFailureCopy.message(for: .onHold)
+    }
     var errorDescription: String? {
         switch self {
         case .notAuthorized:

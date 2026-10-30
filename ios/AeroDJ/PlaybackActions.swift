@@ -157,7 +157,9 @@ struct MusicSearch {
                         djSession.beginQueueInBackground(
                             reservation, djTracks, briefing: briefingForQueue, sources: sources)
                     },
-                    release: { djSession.releaseQueueSetup($0) })
+                    release: { djSession.releaseQueueSetup($0) },
+                    // #145: a tap during a hold loads the new queue and defers; its breaks apply.
+                    loadedButDeferred: MusicKitError.isLoadedButDeferred)
             })
     }
 
