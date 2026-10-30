@@ -23,9 +23,10 @@ public protocol LiveQueueStudio: AnyObject {
 
 extension StudioPresentationModel: LiveQueueStudio {
     public var liveQueueBriefing: LiveQueueBriefingInput {
-        // Rows do not carry `aerodj-sensitivity`. An unknown id is blocked below.
+        // The map `ConnectionsModel` builds (`ConnectionItem.sensitivityMap`), not a copy.
+        // A row with no sensitivity is absent from it and is blocked below.
         LiveQueueBriefingInput(items: connections.items, preferences: station.active.briefing,
-                               sensitivityByItemID: [:])
+                               sensitivityByItemID: connections.sensitivityByItemID)
     }
 }
 
@@ -33,28 +34,33 @@ extension StudioPresentationModel: LiveQueueStudio {
 ///
 /// Adapts consent-approved Connections rows into `ContextItem`s and asks
 /// `MorningBriefingEngine` for the handoff. It does not write cue text.
-/// A later show has no carry-forward on the player, so personal speech stays
-/// nil outside the morning window.
+/// The briefing plays once per local day, on the first listening session of that
+/// day at any hour (owner, Oct 29 2026). Once `BriefingDayLedger` says today was
+/// briefed, it is a later show with no carry-forward, so personal speech stays nil.
 public enum LiveQueueBriefing {
-    /// Closure `PlayerView` passes as the `briefing` argument. The studio is read
-    /// when the closure runs, which is when play starts.
+    /// Closure `PlayerView` passes as the `briefing` argument. The studio and the
+    /// day ledger are read when the closure runs, which is when play starts.
+    /// `days` is the same ledger `DJBreakSession` marks when a briefing starts playing.
     @MainActor
     public static func provider(
         studio: some LiveQueueStudio,
+        days: BriefingDayLedger,
         now: (@MainActor () -> Date)? = nil,
         calendar: Calendar = .current
     ) -> @MainActor () -> ApprovedShowHandoff {
-        let clock = now ?? { Date() }
+        let clock = now ?? { days.now() }
         return {
             let input = studio.liveQueueBriefing
             return handoff(items: input.items, preferences: input.preferences, now: clock(), calendar: calendar,
+                           briefedToday: days.hasBriefedToday,
                            sensitivityByItemID: input.sensitivityByItemID)
         }
     }
 
-    /// Morning window plus an approved row: the engine's handoff. Briefing off, or
+    /// Not yet briefed today plus an approved row: the engine's handoff. Briefing off, or
     /// nothing approved: `revokedOrUnapproved`, which `forQueue()` turns into nil.
-    /// Outside the window: a later show with no carry-forward.
+    /// Already briefed today: a later show with no carry-forward. The time of day no
+    /// longer matters (`preferences.window` is not read here).
     /// `prepared` keeps the caller's script, then applies the same section check
     /// as `approvedRows`. An approved cue whose section is off is reported on
     /// `omittedDisabledSection` and is not offered to a later show. Consent
@@ -65,9 +71,10 @@ public enum LiveQueueBriefing {
         now: Date,
         calendar: Calendar = .current,
         prepared: NarrationHandoff? = nil,
+        briefedToday: Bool = false,
         sensitivityByItemID: [UUID: Sensitivity] = [:]
     ) -> ApprovedShowHandoff {
-        let morning = preferences.enabled && preferences.window.contains(now, calendar: calendar)
+        let morning = preferences.enabled && !briefedToday
         let speakable = approvedRows(items, preferences: preferences)
         if !preferences.enabled || (morning && speakable.isEmpty && prepared == nil) {
             return ApprovedShowHandoff(isMorningShow: morning, approved: nil, revokedOrUnapproved: true,

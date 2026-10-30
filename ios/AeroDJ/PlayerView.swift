@@ -35,7 +35,7 @@ struct PlayerView: View {
                       access: access,
                       snapshot: music.snapshot,
                       actions: .live(music),
-                      search: .live(music, station: stationRef, djSession: djSession, briefing: LiveQueueBriefing.provider(studio: studio)),
+                      search: .live(music, station: stationRef, djSession: djSession, briefing: LiveQueueBriefing.provider(studio: studio, days: djSession.briefingDays)),
                       studio: studio,
                       isTestStation: isTestStation,
                       timeSource: .live)

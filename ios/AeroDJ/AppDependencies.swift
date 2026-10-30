@@ -76,7 +76,8 @@ struct AppDependencies {
         // reads (DIAG override, else the AERODJ_OWNER_AB build default). P0 build 26, -Fry.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
                                        talkOverEnabled: { DJTalkoverFlag.isEnabled() })
-        let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
+        // Once-a-day briefing: the device-only marker in UserDefaults.standard (owner, Oct 29).
+        let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, briefingDays: .standard)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
