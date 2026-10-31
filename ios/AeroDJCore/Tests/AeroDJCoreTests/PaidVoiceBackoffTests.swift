@@ -330,11 +330,26 @@ final class PaidVoiceBackoffTests: XCTestCase {
         XCTAssertEqual(transport.callCount, 3, "without a backoff the provider behaves exactly as before")
     }
 
-    func testOther4xxDoesNotSuspend() async {
-        let backoff = PaidVoiceBackoff(now: { [t0] in t0 })
-        let transport = ScriptedTransport([ScriptedResponse(status: 403)])
-        _ = await render(renderer(transport, backoff), 1)
-        XCTAssertNil(backoff.suspendedUntil())
+    /// #233 §4.4 rev 2 unknown-4xx rule: a 4xx with a missing or unknown reason is a client bug and
+    /// stops paid calls until the next launch (it used to leave the state unchanged).
+    func testOther4xxWithoutAKnownReasonStopsForThisLaunch() async {
+        for status in [403, 404, 409, 418, 422] {
+            let store = MemoryBackoffStore()
+            let backoff = PaidVoiceBackoff(store: store, now: { [t0] in t0 })
+            let transport = ScriptedTransport([ScriptedResponse(status: status), .ok])
+            let r = renderer(transport, backoff)
+            let first = await render(r, 1)
+            XCTAssertEqual(first, "device", "\(status)")
+            let second = await render(r, 2)
+            XCTAssertEqual(second, "device", "\(status)")
+            XCTAssertEqual(transport.callCount, 1, "\(status): no second call this launch")
+            XCTAssertEqual(backoff.stopReason, .clientError, "\(status)")
+            XCTAssertEqual(store.saveCount, 0, "\(status): not persisted")
+            XCTAssertNil(PaidVoiceBackoff(store: store, now: { [t0] in t0 }).suspendedUntil(), "\(status): next launch tries")
+        }
+        let unknown = PaidVoiceBackoff(now: { [t0] in t0 })
+        _ = await render(renderer(ScriptedTransport([.proxyError(403, reason: "something_new")]), unknown), 1)
+        XCTAssertEqual(unknown.stopReason, .clientError, "an unknown 403 reason is not treated as no_entitlement")
     }
 
     func testStatusLineShowsReasonAndResumeTimeOnly() {
@@ -498,10 +513,14 @@ final class PaidVoiceBackoffTests: XCTestCase {
         transport.set([ScriptedResponse(status: 200, headers: ["Content-Type": "text/html", "X-Audio-Duration": "3.0"])])
         let html = await render(r, 2)
         XCTAssertEqual(html, "device")
-        XCTAssertEqual(backoff.snapshot.consecutiveFailures, 1, "a 200 that isn't audio is not a success")
+        // Not a success (the count is not reset); since this PR it also counts as a failure and pauses.
+        XCTAssertEqual(backoff.snapshot.consecutiveFailures, 2, "a 200 that isn't audio is not a success")
+        XCTAssertEqual(backoff.snapshot.reason, .invalidAudio)
+        clock.advance(PaidVoiceBackoff.invalidAudioWait(consecutiveFailures: 2))
         transport.set([ScriptedResponse(status: 200, headers: ["Content-Type": "audio/wav"])])
         _ = await render(r, 3)
-        XCTAssertEqual(backoff.snapshot.consecutiveFailures, 1, "a 200 without a duration is not a success")
+        XCTAssertEqual(backoff.snapshot.consecutiveFailures, 3, "a 200 without a duration is not a success")
+        clock.advance(PaidVoiceBackoff.invalidAudioWait(consecutiveFailures: 3))
         transport.set([.ok])
         let ok = await render(r, 4)
         XCTAssertEqual(ok, "elevenlabs")
@@ -512,5 +531,297 @@ final class PaidVoiceBackoffTests: XCTestCase {
         let old = #"{"suspendedUntil":1800000000,"reason":"rateLimited","consecutiveFailures":0}"#
         let state = try JSONDecoder().decode(PaidVoiceBackoff.State.self, from: Data(old.utf8))
         XCTAssertEqual(state.reason, .rateLimited)
+    }
+
+    // MARK: #233 §4.4 rev 2 (8e2c1b4): entitlement, new daily caps, apple, other 4xx, bad 200
+
+    func testReasonParsingCoversTheRev2Reasons() {
+        typealias R = PaidVoiceBackoff.ProxyErrorReason
+        let expected: [String: R] = [
+            "owner_daily": .ownerDaily, "sandbox_daily": .sandboxDaily, "no_entitlement": .noEntitlement,
+            "install_limit": .installLimit, "apple": .apple, "bad_request": .badRequest, "mixed_auth": .mixedAuth,
+            "too_large": .tooLarge, "owner_token": .ownerToken, "misconfig": .misconfig, "upstream": .upstream,
+            "upstream_timeout": .upstreamTimeout,
+        ]
+        for (raw, reason) in expected {
+            XCTAssertEqual(R.parse(Data(#"{"reason":"\#(raw)"}"#.utf8)), reason, raw)
+        }
+        XCTAssertEqual(Set(R.allDailyCaps), [.installDaily, .globalDaily, .ownerDaily, .sandboxDaily])
+    }
+
+    func test403NoEntitlementStopsWithoutCallingAgainUntilEntitlementChanges() async {
+        let clock = TestClock(t0)
+        let store = MemoryBackoffStore()
+        let backoff = PaidVoiceBackoff(store: store, now: { clock.now })
+        let transport = ScriptedTransport([.proxyError(403, reason: "no_entitlement"), .ok])
+        let r = renderer(transport, backoff)
+        for n in 1...4 {
+            let provider = await render(r, n)
+            XCTAssertEqual(provider, "device", "on-device while not entitled")
+            clock.advance(48 * 3600)
+        }
+        XCTAssertEqual(transport.callCount, 1, "one 403, then no proxy call on any later break")
+        XCTAssertEqual(backoff.stopReason, .noEntitlement)
+        XCTAssertEqual(backoff.statusLine(), "Premium backoff: noEntitlement until entitlement changes")
+        XCTAssertEqual(store.saveCount, 0, "in memory only")
+        XCTAssertNil(PaidVoiceBackoff(store: store, now: { clock.now }).suspendedUntil(), "next launch tries again")
+
+        backoff.entitlementDidChange()  // Transaction.updates, or a 204 from the /api/entitlement re-sync
+        XCTAssertNil(backoff.stopReason)
+        let resumed = await render(r, 9)
+        XCTAssertEqual(resumed, "elevenlabs")
+        XCTAssertEqual(transport.callCount, 2)
+    }
+
+    func test403NoEntitlementOnlySurfacesAsSuspendedNeverAsAPaywallSignal() async throws {
+        // The provider's only output on a 403 is an error and the backoff state; there is no
+        // callback, notification or UI hook, so nothing can open the paywall from here (§5.10).
+        let backoff = PaidVoiceBackoff(now: { [t0] in t0 })
+        let transport = ScriptedTransport([.proxyError(403, reason: "no_entitlement")])
+        let config = try ProxyVoiceProvider.Configuration(endpoint: creds.endpoint, allowedHosts: ["aerodj-tts.vercel.app"],
+                                                          upstream: .elevenlabs, sessionToken: { "t" })
+        let provider = ProxyVoiceProvider(configuration: config, transport: transport, backoff: backoff)
+        let ctx = RequestContext(stationID: "s", isReusableGeneric: false)
+        do {
+            _ = try await provider.synthesize("Hi", voice: VoiceProfile(id: sawyer, name: "S"), context: ctx)
+            XCTFail("403 must throw")
+        } catch {
+            XCTAssertEqual(error as? VoiceRenderError, .invalidResponse("status 403"))
+        }
+        do {
+            _ = try await provider.synthesize("Hi again", voice: VoiceProfile(id: sawyer, name: "S"), context: ctx)
+            XCTFail("stopped provider must throw")
+        } catch {
+            XCTAssertEqual(error as? VoiceRenderError, .suspended)
+        }
+        XCTAssertEqual(transport.callCount, 1)
+    }
+
+    func test403InstallLimitStopsUntilNextLaunchAndEntitlementChangeDoesNotLiftIt() async {
+        let store = MemoryBackoffStore()
+        let backoff = PaidVoiceBackoff(store: store, now: { [t0] in t0 })
+        let transport = ScriptedTransport([.proxyError(403, reason: "install_limit"), .ok])
+        let r = renderer(transport, backoff)
+        _ = await render(r, 1)
+        backoff.entitlementDidChange()
+        let after = await render(r, 2)
+        XCTAssertEqual(after, "device")
+        XCTAssertEqual(transport.callCount, 1)
+        XCTAssertEqual(backoff.stopReason, .installLimit, "Nova's UI can read this to explain too many devices")
+        XCTAssertEqual(backoff.statusLine(), "Premium backoff: installLimit until next launch")
+        XCTAssertEqual(store.saveCount, 0)
+        XCTAssertNil(PaidVoiceBackoff(store: store, now: { [t0] in t0 }).suspendedUntil())
+        // The entitlement client (/api/entitlement) can report it directly too.
+        let direct = PaidVoiceBackoff(now: { [t0] in t0 })
+        direct.recordInstallLimit()
+        XCTAssertEqual(direct.suspendedUntil(), .distantFuture)
+    }
+
+    func testEntitlementChangeNeverLiftsAnUnauthorizedStop() {
+        let backoff = PaidVoiceBackoff(now: { [t0] in t0 })
+        backoff.recordUnauthorized()
+        backoff.recordNoEntitlement()
+        backoff.entitlementDidChange()
+        XCTAssertEqual(backoff.stopReason, .unauthorized, "a 401 stop is never downgraded or lifted by StoreKit")
+    }
+
+    func test429OwnerAndSandboxDailyAreDailyCapsPersistedUntilUTCMidnight() async {
+        for raw in ["owner_daily", "sandbox_daily"] {
+            let clock = TestClock(t0)
+            let store = MemoryBackoffStore()
+            let backoff = PaidVoiceBackoff(store: store, now: { clock.now })
+            let transport = ScriptedTransport([.proxyError(429, reason: raw)])
+            let r = renderer(transport, backoff)
+            let provider = await render(r, 1)
+            XCTAssertEqual(provider, "device", raw)
+            let midnight = Date(timeIntervalSince1970: 1_800_057_600)
+            XCTAssertEqual(backoff.suspendedUntil(), midnight, raw)
+            XCTAssertEqual(backoff.snapshot.reason, .dailyCap, raw)
+            XCTAssertEqual(PaidVoiceBackoff(store: store, now: { clock.now }).suspendedUntil(), midnight, "\(raw) persisted")
+            clock.advance(16 * 3600 - 60)
+            _ = await render(r, 2)
+            XCTAssertEqual(transport.callCount, 1, "\(raw): still suspended a minute before midnight")
+        }
+    }
+
+    func test429OwnerAndSandboxDailyHonorRetryAfterClamped() {
+        for reason in [PaidVoiceBackoff.ProxyErrorReason.ownerDaily, .sandboxDaily] {
+            XCTAssertEqual(PaidVoiceBackoff.rateLimitWait(retryAfter: "7200", reason: reason, now: t0), 7200)
+            XCTAssertEqual(PaidVoiceBackoff.rateLimitWait(retryAfter: "5", reason: reason, now: t0), 60)
+            XCTAssertEqual(PaidVoiceBackoff.rateLimitWait(retryAfter: "999999", reason: reason, now: t0), 86_400)
+            XCTAssertEqual(PaidVoiceBackoff.rateLimitWait(retryAfter: nil, reason: reason, now: t0), 16 * 3600)
+        }
+    }
+
+    func test503AppleHonorsRetryAfterElseFiveMinutesAndFallsBackOnDevice() async {
+        let clock = TestClock(t0)
+        let store = MemoryBackoffStore()
+        let backoff = PaidVoiceBackoff(store: store, now: { clock.now })
+        let transport = ScriptedTransport([.proxyError(503, reason: "apple", retryAfter: "300"), .ok])
+        let r = renderer(transport, backoff)
+        let first = await render(r, 1)
+        XCTAssertEqual(first, "device")
+        XCTAssertEqual(backoff.suspendedUntil(), t0.addingTimeInterval(300))
+        XCTAssertEqual(backoff.snapshot.reason, .apple)
+        XCTAssertEqual(PaidVoiceBackoff(store: store, now: { clock.now }).snapshot.reason, .apple, "persisted")
+        clock.advance(299)
+        _ = await render(r, 2)
+        XCTAssertEqual(transport.callCount, 1)
+        clock.advance(1)
+        let resumed = await render(r, 3)
+        XCTAssertEqual(resumed, "elevenlabs")
+
+        XCTAssertEqual(PaidVoiceBackoff.serviceUnavailableWait(retryAfter: nil, reason: .apple, consecutiveFailures: 4, now: t0), 300)
+        XCTAssertEqual(PaidVoiceBackoff.serviceUnavailableWait(retryAfter: "900", reason: .apple, consecutiveFailures: 1, now: t0), 900)
+        let longer = PaidVoiceBackoff(now: { [t0] in t0 })
+        longer.recordRateLimited(retryAfter: nil, reason: .sandboxDaily)
+        longer.recordServiceUnavailable(retryAfter: "300", reason: .apple)
+        XCTAssertEqual(longer.suspendedUntil(), Date(timeIntervalSince1970: 1_800_057_600), "never shortens")
+    }
+
+    func testOther5xxHonorRetryAfterLike503Unknown() async {
+        for (status, raw, header) in [(500, "misconfig", "3600"), (502, "upstream", "60"), (504, "upstream_timeout", "60")] {
+            let backoff = PaidVoiceBackoff(now: { [t0] in t0 })
+            _ = await render(renderer(ScriptedTransport([.proxyError(status, reason: raw, retryAfter: header)]), backoff), 1)
+            XCTAssertEqual(backoff.suspendedUntil(), t0.addingTimeInterval(TimeInterval(header)!), "\(status) \(raw)")
+            XCTAssertEqual(backoff.snapshot.reason, .serverError)
+        }
+    }
+
+    func test400MixedAuthAnd405StopForThisLaunch() async {
+        for response in [ScriptedResponse.proxyError(400, reason: "mixed_auth"), ScriptedResponse(status: 405)] {
+            let backoff = PaidVoiceBackoff(now: { [t0] in t0 })
+            let transport = ScriptedTransport([response, .ok])
+            let r = renderer(transport, backoff)
+            _ = await render(r, 1)
+            _ = await render(r, 2)
+            XCTAssertEqual(transport.callCount, 1, "\(response.status)")
+            XCTAssertEqual(backoff.stopReason, .clientError, "\(response.status)")
+        }
+    }
+
+    func test400BadRequestAnd413DoNotRetryThatRequestButDoNotPause() async {
+        for response in [ScriptedResponse.proxyError(400, reason: "bad_request"), .proxyError(413, reason: "too_large"),
+                         ScriptedResponse(status: 413), ScriptedResponse(status: 400),
+                         ScriptedResponse(status: 400, headers: ["Content-Type": "application/json"],
+                                          body: Data(#"{"error":"voice not allowed","requestId":"r1"}"#.utf8)),
+                         .proxyError(400, reason: "something_new")] {
+            let store = MemoryBackoffStore()
+            let backoff = PaidVoiceBackoff(store: store, now: { [t0] in t0 })
+            let transport = ScriptedTransport([response, .ok])
+            let r = renderer(transport, backoff)
+            let first = await render(r, 1)
+            XCTAssertEqual(first, "device", "\(response.status): on-device for that cue")
+            XCTAssertEqual(transport.callCount, 1, "\(response.status): that request is not retried")
+            XCTAssertNil(backoff.suspendedUntil(), "\(response.status)")
+            XCTAssertEqual(store.saveCount, 0)
+            let next = await render(r, 2)
+            XCTAssertEqual(next, "elevenlabs", "\(response.status): the next cue may use the paid route")
+        }
+    }
+
+    func test200ThatFailsValidationPausesSoABilledBadResponseIsNotRepaidEveryBreak() async {
+        let bad: [(String, ScriptedResponse)] = [
+            ("content type", ScriptedResponse(status: 200, headers: ["Content-Type": "text/html", "X-Audio-Duration": "3.0"])),
+            ("duration", ScriptedResponse(status: 200, headers: ["Content-Type": "audio/wav"])),
+            ("size", ScriptedResponse(status: 200, headers: ["Content-Type": "audio/wav", "X-Audio-Duration": "3.0"], body: Data())),
+        ]
+        for (label, response) in bad {
+            let clock = TestClock(t0)
+            let store = MemoryBackoffStore()
+            let backoff = PaidVoiceBackoff(store: store, now: { clock.now })
+            let transport = ScriptedTransport([response])
+            let r = renderer(transport, backoff)
+            let first = await render(r, 1)
+            XCTAssertEqual(first, "device", label)
+            XCTAssertEqual(backoff.suspendedUntil(), t0.addingTimeInterval(300), label)
+            XCTAssertEqual(backoff.snapshot.reason, .invalidAudio, label)
+            XCTAssertEqual(PaidVoiceBackoff(store: store, now: { clock.now }).snapshot.reason, .invalidAudio, "\(label) persisted")
+            clock.advance(299)
+            _ = await render(r, 2)
+            XCTAssertEqual(transport.callCount, 1, "\(label): no re-pay inside the pause")
+            clock.advance(1)
+            _ = await render(r, 3)
+            XCTAssertEqual(transport.callCount, 2, label)
+            XCTAssertEqual(backoff.suspendedUntil(), clock.now.addingTimeInterval(600), "\(label): doubles")
+        }
+        XCTAssertEqual(PaidVoiceBackoff.invalidAudioWait(consecutiveFailures: 1), 300)
+        XCTAssertEqual(PaidVoiceBackoff.invalidAudioWait(consecutiveFailures: 5), 3600)
+        XCTAssertEqual(PaidVoiceBackoff.invalidAudioWait(consecutiveFailures: 50), 3600, "capped at 1 h")
+    }
+
+    func testInvalidAudioPauseNeverShortensALongerWait() {
+        let backoff = PaidVoiceBackoff(now: { [t0] in t0 })
+        backoff.recordRateLimited(retryAfter: nil, reason: .ownerDaily)
+        backoff.recordInvalidAudio()
+        XCTAssertEqual(backoff.suspendedUntil(), Date(timeIntervalSince1970: 1_800_057_600))
+        XCTAssertEqual(backoff.snapshot.reason, .dailyCap)
+        let disabled = PaidVoiceBackoff(now: { [t0] in t0 })
+        disabled.recordServiceUnavailable(retryAfter: "3600", reason: .disabled)
+        disabled.recordInvalidAudio()
+        XCTAssertEqual(disabled.suspendedUntil(), t0.addingTimeInterval(3600))
+    }
+
+    func testValidAudioAfterAnInvalidAudioPauseClearsIt() async {
+        let clock = TestClock(t0)
+        let backoff = PaidVoiceBackoff(now: { clock.now })
+        let transport = ScriptedTransport([ScriptedResponse(status: 200, headers: ["Content-Type": "text/html", "X-Audio-Duration": "3.0"]), .ok])
+        let r = renderer(transport, backoff)
+        _ = await render(r, 1)
+        clock.advance(300)
+        let ok = await render(r, 2)
+        XCTAssertEqual(ok, "elevenlabs")
+        XCTAssertEqual(backoff.snapshot, PaidVoiceBackoff.State())
+    }
+
+    func testNoBackoffStillKeepsCallingOnEveryNewStatus() async {
+        for response in [ScriptedResponse.proxyError(403, reason: "no_entitlement"), .proxyError(429, reason: "owner_daily"),
+                         .proxyError(503, reason: "apple", retryAfter: "300"), ScriptedResponse(status: 404),
+                         ScriptedResponse(status: 200, headers: ["Content-Type": "text/html", "X-Audio-Duration": "3.0"])] {
+            let transport = ScriptedTransport([response])
+            let r = renderer(transport, nil)
+            for n in 1...3 { _ = await render(r, n) }
+            XCTAssertEqual(transport.callCount, 3, "\(response.status): opt-in only, nil backoff is the old behavior")
+        }
+    }
+
+    /// Today's proxy (#238/#241) answers 400 with no reason for routine validation failures
+    /// (unlisted voice, text too long). That must not stop the paid voice for the session.
+    func testReasonless400IsBadRequestAndDoesNotStopTheSession() async {
+        let store = MemoryBackoffStore()
+        let backoff = PaidVoiceBackoff(store: store, now: { [t0] in t0 })
+        let transport = ScriptedTransport([ScriptedResponse(status: 400), ScriptedResponse(status: 400), .ok])
+        let r = renderer(transport, backoff)
+        _ = await render(r, 1)
+        _ = await render(r, 2)
+        let third = await render(r, 3)
+        XCTAssertEqual(third, "elevenlabs", "a reasonless 400 only skips that cue")
+        XCTAssertEqual(transport.callCount, 3)
+        XCTAssertNil(backoff.stopReason)
+        XCTAssertFalse(backoff.isStoppedForThisLaunch)
+        XCTAssertEqual(store.saveCount, 0)
+    }
+
+    /// 503 `store`: max(Retry-After, exponential), so a long Redis outage that keeps sending
+    /// `Retry-After: 30` still backs off 30, 60, 120 ... up to 15 min.
+    func test503StoreUsesTheLongerOfRetryAfterAndExponential() async {
+        let clock = TestClock(t0)
+        let backoff = PaidVoiceBackoff(now: { clock.now })
+        let transport = ScriptedTransport([.proxyError(503, reason: "store", retryAfter: "30")])
+        let r = renderer(transport, backoff)
+        var waits: [TimeInterval] = []
+        for n in 1...7 {
+            _ = await render(r, n)
+            let wait = (backoff.suspendedUntil() ?? clock.now).timeIntervalSince(clock.now)
+            waits.append(wait)
+            clock.advance(wait)
+        }
+        XCTAssertEqual(waits, [30, 60, 120, 240, 480, 900, 900])
+        XCTAssertEqual(transport.callCount, 7)
+        XCTAssertEqual(PaidVoiceBackoff.serviceUnavailableWait(retryAfter: "600", reason: .store, consecutiveFailures: 2, now: t0), 600,
+                       "a longer Retry-After still wins")
+        XCTAssertEqual(PaidVoiceBackoff.serviceUnavailableWait(retryAfter: "30", reason: .store, consecutiveFailures: 4, now: t0), 240)
+        XCTAssertEqual(PaidVoiceBackoff.serviceUnavailableWait(retryAfter: "30", reason: .disabled, consecutiveFailures: 4, now: t0), 30,
+                       "only store takes the max; other reasons keep Retry-After")
     }
 }
