@@ -6,8 +6,8 @@ import Foundation
 //
 // Rules, all enforced here and tested in `DJBreakShapesTests`:
 //   - Shapes: back-announce only, coming-up only, combined ("that was X, here's Y"), a short
-//     station ID, the classic shape, and a time check plus intro (offered only when the caller
-//     supplies a time-check line; the clock wiring is a follow-up slice).
+//     station ID, the classic shape, and a time check plus intro (offered only when the plan has
+//     a clock and the time-check rules allow it; see `DJTimeCheck.swift`).
 //   - Never the same shape twice in a row.
 //   - Station ID never in two consecutive breaks, and never in the first two breaks after the
 //     greeting.
@@ -29,7 +29,7 @@ public enum DJBreakShape: String, CaseIterable, Sendable {
     case comingUpOnly
     /// One breath: "That was {title}. Here's {nextTitle}."
     case combined
-    /// A short time check, then the closing line. Needs a time-check line from the caller.
+    /// A short time check, then the closing line. Needs a planning clock (`DJPlanClock`).
     case timeCheckIntro
     /// A short station ID, then the closing line.
     case stationID
@@ -52,10 +52,26 @@ public struct DJBreakShapeConfig: Equatable, Sendable {
     /// Combined back-announce plus forward-sell lines. `{title}`/`{artist}` name the song that
     /// just played, `{nextTitle}`/`{nextArtist}` the next one. Copy is Echo's to restyle.
     public var combined: [String]
+    /// Time checks (part 2): breaks after the greeting that may not carry one (1: never the
+    /// first break after the greeting).
+    public var timeCheckGraceBreaks: Int
+    /// At most one time check per this much wall time (planning clock), planned or aired.
+    public var timeCheckMinSpacingSeconds: Double
+    /// A time check is skipped when the break's known air time is further than this from the
+    /// planning clock (the spoken time would be off).
+    public var timeCheckMaxDriftSeconds: Double
+    /// Time-check copy. Lives here next to `combined` until Echo moves it into `EditorialTone`.
+    public var timeChecks: DJTimeCheckPhrases
 
     public init(weights: [DJBreakShape: Int] = DJBreakShapeConfig.defaultWeights, recentBreakWindow: Int = 6,
                 hereWindow: Int = 3, maxBreakSeconds: Int = 12, maxCuesPerBreak: Int = 4,
-                stationIDGraceBreaks: Int = 2, combined: [String] = DJBreakShapeConfig.defaultCombined) {
+                stationIDGraceBreaks: Int = 2, combined: [String] = DJBreakShapeConfig.defaultCombined,
+                timeCheckGraceBreaks: Int = 1, timeCheckMinSpacingSeconds: Double = 30 * 60,
+                timeCheckMaxDriftSeconds: Double = 2 * 60, timeChecks: DJTimeCheckPhrases = DJTimeCheckPhrases()) {
+        self.timeCheckGraceBreaks = max(0, timeCheckGraceBreaks)
+        self.timeCheckMinSpacingSeconds = max(0, timeCheckMinSpacingSeconds)
+        self.timeCheckMaxDriftSeconds = max(0, timeCheckMaxDriftSeconds)
+        self.timeChecks = timeChecks
         self.weights = weights
         self.recentBreakWindow = max(1, recentBreakWindow)
         self.hereWindow = max(1, hereWindow)
@@ -92,7 +108,7 @@ public struct DJBreakShapeContext: Equatable, Sendable {
     public var canForwardSell: Bool
     /// The station name is speakable (`EditorialStationName.usable`).
     public var stationIDUsable: Bool
-    /// The caller supplied a time-check line for this break.
+    /// The plan has a clock and the drift and spacing rules allow a time check here.
     public var timeCheckAvailable: Bool
 
     public init(canBackAnnounce: Bool = true, canForwardSell: Bool = true, stationIDUsable: Bool = true,
@@ -126,7 +142,9 @@ public struct DJBreakShapePicker: Sendable {
             case .backAnnounceOnly: return context.canBackAnnounce
             case .comingUpOnly: return context.canForwardSell
             case .combined: return context.canBackAnnounce && context.canForwardSell
-            case .timeCheckIntro: return context.timeCheckAvailable && context.canForwardSell
+            case .timeCheckIntro:
+                return context.timeCheckAvailable && context.canForwardSell
+                    && breaksSinceGreeting >= config.timeCheckGraceBreaks
             case .stationID:
                 return context.stationIDUsable && context.canForwardSell
                     && lastShape != .stationID && breaksSinceGreeting >= config.stationIDGraceBreaks
@@ -268,6 +286,11 @@ public struct RecentSpokenTemplates: Sendable {
     /// Drops planned breaks that will never air (a replan discarded them).
     public mutating func forget(ids: Set<UUID>) {
         history.removeAll { $0.id.map(ids.contains) ?? false }
+    }
+
+    /// A planned break's first cue changed (a stale time check was dropped): keep its memory.
+    public mutating func rekey(_ old: UUID, to new: UUID) {
+        for i in history.indices where history[i].id == old { history[i].id = new }
     }
 
     public var lastBreak: [String] { history.last?.entries.map(\.key) ?? [] }
