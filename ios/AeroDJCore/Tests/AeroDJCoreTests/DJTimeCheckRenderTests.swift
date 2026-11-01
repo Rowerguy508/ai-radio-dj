@@ -299,4 +299,58 @@ final class DJTimeCheckRenderTests: XCTestCase {
         assertRestOnly(await Self.ready(p), planned)
         XCTAssertEqual(paid.texts.count, 1, "over the cap: never sent")
     }
+
+    // MARK: Whole-break cap and trimmed lines (#320 merged)
+
+    private func line(_ order: Int, _ text: String) -> NarrationCue {
+        NarrationCue(id: UUID(), order: order, group: -1, kind: .transition, text: text,
+                     estimatedSeconds: 1, maxSeconds: 12, sourceItemID: nil, source: nil, provenance: nil)
+    }
+
+    /// `first`, the time check, the closing line; `optional` in drop order.
+    private func threeLineBreak(_ first: NarrationCue, optional: (_ first: UUID, _ time: UUID) -> [UUID]) -> DJBreak {
+        let time = line(2, "It's 9:40."), closing = line(3, Self.closingText)
+        var b = DJBreak(afterTrack: 0, cues: [first, time, closing],
+                        attributions: [first.id: .presenter, time.id: .presenter,
+                                       closing.id: .trackMetadata(trackIDs: ["t1"], origin: .catalog)])
+        b.talkOverCueID = closing.id
+        b.optionalCueIDs = optional(first.id, time.id)
+        b.timeCheck = DJPlannedTimeCheck(cueID: time.id, plannedAt: date(9, 40),
+                                         templates: [.on: "It's {time}.", .comingUp: "Almost {time}.", .justAfter: "Just after {time}."],
+                                         calendar: eastern, style: .twelveHour)
+        return b
+    }
+
+    func testTimeCheckOverTheWholeBreakCapIsDroppedNotTrimmingAnotherLine() async {
+        let clock = Clock(date(9, 40))
+        // Opener 5 s + closing 3 s + 0.3 s pause = 8.3 s; with a 4 s time check 12.3 s, over 12 s.
+        let voice = ScriptedVoice(seconds: { $0.contains("9:4") ? 4 : $0.hasPrefix("Up next") ? 3 : 5 })
+        let p = preparer([route("device", voice)], clock: clock)
+        let planned = threeLineBreak(line(1, "That was a long one."), optional: { _, time in [time] })
+        await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
+        let tried = await eventually { voice.texts.count == 3 }
+        XCTAssertTrue(tried, "the time check rendered: \(voice.texts)")
+        try? await Task.sleep(for: .milliseconds(150))
+        let b = await Self.ready(p)
+        XCTAssertEqual(b?.cues.map(\.id), [planned.cues[0].id, planned.cues[2].id], "only the time check dropped")
+        XCTAssertEqual(b?.trimmedCueIDs, [])
+        XCTAssertEqual(b?.talkOverCueID, planned.talkOverCueID)
+    }
+
+    func testTimeCheckGoesInItsPlannedPlaceAfterATrimmedLineAndKeepsTheTrimRecord() async {
+        let clock = Clock(date(9, 40))
+        // Color 9 s + closing 3 s + pause: 12.3 s, so color is trimmed; the 1 s time check fits.
+        let voice = ScriptedVoice(seconds: { $0.contains("9:4") ? 1 : $0.hasPrefix("Up next") ? 3 : 9 })
+        let p = preparer([route("device", voice)], clock: clock)
+        let planned = threeLineBreak(line(1, "Grey morning out there."), optional: { color, time in [time, color] })
+        await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
+        let added = await eventually { await Self.ready(p)?.cues.count == 2 }
+        XCTAssertTrue(added)
+        let b = await Self.ready(p)
+        XCTAssertEqual(b?.cues.map(\.id), [planned.cues[1].id, planned.cues[2].id], "time check, then the closing line last")
+        XCTAssertEqual(b?.clips.map(\.cueID), b?.cues.map(\.id))
+        XCTAssertEqual(b?.trimmedCueIDs, [planned.cues[0].id], "the trim record survives the late line")
+        XCTAssertEqual(b.map { Set($0.attributions.keys) }, Set([planned.cues[1].id, planned.cues[2].id]))
+        XCTAssertEqual(b?.talkOverCueID, planned.talkOverCueID)
+    }
 }

@@ -651,6 +651,7 @@ public final class DJBreakSession {
             var shifted = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
             shifted.talkOverCueID = b.talkOverCueID
             shifted.shape = b.shape
+            shifted.optionalCueIDs = b.optionalCueIDs   // #320's measured-audio trim order
             shifted.timeCheck = b.timeCheck
             breaks[k] = shifted
         }

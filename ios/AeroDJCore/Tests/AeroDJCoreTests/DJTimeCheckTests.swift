@@ -30,9 +30,16 @@ final class DJTimeCheckTests: XCTestCase {
 
     /// Time checks heavy, so a plan offers one wherever the rules allow. `spacing` 0 lifts the
     /// 30-minute rule so the per-break rules can be seen on their own.
-    private func heavy(spacing: Double = 30 * 60, cap: Int = 12) -> DJBreakShapeConfig {
-        DJBreakShapeConfig(weights: [.timeCheckIntro: 1000, .comingUpOnly: 1], maxBreakSeconds: cap,
-                           timeCheckMinSpacingSeconds: spacing)
+    private func heavy(spacing: Double = 30 * 60) -> DJBreakShapeConfig {
+        DJBreakShapeConfig(weights: [.timeCheckIntro: 1000, .comingUpOnly: 1], timeCheckMinSpacingSeconds: spacing)
+    }
+
+    /// `dense` with the one ordinary-break cap (#349: the natural shapes fit
+    /// `DJCadence.maxOrdinaryBreakSeconds`, not a shape-config cap) set to `seconds`.
+    private func dense(cap seconds: Int) -> DJCadence {
+        var cadence = dense
+        cadence.maxOrdinaryBreakSeconds = seconds
+        return cadence
     }
 
     private func timeChecks(_ plan: DJSessionPlan) -> [(DJBreak, NarrationCue)] {
@@ -228,7 +235,7 @@ final class DJTimeCheckTests: XCTestCase {
             }
             // Tight: only the closing line fits, so the time check (and the extra) are dropped and
             // the closing line stays.
-            var tight = DJScriptWriter(cadence: dense, seed: seed, shapes: heavy(spacing: 0, cap: 3))
+            var tight = DJScriptWriter(cadence: dense(cap: 3), seed: seed, shapes: heavy(spacing: 0))
             tight.extraLineSource = FixedExtraLine()
             let tightPlan = tight.plan(tracks: djTracks(30), briefing: nil, hour: 9, clock: clock(9, 40))
             let picked = tightPlan.breaks.filter { $0.shape == .timeCheckIntro }
@@ -240,12 +247,28 @@ final class DJTimeCheckTests: XCTestCase {
             }
             XCTAssertEqual(tight.testTimeCheckCount, 0, "a dropped time check does not count toward spacing")
         }
-        // Extra line goes first: a cap with room for exactly one optional line keeps the time check.
-        var writer = DJScriptWriter(cadence: dense, seed: 1, shapes: heavy(spacing: 0, cap: 6))
-        writer.extraLineSource = FixedExtraLine()
-        for b in writer.plan(tracks: djTracks(30), briefing: nil, hour: 9, clock: clock(9, 40)).breaks where b.timeCheckCueID != nil {
-            XCTAssertFalse(b.cues.contains { $0.text.hasPrefix("Bit of rain") }, "extra dropped before the time check")
+        // Extra line goes first: at any cap, a break whose roomy plan had a time check never keeps
+        // the extra line and drops the time check; some cap keeps the time check with the extra
+        // dropped. (#349's one ordinary cap counts the closing line and the pause, so no single
+        // cap value is "room for exactly one optional line".)
+        var keptTimeCheckOnly = 0
+        for seed in UInt64(0)..<10 {
+            var roomy = DJScriptWriter(cadence: dense(cap: 60), seed: seed, shapes: heavy(spacing: 0))
+            roomy.extraLineSource = FixedExtraLine()
+            let withTime = Set(roomy.plan(tracks: djTracks(30), briefing: nil, hour: 9, clock: clock(9, 40)).breaks
+                .filter { $0.timeCheckCueID != nil }.map(\.afterTrack))
+            for cap in 3...10 {
+                var writer = DJScriptWriter(cadence: dense(cap: cap), seed: seed, shapes: heavy(spacing: 0))
+                writer.extraLineSource = FixedExtraLine()
+                for b in writer.plan(tracks: djTracks(30), briefing: nil, hour: 9, clock: clock(9, 40)).breaks
+                where b.shape == .timeCheckIntro && withTime.contains(b.afterTrack) {
+                    let hasExtra = b.cues.contains { $0.text.hasPrefix("Bit of rain") }
+                    XCTAssertFalse(hasExtra && b.timeCheckCueID == nil, "cap \(cap) seed \(seed): extra dropped before the time check")
+                    if !hasExtra, b.timeCheckCueID != nil { keptTimeCheckOnly += 1 }
+                }
+            }
         }
+        XCTAssertGreaterThan(keptTimeCheckOnly, 0, "some cap fits the time check but not the extra")
     }
 
     func testRealWeightsKeepTimeChecksRare() {

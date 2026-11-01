@@ -123,6 +123,7 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
             maxBriefingBreakSeconds: base.maxBriefingBreakSeconds,
             allowsBackToBack: everySong,
             maxClosingSeconds: base.maxClosingSeconds,
+            maxOrdinaryBreakSeconds: base.maxOrdinaryBreakSeconds,
             maxPersonalUpdatesPerBreak: base.maxPersonalUpdatesPerBreak
         )
     }

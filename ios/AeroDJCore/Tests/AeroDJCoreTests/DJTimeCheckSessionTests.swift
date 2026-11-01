@@ -65,10 +65,12 @@ final class DJTimeCheckSessionTests: XCTestCase {
 
     func testSessionSpeaksItsInjectedNowAndAtMostOneTimeCheckPerPlan() async {
         let clock = Clock(eastern.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 7, minute: 40))!)
-        var withOne = 0
+        var withOne = 0, withOptional = 0
         for seed in UInt64(0)..<30 {
             let session = await rig(seed: seed, clock: clock)
             await session.queueStarted(djTracks(90))
+            // replan keeps the planner's drop order for #320's measured-audio trim.
+            withOptional += session.testPlannedBreaks.values.filter { !$0.optionalCueIDs.isEmpty }.count
             let checks = session.testPlannedBreaks.values.filter { $0.timeCheckCueID != nil }
             XCTAssertLessThanOrEqual(checks.count, 1, "seed \(seed): one clock reading per plan")
             for b in checks {
@@ -81,6 +83,7 @@ final class DJTimeCheckSessionTests: XCTestCase {
             await session.stop()   // no queue setup or prepare task outlives this seed
         }
         XCTAssertGreaterThan(withOne, 0, "some seeds plan a time check")
+        XCTAssertGreaterThan(withOptional, 0, "planned breaks keep their optional lines through replan")
     }
 
     func testTimeCheckAirsTheTimeReadWhenItRendersNotWhenPlanned() async {
