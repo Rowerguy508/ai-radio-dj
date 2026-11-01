@@ -503,6 +503,38 @@ final class StudioScreenTests: XCTestCase {
         save(app, isOpenLayout ? "open-ax5-dark" : "closed-ax5-dark")
     }
 
+    /// #310 / #326: at AX5 on a phone the DJ status moves out of the scrolling upper part and
+    /// is pinned above the scrubber. The other AX5 captures have an idle DJ, so this is the one
+    /// that draws the ON AIR pill there: on screen without scrolling, above the scrubber and
+    /// the transport, read after the title. The pill's timer counts from launch, so the
+    /// screenshot's "0:0x" varies run to run.
+    @MainActor
+    func testAX5OnAirPinnedAboveScrubber() throws {
+        try XCTSkipIf(isOpenLayout, "The pinned status is the phone-width folded player at AX5")
+        let app = launch(scenario: "onAir", contentSize: Self.ax5)
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15),
+                      "layout.compact expected at AX5:\n\(app.debugDescription)")
+        let any = app.descendants(matching: .any)
+        let onAir = any["dj.onAir"]
+        let scrubber = any["playback.progress"]
+        let play = app.buttons["transport.playPause"]
+        for (name, element) in [("onAir", onAir), ("scrubber", scrubber), ("play", play)] {
+            XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing at AX5\n\(app.debugDescription)")
+        }
+        XCTAssertTrue(shows(app, "Morning Light"))
+        XCTAssertFalse(any["dj.ready"].exists, "On Air replaces the ready line")
+        guard let pill = settledFrame(of: onAir, "dj.onAir") else { return }
+        let window = app.windows.firstMatch.frame
+        let frames = "window \(window) onAir \(pill) scrubber \(scrubber.frame) play \(play.frame)"
+        XCTAssertGreaterThanOrEqual(pill.minY, window.minY, "ON AIR on screen without scrolling: \(frames)")
+        XCTAssertLessThanOrEqual(pill.maxY, window.maxY, "ON AIR on screen without scrolling: \(frames)")
+        XCTAssertLessThanOrEqual(pill.maxY, scrubber.frame.minY + 1, "ON AIR pinned above the scrubber: \(frames)")
+        XCTAssertLessThan(pill.minY, play.frame.minY, "ON AIR above the transport: \(frames)")
+        XCTAssertTrue(play.isHittable, "Play/pause stays reachable at AX5")
+        assertReadingOrder(app, title: "Morning Light", status: "On Air")
+        save(app, "closed-ax5-onair")
+    }
+
     // MARK: Duo shell, fold, and rotation
 
     /// Tapping a station selects it and shows one studio model. It does not search or play.

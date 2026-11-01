@@ -64,6 +64,11 @@ enum StudioCaptureScenario: String {
     /// container: below the Studio switch but wider than any phone in portrait, like the
     /// unfolded Duo's split-view detail (owner, build 25). Needs a window at least that big.
     case duoWideReady
+    /// The DJ is on air: a break became ready and the player reported it started
+    /// (`breakReady` then `playbackStarted`, the same events the audio player sends), so the
+    /// folded player draws the ON AIR pill. At AX5 on a phone it is pinned above the
+    /// scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
+    case onAir
 
     var access: PlaybackAccess {
         switch self {
@@ -196,6 +201,9 @@ struct StudioCaptureView: View {
                 studio.dj.send(.playbackFailed(afterTrack: 0))
             case .breakReady, .duoWideReady:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
+            case .onAir:
+                studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
+                studio.dj.send(.playbackStarted(afterTrack: 0))
             case .config, .resizeTune:
                 // Fry #110: Save while holding schedules pending until a safe boundary.
                 // Idle Save would apply immediately ("Saved…"), which breaks
