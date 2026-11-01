@@ -37,7 +37,7 @@ final class StationStartBriefingTests: XCTestCase {
         return Fixture(ids: ids, cues: cues, handoff: handoff)
     }
 
-    func testStationStartsOfferTheFirstAvailableUpdateWithItsSources() throws {
+    func testStationStartsOfferTheFirstAvailableUpdateWithItsSources() async throws {
         let f = threeApproved()
         for kind in [StationHandOffKind.idlePlayStart, .createdStationStart] {
             let offer = StationStartBriefing.offer(for: kind, briefing: { f.handoff })
@@ -47,13 +47,13 @@ final class StationStartBriefingTests: XCTestCase {
         }
     }
 
-    func testStartOfferCarriesAtMostOnePersonalUpdate() throws {
+    func testStartOfferCarriesAtMostOnePersonalUpdate() async throws {
         XCTAssertEqual(StationStartBriefing.maxPersonalUpdatesOnStart, 1)
         let offer = StationStartBriefing.offer(for: .idlePlayStart, briefing: { self.threeApproved().handoff })
         XCTAssertEqual(try XCTUnwrap(offer.briefing).cues.filter(\.isContent).count, 1)
     }
 
-    func testBoundaryHandOffNeverReadsOrOffersABriefing() {
+    func testBoundaryHandOffNeverReadsOrOffersABriefing() async {
         var reads = 0
         let f = threeApproved()
         let offer = StationStartBriefing.offer(for: .boundary, briefing: { reads += 1; return f.handoff })
@@ -62,7 +62,7 @@ final class StationStartBriefingTests: XCTestCase {
         XCTAssertEqual(StationStartBriefing.offer(for: .idlePlayStart, briefing: nil), .none, "no provider: fails closed")
     }
 
-    func testStartOfferStaysFailClosedOnConsent() throws {
+    func testStartOfferStaysFailClosedOnConsent() async throws {
         // Revoked / unapproved handoffs: nothing.
         let f = threeApproved()
         let revoked = ApprovedShowHandoff(isMorningShow: true, approved: f.handoff.approved,
@@ -80,7 +80,7 @@ final class StationStartBriefingTests: XCTestCase {
 
     /// The same provider a song tap uses (`LiveQueueBriefing.provider`), read at station start.
     /// Uses 08:00 so the test does not depend on the planner's time gate (Echo, #332).
-    func testStationStartReadsTheSongTapProvider() throws {
+    func testStationStartReadsTheSongTapProvider() async throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         let at = calendar.date(from: DateComponents(year: 2026, month: 10, day: 26, hour: 8))!
