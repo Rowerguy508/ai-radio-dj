@@ -66,11 +66,23 @@ public struct DJCadence: Equatable, Sendable {
     /// whose required lines (opener and closing) alone exceed it is not planned. Both are
     /// reported in `DJSessionPlan.ordinaryCapReport`. Briefing breaks keep `maxBriefingBreakSeconds`.
     public var maxOrdinaryBreakSeconds: Int
+    /// Personal updates (approved briefing content cues) one break may carry (#332). Updates
+    /// past the first wait for the next break; at the end of the queue the usual outcomes apply
+    /// (a durable note is deferred, a calendar event or due task is dropped, never carried).
+    /// At least 1. The 45 s briefing cap still bounds the break.
+    public var maxPersonalUpdatesPerBreak: Int
+
+    /// #332 default: one personal update per break.
+    public static let defaultMaxPersonalUpdatesPerBreak = 1
+    /// #332 default: each personal update airs at most once per local calendar day
+    /// (`PersonalUpdateLedger`, keyed by source item id).
+    public static let defaultPersonalUpdatePlaysPerDay = 1
 
     public init(talkFraction: Double = 0.3, minSongsBetweenBreaks: Int = 2,
                 maxTransitionSeconds: Int = 15, maxBriefingBreakSeconds: Int = 45,
                 allowsBackToBack: Bool = false, maxClosingSeconds: Int = 4,
-                maxOrdinaryBreakSeconds: Int = 12) {
+                maxOrdinaryBreakSeconds: Int = 12,
+                maxPersonalUpdatesPerBreak: Int = DJCadence.defaultMaxPersonalUpdatesPerBreak) {
         self.talkFraction = min(max(talkFraction, 0), 1)
         self.allowsBackToBack = allowsBackToBack
         self.minSongsBetweenBreaks = max(allowsBackToBack ? 0 : 1, minSongsBetweenBreaks)
@@ -78,6 +90,7 @@ public struct DJCadence: Equatable, Sendable {
         self.maxClosingSeconds = max(0, maxClosingSeconds)
         self.maxBriefingBreakSeconds = maxBriefingBreakSeconds
         self.maxOrdinaryBreakSeconds = max(0, maxOrdinaryBreakSeconds)
+        self.maxPersonalUpdatesPerBreak = max(1, maxPersonalUpdatesPerBreak)
     }
 
     /// Share of boundaries with a break that the planner actually delivers over a long session
@@ -123,15 +136,23 @@ public struct TemplatePool: Sendable {
     public mutating func next(filling values: [String: String], using rng: inout SeededGenerator) -> String? {
         let usable = templates.indices.filter { Self.fill(templates[$0], values) != nil }
         guard !usable.isEmpty else { return nil }
-        var fresh = usable.filter { !used.contains($0) }
+        guard let pick = pickIndex(from: usable, usable: usable, using: &rng) else { return nil }
+        return Self.fill(templates[pick], values)
+    }
+
+    /// Cycles `candidates` (a subset of `usable`) without repeats, never repeating the last pick
+    /// across a reset. With `candidates == usable` this is the original selection, draw for draw.
+    mutating func pickIndex(from candidates: [Int], usable: [Int], using rng: inout SeededGenerator) -> Int? {
+        guard !candidates.isEmpty else { return nil }
+        var fresh = candidates.filter { !used.contains($0) }
         if fresh.isEmpty {
             used.subtract(usable)
-            fresh = usable.count > 1 ? usable.filter { $0 != last } : usable
+            fresh = candidates.count > 1 ? candidates.filter { $0 != last } : candidates
         }
         let pick = fresh[Int(rng.next() % UInt64(fresh.count))]
         used.insert(pick)
         last = pick
-        return Self.fill(templates[pick], values)
+        return pick
     }
 
     /// Replaces `{key}` placeholders; nil if any is missing or empty. Track titles and artists
@@ -191,7 +212,11 @@ public struct DJBreak: Equatable, Sendable {
     /// Ordinary breaks: the optional lines (continuation, then station ID or time-of-day color),
     /// in the order the planner drops them. `DJBreakPreparer` drops them in this order when the
     /// measured audio runs over `DJCadence.maxOrdinaryBreakSeconds`. Never the opener or closing.
+    /// Natural-shape breaks (lane 2) list theirs last-placed first: the extra (weather) line,
+    /// then continuation, then color, matching the planner's own drop order.
     public var optionalCueIDs: [UUID] = []
+    /// The natural shape this break was planned in (lane 2). Nil: the classic planner.
+    public var shape: DJBreakShape? = nil
     public var briefingCueIDs: [UUID] { cues.filter(\.isContent).map(\.id) }
     public var hasBriefing: Bool { cues.contains { $0.isContent } }
     public var estimatedSeconds: Double { cues.reduce(0) { $0 + $1.plannedSeconds } }
@@ -248,12 +273,26 @@ public struct DJScriptWriter: Sendable {
     private var briefingOutro: TemplatePool
     private var greetings: [DayPart: TemplatePool]
     private var hasGreeted = false
+    /// Natural break shapes (lane 2). Nil keeps the classic planner, line for line.
+    public let shapes: DJBreakShapeConfig?
+    /// Optional extra main-segment line per natural break (the weather seam). Nil: none.
+    public var extraLineSource: (any DJBreakExtraLineSource)?
+    private var shapePicker: DJBreakShapePicker?
+    private var recentTemplates: RecentSpokenTemplates
+    /// Natural breaks planned so far (id: first cue), newest last, for `forgetPlannedBreaks`.
+    private var shapeLog: [(id: UUID, shape: DJBreakShape)] = []
+    private var combined: TemplatePool
 
     public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = DJScriptWriter.builtInStationName,
-                tone: EditorialTone = .warm) {
+                tone: EditorialTone = .warm, shapes: DJBreakShapeConfig? = nil) {
         self.cadence = cadence
         self.stationName = stationName
         self.tone = tone
+        self.shapes = shapes
+        // Its own stream, so turning shapes on never moves where breaks fall (`rng`).
+        self.shapePicker = shapes.map { DJBreakShapePicker(config: $0, seed: seed &+ 0x5851_F42D_4C95_7F2D) }
+        self.recentTemplates = RecentSpokenTemplates(window: shapes?.recentBreakWindow ?? 1, hereWindow: shapes?.hereWindow ?? 1)
+        self.combined = TemplatePool(shapes?.combined ?? [])
         self.rng = SeededGenerator(seed: seed)
         self.editorial = SeededGenerator(seed: seed &+ 0x9E37_79B9_7F4A_7C15)
         self.phrasing = SeededGenerator(seed: seed &+ 0x3C6E_F372_FE94_F82B)
@@ -312,6 +351,20 @@ public struct DJScriptWriter: Sendable {
                 attributions[cue.id] = attribution.resolvingTrackOrigins(in: tracks)
                 return cue
             }
+            // Natural shapes (opt-in): ordinary breaks after the greeting.
+            if !wantsBriefing, hasGreeted, shapePicker != nil {
+                switch naturalBreak(boundary: boundary, prev: prev, next: next, station: station, dayPart: dayPart,
+                                    tracks: tracks, order: &order) {
+                case .planned(let planned):
+                    breaks.append(planned)
+                    lastBreak = boundary
+                    continue
+                case .musicOnly:
+                    continue
+                case .notApplicable:
+                    break
+                }
+            }
             let metadata = ["title": prev.title, "artist": prev.artist]
             // Opener: the greeting once per session, else artist focus or a back-announce.
             let shape = wantsBriefing ? BreakShape.plain : breakShape()
@@ -336,7 +389,8 @@ public struct DJScriptWriter: Sendable {
                     let leadCue = add(lead, .presenter)
                     spent += leadCue.plannedSeconds
                     var taken: [NarrationCue] = []
-                    while let cue = pending.first, spent + cue.plannedSeconds <= limit {
+                    while let cue = pending.first, taken.count < cadence.maxPersonalUpdatesPerBreak,
+                          spent + cue.plannedSeconds <= limit {
                         taken.append(cue); spent += cue.plannedSeconds; pending.removeFirst()
                     }
                     if taken.isEmpty, let cue = pending.first, cue.plannedSeconds + leadCue.plannedSeconds > limit {
@@ -400,6 +454,12 @@ public struct DJScriptWriter: Sendable {
             }
             breaks.append(planned)
             lastBreak = boundary
+            if shapes != nil {
+                // Natural shapes on: the classic and briefing breaks' own lines (never personal
+                // text) count toward the cross-pool window too, so a later break never echoes them.
+                let spoken = cues.filter { !$0.isContent }.map(\.text)
+                recentTemplates.record(spoken, texts: spoken, id: cues.first?.id)
+            }
         }
         for cue in pending {
             outcomes[cue.id] = Self.carriesToLaterShow(cue) ? .deferred(.noTrackBoundary) : .dropped(.notCarriedForward)
@@ -459,6 +519,182 @@ public struct DJScriptWriter: Sendable {
             guard let line = atmosphere[dayPart]?.next(filling: [:], using: &phrasing) else { return nil }
             return (line, .presenter)
         }
+    }
+
+    /// A replan discarded these planned breaks before they aired: they leave the cross-pool
+    /// memory and the shape history, so the next plan follows what actually aired (or is kept).
+    /// No-op with natural shapes off. Pool cycling (`TemplatePool`) is not rewound.
+    public mutating func forgetPlannedBreaks(_ discarded: [DJBreak]) {
+        guard shapes != nil, var picker = shapePicker else { return }
+        let ids = Set(discarded.compactMap { $0.cues.first?.id })
+        guard !ids.isEmpty else { return }
+        recentTemplates.forget(ids: ids)
+        let before = shapeLog.count
+        shapeLog.removeAll { ids.contains($0.id) }
+        picker.restore(lastShape: shapeLog.last?.shape, forgetting: before - shapeLog.count)
+        shapePicker = picker
+    }
+
+    /// Test hook: breaks in the cross-pool memory.
+    var testRememberedBreaks: Int { recentTemplates.count }
+    /// Test hook: the shape the next pick avoids.
+    var testLastShape: DJBreakShape? { shapePicker?.lastShape }
+
+    enum NaturalOutcome {
+        case planned(DJBreak)
+        /// Over a cap even with every optional line dropped: the boundary stays music-only.
+        case musicOnly
+        /// No natural shape fits this boundary; the classic planner takes it.
+        case notApplicable
+    }
+
+    /// One ordinary break in a natural shape (`DJBreakShapes.swift`). Each cue is filled from
+    /// one source, so attribution stays exact; the combined line names both tracks.
+    private mutating func naturalBreak(boundary: Int, prev: DJTrack, next: DJTrack, station: String, dayPart: DayPart,
+                                       tracks: [DJTrack], order: inout Int) -> NaturalOutcome {
+        guard var picker = shapePicker, let config = shapes else { return .notApplicable }
+        let metadata = ["title": prev.title, "artist": prev.artist]
+        let nextValues = ["nextTitle": next.title, "nextArtist": next.artist]
+        let bothValues = metadata.merging(nextValues) { a, _ in a }
+        let stationName = EditorialStationName.usable(station)
+        func fits(_ pool: TemplatePool, _ values: [String: String]) -> Bool {
+            pool.templates.contains { TemplatePool.fill($0, values) != nil }
+        }
+        let context = DJBreakShapeContext(canBackAnnounce: fits(backAnnounce, metadata),
+                                          canForwardSell: fits(closing, nextValues),
+                                          stationIDUsable: stationName.map { fits(stationIDs, ["station": $0]) } ?? false,
+                                          timeCheckAvailable: false)
+        guard let shape = picker.pick(context) else { return .notApplicable }
+
+        struct Line { var template: String; var text: String; var attribution: SpokenAttribution; var optional: Bool }
+        var lines: [Line] = []
+        let recent = recentTemplates
+        func draw(_ pool: inout TemplatePool, _ values: [String: String], _ attribution: SpokenAttribution,
+                  optional: Bool = false) -> Bool {
+            let sameBreak = lines.map(\.template) + lines.map(\.text)
+            let isOpener = lines.isEmpty
+            func text(_ template: String) -> String? { TemplatePool.fill(template, values) }
+            // 1: no identical line (template or spoken text) in the last `recentBreakWindow`
+            //    breaks, plus the opener first-word and "Here's" rules.
+            // 2: the same, with the first-word rule relaxed (the "Here's" rule kept).
+            // 3: no identical line in the window (soft rules relaxed).
+            // Optional lines stop there: if every candidate repeats, the line is left out.
+            // Required lines (opener, closing, station ID) relax further rather than go silent:
+            // 4: no identical line in the last two breaks; 5: not twice in this break.
+            var tiers: [(String) -> Bool] = [
+                { recent.rejects($0, text: text($0), sameBreak: sameBreak, isOpener: isOpener) },
+                { recent.rejects($0, text: text($0), sameBreak: sameBreak, isOpener: isOpener, firstWordRule: false) },
+                { recent.rejects($0, text: text($0), sameBreak: sameBreak, isOpener: isOpener, firstWordRule: false, hereWindow: 2) },
+                { recent.repeats($0, text: text($0), sameBreak: sameBreak) },
+            ]
+            if !optional {
+                tiers += [
+                    { recent.repeats($0, text: text($0), sameBreak: sameBreak, window: 2) },
+                    { recent.repeats($0, text: text($0), sameBreak: sameBreak, window: 0) },
+                ]
+            }
+            if optional {
+                // No fallback for optional lines: a pick must clear tier 3.
+                guard pool.templates.contains(where: { text($0) != nil && !tiers[3]($0) }) else { return false }
+            }
+            guard let picked = pool.next(filling: values, avoiding: tiers, using: &phrasing) else { return false }
+            lines.append(Line(template: picked.template, text: picked.text, attribution: attribution, optional: optional))
+            return true
+        }
+        let prevAttribution = SpokenAttribution.trackMetadata(trackIDs: [prev.id])
+        let nextAttribution = SpokenAttribution.trackMetadata(trackIDs: [next.id])
+        var closingIndex: Int?
+        switch shape {
+        case .classic:
+            if phrasing.next() % 100 >= 20 || !draw(&artistFocus, metadata, prevAttribution) {
+                _ = draw(&backAnnounce, metadata, prevAttribution)
+            }
+            if phrasing.next() % 100 < 40, var pool = atmosphere[dayPart] {
+                _ = draw(&pool, [:], .presenter, optional: true)
+                atmosphere[dayPart] = pool
+            }
+            if phrasing.next() % 100 < 50 { _ = draw(&continuation, [:], .presenter, optional: true) }
+            if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
+        case .backAnnounceOnly:
+            _ = draw(&backAnnounce, metadata, prevAttribution)
+        case .comingUpOnly:
+            if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
+        case .combined:
+            if draw(&combined, bothValues, .trackMetadata(trackIDs: [prev.id, next.id])) {
+                closingIndex = lines.count - 1
+            } else if draw(&closing, nextValues, nextAttribution) {
+                closingIndex = lines.count - 1
+            }
+        case .timeCheckIntro:
+            return .notApplicable   // no clock source in this slice
+        case .stationID:
+            if let stationName {
+                let attribution: SpokenAttribution = stationName == Self.builtInStationName ? .presenter : .stationName
+                _ = draw(&stationIDs, ["station": stationName], attribution)
+            }
+            if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
+        }
+        guard !lines.isEmpty else { return .notApplicable }
+
+        // The extra-line seam: optional, before the closing line, dropped first.
+        if let source = extraLineSource, let extra = source.extraLine(after: prev, before: next, shape: shape) {
+            let text = extra.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Never inside the anti-repeat window either: the same extra every break is dropped.
+            if !text.isEmpty, !text.contains(where: { "{}\n\r".contains($0) }),
+               !recent.repeats(text, text: text, sameBreak: lines.map(\.template) + lines.map(\.text)) {
+                let line = Line(template: text, text: text, attribution: extra.attribution, optional: true)
+                if let index = closingIndex { lines.insert(line, at: index); closingIndex = index + 1 }
+                else { lines.append(line) }
+            }
+        }
+
+        // Fit: drop optional lines, last added first (extra, then continuation, then color).
+        func seconds(_ line: Line) -> Double { estimate(line.text) }
+        func closingTalksOver() -> Bool {
+            guard let closingIndex, closingIndex == lines.count - 1 else { return false }
+            return seconds(lines[closingIndex]) <= Double(cadence.maxClosingSeconds)
+        }
+        // #320 counts the `talkOverGapSeconds` (0.3 s) pause before the closing line whenever
+        // something plays before it, so the planner does too.
+        func gap() -> Double {
+            guard let closingIndex, closingIndex == lines.count - 1, lines.count > 1 else { return 0 }
+            return PreparedDJBreak.talkOverGapSeconds
+        }
+        func spoken() -> Double { lines.reduce(0) { $0 + seconds($1) } }
+        func total() -> Double { spoken() + gap() }
+        func main() -> Double { spoken() - (closingTalksOver() ? seconds(lines[lines.count - 1]) : 0) }
+        func overCap() -> Bool {
+            total() > Double(config.maxBreakSeconds) || main() > Double(cadence.maxTransitionSeconds)
+                || lines.count > config.maxCuesPerBreak
+        }
+        while overCap(), let drop = lines.indices.reversed().first(where: { lines[$0].optional }) {
+            lines.remove(at: drop)
+            if let index = closingIndex, drop < index { closingIndex = index - 1 }
+        }
+        if overCap() { return .musicOnly }
+
+        var attributions: [UUID: SpokenAttribution] = [:]
+        var cues: [NarrationCue] = []
+        for line in lines {
+            let cue = transitionCue(line.text, order: &order)
+            attributions[cue.id] = line.attribution.resolvingTrackOrigins(in: tracks)
+            cues.append(cue)
+        }
+        var planned = DJBreak(afterTrack: boundary, cues: cues, attributions: attributions)
+        if closingTalksOver() { planned.talkOverCueID = cues.last?.id }
+        planned.shape = shape
+        // #320's measured-audio trim drops these in order, the same order as the fit above: the
+        // last optional line first, so the extra (weather) line before the closing line goes first,
+        // then continuation, then color. Never the opener, a required line or the closing line.
+        planned.optionalCueIDs = zip(lines, cues).filter { $0.0.optional }.map { $0.1.id }.reversed()
+        picker.record(shape)
+        shapePicker = picker
+        recentTemplates.record(lines.map(\.template), texts: lines.map(\.text), id: cues.first?.id)
+        if let id = cues.first?.id {
+            shapeLog.append((id, shape))
+            if shapeLog.count > RecentSpokenTemplates.historyLimit { shapeLog.removeFirst(shapeLog.count - RecentSpokenTemplates.historyLimit) }
+        }
+        return .planned(planned)
     }
 
     private func estimate(_ text: String?) -> Double {
