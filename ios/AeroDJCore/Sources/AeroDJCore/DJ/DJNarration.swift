@@ -306,7 +306,7 @@ public struct DJScriptWriter: Sendable {
         // Its own stream, so turning shapes on never moves where breaks fall (`rng`).
         self.shapePicker = shapes.map { DJBreakShapePicker(config: $0, seed: seed &+ 0x5851_F42D_4C95_7F2D) }
         self.recentTemplates = RecentSpokenTemplates(window: shapes?.recentBreakWindow ?? 1, hereWindow: shapes?.hereWindow ?? 1)
-        self.combined = TemplatePool(shapes?.combined ?? [])
+        self.combined = TemplatePool(shapes?.combinedLines(for: tone) ?? [])
         let phrases = shapes?.timeChecks ?? DJTimeCheckPhrases(on: [], comingUp: [], justAfter: [])
         self.timeCheckPools = Dictionary(uniqueKeysWithValues: DJTimeCheckRelation.allCases.map {
             ($0, TemplatePool(phrases.templates(for: $0)))
