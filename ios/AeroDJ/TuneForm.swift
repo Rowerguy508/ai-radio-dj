@@ -62,7 +62,7 @@ struct TuneForm: View {
     private var blockedMessage: String? {
         switch model.loadState {
         case .notLoaded, .loading: "Loading your station settings"
-        case .failed(.newerVersion(_)): "Update AeroDJ to change these settings"
+        case .failed(.newerVersion(_)): "Update \(AppName.display) to change these settings"
         case .ready, .failed: nil
         }
     }

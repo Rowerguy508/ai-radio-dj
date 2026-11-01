@@ -276,7 +276,7 @@ private struct StationListCapture: View {
                         .foregroundStyle(AeroDJPalette.secondaryText)
                 }
             }
-            .navigationTitle("AeroDJ")
+            .navigationTitle(AppName.display)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("split.sidebar")
         } detail: {

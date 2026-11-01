@@ -70,6 +70,7 @@ final class SongEndInterruptionTests: XCTestCase {
         /// `MusicKitService.releaseSongEndHoldIfAllowed()`.
         mutating func boundaryHook() {
             policy.naturalEndReached(interruptionBeganNearEnd: interpreter.interruptionBeganNearEnd,
+                                     queueFinishedSinceInterruption: interpreter.queueFinishedSinceInterruption,
                                      otherAudioPlaying: world.otherAudioPlaying,
                                      secondaryHint: world.secondaryHint,
                                      callActive: world.callActive)
@@ -112,6 +113,10 @@ final class SongEndInterruptionTests: XCTestCase {
     // MARK: - Required matrix (a)-(h)
 
     /// (a) began before the stop poll; the entry is kept and paused at its end.
+    /// #149 (-Atlas): changed from "song 2 plays". The interruption never ended and MusicKit never
+    /// cleared or rewound the entry, so nothing but the two hints says it is over: an interruption
+    /// that paused the song in its last 1.5 s looks the same. The end is still reported once;
+    /// song 2 is held until the user presses play. A later rewind or clear is (d) / (c) / (b).
     func testA_BeganBeforeStopPollKeptAndPausedAtEnd() {
         var h = Harness()
         h.play(through: 199)
@@ -119,9 +124,10 @@ final class SongEndInterruptionTests: XCTestCase {
         h.poll("s1", playing: false, at: 200)
         h.poll("s1", playing: false, at: 200)
         assertOneHandoff(h)
-        XCTAssertTrue(h.policy.mayAutoResume, "the end-of-song interruption no longer holds song 2")
-        XCTAssertEqual(h.startNext(), .plays)
-        XCTAssertNil(h.startNext(), "song 2 loads once")
+        XCTAssertFalse(h.policy.mayAutoResume, "a never-ended interruption with no MusicKit finish holds")
+        XCTAssertEqual(h.startNext(), .held(.deferSilently))
+        h.policy.userPlay()
+        XCTAssertTrue(h.policy.mayAutoResume, "the user's play is the release")
     }
 
     /// (b) began after the stop poll: the end was already reported; no second report.
@@ -306,15 +312,20 @@ final class SongEndInterruptionTests: XCTestCase {
         XCTAssertFalse(p.lastEndShouldResume)
         _ = p.handle(.interruptionBegan, breakIsActive: false)
         XCTAssertTrue(p.lastEndShouldResume)
-        XCTAssertTrue(p.naturalEndReached(interruptionBeganNearEnd: true, otherAudioPlaying: false,
-                                          secondaryHint: false, callActive: false),
-                      "never ended + nothing else playing still releases (Sentinel's gate)")
+        var hintsOnly = p
+        XCTAssertFalse(hintsOnly.naturalEndReached(interruptionBeganNearEnd: true, queueFinishedSinceInterruption: false,
+                                                   otherAudioPlaying: false, secondaryHint: false, callActive: false),
+                       "#149: never ended + both hints false is not enough on its own")
+        XCTAssertTrue(p.naturalEndReached(interruptionBeganNearEnd: true, queueFinishedSinceInterruption: true,
+                                          otherAudioPlaying: false, secondaryHint: false, callActive: false),
+                      "never ended + MusicKit finished the queue + nothing else playing releases (Sentinel's gate)")
     }
 
     func testDecisionTable() {
         func r(_ ended: Bool, _ other: Bool, _ hint: Bool, _ call: Bool, _ near: Bool,
-               resume: Bool = true) -> Bool {
-            SongEndHold.releases(interruptionEnded: ended, shouldResume: resume, otherAudioPlaying: other,
+               resume: Bool = true, finished: Bool = true) -> Bool {
+            SongEndHold.releases(interruptionEnded: ended, shouldResume: resume,
+                                 queueFinishedSinceInterruption: finished, otherAudioPlaying: other,
                                  secondaryHint: hint, callActive: call, beganNearEnd: near)
         }
         XCTAssertFalse(r(true, false, false, false, true, resume: false), "ended without shouldResume holds")
@@ -327,6 +338,11 @@ final class SongEndInterruptionTests: XCTestCase {
         XCTAssertFalse(r(true, false, false, true, true), "a call always holds")
         XCTAssertFalse(r(true, false, false, false, false), "never outside the end window")
         XCTAssertFalse(r(false, false, false, false, false))
+        // #149: a never-ended interruption needs MusicKit's own finish; the hints alone never do.
+        XCTAssertFalse(r(false, false, false, false, true, finished: false), "hints alone never release")
+        XCTAssertTrue(r(true, false, false, false, true, finished: false), "an OS end with shouldResume needs no finish")
+        XCTAssertFalse(r(true, false, false, false, true, resume: false, finished: true),
+                       "a MusicKit finish never overrides shouldResume:false")
     }
 
     /// The hook never releases a route hold or a user pause.
@@ -334,7 +350,8 @@ final class SongEndInterruptionTests: XCTestCase {
         var route = AudioSessionPolicy()
         route.userPlay()
         _ = route.handle(.routeChanged(.oldDeviceUnavailable), breakIsActive: false)
-        XCTAssertFalse(route.naturalEndReached(interruptionBeganNearEnd: true, otherAudioPlaying: false,
+        XCTAssertFalse(route.naturalEndReached(interruptionBeganNearEnd: true, queueFinishedSinceInterruption: true,
+                                               otherAudioPlaying: false,
                                                secondaryHint: false, callActive: false))
         XCTAssertFalse(route.mayAutoResume)
 
@@ -342,7 +359,8 @@ final class SongEndInterruptionTests: XCTestCase {
         paused.userPlay()
         _ = paused.handle(.interruptionBegan, breakIsActive: false)
         _ = paused.userPause()
-        paused.naturalEndReached(interruptionBeganNearEnd: true, otherAudioPlaying: false,
+        paused.naturalEndReached(interruptionBeganNearEnd: true, queueFinishedSinceInterruption: true,
+                                 otherAudioPlaying: false,
                                  secondaryHint: false, callActive: false)
         XCTAssertFalse(paused.mayAutoResume, "the user's pause still wins")
     }
