@@ -33,64 +33,121 @@ extension StudioPresentationModel: LiveQueueStudio {
 ///
 /// Adapts consent-approved Connections rows into `ContextItem`s and asks
 /// `MorningBriefingEngine` for the handoff. It does not write cue text.
-/// A later show has no carry-forward on the player, so personal speech stays
-/// nil outside the morning window.
+/// Since #332 personal updates may air at any time of day (`BriefingPreferences.window` no
+/// longer gates them). A song tap and a station start read the same provider; a shared
+/// `PersonalUpdateLedger` keeps each update to once per local day.
 public enum LiveQueueBriefing {
-    /// Closure `PlayerView` passes as the `briefing` argument. The studio is read
-    /// when the closure runs, which is when play starts.
+    /// Closure `PlayerView` passes as the `briefing` argument, and the one a station start
+    /// reads (#332). The studio and the ledger are read when the closure runs, which is when
+    /// play starts. Pass the app's single `ledger` to every provider so a tap and a station
+    /// start share the once-a-day limit. Nil: no repeat limit (tests and previews only).
     @MainActor
     public static func provider(
         studio: some LiveQueueStudio,
         now: (@MainActor () -> Date)? = nil,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        ledger: PersonalUpdateLedger? = nil
     ) -> @MainActor () -> ApprovedShowHandoff {
         let clock = now ?? { Date() }
         return {
             let input = studio.liveQueueBriefing
             return handoff(items: input.items, preferences: input.preferences, now: clock(), calendar: calendar,
-                           sensitivityByItemID: input.sensitivityByItemID)
+                           sensitivityByItemID: input.sensitivityByItemID, ledger: ledger)
         }
     }
 
-    /// Morning window plus an approved row: the engine's handoff. Briefing off, or
+    /// An approved row, at any time of day: the engine's handoff. Briefing off, or
     /// nothing approved: `revokedOrUnapproved`, which `forQueue()` turns into nil.
-    /// Outside the window: a later show with no carry-forward.
     /// `prepared` keeps the caller's script, then applies the same section check
     /// as `approvedRows`. An approved cue whose section is off is reported on
-    /// `omittedDisabledSection` and is not offered to a later show. Consent
-    /// stays in `forQueue()`.
+    /// `omittedDisabledSection` and is not offered to a later show.
+    /// Then the #332 limits: an update that already aired today (`ledger`) is
+    /// `.dropped(.repeatLimit)`, and one whose row expired is `.dropped(.windowPassed)`,
+    /// both on `omittedByLimit`. Consent stays in `forQueue()`.
     public static func handoff(
         items: [ConnectionItem],
         preferences: BriefingPreferences,
         now: Date,
         calendar: Calendar = .current,
         prepared: NarrationHandoff? = nil,
-        sensitivityByItemID: [UUID: Sensitivity] = [:]
+        sensitivityByItemID: [UUID: Sensitivity] = [:],
+        ledger: PersonalUpdateLedger? = nil
     ) -> ApprovedShowHandoff {
-        let morning = preferences.enabled && preferences.window.contains(now, calendar: calendar)
         let speakable = approvedRows(items, preferences: preferences)
-        if !preferences.enabled || (morning && speakable.isEmpty && prepared == nil) {
-            return ApprovedShowHandoff(isMorningShow: morning, approved: nil, revokedOrUnapproved: true,
+        if !preferences.enabled || (speakable.isEmpty && prepared == nil) {
+            return ApprovedShowHandoff(isMorningShow: preferences.enabled, approved: nil, revokedOrUnapproved: true,
                                        connectionItems: items)
-        }
-        guard morning else {
-            return ApprovedShowHandoff(isMorningShow: false, approved: nil, revokedOrUnapproved: false,
-                                       carryForward: nil, connectionItems: items)
         }
         let script: NarrationHandoff?
         let omitted: [NarrationCue]
+        var limited: [NarrationScheduleEntry] = []
         if let prepared {
             let checked = preparedKeepingEnabledSections(prepared, items: items, preferences: preferences)
             script = checked.handoff
             omitted = checked.omitted
         } else {
-            script = narration(from: speakable, now: now, calendar: calendar,
+            // Rows held back by a #332 limit never reach the engine: it would drop an expired row
+            // unreported, and an update that already aired today would take another's place.
+            let today = ledger?.limitedItemIDs(at: now) ?? []
+            var eligible: [ConnectionItem] = []
+            for row in speakable {
+                if let end = row.expiresAt, end <= now {
+                    limited.append(NarrationScheduleEntry(cue: reportOnlyCue(for: row), outcome: .dropped(.windowPassed)))
+                } else if today.contains(row.id) {
+                    limited.append(NarrationScheduleEntry(cue: reportOnlyCue(for: row), outcome: .dropped(.repeatLimit)))
+                } else {
+                    eligible.append(row)
+                }
+            }
+            script = narration(from: eligible, now: now, calendar: calendar,
                                targetSeconds: preferences.targetSeconds,
                                sensitivityByItemID: sensitivityByItemID)
             omitted = []
         }
-        return ApprovedShowHandoff(isMorningShow: true, approved: script, revokedOrUnapproved: false,
-                                   connectionItems: items, omittedDisabledSection: omitted)
+        let gated = script.map { applyLimits($0, items: items, now: now, ledger: ledger) }
+        limited += gated?.omitted ?? []
+        return ApprovedShowHandoff(isMorningShow: true, approved: gated?.handoff, revokedOrUnapproved: false,
+                                   connectionItems: items, omittedDisabledSection: omitted,
+                                   omittedByLimit: NarrationScheduleReport(entries: limited))
+    }
+
+    /// #332 limits on content cues, in cue order. Framing cues pass through.
+    /// - row `expiresAt` passed: `.dropped(.windowPassed)` (never carried forward),
+    /// - item already aired today, or a second cue for the same item: `.dropped(.repeatLimit)`.
+    static func applyLimits(_ handoff: NarrationHandoff, items: [ConnectionItem], now: Date,
+                            ledger: PersonalUpdateLedger?) -> (handoff: NarrationHandoff, omitted: [NarrationScheduleEntry]) {
+        let limitedToday = ledger?.limitedItemIDs(at: now) ?? []
+        var seen: Set<UUID> = []
+        var kept: [NarrationCue] = []
+        var omitted: [NarrationScheduleEntry] = []
+        for cue in handoff.cues.sorted(by: { $0.order < $1.order }) {
+            guard let id = cue.sourceItemID else { kept.append(cue); continue }
+            let row = items.first { $0.id == id }
+            if let end = row?.expiresAt, end <= now {
+                omitted.append(NarrationScheduleEntry(cue: cue, outcome: .dropped(.windowPassed)))
+            } else if limitedToday.contains(id) || !seen.insert(id).inserted {
+                omitted.append(NarrationScheduleEntry(cue: cue, outcome: .dropped(.repeatLimit)))
+            } else {
+                kept.append(cue)
+            }
+        }
+        return (NarrationHandoff(cues: kept, maxSpokenSeconds: handoff.maxSpokenSeconds,
+                                 experienceSeconds: handoff.experienceSeconds), omitted)
+    }
+
+    /// Report-only entry for a row that never became a cue. Empty text and 0 s: it cannot be
+    /// spoken, and it carries only the row's id, source and provenance. The kind matches what
+    /// the engine gives a row with no clock time (calendar: event; notes: note; shared: follow-up).
+    static func reportOnlyCue(for item: ConnectionItem) -> NarrationCue {
+        let kind: BriefingScriptSegment.Kind
+        switch item.integration {
+        case .calendar: kind = .upcomingEvent
+        case .obsidian: kind = .note
+        case .shareInbox: kind = .followUp
+        }
+        return NarrationCue(id: item.id, order: 0, group: 0, kind: kind, text: "", estimatedSeconds: 0,
+                            maxSeconds: 0, sourceItemID: item.id, source: source(for: item.integration),
+                            provenance: "connection:\(item.id.uuidString)")
     }
 
     /// Section check for a script the caller already built. A content cue whose
