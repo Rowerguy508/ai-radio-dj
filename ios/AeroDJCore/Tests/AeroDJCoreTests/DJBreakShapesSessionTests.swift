@@ -62,12 +62,15 @@ final class DJBreakShapesSessionTests: XCTestCase {
     }
 
     func testReplanFollowsTheKeptBreaksNotThePlannedAwayOnes() async {
-        for seed in UInt64(0)..<30 {
+        for seed in UInt64(0)..<40 {
             let (session, station) = await rig(seed: seed)
             await session.queueStarted(djTracks(90))
+            await session.songStarted(index: 12, remaining: .seconds(180))
+            let kept = session.testPlannedBreaks.filter { $0.key <= 12 }
             await station.setCommentary(.chatty)          // cadence change: re-plans after the playing song
             await station.saveChanges()
-            await session.songStarted(index: 3, remaining: .seconds(180))
+            XCTAssertEqual(session.testPlannedBreaks.filter { $0.key <= 12 }.keys.sorted(), kept.keys.sorted(), "seed \(seed): kept")
+            XCTAssertNotEqual(session.testPlannedBreaks.keys.filter { $0 > 12 }.sorted().prefix(3), [15, 18, 21], "seed \(seed): re-planned")
             assertNatural(ordered(session.testPlannedBreaks), "seed \(seed) after replan")
         }
     }
