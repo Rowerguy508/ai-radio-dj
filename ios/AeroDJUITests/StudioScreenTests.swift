@@ -506,8 +506,8 @@ final class StudioScreenTests: XCTestCase {
     /// #310 / #326: at AX5 on a phone the DJ status moves out of the scrolling upper part and
     /// is pinned above the scrubber. The other AX5 captures have an idle DJ, so this is the one
     /// that draws the ON AIR pill there: on screen without scrolling, above the scrubber and
-    /// the transport, read after the title. The pill's timer counts from launch, so the
-    /// screenshot's "0:0x" varies run to run.
+    /// the transport, read after the title. The capture freezes the pill's timer at "0:12"
+    /// (`StudioCaptureOnAir`), so the screenshot is the same every run.
     @MainActor
     func testAX5OnAirPinnedAboveScrubber() throws {
         try XCTSkipIf(isOpenLayout, "The pinned status is the phone-width folded player at AX5")
@@ -532,6 +532,8 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertLessThan(pill.minY, play.frame.minY, "ON AIR above the transport: \(frames)")
         XCTAssertTrue(play.isHittable, "Play/pause stays reachable at AX5")
         assertReadingOrder(app, title: "Morning Light", status: "On Air")
+        let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
+        XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
         save(app, "closed-ax5-onair")
     }
 

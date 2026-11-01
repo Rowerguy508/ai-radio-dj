@@ -202,6 +202,8 @@ struct StudioCaptureView: View {
             case .breakReady, .duoWideReady:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .onAir:
+                // Freeze the pill's timer before it appears, so the PNG is deterministic.
+                StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
                 studio.dj.send(.playbackStarted(afterTrack: 0))
             case .config, .resizeTune:
@@ -427,5 +429,14 @@ extension MusicSearch {
 @MainActor
 enum StudioCaptureSegment {
     static var initial: WorkspaceSegment?
+}
+
+/// The `onAir` capture's frozen ON AIR timer. `FoldedOnAirPill` shows `frozenElapsed` when it
+/// is set; only the `onAir` scenario sets it, so every other run (and Release, which does not
+/// compile this) counts from when the pill appeared.
+enum StudioCaptureOnAir {
+    /// What `closed-ax5-onair` shows: "0:12". Same width as a live "0:0x".
+    static let capturedElapsed: TimeInterval = 12
+    static var frozenElapsed: TimeInterval?
 }
 #endif
