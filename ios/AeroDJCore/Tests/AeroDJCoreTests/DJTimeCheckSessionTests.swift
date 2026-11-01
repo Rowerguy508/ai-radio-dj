@@ -22,7 +22,16 @@ final class DJTimeCheckSessionTests: XCTestCase {
         return calendar
     }
 
-    private final class Clock: @unchecked Sendable { var now: Date; init(_ now: Date) { self.now = now } }
+    /// Read by the preparer's task off the main actor, so lock-protected.
+    private final class Clock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Date
+        init(_ now: Date) { value = now }
+        var now: Date {
+            get { lock.withLock { value } }
+            set { lock.withLock { value = newValue } }
+        }
+    }
 
     private func rig(seed: UInt64, clock: Clock) async -> DJBreakSession {
         let config = StationConfiguration(commentary: .frequent)
@@ -41,11 +50,15 @@ final class DJTimeCheckSessionTests: XCTestCase {
     }
 
     /// A seed whose queue-start plan has a time check, and its boundary.
+    /// Sessions that did not plan one are stopped here (their queue setup and prepare tasks
+    /// cancelled); the caller stops the one returned.
     private func seededTimeCheck(clock: Clock) async -> (DJBreakSession, Int, DJBreak)? {
         for seed in UInt64(0)..<60 {
             let session = await rig(seed: seed, clock: clock)
             await session.queueStarted(djTracks(90))
-            if let (k, b) = session.testPlannedBreaks.first(where: { $0.value.timeCheckCueID != nil }) { return (session, k, b) }
+            let found = session.testPlannedBreaks.first { $0.value.timeCheckCueID != nil }
+            if let found { return (session, found.key, found.value) }
+            await session.stop()
         }
         return nil
     }
@@ -60,41 +73,44 @@ final class DJTimeCheckSessionTests: XCTestCase {
             XCTAssertLessThanOrEqual(checks.count, 1, "seed \(seed): one clock reading per plan")
             for b in checks {
                 withOne += 1
-                let cue = b.cues.first { $0.id == b.timeCheckCueID }
-                XCTAssertTrue(cue?.text.contains("7:40") == true, cue?.text ?? "-")
+                let text = b.cues.first { $0.id == b.timeCheckCueID }.map(\.text) ?? "-"
+                XCTAssertTrue(text.contains("7:40"), text)
                 XCTAssertEqual(b.attributions[b.timeCheckCueID!], .presenter)
                 XCTAssertEqual(b.timeCheckPlannedAt, clock.now)
             }
+            await session.stop()   // no queue setup or prepare task outlives this seed
         }
         XCTAssertGreaterThan(withOne, 0, "some seeds plan a time check")
     }
 
     func testTimeCheckAirsTheTimeReadWhenItRendersNotWhenPlanned() async {
         let clock = Clock(eastern.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 7, minute: 40))!)
-        guard let (session, k, planned) = await seededTimeCheck(clock: clock) else { return XCTFail("no seed planned one") }
+        guard let seeded = await seededTimeCheck(clock: clock) else { return XCTFail("no seed planned one") }
+        let (session, k, planned) = seeded
+        await airsTheTimeReadWhenItRenders(session, k, planned, clock)
+        await session.stop()   // cancels its prepare tasks, the late time-check wait included
+    }
+
+    private func airsTheTimeReadWhenItRenders(_ session: DJBreakSession, _ k: Int, _ planned: DJBreak, _ clock: Clock) async {
         // Songs played for a while: the break now airs 20 minutes after it was planned.
         clock.now = clock.now.addingTimeInterval(20 * 60)
         // 60 s left: inside the time-check window, so the line renders straight after the rest.
         await session.songStarted(index: k, remaining: .seconds(60))
         XCTAssertEqual(session.testPlannedBreaks[k]?.timeCheckCueID, planned.timeCheckCueID, "the slot stays planned")
-        let preparer = session.testPreparer
-        let added = await eventually {
-            if case .ready(let b)? = await preparer.testResult(afterTrack: k) { return b.cues.count == planned.cues.count }
-            return false
+        // Polled inline: no non-escaping async closure is held across awaits in this @MainActor
+        // test (the suspected trigger of the Xcode 26.6 task-allocator abort, see 10468a2). -Fry
+        let preparer = session.testPreparer, count = planned.cues.count
+        var added = false
+        for _ in 0..<500 {
+            if case .ready(let b)? = await preparer.testResult(afterTrack: k), b.cues.count == count { added = true; break }
+            try? await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(added)
         guard let aired = await session.naturalBoundary(afterTrack: k) else { return XCTFail("the break airs") }
-        let line = aired.cues.first { $0.id == planned.timeCheckCueID }
-        XCTAssertTrue(line?.text.contains("8 o'clock") == true, line?.text ?? "-")
-        XCTAssertFalse(aired.cues.contains { $0.text.contains("7:40") }, "the plan-time reading never airs")
+        let text = aired.cues.first { $0.id == planned.timeCheckCueID }.map(\.text) ?? "-"
+        XCTAssertTrue(text.contains("8 o'clock"), text)
+        let stale = aired.cues.contains { $0.text.contains("7:40") }
+        XCTAssertFalse(stale, "the plan-time reading never airs")
         XCTAssertEqual(aired.cues.last?.id, planned.cues.last?.id, "the closing line stays last")
-    }
-
-    private func eventually(_ check: () async -> Bool) async -> Bool {
-        for _ in 0..<500 {
-            if await check() { return true }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return await check()
     }
 }

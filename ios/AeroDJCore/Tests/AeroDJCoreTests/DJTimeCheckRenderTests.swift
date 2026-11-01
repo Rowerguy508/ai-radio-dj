@@ -45,6 +45,16 @@ private final class Clock: @unchecked Sendable {
 }
 
 final class DJTimeCheckRenderTests: XCTestCase {
+    /// Every preparer a test made; their prepare tasks (and late time-check waits) are cancelled
+    /// in tearDown so none outlives its test.
+    private var made: [DJBreakPreparer] = []
+
+    override func tearDown() async throws {
+        for p in made { await p.cancelAll() }
+        made = []
+        try await super.tearDown()
+    }
+
     private var eastern: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
@@ -82,17 +92,21 @@ final class DJTimeCheckRenderTests: XCTestCase {
     private func preparer(_ routes: [VoiceRoute], clock: Clock, budget: VoiceBudget = VoiceBudget(dailyCapMicrodollars: 0),
                           sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = { _ in })
         -> DJBreakPreparer {
-        DJBreakPreparer(renderer: VoiceRenderer(routes: routes, budget: budget, cache: InMemoryAudioCache(),
-                                                revocations: NarrationRevocations()),
-                        userID: "u", stationID: "s", talkOverEnabled: { true }, now: { clock.now }, sleepUntil: sleepUntil)
+        let p = DJBreakPreparer(renderer: VoiceRenderer(routes: routes, budget: budget, cache: InMemoryAudioCache(),
+                                                        revocations: NarrationRevocations()),
+                                userID: "u", stationID: "s", talkOverEnabled: { true }, now: { clock.now }, sleepUntil: sleepUntil)
+        made.append(p)
+        return p
     }
 
-    private func ready(_ p: DJBreakPreparer) async -> PreparedDJBreak? {
+    private static func ready(_ p: DJBreakPreparer) async -> PreparedDJBreak? {
         if case .ready(let b)? = await p.testResult(afterTrack: 0) { return b }
         return nil
     }
 
-    private func eventually(_ seconds: Double = 5, _ check: () async -> Bool) async -> Bool {
+    /// `check` is escaping and Sendable: a non-escaping closure held across awaits in an async
+    /// function is the suspected trigger of the Xcode 26.6 task-allocator abort (10468a2). -Fry
+    private func eventually(_ seconds: Double = 5, _ check: @escaping @Sendable () async -> Bool) async -> Bool {
         let end = Date().addingTimeInterval(seconds)
         while Date() < end {
             if await check() { return true }
@@ -118,9 +132,9 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let p = preparer([route("device", voice)], clock: clock, sleepUntil: { _ in clock.now = later })
         let planned = timeCheckBreak()
         await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
-        let added = await eventually { await self.ready(p)?.cues.count == 2 }
+        let added = await eventually { await Self.ready(p)?.cues.count == 2 }
         XCTAssertTrue(added)
-        let b = await ready(p)
+        let b = await Self.ready(p)
         XCTAssertEqual(b?.cues.map(\.text), ["Just after 9:50.", Self.closingText])
         XCTAssertEqual(b?.cues.first?.id, planned.timeCheckCueID, "in its planned slot")
         XCTAssertFalse(voice.texts.contains { $0.contains("9:40") }, "the plan-time reading never renders: \(voice.texts)")
@@ -139,7 +153,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let p = preparer([route("device", ScriptedVoice())], clock: clock, sleepUntil: { seen.at = $0 })
         let before = ContinuousClock.now
         await p.prepare(timeCheckBreak(), deadline: .seconds(200), onDeviceOnly: false)
-        let added = await eventually { await self.ready(p)?.cues.count == 2 }
+        let added = await eventually { await Self.ready(p)?.cues.count == 2 }
         XCTAssertTrue(added)
         guard let at = seen.at else { return XCTFail("never waited") }
         // 200 s deadline: the line renders 72 s before it (about 75 s before the boundary).
@@ -190,7 +204,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let rendering = await eventually { voice.texts.count == 2 }
         XCTAssertTrue(rendering)
         try? await Task.sleep(for: .milliseconds(2300))   // past the deadline and the slow render
-        assertRestOnly(await ready(p), planned)
+        assertRestOnly(await Self.ready(p), planned)
         guard case .ready(let b) = await p.takeBreak(afterTrack: 0) else { return XCTFail("the break must still air") }
         assertRestOnly(b, planned)
     }
@@ -206,7 +220,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let tried = await eventually { voice.texts.count == 2 }
         XCTAssertTrue(tried)
         try? await Task.sleep(for: .milliseconds(100))
-        assertRestOnly(await ready(p), planned)
+        assertRestOnly(await Self.ready(p), planned)
         guard case .ready(let b) = await p.takeBreak(afterTrack: 0) else { return XCTFail("the break must still air") }
         assertRestOnly(b, planned)
     }
@@ -221,7 +235,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let tried = await eventually { voice.texts.count == 2 }
         XCTAssertTrue(tried)
         try? await Task.sleep(for: .milliseconds(100))
-        assertRestOnly(await ready(p), planned)
+        assertRestOnly(await Self.ready(p), planned)
     }
 
     // MARK: Voice and cost
@@ -234,9 +248,9 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let standard = ScriptedVoice()
         let p = preparer([route("premium", premium), route("device", standard)], clock: clock)
         await p.prepare(timeCheckBreak(), deadline: .seconds(60), onDeviceOnly: false)
-        let added = await eventually { await self.ready(p)?.cues.count == 2 }
+        let added = await eventually { await Self.ready(p)?.cues.count == 2 }
         XCTAssertTrue(added)
-        let b = await ready(p)
+        let b = await Self.ready(p)
         XCTAssertEqual(b?.clips.map(\.audio.voiceID), ["device-voice", "device-voice"])
         XCTAssertEqual(b?.cues.map(\.providerID), ["device", "device"])
         XCTAssertEqual(premium.texts.count, 1, "never re-voiced in the first route: \(premium.texts)")
@@ -252,7 +266,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let tried = await eventually { premium.texts.count == 2 }
         XCTAssertTrue(tried)
         try? await Task.sleep(for: .milliseconds(100))
-        assertRestOnly(await ready(p), planned)
+        assertRestOnly(await Self.ready(p), planned)
         XCTAssertTrue(standard.texts.isEmpty, "dropped, not spoken in another voice: \(standard.texts)")
     }
 
@@ -262,7 +276,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000, calendar: eastern, now: { clock.now })
         let p = preparer([route("paid", paid, microdollarsPerThousand: 1000)], clock: clock, budget: budget)
         await p.prepare(timeCheckBreak(), deadline: .seconds(60), onDeviceOnly: false)
-        let added = await eventually { await self.ready(p)?.cues.count == 2 }
+        let added = await eventually { await Self.ready(p)?.cues.count == 2 }
         XCTAssertTrue(added)
         guard paid.texts.count == 2 else { return XCTFail("both lines in the paid voice: \(paid.texts)") }
         // 1 microdollar per character: every character sent, the late line included, is charged.
@@ -282,7 +296,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let isReady = await eventually { await p.isReady(afterTrack: 0) }
         XCTAssertTrue(isReady)
         try? await Task.sleep(for: .milliseconds(150))
-        assertRestOnly(await ready(p), planned)
+        assertRestOnly(await Self.ready(p), planned)
         XCTAssertEqual(paid.texts.count, 1, "over the cap: never sent")
     }
 }

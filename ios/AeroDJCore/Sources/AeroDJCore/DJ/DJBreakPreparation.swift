@@ -110,6 +110,13 @@ public actor DJBreakPreparer {
     /// less left renders it straight after the rest of the break.
     public static let timeCheckLead: Duration = .seconds(72)
 
+    /// The production clock and wait, as plain nonisolated functions (not closure literals in a
+    /// default argument), so nothing the prepare task calls carries the caller's isolation.
+    @Sendable public nonisolated static func systemNow() -> Date { Date() }
+    @Sendable public nonisolated static func sleep(until deadline: ContinuousClock.Instant) async throws {
+        try await Task.sleep(until: deadline, clock: .continuous)
+    }
+
     public enum DJBreakEvent: Equatable, Sendable {
         case preparing(afterTrack: Int, includesBriefing: Bool)
         case prepared(afterTrack: Int, includesBriefing: Bool, seconds: Double)
@@ -120,10 +127,8 @@ public actor DJBreakPreparer {
     /// `AERODJ_OWNER_AB` build default), the same flag `TalkoverCoordinator` reads.
     public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
                 talkOverEnabled: @escaping @Sendable () -> Bool = { DJTalkoverFlag.isEnabled() },
-                now: @escaping @Sendable () -> Date = { Date() },
-                sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = {
-                    try await Task.sleep(until: $0, clock: .continuous)
-                }) {
+                now: @escaping @Sendable () -> Date = DJBreakPreparer.systemNow,
+                sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = DJBreakPreparer.sleep(until:)) {
         self.renderer = renderer
         self.now = now
         self.sleepUntil = sleepUntil
@@ -171,8 +176,12 @@ public actor DJBreakPreparer {
         let renderer = onDeviceOnly ? self.renderer.onDeviceOnly : self.renderer
         let userID = userID, stationID = stationID, cap = breakCap(djBreak).talkOver(talkOverEnabled())
         // The time check is held back from the first step (its plan-time words never render).
-        let timeCheck = djBreak.timeCheck.flatMap { tc in djBreak.cues.contains { $0.id == tc.cueID } ? tc : nil }
-        let rest = timeCheck.map { Self.removing($0.cueID, from: djBreak) } ?? djBreak
+        // Looked up here, outside the async task: no non-escaping closure is formed inside it
+        // (a suspected trigger of the Xcode 26.6 task-allocator abort, see 10468a2). -Fry
+        let plannedLine = djBreak.timeCheck.flatMap { tc in djBreak.cues.first { $0.id == tc.cueID } }
+        let timeCheck = plannedLine == nil ? nil : djBreak.timeCheck
+        let rest: DJBreak
+        if let timeCheck { rest = Self.removing(timeCheck.cueID, from: djBreak) } else { rest = djBreak }
         let end = ContinuousClock.now + deadline
         let now = now, sleepUntil = sleepUntil
         tasks[k] = Task {
@@ -187,21 +196,25 @@ public actor DJBreakPreparer {
                 outcome = .skipped(.timedOut)
             }
             self.finish(k, outcome)
-            guard let timeCheck, case .ready(let main) = outcome else { return }
+            guard let timeCheck, let plannedLine, case .ready(let main) = outcome else { return }
             // Same task, same deadline: wait for the time-check window (cancelled by takeBreak,
             // cancelAll or purge like any render), then read the clock and render the line.
             do { try await sleepUntil(end - Self.timeCheckLead) } catch { return }
             guard !Task.isCancelled, let voice = Self.sameVoice(as: main, in: renderer),
-                  let planned = djBreak.cues.first(where: { $0.id == timeCheck.cueID }),
                   let text = timeCheck.text(at: now()) else { return }
-            let line = Self.cue(planned, saying: text)
+            let line = Self.cue(plannedLine, saying: text)
+            let attribution = djBreak.attributions[line.id]
             let left = end - ContinuousClock.now
-            guard left > .zero,
-                  case .success(let clip)? = try? await VoiceRenderer.withTimeout(left, {
-                      await voice.render(line, userID: userID, stationID: stationID,
-                                         attribution: djBreak.attributions[line.id])
-                  }),
-                  !Task.isCancelled else { return }   // failed, late or taken: dropped
+            guard left > .zero else { return }   // late: dropped
+            let rendered: Result<RenderedClip, VoiceRenderer.Failure>?
+            do {
+                rendered = try await VoiceRenderer.withTimeout(left) {
+                    await voice.render(line, userID: userID, stationID: stationID, attribution: attribution)
+                }
+            } catch {
+                rendered = nil
+            }
+            guard case .success(let clip)? = rendered, !Task.isCancelled else { return }   // failed, late or taken: dropped
             self.addTimeCheck(k, line, clip, to: main, in: djBreak, cap: cap)
         }
     }
