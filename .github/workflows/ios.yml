@@ -47,6 +47,8 @@ jobs:
         run: ios/scripts/check-release-excludes-test-station.sh
       - name: Release build cannot enable paid voices
         run: ios/scripts/check-release-disables-paid-voice.sh
+      - name: Privacy manifests match the privacy policy (#333)
+        run: ios/scripts/check-privacy-manifests.py
 
   # Linux SwiftPM discovery. swift test here is the official Swift 6.2 image.
   # It does not replace the macOS AeroDJCore job or the iOS simulator gates.
@@ -131,6 +133,11 @@ jobs:
           # Share sheet shows the app's display name (AppName.display).
           /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APPEX/Info.plist" | grep -qx 'OnAirly' \
             || { echo "share extension display name is not OnAirly"; exit 1; }
+          # #333: both privacy manifests must be bundled, not just present in the repo.
+          for M in "$APPEX/../../PrivacyInfo.xcprivacy" "$APPEX/PrivacyInfo.xcprivacy"; do
+            test -f "$M" || { echo "PrivacyInfo.xcprivacy not bundled: $M"; exit 1; }
+            plutil -lint "$M"
+          done
       - name: Verify single-window scene manifest
         # app-resizability: the app declares UIApplicationSceneManifest, and one window only
         # (one app-scoped DJ session). No UIRequiresFullScreen opt-out.
