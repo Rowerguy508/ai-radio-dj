@@ -61,6 +61,11 @@ public struct DJCadence: Equatable, Sendable {
     /// Cap for a break that carries briefing cues. Durable notes that do not fit
     /// may be offered next show; time-sensitive cues are dropped, not deferred.
     public var maxBriefingBreakSeconds: Int
+    /// Cap for a whole ordinary break (no briefing content), the closing line included, at the
+    /// word-rate estimate. Optional lines (continuation, then color) are dropped to fit; a break
+    /// whose required lines (opener and closing) alone exceed it is not planned. Both are
+    /// reported in `DJSessionPlan.ordinaryCapReport`. Briefing breaks keep `maxBriefingBreakSeconds`.
+    public var maxOrdinaryBreakSeconds: Int
     /// Personal updates (approved briefing content cues) one break may carry (#332). Updates
     /// past the first wait for the next break; at the end of the queue the usual outcomes apply
     /// (a durable note is deferred, a calendar event or due task is dropped, never carried).
@@ -76,6 +81,7 @@ public struct DJCadence: Equatable, Sendable {
     public init(talkFraction: Double = 0.3, minSongsBetweenBreaks: Int = 2,
                 maxTransitionSeconds: Int = 15, maxBriefingBreakSeconds: Int = 45,
                 allowsBackToBack: Bool = false, maxClosingSeconds: Int = 4,
+                maxOrdinaryBreakSeconds: Int = 12,
                 maxPersonalUpdatesPerBreak: Int = DJCadence.defaultMaxPersonalUpdatesPerBreak) {
         self.talkFraction = min(max(talkFraction, 0), 1)
         self.allowsBackToBack = allowsBackToBack
@@ -83,6 +89,7 @@ public struct DJCadence: Equatable, Sendable {
         self.maxTransitionSeconds = maxTransitionSeconds
         self.maxClosingSeconds = max(0, maxClosingSeconds)
         self.maxBriefingBreakSeconds = maxBriefingBreakSeconds
+        self.maxOrdinaryBreakSeconds = max(0, maxOrdinaryBreakSeconds)
         self.maxPersonalUpdatesPerBreak = max(1, maxPersonalUpdatesPerBreak)
     }
 
@@ -148,18 +155,31 @@ public struct TemplatePool: Sendable {
         return pick
     }
 
-    /// Replaces `{key}` placeholders; nil if any is missing or empty.
+    /// Replaces `{key}` placeholders; nil if any is missing or empty. Track titles and artists
+    /// go through `SpokenTitle` first, so catalog suffixes ("(Remastered 2011)", "[Explicit]")
+    /// are never read aloud and "(feat. X)" is spoken as "featuring X".
     static func fill(_ template: String, _ values: [String: String]) -> String? {
         var out = ""
         var rest = Substring(template)
         while let open = rest.firstIndex(of: "{") {
             guard let close = rest[open...].firstIndex(of: "}") else { return nil }
             out += rest[..<open]
-            guard let value = values[String(rest[rest.index(after: open)..<close])], !value.isEmpty else { return nil }
+            let key = String(rest[rest.index(after: open)..<close])
+            guard let value = values[key].map({ Self.spoken($0, key: key) }), !value.isEmpty else { return nil }
             out += value
             rest = rest[rest.index(after: close)...]
         }
         return out + rest
+    }
+
+    /// Spoken form of one placeholder value. Only track fields are cleaned; the station name
+    /// is already screened by `EditorialStationName`.
+    static func spoken(_ value: String, key: String) -> String {
+        switch key {
+        case "title", "nextTitle": return SpokenTitle.clean(value)
+        case "artist", "nextArtist": return SpokenTitle.cleanArtist(value)
+        default: return value
+        }
     }
 }
 
@@ -189,6 +209,12 @@ public struct DJBreak: Equatable, Sendable {
     /// The closing line (always the last cue) when it fits `maxClosingSeconds` and may land
     /// over the next song's intro. Nil: every cue plays in the gap, as before.
     public var talkOverCueID: UUID? = nil
+    /// Ordinary breaks: the optional lines (continuation, then station ID or time-of-day color),
+    /// in the order the planner drops them. `DJBreakPreparer` drops them in this order when the
+    /// measured audio runs over `DJCadence.maxOrdinaryBreakSeconds`. Never the opener or closing.
+    /// Natural-shape breaks (lane 2) list theirs last-placed first: the extra (weather) line,
+    /// then continuation, then color, matching the planner's own drop order.
+    public var optionalCueIDs: [UUID] = []
     /// The natural shape this break was planned in (lane 2). Nil: the classic planner.
     public var shape: DJBreakShape? = nil
     public var briefingCueIDs: [UUID] { cues.filter(\.isContent).map(\.id) }
@@ -204,6 +230,20 @@ public struct DJSessionPlan: Equatable, Sendable {
     public let breaks: [DJBreak]
     /// One outcome for every briefing cue: placed in a break, or explicitly deferred/dropped.
     public let briefingReport: NarrationScheduleReport
+    /// What the ordinary-break caps left out. Fact-free presenter lines only: no briefing cue is
+    /// ever counted here (those are in `briefingReport`).
+    public var ordinaryCapReport = OrdinaryBreakCapReport()
+}
+
+/// Ordinary-break lines omitted by `DJCadence.maxTransitionSeconds` or
+/// `DJCadence.maxOrdinaryBreakSeconds`, by boundary (the `afterTrack` the break would follow).
+public struct OrdinaryBreakCapReport: Equatable, Sendable {
+    /// Optional lines (continuation, station ID, time-of-day color) dropped so the break fits.
+    public var trimmedOptionalLines: [Int: Int] = [:]
+    /// Boundaries where the required lines alone (opener and closing) exceed a cap, so the
+    /// boundary stays music-only. Never cut mid-line.
+    public var skippedOverCap: [Int] = []
+    public init() {}
 }
 
 /// Plans a session: where the DJ talks and what it says. State (template pools,
@@ -293,6 +333,7 @@ public struct DJScriptWriter: Sendable {
         for cue in briefing?.cues ?? [] where !cue.isContent { outcomes[cue.id] = .dropped(.notPlacedByScheduler) }
 
         var breaks: [DJBreak] = []
+        var capReport = OrdinaryBreakCapReport()
         var lastBreak: Int?
         var order = 0
         for boundary in 0..<max(0, tracks.count - 1) {
@@ -340,6 +381,7 @@ public struct DJScriptWriter: Sendable {
             let closingLine = closing.next(filling: ["nextTitle": next.title, "nextArtist": next.artist], using: &phrasing)
             let closingFits = closingLine.map { estimate($0) <= Double(cadence.maxClosingSeconds) } ?? false
 
+            var optionalCueIDs: [UUID] = []
             if wantsBriefing {
                 let limit = Double(cadence.maxBriefingBreakSeconds)
                 var spent = cues.reduce(0) { $0 + $1.plannedSeconds } + estimate(closingLine)
@@ -381,9 +423,16 @@ public struct DJScriptWriter: Sendable {
                 }
                 let closingInMain = closingFits ? 0 : estimate(closingLine)
                 func main() -> Double { (cues + extras).reduce(0) { $0 + $1.plannedSeconds } + closingInMain }
-                while !extras.isEmpty, main() > Double(cadence.maxTransitionSeconds) {
+                // The whole break, closing line included, counts toward the ordinary cap.
+                func total() -> Double { (cues + extras).reduce(0) { $0 + $1.plannedSeconds } + estimate(closingLine) }
+                var trimmed = 0
+                while !extras.isEmpty, main() > Double(cadence.maxTransitionSeconds)
+                        || total() > Double(cadence.maxOrdinaryBreakSeconds) {
                     attributions[extras.removeLast().id] = nil
+                    trimmed += 1
                 }
+                if trimmed > 0 { capReport.trimmedOptionalLines[boundary] = trimmed }
+                optionalCueIDs = extras.reversed().map(\.id)   // drop order: continuation, then color
                 cues += extras
             }
             var talkOverCueID: UUID?
@@ -396,7 +445,13 @@ public struct DJScriptWriter: Sendable {
             let isBriefing = cues.contains { $0.isContent }
             var planned = DJBreak(afterTrack: boundary, cues: cues, attributions: attributions)
             planned.talkOverCueID = talkOverCueID
-            if !isBriefing, planned.mainSeconds > Double(cadence.maxTransitionSeconds) { continue }
+            if !isBriefing { planned.optionalCueIDs = optionalCueIDs }
+            if !isBriefing, planned.mainSeconds > Double(cadence.maxTransitionSeconds)
+                || planned.estimatedSeconds > Double(cadence.maxOrdinaryBreakSeconds) {
+                capReport.trimmedOptionalLines[boundary] = nil
+                capReport.skippedOverCap.append(boundary)
+                continue
+            }
             breaks.append(planned)
             lastBreak = boundary
             if shapes != nil {
@@ -412,7 +467,9 @@ public struct DJScriptWriter: Sendable {
         let entries = (briefing?.cues ?? []).map { cue in
             NarrationScheduleEntry(cue: cue, outcome: outcomes[cue.id] ?? Self.unplaced(cue))
         }
-        return DJSessionPlan(breaks: breaks, briefingReport: NarrationScheduleReport(entries: entries))
+        var sessionPlan = DJSessionPlan(breaks: breaks, briefingReport: NarrationScheduleReport(entries: entries))
+        sessionPlan.ordinaryCapReport = capReport
+        return sessionPlan
     }
 
     /// Notes and follow-ups can air in a later show. Calendar events and due tasks cannot.
@@ -626,6 +683,10 @@ public struct DJScriptWriter: Sendable {
         var planned = DJBreak(afterTrack: boundary, cues: cues, attributions: attributions)
         if closingTalksOver() { planned.talkOverCueID = cues.last?.id }
         planned.shape = shape
+        // #320's measured-audio trim drops these in order, the same order as the fit above: the
+        // last optional line first, so the extra (weather) line before the closing line goes first,
+        // then continuation, then color. Never the opener, a required line or the closing line.
+        planned.optionalCueIDs = zip(lines, cues).filter { $0.0.optional }.map { $0.1.id }.reversed()
         picker.record(shape)
         shapePicker = picker
         recentTemplates.record(lines.map(\.template), texts: lines.map(\.text), id: cues.first?.id)
