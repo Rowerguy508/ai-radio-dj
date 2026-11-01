@@ -531,6 +531,16 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertLessThanOrEqual(pill.maxY, scrubber.frame.minY + 1, "ON AIR pinned above the scrubber: \(frames)")
         XCTAssertLessThan(pill.minY, play.frame.minY, "ON AIR above the transport: \(frames)")
         XCTAssertTrue(play.isHittable, "Play/pause stays reachable at AX5")
+        // #345 review: the pinned pill must not cover the TEST STATION tag (capture mode
+        // always shows it; a real station has none, so only check it when it exists).
+        let tag = any["folded.testStation"]
+        if tag.exists {
+            let chip = tag.frame
+            let both = "\(frames) testStation \(chip)"
+            XCTAssertFalse(chip.intersects(pill), "TEST STATION clear of ON AIR: \(both)")
+            XCTAssertLessThanOrEqual(chip.maxY, pill.minY, "TEST STATION above ON AIR: \(both)")
+            XCTAssertGreaterThanOrEqual(chip.minY, window.minY, "TEST STATION on screen: \(both)")
+        }
         assertReadingOrder(app, title: "Morning Light", status: "On Air")
         let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
         XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
