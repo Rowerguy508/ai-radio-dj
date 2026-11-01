@@ -2,7 +2,8 @@ import XCTest
 @testable import AeroDJCore
 
 /// The 12 s ordinary-break cap: the whole break, closing line included, at the word-rate estimate
-/// (150 wpm, rounded up per line). Briefing breaks keep their own cap. -Echo
+/// (150 wpm, rounded up per line), plus the 0.3 s pause before a talk-over closing line, as the
+/// rendered cap counts it (#339 follow-up, -Fry). Briefing breaks keep their own cap. -Echo
 final class DJOrdinaryCapTests: XCTestCase {
     private func filler(_ n: Int) -> String { Array(repeating: "la", count: n).joined(separator: " ") }
 
@@ -20,17 +21,19 @@ final class DJOrdinaryCapTests: XCTestCase {
         DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1, maxClosingSeconds: closing, maxOrdinaryBreakSeconds: cap)
     }
 
-    func testABreakExactlyAtTheCapKeepsItsClosingLineAndDropsTheOptionalLine() {
+    func testABreakAtTheCapKeepsItsClosingLineAndDropsTheOptionalLine() {
         var trimmedTotal = 0
         for seed: UInt64 in 0..<40 {
-            var w = DJScriptWriter(cadence: cadence(), seed: seed, tone: tone(openerWords: 20))   // 8 s + 4 s = 12 s
+            // 7 s + 0.3 s pause + 4 s = 11.3 s: the most whole seconds of words that fit 12 s.
+            var w = DJScriptWriter(cadence: cadence(), seed: seed, tone: tone(openerWords: 17))
             let plan = w.plan(tracks: tracks, briefing: nil, hour: 15)
             XCTAssertFalse(plan.breaks.isEmpty)
             for b in plan.breaks {
-                XCTAssertEqual(b.estimatedSeconds, 12, "opener 8 s + closing 4 s lands exactly on the cap")
+                XCTAssertEqual(b.estimatedSeconds, 11, "opener 7 s + closing 4 s, plus the 0.3 s pause, is at the cap")
+                XCTAssertEqual(DJScriptWriter.wholeSeconds(b), 11.3, accuracy: 0.001)
                 XCTAssertTrue(b.cues.last!.text.hasPrefix("T\(b.afterTrack + 1) "), "the next-song closing line is never dropped")
                 XCTAssertEqual(b.talkOverCueID, b.cues.last!.id)
-                XCTAssertFalse(b.cues.contains { $0.text == "Okay." }, "a 1 s continuation would make it 13 s")
+                XCTAssertFalse(b.cues.contains { $0.text == "Okay." }, "a 1 s continuation would make it 12.3 s")
             }
             XCTAssertTrue(Set(plan.ordinaryCapReport.trimmedOptionalLines.keys).isSubset(of: Set(plan.breaks.map(\.afterTrack))))
             XCTAssertTrue(plan.ordinaryCapReport.skippedOverCap.isEmpty)
@@ -42,23 +45,27 @@ final class DJOrdinaryCapTests: XCTestCase {
     func testTheSameBreaksKeepTheContinuationWhenTheCapAllowsIt() {
         var kept = false
         for seed: UInt64 in 0..<40 {
-            var w = DJScriptWriter(cadence: cadence(cap: 13), seed: seed, tone: tone(openerWords: 20))
+            var w = DJScriptWriter(cadence: cadence(cap: 13), seed: seed, tone: tone(openerWords: 17))
             let plan = w.plan(tracks: tracks, briefing: nil, hour: 15)
-            kept = kept || plan.breaks.contains { $0.cues.contains { $0.text == "Okay." } && $0.estimatedSeconds == 13 }
+            kept = kept || plan.breaks.contains { $0.cues.contains { $0.text == "Okay." } && $0.estimatedSeconds == 12 }
             XCTAssertTrue(plan.ordinaryCapReport.trimmedOptionalLines.isEmpty)
         }
         XCTAssertTrue(kept, "control: the trim above is the 12 s cap, not the shape roll")
     }
 
     func testABreakWhoseRequiredLinesExceedTheCapIsSkippedAndReportedNotCutMidLine() {
-        var w = DJScriptWriter(cadence: cadence(), seed: 7, tone: tone(openerWords: 22))   // 9 s + 4 s = 13 s
-        let plan = w.plan(tracks: tracks, briefing: nil, hour: 15)
-        XCTAssertTrue(plan.breaks.isEmpty, "no truncated line and no break without its closing line")
-        XCTAssertFalse(plan.ordinaryCapReport.skippedOverCap.isEmpty)
-        XCTAssertTrue(plan.ordinaryCapReport.trimmedOptionalLines.isEmpty, "a skipped boundary is reported once, as skipped")
+        // 9 s + 4 s = 13 s, and (#339 follow-up) 8 s + 0.3 s pause + 4 s = 12.3 s: both over 12 s.
+        for words in [22, 20] {
+            var w = DJScriptWriter(cadence: cadence(), seed: 7, tone: tone(openerWords: words))
+            let plan = w.plan(tracks: tracks, briefing: nil, hour: 15)
+            XCTAssertTrue(plan.breaks.isEmpty, "no truncated line and no break without its closing line (\(words) words)")
+            XCTAssertFalse(plan.ordinaryCapReport.skippedOverCap.isEmpty)
+            XCTAssertTrue(plan.ordinaryCapReport.trimmedOptionalLines.isEmpty, "a skipped boundary is reported once, as skipped")
+        }
     }
 
     func testAClosingLineThatIsNotTalkOverStillCountsTowardTheCap() {
+        // Closing 4 s > 3 s: no talk-over marker, so no pause either, as the rendered cap counts it.
         var w = DJScriptWriter(cadence: cadence(closing: 3), seed: 3, tone: tone(openerWords: 20))  // closing 4 s > 3 s
         let plan = w.plan(tracks: tracks, briefing: nil, hour: 15)
         XCTAssertFalse(plan.breaks.isEmpty)
