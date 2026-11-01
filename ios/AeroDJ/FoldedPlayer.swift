@@ -119,20 +119,47 @@ struct FoldedPlayer: View {
         // so it is always visible without scrolling. Anything still taller (a very long
         // title) scrolls, with the indicator shown. Default sizes are unchanged.
         let accessibilityText = typeSize.isAccessibilitySize
+        let art = artSide(in: size)
         return VStack(spacing: 0) {
-            ScrollView(.vertical, showsIndicators: accessibilityText) {
-                upper(artSide: artSide(in: size), centered: false, includesStatus: !accessibilityText)
-                    .padding(.horizontal, FoldedStyle.contentInset)
-                    .padding(.top, 8)
-                    .padding(.bottom, 16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if accessibilityText {
+                // The pinned status makes the controls taller, so the space above them can
+                // shrink below the title block even with the art at its 72 pt floor; the scroll
+                // then cut the TEST STATION tag off behind the ON AIR pill (#345 review). The
+                // art gives way next: title, artist and tag unscrolled with the art, then
+                // without it, and only if neither fits, everything scrolls as before.
+                ViewThatFits(in: .vertical) {
+                    compactUpper(artSide: art, includesArt: true, includesStatus: false)
+                    compactUpper(artSide: art, includesArt: false, includesStatus: false)
+                    compactUpperScroll(artSide: art, showsIndicators: true, includesStatus: false)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            } else {
+                compactUpperScroll(artSide: art, showsIndicators: false, includesStatus: true)
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .scrollContentBackground(.hidden)
             controls(contentInset: FoldedStyle.contentInset, toolbarInset: FoldedStyle.toolbarInset,
                      spacing: 16, balancesTransport: false, pinsStatus: accessibilityText)
         }
         .frame(width: size.width, height: size.height)
+    }
+
+    /// Phone-width upper part with the wireframe gutters. `includesArt` false is only used at
+    /// accessibility sizes, when the title block would not otherwise fit above the controls.
+    private func compactUpper(artSide: CGFloat, includesArt: Bool, includesStatus: Bool) -> some View {
+        upper(artSide: artSide, centered: false, includesStatus: includesStatus, includesArt: includesArt)
+            .padding(.horizontal, FoldedStyle.contentInset)
+            .padding(.top, 8)
+            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Phone width: the scrolling upper part (wireframe 08). Default sizes always use this.
+    private func compactUpperScroll(artSide: CGFloat, showsIndicators: Bool,
+                                    includesStatus: Bool) -> some View {
+        ScrollView(.vertical, showsIndicators: showsIndicators) {
+            compactUpper(artSide: artSide, includesArt: true, includesStatus: includesStatus)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollContentBackground(.hidden)
     }
 
     /// Wide container: header (⋯), art, title, status and controls as one centred column,
@@ -201,16 +228,22 @@ struct FoldedPlayer: View {
     // MARK: Upper (scrolls at large text sizes)
 
     /// `includesStatus` false: the caller pins the DJ status in the controls instead (#310).
+    /// `includesArt` false: phone width at accessibility sizes when the title block would not
+    /// fit under the art (#345 review); the title then starts at the top.
     @ViewBuilder
-    private func upper(artSide: CGFloat, centered: Bool, includesStatus: Bool = true) -> some View {
+    private func upper(artSide: CGFloat, centered: Bool, includesStatus: Bool = true,
+                       includesArt: Bool = true) -> some View {
         VStack(alignment: centered ? .center : .leading, spacing: 0) {
             switch content {
             case .track(let track):
-                FoldedArtCard(track: track, station: station, isOnAir: dj.state.isOnAir,
-                              side: artSide, namespace: artworkNamespace, speechLevel: speechLevel)
-                    .frame(maxWidth: .infinity)
+                if includesArt {
+                    FoldedArtCard(track: track, station: station, isOnAir: dj.state.isOnAir,
+                                  side: artSide, namespace: artworkNamespace, speechLevel: speechLevel)
+                        .frame(maxWidth: .infinity)
+                }
                 FoldedTitleBlock(track: track, isTestStation: isTestStation, centered: centered)
-                    .padding(.top, centered ? CGFloat(FoldedColumnLayout.Spacing.artToTitle) : 24)
+                    .padding(.top, includesArt
+                             ? (centered ? CGFloat(FoldedColumnLayout.Spacing.artToTitle) : 24) : 0)
                 if includesStatus {
                     FoldedDJStatus(dj: dj)
                         .padding(.top, centered ? CGFloat(FoldedColumnLayout.Spacing.titleToStatus) : 16)
@@ -425,6 +458,7 @@ private struct FoldedTestStationTag: View {
             .padding(.vertical, 3)
             .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
             .accessibilityLabel("Test station")
+            .accessibilityIdentifier("folded.testStation")
     }
 }
 
