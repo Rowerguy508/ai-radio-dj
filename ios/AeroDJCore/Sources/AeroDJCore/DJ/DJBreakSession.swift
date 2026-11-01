@@ -24,13 +24,11 @@ public final class DJBreakSession {
     private let dj: DJPresentationStore
     private let base: DJCadence
     private let hour: () -> Int
-    /// Lane 2 time checks: the listener's calendar (time zone) and clock style. The spoken time is
-    /// read from `now()` when a break is planned.
+    /// Lane 2 time checks: the listener's calendar (time zone) and clock style. The plan only
+    /// reserves a time-check slot; `DJBreakPreparer` writes and renders the line about 75 s
+    /// before the boundary, from its own injected clock (Orion option (a), #347).
     private let calendar: Calendar
     private let clockStyle: DJClockStyle
-    /// Air time of the break after the song playing now (`songStarted`: now + remaining), the only
-    /// boundary whose air time is known. Time checks skip a break planned too far from it.
-    private var knownAirTime: (afterTrack: Int, at: Date)?
     private var writer: DJScriptWriter
     private var tracks: [DJTrack] = []
     private var briefing: NarrationHandoff?
@@ -272,7 +270,6 @@ public final class DJBreakSession {
         // anti-repeat and shape memory forget them (the ones that aired stay remembered).
         writer.forgetPlannedBreaks(breaks.filter { $0.key > (playing ?? -1) }.map(\.value))
         playing = nil
-        knownAirTime = nil
         breaks = [:]
         // Same key the feed gives a new queue (`queueStarted(for: committedDisplayed)`). A save
         // since the reservation makes it uncertain, which fails closed (intros dropped).
@@ -323,14 +320,11 @@ public final class DJBreakSession {
             return
         }
         testLastSongStartRemaining = remaining
-        let airTime = now().addingTimeInterval(Self.seconds(remaining))
-        knownAirTime = (index, airTime)
         await preparer.openBoundary(afterTrack: index)   // seeks may re-arm this boundary once (-Atlas)
         guard breaks[index] != nil, let deadline = DJBreakPreparer.deadline(remainingInSong: remaining) else { return }
         // Personality edits apply when a break starts preparing; re-plan this break if they did.
         await station.handle(.djBreakWillPrepare(afterTrack: index))
         replanIfCadenceChanged(after: index - 1)
-        dropStaleTimeCheck(afterTrack: index, airTime: airTime)
         guard let djBreak = breaks[index] else { return }
         // Library-seed gate (#154): a station built from the listener's own library is spoken
         // on-device only, so no seed, song or artist from it reaches a cloud or paid voice.
@@ -622,23 +616,6 @@ public final class DJBreakSession {
         requestStop(afterTrack: live.afterTrack, .sourceRevoked)
     }
 
-    /// Lane 2 time checks: a break's spoken time was read when it was planned; if it now airs more
-    /// than `timeCheckMaxDriftSeconds` from that reading, the time check is dropped before it
-    /// renders (the rest of the break stays).
-    private func dropStaleTimeCheck(afterTrack k: Int, airTime: Date) {
-        guard let planned = breaks[k], planned.timeCheckCueID != nil else { return }
-        let maxDrift = writer.shapes?.timeCheckMaxDriftSeconds ?? DJBreakShapeConfig.natural.timeCheckMaxDriftSeconds
-        let kept = DJTimeCheck.droppingStale(planned, airTime: airTime, maxDriftSeconds: maxDrift)
-        guard kept != planned else { return }
-        writer.timeCheckDropped(from: planned, leaving: kept)
-        breaks[k] = kept
-    }
-
-    nonisolated static func seconds(_ duration: Duration) -> Double {
-        let c = duration.components
-        return Double(c.seconds) + Double(c.attoseconds) / 1e18
-    }
-
     private func replanIfCadenceChanged(after k: Int) {
         guard station.active.cadence(base: base) != plannedWith else { return }
         replan(from: k + 1, keepingThrough: k)
@@ -662,11 +639,9 @@ public final class DJBreakSession {
         }
         // Plan the suffix starting at the song before `first`, then shift indices back.
         let offset = first
-        // Lane 2 time checks: the planning clock is read once, here. Only the boundary after the
-        // playing song has a known air time (shifted into the suffix's indices).
-        var airTimes: [Int: Date] = [:]
-        if let known = knownAirTime, known.afterTrack >= offset { airTimes[known.afterTrack - offset] = known.at }
-        let clock = DJPlanClock(now: now(), calendar: calendar, style: clockStyle, airTimes: airTimes)
+        // Lane 2 time checks: the planning clock (spacing, calendar, style) is read once, here.
+        // The spoken time is not: the preparer reads its clock when the line renders.
+        let clock = DJPlanClock(now: now(), calendar: calendar, style: clockStyle)
         let plan = writer.plan(tracks: Array(tracks[offset...]), briefing: remainingBriefing, hour: hour(), clock: clock)
         var tooClose: [DJBreak] = []
         defer { writer.forgetPlannedBreaks(tooClose) }   // planned, never kept: never airs
@@ -676,8 +651,7 @@ public final class DJBreakSession {
             var shifted = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
             shifted.talkOverCueID = b.talkOverCueID
             shifted.shape = b.shape
-            shifted.timeCheckCueID = b.timeCheckCueID
-            shifted.timeCheckPlannedAt = b.timeCheckPlannedAt
+            shifted.timeCheck = b.timeCheck
             breaks[k] = shifted
         }
     }
@@ -688,6 +662,8 @@ public final class DJBreakSession {
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: the planned breaks by boundary (what `replan` wrote).
     var testPlannedBreaks: [Int: DJBreak] { breaks }
+    /// Test hook: the preparer this session hands breaks to.
+    var testPreparer: DJBreakPreparer { preparer }
     /// Test hook: background tap setup has not finished planning.
     var testQueueSetupPending: Bool { queueSetupPending }
     /// Test hook (#116): the song start held until the new queue is planned.

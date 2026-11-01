@@ -288,11 +288,6 @@ public struct RecentSpokenTemplates: Sendable {
         history.removeAll { $0.id.map(ids.contains) ?? false }
     }
 
-    /// A planned break's first cue changed (a stale time check was dropped): keep its memory.
-    public mutating func rekey(_ old: UUID, to new: UUID) {
-        for i in history.indices where history[i].id == old { history[i].id = new }
-    }
-
     public var lastBreak: [String] { history.last?.entries.map(\.key) ?? [] }
     /// Breaks remembered, newest last (test hook).
     var count: Int { history.count }

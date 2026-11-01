@@ -303,32 +303,32 @@ final class DJTimeCheckTests: XCTestCase {
         XCTAssertGreaterThan(found, 0)
     }
 
-    func testDroppingAStaleTimeCheckKeepsTheRestOfTheBreak() {
+    func testPlannedTimeCheckKeepsItsPhrasingSlotAndReadsAnyClock() {
         var writer = DJScriptWriter(cadence: dense, seed: 3, shapes: heavy(spacing: 0))
         let plan = writer.plan(tracks: djTracks(30), briefing: nil, hour: 9, clock: clock(9, 40))
-        guard let b = plan.breaks.first(where: { $0.timeCheckCueID != nil }) else { return XCTFail("no time check") }
-        XCTAssertEqual(DJTimeCheck.droppingStale(b, airTime: date(9, 42), maxDriftSeconds: 120), b, "within 2 min: kept")
-        let trimmed = DJTimeCheck.droppingStale(b, airTime: date(9, 43), maxDriftSeconds: 120)
-        XCTAssertNotNil(trimmed)
-        XCTAssertEqual(trimmed?.cues.count, b.cues.count - 1)
-        XCTAssertFalse(trimmed?.cues.contains { $0.id == b.timeCheckCueID } ?? true)
-        XCTAssertNil(trimmed?.attributions[b.timeCheckCueID!])
-        XCTAssertNil(trimmed?.timeCheckCueID)
-        XCTAssertEqual(trimmed?.talkOverCueID, b.talkOverCueID)
-        XCTAssertEqual(trimmed?.shape, .timeCheckIntro)
-        let before = writer.testRememberedBreaks
-        writer.timeCheckDropped(from: b, leaving: trimmed)
-        XCTAssertEqual(writer.testRememberedBreaks, before, "memory re-keyed, not lost")
-        XCTAssertEqual(writer.testTimeCheckCount, plan.breaks.filter { $0.timeCheckCueID != nil }.count - 1)
-        // Re-keyed: forgetting the trimmed break by its new first cue removes it.
-        writer.forgetPlannedBreaks([trimmed!])
-        XCTAssertEqual(writer.testRememberedBreaks, before - 1)
-        // Only the time check: nothing left, the boundary goes music-only.
-        let lone = DJBreak(afterTrack: 1, cues: b.cues.filter { $0.id == b.timeCheckCueID },
-                           attributions: b.attributions.filter { $0.key == b.timeCheckCueID })
-        var loneBreak = lone
-        loneBreak.timeCheckCueID = b.timeCheckCueID
-        loneBreak.timeCheckPlannedAt = b.timeCheckPlannedAt
-        XCTAssertNil(DJTimeCheck.droppingStale(loneBreak, airTime: date(10, 0), maxDriftSeconds: 120))
+        guard let b = plan.breaks.first(where: { $0.timeCheck != nil }), let tc = b.timeCheck,
+              let cue = b.cues.first(where: { $0.id == tc.cueID }) else { return XCTFail("no time check") }
+        let phrases = DJTimeCheckPhrases()
+        guard let slot = phrases.on.firstIndex(where: { TemplatePool.fill($0, ["time": "9:40"]) == cue.text }) else {
+            return XCTFail("plan-time text from the on pool: \(cue.text)")
+        }
+        XCTAssertEqual(tc.templates, [.on: phrases.on[slot], .comingUp: phrases.comingUp[slot], .justAfter: phrases.justAfter[slot]])
+        XCTAssertEqual(tc.plannedAt, date(9, 40))
+        XCTAssertEqual(tc.style, .twelveHour)
+        XCTAssertEqual(tc.calendar.timeZone, eastern.timeZone)
+        // Any later clock: same slot, the relation and time that clock reads.
+        XCTAssertEqual(tc.text(at: date(9, 52)), TemplatePool.fill(phrases.justAfter[slot], ["time": "9:50"]))
+        XCTAssertEqual(tc.text(at: date(9, 58)), TemplatePool.fill(phrases.comingUp[slot], ["time": "10 o'clock"]))
+        XCTAssertEqual(tc.text(at: date(11, 0)), TemplatePool.fill(phrases.on[slot], ["time": "11 o'clock"]))
+    }
+
+    func testTimeCheckNeverPlannedWithoutAClosingLine() {
+        // A time check is never a break's only line: the closing line always follows it.
+        var writer = DJScriptWriter(cadence: dense, seed: 5, shapes: heavy(spacing: 0))
+        let plan = writer.plan(tracks: djTracks(30), briefing: nil, hour: 9, clock: clock(9, 40))
+        for b in plan.breaks where b.timeCheck != nil {
+            XCTAssertGreaterThan(b.cues.count, 1)
+            XCTAssertNotEqual(b.cues.last?.id, b.timeCheckCueID, "the closing line comes after it")
+        }
     }
 }

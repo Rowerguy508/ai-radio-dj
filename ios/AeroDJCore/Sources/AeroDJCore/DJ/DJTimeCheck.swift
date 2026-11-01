@@ -116,20 +116,35 @@ public enum DJTimeCheck {
         let r = rounded(hour: parts.hour ?? 0, minute: parts.minute ?? 0)
         return (spokenTime(hour: r.hour, minute: r.minute, style: style), r.relation)
     }
+}
 
-    /// Strips a planned time check whose break will air too far from when it was planned (the
-    /// spoken time would be wrong). The rest of the break is kept: the time check is an optional
-    /// line ahead of the closing line, so the closing line and its talk-over stay as they are.
-    /// Unchanged when the break has no time check or the drift is within `maxDriftSeconds`.
-    /// Nil when the time check was the only line (the boundary goes music-only).
-    public static func droppingStale(_ djBreak: DJBreak, airTime: Date, maxDriftSeconds: Double) -> DJBreak? {
-        guard let id = djBreak.timeCheckCueID, let plannedAt = djBreak.timeCheckPlannedAt,
-              abs(airTime.timeIntervalSince(plannedAt)) > maxDriftSeconds else { return djBreak }
-        guard djBreak.cues.contains(where: { $0.id != id }) else { return nil }
-        var trimmed = DJBreak(afterTrack: djBreak.afterTrack, cues: djBreak.cues.filter { $0.id != id },
-                              attributions: djBreak.attributions.filter { $0.key != id })
-        trimmed.talkOverCueID = djBreak.talkOverCueID
-        trimmed.shape = djBreak.shape
-        return trimmed
+/// A planned time check (lane 2 part 2, Orion option (a) on #347). The plan only reserves the
+/// slot: its words are written when the line renders, about 75 s before the boundary, from the
+/// clock read then (`DJBreakPreparer`). The plan-time text is never spoken.
+public struct DJPlannedTimeCheck: Equatable, Sendable {
+    /// The time-check cue in the break (an optional presenter line before the closing line).
+    public let cueID: UUID
+    /// `DJPlanClock.now` at planning (spacing only; never the spoken time).
+    public let plannedAt: Date
+    /// The phrasing drawn at planning, one per relation (same slot in each pool), so the line
+    /// keeps its anti-repeat pick whichever way the render-time clock rounds.
+    public let templates: [DJTimeCheckRelation: String]
+    public let calendar: Calendar
+    public let style: DJClockStyle
+
+    public init(cueID: UUID, plannedAt: Date, templates: [DJTimeCheckRelation: String],
+                calendar: Calendar, style: DJClockStyle) {
+        self.cueID = cueID
+        self.plannedAt = plannedAt
+        self.templates = templates
+        self.calendar = calendar
+        self.style = style
+    }
+
+    /// The line for the clock reading `date`. Nil when no phrasing fits.
+    public func text(at date: Date) -> String? {
+        let reading = DJTimeCheck.reading(date, calendar: calendar, style: style)
+        guard let template = templates[reading.relation] else { return nil }
+        return TemplatePool.fill(template, ["time": reading.time])
     }
 }

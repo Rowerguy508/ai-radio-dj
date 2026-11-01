@@ -2,10 +2,10 @@ import Foundation
 import XCTest
 @testable import AeroDJCore
 
-/// Lane 2 time checks through `DJBreakSession` (-Fry): the spoken time comes from the session's
-/// injected `now()`, and a planned time check that would air more than 2 min from that reading is
-/// dropped when its song starts. Async methods throughout: Swift 6.2 Linux test discovery needs
-/// them in a @MainActor test class.
+/// Lane 2 time checks through `DJBreakSession` (-Fry): the session plans the slot with its
+/// injected `now()`, and the line that airs is written by the preparer from the same injected
+/// clock when it renders (Orion option (a), #347), however long after planning that is. Async
+/// methods throughout: Swift 6.2 Linux test discovery needs them in a @MainActor test class.
 private struct TimeVoice: VoiceProvider {
     func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
         let words = SpeechDelivery.plainText(fromSSML: text).split(separator: " ").count
@@ -32,7 +32,8 @@ final class DJTimeCheckSessionTests: XCTestCase {
         await station.load()
         let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: TimeVoice(), voice: djVoice)],
                                      budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
-        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence())
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence(),
+                                       now: { clock.now })
         let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: seed,
                                      hour: { 7 }, now: { clock.now }, calendar: eastern, clockStyle: .twelveHour)
         await session.start()
@@ -68,22 +69,32 @@ final class DJTimeCheckSessionTests: XCTestCase {
         XCTAssertGreaterThan(withOne, 0, "some seeds plan a time check")
     }
 
-    func testStaleTimeCheckIsDroppedWhenItsSongStarts() async {
+    func testTimeCheckAirsTheTimeReadWhenItRendersNotWhenPlanned() async {
         let clock = Clock(eastern.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 7, minute: 40))!)
         guard let (session, k, planned) = await seededTimeCheck(clock: clock) else { return XCTFail("no seed planned one") }
-        // Songs played for a while: the break now airs 20 minutes after the planning reading.
+        // Songs played for a while: the break now airs 20 minutes after it was planned.
         clock.now = clock.now.addingTimeInterval(20 * 60)
+        // 60 s left: inside the time-check window, so the line renders straight after the rest.
         await session.songStarted(index: k, remaining: .seconds(60))
-        let aired = session.testPlannedBreaks[k]
-        XCTAssertNil(aired?.timeCheckCueID, "stale: dropped")
-        XCTAssertFalse(aired?.cues.contains { $0.id == planned.timeCheckCueID } ?? false)
-        XCTAssertEqual(aired?.cues.last?.id, planned.cues.last?.id, "the closing line stays")
+        XCTAssertEqual(session.testPlannedBreaks[k]?.timeCheckCueID, planned.timeCheckCueID, "the slot stays planned")
+        let preparer = session.testPreparer
+        let added = await eventually {
+            if case .ready(let b)? = await preparer.testResult(afterTrack: k) { return b.cues.count == planned.cues.count }
+            return false
+        }
+        XCTAssertTrue(added)
+        guard let aired = await session.naturalBoundary(afterTrack: k) else { return XCTFail("the break airs") }
+        let line = aired.cues.first { $0.id == planned.timeCheckCueID }
+        XCTAssertTrue(line?.text.contains("8 o'clock") == true, line?.text ?? "-")
+        XCTAssertFalse(aired.cues.contains { $0.text.contains("7:40") }, "the plan-time reading never airs")
+        XCTAssertEqual(aired.cues.last?.id, planned.cues.last?.id, "the closing line stays last")
     }
 
-    func testFreshTimeCheckIsKeptWhenItAirsWithinTwoMinutes() async {
-        let clock = Clock(eastern.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 7, minute: 40))!)
-        guard let (session, k, planned) = await seededTimeCheck(clock: clock) else { return XCTFail("no seed planned one") }
-        await session.songStarted(index: k, remaining: .seconds(90))     // airs 1.5 min after the reading
-        XCTAssertEqual(session.testPlannedBreaks[k]?.timeCheckCueID, planned.timeCheckCueID)
+    private func eventually(_ check: () async -> Bool) async -> Bool {
+        for _ in 0..<500 {
+            if await check() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return await check()
     }
 }

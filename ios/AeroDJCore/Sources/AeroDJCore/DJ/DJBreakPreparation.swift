@@ -100,6 +100,15 @@ public actor DJBreakPreparer {
     /// still playing) must not render, and spend on, a second break (-Fry, Sentinel #210).
     /// Cleared with everything else by `cancelAll()` (new queue: indices restart).
     private var taken: Set<Int> = []
+    /// Lane 2 time checks (Orion option (a), #347): the clock the time-check line is read from
+    /// when it renders, and the wait until its render starts. Injected; Core never calls `Date()`.
+    private let now: @Sendable () -> Date
+    private let sleepUntil: @Sendable (ContinuousClock.Instant) async throws -> Void
+
+    /// How long before the render deadline the time-check line renders: 72 s, so about 75 s
+    /// before the boundary at the default 3 s margin (Orion: 60-90 s). A song that starts with
+    /// less left renders it straight after the rest of the break.
+    public static let timeCheckLead: Duration = .seconds(72)
 
     public enum DJBreakEvent: Equatable, Sendable {
         case preparing(afterTrack: Int, includesBriefing: Bool)
@@ -110,8 +119,14 @@ public actor DJBreakPreparer {
     /// `talkOverEnabled` defaults to `DJTalkoverFlag.isEnabled()` (the DIAG override, else the
     /// `AERODJ_OWNER_AB` build default), the same flag `TalkoverCoordinator` reads.
     public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
-                talkOverEnabled: @escaping @Sendable () -> Bool = { DJTalkoverFlag.isEnabled() }) {
+                talkOverEnabled: @escaping @Sendable () -> Bool = { DJTalkoverFlag.isEnabled() },
+                now: @escaping @Sendable () -> Date = { Date() },
+                sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = {
+                    try await Task.sleep(until: $0, clock: .continuous)
+                }) {
         self.renderer = renderer
+        self.now = now
+        self.sleepUntil = sleepUntil
         self.userID = userID
         self.stationID = stationID
         self.talkOverEnabled = talkOverEnabled
@@ -139,6 +154,15 @@ public actor DJBreakPreparer {
     /// `onDeviceOnly` (a station with a library seed) renders on the on-device, free routes only;
     /// with none configured the break is skipped as `.renderFailed`, never sent off the device.
     /// No default: every caller must decide, so a new call site cannot silently skip the gate.
+    ///
+    /// Lane 2 time checks (Orion option (a), #347): a break with a time check renders in the same
+    /// task, in two steps. First every other cue, as before; the break is then ready and airs as
+    /// it is if nothing more happens. Then, `timeCheckLead` before the deadline, the time-check
+    /// line alone: written from `now()` at that moment (never from the plan), rendered by this
+    /// renderer narrowed to the voice the break's clips used (paid routes are charged by the
+    /// renderer as for every cue), and added only if it finishes before the deadline, before the
+    /// break is taken, and within the break's cap. Otherwise the line is dropped and the rest of
+    /// the prepared break airs unchanged.
     public func prepare(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool) {
         let k = djBreak.afterTrack
         guard tasks[k] == nil, results[k] == nil, !taken.contains(k) else { return }
@@ -146,18 +170,89 @@ public actor DJBreakPreparer {
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
         let renderer = onDeviceOnly ? self.renderer.onDeviceOnly : self.renderer
         let userID = userID, stationID = stationID, cap = breakCap(djBreak).talkOver(talkOverEnabled())
+        // The time check is held back from the first step (its plan-time words never render).
+        let timeCheck = djBreak.timeCheck.flatMap { tc in djBreak.cues.contains { $0.id == tc.cueID } ? tc : nil }
+        let rest = timeCheck.map { Self.removing($0.cueID, from: djBreak) } ?? djBreak
+        let end = ContinuousClock.now + deadline
+        let now = now, sleepUntil = sleepUntil
         tasks[k] = Task {
             let outcome: DJBreakOutcome
             guard let renderer else { self.finish(k, .skipped(.renderFailed)); return }
+            guard !rest.cues.isEmpty else { self.finish(k, .skipped(.notPlanned)); return }
             do {
                 outcome = try await VoiceRenderer.withTimeout(deadline) {
-                    await Self.render(djBreak, renderer: renderer, userID: userID, stationID: stationID, cap: cap)
+                    await Self.render(rest, renderer: renderer, userID: userID, stationID: stationID, cap: cap)
                 }
             } catch {
                 outcome = .skipped(.timedOut)
             }
             self.finish(k, outcome)
+            guard let timeCheck, case .ready(let main) = outcome else { return }
+            // Same task, same deadline: wait for the time-check window (cancelled by takeBreak,
+            // cancelAll or purge like any render), then read the clock and render the line.
+            do { try await sleepUntil(end - Self.timeCheckLead) } catch { return }
+            guard !Task.isCancelled, let voice = Self.sameVoice(as: main, in: renderer),
+                  let planned = djBreak.cues.first(where: { $0.id == timeCheck.cueID }),
+                  let text = timeCheck.text(at: now()) else { return }
+            let line = Self.cue(planned, saying: text)
+            let left = end - ContinuousClock.now
+            guard left > .zero,
+                  case .success(let clip)? = try? await VoiceRenderer.withTimeout(left, {
+                      await voice.render(line, userID: userID, stationID: stationID,
+                                         attribution: djBreak.attributions[line.id])
+                  }),
+                  !Task.isCancelled else { return }   // failed, late or taken: dropped
+            self.addTimeCheck(k, line, clip, to: main, in: djBreak, cap: cap)
         }
+    }
+
+    /// `djBreak` without cue `id` (and its attribution); talk-over and shape kept.
+    static func removing(_ id: UUID, from djBreak: DJBreak) -> DJBreak {
+        var rest = DJBreak(afterTrack: djBreak.afterTrack, cues: djBreak.cues.filter { $0.id != id },
+                           attributions: djBreak.attributions.filter { $0.key != id })
+        rest.talkOverCueID = djBreak.talkOverCueID
+        rest.shape = djBreak.shape
+        return rest
+    }
+
+    /// The renderer narrowed to the one route (provider and voice) the break's closing clip used,
+    /// sharing its budget, cache and revocations, so the time check is in the break's voice.
+    /// Nil when that route is not in `renderer` (the line is dropped, never re-voiced).
+    static func sameVoice(as main: PreparedDJBreak, in renderer: VoiceRenderer) -> VoiceRenderer? {
+        guard let last = main.clips.last,
+              let route = renderer.routes.first(where: { $0.providerID == last.audio.providerID && $0.voice.id == last.audio.voiceID })
+        else { return nil }
+        return VoiceRenderer(routes: [route], budget: renderer.budget, cache: renderer.cache, revocations: renderer.revocations)
+    }
+
+    /// The planned time-check cue with its render-time words.
+    static func cue(_ planned: NarrationCue, saying text: String) -> NarrationCue {
+        let seconds = DefaultBriefingPlanner.estimatedSpokenSeconds(for: text)
+        return NarrationCue(id: planned.id, order: planned.order, group: planned.group, kind: planned.kind, text: text,
+                            estimatedSeconds: seconds, maxSeconds: max(planned.maxSeconds, 8, seconds * 2),
+                            sourceItemID: planned.sourceItemID, source: planned.source, provenance: planned.provenance)
+    }
+
+    /// Adds the late time-check clip to boundary `k`'s ready break, in its planned place, when
+    /// that break is still the one this render made (not taken, cancelled, purged or replaced)
+    /// and the whole break still fits its cap. Otherwise nothing changes (the line is dropped).
+    private func addTimeCheck(_ k: Int, _ line: NarrationCue, _ clip: RenderedClip, to main: PreparedDJBreak,
+                              in djBreak: DJBreak, cap: BreakCap) {
+        guard tasks[k] != nil, case .ready(let current)? = results[k], current == main else { return }
+        let slot = djBreak.cues.prefix { $0.id != line.id }.count
+        guard slot <= main.cues.count else { return }
+        var spoken = line
+        spoken.renderedSeconds = clip.audio.seconds
+        spoken.voiceID = clip.audio.voiceID
+        spoken.providerID = clip.audio.providerID
+        spoken.audioCacheKey = clip.cacheKey
+        var cues = main.cues, clips = main.clips
+        cues.insert(spoken, at: slot)
+        clips.insert(clip, at: slot)
+        let fit = cap.fit(clips)
+        guard fit != .skip else { return }
+        results[k] = .ready(PreparedDJBreak(afterTrack: k, cues: cues, clips: clips, attributions: djBreak.attributions,
+                                            talkOverCueID: fit == .keepMarker ? djBreak.talkOverCueID : nil))
     }
 
     /// Song scrubbing (-Atlas): a user seek changed the time left before boundary `k`.
@@ -228,7 +323,10 @@ public actor DJBreakPreparer {
             if wasPlanned { emit(.skipped(afterTrack: k, .notNaturalBoundary)) }
             return .skipped(.notNaturalBoundary)
         }
-        if let result = results.removeValue(forKey: k) { return result }
+        if let result = results.removeValue(forKey: k) {
+            tasks[k]?.cancel()   // a time-check line still rendering is dropped (#347)
+            return result
+        }
         guard let task = tasks[k] else { return .skipped(.notPlanned) }
         task.cancel()
         results[k] = .skipped(.notReadyAtBoundary)   // a late finish must not replace this
