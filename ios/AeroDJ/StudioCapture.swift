@@ -434,6 +434,7 @@ enum StudioCaptureSegment {
 /// The `onAir` capture's frozen ON AIR timer. `FoldedOnAirPill` shows `frozenElapsed` when it
 /// is set; only the `onAir` scenario sets it, so every other run (and Release, which does not
 /// compile this) counts from when the pill appeared.
+@MainActor
 enum StudioCaptureOnAir {
     /// What `closed-ax5-onair` shows: "0:12". Same width as a live "0:0x".
     static let capturedElapsed: TimeInterval = 12

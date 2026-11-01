@@ -555,6 +555,7 @@ private struct FoldedOnAirPill: View {
 
     /// Seconds on air. Debug only: the `onAir` Studio capture freezes it
     /// (`StudioCaptureOnAir.frozenElapsed`) so `closed-ax5-onair` is the same every run.
+    @MainActor
     private static func elapsed(at now: Date, since startedAt: Date) -> TimeInterval {
         #if DEBUG
         if let frozen = StudioCaptureOnAir.frozenElapsed { return frozen }
