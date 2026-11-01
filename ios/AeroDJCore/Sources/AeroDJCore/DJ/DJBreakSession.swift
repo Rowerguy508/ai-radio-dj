@@ -111,7 +111,7 @@ public final class DJBreakSession {
         self.dj = dj
         self.base = base
         self.hour = hour
-        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed)
+        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed, shapes: .natural)
     }
 
     /// Forwards preparer events to the DJ status and follows station changes. Call once.
@@ -258,6 +258,9 @@ public final class DJBreakSession {
             }
         }
         deliveredBriefing = []
+        // Lane 2: the old queue's breaks after the song playing now never air; the DJ's
+        // anti-repeat and shape memory forget them (the ones that aired stay remembered).
+        writer.forgetPlannedBreaks(breaks.filter { $0.key > (playing ?? -1) }.map(\.value))
         playing = nil
         breaks = [:]
         // Same key the feed gives a new queue (`queueStarted(for: committedDisplayed)`). A save
@@ -616,6 +619,8 @@ public final class DJBreakSession {
         let cadence = station.active.cadence(base: base)
         plannedWith = cadence
         writer.cadence = cadence
+        // Lane 2: breaks past `kept` are planned away before airing; forget them first.
+        writer.forgetPlannedBreaks(breaks.filter { $0.key > kept }.map(\.value))
         breaks = breaks.filter { $0.key <= kept }
         guard first < tracks.count - 1 else { return }
         let lastBreak = breaks.keys.max()
@@ -627,11 +632,14 @@ public final class DJBreakSession {
         // Plan the suffix starting at the song before `first`, then shift indices back.
         let offset = first
         let plan = writer.plan(tracks: Array(tracks[offset...]), briefing: remainingBriefing, hour: hour())
+        var tooClose: [DJBreak] = []
+        defer { writer.forgetPlannedBreaks(tooClose) }   // planned, never kept: never airs
         for b in plan.breaks {
             let k = b.afterTrack + offset
-            if let lastBreak, k - lastBreak <= cadence.minSongsBetweenBreaks { continue }
+            if let lastBreak, k - lastBreak <= cadence.minSongsBetweenBreaks { tooClose.append(b); continue }
             var shifted = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
             shifted.talkOverCueID = b.talkOverCueID
+            shifted.shape = b.shape
             breaks[k] = shifted
         }
     }
