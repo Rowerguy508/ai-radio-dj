@@ -239,6 +239,8 @@ public struct DJScriptWriter: Sendable {
     public var extraLineSource: (any DJBreakExtraLineSource)?
     private var shapePicker: DJBreakShapePicker?
     private var recentTemplates: RecentSpokenTemplates
+    /// Natural breaks planned so far (id: first cue), newest last, for `forgetPlannedBreaks`.
+    private var shapeLog: [(id: UUID, shape: DJBreakShape)] = []
     private var combined: TemplatePool
 
     public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = DJScriptWriter.builtInStationName,
@@ -397,6 +399,12 @@ public struct DJScriptWriter: Sendable {
             if !isBriefing, planned.mainSeconds > Double(cadence.maxTransitionSeconds) { continue }
             breaks.append(planned)
             lastBreak = boundary
+            if shapes != nil {
+                // Natural shapes on: the classic and briefing breaks' own lines (never personal
+                // text) count toward the cross-pool window too, so a later break never echoes them.
+                let spoken = cues.filter { !$0.isContent }.map(\.text)
+                recentTemplates.record(spoken, texts: spoken, id: cues.first?.id)
+            }
         }
         for cue in pending {
             outcomes[cue.id] = Self.carriesToLaterShow(cue) ? .deferred(.noTrackBoundary) : .dropped(.notCarriedForward)
@@ -456,6 +464,25 @@ public struct DJScriptWriter: Sendable {
         }
     }
 
+    /// A replan discarded these planned breaks before they aired: they leave the cross-pool
+    /// memory and the shape history, so the next plan follows what actually aired (or is kept).
+    /// No-op with natural shapes off. Pool cycling (`TemplatePool`) is not rewound.
+    public mutating func forgetPlannedBreaks(_ discarded: [DJBreak]) {
+        guard shapes != nil, var picker = shapePicker else { return }
+        let ids = Set(discarded.compactMap { $0.cues.first?.id })
+        guard !ids.isEmpty else { return }
+        recentTemplates.forget(ids: ids)
+        let before = shapeLog.count
+        shapeLog.removeAll { ids.contains($0.id) }
+        picker.restore(lastShape: shapeLog.last?.shape, forgetting: before - shapeLog.count)
+        shapePicker = picker
+    }
+
+    /// Test hook: breaks in the cross-pool memory.
+    var testRememberedBreaks: Int { recentTemplates.count }
+    /// Test hook: the shape the next pick avoids.
+    var testLastShape: DJBreakShape? { shapePicker?.lastShape }
+
     enum NaturalOutcome {
         case planned(DJBreak)
         /// Over a cap even with every optional line dropped: the boundary stays music-only.
@@ -487,16 +514,32 @@ public struct DJScriptWriter: Sendable {
         let recent = recentTemplates
         func draw(_ pool: inout TemplatePool, _ values: [String: String], _ attribution: SpokenAttribution,
                   optional: Bool = false) -> Bool {
-            let sameBreak = lines.map(\.template)
+            let sameBreak = lines.map(\.template) + lines.map(\.text)
             let isOpener = lines.isEmpty
-            // Full window and opener rules; then the rules over the last two breaks; then just
-            // the last two breaks; then this break only.
-            let tiers: [(String) -> Bool] = [
-                { recent.rejects($0, sameBreak: sameBreak, isOpener: isOpener) },
-                { recent.rejects($0, sameBreak: sameBreak, isOpener: isOpener, window: 2) },
-                { recent.rejects($0, sameBreak: sameBreak, isOpener: isOpener, window: 2, strict: false) },
-                { recent.rejects($0, sameBreak: sameBreak, isOpener: isOpener, window: 0, strict: false) },
+            func text(_ template: String) -> String? { TemplatePool.fill(template, values) }
+            // 1: no identical line (template or spoken text) in the last `recentBreakWindow`
+            //    breaks, plus the opener first-word and "Here's" rules.
+            // 2: the same, with the first-word rule relaxed (the "Here's" rule kept).
+            // 3: no identical line in the window (soft rules relaxed).
+            // Optional lines stop there: if every candidate repeats, the line is left out.
+            // Required lines (opener, closing, station ID) relax further rather than go silent:
+            // 4: no identical line in the last two breaks; 5: not twice in this break.
+            var tiers: [(String) -> Bool] = [
+                { recent.rejects($0, text: text($0), sameBreak: sameBreak, isOpener: isOpener) },
+                { recent.rejects($0, text: text($0), sameBreak: sameBreak, isOpener: isOpener, firstWordRule: false) },
+                { recent.rejects($0, text: text($0), sameBreak: sameBreak, isOpener: isOpener, firstWordRule: false, hereWindow: 2) },
+                { recent.repeats($0, text: text($0), sameBreak: sameBreak) },
             ]
+            if !optional {
+                tiers += [
+                    { recent.repeats($0, text: text($0), sameBreak: sameBreak, window: 2) },
+                    { recent.repeats($0, text: text($0), sameBreak: sameBreak, window: 0) },
+                ]
+            }
+            if optional {
+                // No fallback for optional lines: a pick must clear tier 3.
+                guard pool.templates.contains(where: { text($0) != nil && !tiers[3]($0) }) else { return false }
+            }
             guard let picked = pool.next(filling: values, avoiding: tiers, using: &phrasing) else { return false }
             lines.append(Line(template: picked.template, text: picked.text, attribution: attribution, optional: optional))
             return true
@@ -539,7 +582,9 @@ public struct DJScriptWriter: Sendable {
         // The extra-line seam: optional, before the closing line, dropped first.
         if let source = extraLineSource, let extra = source.extraLine(after: prev, before: next, shape: shape) {
             let text = extra.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty, !text.contains(where: { "{}\n\r".contains($0) }) {
+            // Never inside the anti-repeat window either: the same extra every break is dropped.
+            if !text.isEmpty, !text.contains(where: { "{}\n\r".contains($0) }),
+               !recent.repeats(text, text: text, sameBreak: lines.map(\.template) + lines.map(\.text)) {
                 let line = Line(template: text, text: text, attribution: extra.attribution, optional: true)
                 if let index = closingIndex { lines.insert(line, at: index); closingIndex = index + 1 }
                 else { lines.append(line) }
@@ -552,8 +597,15 @@ public struct DJScriptWriter: Sendable {
             guard let closingIndex, closingIndex == lines.count - 1 else { return false }
             return seconds(lines[closingIndex]) <= Double(cadence.maxClosingSeconds)
         }
-        func total() -> Double { lines.reduce(0) { $0 + seconds($1) } }
-        func main() -> Double { total() - (closingTalksOver() ? seconds(lines[lines.count - 1]) : 0) }
+        // #320 counts the `talkOverGapSeconds` (0.3 s) pause before the closing line whenever
+        // something plays before it, so the planner does too.
+        func gap() -> Double {
+            guard let closingIndex, closingIndex == lines.count - 1, lines.count > 1 else { return 0 }
+            return PreparedDJBreak.talkOverGapSeconds
+        }
+        func spoken() -> Double { lines.reduce(0) { $0 + seconds($1) } }
+        func total() -> Double { spoken() + gap() }
+        func main() -> Double { spoken() - (closingTalksOver() ? seconds(lines[lines.count - 1]) : 0) }
         func overCap() -> Bool {
             total() > Double(config.maxBreakSeconds) || main() > Double(cadence.maxTransitionSeconds)
                 || lines.count > config.maxCuesPerBreak
@@ -576,7 +628,11 @@ public struct DJScriptWriter: Sendable {
         planned.shape = shape
         picker.record(shape)
         shapePicker = picker
-        recentTemplates.record(lines.map(\.template))
+        recentTemplates.record(lines.map(\.template), texts: lines.map(\.text), id: cues.first?.id)
+        if let id = cues.first?.id {
+            shapeLog.append((id, shape))
+            if shapeLog.count > RecentSpokenTemplates.historyLimit { shapeLog.removeFirst(shapeLog.count - RecentSpokenTemplates.historyLimit) }
+        }
         return .planned(planned)
     }
 
