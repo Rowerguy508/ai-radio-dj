@@ -32,28 +32,12 @@ enum FoldedStyle {
     static let toolbarHeight: CGFloat = 52
     static let artMaxSide: CGFloat = 420
     static let artMinSide: CGFloat = 140
-}
-
-/// Bottom fade on the folded scroll area, accessibility text sizes only (#310). A mask
-/// changes no frame, so layout and hit testing are the same as without it.
-struct FoldedOverflowFade: ViewModifier {
-    static let height: CGFloat = 32
-    let isActive: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isActive {
-            content.mask {
-                VStack(spacing: 0) {
-                    Color.black
-                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                        .frame(height: Self.height)
-                }
-            }
-        } else {
-            content
-        }
-    }
+    /// Phone width at accessibility text sizes only (#310): the art gives way first so the
+    /// title block fits above the pinned controls.
+    static let artMinSideAccessibility: CGFloat = 72
+    /// Height kept clear of the art on a phone at accessibility text sizes (#310): pinned
+    /// controls with the DJ status, plus the title block at AX5.
+    static let artReserveAccessibility: CGFloat = 700
 }
 
 /// Dark glass through the shared `aeroGlass`: Liquid Glass on iOS 26, the white 8 % fill plus a
@@ -130,24 +114,23 @@ struct FoldedPlayer: View {
 
     /// Phone width: unchanged from wireframe 08 (scrolling upper, pinned controls).
     private func compactBody(in size: CGSize) -> some View {
-        // #310: at accessibility sizes the upper part overflows above the pinned controls.
-        // It still scrolls, but now shows its indicator and fades out at the bottom edge
-        // instead of a hard cut through the title block, and the extra bottom padding lets
-        // the DJ status scroll fully clear of the fade. Default sizes are unchanged.
+        // #310: at accessibility sizes the art shrinks (72 pt floor) so the title block fits,
+        // and the DJ status / ON AIR line moves into the pinned controls above the scrubber,
+        // so it is always visible without scrolling. Anything still taller (a very long
+        // title) scrolls, with the indicator shown. Default sizes are unchanged.
         let accessibilityText = typeSize.isAccessibilitySize
         return VStack(spacing: 0) {
             ScrollView(.vertical, showsIndicators: accessibilityText) {
-                upper(artSide: artSide(in: size), centered: false)
+                upper(artSide: artSide(in: size), centered: false, includesStatus: !accessibilityText)
                     .padding(.horizontal, FoldedStyle.contentInset)
                     .padding(.top, 8)
-                    .padding(.bottom, accessibilityText ? 16 + FoldedOverflowFade.height : 16)
+                    .padding(.bottom, 16)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollContentBackground(.hidden)
-            .modifier(FoldedOverflowFade(isActive: accessibilityText))
             controls(contentInset: FoldedStyle.contentInset, toolbarInset: FoldedStyle.toolbarInset,
-                     spacing: 16, balancesTransport: false)
+                     spacing: 16, balancesTransport: false, pinsStatus: accessibilityText)
         }
         .frame(width: size.width, height: size.height)
     }
@@ -206,15 +189,20 @@ struct FoldedPlayer: View {
     /// controls stay on screen. Only the container decides; no device size is named.
     private func artSide(in size: CGSize) -> CGFloat {
         let byWidth = size.width - FoldedStyle.contentInset * 2
-        let reserve: CGFloat = typeSize.isAccessibilitySize ? 560 : 430
-        let byHeight = size.height - reserve
+        if typeSize.isAccessibilitySize {
+            // #310: phone width at accessibility sizes only.
+            let byHeight = size.height - FoldedStyle.artReserveAccessibility
+            return max(FoldedStyle.artMinSideAccessibility, min(byWidth, byHeight, FoldedStyle.artMaxSide))
+        }
+        let byHeight = size.height - 430
         return max(FoldedStyle.artMinSide, min(byWidth, byHeight, FoldedStyle.artMaxSide))
     }
 
     // MARK: Upper (scrolls at large text sizes)
 
+    /// `includesStatus` false: the caller pins the DJ status in the controls instead (#310).
     @ViewBuilder
-    private func upper(artSide: CGFloat, centered: Bool) -> some View {
+    private func upper(artSide: CGFloat, centered: Bool, includesStatus: Bool = true) -> some View {
         VStack(alignment: centered ? .center : .leading, spacing: 0) {
             switch content {
             case .track(let track):
@@ -223,8 +211,10 @@ struct FoldedPlayer: View {
                     .frame(maxWidth: .infinity)
                 FoldedTitleBlock(track: track, isTestStation: isTestStation, centered: centered)
                     .padding(.top, centered ? CGFloat(FoldedColumnLayout.Spacing.artToTitle) : 24)
-                FoldedDJStatus(dj: dj)
-                    .padding(.top, centered ? CGFloat(FoldedColumnLayout.Spacing.titleToStatus) : 16)
+                if includesStatus {
+                    FoldedDJStatus(dj: dj)
+                        .padding(.top, centered ? CGFloat(FoldedColumnLayout.Spacing.titleToStatus) : 16)
+                }
             case .nothingPlaying:
                 testTag
                 NowPlayingPlaceholder(content: content, actions: actions)
@@ -264,9 +254,16 @@ struct FoldedPlayer: View {
 
     /// Phone: inset by the wireframe gutters and pinned under the scroll. Wide: no inset (the
     /// column already sets the width) and Play/Pause centred on the column.
+    /// `pinsStatus`: phone width at accessibility sizes (#310), the DJ status sits here, above
+    /// the scrubber, instead of in the scrolling upper part. Idle draws nothing.
     private func controls(contentInset: CGFloat, toolbarInset: CGFloat, spacing: CGFloat,
-                          balancesTransport: Bool) -> some View {
+                          balancesTransport: Bool, pinsStatus: Bool = false) -> some View {
         VStack(spacing: spacing) {
+            if pinsStatus, case .track = content {
+                FoldedDJStatus(dj: dj)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, contentInset)
+            }
             PlaybackErrorBanner(error: snapshot.error, actions: actions)
                 .padding(.horizontal, contentInset)
             if showsProgress, let timeSource {
