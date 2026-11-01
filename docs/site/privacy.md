@@ -20,7 +20,7 @@ Personal items, such as calendar events, Markdown notes, shared items, your libr
 
 ## What leaves your device
 
-- **Weather checks.** Weather checks are off until you turn them on. When you do, OnAirly asks for your approximate location only, never your precise location, and sends it to Apple's WeatherKit to get the weather. Apple handles that data under [Apple's Privacy Policy](https://www.apple.com/legal/privacy/). Your location isn't stored or sent anywhere else.
+- **Weather checks.** Weather checks are off until you turn them on. When you do, OnAirly asks for your approximate location only, never your precise location, and sends it to Apple's WeatherKit to get the weather. Apple handles that data under [Apple's Privacy Policy](https://www.apple.com/legal/privacy/). Your location isn't stored or sent anywhere else. The app keeps the last weather reading (not your location) for up to an hour.
 - **AI-written DJ lines.** To write what the DJ says around a song, OnAirly sends the song and artist names and your station's style to OnAirly's server, which passes them to a third-party AI text provider. No account is needed and no personal identifiers are sent. Your calendar, Markdown notes and shared items are never sent.
 
 ## Apple Music
