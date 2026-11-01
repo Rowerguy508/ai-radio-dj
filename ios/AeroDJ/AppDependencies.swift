@@ -72,10 +72,16 @@ struct AppDependencies {
         }
         let dj = DJPresentationStore()
         // One preparer per launch: revoking a source purges prepared breaks as well as cached audio.
+        // Bundled presenter clips (Fry): build 27 ships an empty manifest, so nothing resolves and
+        // every cue takes today's path. A missing or malformed resource is also empty.
+        let bundledClips = BundledClipResolver(
+            manifest: .load(contentsOf: Bundle.main.url(forResource: BundledClipManifest.resourceName,
+                                                        withExtension: BundledClipManifest.resourceExtension)),
+            directory: Bundle.main.resourceURL ?? Bundle.main.bundleURL)
         // The 4 s closing cap applies only while talk-over is on: the same flag the coordinator
         // reads (DIAG override, else the AERODJ_OWNER_AB build default). P0 build 26, -Fry.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
-                                       talkOverEnabled: { DJTalkoverFlag.isEnabled() })
+                                       talkOverEnabled: { DJTalkoverFlag.isEnabled() }, bundledClips: bundledClips)
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
