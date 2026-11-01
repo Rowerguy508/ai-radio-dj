@@ -66,7 +66,6 @@ public struct DJCadence: Equatable, Sendable {
     /// whose required lines (opener and closing) alone exceed it is not planned. Both are
     /// reported in `DJSessionPlan.ordinaryCapReport`. Briefing breaks keep `maxBriefingBreakSeconds`.
     public var maxOrdinaryBreakSeconds: Int
-
     /// Personal updates (approved briefing content cues) one break may carry (#332). Updates
     /// past the first wait for the next break; at the end of the queue the usual outcomes apply
     /// (a durable note is deferred, a calendar event or due task is dropped, never carried).
@@ -213,6 +212,8 @@ public struct DJBreak: Equatable, Sendable {
     /// Ordinary breaks: the optional lines (continuation, then station ID or time-of-day color),
     /// in the order the planner drops them. `DJBreakPreparer` drops them in this order when the
     /// measured audio runs over `DJCadence.maxOrdinaryBreakSeconds`. Never the opener or closing.
+    /// Natural-shape breaks (lane 2) list theirs last-placed first: the extra (weather) line,
+    /// then continuation, then color, matching the planner's own drop order.
     public var optionalCueIDs: [UUID] = []
     /// The natural shape this break was planned in (lane 2). Nil: the classic planner.
     public var shape: DJBreakShape? = nil
@@ -682,6 +683,10 @@ public struct DJScriptWriter: Sendable {
         var planned = DJBreak(afterTrack: boundary, cues: cues, attributions: attributions)
         if closingTalksOver() { planned.talkOverCueID = cues.last?.id }
         planned.shape = shape
+        // #320's measured-audio trim drops these in order, the same order as the fit above: the
+        // last optional line first, so the extra (weather) line before the closing line goes first,
+        // then continuation, then color. Never the opener, a required line or the closing line.
+        planned.optionalCueIDs = zip(lines, cues).filter { $0.0.optional }.map { $0.1.id }.reversed()
         picker.record(shape)
         shapePicker = picker
         recentTemplates.record(lines.map(\.template), texts: lines.map(\.text), id: cues.first?.id)

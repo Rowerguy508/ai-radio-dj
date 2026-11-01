@@ -409,8 +409,8 @@ final class EditorialNarrationTests: XCTestCase {
             ["There's Midnight City, from M83.", "Stay right there.", "Coming up, Vienna from Billy Joel."],
             ["That's Dreams from Fleetwood Mac.", "This is Frank Ocean, Pink + White."],
         ])
-        // #332 merged in (Echo, lane 4 follow-up): one personal update per break, so the note gets
-        // the next break of its own; same house-style pools, re-pinned from the merged engine.
+        // #332: one personal update per break, so the note gets the next break of its own.
+        // Forward merge of #339 with #338: #338's break structure, lane 1's pool text (lane 4 merges keep it).
         XCTAssertEqual(showPlan.breaks.map { $0.cues.map(\.text) }, [
             ["Hey, good morning.", "One sec before the next one.",
              "You've got Design review at 9:30 AM. Bring the notes. From your calendar.",
@@ -428,6 +428,7 @@ final class EditorialNarrationTests: XCTestCase {
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[2].cues.map(\.text)), 5)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 15)
         XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 45)
+        XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[1].cues.map(\.text)), 45)
         XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[1].cues.map(\.text)), 45)
 
         // Afternoon: back-announce, station ID, continuation, closing.

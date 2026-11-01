@@ -53,36 +53,6 @@ final class DJBreakShapesTests: XCTestCase {
         return tone
     }
 
-    /// The ordinary-break pool text from lane 1 (#339 at 78da4e5), copied so this PR measures the
-    /// rules against the pools it will ship with. Replace with `.warm` once #339 is merged in.
-    private func lane1Tone() -> EditorialTone {
-        var tone = EditorialTone.warm
-        tone.backAnnounce = ["That's {title} from {artist}.", "{artist} there. {title}.", "That was {artist}, with {title}.",
-                             "{artist}. {title}.", "There's {title}, from {artist}.", "{title} there, from {artist}.",
-                             "You heard {artist}. That's {title}.", "{artist} with {title}, just now.",
-                             "Just had {artist} there. {title}.", "{title}. That's {artist}."]
-        tone.closing = ["Here's {nextArtist}, with {nextTitle}.", "Here's {nextTitle}, from {nextArtist}.",
-                        "This is {nextArtist}, {nextTitle}.", "And this one's {nextTitle}.", "Now, {nextArtist} with {nextTitle}.",
-                        "Coming up, {nextTitle} from {nextArtist}.", "Here comes {nextTitle}.", "{nextArtist} now, with {nextTitle}.",
-                        "Right now, it's {nextTitle}.", "Next up, it's {nextTitle}."]
-        tone.artistFocus = ["That was {artist}.", "{artist}, with {title}.", "A little {artist} for you.",
-                            "Some {artist} there. {title}.", "That's {artist}.", "{artist}, right there.", "One from {artist}.",
-                            "Bit of {artist} there."]
-        tone.stationID = ["{station}. Stick around.", "You're on {station}.", "This is {station}.", "You're tuned to {station}.",
-                          "{station}. Glad you're here.", "It's {station}.", "{station}, keeping you company.",
-                          "Right here on {station}."]
-        tone.atmosphere = [
-            .earlyMorning: ["Quiet start — no rush.", "Early one. Take it slow.", "Still early. Easy does it.", "The day's just getting going."],
-            .morning: ["Easy morning stretch.", "Morning's rolling along.", "Ease into it.", "Plenty of morning left."],
-            .afternoon: ["Easy afternoon stretch.", "Middle of the afternoon.", "Halfway through the day.", "Afternoon — keep it easy."],
-            .evening: ["Evening's settling in.", "Winding down now. No rush.", "Nice and easy tonight.", "Evening — take a breath."],
-            .lateNight: ["Late hours. Quiet stretch.", "Still up? Glad you're here.", "Night owls, this one's yours.", "Late one. Keep it low."],
-        ]
-        tone.continuation = ["More on the way.", "Stay right there.", "We'll keep it rolling.", "Thanks for hanging out.",
-                             "Okay. Back to it.", "Plenty more coming.", "Don't go anywhere.", "Lots more music ahead."]
-        return tone
-    }
-
     /// Repeat counts over whole sessions (greeting break included): identical lines, and shared
     /// phrases of `RecentSpokenTemplates.minPhraseWords`+ words, inside `window` breaks.
     private func repeatStats(tone: EditorialTone, hour: Int, seeds: Range<UInt64> = 0..<200)
@@ -185,9 +155,10 @@ final class DJBreakShapesTests: XCTestCase {
             }
         }
         XCTAssertLessThanOrEqual(Double(sameFirstWord) / Double(openerPairs), 0.25, "opener first-word repeats \(sameFirstWord)/\(openerPairs)")
-        // Today's closing pool has five lines, three of them "Here's", and no line may repeat inside
-        // six breaks (the hard rule), so the soft "Here's" rule gives way in some windows (measured
-        // 406/2400 = 16.9%). Lane 1's ten-line pool meets it outright: `testLane1PoolsMeetTheSoftRules`.
+        // Bound set for the pre-#339 five-line closing pool (406/2400 = 16.9%), where the hard
+        // identical-in-6 rule beat the soft "Here's" rule. Since #339 `.warm` is lane 1's ten-line
+        // pool and measures 0/2400 here (forward merge, Linux). Left at 20% on purpose; tightening
+        // it is a separate call (see `testLane1PoolsMeetTheSoftRules`, which holds 10%).
         XCTAssertLessThanOrEqual(Double(hereViolations) / Double(windows), 0.20, "\"Here's\" more than once in 3 breaks: \(hereViolations)/\(windows)")
     }
 
@@ -257,9 +228,9 @@ final class DJBreakShapesTests: XCTestCase {
     }
 
     /// Across every pool, the whole session (greeting break included), every day part: no identical
-    /// line and no shared 3+ word phrase inside the window, with today's pools and lane 1's.
+    /// line and no shared 3+ word phrase inside the window, with the shipped pools (lane 1's, #339).
     func testNoIdenticalLineOrSharedPhraseInsideTheWindowAcrossAllPools() {
-        for (name, tone) in Self.personaTones + [("lane1", lane1Tone())] {
+        for (name, tone) in Self.personaTones {
             for hour in [6, 15, 23] {
                 let r = repeatStats(tone: tone, hour: hour, seeds: 0..<100)
                 print("repeat-stats \(name) hour \(hour): \(r)")
@@ -270,10 +241,10 @@ final class DJBreakShapesTests: XCTestCase {
         }
     }
 
-    /// The soft rules on lane 1's pools: opener first word repeats at most 1 in 4 (the plan's bar),
+    /// The soft rules on lane 1's pools (`.warm` since #339): opener first word repeats at most 1 in 4 (the plan's bar),
     /// and "Here's" more than once in 3 breaks in at most 1 window in 10.
     func testLane1PoolsMeetTheSoftRules() {
-        let r = repeatStats(tone: lane1Tone(), hour: 10)
+        let r = repeatStats(tone: .warm, hour: 10)
         print("soft-rules lane1: \(r)")
         XCTAssertLessThanOrEqual(Double(r.sameFirstWord) / Double(r.openerPairs), 0.25, "\(r)")
         XCTAssertLessThanOrEqual(Double(r.here) / Double(r.windows), 0.10, "\(r)")
