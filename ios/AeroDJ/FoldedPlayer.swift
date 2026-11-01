@@ -563,7 +563,7 @@ private struct FoldedOnAirPill: View {
 
     var body: some View {
         TimelineView(.periodic(from: startedAt, by: 1)) { context in
-            let elapsed = max(0, context.date.timeIntervalSince(startedAt))
+            let elapsed = Self.elapsed(at: context.date, since: startedAt)
             HStack(spacing: 8) {
                 Circle()
                     .fill(FoldedStyle.onAirAmber)
@@ -585,6 +585,16 @@ private struct FoldedOnAirPill: View {
             .accessibilityLabel("On Air, \(PlaybackTimeFormat.label(elapsed))")
         }
         .accessibilityIdentifier("dj.onAir")
+    }
+
+    /// Seconds on air. Debug only: the `onAir` Studio capture freezes it
+    /// (`StudioCaptureOnAir.frozenElapsed`) so `closed-ax5-onair` is the same every run.
+    @MainActor
+    private static func elapsed(at now: Date, since startedAt: Date) -> TimeInterval {
+        #if DEBUG
+        if let frozen = StudioCaptureOnAir.frozenElapsed { return frozen }
+        #endif
+        return max(0, now.timeIntervalSince(startedAt))
     }
 }
 
