@@ -96,6 +96,36 @@ final class SpokenScriptLintTests: XCTestCase {
         }
     }
 
+    /// The closing line talks up the intro, so its template is one sentence of seven words or fewer.
+    func testClosingLinesAreSevenWordsOrFewer() {
+        for line in EditorialTone.warm.closing {
+            XCTAssertLessThanOrEqual(line.split(separator: " ").count, 7, line)
+            XCTAssertEqual(line.filter { ".?".contains($0) }.count, 1, "one sentence: \(line)")
+        }
+    }
+
+    /// Stock phrases say themselves once: a greeting, station ID and atmosphere line can share a break.
+    func testStockPhrasesAppearInOnePoolLineAtMost() {
+        let lines = EditorialTone.warm.allLines.map { $0.lowercased() }
+        for phrase in ["glad you're here", "ease into", "easy does it", "good to have you"] {
+            XCTAssertLessThanOrEqual(lines.filter { $0.contains(phrase) }.count, 1, phrase)
+        }
+    }
+
+    /// Day-part lines are mood only: nothing that is false late in the day part or reads as a clock time.
+    func testDayPartLinesMakeNoClockClaims() {
+        let tone = EditorialTone.warm
+        let dayPartLines = DayPart.allCases.flatMap { tone.atmosphere[$0, default: []] + tone.greetings[$0, default: []] }
+        for line in dayPartLines {
+            let lower = line.lowercased()
+            for claim in ["halfway", "left", "o'clock", "middle of", "almost", "nearly", "midday", "noon", "midnight"] {
+                // Whole words only: "afternoon" is a day part, "noon" is a clock claim.
+                XCTAssertNil(lower.range(of: "\\b\(claim)\\b", options: .regularExpression), "\(claim): \(line)")
+            }
+            XCTAssertNil(line.rangeOfCharacter(from: .decimalDigits), line)
+        }
+    }
+
     func testPoolsAreDeepEnoughToAvoidQuickRepeats() {
         let tone = EditorialTone.warm
         for (name, lines) in [("backAnnounce", tone.backAnnounce), ("closing", tone.closing), ("artistFocus", tone.artistFocus),
