@@ -52,6 +52,10 @@ public struct BoundaryInterpreter: Sendable {
     /// or after its end was reported. Read once at the boundary by the song-end hold decision.
     public var interruptionBeganNearEnd: Bool { detector.interruptionBeganNearEnd }
 
+    /// #149 (-Atlas): MusicKit cleared, changed or rewound the finished entry after the latest
+    /// interruption began. The only evidence a never-ended interruption may be released on.
+    public var queueFinishedSinceInterruption: Bool { detector.queueFinishedSinceInterruption }
+
     /// True once after the detector refused a change or clear because the entry never
     /// progressed (build 9 P0). The caller must surface a failed start and must not advance.
     public mutating func takeNoProgressEnd() -> Bool {
