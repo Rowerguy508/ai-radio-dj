@@ -13,6 +13,13 @@ private struct TimedVoice: VoiceProvider {
     }
 }
 
+/// A different extra line at every boundary (as weather would read), so anti-repeat keeps it.
+private struct WeatherExtra: DJBreakExtraLineSource {
+    func extraLine(after previous: DJTrack, before next: DJTrack, shape: DJBreakShape) -> DJExtraLine? {
+        DJExtraLine(text: "Rain later by \(previous.id).", attribution: .presenter)
+    }
+}
+
 private final class Events: @unchecked Sendable {
     let done: XCTestExpectation
     init(_ done: XCTestExpectation) { self.done = done }
@@ -140,5 +147,61 @@ final class RenderedOrdinaryCapTests: XCTestCase {
             XCTAssertFalse(positions.contains(b.cues.count - 1), "never the closing line")
             XCTAssertEqual(positions, positions.sorted(by: >), "continuation (later) drops first")
         }
+    }
+
+    // MARK: Natural shapes (#344) in the #339 forward merge
+
+    private func naturalPlan(seed: UInt64) -> [DJBreak] {
+        var w = DJScriptWriter(cadence: DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed,
+                               shapes: DJBreakShapeConfig(weights: [.classic: 1]))
+        w.extraLineSource = WeatherExtra()
+        let tracks = (0..<40).map { DJTrack(id: "t\($0)", title: "T\($0)", artist: "A\($0)", origin: .catalog) }
+        return w.plan(tracks: tracks, briefing: nil, hour: 15).breaks.filter { $0.shape != nil }
+    }
+
+    /// Natural breaks list their optional lines last-placed first, so the extra (weather) line,
+    /// which sits just before the closing line, is the first one rendered trimming drops.
+    func testNaturalBreaksListTheExtraLineFirstAndNeverARequiredLine() {
+        var withExtra = 0
+        for seed in UInt64(0)..<40 {
+            for b in naturalPlan(seed: seed) {
+                let index = Dictionary(uniqueKeysWithValues: b.cues.enumerated().map { ($1.id, $0) })
+                let positions = b.optionalCueIDs.compactMap { index[$0] }
+                XCTAssertEqual(positions.count, b.optionalCueIDs.count, "every optional id is a cue of the break")
+                XCTAssertEqual(positions, positions.sorted(by: >), "last-placed optional line drops first")
+                if let closing = b.talkOverCueID { XCTAssertFalse(b.optionalCueIDs.contains(closing), "never the closing line") }
+                XCTAssertFalse(b.optionalCueIDs.contains(b.cues[0].id), "never the classic opener")
+                let optionalTexts = b.cues.filter { b.optionalCueIDs.contains($0.id) }.map(\.text)
+                for text in optionalTexts {
+                    XCTAssertTrue(text.hasPrefix("Rain later") || EditorialTone.warm.continuation.contains(text)
+                                  || EditorialTone.warm.atmosphere.values.contains { $0.contains(text) }, "optional: \(text)")
+                }
+                if let extra = b.cues.first(where: { $0.text.hasPrefix("Rain later") }) {
+                    withExtra += 1
+                    XCTAssertEqual(b.optionalCueIDs.first, extra.id, "the extra line drops first")
+                }
+            }
+        }
+        XCTAssertGreaterThan(withExtra, 0, "some natural breaks carry the extra line")
+    }
+
+    /// End to end: a planned natural break over 12 s of measured audio loses the extra line, and
+    /// only it, while the other optional line, the opener and the closing line all stay.
+    func testRenderedTrimmingDropsTheNaturalBreaksExtraLineFirst() async throws {
+        var planned: DJBreak?
+        search: for seed in UInt64(0)..<40 {
+            for b in naturalPlan(seed: seed) where b.cues.count == 4 && b.optionalCueIDs.count == 2 {
+                if b.talkOverCueID == b.cues[3].id, b.cues[2].text.hasPrefix("Rain later") { planned = b; break search }
+            }
+        }
+        let b = try XCTUnwrap(planned, "a classic natural break with one optional line plus the extra")
+        let (opener, other, extra, closing) = (b.cues[0], b.cues[1], b.cues[2], b.cues[3])
+        // 3 + 2 + 4 + 3 + 0.3 s pause = 12.3 s, over 12; without the extra 8.3 s.
+        let outcome = await prepare(b, [opener.text: 3, other.text: 2, extra.text: 4, closing.text: 3])
+        guard case .ready(let ready) = outcome else { return XCTFail("must trim, not skip: \(outcome)") }
+        XCTAssertEqual(ready.trimmedCueIDs, [extra.id])
+        XCTAssertEqual(ready.cues.map(\.id), [opener.id, other.id, closing.id])
+        XCTAssertEqual(ready.talkOverCueID, closing.id)
+        XCTAssertEqual(ready.measuredSeconds, 8, accuracy: 0.001)
     }
 }

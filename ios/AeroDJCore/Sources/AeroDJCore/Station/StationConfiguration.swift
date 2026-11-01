@@ -123,7 +123,8 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
             maxBriefingBreakSeconds: base.maxBriefingBreakSeconds,
             allowsBackToBack: everySong,
             maxClosingSeconds: base.maxClosingSeconds,
-            maxOrdinaryBreakSeconds: base.maxOrdinaryBreakSeconds
+            maxOrdinaryBreakSeconds: base.maxOrdinaryBreakSeconds,
+            maxPersonalUpdatesPerBreak: base.maxPersonalUpdatesPerBreak
         )
     }
 
@@ -259,6 +260,8 @@ public enum BriefingSection: String, Codable, Sendable, CaseIterable, Hashable {
 }
 
 /// A local time-of-day window, in minutes after midnight. May wrap past midnight.
+/// Since #332 it does not gate personal updates (they may air all day); it is kept so saved
+/// stations still decode and round-trip.
 public struct BriefingWindow: Codable, Equatable, Sendable {
     public var startMinute: Int
     public var durationMinutes: Int
