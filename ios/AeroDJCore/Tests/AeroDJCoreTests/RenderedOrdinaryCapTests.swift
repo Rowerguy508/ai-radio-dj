@@ -149,6 +149,37 @@ final class RenderedOrdinaryCapTests: XCTestCase {
         }
     }
 
+    // MARK: Classic planner and rendered cap agree (#339 follow-up, -Fry)
+
+    /// Opener `openerWords` words, closing 10 words (4 s, talk-over), continuation "Okay." (1 s).
+    private func capTone(openerWords: Int) -> EditorialTone {
+        let opener = "{title} " + Array(repeating: "la", count: openerWords - 1).joined(separator: " ") + "."
+        return EditorialTone(backAnnounce: [opener], closing: ["{nextTitle} " + Array(repeating: "la", count: 9).joined(separator: " ") + "."],
+                             artistFocus: [opener], stationID: [], atmosphere: [:], continuation: ["Okay."],
+                             briefingLead: ["Quick one."], briefingOutro: ["Back to it."], greetings: [:])
+    }
+
+    /// A classic break the planner admits at the cap renders with nothing trimmed and is never
+    /// skipped when the audio runs exactly as estimated. Before the fix, 8 s + 4 s planned as
+    /// "12 s" and rendered as 12.3 s, so it was skipped after rendering.
+    func testAClassicBreakPlannedAtTheCapIsNeverSkippedAtRenderWhenAudioMatchesTheEstimate() async {
+        let tracks = (0..<12).map { DJTrack(id: "t\($0)", title: "T\($0)", artist: "A\($0)", origin: .catalog) }
+        var rendered = 0
+        for words in [17, 18, 20] {   // 7 s, 8 s, 8 s openers with a 4 s closing line
+            var w = DJScriptWriter(cadence: DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 3, tone: capTone(openerWords: words))
+            for b in w.plan(tracks: tracks, briefing: nil, hour: 15).breaks.prefix(2) {
+                XCTAssertNotNil(b.talkOverCueID)
+                let seconds = Dictionary(b.cues.map { ($0.text, $0.plannedSeconds) }, uniquingKeysWith: { a, _ in a })
+                let outcome = await prepare(b, seconds)
+                guard case .ready(let ready) = outcome else { return XCTFail("planned \(b.estimatedSeconds) s skipped at render: \(outcome)") }
+                XCTAssertEqual(ready.trimmedCueIDs, [], "nothing to trim when the audio matches the plan")
+                XCTAssertLessThanOrEqual(ready.measuredSeconds + PreparedDJBreak.talkOverGapSeconds, 12)
+                rendered += 1
+            }
+        }
+        XCTAssertGreaterThan(rendered, 0, "the 7 s opener breaks plan and render")
+    }
+
     // MARK: Natural shapes (#344) in the #339 forward merge
 
     private func naturalPlan(seed: UInt64) -> [DJBreak] {

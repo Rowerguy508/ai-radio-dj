@@ -14,7 +14,8 @@ import Foundation
 //   - Cross-pool anti-repeat: a template used in the last `recentBreakWindow` breaks is not
 //     picked again while another fits; an opener never starts with the previous break's opener
 //     word; at most one line starting "Here's" in any `hereWindow` consecutive breaks.
-//   - Every ordinary break fits `maxBreakSeconds` (12 s, closing line included) and the main
+//   - Every ordinary break fits `DJCadence.maxOrdinaryBreakSeconds` (12 s, closing line and the
+//     0.3 s pause before it included; the station's cadence, as classic breaks) and the main
 //     segment cap, at the word-rate estimate, with at most `maxCuesPerBreak` (4) cues, which is
 //     the proxy's `MAX_CLOUD_RENDERS_PER_BREAK`.
 //   - Templates add no facts: placeholders are filled only from track metadata or the station name.
@@ -43,7 +44,9 @@ public struct DJBreakShapeConfig: Equatable, Sendable {
     public var recentBreakWindow: Int
     /// At most one line starting "Here's" in this many consecutive breaks.
     public var hereWindow: Int
-    /// Whole-break cap at the word-rate estimate, closing line included (the 12 s cap, #320).
+    /// Not the planner's cap any more: natural breaks cap at the station cadence's
+    /// `DJCadence.maxOrdinaryBreakSeconds`, one knob for classic and natural breaks (#339
+    /// follow-up). Kept, defaulting to the same 12 s, so existing callers still build.
     public var maxBreakSeconds: Int
     /// Cues per ordinary break; matches the proxy's `MAX_CLOUD_RENDERS_PER_BREAK` (4).
     public var maxCuesPerBreak: Int

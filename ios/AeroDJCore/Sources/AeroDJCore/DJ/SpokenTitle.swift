@@ -3,23 +3,27 @@ import Foundation
 /// Light cleanup of track metadata before the DJ says it. MusicKit titles often carry catalog
 /// suffixes a radio host would never read aloud: "(Remastered 2011)", " - 2009 Remaster",
 /// "[Explicit]", "(Deluxe Edition)". Those are dropped. A featured artist is kept and spoken
-/// naturally: "(feat. X)" becomes "featuring X". Nothing is added: the result only ever
+/// naturally: "(feat. X)" becomes "featuring X"; "(with X)" is left as written, since it is not
+/// always an artist credit ("(with Strings)"). Nothing is added: the result only ever
 /// contains words that were already in the metadata (narration reliability, not a feature).
 /// If cleanup would leave nothing, the original text is spoken unchanged.
 public enum SpokenTitle {
-    /// Catalog-only tags. A bracketed or dash suffix is dropped when it starts with one of these.
-    /// "Live", "Remix", "Acoustic" and similar are kept: they say which recording it is.
+    /// Catalog-only tags. A bracketed or dash suffix is dropped only when it is exactly one of
+    /// these, ignoring years and ordinals, optionally followed by "version" ("Clean Version").
+    /// Anything mentioning remix, mix, live, acoustic or demo is always kept: it says which
+    /// recording it is ("Clean Bandit Remix", "Live 2011 Remaster").
     static let catalogTags = [
-        "remaster", "remastered", "explicit", "clean", "deluxe", "bonus track", "bonus",
+        "remaster", "remastered", "explicit", "clean", "deluxe", "deluxe edition", "bonus track", "bonus",
         "album version", "single version", "lp version", "mono", "stereo", "anniversary edition",
-        "expanded edition", "special edition", "edition", "digitally remastered", "remasterizado",
+        "expanded edition", "special edition", "edition", "digitally remastered", "digital remaster",
+        "super deluxe edition", "remasterizado",
     ]
 
     /// The title as it should be spoken.
     public static func clean(_ raw: String) -> String {
         let original = collapse(raw)
         var text = original
-        text = replace(text, #"\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring|with)\s+([^\)\]]+?)\s*[\)\]]"#) { " featuring " + $0[0] }
+        text = replace(text, #"\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+([^\)\]]+?)\s*[\)\]]"#) { " featuring " + $0[0] }
         text = replace(text, #"\s*[\(\[]([^\)\]]*)[\)\]]"#) { isCatalogTag($0[0]) ? "" : nil }
         text = replace(text, #"\s+[-–—]\s+([^-–—]+)$"#) { isCatalogTag($0[0]) ? "" : nil }
         text = replace(text, #"\s+(?:feat\.|ft\.)\s+"#) { _ in " featuring " }
@@ -34,14 +38,19 @@ public enum SpokenTitle {
         return text.isEmpty ? original : text
     }
 
+    /// Words that name a recording, never a catalog tag (matched anywhere, case-insensitive).
+    static let recordingWords = ["remix", "mix", "live", "acoustic", "demo"]
+
     static func isCatalogTag(_ inner: String) -> Bool {
+        let lower = inner.lowercased()
+        if recordingWords.contains(where: { lower.contains($0) }) { return false }
         // Years and numbers around the tag ("2011 Remaster", "Remastered 2009", "40th Anniversary Edition").
-        let words = inner.lowercased()
+        let words = lower
             .replacingOccurrences(of: #"\b\d+(st|nd|rd|th)?\b"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #"[^a-z ]"#, with: " ", options: .regularExpression)
             .split(separator: " ").joined(separator: " ")
         guard !words.isEmpty else { return false }
-        return catalogTags.contains { words == $0 || words.hasPrefix($0 + " ") || words.hasSuffix(" " + $0) }
+        return catalogTags.contains { words == $0 || words == $0 + " version" }
     }
 
     private static func collapse(_ text: String) -> String {

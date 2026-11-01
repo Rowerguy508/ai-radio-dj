@@ -223,6 +223,49 @@ final class SpokenScriptLintTests: XCTestCase {
         XCTAssertEqual(SpokenTitle.cleanArtist("Simon & Garfunkel"), "Simon & Garfunkel")
     }
 
+    /// #339 follow-up (-Fry): tags match exactly, not by prefix or suffix, and anything naming the
+    /// recording (remix, mix, live, acoustic, demo) is kept. "(with X)" is not always a credit.
+    func testSpokenTitleKeepsRecordingVersionsThatStartOrEndLikeATag() {
+        let kept: [String] = [
+            "Rather Be (Clean Bandit Remix)",   // starts with "clean"
+            "Rather Be - Clean Bandit Remix",
+            "Song (Mono Remix)",                 // starts with "mono"
+            "Song (Stereo Mix)",                 // starts with "stereo"
+            "Song (Live 2011 Remaster)",         // ends with "remaster"
+            "Song - Live 2011 Remaster",
+            "Song (Live Edition)",               // ends with "edition"
+            "Song (Acoustic Version)",
+            "Song (Demo Remastered)",
+            "Song (LIVE)",
+            "Song (with Strings)",               // not an artist credit
+        ]
+        for raw in kept { XCTAssertEqual(SpokenTitle.clean(raw), raw, raw) }
+    }
+
+    func testSpokenTitleStillDropsExactTagsWithYearsOrVersion() {
+        let cases: [(String, String)] = [
+            ("Midnight City (Remastered 2011)", "Midnight City"),
+            ("Let It Be - Remastered 2009", "Let It Be"),
+            ("Dreams - 2004 Remaster", "Dreams"),
+            ("Help! (2009 Digital Remaster)", "Help!"),
+            ("Song (Remastered Version)", "Song"),
+            ("Song (Clean Version)", "Song"),
+            ("Song (Mono)", "Song"),
+            ("Song [Stereo]", "Song"),
+            ("Rumours (Super Deluxe Edition)", "Rumours"),
+            ("Song (Bonus Track Version)", "Song"),
+            ("Sunflower (feat. Swae Lee)", "Sunflower featuring Swae Lee"),
+            ("Sunflower (Featuring Swae Lee)", "Sunflower featuring Swae Lee"),
+            ("Sunflower (ft. Swae Lee) [Explicit]", "Sunflower featuring Swae Lee"),
+            ("Sunflower ft. Swae Lee - Remastered", "Sunflower featuring Swae Lee"),
+        ]
+        for (raw, spoken) in cases { XCTAssertEqual(SpokenTitle.clean(raw), spoken, raw) }
+        // The exact-match rule is not a prefix rule: a tag followed by other words stays.
+        XCTAssertFalse(SpokenTitle.isCatalogTag("Clean Bandit Remix"))
+        XCTAssertFalse(SpokenTitle.isCatalogTag("Explicit Content Warning"))
+        XCTAssertTrue(SpokenTitle.isCatalogTag("40th Anniversary Edition"))
+    }
+
     func testTemplateFillSpeaksTheCleanTitleAndStillRefusesMissingValues() {
         XCTAssertEqual(TemplatePool.fill("That's {title} from {artist}.",
                                          ["title": "Midnight City (Remastered 2011)", "artist": "M83"]),

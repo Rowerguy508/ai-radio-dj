@@ -423,8 +423,14 @@ public struct DJScriptWriter: Sendable {
                 }
                 let closingInMain = closingFits ? 0 : estimate(closingLine)
                 func main() -> Double { (cues + extras).reduce(0) { $0 + $1.plannedSeconds } + closingInMain }
-                // The whole break, closing line included, counts toward the ordinary cap.
-                func total() -> Double { (cues + extras).reduce(0) { $0 + $1.plannedSeconds } + estimate(closingLine) }
+                // The whole break, closing line included, counts toward the ordinary cap, plus the
+                // `talkOverGapSeconds` pause before a talk-over closing line that follows other talk,
+                // exactly as the rendered cap counts it (#320) and #344's natural planner does.
+                let gapBeforeClosing = closingLine != nil && closingFits ? PreparedDJBreak.talkOverGapSeconds : 0
+                func total() -> Double {
+                    let spoken = cues + extras
+                    return spoken.reduce(0) { $0 + $1.plannedSeconds } + estimate(closingLine) + (spoken.isEmpty ? 0 : gapBeforeClosing)
+                }
                 var trimmed = 0
                 while !extras.isEmpty, main() > Double(cadence.maxTransitionSeconds)
                         || total() > Double(cadence.maxOrdinaryBreakSeconds) {
@@ -447,7 +453,7 @@ public struct DJScriptWriter: Sendable {
             planned.talkOverCueID = talkOverCueID
             if !isBriefing { planned.optionalCueIDs = optionalCueIDs }
             if !isBriefing, planned.mainSeconds > Double(cadence.maxTransitionSeconds)
-                || planned.estimatedSeconds > Double(cadence.maxOrdinaryBreakSeconds) {
+                || Self.wholeSeconds(planned) > Double(cadence.maxOrdinaryBreakSeconds) {
                 capReport.trimmedOptionalLines[boundary] = nil
                 capReport.skippedOverCap.append(boundary)
                 continue
@@ -473,6 +479,15 @@ public struct DJScriptWriter: Sendable {
     }
 
     /// Notes and follow-ups can air in a later show. Calendar events and due tasks cannot.
+    /// A planned ordinary break's whole length for the ordinary cap, on the same rule as the
+    /// rendered cap (`DJBreakPreparer.BreakCap.spokenSeconds`): every line plus the
+    /// `talkOverGapSeconds` pause before a talk-over closing line that follows other talk.
+    static func wholeSeconds(_ djBreak: DJBreak) -> Double {
+        let gap = djBreak.cues.count > 1 && djBreak.talkOverCueID != nil && djBreak.cues.last?.id == djBreak.talkOverCueID
+            ? PreparedDJBreak.talkOverGapSeconds : 0
+        return djBreak.estimatedSeconds + gap
+    }
+
     static func carriesToLaterShow(_ cue: NarrationCue) -> Bool {
         guard cue.isContent, !EditorialCarryForward.isTimeSensitive(cue) else { return false }
         return cue.kind == .note || cue.kind == .followUp
@@ -664,7 +679,7 @@ public struct DJScriptWriter: Sendable {
         func total() -> Double { spoken() + gap() }
         func main() -> Double { spoken() - (closingTalksOver() ? seconds(lines[lines.count - 1]) : 0) }
         func overCap() -> Bool {
-            total() > Double(config.maxBreakSeconds) || main() > Double(cadence.maxTransitionSeconds)
+            total() > Double(cadence.maxOrdinaryBreakSeconds) || main() > Double(cadence.maxTransitionSeconds)
                 || lines.count > config.maxCuesPerBreak
         }
         while overCap(), let drop = lines.indices.reversed().first(where: { lines[$0].optional }) {

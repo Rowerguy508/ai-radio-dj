@@ -165,7 +165,8 @@ final class DJBreakShapesTests: XCTestCase {
             for b in naturalBreaks(seed: seed, tracks: djTracks(30, origin: .catalog), extra: VaryingExtra()) {
                 // #320: the 0.3 s pause before a closing line that follows other talk counts too.
                 let gap = b.cues.count > 1 && b.talkOverCueID == b.cues.last?.id ? PreparedDJBreak.talkOverGapSeconds : 0
-                XCTAssertLessThanOrEqual(b.estimatedSeconds + gap, Double(config.maxBreakSeconds))
+                // The cap is the cadence's ordinary cap (#339 follow-up), not the shape config's.
+                XCTAssertLessThanOrEqual(b.estimatedSeconds + gap, Double(dense.maxOrdinaryBreakSeconds))
                 if b.cues.contains(where: { $0.text.hasPrefix("Bit of rain") }) { withExtra += 1 }
                 XCTAssertLessThanOrEqual(b.mainSeconds, Double(DJCadence().maxTransitionSeconds))
                 XCTAssertLessThanOrEqual(b.cues.count, config.maxCuesPerBreak)
@@ -187,17 +188,43 @@ final class DJBreakShapesTests: XCTestCase {
         tone.closing = ["{nextTitle} " + six]
         let tracks = (0..<30).map { DJTrack(id: "t\($0)", title: "x", artist: "y", origin: .catalog) }
         XCTAssertEqual(DefaultBriefingPlanner.estimatedSpokenSeconds(for: "x " + six), 6)
-        let classicOnly = DJBreakShapeConfig(weights: [.classic: 1], maxBreakSeconds: 12)
+        // #339 follow-up: natural breaks cap at the cadence's `maxOrdinaryBreakSeconds` (12 s
+        // default), so the "fits at 13" control raises that cap instead of the shape config's.
+        let classicOnly = DJBreakShapeConfig(weights: [.classic: 1])
         var writer = DJScriptWriter(cadence: DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1, maxTransitionSeconds: 20,
                                                        maxClosingSeconds: 8),
                                     seed: 4, tone: tone, shapes: classicOnly)
         let natural = writer.plan(tracks: tracks, briefing: nil, hour: 10).breaks.filter { $0.shape != nil }
         XCTAssertTrue(natural.isEmpty, "6 s + 0.3 s pause + 6 s is over 12 s: music only, got \(natural.map { $0.cues.map(\.text) })")
-        let roomier = DJBreakShapeConfig(weights: [.classic: 1], maxBreakSeconds: 13)
         var writer2 = DJScriptWriter(cadence: DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1, maxTransitionSeconds: 20,
-                                                        maxClosingSeconds: 8),
-                                     seed: 4, tone: tone, shapes: roomier)
+                                                        maxClosingSeconds: 8, maxOrdinaryBreakSeconds: 13),
+                                     seed: 4, tone: tone, shapes: classicOnly)
         XCTAssertFalse(writer2.plan(tracks: tracks, briefing: nil, hour: 10).breaks.filter { $0.shape != nil }.isEmpty)
+    }
+
+    /// #339 follow-up (-Fry): a station whose cadence sets a lower ordinary cap gets natural breaks
+    /// within it, pause included. The shape config's own `maxBreakSeconds` (12) is not the cap.
+    func testAStationWithALowerOrdinaryCapPlansNaturalBreaksWithinIt() {
+        let tracks = djTracks(30, origin: .catalog)
+        func wholeSeconds(_ b: DJBreak) -> Double {
+            b.estimatedSeconds + (b.cues.count > 1 && b.talkOverCueID == b.cues.last?.id ? PreparedDJBreak.talkOverGapSeconds : 0)
+        }
+        var lowCadence = DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1, maxOrdinaryBreakSeconds: 7)
+        #if DEBUG
+        // Through the station's effective cadence, as the app builds it.
+        lowCadence = TestStation.configuration.cadence(base: lowCadence)
+        XCTAssertEqual(lowCadence.maxOrdinaryBreakSeconds, 7)
+        #endif
+        var planned = 0, overSevenAtDefault = 0
+        for seed in UInt64(0)..<60 {
+            for b in naturalBreaks(seed: seed, tracks: tracks, cadence: lowCadence, extra: VaryingExtra()) {
+                planned += 1
+                XCTAssertLessThanOrEqual(wholeSeconds(b), 7, "\(b.cues.map(\.text))")
+            }
+            overSevenAtDefault += naturalBreaks(seed: seed, tracks: tracks, extra: VaryingExtra()).filter { wholeSeconds($0) > 7 }.count
+        }
+        XCTAssertGreaterThan(planned, 0, "short natural breaks still air under a 7 s cap")
+        XCTAssertGreaterThan(overSevenAtDefault, 0, "control: at the default 12 s some natural breaks run past 7 s")
     }
 
     /// Echo's #339 note: "Glad you're here" sits in three pools. A line shared by pools must not
