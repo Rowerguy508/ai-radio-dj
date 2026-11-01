@@ -249,30 +249,47 @@ final class SpokenScriptLintTests: XCTestCase {
         }
     }
 
+    /// With and without a briefing: the typed name and personal-update text never ride in a
+    /// `.presenter` segment, so `mayLeaveDevice` can keep both on-device.
     func testATypedStationNameIsNeverAPresenterLine() {
         let typed = "Kitchen Radio"
+        let personal = "You've got Grocery list. From your notes."
         let tracks = djTracks(24)
+        let note = NarrationCue(id: UUID(), order: 1, group: 0, kind: .note, text: personal,
+                                estimatedSeconds: 4, maxSeconds: 12, sourceItemID: UUID(), source: .obsidian, provenance: "n:1")
+        let briefings: [NarrationHandoff?] = [nil, NarrationHandoff(cues: [note], maxSpokenSeconds: 150, experienceSeconds: 300)]
         for (name, tone) in Self.tones {
-            var sawName = false
+            var sawName = false, sawBriefing = false
             for seed in UInt64(1)...40 {
                 for hour in [5, 9, 14, 19, 23] {
-                    var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed,
-                                                stationName: typed, tone: tone)
-                    for djBreak in writer.plan(tracks: tracks, briefing: nil, hour: hour).breaks {
-                        for cue in djBreak.cues {
-                            let attribution = djBreak.attributions[cue.id]
-                            if cue.text.contains(typed) {
-                                sawName = true
-                                XCTAssertEqual(attribution, .stationName, "\(name) seed \(seed): \(cue.text)")
-                            }
-                            if attribution == .presenter {
-                                XCTAssertFalse(cue.text.contains(typed), "\(name): typed name in a presenter line")
+                    for briefing in briefings {
+                        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed,
+                                                    stationName: typed, tone: tone)
+                        for djBreak in writer.plan(tracks: tracks, briefing: briefing, hour: hour).breaks {
+                            for cue in djBreak.cues {
+                                let attribution = djBreak.attributions[cue.id]
+                                let context = "\(name) seed \(seed) hour \(hour) briefing \(briefing != nil): \(cue.text)"
+                                if cue.text.contains(typed) {
+                                    sawName = true
+                                    XCTAssertEqual(attribution, .stationName, context)
+                                }
+                                if cue.text == personal {
+                                    sawBriefing = true
+                                    guard case .personalContext = attribution else {
+                                        return XCTFail("personal update not attributed .personalContext: \(context)")
+                                    }
+                                }
+                                if attribution == .presenter {
+                                    XCTAssertFalse(cue.text.contains(typed), "typed name in a presenter line: \(context)")
+                                    XCTAssertFalse(cue.text.contains("Grocery list"), "personal text in a presenter line: \(context)")
+                                }
                             }
                         }
                     }
                 }
             }
             XCTAssertTrue(sawName, "\(name): station IDs still air with the typed name")
+            XCTAssertTrue(sawBriefing, "\(name): the briefing case actually placed the personal update")
         }
     }
 
