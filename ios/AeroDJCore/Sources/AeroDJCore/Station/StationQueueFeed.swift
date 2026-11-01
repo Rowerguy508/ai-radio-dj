@@ -183,6 +183,9 @@ public final class StationQueueFeed<Item: Sendable> {
     private var observing = false
     /// #204: the last hand-off, until its start reports. A failed start puts it back.
     private var pendingHandOff: PendingHandOff?
+    /// The trigger of the hand-off just returned and not yet finished (#332, -Fry): lets the player
+    /// tell a station switch at a boundary (`.songBoundary`) from a same-station `.refill`.
+    public var pendingHandOffTrigger: StationQueueTrigger? { pendingHandOff?.trigger }
 
     private struct PendingHandOff {
         let trigger: StationQueueTrigger

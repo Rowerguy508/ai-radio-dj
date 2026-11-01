@@ -391,7 +391,9 @@ final class RadioStyleBreakTests: XCTestCase {
         func outcome(_ b: DJBreak) async -> DJBreakOutcome {
             let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: WordVoice(secondsPerWord: 0.6), voice: djVoice)],
                                          budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
-            let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", talkOverEnabled: { true })
+            // The split caps alone: the whole-break 12 s cap is lifted here (RenderedOrdinaryCapTests, #320).
+            let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: Self.splitCapsOnly,
+                                           talkOverEnabled: { true })
             let done = AsyncStream<Void>.makeStream()
             await preparer.observe { event in
                 switch event {
@@ -424,9 +426,14 @@ final class RadioStyleBreakTests: XCTestCase {
         }
     }
 
-    private func outcome(_ b: DJBreak, routes: [VoiceRoute], talkOver: Bool = true, onDeviceOnly: Bool = false) async -> DJBreakOutcome {
+    /// 15 s main + 4 s closing, with the whole-break 12 s ordinary cap (#320) lifted, for tests of
+    /// the split caps themselves. The 12 s measured cap is covered in RenderedOrdinaryCapTests. -Echo
+    static let splitCapsOnly = DJCadence(maxOrdinaryBreakSeconds: 60)
+
+    private func outcome(_ b: DJBreak, routes: [VoiceRoute], talkOver: Bool = true, onDeviceOnly: Bool = false,
+                         cadence: DJCadence = DJCadence()) async -> DJBreakOutcome {
         let renderer = VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
-        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", talkOverEnabled: { talkOver })
+        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: cadence, talkOverEnabled: { talkOver })
         let done = AsyncStream<Void>.makeStream()
         await preparer.observe { event in
             switch event {
@@ -459,18 +466,18 @@ final class RadioStyleBreakTests: XCTestCase {
         // that no longer skips the break; the line loses its talk-over marker and counts toward
         // the 15 s main budget (10 + 5 = 15 fits).
         let long = ScriptedVoice(seconds: [main.text: 10, closing.text: 5])
-        guard case .ready(let closingOver) = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(long)]) else {
+        guard case .ready(let closingOver) = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(long)], cadence: Self.splitCapsOnly) else {
             return XCTFail("a 5 s closing line is counted in the 15 s budget, not a skip")
         }
         XCTAssertNil(closingOver.talkOverCueID, "over 4 s: no talk-over marker")
         XCTAssertNil(closingOver.talkOverStartSeconds)
         // 11 s main + 5 s closing: 16 s counted together, over 15: still skipped.
         let longOver = ScriptedVoice(seconds: [main.text: 11, closing.text: 5])
-        let pooledOver = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(longOver)])
+        let pooledOver = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(longOver)], cadence: Self.splitCapsOnly)
         XCTAssertEqual(pooledOver, .skipped(.overBreakBudget), "a long closing line counts in the 15 s budget")
         // 15 s + 4 s: both at their caps, accepted.
         let edge = ScriptedVoice(seconds: [main.text: 15, closing.text: 4])
-        guard case .ready(let atCaps) = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(edge)]) else {
+        guard case .ready(let atCaps) = await outcome(talkOverBreak(main: main, closing: closing), routes: [route(edge)], cadence: Self.splitCapsOnly) else {
             return XCTFail("15 + 4 is within both caps")
         }
         XCTAssertEqual(atCaps.talkOverStartSeconds ?? 0, 15.3, accuracy: 1e-9)
@@ -513,7 +520,7 @@ final class RadioStyleBreakTests: XCTestCase {
         }
         XCTAssertNil(short.talkOverCueID, "the 4 s talk-over slot applies only while talk-over is on")
         // Talk-over off keeps the planned allowances: 15 s main + a 3 s closing line plays.
-        guard case .ready = await self.outcome(b, routes: scripted(main, closing, 15, 3), talkOver: false) else {
+        guard case .ready = await self.outcome(b, routes: scripted(main, closing, 15, 3), talkOver: false, cadence: Self.splitCapsOnly) else {
             return XCTFail("talk-over off never skips a break talk-over on would play")
         }
     }
@@ -533,11 +540,14 @@ final class RadioStyleBreakTests: XCTestCase {
         XCTAssertEqual(fits.talkOverCueID, closing.id)
         XCTAssertEqual(fits.talkOverStartSeconds ?? 0, 6.3, accuracy: 1e-9)
         // Counted in the 15 s budget: 10 + 5 = 15 plays, 10.5 + 5 = 15.5 is skipped.
-        guard case .ready = await self.outcome(b, routes: scripted(main, closing, 10, 5), talkOver: true) else {
+        guard case .ready = await self.outcome(b, routes: scripted(main, closing, 10, 5), talkOver: true, cadence: Self.splitCapsOnly) else {
             return XCTFail("10 + 5 is exactly the 15 s budget")
         }
-        let over = await self.outcome(b, routes: scripted(main, closing, 10.5, 5), talkOver: true)
+        let over = await self.outcome(b, routes: scripted(main, closing, 10.5, 5), talkOver: true, cadence: Self.splitCapsOnly)
         XCTAssertEqual(over, .skipped(.overBreakBudget), "the 15 s total budget still skips a break over it")
+        // With the default 12 s ordinary cap (#320), 10 + 5 has no optional line to drop: skipped.
+        let overWhole = await self.outcome(b, routes: scripted(main, closing, 10, 5), talkOver: true)
+        XCTAssertEqual(overWhole, .skipped(.overBreakBudget), "15 s measured is over the 12 s ordinary cap")
     }
 
     func testBreakOverTheFifteenSecondBudgetIsStillSkippedWithTalkOverOff() async {
