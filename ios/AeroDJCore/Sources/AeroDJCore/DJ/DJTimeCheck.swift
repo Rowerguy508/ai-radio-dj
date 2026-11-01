@@ -1,8 +1,9 @@
 import Foundation
 
 // Spoken time checks (lane 2 part 2, #342, -Fry). The one place a DJ line says a time. The time
-// always comes from the clock the caller injects (`DJPlanClock.now`, the session's `now()`), read
-// once when the break is planned. Nothing here reads the system clock.
+// always comes from an injected clock, read when the line itself renders (`DJBreakPreparer`, about
+// 75 s before the break; Orion option (a) on #347). The plan only reserves the slot and phrasing,
+// and `DJPlanClock.now` drives spacing only. Nothing here reads the system clock.
 //
 // Rendering, all tested in `DJTimeCheckTests`:
 //   - Rounded to the nearest 5 minutes (x:58 is the next hour, 11:58 is noon, 23:58 is midnight).
@@ -25,7 +26,8 @@ public enum DJClockStyle: String, Sendable, CaseIterable {
 
 /// The planning clock for one `DJScriptWriter.plan` call. Injected; Core never calls `Date()`.
 public struct DJPlanClock: Sendable {
-    /// The moment the break is planned (the session's `now()`). The spoken time comes from here.
+    /// The moment the break is planned (the session's `now()`). Used for spacing only; the spoken
+    /// time is read at render time by `DJBreakPreparer`.
     public var now: Date
     /// The listener's calendar and time zone.
     public var calendar: Calendar
