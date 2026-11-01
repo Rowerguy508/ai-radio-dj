@@ -51,7 +51,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
 
     /// The 07:00–09:00 window no longer gates eligibility: 6 AM, 10 AM, 3 PM and 11 PM all air,
     /// with the stored default window (420, 120) left as it was.
-    func testUpdatesAreEligibleAt6AM10AM3PMAnd11PM() throws {
+    func testUpdatesAreEligibleAt6AM10AM3PMAnd11PM() async throws {
         let id = UUID()
         let prefs = BriefingPreferences(enabled: true, window: BriefingWindow(startMinute: 7 * 60, durationMinutes: 120))
         XCTAssertEqual(prefs.window.startMinute, 420)
@@ -70,7 +70,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
 
     /// Consent is unchanged at any hour: only `.approved` rows with a known sensitivity air,
     /// and briefing off is still nil.
-    func testConsentStillGatesEveryHour() {
+    func testConsentStillGatesEveryHour() async {
         let approved = UUID(), pending = UUID(), blocked = UUID()
         let items = [row(approved), ConnectionItem(id: pending, integration: .calendar, title: "Pending", state: .pendingApproval),
                      row(blocked, .obsidian, "Private diary")]
@@ -88,7 +88,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
 
     // MARK: Repeat limit
 
-    func testDefaultsAreOncePerDayAndOnePerBreak() {
+    func testDefaultsAreOncePerDayAndOnePerBreak() async {
         XCTAssertEqual(DJCadence.defaultPersonalUpdatePlaysPerDay, 1)
         XCTAssertEqual(DJCadence.defaultMaxPersonalUpdatesPerBreak, 1)
         XCTAssertEqual(DJCadence().maxPersonalUpdatesPerBreak, 1)
@@ -99,7 +99,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
     }
 
     /// Aired at 08:00: blocked at 15:00 and 23:59 the same local day, allowed again at 00:00 next day.
-    func testSecondPlaySameDayIsBlockedAndNextDayIsAllowed() throws {
+    func testSecondPlaySameDayIsBlockedAndNextDayIsAllowed() async throws {
         let id = UUID(), other = UUID()
         let ledger = PersonalUpdateLedger(calendar: calendar)
         let studio = AllDayStudio(items: [row(id), row(other, .obsidian, "Grocery list")],
@@ -132,7 +132,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
 
     /// The day is the LOCAL calendar day: 23:30 and 00:30 New York are different days even though
     /// they are 1 hour apart (and the same UTC day).
-    func testDayBoundaryIsTheLocalCalendarDay() {
+    func testDayBoundaryIsTheLocalCalendarDay() async {
         let id = UUID()
         let ledger = PersonalUpdateLedger(calendar: calendar)
         ledger.recordAired([cue(id)], at: at(23, 30))
@@ -143,7 +143,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
     }
 
     /// Presenter and track lines never count; one break with the same item twice counts once.
-    func testOnlyContentCuesCountAndEachItemOncePerRecord() {
+    func testOnlyContentCuesCountAndEachItemOncePerRecord() async {
         let id = UUID()
         let ledger = PersonalUpdateLedger(calendar: calendar, playsPerDay: 2)
         let presenter = NarrationCue(id: UUID(), order: 0, group: 0, kind: .transition, text: "Good morning.",
@@ -157,7 +157,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
     }
 
     /// The UserDefaults store survives a new ledger (an app relaunch) and keeps only one day.
-    func testUserDefaultsStoreSurvivesARelaunchAndKeepsOneDay() throws {
+    func testUserDefaultsStoreSurvivesARelaunchAndKeepsOneDay() async throws {
         let suite = "personal-updates-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -176,7 +176,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
     /// Fry's station start reads `LiveQueueBriefing.provider` (the song tap's). With the app's one
     /// ledger, an update aired at a station start counts toward the once-a-day limit, so a later
     /// queue (song tap or station start) the same day does not repeat it, and reports it.
-    func testAnUpdatePlayedAtAStationStartCountsTowardTheDailyLimit() throws {
+    func testAnUpdatePlayedAtAStationStartCountsTowardTheDailyLimit() async throws {
         let id = UUID()
         let ledger = PersonalUpdateLedger(calendar: calendar)
         let studio = AllDayStudio(items: [row(id)], sensitivity: [id: .low])
@@ -210,7 +210,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
     // MARK: One per break
 
     /// Three updates, default cadence: one per break, each exactly once, all within 45 s.
-    func testAtMostOnePersonalUpdatePerBreak() {
+    func testAtMostOnePersonalUpdatePerBreak() async {
         let ids = [UUID(), UUID(), UUID()]
         let handoff = NarrationHandoff(cues: ids.enumerated().map { i, id in cue(id, order: i + 1, kind: .note) },
                                        maxSpokenSeconds: 60, experienceSeconds: 600)
@@ -229,7 +229,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
 
     /// Too few boundaries for one per break: the leftover is reported, never silently lost
     /// (a note is deferred; a calendar event is dropped, not carried forward).
-    func testLeftoverUpdatesAreReported() {
+    func testLeftoverUpdatesAreReported() async {
         let event = UUID(), note = UUID(), extra = UUID()
         let handoff = NarrationHandoff(cues: [cue(event, order: 1, kind: .upcomingEvent), cue(note, order: 2, kind: .note),
                                               cue(extra, order: 3, kind: .upcomingEvent)],
@@ -245,7 +245,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
 
     /// A calendar row whose window passed is dropped and reported (`windowPassed`), never spoken
     /// and never carried forward. The still-valid row airs.
-    func testExpiredTimeSensitiveUpdateIsDroppedAndReported() throws {
+    func testExpiredTimeSensitiveUpdateIsDroppedAndReported() async throws {
         let past = UUID(), current = UUID()
         let now = at(15)
         let items = [row(past, .calendar, "Standup", expiresAt: at(10)),
@@ -268,7 +268,7 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
     }
 
     /// Same for a prepared script: the cue is reported with its own text, not spoken.
-    func testExpiredPreparedCueIsDroppedAndReported() throws {
+    func testExpiredPreparedCueIsDroppedAndReported() async throws {
         let past = UUID(), dup = UUID()
         let items = [row(past, .calendar, "Standup", expiresAt: at(10)), row(dup, .obsidian, "Grocery list")]
         let expired = cue(past, order: 1, kind: .upcomingEvent)
