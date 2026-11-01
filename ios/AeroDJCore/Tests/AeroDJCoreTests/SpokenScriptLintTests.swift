@@ -25,6 +25,11 @@ final class SpokenScriptLintTests: XCTestCase {
         ("Dreams - 2004 Remaster", "Fleetwood Mac"),
         ("Hold On [Explicit]", "Ana feat. Bo"),
         ("Sunflower (feat. Swae Lee)", "Post Malone"),
+        ("Ocean Avenue (Live 2014)", "Yellowcard"),
+        ("Rather Be (Clean Bandit Remix)", "Clean Bandit feat. Jess Glynne"),
+        ("Song - Live 2011", "Artist"),
+        ("Song (with Strings) [Acoustic]", "Artist"),
+        ("Help! (Live)", "The Beatles"),
     ]
 
     /// Every persona's bank (lane 4). Each house-style test below runs over all of them.
@@ -49,6 +54,8 @@ final class SpokenScriptLintTests: XCTestCase {
         if lower.contains("aerodj") || lower.contains("aero dj") { found.append("old brand") }
         if line.contains(where: { "*_#`".contains($0) }) { found.append("markdown character") }
         if line.contains("[") || line.contains("]") { found.append("bracket or markdown link") }
+        if line.contains("(") || line.contains(")") { found.append("round bracket") }
+        if line.range(of: #",\s*[,.!?;:]"#, options: .regularExpression) != nil { found.append("comma run") }
         if line.range(of: #"^\s*(?:[-•]|\d+\.)\s"#, options: .regularExpression) != nil { found.append("list marker") }
         if line.unicodeScalars.contains(where: { $0.properties.isEmojiPresentation
             || ($0.properties.isEmoji && $0.value > 0x238C) }) { found.append("emoji") }
@@ -75,11 +82,13 @@ final class SpokenScriptLintTests: XCTestCase {
             "1. Holocene", "Holocene 🎶", "Visit onairly.app now.", "See https://example.com.", "<break time=\"1s\"/>",
             "Here's {nextTitle}.", "Wow!!", "Here is your next song.", "Let me catch you up.", "As an AI, I pick songs.",
             "I hope you enjoy this one.", "Additionally, there's more.", "That was amazing.", "Song (feat. X).",
-            "Song - Remastered.", "Song [Explicit].",
+            "Song - Remastered.", "Song [Explicit].", "That's Song (Live).", "Song,, then more.", "That's Song, .",
+            "Song, Live, ?",
         ]
         for line in bad { XCTAssertFalse(Self.problems(line).isEmpty, "lint should reject: \(line)") }
         for line in ["That's Holocene from Bon Iver.", "OnAirly. Stick around.", "Morning — let's ease into it.",
-                     "Here's Pink + White, from Frank Ocean.", "Sunflower featuring Swae Lee."] {
+                     "Here's Pink + White, from Frank Ocean.", "Sunflower featuring Swae Lee.",
+                     "That's Ocean Avenue, Live 2014 there."] {
             XCTAssertEqual(Self.problems(line), [], line)
         }
     }
@@ -385,9 +394,9 @@ final class SpokenScriptLintTests: XCTestCase {
 
     func testSpokenTitleKeepsMeaningfulVersionsAndNeverEmptiesATitle() {
         // These say which recording it is, so they stay.
-        XCTAssertEqual(SpokenTitle.clean("Holocene (Live)"), "Holocene (Live)")
-        XCTAssertEqual(SpokenTitle.clean("Midnight City (Eric Prydz Remix)"), "Midnight City (Eric Prydz Remix)")
-        XCTAssertEqual(SpokenTitle.clean("Song - Acoustic"), "Song - Acoustic")
+        XCTAssertEqual(SpokenTitle.clean("Holocene (Live)"), "Holocene, Live")
+        XCTAssertEqual(SpokenTitle.clean("Midnight City (Eric Prydz Remix)"), "Midnight City, Eric Prydz Remix")
+        XCTAssertEqual(SpokenTitle.clean("Song - Acoustic"), "Song, Acoustic")
         XCTAssertEqual(SpokenTitle.clean("Re-Make - Re-Model"), "Re-Make - Re-Model")
         // A title that is only a tag is spoken as it was rather than as nothing.
         XCTAssertEqual(SpokenTitle.clean("(Remastered)"), "(Remastered)")
@@ -399,21 +408,149 @@ final class SpokenScriptLintTests: XCTestCase {
 
     /// #339 follow-up (-Fry): tags match exactly, not by prefix or suffix, and anything naming the
     /// recording (remix, mix, live, acoustic, demo) is kept. "(with X)" is not always a credit.
+    /// Since the bracket fix (-Echo), kept tags keep their words but are spoken as ", tag".
     func testSpokenTitleKeepsRecordingVersionsThatStartOrEndLikeATag() {
-        let kept: [String] = [
-            "Rather Be (Clean Bandit Remix)",   // starts with "clean"
-            "Rather Be - Clean Bandit Remix",
-            "Song (Mono Remix)",                 // starts with "mono"
-            "Song (Stereo Mix)",                 // starts with "stereo"
-            "Song (Live 2011 Remaster)",         // ends with "remaster"
-            "Song - Live 2011 Remaster",
-            "Song (Live Edition)",               // ends with "edition"
-            "Song (Acoustic Version)",
-            "Song (Demo Remastered)",
-            "Song (LIVE)",
-            "Song (with Strings)",               // not an artist credit
+        let kept: [(String, String)] = [
+            ("Rather Be (Clean Bandit Remix)", "Rather Be, Clean Bandit Remix"),   // starts with "clean"
+            ("Rather Be - Clean Bandit Remix", "Rather Be, Clean Bandit Remix"),
+            ("Song (Mono Remix)", "Song, Mono Remix"),                             // starts with "mono"
+            ("Song (Stereo Mix)", "Song, Stereo Mix"),                             // starts with "stereo"
+            ("Song (Live 2011 Remaster)", "Song, Live 2011 Remaster"),             // ends with "remaster"
+            ("Song - Live 2011 Remaster", "Song, Live 2011 Remaster"),
+            ("Song (Live Edition)", "Song, Live Edition"),                         // ends with "edition"
+            ("Song (Acoustic Version)", "Song, Acoustic Version"),
+            ("Song (Demo Remastered)", "Song, Demo Remastered"),
+            ("Song (LIVE)", "Song, LIVE"),
+            ("Song (with Strings)", "Song, with Strings"),                         // not an artist credit
         ]
-        for raw in kept { XCTAssertEqual(SpokenTitle.clean(raw), raw, raw) }
+        for (raw, spoken) in kept { XCTAssertEqual(SpokenTitle.clean(raw), spoken, raw) }
+    }
+
+    // MARK: SpokenTitle brackets (-Echo)
+
+    func testKeptTagsAreSpokenWithoutBracketsKeepingTheirWordsAndCase() {
+        // Orion's case. Casing is preserved exactly ("Live", not "live").
+        XCTAssertEqual(SpokenTitle.clean("Ocean Avenue (Live 2014)"), "Ocean Avenue, Live 2014")
+        XCTAssertEqual(SpokenTitle.clean("Ocean Avenue [Live 2014]"), "Ocean Avenue, Live 2014")
+        let remix = SpokenTitle.clean("Rather Be (Clean Bandit Remix)")
+        XCTAssertEqual(remix, "Rather Be, Clean Bandit Remix")
+        XCTAssertTrue(remix.contains("Clean Bandit Remix"), "the tag's words survive as written")
+        XCTAssertEqual(SpokenTitle.clean("Song - Live 2011 Remaster"), "Song, Live 2011 Remaster")
+        XCTAssertEqual(SpokenTitle.clean("Song – Acoustic"), "Song, Acoustic")
+        XCTAssertEqual(SpokenTitle.clean("Song (with Strings)"), "Song, with Strings")
+        // Several kept tags become a comma chain; catalog tags in the chain still drop.
+        XCTAssertEqual(SpokenTitle.clean("Song (Live) [Acoustic]"), "Song, Live, Acoustic")
+        XCTAssertEqual(SpokenTitle.clean("Song (Live) [Explicit]"), "Song, Live")
+        XCTAssertEqual(SpokenTitle.clean("Song (Remastered 2011) - Live 2011"), "Song, Live 2011")
+        XCTAssertEqual(SpokenTitle.clean("Sunflower (feat. Swae Lee) (Live)"), "Sunflower featuring Swae Lee, Live")
+        // No words are ever added: the spoken words are the raw words minus dropped catalog tags.
+        for raw in ["Ocean Avenue (Live 2014)", "Rather Be (Clean Bandit Remix)", "Song (Live) [Acoustic]",
+                    "Song - Live 2011 Remaster", "Song (with Strings)"] {
+            XCTAssertEqual(Self.words(SpokenTitle.clean(raw)), Self.words(raw), raw)
+        }
+    }
+
+    func testBracketedAndDashedTagsSpeakIdentically() {
+        XCTAssertEqual(SpokenTitle.clean("Song (Live 2011 Remaster)"), SpokenTitle.clean("Song - Live 2011 Remaster"))
+        XCTAssertEqual(SpokenTitle.clean("Song - Live 2011 Remaster"), "Song, Live 2011 Remaster")
+    }
+
+    func testCatalogTagsAndFeaturingAreUnchangedByTheBracketFix() {
+        XCTAssertEqual(SpokenTitle.clean("Midnight City (Remastered 2011)"), "Midnight City")
+        XCTAssertEqual(SpokenTitle.clean("Song (Remastered 2011)"), "Song")
+        XCTAssertEqual(SpokenTitle.clean("Dreams - 2004 Remaster"), "Dreams")
+        XCTAssertEqual(SpokenTitle.clean("Sunflower (feat. Swae Lee)"), "Sunflower featuring Swae Lee")
+        XCTAssertEqual(SpokenTitle.clean("Sunflower feat. Swae Lee"), "Sunflower featuring Swae Lee")
+        XCTAssertEqual(SpokenTitle.cleanArtist("Ana feat. Bo"), "Ana featuring Bo")
+        // Dash suffixes that do not name a recording are left as written.
+        XCTAssertEqual(SpokenTitle.clean("Re-Make - Re-Model"), "Re-Make - Re-Model")
+    }
+
+    func testOddBracketsAreLeftUnchangedRatherThanMangled() {
+        let unchanged = [
+            "Song (Live 2014",            // unbalanced
+            "Song Live 2014)",            // unbalanced
+            "Song (Live [2014])",         // nested
+            "Song (Live 2014]",           // mismatched
+            "(Live)",                     // only a bracket
+            "(Live) (Remix)",             // only brackets
+            "(Remastered)",               // only a catalog tag
+            "(I Can't Get No) Satisfaction", // leading bracket is part of the title
+        ]
+        for raw in unchanged { XCTAssertEqual(SpokenTitle.clean(raw), raw, raw) }
+        XCTAssertEqual(SpokenTitle.clean("Song, (Live)"), "Song, Live", "no double comma")
+        XCTAssertEqual(SpokenTitle.clean("Song ( Live , )"), "Song, Live", "no comma before the end")
+        XCTAssertEqual(SpokenTitle.clean("Song ()"), "Song")
+    }
+
+    func testTemplateFillNeverMakesCommaRuns() {
+        for template in ["{title} there.", "That's {title}, from {artist}.", "Up next: {nextTitle}!", "{title}?"] {
+            for raw in ["Ocean Avenue (Live 2014)", "Song (Live) [Acoustic]", "Song, (Live)", "Song,", "Song ( Live , )",
+                        "Song - Live 2011 Remaster", "Song (Remastered 2011)"] {
+                let line = TemplatePool.fill(template, ["title": raw, "nextTitle": raw, "artist": "M83"])!
+                XCTAssertNil(line.range(of: #",\s*[,.!?;:]"#, options: .regularExpression), line)
+                XCTAssertFalse(line.contains("(") || line.contains(")"), line)
+            }
+        }
+        XCTAssertEqual(TemplatePool.fill("{title} there.", ["title": "Ocean Avenue (Live 2014)"]),
+                       "Ocean Avenue, Live 2014 there.")
+    }
+
+    /// Every tone's every pool line, filled from bracketed sample titles, speaks no bracket.
+    func testNoToneSpeaksABracketForBracketedTitles() {
+        let titles = ["Ocean Avenue (Live 2014)", "Rather Be (Clean Bandit Remix)", "Song [Acoustic]",
+                      "Song (Live) [Demo]", "Song (with Strings)", "Midnight City (Remastered 2011)", "Hold On [Explicit]"]
+        let names = Set(Self.tones.map(\.name))
+        XCTAssertEqual(names, ["warm", "upbeat", "laidBack", "minimal"])
+        for (toneName, tone) in Self.tones { for (pool, lines) in Self.pools(tone) { for template in lines {
+            for title in titles {
+                guard let line = TemplatePool.fill(template, ["title": title, "nextTitle": title, "artist": "Artist",
+                                                              "nextArtist": "Artist", "station": "OnAirly"]) else { continue }
+                XCTAssertFalse(line.contains(where: { "()[]".contains($0) }), "\(toneName).\(pool): \(line)")
+            }
+        } } }
+    }
+
+    /// Sentinel: the fix is formatting only. A plan over bracketed titles gives every cue the
+    /// same attribution (track ids and origin) as the same plan over the already-spoken titles.
+    func testCleanedTitlesKeepTheirTrackOriginAttribution() {
+        let raws = ["Ocean Avenue (Live 2014)", "Rather Be (Clean Bandit Remix)", "Song - Live 2011 Remaster",
+                    "Song (with Strings) [Acoustic]"]
+        func tracks(_ titles: [String]) -> [DJTrack] {
+            titles.enumerated().map { i, title in
+                DJTrack(id: "b\(i)", title: title, artist: "Artist \(i)", origin: i % 2 == 0 ? .library : .catalog)
+            } + djTracks(12, origin: .catalog)
+        }
+        let bracketed = tracks(raws + raws), spoken = tracks((raws + raws).map(SpokenTitle.clean))
+        var sawCleanTitle = false
+        for (toneName, tone) in Self.tones {
+            for seed in UInt64(1)...30 {
+                var a = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, tone: tone)
+                var b = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, tone: tone)
+                let planA = a.plan(tracks: bracketed, briefing: nil, hour: 9)
+                let planB = b.plan(tracks: spoken, briefing: nil, hour: 9)
+                XCTAssertEqual(planA.breaks.count, planB.breaks.count, "\(toneName) seed \(seed)")
+                for (breakA, breakB) in zip(planA.breaks, planB.breaks) {
+                    XCTAssertEqual(breakA.cues.map(\.text), breakB.cues.map(\.text), "\(toneName) seed \(seed)")
+                    for (cueA, cueB) in zip(breakA.cues, breakB.cues) {
+                        XCTAssertEqual(breakA.attributions[cueA.id], breakB.attributions[cueB.id], "\(toneName): \(cueA.text)")
+                        for (i, raw) in raws.enumerated() where cueA.text.contains(SpokenTitle.clean(raw)) {
+                            sawCleanTitle = true
+                            guard case .trackMetadata(let ids, let origin)? = breakA.attributions[cueA.id] else {
+                                return XCTFail("cleaned title not attributed to track metadata: \(cueA.text)")
+                            }
+                            XCTAssertTrue(ids.contains("b\(i)") || ids.contains("b\(i + raws.count)"), cueA.text)
+                            if i % 2 == 0 { XCTAssertEqual(origin, .library, "library stays on-device: \(cueA.text)") }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertTrue(sawCleanTitle, "the plans actually spoke a cleaned title")
+    }
+
+    private static func words(_ text: String) -> [String] {
+        text.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" }).map(String.init)
     }
 
     func testSpokenTitleStillDropsExactTagsWithYearsOrVersion() {
