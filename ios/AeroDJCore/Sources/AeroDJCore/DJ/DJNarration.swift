@@ -292,7 +292,7 @@ public struct DJScriptWriter: Sendable {
         // Its own stream, so turning shapes on never moves where breaks fall (`rng`).
         self.shapePicker = shapes.map { DJBreakShapePicker(config: $0, seed: seed &+ 0x5851_F42D_4C95_7F2D) }
         self.recentTemplates = RecentSpokenTemplates(window: shapes?.recentBreakWindow ?? 1, hereWindow: shapes?.hereWindow ?? 1)
-        self.combined = TemplatePool(shapes?.combined ?? [])
+        self.combined = TemplatePool(shapes?.combinedLines(for: tone) ?? [])
         self.rng = SeededGenerator(seed: seed)
         self.editorial = SeededGenerator(seed: seed &+ 0x9E37_79B9_7F4A_7C15)
         self.phrasing = SeededGenerator(seed: seed &+ 0x3C6E_F372_FE94_F82B)

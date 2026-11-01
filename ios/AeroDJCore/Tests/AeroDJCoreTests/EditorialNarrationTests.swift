@@ -410,8 +410,7 @@ final class EditorialNarrationTests: XCTestCase {
             ["That's Dreams from Fleetwood Mac.", "This is Frank Ocean, Pink + White."],
         ])
         // #332: one personal update per break, so the note gets the next break of its own.
-        // #332: one personal update per break, so the note gets the next break of its own.
-        // Forward merge of #339 with #338: #338's break structure, lane 1's pool text.
+        // Forward merge of #339 with #338: #338's break structure, lane 1's pool text (lane 4 merges keep it).
         XCTAssertEqual(showPlan.breaks.map { $0.cues.map(\.text) }, [
             ["Hey, good morning.", "One sec before the next one.",
              "You've got Design review at 9:30 AM. Bring the notes. From your calendar.",

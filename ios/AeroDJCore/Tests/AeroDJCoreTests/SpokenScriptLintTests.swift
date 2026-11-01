@@ -38,6 +38,7 @@ final class SpokenScriptLintTests: XCTestCase {
             ("briefingOutro", tone.briefingOutro),
             ("atmosphere", DayPart.allCases.flatMap { tone.atmosphere[$0, default: []] }),
             ("greetings", DayPart.allCases.flatMap { tone.greetings[$0, default: []] }),
+            ("combined", tone.combined),
         ]
     }
 
@@ -143,7 +144,8 @@ final class SpokenScriptLintTests: XCTestCase {
         for (toneName, tone) in Self.tones {
         for (name, lines) in [("backAnnounce", tone.backAnnounce), ("closing", tone.closing), ("artistFocus", tone.artistFocus),
                               ("stationID", tone.stationID), ("continuation", tone.continuation),
-                              ("briefingLead", tone.briefingLead), ("briefingOutro", tone.briefingOutro)] {
+                              ("briefingLead", tone.briefingLead), ("briefingOutro", tone.briefingOutro),
+                              ("combined", tone.combined)] {
             XCTAssertTrue((8...12).contains(lines.count), "\(toneName).\(name) has \(lines.count) lines; the house style wants 8 to 12")
         }
         for part in DayPart.allCases {
@@ -224,6 +226,7 @@ final class SpokenScriptLintTests: XCTestCase {
                 ("briefingOutro", tone.briefingOutro, []),
                 ("atmosphere", tone.atmosphere.values.flatMap { $0 }, []),
                 ("greetings", tone.greetings.values.flatMap { $0 }, []),
+                ("combined", tone.combined, ["title", "artist", "nextTitle", "nextArtist"]),
             ]
             for (pool, lines, ok) in allowed {
                 for line in lines {
@@ -234,6 +237,38 @@ final class SpokenScriptLintTests: XCTestCase {
             for part in DayPart.allCases {
                 XCTAssertFalse(tone.atmosphere[part, default: []].isEmpty, "\(name) atmosphere \(part)")
                 XCTAssertFalse(tone.greetings[part, default: []].isEmpty, "\(name) greeting \(part)")
+            }
+        }
+    }
+
+    /// Lane 4 follow-up: each persona's combined ("that was X, here's Y") bank names the song that
+    /// just played and the next one, from track metadata only, and leans on "Here's" at most once.
+    func testCombinedBanksNameBothSongsInTheHouseStyle() {
+        XCTAssertEqual(EditorialTone.warm.combined, [
+            "That was {title}. Here's {nextTitle}.",
+            "{artist} there. And here's {nextArtist}.",
+            "That's {title}. Coming up, {nextTitle}.",
+            "{title}, from {artist}. Now, {nextTitle}.",
+            "That was {artist}. Next, {nextArtist}.",
+            "{artist}, {title}. And this one's {nextArtist}.",
+            "Out of {artist}, into {nextArtist}.",
+            "{title} there. Up next, {nextArtist}.",
+        ], "warm keeps #344's combined lines verbatim")
+        for (name, tone) in Self.tones {
+            XCTAssertTrue((8...12).contains(tone.combined.count), "\(name).combined has \(tone.combined.count) lines")
+            XCTAssertLessThanOrEqual(tone.combined.filter { $0.lowercased().hasPrefix("here's") }.count, 1,
+                                     "\(name).combined: one line starting \"Here's\" at most")
+            for line in tone.combined {
+                let found = Self.placeholders(line)
+                XCTAssertTrue(found.isSubset(of: ["title", "artist", "nextTitle", "nextArtist"]), "\(name).combined: \(line)")
+                XCTAssertFalse(found.isDisjoint(with: ["title", "artist"]), "\(name).combined names the song that played: \(line)")
+                XCTAssertFalse(found.isDisjoint(with: ["nextTitle", "nextArtist"]), "\(name).combined names the next song: \(line)")
+                XCTAssertFalse(line.contains(where: \.isNumber), "\(name).combined: \(line)")
+                XCTAssertLessThanOrEqual(line.split(separator: " ").count, 12, "\(name).combined, one breath: \(line)")
+            }
+            let tones = Self.tones.map(\.tone)
+            for other in tones where other != tone {
+                XCTAssertTrue(Set(tone.combined).isDisjoint(with: other.combined), "\(name).combined shares a line with another persona")
             }
         }
     }

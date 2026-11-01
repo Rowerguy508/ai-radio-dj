@@ -1,8 +1,8 @@
 import Foundation
 
-// Natural break shapes (lane 2, -Fry). Opt-in: `DJScriptWriter.shapes` is nil by default, so the
-// classic planner (and every pinned line in the existing tests) is unchanged until the default
-// is flipped in a follow-up, after Echo's lane-1 pools land.
+// Natural break shapes (lane 2, -Fry). `DJBreakSession` plans with `shapes: .natural`. A bare
+// `DJScriptWriter` still defaults to `shapes: nil`, the classic planner, which keeps the pinned
+// classic lines in the existing tests. Combined lines come from the tone (`EditorialTone.combined`).
 //
 // Rules, all enforced here and tested in `DJBreakShapesTests`:
 //   - Shapes: back-announce only, coming-up only, combined ("that was X, here's Y"), a short
@@ -53,7 +53,8 @@ public struct DJBreakShapeConfig: Equatable, Sendable {
     /// Breaks after the greeting that may not carry a station ID.
     public var stationIDGraceBreaks: Int
     /// Combined back-announce plus forward-sell lines. `{title}`/`{artist}` name the song that
-    /// just played, `{nextTitle}`/`{nextArtist}` the next one. Copy is Echo's to restyle.
+    /// just played, `{nextTitle}`/`{nextArtist}` the next one. Left at `defaultCombined`, the
+    /// writer speaks its tone's own bank (`EditorialTone.combined`); any other list overrides it.
     public var combined: [String]
 
     public init(weights: [DJBreakShape: Int] = DJBreakShapeConfig.defaultWeights, recentBreakWindow: Int = 6,
@@ -75,16 +76,13 @@ public struct DJBreakShapeConfig: Equatable, Sendable {
         .combined: 30, .classic: 20, .comingUpOnly: 20, .backAnnounceOnly: 10, .stationID: 10, .timeCheckIntro: 10,
     ]
 
-    public static let defaultCombined = [
-        "That was {title}. Here's {nextTitle}.",
-        "{artist} there. And here's {nextArtist}.",
-        "That's {title}. Coming up, {nextTitle}.",
-        "{title}, from {artist}. Now, {nextTitle}.",
-        "That was {artist}. Next, {nextArtist}.",
-        "{artist}, {title}. And this one's {nextArtist}.",
-        "Out of {artist}, into {nextArtist}.",
-        "{title} there. Up next, {nextArtist}.",
-    ]
+    /// The default marker: `warm`'s combined bank (lane 4 moved the copy into `EditorialTone`).
+    public static let defaultCombined = EditorialTone.warm.combined
+
+    /// The combined lines a writer with `tone` speaks: the tone's bank unless overridden.
+    public func combinedLines(for tone: EditorialTone) -> [String] {
+        combined == Self.defaultCombined ? tone.combined : combined
+    }
 }
 
 /// What the picker may know about a boundary.

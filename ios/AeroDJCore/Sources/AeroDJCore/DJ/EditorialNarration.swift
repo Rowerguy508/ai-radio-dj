@@ -31,10 +31,15 @@ public struct EditorialTone: Equatable, Sendable {
     public var briefingOutro: [String]
     /// The first break of a session.
     public var greetings: [DayPart: [String]]
+    /// One breath that names both songs: "that was X, here's Y" (lane 2's combined shape).
+    /// `{title}`/`{artist}` are the song that just played, `{nextTitle}`/`{nextArtist}` the next
+    /// one; every line names both. Never `{station}`. Empty: the combined shape falls back to
+    /// the closing line.
+    public var combined: [String]
 
     public init(backAnnounce: [String], closing: [String], artistFocus: [String], stationID: [String],
                 atmosphere: [DayPart: [String]], continuation: [String], briefingLead: [String],
-                briefingOutro: [String], greetings: [DayPart: [String]]) {
+                briefingOutro: [String], greetings: [DayPart: [String]], combined: [String] = []) {
         self.backAnnounce = backAnnounce
         self.closing = closing
         self.artistFocus = artistFocus
@@ -44,6 +49,7 @@ public struct EditorialTone: Equatable, Sendable {
         self.briefingLead = briefingLead
         self.briefingOutro = briefingOutro
         self.greetings = greetings
+        self.combined = combined
     }
 
     /// Default: warm and conversational, in the house style below.
@@ -153,6 +159,16 @@ public struct EditorialTone: Equatable, Sendable {
             .afternoon: ["Good afternoon.", "Afternoon. Pull up a chair.", "Hey there, good afternoon."],
             .evening: ["Good evening.", "Evening. Glad you found us.", "Hey, good evening."],
             .lateNight: ["Late one tonight.", "Still up? Good.", "Hey, night owl."],
+        ],
+        combined: [
+            "That was {title}. Here's {nextTitle}.",
+            "{artist} there. And here's {nextArtist}.",
+            "That's {title}. Coming up, {nextTitle}.",
+            "{title}, from {artist}. Now, {nextTitle}.",
+            "That was {artist}. Next, {nextArtist}.",
+            "{artist}, {title}. And this one's {nextArtist}.",
+            "Out of {artist}, into {nextArtist}.",
+            "{title} there. Up next, {nextArtist}.",
         ]
     )
 
@@ -251,6 +267,18 @@ public struct EditorialTone: Equatable, Sendable {
             .afternoon: ["Hey there, afternoon crew.", "Good afternoon — let's pick it up.", "Afternoon, everybody."],
             .evening: ["Evening, all.", "Hey, good evening. Let's roll.", "Evening — glad you're in."],
             .lateNight: ["Hey, late crew.", "Night owls, let's go.", "Still up? Let's keep it going."],
+        ],
+        combined: [
+            "{title} from {artist}. Now let's go, {nextTitle}.",
+            "That's {artist}. Straight on to {nextArtist}.",
+            "{artist} done, {nextArtist} up. Let's roll.",
+            "Out with {title}, in with {nextTitle}.",
+            "{title}, nice. Up next, {nextArtist}.",
+            "Keep it moving — {artist}, then {nextArtist}.",
+            "From {artist} to {nextArtist}, no stopping.",
+            "Here's {nextTitle}, right after {title}.",
+            "{artist} with {title}. Rolling on, {nextTitle}.",
+            "That was {title}. Let's hit {nextTitle}.",
         ]
     )
 
@@ -348,6 +376,18 @@ public struct EditorialTone: Equatable, Sendable {
             .afternoon: ["Hey, afternoon. Kick back.", "Afternoon, friend.", "Hi there. Easy afternoon."],
             .evening: ["Evening, friend.", "Hey there, good evening.", "Evening. Get comfy."],
             .lateNight: ["Hey, still awake?", "Late one. Hi there.", "Night owl? Get cozy."],
+        ],
+        combined: [
+            "That was {title}. Now let's drift into {nextTitle}.",
+            "{artist} there. We'll slide over to {nextArtist}.",
+            "That's {title}. Here's {nextTitle}, no rush.",
+            "{title}, from {artist}. Now we'll take {nextTitle}.",
+            "That's been {artist}. Next, a little {nextArtist}.",
+            "Easy now. {title} there, {nextTitle} next.",
+            "There's {artist}. We'll let {nextArtist} take it from here.",
+            "{title} just went by. Now it's {nextTitle}.",
+            "So that's {artist}. Let's hang with {nextArtist}.",
+            "{artist}, {title}. And now, {nextTitle}. Easy.",
         ]
     )
 
@@ -441,6 +481,18 @@ public struct EditorialTone: Equatable, Sendable {
             .afternoon: ["Afternoon, all.", "Hi there. Afternoon.", "Hey. Afternoon."],
             .evening: ["Evening, all.", "Hi there. Evening.", "Hey. Evening."],
             .lateNight: ["Hi. Late one.", "Hey there. Late hours.", "You're up late. Hi."],
+        ],
+        combined: [
+            "{title}. {nextTitle}.",
+            "{artist}, then {nextArtist}.",
+            "That's {title}. Now, {nextTitle}.",
+            "{title}, {artist}. Next, {nextTitle}.",
+            "{artist}. Now {nextArtist}.",
+            "{title} there. {nextTitle} now.",
+            "{artist} out. {nextArtist} in.",
+            "{title}. Up next, {nextArtist}.",
+            "That was {artist}. This is {nextArtist}.",
+            "Here's {nextTitle}, after {title}.",
         ]
     )
 
@@ -458,7 +510,7 @@ public struct EditorialTone: Equatable, Sendable {
     /// Every line in every pool (for scans in tests).
     public var allLines: [String] {
         backAnnounce + closing + artistFocus + stationID + continuation + briefingLead + briefingOutro
-            + atmosphere.values.flatMap { $0 } + greetings.values.flatMap { $0 }
+            + atmosphere.values.flatMap { $0 } + greetings.values.flatMap { $0 } + combined
     }
 }
 

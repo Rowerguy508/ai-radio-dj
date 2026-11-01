@@ -20,6 +20,10 @@ final class DJBreakShapesTests: XCTestCase {
     /// Dense cadence so 30 tracks give plenty of breaks.
     private let dense = DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1)
 
+    /// Every persona's bank (lane 4), each with its own combined lines.
+    private static let personaTones: [(name: String, tone: EditorialTone)] =
+        DJPersonality.allCases.map { ($0.rawValue, EditorialTone.forPersonality($0)) }
+
     /// Every track shares the same title and artist, so filled text identifies the template.
     private func sameMetaTracks(_ n: Int, origin: TrackOrigin = .catalog) -> [DJTrack] {
         (0..<n).map { DJTrack(id: "t\($0)", title: "Song", artist: "Band", origin: origin) }
@@ -253,7 +257,7 @@ final class DJBreakShapesTests: XCTestCase {
     /// Across every pool, the whole session (greeting break included), every day part: no identical
     /// line and no shared 3+ word phrase inside the window, with the shipped pools (lane 1's, #339).
     func testNoIdenticalLineOrSharedPhraseInsideTheWindowAcrossAllPools() {
-        for (name, tone) in [("warm", EditorialTone.warm)] {
+        for (name, tone) in Self.personaTones {
             for hour in [6, 15, 23] {
                 let r = repeatStats(tone: tone, hour: hour, seeds: 0..<100)
                 print("repeat-stats \(name) hour \(hour): \(r)")
@@ -306,6 +310,82 @@ final class DJBreakShapesTests: XCTestCase {
         XCTAssertTrue(allCatalog.allSatisfy { b in
             if case .trackMetadata(_, let origin) = b.attributions[b.cues[0].id]! { return origin == .catalog } else { return false }
         })
+    }
+
+    /// Lane 4 follow-up: a writer speaks its own tone's combined bank, never another persona's.
+    /// Left at the default, `DJBreakShapeConfig.combined` defers to the tone; any other list wins.
+    func testEachToneSpeaksItsOwnCombinedLines() {
+        XCTAssertEqual(DJBreakShapeConfig.defaultCombined, EditorialTone.warm.combined)
+        let config = DJBreakShapeConfig(weights: [.combined: 1])
+        let tracks = (0..<30).map { DJTrack(id: "t\($0)", title: "Song \($0)", artist: "Artist \($0)", origin: $0 % 2 == 0 ? .catalog : .library) }
+        for (name, tone) in Self.personaTones {
+            XCTAssertEqual(DJBreakShapeConfig.natural.combinedLines(for: tone), tone.combined, name)
+            var used = Set<String>()
+            for seed in UInt64(0)..<40 {
+                for b in naturalBreaks(seed: seed, tracks: tracks, config: config, tone: tone) {
+                    XCTAssertEqual(b.shape, .combined, name)
+                    XCTAssertEqual(b.cues.count, 1, name)
+                    let prev = tracks[b.afterTrack], next = tracks[b.afterTrack + 1]
+                    let values = ["title": prev.title, "artist": prev.artist, "nextTitle": next.title, "nextArtist": next.artist]
+                    let template = tone.combined.first { TemplatePool.fill($0, values) == b.cues[0].text }
+                    XCTAssertNotNil(template, "\(name) seed \(seed): not from its own bank: \(b.cues[0].text)")
+                    if let template { used.insert(template) }
+                    // Both tracks, at the most restrictive origin (every boundary pairs catalog and library).
+                    XCTAssertEqual(b.attributions[b.cues[0].id], .trackMetadata(trackIDs: [prev.id, next.id], origin: .library), name)
+                }
+            }
+            XCTAssertEqual(used, Set(tone.combined), "\(name): every combined line airs")
+        }
+        let override = DJBreakShapeConfig(weights: [.combined: 1], combined: ["{artist}, then {nextArtist}. Custom."])
+        XCTAssertEqual(override.combinedLines(for: .upbeat), ["{artist}, then {nextArtist}. Custom."])
+        let custom = naturalBreaks(seed: 1, tracks: tracks, config: override, tone: .upbeat).map { $0.cues[0].text }
+        XCTAssertFalse(custom.isEmpty)
+        XCTAssertTrue(custom.allSatisfy { $0.hasSuffix("Custom.") }, "\(custom)")
+    }
+
+    /// The 12 s cap, the main-segment cap, the four-cue cap and per-cue attribution hold for every
+    /// persona, with the default shape mix and with combined-only, at each persona's own cadence.
+    func testEveryPersonaFitsTheCapsAndAttributesEveryCue() {
+        let shapeConfig = DJBreakShapeConfig.natural
+        for personality in DJPersonality.allCases {
+            let tone = EditorialTone.forPersonality(personality)
+            let cadence = DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1,
+                                    maxTransitionSeconds: personality == .minimal ? 6 : 15)
+            var combinedCount = 0
+            for config in [shapeConfig, DJBreakShapeConfig(weights: [.combined: 1])] {
+                for seed in UInt64(0)..<100 {
+                    for b in naturalBreaks(seed: seed, tracks: djTracks(30, origin: .catalog), config: config, tone: tone,
+                                           cadence: cadence, extra: VaryingExtra()) {
+                        let context = "\(personality) seed \(seed): \(b.cues.map(\.text))"
+                        let gap = b.cues.count > 1 && b.talkOverCueID == b.cues.last?.id ? PreparedDJBreak.talkOverGapSeconds : 0
+                        XCTAssertLessThanOrEqual(b.estimatedSeconds + gap, Double(config.maxBreakSeconds), context)
+                        XCTAssertLessThanOrEqual(b.mainSeconds, Double(cadence.maxTransitionSeconds), context)
+                        XCTAssertLessThanOrEqual(b.cues.count, config.maxCuesPerBreak, context)
+                        XCTAssertEqual(Set(b.attributions.keys), Set(b.cues.map(\.id)), context)
+                        if b.shape == .combined, let first = b.cues.first(where: { !$0.text.hasPrefix("Bit of rain") }) {
+                            combinedCount += 1
+                            XCTAssertEqual(b.attributions[first.id],
+                                           .trackMetadata(trackIDs: ["t\(b.afterTrack)", "t\(b.afterTrack + 1)"], origin: .catalog), context)
+                        }
+                        for cue in b.cues where b.attributions[cue.id] == .presenter {
+                            XCTAssertFalse(cue.text.contains("Song ") || cue.text.contains("Artist "), "no track facts in a presenter line: \(context)")
+                        }
+                    }
+                }
+            }
+            XCTAssertGreaterThan(combinedCount, 100, "\(personality): combined breaks air")
+        }
+    }
+
+    /// The soft rules over every persona: opener first word repeats at most 1 in 4, and "Here's"
+    /// more than once in 3 breaks in at most 1 window in 10.
+    func testEveryPersonaMeetsTheSoftRules() {
+        for (name, tone) in Self.personaTones {
+            let r = repeatStats(tone: tone, hour: 10)
+            print("soft-rules \(name): \(r)")
+            XCTAssertLessThanOrEqual(Double(r.sameFirstWord) / Double(r.openerPairs), 0.25, "\(name) \(r)")
+            XCTAssertLessThanOrEqual(Double(r.here) / Double(r.windows), 0.10, "\(name) \(r)")
+        }
     }
 
     func testMissingMetadataNarrowsTheShapes() {
@@ -395,9 +475,14 @@ final class DJBreakShapesTests: XCTestCase {
     }
 
     func testNaturalLinesPassTheCopyLint() {
-        let pool = DJBreakShapeConfig.defaultCombined
+        let pool = Self.personaTones.flatMap(\.tone.combined)
         var spoken: [String] = pool
-        for seed in UInt64(0)..<100 { spoken += naturalBreaks(seed: seed, tracks: djTracks(30)).flatMap { $0.cues.map(\.text) } }
+        for (_, tone) in Self.personaTones {
+            for seed in UInt64(0)..<100 {
+                spoken += naturalBreaks(seed: seed, tracks: djTracks(30), tone: tone).flatMap { $0.cues.map(\.text) }
+            }
+        }
+        for line in spoken where !line.contains("{") { XCTAssertEqual(SpokenScriptLintTests.problems(line), [], line) }
         for line in spoken {
             let lower = line.lowercased()
             XCTAssertFalse(lower.contains("aerodj"), line)
