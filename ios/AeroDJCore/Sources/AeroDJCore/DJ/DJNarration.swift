@@ -250,6 +250,9 @@ public struct OrdinaryBreakCapReport: Equatable, Sendable {
     /// Boundaries where the required lines alone (opener and closing) exceed a cap, so the
     /// boundary stays music-only. Never cut mid-line.
     public var skippedOverCap: [Int] = []
+    /// #347: time-check lines that did not air, by boundary (cue ID and reason code only).
+    /// Not counted in `trimmedOptionalLines`: a time check is never trimmed to fit, only dropped.
+    public var droppedTimeChecks: [Int: DJTimeCheckDrop] = [:]
     public init() {}
 }
 

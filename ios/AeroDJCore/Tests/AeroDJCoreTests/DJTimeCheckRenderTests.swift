@@ -122,28 +122,113 @@ final class DJTimeCheckRenderTests: XCTestCase {
         XCTAssertEqual(b?.talkOverCueID, planned.talkOverCueID, "closing line and talk-over unchanged", file: file, line: line)
     }
 
+    /// Every time-check drop the preparer reported (#347, Echo blocker 2).
+    private final class Drops: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: [DJTimeCheckDrop] = []
+        var all: [DJTimeCheckDrop] { lock.withLock { value } }
+        func add(_ drop: DJTimeCheckDrop) { lock.withLock { value.append(drop) } }
+    }
+
+    private func drops(_ p: DJBreakPreparer) async -> Drops {
+        let drops = Drops()
+        await p.observeTimeCheckDrops { k, drop in if k == 0 { drops.add(drop) } }
+        return drops
+    }
+
+    /// The taken break carries the drop (cue ID and reason only), it was reported once, and the
+    /// plan's cap report lists it.
+    private func assertDropped(_ outcome: DJBreakOutcome, _ planned: DJBreak, _ reason: DJTimeCheckDropReason,
+                               _ drops: Drops, file: StaticString = #filePath, line: UInt = #line) {
+        let drop = DJTimeCheckDrop(cueID: planned.timeCheckCueID!, reason: reason)
+        guard case .ready(let b) = outcome else { return XCTFail("the break must still air", file: file, line: line) }
+        XCTAssertEqual(b.droppedTimeCheck, drop, file: file, line: line)
+        XCTAssertEqual(drops.all, [drop], "reported once", file: file, line: line)
+        let plan = DJSessionPlan(breaks: [planned], briefingReport: NarrationScheduleReport(entries: []))
+        XCTAssertEqual(plan.capReport(afterBreaks: [0: outcome]).droppedTimeChecks, [0: drop], file: file, line: line)
+        XCTAssertFalse(b.trimmedCueIDs.contains(drop.cueID), "a drop, not an optional-line trim", file: file, line: line)
+    }
+
     // MARK: Render-time clock
 
     func testLineIsWrittenFromTheClockWhenItRendersNotWhenPlanned() async {
         let clock = Clock(date(9, 40))
         let voice = ScriptedVoice()
-        // The wait for the time-check window: twelve minutes of songs go by.
+        // The wait for the time-check window: twelve minutes of songs go by. The line is written
+        // for the time it airs, about 63 s on (9:53:03, "Almost 9:55."), not the render
+        // reading (9:52, "Just after 9:50.") (Echo nit, #347).
         let later = date(9, 52)
         let p = preparer([route("device", voice)], clock: clock, sleepUntil: { _ in clock.now = later })
         let planned = timeCheckBreak()
+        let drops = await drops(p)
         await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
         let added = await eventually { await Self.ready(p)?.cues.count == 2 }
         XCTAssertTrue(added)
         let b = await Self.ready(p)
-        XCTAssertEqual(b?.cues.map(\.text), ["Just after 9:50.", Self.closingText])
+        XCTAssertEqual(b?.cues.map(\.text), ["Almost 9:55.", Self.closingText])
         XCTAssertEqual(b?.cues.first?.id, planned.timeCheckCueID, "in its planned slot")
         XCTAssertFalse(voice.texts.contains { $0.contains("9:40") }, "the plan-time reading never renders: \(voice.texts)")
         XCTAssertEqual(voice.texts.count, 2, "the closing line first, then the time check alone")
-        XCTAssertTrue(voice.texts[1].contains("9:50"))
+        XCTAssertTrue(voice.texts[1].contains("9:55"))
         XCTAssertEqual(b?.talkOverCueID, planned.talkOverCueID)
         XCTAssertEqual(b?.talkOverStartSeconds ?? 0, 1 + PreparedDJBreak.talkOverGapSeconds, accuracy: 0.001)
+        clock.now = date(9, 53)   // the boundary, on time
         let taken = await p.takeBreak(afterTrack: 0)
         XCTAssertEqual(taken, b.map { .ready($0) })
+        XCTAssertNil(b?.droppedTimeCheck)
+        XCTAssertEqual(drops.all, [], "nothing dropped, nothing reported")
+    }
+
+    // MARK: Stale at the take (Echo blocker 1)
+
+    /// A ready break with "Almost 9:55." for a 9:53 boundary.
+    private func readyAt953(_ clock: Clock, _ voice: ScriptedVoice) async -> (DJBreakPreparer, DJBreak, Drops) {
+        let later = date(9, 52)
+        let p = preparer([route("device", voice)], clock: clock, sleepUntil: { _ in clock.now = later })
+        let planned = timeCheckBreak()
+        let drops = await drops(p)
+        await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
+        let added = await eventually { await Self.ready(p)?.cues.map(\.text) == ["Almost 9:55.", Self.closingText] }
+        XCTAssertTrue(added)
+        return (p, planned, drops)
+    }
+
+    func testPausedBreakDropsOnlyTheStaleTimeCheckAtTheTake() async {
+        let clock = Clock(date(9, 40))
+        let voice = ScriptedVoice()
+        let (p, planned, drops) = await readyAt953(clock, voice)
+        // Paused for ten minutes with the break ready: "Almost 9:55." would air at 10:03.
+        clock.now = date(10, 3)
+        let outcome = await p.takeBreak(afterTrack: 0)
+        guard case .ready(let b) = outcome else { return XCTFail("the break must still air") }
+        assertRestOnly(b, planned)
+        XCTAssertEqual(b.clips.map(\.cueID), [planned.cues[1].id])
+        XCTAssertNil(b.attributions[planned.timeCheckCueID!])
+        XCTAssertNil(b.talkOverStartSeconds, "talk-over hooks from the kept clips, as for an earlier drop")
+        assertDropped(outcome, planned, .stale, drops)
+        XCTAssertEqual(voice.texts.count, 2, "never re-rendered at the take")
+    }
+
+    func testSeekBackDropsTheStaleTimeCheckAtTheTake() async {
+        let clock = Clock(date(9, 40))
+        let (p, planned, drops) = await readyAt953(clock, ScriptedVoice())
+        // Seek back two minutes in the song: the ready break is kept, and airs two minutes later.
+        let rearmed = await p.rearm(planned, deadline: .seconds(180), onDeviceOnly: false)
+        XCTAssertFalse(rearmed, "a ready break is kept on a seek")
+        clock.now = date(9, 55).addingTimeInterval(5)   // "Just after 9:55." now
+        let outcome = await p.takeBreak(afterTrack: 0)
+        assertDropped(outcome, planned, .stale, drops)
+        if case .ready(let b) = outcome { assertRestOnly(b, planned) }
+    }
+
+    func testShortPauseThatStillReadsTheSameTimeKeepsTheLine() async {
+        let clock = Clock(date(9, 40))
+        let (p, _, drops) = await readyAt953(clock, ScriptedVoice())
+        clock.now = date(9, 54)   // still "Almost 9:55."
+        guard case .ready(let b) = await p.takeBreak(afterTrack: 0) else { return XCTFail("airs") }
+        XCTAssertEqual(b.cues.map(\.text), ["Almost 9:55.", Self.closingText])
+        XCTAssertNil(b.droppedTimeCheck)
+        XCTAssertEqual(drops.all, [])
     }
 
     func testTimeCheckWaitsForItsWindowBeforeTheDeadline() async {
@@ -169,11 +254,14 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let voice = ScriptedVoice()
         let p = preparer([route("device", voice)], clock: clock, sleepUntil: { _ in try await Task.sleep(for: .seconds(60)) })
         let planned = timeCheckBreak()
+        let drops = await drops(p)
         await p.prepare(planned, deadline: .seconds(200), onDeviceOnly: false)
         let isReady = await eventually { await p.isReady(afterTrack: 0) }
         XCTAssertTrue(isReady, "the rest of the break is ready on its own")
-        guard case .ready(let b) = await p.takeBreak(afterTrack: 0) else { return XCTFail("the break must still air") }
+        let outcome = await p.takeBreak(afterTrack: 0)
+        guard case .ready(let b) = outcome else { return XCTFail("the break must still air") }
         assertRestOnly(b, planned)
+        assertDropped(outcome, planned, .taken, drops)
         try? await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(voice.texts, [Self.closingText], "the time check never renders after the take")
         let leftover = await p.testResult(afterTrack: 0)
@@ -185,11 +273,14 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let voice = ScriptedVoice(delay: { $0.contains("9:40") ? .milliseconds(300) : nil })
         let p = preparer([route("device", voice)], clock: clock)
         let planned = timeCheckBreak()
+        let drops = await drops(p)
         await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
         let rendering = await eventually { voice.texts.count == 2 }
         XCTAssertTrue(rendering)
-        guard case .ready(let b) = await p.takeBreak(afterTrack: 0) else { return XCTFail("the break must still air") }
+        let outcome = await p.takeBreak(afterTrack: 0)
+        guard case .ready(let b) = outcome else { return XCTFail("the break must still air") }
         assertRestOnly(b, planned)
+        assertDropped(outcome, planned, .taken, drops)
         try? await Task.sleep(for: .milliseconds(500))   // past the slow render
         let leftover = await p.testResult(afterTrack: 0)
         XCTAssertNil(leftover, "a late finish never lands after the take")
@@ -200,13 +291,30 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let voice = ScriptedVoice(delay: { $0.contains("9:40") ? .seconds(2) : nil })
         let p = preparer([route("device", voice)], clock: clock)
         let planned = timeCheckBreak()
+        let drops = await drops(p)
         await p.prepare(planned, deadline: .milliseconds(400), onDeviceOnly: false)
         let rendering = await eventually { voice.texts.count == 2 }
         XCTAssertTrue(rendering)
         try? await Task.sleep(for: .milliseconds(2300))   // past the deadline and the slow render
         assertRestOnly(await Self.ready(p), planned)
-        guard case .ready(let b) = await p.takeBreak(afterTrack: 0) else { return XCTFail("the break must still air") }
+        let outcome = await p.takeBreak(afterTrack: 0)
+        guard case .ready(let b) = outcome else { return XCTFail("the break must still air") }
         assertRestOnly(b, planned)
+        assertDropped(outcome, planned, .late, drops)
+    }
+
+    func testTimeCheckWithNoTimeLeftIsDroppedAsLate() async {
+        let clock = Clock(date(9, 40))
+        let voice = ScriptedVoice()
+        // The window wait returns after the deadline has passed: no time left to render.
+        let p = preparer([route("device", voice)], clock: clock,
+                         sleepUntil: { try await ContinuousClock().sleep(until: $0 + DJBreakPreparer.timeCheckLead + .milliseconds(200)) })
+        let planned = timeCheckBreak()
+        let drops = await drops(p)
+        await p.prepare(planned, deadline: .milliseconds(100), onDeviceOnly: false)
+        try? await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(voice.texts, [Self.closingText], "never sent")
+        assertDropped(await p.takeBreak(afterTrack: 0), planned, .late, drops)
     }
 
     // MARK: Failed
@@ -216,13 +324,16 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let voice = ScriptedVoice(fail: { text, _ in text.contains("9:40") })
         let p = preparer([route("device", voice)], clock: clock)
         let planned = timeCheckBreak()
+        let drops = await drops(p)
         await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
         let tried = await eventually { voice.texts.count == 2 }
         XCTAssertTrue(tried)
         try? await Task.sleep(for: .milliseconds(100))
         assertRestOnly(await Self.ready(p), planned)
-        guard case .ready(let b) = await p.takeBreak(afterTrack: 0) else { return XCTFail("the break must still air") }
+        let outcome = await p.takeBreak(afterTrack: 0)
+        guard case .ready(let b) = outcome else { return XCTFail("the break must still air") }
         assertRestOnly(b, planned)
+        assertDropped(outcome, planned, .renderFailed, drops)
     }
 
     func testOverCapTimeCheckIsDroppedNotTheBreak() async {
@@ -231,11 +342,13 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let voice = ScriptedVoice(seconds: { $0.contains("9:40") ? 20 : 1 })
         let p = preparer([route("device", voice)], clock: clock)
         let planned = timeCheckBreak()
+        let drops = await drops(p)
         await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
         let tried = await eventually { voice.texts.count == 2 }
         XCTAssertTrue(tried)
         try? await Task.sleep(for: .milliseconds(100))
         assertRestOnly(await Self.ready(p), planned)
+        assertDropped(await p.takeBreak(afterTrack: 0), planned, .overCap, drops)
     }
 
     // MARK: Voice and cost
@@ -268,6 +381,8 @@ final class DJTimeCheckRenderTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(100))
         assertRestOnly(await Self.ready(p), planned)
         XCTAssertTrue(standard.texts.isEmpty, "dropped, not spoken in another voice: \(standard.texts)")
+        guard case .ready(let b) = await p.takeBreak(afterTrack: 0) else { return XCTFail("airs") }
+        XCTAssertEqual(b.droppedTimeCheck, DJTimeCheckDrop(cueID: planned.timeCheckCueID!, reason: .renderFailed))
     }
 
     func testPaidVoiceTimeCheckIsChargedThroughTheRendererBudget() async {
@@ -292,12 +407,14 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let budget = VoiceBudget(dailyCapMicrodollars: Self.closingText.count + 2, calendar: eastern, now: { clock.now })
         let p = preparer([route("paid", paid, microdollarsPerThousand: 1000)], clock: clock, budget: budget)
         let planned = timeCheckBreak()
+        let drops = await drops(p)
         await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
         let isReady = await eventually { await p.isReady(afterTrack: 0) }
         XCTAssertTrue(isReady)
         try? await Task.sleep(for: .milliseconds(150))
         assertRestOnly(await Self.ready(p), planned)
         XCTAssertEqual(paid.texts.count, 1, "over the cap: never sent")
+        assertDropped(await p.takeBreak(afterTrack: 0), planned, .overCap, drops)
     }
 
     // MARK: Whole-break cap and trimmed lines (#320 merged)
@@ -327,14 +444,19 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let voice = ScriptedVoice(seconds: { $0.contains("9:4") ? 4 : $0.hasPrefix("Up next") ? 3 : 5 })
         let p = preparer([route("device", voice)], clock: clock)
         let planned = threeLineBreak(line(1, "That was a long one."), optional: { _, time in [time] })
+        let drops = await drops(p)
         await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
         let tried = await eventually { voice.texts.count == 3 }
         XCTAssertTrue(tried, "the time check rendered: \(voice.texts)")
         try? await Task.sleep(for: .milliseconds(150))
         let b = await Self.ready(p)
         XCTAssertEqual(b?.cues.map(\.id), [planned.cues[0].id, planned.cues[2].id], "only the time check dropped")
-        XCTAssertEqual(b?.trimmedCueIDs, [])
+        XCTAssertEqual(b?.trimmedCueIDs, [], "not an optional-line trim: reported as a time-check drop")
         XCTAssertEqual(b?.talkOverCueID, planned.talkOverCueID)
+        let outcome = await p.takeBreak(afterTrack: 0)
+        assertDropped(outcome, planned, .overCap, drops)
+        let plan = DJSessionPlan(breaks: [planned], briefingReport: NarrationScheduleReport(entries: []))
+        XCTAssertEqual(plan.capReport(afterBreaks: [0: outcome]).trimmedOptionalLines, [:])
     }
 
     func testTimeCheckGoesInItsPlannedPlaceAfterATrimmedLineAndKeepsTheTrimRecord() async {

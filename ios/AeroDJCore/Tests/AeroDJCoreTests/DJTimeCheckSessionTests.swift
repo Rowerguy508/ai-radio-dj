@@ -115,5 +115,63 @@ final class DJTimeCheckSessionTests: XCTestCase {
         let stale = aired.cues.contains { $0.text.contains("7:40") }
         XCTAssertFalse(stale, "the plan-time reading never airs")
         XCTAssertEqual(aired.cues.last?.id, planned.cues.last?.id, "the closing line stays last")
+        XCTAssertNil(aired.droppedTimeCheck)
+    }
+
+    // MARK: Stale at the take (Echo blocker 1, #347)
+
+    /// Plays song `k` to 60 s left and waits for the full break, time check included.
+    private func readyWithTimeCheck(_ session: DJBreakSession, _ k: Int, _ planned: DJBreak) async -> Bool {
+        await session.songStarted(index: k, remaining: .seconds(60))
+        let preparer = session.testPreparer, count = planned.cues.count
+        for _ in 0..<500 {
+            if case .ready(let b)? = await preparer.testResult(afterTrack: k), b.cues.count == count { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    private final class Drops: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: [Int: DJTimeCheckDrop] = [:]
+        var all: [Int: DJTimeCheckDrop] { lock.withLock { value } }
+        func add(_ k: Int, _ drop: DJTimeCheckDrop) { lock.withLock { value[k] = drop } }
+    }
+
+    private func assertAirsWithoutStaleTimeCheck(_ aired: PreparedDJBreak?, _ k: Int, _ planned: DJBreak, _ drops: Drops) {
+        guard let aired else { return XCTFail("the rest of the break airs") }
+        let id = planned.timeCheckCueID!
+        XCTAssertFalse(aired.cues.contains { $0.id == id }, "the stale time check never airs")
+        XCTAssertEqual(aired.cues.map(\.id), planned.cues.map(\.id).filter { $0 != id }, "only the time check dropped")
+        XCTAssertEqual(aired.droppedTimeCheck, DJTimeCheckDrop(cueID: id, reason: .stale))
+        XCTAssertEqual(drops.all, [k: DJTimeCheckDrop(cueID: id, reason: .stale)])
+    }
+
+    func testPausedSessionDropsTheStaleTimeCheck() async {
+        let clock = Clock(eastern.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 7, minute: 40))!)
+        guard let (session, k, planned) = await seededTimeCheck(clock: clock) else { return XCTFail("no seed planned one") }
+        let drops = Drops()
+        await session.testPreparer.observeTimeCheckDrops { drops.add($0, $1) }
+        let ready = await readyWithTimeCheck(session, k, planned)
+        XCTAssertTrue(ready)
+        clock.now = clock.now.addingTimeInterval(10 * 60)   // paused ten minutes before the boundary
+        assertAirsWithoutStaleTimeCheck(await session.naturalBoundary(afterTrack: k), k, planned, drops)
+        await session.stop()
+    }
+
+    func testSeekBackInSessionDropsTheStaleTimeCheck() async {
+        let clock = Clock(eastern.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 7, minute: 40))!)
+        guard let (session, k, planned) = await seededTimeCheck(clock: clock) else { return XCTFail("no seed planned one") }
+        let drops = Drops()
+        await session.testPreparer.observeTimeCheckDrops { drops.add($0, $1) }
+        let ready = await readyWithTimeCheck(session, k, planned)
+        XCTAssertTrue(ready)
+        // Seek back four minutes: the ready break is kept and airs four minutes later.
+        await session.songSeeked(index: k, remaining: .seconds(300))
+        let kept = await session.breakIsReady(afterTrack: k)
+        XCTAssertTrue(kept, "a ready break is kept on a seek")
+        clock.now = clock.now.addingTimeInterval(5 * 60)
+        assertAirsWithoutStaleTimeCheck(await session.naturalBoundary(afterTrack: k), k, planned, drops)
+        await session.stop()
     }
 }
