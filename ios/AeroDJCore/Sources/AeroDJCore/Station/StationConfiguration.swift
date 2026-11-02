@@ -124,7 +124,8 @@ public struct StationConfiguration: Codable, Equatable, Sendable {
             allowsBackToBack: everySong,
             maxClosingSeconds: base.maxClosingSeconds,
             maxOrdinaryBreakSeconds: base.maxOrdinaryBreakSeconds,
-            maxPersonalUpdatesPerBreak: base.maxPersonalUpdatesPerBreak
+            maxPersonalUpdatesPerBreak: base.maxPersonalUpdatesPerBreak,
+            maxOpenerBreakSeconds: base.maxOpenerBreakSeconds
         )
     }
 

@@ -71,7 +71,15 @@ public struct DJCadence: Equatable, Sendable {
     /// (a durable note is deferred, a calendar event or due task is dropped, never carried).
     /// At least 1. The 45 s briefing cap still bounds the break.
     public var maxPersonalUpdatesPerBreak: Int
+    /// Cap for the show opener (`DJBreakShape.showOpener`), the first break of a session with no
+    /// briefing content: the whole break, closing line and talk-over gap included, and its main
+    /// segment. Optional lines (setup, then the time check) are dropped to fit. Held at or below
+    /// `maxBriefingBreakSeconds`; ordinary breaks keep `maxOrdinaryBreakSeconds`.
+    public var maxOpenerBreakSeconds: Int
 
+    /// Build 34 default: the longest estimated opener is 17.3 s (warm, three-line greeting,
+    /// station line, setup, time check, closing), so 22 s leaves headroom for slower voices.
+    public static let defaultMaxOpenerBreakSeconds = 22
     /// #332 default: one personal update per break.
     public static let defaultMaxPersonalUpdatesPerBreak = 1
     /// #332 default: each personal update airs at most once per local calendar day
@@ -82,7 +90,8 @@ public struct DJCadence: Equatable, Sendable {
                 maxTransitionSeconds: Int = 15, maxBriefingBreakSeconds: Int = 45,
                 allowsBackToBack: Bool = false, maxClosingSeconds: Int = 4,
                 maxOrdinaryBreakSeconds: Int = 12,
-                maxPersonalUpdatesPerBreak: Int = DJCadence.defaultMaxPersonalUpdatesPerBreak) {
+                maxPersonalUpdatesPerBreak: Int = DJCadence.defaultMaxPersonalUpdatesPerBreak,
+                maxOpenerBreakSeconds: Int = DJCadence.defaultMaxOpenerBreakSeconds) {
         self.talkFraction = min(max(talkFraction, 0), 1)
         self.allowsBackToBack = allowsBackToBack
         self.minSongsBetweenBreaks = max(allowsBackToBack ? 0 : 1, minSongsBetweenBreaks)
@@ -91,6 +100,7 @@ public struct DJCadence: Equatable, Sendable {
         self.maxBriefingBreakSeconds = maxBriefingBreakSeconds
         self.maxOrdinaryBreakSeconds = max(0, maxOrdinaryBreakSeconds)
         self.maxPersonalUpdatesPerBreak = max(1, maxPersonalUpdatesPerBreak)
+        self.maxOpenerBreakSeconds = min(max(0, maxOpenerBreakSeconds), max(0, maxBriefingBreakSeconds))
     }
 
     /// Share of boundaries with a break that the planner actually delivers over a long session
@@ -253,6 +263,9 @@ public struct OrdinaryBreakCapReport: Equatable, Sendable {
     /// #347: time-check lines that did not air, by boundary (cue ID and reason code only).
     /// Not counted in `trimmedOptionalLines`: a time check is never trimmed to fit, only dropped.
     public var droppedTimeChecks: [Int: DJTimeCheckDrop] = [:]
+    /// Build 34: show openers planned without a time check, by boundary, and why (reason code
+    /// only). Never silent: an opener that cannot say the time truthfully says so here.
+    public var omittedOpenerTimeChecks: [Int: DJOpenerTimeCheckOmission] = [:]
     public init() {}
 }
 
@@ -265,8 +278,8 @@ public struct DJScriptWriter: Sendable {
     public var cadence: DJCadence
     /// Spoken in station IDs. Unusable names (empty, braces, instruction-shaped) are skipped.
     public var stationName: String
-    /// The phrase bank. Swapping it changes the words, never the engine.
-    public let tone: EditorialTone
+    /// The phrase bank. Swapping it changes the words, never the engine. Set with `setTone`.
+    public private(set) var tone: EditorialTone
     /// Talk/silence rolls only, so phrasing changes never move where breaks fall.
     private var rng: SeededGenerator
     /// Chooses the break shape.
@@ -282,6 +295,8 @@ public struct DJScriptWriter: Sendable {
     private var briefingLead: TemplatePool
     private var briefingOutro: TemplatePool
     private var greetings: [DayPart: TemplatePool]
+    private var openerStation: TemplatePool
+    private var openerSetup: [DayPart: TemplatePool]
     private var hasGreeted = false
     /// Natural break shapes (lane 2). Nil keeps the classic planner, line for line.
     public let shapes: DJBreakShapeConfig?
@@ -310,10 +325,9 @@ public struct DJScriptWriter: Sendable {
         self.shapePicker = shapes.map { DJBreakShapePicker(config: $0, seed: seed &+ 0x5851_F42D_4C95_7F2D) }
         self.recentTemplates = RecentSpokenTemplates(window: shapes?.recentBreakWindow ?? 1, hereWindow: shapes?.hereWindow ?? 1)
         self.combined = TemplatePool(shapes?.combinedLines(for: tone) ?? [])
-        let phrases = shapes?.timeCheckPhrases(for: tone) ?? DJTimeCheckPhrases(on: [], comingUp: [], justAfter: [])
-        self.timeCheckPools = Dictionary(uniqueKeysWithValues: DJTimeCheckRelation.allCases.map {
-            ($0, TemplatePool(phrases.templates(for: $0)))
-        })
+        self.timeCheckPools = Self.makeTimeCheckPools(shapes, tone)
+        self.openerStation = TemplatePool(tone.opener.station)
+        self.openerSetup = tone.opener.setup.mapValues { TemplatePool($0) }
         self.rng = SeededGenerator(seed: seed)
         self.editorial = SeededGenerator(seed: seed &+ 0x9E37_79B9_7F4A_7C15)
         self.phrasing = SeededGenerator(seed: seed &+ 0x3C6E_F372_FE94_F82B)
@@ -326,6 +340,38 @@ public struct DJScriptWriter: Sendable {
         briefingLead = TemplatePool(tone.briefingLead)
         briefingOutro = TemplatePool(tone.briefingOutro)
         greetings = tone.greetings.mapValues { TemplatePool($0) }
+    }
+
+    /// Swaps the phrase bank (a station's DJ personality changed, -Fry). Only which copy the
+    /// pools pick from changes, time-check wording included (#354: each tone has its own bank,
+    /// and a `DJBreakShapeConfig.timeChecks` override still wins). The RNG streams, so where
+    /// breaks fall and which shape each one takes, the anti-repeat memory, the greeting state
+    /// and the time-check spacing log stay. A no-op for the current tone, so a replan with the
+    /// same personality keeps the pools' rotation.
+    public mutating func setTone(_ newTone: EditorialTone) {
+        guard newTone != tone else { return }
+        tone = newTone
+        combined = TemplatePool(shapes?.combinedLines(for: newTone) ?? [])
+        timeCheckPools = Self.makeTimeCheckPools(shapes, newTone)
+        openerStation = TemplatePool(newTone.opener.station)
+        openerSetup = newTone.opener.setup.mapValues { TemplatePool($0) }
+        backAnnounce = TemplatePool(newTone.backAnnounce)
+        closing = TemplatePool(newTone.closing)
+        artistFocus = TemplatePool(newTone.artistFocus)
+        stationIDs = TemplatePool(newTone.stationID)
+        continuation = TemplatePool(newTone.continuation)
+        atmosphere = newTone.atmosphere.mapValues { TemplatePool($0) }
+        briefingLead = TemplatePool(newTone.briefingLead)
+        briefingOutro = TemplatePool(newTone.briefingOutro)
+        greetings = newTone.greetings.mapValues { TemplatePool($0) }
+    }
+
+    /// The tone's time-check bank by relation (empty without shapes: no time checks).
+    private static func makeTimeCheckPools(_ shapes: DJBreakShapeConfig?, _ tone: EditorialTone) -> [DJTimeCheckRelation: TemplatePool] {
+        let phrases = shapes?.timeCheckPhrases(for: tone) ?? DJTimeCheckPhrases(on: [], comingUp: [], justAfter: [])
+        return Dictionary(uniqueKeysWithValues: DJTimeCheckRelation.allCases.map {
+            ($0, TemplatePool(phrases.templates(for: $0)))
+        })
     }
 
     /// - Parameters:
@@ -394,6 +440,16 @@ public struct DJScriptWriter: Sendable {
             let metadata = ["title": prev.title, "artist": prev.artist]
             // Opener: the greeting once per session, else artist focus or a back-announce.
             let shape = wantsBriefing ? BreakShape.plain : breakShape()
+            // Build 34: with natural shapes on, the session's first break is a show opener. A
+            // briefing first break keeps the short greeting (the 45 s cap is the briefing's).
+            if !hasGreeted, !wantsBriefing, shapes?.showOpener == true,
+               let opener = showOpener(boundary: boundary, next: next, station: station, dayPart: dayPart,
+                                       tracks: tracks, report: &capReport, order: &order) {
+                breaks.append(opener)
+                lastBreak = boundary
+                hasGreeted = true
+                continue
+            }
             if !hasGreeted, let greeting = greetings[dayPart]?.next(filling: [:], using: &phrasing) {
                 cues.append(add(greeting, .presenter))
                 hasGreeted = true
@@ -565,8 +621,10 @@ public struct DJScriptWriter: Sendable {
     /// A replan discarded these planned breaks before they aired: they leave the cross-pool
     /// memory and the shape history, so the next plan follows what actually aired (or is kept).
     /// No-op with natural shapes off. Pool cycling (`TemplatePool`) is not rewound.
+    /// A discarded show opener never aired, so the next plan opens the show again.
     public mutating func forgetPlannedBreaks(_ discarded: [DJBreak]) {
         guard shapes != nil, var picker = shapePicker else { return }
+        if discarded.contains(where: { $0.shape == .showOpener }) { hasGreeted = false }
         let ids = Set(discarded.compactMap { $0.cues.first?.id })
         guard !ids.isEmpty else { return }
         recentTemplates.forget(ids: ids)
@@ -577,12 +635,25 @@ public struct DJScriptWriter: Sendable {
         shapePicker = picker
     }
 
+    /// The next break opens the show again (greeting, or the show opener with natural shapes on).
+    /// For a new station: `DJBreakSession` calls this when `queueStarted` changes station (Fry).
+    /// Anti-repeat memory is kept, so the new opener does not echo the last one.
+    public mutating func greetAgain() {
+        hasGreeted = false
+    }
+
+    /// Test hook: the next plan greets (or opens the show).
+    var testHasGreeted: Bool { hasGreeted }
     /// Test hook: breaks in the cross-pool memory.
     var testRememberedBreaks: Int { recentTemplates.count }
     /// Test hook: planned time checks still counted for spacing.
     var testTimeCheckCount: Int { timeCheckLog.count }
     /// Test hook: the shape the next pick avoids.
     var testLastShape: DJBreakShape? { shapePicker?.lastShape }
+    /// Test hook: the show-opener pools' templates (station lines, mood lines by day part).
+    var testOpenerTemplates: DJOpenerPhrases {
+        DJOpenerPhrases(station: openerStation.templates, setup: openerSetup.mapValues(\.templates))
+    }
 
     enum NaturalOutcome {
         case planned(DJBreak)
@@ -689,6 +760,8 @@ public struct DJScriptWriter: Sendable {
                 _ = draw(&stationIDs, ["station": stationName], attribution)
             }
             if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
+        case .showOpener:
+            break   // never picked (`DJBreakShapePicker.eligible`); `showOpener(...)` plans it
         }
         guard !lines.isEmpty else { return .notApplicable }
 
@@ -770,13 +843,163 @@ public struct DJScriptWriter: Sendable {
     /// The first-break-after-the-greeting and not-twice-in-a-row rules live in the picker.
     private func timeCheckReading(boundary: Int, config: DJBreakShapeConfig)
         -> (time: String, relation: DJTimeCheckRelation, at: Date)? {
-        guard let clock = planClock else { return nil }
+        if case .success(let reading) = timeCheckAvailability(boundary: boundary, config: config) { return reading }
+        return nil
+    }
+
+    struct TimeCheckUnavailable: Error { let reason: DJOpenerTimeCheckOmission }
+
+    /// `timeCheckReading`, with the rule that ruled it out (the opener reports it).
+    private func timeCheckAvailability(boundary: Int, config: DJBreakShapeConfig)
+        -> Result<(time: String, relation: DJTimeCheckRelation, at: Date), TimeCheckUnavailable> {
+        guard let clock = planClock else { return .failure(.init(reason: .noClock)) }
         if let air = clock.airTimes[boundary],
-           abs(air.timeIntervalSince(clock.now)) > config.timeCheckMaxDriftSeconds { return nil }
+           abs(air.timeIntervalSince(clock.now)) > config.timeCheckMaxDriftSeconds {
+            return .failure(.init(reason: .airTimeDrift))
+        }
         guard !timeCheckLog.contains(where: { abs(clock.now.timeIntervalSince($0.at)) < config.timeCheckMinSpacingSeconds })
-        else { return nil }
+        else { return .failure(.init(reason: .spacing)) }
         let reading = DJTimeCheck.reading(clock.now, calendar: clock.calendar, style: clock.style)
-        return (reading.time, reading.relation, clock.now)
+        return .success((reading.time, reading.relation, clock.now))
+    }
+
+    /// The show opener (build 34; `DJShowOpener.swift`): greeting and station name in one cue,
+    /// a mood line, the time check when the rules allow, then the first closing line. At most
+    /// `maxCuesPerBreak` cues, all within `DJCadence.maxOpenerBreakSeconds` at the word-rate
+    /// estimate (main segment and whole break). The mood line, then the time check, drop to fit.
+    /// Nil when no greeting exists for the day part or the required lines alone do not fit: the
+    /// classic short greeting takes the boundary instead, under the ordinary caps.
+    private mutating func showOpener(boundary: Int, next: DJTrack, station: String, dayPart: DayPart,
+                                     tracks: [DJTrack], report: inout OrdinaryBreakCapReport,
+                                     order: inout Int) -> DJBreak? {
+        guard let config = shapes, var greetingPool = greetings[dayPart] else { return nil }
+        struct Line {
+            /// One entry per pool line drawn (the welcome cue joins two), with its spoken text.
+            var templates: [String]; var texts: [String]; var attribution: SpokenAttribution
+            var kind: Kind
+            var text: String { texts.joined(separator: " ") }
+            enum Kind { case welcome, setup, timeCheck, closing }
+        }
+        var lines: [Line] = []
+        let recent = recentTemplates
+        // The same anti-repeat tiers as `naturalBreak`. Optional lines must clear tier 3 or are
+        // left out; required lines relax rather than go silent.
+        func draw(_ pool: inout TemplatePool, _ values: [String: String], optional: Bool,
+                  extra: [String] = []) -> (template: String, text: String)? {
+            let sameBreak = lines.flatMap(\.templates) + lines.flatMap(\.texts) + extra
+            let isOpener = lines.isEmpty && extra.isEmpty
+            func text(_ template: String) -> String? { TemplatePool.fill(template, values) }
+            var tiers: [(String) -> Bool] = [
+                { recent.rejects($0, text: text($0), sameBreak: sameBreak, isOpener: isOpener) },
+                { recent.rejects($0, text: text($0), sameBreak: sameBreak, isOpener: isOpener, firstWordRule: false) },
+                { recent.rejects($0, text: text($0), sameBreak: sameBreak, isOpener: isOpener, firstWordRule: false, hereWindow: 2) },
+                { recent.repeats($0, text: text($0), sameBreak: sameBreak) },
+            ]
+            if optional {
+                guard pool.templates.contains(where: { text($0) != nil && !tiers[3]($0) }) else { return nil }
+            } else {
+                tiers += [
+                    { recent.repeats($0, text: text($0), sameBreak: sameBreak, window: 2) },
+                    { recent.repeats($0, text: text($0), sameBreak: sameBreak, window: 0) },
+                ]
+            }
+            return pool.next(filling: values, avoiding: tiers, using: &phrasing)
+        }
+
+        // 1. Welcome: the day-part greeting, then the real station name, as one cue. The typed
+        //    name is the listener's own words (`.stationName`, on-device only); the built-in
+        //    brand is fixed phrasing. No usable name: the greeting airs alone.
+        guard let greeting = draw(&greetingPool, [:], optional: false) else { return nil }
+        greetings[dayPart] = greetingPool
+        var welcome = Line(templates: [greeting.template], texts: [greeting.text], attribution: .presenter, kind: .welcome)
+        if let name = EditorialStationName.usable(station),
+           let named = draw(&openerStation, ["station": name], optional: false, extra: [greeting.template, greeting.text]) {
+            welcome.templates.append(named.template)
+            welcome.texts.append(named.text)
+            if name != Self.builtInStationName { welcome.attribution = .stationName }
+        }
+        lines.append(welcome)
+        // 2. Mood (optional).
+        if var pool = openerSetup[dayPart] {
+            if let setup = draw(&pool, [:], optional: true) {
+                lines.append(Line(templates: [setup.template], texts: [setup.text], attribution: .presenter, kind: .setup))
+            }
+            openerSetup[dayPart] = pool
+        }
+        // 3. The time (optional), from the time-check machinery only. Never invented: no
+        //    truthful reading, no time, and the reason is reported.
+        var timeCheck: (template: String, relation: DJTimeCheckRelation, at: Date)?
+        switch timeCheckAvailability(boundary: boundary, config: config) {
+        case .failure(let unavailable):
+            report.omittedOpenerTimeChecks[boundary] = unavailable.reason
+        case .success(let reading):
+            if var pool = timeCheckPools[reading.relation], !pool.templates.isEmpty,
+               let line = draw(&pool, ["time": reading.time], optional: true) {
+                lines.append(Line(templates: [line.template], texts: [line.text], attribution: .presenter, kind: .timeCheck))
+                timeCheck = (line.template, reading.relation, reading.at)
+                timeCheckPools[reading.relation] = pool
+            } else {
+                report.omittedOpenerTimeChecks[boundary] = .noPhrasing
+            }
+        }
+        // 4. The first song's intro, talk-over when it fits the closing cap.
+        if let line = draw(&closing, ["nextTitle": next.title, "nextArtist": next.artist], optional: false) {
+            lines.append(Line(templates: [line.template], texts: [line.text],
+                              attribution: .trackMetadata(trackIDs: [next.id]), kind: .closing))
+        }
+
+        // Fit the opener cap: drop the mood line, then the time check. Same arithmetic as the
+        // ordinary cap (#320): the 0.3 s gap before a talk-over closing line that follows talk.
+        let cap = Double(cadence.maxOpenerBreakSeconds)
+        func seconds(_ line: Line) -> Double { estimate(line.text) }
+        func closingTalksOver() -> Bool {
+            guard let last = lines.last, last.kind == .closing else { return false }
+            return seconds(last) <= Double(cadence.maxClosingSeconds)
+        }
+        func spoken() -> Double { lines.reduce(0) { $0 + seconds($1) } }
+        func total() -> Double { spoken() + (closingTalksOver() && lines.count > 1 ? PreparedDJBreak.talkOverGapSeconds : 0) }
+        func main() -> Double { spoken() - (closingTalksOver() ? seconds(lines[lines.count - 1]) : 0) }
+        func overCap() -> Bool { total() > cap || main() > cap || lines.count > config.maxCuesPerBreak }
+        for kind in [Line.Kind.setup, .timeCheck] where overCap() {
+            guard let index = lines.firstIndex(where: { $0.kind == kind }) else { continue }
+            lines.remove(at: index)
+            if kind == .timeCheck {
+                timeCheck = nil
+                report.omittedOpenerTimeChecks[boundary] = .overCap
+            } else {
+                report.trimmedOptionalLines[boundary, default: 0] += 1
+            }
+        }
+        guard !overCap() else {
+            report.trimmedOptionalLines[boundary] = nil
+            report.omittedOpenerTimeChecks[boundary] = nil
+            return nil
+        }
+
+        var attributions: [UUID: SpokenAttribution] = [:]
+        var cues: [NarrationCue] = []
+        for line in lines {
+            let cue = transitionCue(line.text, order: &order)
+            attributions[cue.id] = line.attribution.resolvingTrackOrigins(in: tracks)
+            cues.append(cue)
+        }
+        var planned = DJBreak(afterTrack: boundary, cues: cues, attributions: attributions)
+        if closingTalksOver() { planned.talkOverCueID = cues.last?.id }
+        planned.shape = .showOpener
+        if let timeCheck, let index = lines.firstIndex(where: { $0.kind == .timeCheck }), let id = cues.first?.id {
+            planned.timeCheck = DJPlannedTimeCheck(
+                cueID: cues[index].id, plannedAt: timeCheck.at,
+                templates: timeCheckTemplates(drawn: timeCheck.template, relation: timeCheck.relation),
+                calendar: planClock?.calendar ?? .autoupdatingCurrent, style: planClock?.style ?? .twelveHour)
+            timeCheckLog.append((id, timeCheck.at))
+            if timeCheckLog.count > RecentSpokenTemplates.historyLimit { timeCheckLog.removeFirst() }
+        }
+        // #320's measured trim drops these, last first: the time check (the preparer renders it
+        // late and drops it on its own, #347), then the mood line. Never the welcome or closing.
+        planned.optionalCueIDs = zip(lines, cues).filter { $0.0.kind == .setup || $0.0.kind == .timeCheck }
+            .map { $0.1.id }.reversed()
+        recentTemplates.record(lines.flatMap(\.templates), texts: lines.flatMap(\.texts), id: cues.first?.id)
+        return planned
     }
 
     /// The drawn phrasing's slot in its relation's pool, applied to every relation's pool, so the

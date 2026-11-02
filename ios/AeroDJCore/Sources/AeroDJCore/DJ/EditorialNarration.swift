@@ -31,6 +31,8 @@ public struct EditorialTone: Equatable, Sendable {
     public var briefingOutro: [String]
     /// The first break of a session.
     public var greetings: [DayPart: [String]]
+    /// The show opener's station and mood lines (`DJShowOpener.swift`), after the greeting.
+    public var opener: DJOpenerPhrases
     /// One breath that names both songs: "that was X, here's Y" (lane 2's combined shape).
     /// `{title}`/`{artist}` are the song that just played, `{nextTitle}`/`{nextArtist}` the next
     /// one; every line names both. Never `{station}`. Empty: the combined shape falls back to
@@ -43,6 +45,7 @@ public struct EditorialTone: Equatable, Sendable {
     public var timeChecks: DJTimeCheckPhrases
 
     public init(backAnnounce: [String], closing: [String], artistFocus: [String], stationID: [String],
+                opener: DJOpenerPhrases = .warm,
                 atmosphere: [DayPart: [String]], continuation: [String], briefingLead: [String],
                 briefingOutro: [String], greetings: [DayPart: [String]], combined: [String] = [],
                 timeChecks: DJTimeCheckPhrases = DJTimeCheckPhrases()) {
@@ -50,6 +53,7 @@ public struct EditorialTone: Equatable, Sendable {
         self.closing = closing
         self.artistFocus = artistFocus
         self.stationID = stationID
+        self.opener = opener
         self.atmosphere = atmosphere
         self.continuation = continuation
         self.briefingLead = briefingLead
@@ -70,73 +74,77 @@ public struct EditorialTone: Equatable, Sendable {
     /// - Plain text only: no markdown, emoji, URLs, tags or leftover braces. Titles are spoken
     ///   through `SpokenTitle`, so catalog suffixes never reach a voice.
     /// - No facts of our own: no genres, years, chart claims, weather, or clock times.
+    /// - Casual, like a DJ hanging out with a friend (build 34 owner note): no announcer
+    ///   boilerplate or spelled-out forms ("Welcome to", "it is", "you are"), and contractions in
+    ///   at least half of the regular-break lines (`WarmCasualCopyTests`). Slots stay put.
     public static let warm = EditorialTone(
         backAnnounce: [
-            "That's {title} from {artist}.",
-            "{artist} there. {title}.",
-            "That was {artist}, with {title}.",
+            "So that's {title} from {artist}.",
+            "{artist} there. That's {title}.",
+            "That's {artist}, with {title}.",
             "{artist}. {title}.",
-            "There's {title}, from {artist}.",
-            "{title} there, from {artist}.",
-            "You heard {artist}. That's {title}.",
-            "{artist} with {title}, just now.",
-            "Just had {artist} there. {title}.",
-            "{title}. That's {artist}.",
+            "There you go, {title} from {artist}.",
+            "That one's {title}, by {artist}.",
+            "That's {artist} you just heard. {title}.",
+            "Okay, that's {title}. {artist}.",
+            "Just had {artist} on. {title}.",
+            "{title}. That's {artist}, by the way.",
         ],
         // Ten lines, one sentence each, at most seven words, so it fits `DJCadence.maxClosingSeconds`
         // and lands before the vocal. Every line names the next title. `DJNarrationTests` and
         // `RadioStyleBreakTests` cycle this pool, so its size is a multiple of five.
         closing: [
-            "Here's {nextArtist}, with {nextTitle}.",
-            "Here's {nextTitle}, from {nextArtist}.",
-            "This is {nextArtist}, {nextTitle}.",
+            "Let's hear {nextTitle} by {nextArtist}.",
+            "Here's one from {nextArtist}, {nextTitle}.",
+            "We're going with {nextArtist}, {nextTitle}.",
             "And this one's {nextTitle}.",
-            "Now, {nextArtist} with {nextTitle}.",
-            "Coming up, {nextTitle} from {nextArtist}.",
+            "Now we've got {nextArtist}, {nextTitle}.",
+            "Alright, {nextTitle} from {nextArtist}.",
             "Here comes {nextTitle}.",
-            "{nextArtist} now, with {nextTitle}.",
-            "Right now, it's {nextTitle}.",
+            "Here's {nextArtist} now, {nextTitle}.",
+            "Got {nextTitle} for you now.",
             "Next up, it's {nextTitle}.",
         ],
         artistFocus: [
-            "That was {artist}.",
-            "{artist}, with {title}.",
+            "That's {artist}, if you were wondering.",
+            "Yep, {artist}. That's {title}.",
             "A little {artist} for you.",
-            "Some {artist} there. {title}.",
-            "That's {artist}.",
+            "There's {artist} for you. {title}.",
+            "Yeah, that's {artist}.",
             "{artist}, right there.",
-            "One from {artist}.",
+            "Got one from {artist} there.",
             "Bit of {artist} there.",
         ],
         stationID: [
-            "{station}. Stick around.",
+            "{station}. Stick around a while.",
             "You're on {station}.",
-            "This is {station}.",
-            "You're tuned to {station}.",
+            "Still hanging out on {station}.",
+            "You've got {station} on.",
             "{station}. Good to have you.",
-            "It's {station}.",
-            "{station}, keeping you company.",
+            "It's {station}, just so you know.",
+            "{station}'s got you covered.",
             "Right here on {station}.",
         ],
+        opener: .warm,
         atmosphere: [
-            .earlyMorning: ["Quiet start — no rush.", "Early one. Take it slow.", "Still early out there.",
-                            "The day's just getting going."],
-            .morning: ["Nice steady morning.", "Morning's rolling along.", "Take your time with it.",
-                       "Keeping the morning moving."],
-            .afternoon: ["Afternoon stretch.", "Afternoon groove.", "Keeping the afternoon going.",
-                         "Afternoon — keep it easy."],
-            .evening: ["Evening's settling in.", "Winding down now. No rush.", "Settle in tonight.",
-                       "Evening — take a breath."],
-            .lateNight: ["Late hours. Quiet stretch.", "Still up? Glad you're here.", "Night owls, this one's yours.",
-                         "Late one. Keep it low."],
+            .earlyMorning: ["Quiet start. No rush at all.", "Early one, huh? We'll take it slow.",
+                            "It's still pretty early out there.", "Day's just getting going."],
+            .morning: ["It's a nice steady morning.", "Morning's rolling along.", "Take your time, there's no rush.",
+                       "We'll keep the morning moving."],
+            .afternoon: ["Ah, the afternoon stretch.", "Afternoon's cruising along.", "We'll keep the afternoon going.",
+                         "It's the afternoon. Keep it easy."],
+            .evening: ["Evening's settling in.", "We're winding down now. No rush.", "Kick back, it's evening.",
+                       "Evening. Go ahead and take a breath."],
+            .lateNight: ["It's late. Quiet stretch now.", "Still up? Glad you're here.", "Night owls, this one's yours.",
+                         "Late one. We'll keep it low."],
         ],
         continuation: [
-            "More on the way.",
+            "There's more on the way.",
             "Stay right there.",
             "We'll keep it rolling.",
             "Thanks for hanging out.",
-            "Okay. Back to it.",
-            "Plenty more coming.",
+            "Okay, let's keep going.",
+            "We've got plenty more.",
             "Don't go anywhere.",
             "Lots more music ahead.",
         ],
@@ -168,14 +176,14 @@ public struct EditorialTone: Equatable, Sendable {
             .lateNight: ["Late one tonight.", "Still up? Good.", "Hey, night owl."],
         ],
         combined: [
-            "That was {title}. Here's {nextTitle}.",
-            "{artist} there. And here's {nextArtist}.",
-            "That's {title}. Coming up, {nextTitle}.",
-            "{title}, from {artist}. Now, {nextTitle}.",
-            "That was {artist}. Next, {nextArtist}.",
+            "That was {title}. Now here's {nextTitle}.",
+            "{artist} there. Now let's hear {nextArtist}.",
+            "That's {title}. We'll go to {nextTitle} next.",
+            "{title}, from {artist}. Next it's {nextTitle}.",
+            "Okay, that's {artist}. Here comes {nextArtist}.",
             "{artist}, {title}. And this one's {nextArtist}.",
-            "Out of {artist}, into {nextArtist}.",
-            "{title} there. Up next, {nextArtist}.",
+            "We're going from {artist} to {nextArtist}.",
+            "{title} there. Up next, it's {nextArtist}.",
         ],
         // Fry's #347 copy, verbatim: `DJTimeCheckPhrases`' defaults are warm's bank.
         timeChecks: DJTimeCheckPhrases()
@@ -228,6 +236,7 @@ public struct EditorialTone: Equatable, Sendable {
             "Right where you should be, {station}.",
             "This is {station}. Here we go.",
         ],
+        opener: .upbeat,
         atmosphere: [
             .earlyMorning: ["Early start. Let's get moving.", "Up and at it.", "Fresh start out there.",
                             "Early crew, this one's for you."],
@@ -343,6 +352,7 @@ public struct EditorialTone: Equatable, Sendable {
             "{station}. Make yourself at home.",
             "This is {station}. Take your time.",
         ],
+        opener: .laidBack,
         atmosphere: [
             .earlyMorning: ["Soft start this morning.", "Early and easy.", "Slow start, nothing to chase.",
                             "Early hours. Breathe easy."],
@@ -457,6 +467,7 @@ public struct EditorialTone: Equatable, Sendable {
             "We're {station}.",
             "{station}. Stay put.",
         ],
+        opener: .minimal,
         atmosphere: [
             .earlyMorning: ["Early.", "Early start.", "Quiet, early.", "Early hours."],
             .morning: ["Morning.", "Morning, steady.", "Morning set.", "Morning's going."],

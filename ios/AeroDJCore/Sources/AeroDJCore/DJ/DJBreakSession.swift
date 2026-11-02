@@ -34,6 +34,8 @@ public final class DJBreakSession {
     private var briefing: NarrationHandoff?
     private var breaks: [Int: DJBreak] = [:]
     private var plannedWith: DJCadence?
+    /// The DJ personality the current plan was written in (its tone picks the copy bank).
+    private var plannedPersonality: DJPersonality?
     /// Why the last `naturalBoundary` handed out no break, and whether the cadence had planned
     /// one there. Read-only; nothing decides on it (the P0 trace's boundary row reads it).
     public private(set) var lastNoBreak: (reason: DJBreakSkipReason, cadencePlanned: Bool)?
@@ -79,6 +81,16 @@ public final class DJBreakSession {
     /// The committed station when the pending queue was reserved, to catch a save that lands
     /// between the tap and `queueStarted` (the feed keys the queue inside `music.play`).
     private var reservedStation: StationQueueKey??
+    /// Show opener on a new station (-Fry, for Echo's #359): the `StationQueueKey` of the station
+    /// the last queue was started for (outer nil: no queue yet). This is the value the feed records
+    /// for every queue start (`StationQueueKey(committedDisplayed)`), and `queueStarted` reopens the
+    /// show (`DJScriptWriter.greetAgain()`) only when its SEED part differs (Echo, #362): reach and
+    /// discovery are tuning sliders on the same station, so their new queue keeps the show going.
+    /// A refill, a re-queue or restart on the same station, a skip, or a genre, mood, personality,
+    /// energy or briefing edit never re-greets (none is in the key; the feed starts no new queue for
+    /// them). A tags-only station has no key (nil); switching between two tags-only stations does
+    /// not re-greet (known gap until stations have a real id).
+    private var openedStation: StationQueueKey??
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -122,7 +134,10 @@ public final class DJBreakSession {
         self.dj = dj
         self.base = base
         self.hour = hour
-        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed, shapes: .natural)
+        // The station's DJ personality picks the copy bank (lane 4, docs/dj-persona.md). Only the
+        // words change: no new data, request or provider (-Fry, agreed with Echo).
+        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed,
+                                     tone: .forPersonality(station.active.personality), shapes: .natural)
     }
 
     /// Forwards preparer events to the DJ status and follows station changes. Call once.
@@ -281,6 +296,11 @@ public final class DJBreakSession {
         if let reserved = reservedStation, reserved != committed { queueStation = .unknown }
         else { queueStation = .known(committed) }
         reservedStation = nil
+        // A different station opens the show again. Its old queue's opener, if it already aired,
+        // stays remembered by `forgetPlannedBreaks` above, so without this the new station would
+        // start with no opener. Anti-repeat memory is kept: the new opener won't echo the old one.
+        if let previous = openedStation, previous?.seeds != committed?.seeds { writer.greetAgain() }
+        openedStation = .some(committed)
         replan(from: 0, keepingThrough: -1)
     }
 
@@ -656,7 +676,10 @@ public final class DJBreakSession {
     }
 
     private func replanIfCadenceChanged(after k: Int) {
-        guard station.active.cadence(base: base) != plannedWith else { return }
+        // A personality change re-plans too, even when its cadence is the same (warm, upbeat
+        // and laid-back share one), so the breaks still to come speak in the new tone.
+        guard station.active.cadence(base: base) != plannedWith
+                || station.active.personality != plannedPersonality else { return }
         replan(from: k + 1, keepingThrough: k)
     }
 
@@ -666,6 +689,8 @@ public final class DJBreakSession {
         let cadence = station.active.cadence(base: base)
         plannedWith = cadence
         writer.cadence = cadence
+        plannedPersonality = station.active.personality
+        writer.setTone(.forPersonality(station.active.personality))
         // Lane 2: breaks past `kept` are planned away before airing; forget them first.
         writer.forgetPlannedBreaks(breaks.filter { $0.key > kept }.map(\.value))
         breaks = breaks.filter { $0.key <= kept }
@@ -702,6 +727,8 @@ public final class DJBreakSession {
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: the planned breaks by boundary (what `replan` wrote).
     var testPlannedBreaks: [Int: DJBreak] { breaks }
+    /// Test hook: the phrase bank the session's writer plans with.
+    var testWriterTone: EditorialTone { writer.tone }
     /// Test hook: called after the `start()` observer has handled a station change (any replan
     /// it causes is done), so a test can wait for it instead of racing the change stream.
     var testOnStationChangeHandled: ((StationConfigurationChange) -> Void)?
