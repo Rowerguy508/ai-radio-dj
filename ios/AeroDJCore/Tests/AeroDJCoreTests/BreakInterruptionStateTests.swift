@@ -60,6 +60,26 @@ final class BreakInterruptionStateTests: XCTestCase {
         XCTAssertEqual(s.phase, .held(line: 1))
     }
 
+    func testNoEndedWithinTheLimitHoldsAndNothingRestarts() {
+        var s = speaking(at: 2)
+        _ = s.interruptionBegan()
+        XCTAssertEqual(s.pauseExpired(), .stayPaused(line: 2))
+        XCTAssertEqual(s.phase, .held(line: 2))
+        XCTAssertEqual(s.interruptionEnded(shouldResume: true, acknowledgementReady: true), .none, "a late end resumes nothing")
+        XCTAssertEqual(s.pauseExpired(), .none)
+        XCTAssertGreaterThan(BreakInterruptionState.maxPausedSeconds, 0)
+    }
+
+    func testPauseExpiryOutsideAPauseIsANoOp() {
+        var s = speaking(at: 1)
+        XCTAssertEqual(s.pauseExpired(), .none)
+        XCTAssertEqual(s.phase, .speaking(line: 1))
+        _ = s.interruptionBegan()
+        _ = s.interruptionEnded(shouldResume: true, acknowledgementReady: true)
+        XCTAssertEqual(s.pauseExpired(), .none, "an acknowledgement on air is not paused")
+        XCTAssertEqual(s.phase, .acknowledging(resumeLine: 1))
+    }
+
     func testBeganWithNoBreakIsANoOp() {
         var s = BreakInterruptionState()
         XCTAssertEqual(s.interruptionBegan(), .none)

@@ -37,7 +37,8 @@ public enum BreakInterruptionAcknowledgement {
 /// - `.ended` with `shouldResume`: one short acknowledgement (`BreakInterruptionAcknowledgement`),
 ///   then the planned script again FROM THE INTERRUPTED LINE (that line restarts from its
 ///   beginning). No acknowledgement clip ready: the script resumes at once (music never waits).
-/// - `.ended` without `shouldResume`: stays held; nothing restarts on its own.
+/// - `.ended` without `shouldResume`, or no `.ended` within `maxPausedSeconds`: stays held;
+///   nothing restarts on its own.
 /// - Talk-over: the voice is pinned to the song's outro, which moved on while the system held
 ///   the music, so the talk-over voice stops cleanly at `.began` and is never replayed.
 /// - Notices with no break on air, a second `.began` or a second `.ended` change nothing.
@@ -136,6 +137,18 @@ public struct BreakInterruptionState: Equatable, Sendable {
         }
         phase = .speaking(line: line)
         return .resume(fromLine: line)
+    }
+
+    /// The longest a break stays paused waiting for `.ended` (Apple does not promise an
+    /// `.ended` for every `.began`). Then it is dropped as for an end without `shouldResume`,
+    /// so no break stays open; `MusicKitService` resumes music at a later `.ended` as before.
+    public static let maxPausedSeconds: Double = 45
+
+    /// No `.ended` within `maxPausedSeconds`: held, nothing restarts.
+    public mutating func pauseExpired() -> Action {
+        guard case .paused(let line) = phase else { return .none }
+        phase = .held(line: line)
+        return .stayPaused(line: line)
     }
 
     /// The acknowledgement finished (or could not play): the script resumes.
