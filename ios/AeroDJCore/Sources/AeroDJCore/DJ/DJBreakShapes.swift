@@ -68,7 +68,8 @@ public struct DJBreakShapeConfig: Equatable, Sendable {
     /// A time check is skipped when the break's known air time is further than this from the
     /// planning clock (the spoken time would be off).
     public var timeCheckMaxDriftSeconds: Double
-    /// Time-check copy. Lives here next to `combined` until Echo moves it into `EditorialTone`.
+    /// Time-check copy. Left at `defaultTimeChecks`, the writer speaks its tone's own bank
+    /// (`EditorialTone.timeChecks`), as with `combined`; any other phrases override it.
     public var timeChecks: DJTimeCheckPhrases
     /// Build 34: the session's first break (no briefing) is a show opener. False keeps the
     /// short greeting.
@@ -78,7 +79,7 @@ public struct DJBreakShapeConfig: Equatable, Sendable {
                 hereWindow: Int = 3, maxBreakSeconds: Int = 12, maxCuesPerBreak: Int = 4,
                 stationIDGraceBreaks: Int = 2, combined: [String] = DJBreakShapeConfig.defaultCombined,
                 timeCheckGraceBreaks: Int = 1, timeCheckMinSpacingSeconds: Double = 30 * 60,
-                timeCheckMaxDriftSeconds: Double = 2 * 60, timeChecks: DJTimeCheckPhrases = DJTimeCheckPhrases()) {
+                timeCheckMaxDriftSeconds: Double = 2 * 60, timeChecks: DJTimeCheckPhrases = DJBreakShapeConfig.defaultTimeChecks) {
         self.timeCheckGraceBreaks = max(0, timeCheckGraceBreaks)
         self.timeCheckMinSpacingSeconds = max(0, timeCheckMinSpacingSeconds)
         self.timeCheckMaxDriftSeconds = max(0, timeCheckMaxDriftSeconds)
@@ -105,6 +106,14 @@ public struct DJBreakShapeConfig: Equatable, Sendable {
     /// The combined lines a writer with `tone` speaks: the tone's bank unless overridden.
     public func combinedLines(for tone: EditorialTone) -> [String] {
         combined == Self.defaultCombined ? tone.combined : combined
+    }
+
+    /// The default marker: `warm`'s time-check bank (Fry's #347 copy, `DJTimeCheckPhrases()`).
+    public static let defaultTimeChecks = EditorialTone.warm.timeChecks
+
+    /// The time-check phrases a writer with `tone` speaks: the tone's bank unless overridden.
+    public func timeCheckPhrases(for tone: EditorialTone) -> DJTimeCheckPhrases {
+        timeChecks == Self.defaultTimeChecks ? tone.timeChecks : timeChecks
     }
 }
 

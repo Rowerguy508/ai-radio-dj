@@ -55,8 +55,9 @@ public enum DJTimeCheckRelation: String, Sendable, CaseIterable {
 }
 
 /// Time-check phrasings. `{time}` is "7:40", "8 o'clock", "noon", "midnight" or "19:40".
-/// One sentence, seven words or fewer, no day-part claims. Copy is Echo's to restyle (and to move
-/// into `EditorialTone` later); the rules in `DJTimeCheck` do not depend on the wording.
+/// One sentence, seven words or fewer, no day-part claims. The defaults are `warm`'s bank; each
+/// persona's own bank is `EditorialTone.timeChecks`. The rules in `DJTimeCheck` do not depend on
+/// the wording.
 public struct DJTimeCheckPhrases: Equatable, Sendable {
     public var on: [String]
     public var comingUp: [String]
