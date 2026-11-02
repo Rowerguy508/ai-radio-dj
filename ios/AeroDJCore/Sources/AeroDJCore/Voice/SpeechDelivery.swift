@@ -22,6 +22,36 @@ public enum SpeechDelivery {
         return s
     }
 
+    /// The only audio tags a tag-reading voice (ElevenLabs v3/v4) may receive; the same list the
+    /// proxy allows. No template uses one yet: tags are off on every route by default.
+    public static let allowedAudioTags = ["warmly", "relaxed", "chuckles", "softly", "excited"]
+
+    /// `speakable` for a route that leaves the device as plain text. Square brackets never reach
+    /// a voice as text: a title like "Song [Live]" becomes "Song Live", so nothing a title or
+    /// user text contains can become an audio tag. Only with `keepingAudioTags` (a route whose
+    /// `supportsAudioTags` is on) does an exact allowlisted tag such as `[warmly]` survive;
+    /// otherwise those are dropped too. Text without brackets is returned exactly as `speakable`.
+    public static func speakable(_ text: String, keepingAudioTags: Bool) -> String {
+        let spoken = speakable(text)
+        guard spoken.contains("[") || spoken.contains("]") else { return spoken }
+        let pattern = #"\[\s*("# + allowedAudioTags.joined(separator: "|") + #")\s*\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return spoken }
+        let ns = spoken as NSString
+        var out = ""
+        var last = 0
+        for match in regex.matches(in: spoken, range: NSRange(location: 0, length: ns.length)) {
+            out += stripBrackets(ns.substring(with: NSRange(location: last, length: match.range.location - last)))
+            out += keepingAudioTags ? " [\(ns.substring(with: match.range(at: 1)).lowercased())] " : " "
+            last = match.range.location + match.range.length
+        }
+        out += stripBrackets(ns.substring(from: last))
+        return out.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private static func stripBrackets(_ s: String) -> String {
+        s.replacingOccurrences(of: "[", with: " ").replacingOccurrences(of: "]", with: " ")
+    }
+
     /// SSML 1.1 subset (`speak`, `break`) accepted by AVSpeechUtterance(ssmlRepresentation:)
     /// and SSML-capable cloud voices. Text is XML-escaped.
     public static func ssml(_ text: String) -> String {

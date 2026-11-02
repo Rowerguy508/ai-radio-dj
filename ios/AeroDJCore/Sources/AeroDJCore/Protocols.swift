@@ -37,9 +37,16 @@ public struct VoiceProfile: Codable, Equatable, Sendable {
 public struct RequestContext: Codable, Equatable, Sendable {
     public let stationID: String
     public let isReusableGeneric: Bool
-    public init(stationID: String, isReusableGeneric: Bool) {
+    /// The spoken line just before this one in the same break, for a provider that stitches
+    /// requests (ElevenLabs `previous_text`). Context only: never spoken, never billed by us.
+    public let previousText: String?
+    /// The spoken line just after this one in the same break (ElevenLabs `next_text`).
+    public let nextText: String?
+    public init(stationID: String, isReusableGeneric: Bool, previousText: String? = nil, nextText: String? = nil) {
         self.stationID = stationID
         self.isReusableGeneric = isReusableGeneric
+        self.previousText = previousText
+        self.nextText = nextText
     }
 }
 

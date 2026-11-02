@@ -70,10 +70,18 @@ public struct ProxyVoiceProvider: VoiceProvider {
         request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(try await configuration.sessionToken())", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode([
+        var body = [
             "upstream": configuration.upstream.rawValue, "voiceId": voice.id, "text": text,
             "format": text.hasPrefix("<speak>") ? "ssml" : "text", "stationId": context.stationID,
-        ])
+        ]
+        // Stitching context (ElevenLabs only, proxy #364): the neighbouring lines of the same
+        // break, so each line is intonated as part of one thought. Omitted when absent, so a
+        // request without context is byte-for-byte the old contract.
+        if configuration.upstream == .elevenlabs {
+            if let previous = Self.context(context.previousText, keep: .end) { body["previousText"] = previous }
+            if let next = Self.context(context.nextText, keep: .start) { body["nextText"] = next }
+        }
+        request.httpBody = try JSONEncoder().encode(body)
         let data: Data
         let response: HTTPURLResponse
         do {
@@ -108,5 +116,19 @@ public struct ProxyVoiceProvider: VoiceProvider {
         let billed = response.value(forHTTPHeaderField: "X-Billed-Characters").flatMap(Int.init) ?? text.count
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: billed,
                              provider: configuration.upstream.rawValue, cacheKey: nil)
+    }
+
+    /// The proxy keeps at most this many characters of each context side (`MAX_CONTEXT_CHARS`).
+    public static let maxContextCharacters = 300
+
+    enum ContextSide { case start, end }
+
+    /// Trimmed context: nil when empty; at most `maxContextCharacters`, keeping the side nearest
+    /// the spoken line (the end of the previous line, the start of the next one).
+    static func context(_ text: String?, keep: ContextSide) -> String? {
+        guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        guard trimmed.count > maxContextCharacters else { return trimmed }
+        let cut = keep == .end ? String(trimmed.suffix(maxContextCharacters)) : String(trimmed.prefix(maxContextCharacters))
+        return cut.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

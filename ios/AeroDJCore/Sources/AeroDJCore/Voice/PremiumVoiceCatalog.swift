@@ -163,7 +163,10 @@ public enum PremiumVoiceRoutes {
                                                                   backoff: backoff),
                                voice: VoiceProfile(id: option.id, name: option.displayName),
                                microdollarsPerThousandCharacters: 0, timeout: timeout, acceptsSSML: false,
-                               leavesDevice: true)
+                               leavesDevice: true,
+                               // Neighbouring lines go as stitching context (proxy #364). Audio tags
+                               // stay off until the owner moves the proxy to a tag-reading model.
+                               sendsSpeechContext: true, supportsAudioTags: false)
         return Composition(routes: [route] + onDevice, decision: .included(catalogIndex: index))
     }
 
