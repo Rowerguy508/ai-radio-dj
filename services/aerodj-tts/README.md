@@ -33,8 +33,33 @@ Authorization: Bearer <owner token>
 Content-Type: application/json
 
 { "upstream": "elevenlabs", "voiceId": "<allowlisted id>", "text": "...",
-  "format": "text" | "ssml", "stationId": "..." }
+  "format": "text" | "ssml", "stationId": "...",
+  "previousText": "...", "nextText": "...", "previousRequestIds": ["..."] }
 ```
+
+`previousText`, `nextText` and `previousRequestIds` are optional (older app
+builds send none, and their request to ElevenLabs is unchanged). They carry
+the neighbouring lines of the same DJ break so ElevenLabs intonates each line
+as part of one thought (request stitching):
+
+- `previousText` / `nextText`: strings, forwarded as `previous_text` /
+  `next_text`. Not spoken and not charged to our caps. Each is reduced to
+  plain text with brackets removed, then trimmed to 300 characters (previous
+  keeps its end, next keeps its start). A non-string, or one over 2,400
+  characters, is 400.
+- `previousRequestIds`: at most 3 ElevenLabs request ids
+  (`^[A-Za-z0-9_-]{1,64}$`), forwarded as `previous_request_ids`. Anything
+  else is 400. A 200 returns ElevenLabs' own id as `X-Upstream-Request-Id`
+  when it has that shape.
+- None of the three are sent to `eleven_v3` (request stitching is not
+  available on v3).
+
+Square brackets never reach a model as text: they are removed from the
+spoken text and the context (a title like "Song [Live]" is spoken as "Song
+Live"). Only on a model that reads audio tags (`eleven_v3`, `eleven_v4`,
+`eleven_v4_turbo`) does an exact allowlisted tag survive in the spoken text:
+`[warmly]`, `[relaxed]`, `[chuckles]`, `[softly]`, `[excited]`. On every other
+model those tags are dropped. Characters are counted after this step.
 
 Success: `200`, `Content-Type: audio/wav` (16-bit mono 22,050 Hz PCM in a RIFF
 header), body non-empty and at most 5 MB, plus
@@ -43,13 +68,15 @@ header), body non-empty and at most 5 MB, plus
 - `X-Billed-Characters`: ElevenLabs' `character-cost` response header when it
   is present and numeric, otherwise the number of characters sent
 - `X-Request-Id`
+- `X-Upstream-Request-Id`: ElevenLabs' `request-id`, only when present and
+  shaped `^[A-Za-z0-9_-]{1,64}$`
 
 Errors return a generic JSON body `{ "error": "...", "requestId": "..." }` and
 never echo user input or the upstream response:
 
 | Status | When |
 | --- | --- |
-| 400 | invalid JSON, `upstream` not `elevenlabs`, voice not allowlisted, empty/too-long text, bad `format` |
+| 400 | invalid JSON, `upstream` not `elevenlabs`, voice not allowlisted, empty/too-long text, bad `format`, a bad `previousText`/`nextText`/`previousRequestIds` |
 | 401 | missing, malformed or wrong bearer token |
 | 405 | any method other than POST |
 | 429 | per-minute rate limit or a daily character cap reached (`Retry-After` and `reason` set, see below) |
@@ -87,23 +114,27 @@ spoken text is then held to the normal cap.
 
 ## Voice settings (fixed server-side)
 
-Every render sends the owner-approved radio tuning:
+Every render sends the owner-approved radio tuning (intonation plan,
+2026-11-02: stability 0.40 -> 0.32, speed 1.0 -> 1.03), with only the fields
+the model supports:
 
-```json
-"voice_settings": { "stability": 0.4, "similarity_boost": 0.75, "speed": 1.0 }
-```
+| Model | `voice_settings` |
+| --- | --- |
+| `eleven_flash_v2_5` (default), Turbo v2.5, Multilingual v2 | `{ "stability": 0.32, "similarity_boost": 0.75, "speed": 1.03 }` |
+| `eleven_v4`, `eleven_v4_turbo` | `{ "stability": 0.32, "similarity_boost": 0.75 }` (v4 has no style or speed) |
+| `eleven_v3` | `{ "stability": 0.5, "similarity_boost": 0.75 }` (v3 stability is 0 / 0.5 / 1) |
 
-- Set in `VOICE_SETTINGS` in `src/handler.ts`, not by env and not by the
-  client: the request contract carries no voice settings, and any
-  `voice_settings`, `style`, `speed` or `model_id` field a client adds is
-  ignored.
-- No `style` and no `use_speaker_boost` are sent.
-- `speed` is fixed at 1.0, inside the approved 1.0-1.05 range. Changing it
+- Set in `VOICE_SETTINGS`, `V4_VOICE_SETTINGS` and `V3_VOICE_SETTINGS` in
+  `src/handler.ts`, not by env and not by the client: the request contract
+  carries no voice settings, and any `voice_settings`, `style`, `speed` or
+  `model_id` field a client adds is ignored.
+- No `style` (so the API default 0) and no `use_speaker_boost` are sent.
+- `speed` is fixed at 1.03, inside the approved 1.0-1.05 range. Changing it
   (or any other value) is a code change with review, never an env edit.
-- The model is unchanged: `eleven_flash_v2_5` unless `ELEVENLABS_MODEL_ID`
-  overrides it.
-- Voice settings do not affect the character caps: only the spoken text is
-  counted.
+- The model is `eleven_flash_v2_5` unless `ELEVENLABS_MODEL_ID` overrides it.
+  Moving to a 2x-credit model (v4, v3, Multilingual v2) is an owner decision.
+- Voice settings and stitching context do not affect the character caps:
+  only the spoken text is counted.
 
 ## Auth: owner-only bearer token (interim)
 
@@ -373,7 +404,7 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `ELEVENLABS_API_KEY` | yes | Server-only. Restricted key, Text to Speech only. Production scope only. |
 | `AERODJ_TTS_TOKEN_SHA256` | yes | 64-char hex SHA-256 of the owner token. Never the token itself. |
 | `AERODJ_TTS_VOICE_IDS` | yes | Comma-separated ElevenLabs voice ID allowlist. |
-| `ELEVENLABS_MODEL_ID` | no | Default `eleven_flash_v2_5`. |
+| `ELEVENLABS_MODEL_ID` | no | Default `eleven_flash_v2_5`. Picks the `voice_settings` family above and whether audio tags and stitching are sent. |
 | `AERODJ_TTS_MAX_TEXT_CHARS` | no | Default 600. |
 | `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP` | no | Global daily ceiling. Default: `AERODJ_TTS_DAILY_CHAR_CAP`, else 9000. |
 | `AERODJ_TTS_DAILY_CHAR_CAP` | no | Legacy name, used for the global ceiling when the new name is unset. |
