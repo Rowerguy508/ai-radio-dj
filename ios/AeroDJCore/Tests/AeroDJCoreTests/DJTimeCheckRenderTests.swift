@@ -690,8 +690,8 @@ final class DJTimeCheckRenderTests: XCTestCase {
         XCTAssertEqual(b?.talkOverCueID, planned.talkOverCueID)
     }
 
-    /// The per-cue paid-voice gate (#255) covers the late line too: Pro + consent withdrawn while
-    /// the time check waits drops only that line, before any paid request. The rest airs. -Nova
+    /// The late time-check paid-voice gate (#255): Pro + consent withdrawn while
+    /// the time check waits drops only that line as `.noVoice`, before any paid request. The rest airs. -Nova
     func testPaidTimeCheckIsDroppedWhenProVoiceIsWithdrawnBeforeItRenders() async {
         let clock = Clock(date(9, 40))
         let paid = ScriptedVoice()
@@ -714,6 +714,6 @@ final class DJTimeCheckRenderTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(150))
         assertRestOnly(await Self.ready(p), planned)
         XCTAssertEqual(paid.texts.count, 1, "the late line never reaches the paid voice")
-        assertDropped(await p.takeBreak(afterTrack: 0), planned, .renderFailed, drops)
+        assertDropped(await p.takeBreak(afterTrack: 0), planned, .noVoice, drops)
     }
 }
