@@ -689,4 +689,94 @@ final class DJTimeCheckRenderTests: XCTestCase {
         XCTAssertEqual(b.map { Set($0.attributions.keys) }, Set([planned.cues[1].id, planned.cues[2].id]))
         XCTAssertEqual(b?.talkOverCueID, planned.talkOverCueID)
     }
+
+    // MARK: Paid-voice gate (#255, Sentinel spend blocker)
+
+    /// Flags when the time-check wait starts, then waits until cancelled (never on its own).
+    private final class HeldWait: @unchecked Sendable {
+        private let lock = NSLock()
+        private var started = false
+        var hasStarted: Bool { lock.withLock { started } }
+        func wait() async throws {
+            lock.withLock { started = true }
+            try await Task.sleep(for: .seconds(3600))
+        }
+    }
+
+    private func paidPreparer(_ paid: ScriptedVoice, access: ProVoiceAccess, clock: Clock,
+                              sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void) -> DJBreakPreparer {
+        let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000, calendar: eastern, now: { clock.now })
+        let p = DJBreakPreparer(renderer: VoiceRenderer(routes: [route("paid", paid, microdollarsPerThousand: 1000)], budget: budget,
+                                                        cache: InMemoryAudioCache(), revocations: NarrationRevocations()),
+                                userID: "u", stationID: "s", paidVoice: access, talkOverEnabled: { true },
+                                now: { clock.now }, sleepUntil: sleepUntil)
+        made.append(p)
+        return p
+    }
+
+    private func proAccess(_ consent: SwitchableConsent) -> ProVoiceAccess {
+        ProVoiceAccess(entitlement: FixedEntitlement(.pro(productID: ProSubscriptionConfig.monthlyProductID, expiresAt: .distantFuture)),
+                       consent: consent)
+    }
+
+    /// The late time-check paid-voice gate (#255): Pro + consent withdrawn while
+    /// the time check waits drops only that line as `.noVoice`, before any paid request. The rest airs.
+    /// From Nova's #258 (a8a1981); here the fixed wait is replaced by waiting for the recorded drop. -Nova, -Fry
+    func testPaidTimeCheckIsDroppedWhenProVoiceIsWithdrawnBeforeItRenders() async {
+        let clock = Clock(date(9, 40))
+        let paid = ScriptedVoice()
+        let consent = SwitchableConsent(true)
+        let p = paidPreparer(paid, access: proAccess(consent), clock: clock, sleepUntil: { _ in consent.set(false) })
+        let planned = timeCheckBreak()
+        let drops = await drops(p)
+        await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
+        let dropped = await eventually { await p.testTimeCheckDrop(afterTrack: 0) == .noVoice }
+        XCTAssertTrue(dropped, "the refused check drops the line as .noVoice")
+        assertRestOnly(await Self.ready(p), planned)
+        XCTAssertEqual(paid.texts, [Self.closingText], "zero paid-voice calls for the late line: only the closing line was sent")
+        assertDropped(await p.takeBreak(afterTrack: 0), planned, .noVoice, drops)
+        XCTAssertEqual(paid.texts.count, 1, "the take adds no paid call")
+    }
+
+    /// Sentinel, #255: `dropPaidVoiceBreaks` with the time-check line still waiting cancels it and
+    /// clears its time-check state (planned check, drop reason, deadline; the air time goes with the
+    /// result), as `purge` does. The line never renders, and a later break at that boundary is not
+    /// handed a stale `.late` or `.taken` for it. -Fry
+    func testDroppingPaidVoiceBreaksCancelsAPendingTimeCheckAndClearsItsState() async {
+        let clock = Clock(date(9, 40))
+        let paid = ScriptedVoice()
+        let consent = SwitchableConsent(true)
+        let held = HeldWait()
+        let p = paidPreparer(paid, access: proAccess(consent), clock: clock, sleepUntil: { _ in try await held.wait() })
+        let planned = timeCheckBreak()
+        let drops = await drops(p)
+        await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
+        let waiting = await eventually { held.hasStarted }
+        XCTAssertTrue(waiting, "the rest rendered and the time check is waiting for its window")
+        let before = await p.testTimeCheckState(afterTrack: 0)
+        XCTAssertTrue(before.planned && before.deadline, "time-check state is set while the line waits")
+        let readyRest = await Self.ready(p)
+        assertRestOnly(readyRest, planned)
+
+        consent.set(false)
+        let dropped = await p.dropPaidVoiceBreaks()
+        XCTAssertEqual(dropped, [0])
+        let after = await p.testTimeCheckState(afterTrack: 0)
+        XCTAssertFalse(after.planned, "planned time check cleared")
+        XCTAssertNil(after.drop, "no drop reason left behind")
+        XCTAssertFalse(after.deadline, "render deadline cleared")
+        let result = await p.testResult(afterTrack: 0)
+        XCTAssertNil(result, "the ready break and its air time are gone")
+        let inFlight = await p.testInFlight
+        XCTAssertEqual(inFlight, [], "the waiting time-check task was cancelled")
+
+        // A break recorded at boundary 0 afterwards (as a re-prepare without the line would) is
+        // taken without any time-check verdict carried over from the dropped render.
+        guard let readyRest else { return XCTFail("the rest was ready before the drop") }
+        await p.testRecord(.ready(readyRest), afterTrack: 0)
+        guard case .ready(let taken) = await p.takeBreak(afterTrack: 0) else { return XCTFail("the recorded break airs") }
+        XCTAssertNil(taken.droppedTimeCheck, "no stale .late or .taken from the dropped render")
+        XCTAssertEqual(drops.all, [], "no time-check drop reported")
+        XCTAssertEqual(paid.texts, [Self.closingText], "the time-check line never reached the paid voice")
+    }
 }

@@ -130,10 +130,14 @@ final class OwnerTrialIsFlagOnlyTests: XCTestCase {
         // The owner picker preview has no owner access to show.
         XCTAssertEqual(ProVoiceGate.ownerPickerAccess, .denied(.notPro))
         XCTAssertFalse(ProVoiceGate.ownerPickerAccess.permitsPaidVoice)
-        let picker = PremiumVoicePickerStatus.pendingDecision(
-            paidProvidersEnabled: true, selectedVoiceID: PremiumVoiceCatalog.voices[0].id,
-            endpoint: PremiumVoiceRoutes.defaultEndpoint, enteredToken: "t", hasSavedToken: true)
-        XCTAssertEqual(picker, .omitted(.notEntitled), "even forced on, the picker route has no owner access")
+        // The picker helpers (`PremiumVoicePickerStatus`) are not compiled into this build at all;
+        // the Release needle in check-release-disables-paid-voice.sh and ios.yml checks that. -Echo
+        // Even forced on, a compose with the picker's access has no owner access.
+        let picker = PremiumVoiceRoutes.compose(
+            onDevice: [], paidProvidersEnabled: true, access: ProVoiceGate.ownerPickerAccess,
+            selectedVoiceID: PremiumVoiceCatalog.voices[0].id,
+            credentials: PremiumProxyCredentials(endpoint: URL(string: PremiumVoiceRoutes.defaultEndpoint)!, token: "t"))
+        XCTAssertEqual(picker.decision, .omitted(.notEntitled), "even forced on, the picker route has no owner access")
         XCTAssertFalse(OwnerVoiceTrial.paidProvidersEnabled)
     }
     #else

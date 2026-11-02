@@ -29,6 +29,9 @@ public enum DJBreakSkipReason: String, Codable, Equatable, Sendable, CaseIterabl
     /// Build 18 P0: the system was still holding playback (a call, another app's audio) when
     /// the break would have started, so it was skipped.
     case interrupted
+    /// Pro or paid-voice consent ended (expiry, refund, revocation, withdrawal) after this
+    /// break was prepared with the paid voice or a bundled clip: it is not played (-Echo).
+    case paidVoiceRevoked
 }
 
 /// Why a planned time-check line did not air (#347). Only that line is dropped; the rest of
@@ -121,6 +124,10 @@ public actor DJBreakPreparer {
     /// Bundled pre-rendered presenter lines, tried per whole cue before the renderer. Nil or an
     /// empty manifest (build 27) changes nothing.
     private let bundledClips: BundledClipResolver?
+    /// The Pro + consent gate for the paid voice (`ProVoiceGate`), asked once per cue while a
+    /// break renders and again when a prepared break is taken. Nil: no gate (tests whose
+    /// renderer has no paid route). The app passes it through `init(voice:...)` (-Echo).
+    private let paidVoice: ProVoiceAccess?
     /// Whether DJ talk-over is on, read when a render starts (`prepare`, `rearm`). P0 build 26
     /// (-Fry): the 4 s closing cap is a talk-over cap, so it only applies while this is true.
     private let talkOverEnabled: @Sendable () -> Bool
@@ -140,6 +147,10 @@ public actor DJBreakPreparer {
     /// still playing) must not render, and spend on, a second break (-Fry, Sentinel #210).
     /// Cleared with everything else by `cancelAll()` (new queue: indices restart).
     private var taken: Set<Int> = []
+    /// One token per in-flight take check (Sentinel/Fry, #255). A re-take of the boundary or a
+    /// cancelAll() clears it, so a check that finishes after either writes and hands out nothing.
+    private var takeTokens: [Int: UInt64] = [:]
+    private var nextTakeToken: UInt64 = 0
     /// #347: the planned time check of each boundary being prepared, and why its line was
     /// dropped before the take (late, failed, over cap, no voice). Read and cleared by `takeBreak`.
     private var timeChecks: [Int: DJPlannedTimeCheck] = [:]
@@ -181,15 +192,25 @@ public actor DJBreakPreparer {
         case skipped(afterTrack: Int, DJBreakSkipReason)
     }
 
+    /// The app's init: the renderer and its Pro + consent gate travel together (`PaidVoice`),
+    /// so a renderer with a paid route is never prepared without the per-cue gate (-Echo).
+    public init(voice: PaidVoice, userID: String, stationID: String, cadence: DJCadence = .init(),
+                talkOverEnabled: @escaping @Sendable () -> Bool = { DJTalkoverFlag.isEnabled() },
+                bundledClips: BundledClipResolver? = nil) {
+        self.init(renderer: voice.renderer, userID: userID, stationID: stationID, cadence: cadence,
+                  bundledClips: bundledClips, paidVoice: voice.access, talkOverEnabled: talkOverEnabled)
+    }
+
     /// `talkOverEnabled` defaults to `DJTalkoverFlag.isEnabled()` (the DIAG override, else the
     /// `AERODJ_OWNER_AB` build default), the same flag `TalkoverCoordinator` reads.
     public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
+                bundledClips: BundledClipResolver? = nil, paidVoice: ProVoiceAccess? = nil,
                 talkOverEnabled: @escaping @Sendable () -> Bool = { DJTalkoverFlag.isEnabled() },
-                bundledClips: BundledClipResolver? = nil,
                 now: @escaping @Sendable () -> Date = DJBreakPreparer.systemNow,
                 sleepUntil: (@Sendable (ContinuousClock.Instant) async throws -> Void)? = nil) {
         self.renderer = renderer
         self.bundledClips = bundledClips
+        self.paidVoice = paidVoice
         self.now = now
         // Nil default, filled in here: an async function value in a default argument is emitted
         // into every client object, and Swift 6.3.3 gives those copies a smaller async context
@@ -265,7 +286,7 @@ public actor DJBreakPreparer {
         if let timeCheck { rest = Self.removing(timeCheck.cueID, from: djBreak) } else { rest = djBreak }
         let end = ContinuousClock.now + deadline
         let now = now, sleepUntil = sleepUntil
-        let bundled = bundledClips
+        let bundled = bundledClips, paid = paidVoice
         timeChecks[k] = timeCheck
         timeCheckDrops[k] = nil
         timeCheckDeadlines[k] = timeCheck == nil ? nil : end
@@ -277,7 +298,7 @@ public actor DJBreakPreparer {
         // an await except the escaping `@Sendable` work given to `withTimeout`. -Fry
         tasks[k] = Task { [weak self] in
             let outcome = await Self.renderRest(rest, renderer: renderer, userID: userID, stationID: stationID,
-                                                cap: cap, deadline: deadline, bundled: bundled)
+                                                cap: cap, deadline: deadline, bundled: bundled, paidVoice: paid)
             await self?.finish(k, outcome)
             guard let timeCheck, let plannedLine, let renderer, case .ready(let main) = outcome else { return }
             // Same task, same deadline: wait for the time-check window (cancelled by takeBreak,
@@ -285,7 +306,7 @@ public actor DJBreakPreparer {
             // Cancelled here or below: taken first (`takeBreak` reports it) or cancelled.
             let late = await Self.renderTimeCheck(timeCheck, plannedLine, after: main, in: djBreak, renderer: renderer,
                                                   userID: userID, stationID: stationID, end: end,
-                                                  now: now, sleepUntil: sleepUntil)
+                                                  now: now, sleepUntil: sleepUntil, paidVoice: paid)
             guard !Task.isCancelled else { return }
             switch late {
             case .cancelled: return
@@ -302,12 +323,13 @@ public actor DJBreakPreparer {
 
     /// Step 1 of a prepare task: every cue but the held-back time check, under the deadline.
     nonisolated static func renderRest(_ rest: DJBreak, renderer: VoiceRenderer?, userID: String, stationID: String,
-                                       cap: BreakCap, deadline: Duration,
-                                       bundled: BundledClipResolver? = nil) async -> DJBreakOutcome {
+                                       cap: BreakCap, deadline: Duration, bundled: BundledClipResolver? = nil,
+                                       paidVoice: ProVoiceAccess? = nil) async -> DJBreakOutcome {
         guard let renderer else { return .skipped(.renderFailed) }
         guard !rest.cues.isEmpty else { return .skipped(.notPlanned) }
         let work: @Sendable () async -> DJBreakOutcome = {
-            await render(rest, renderer: renderer, userID: userID, stationID: stationID, cap: cap, bundled: bundled)
+            await render(rest, renderer: renderer, userID: userID, stationID: stationID, cap: cap,
+                         bundled: bundled, paidVoice: paidVoice)
         }
         guard let outcome = try? await VoiceRenderer.withTimeout(deadline, work) else { return .skipped(.timedOut) }
         return outcome
@@ -325,10 +347,18 @@ public actor DJBreakPreparer {
                                             after main: PreparedDJBreak, in djBreak: DJBreak, renderer: VoiceRenderer,
                                             userID: String, stationID: String, end: ContinuousClock.Instant,
                                             now: @escaping @Sendable () -> Date,
-                                            sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void)
+                                            sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void,
+                                            paidVoice: ProVoiceAccess? = nil)
         async -> LateTimeCheck {
         guard (try? await sleepUntil(end - timeCheckLead)) != nil, !Task.isCancelled else { return .cancelled }
         guard let voice = sameVoice(as: main, in: renderer) else { return .dropped(.noVoice) }
+        // Paid-voice gate for this cue too (-Echo, #255): the line is never re-voiced, so with
+        // Pro or consent gone a paid-route voice is not available for it and the line is dropped
+        // before any provider is asked. The rest of the break is re-checked at the take.
+        if voice.routes.contains(where: { !$0.isLocalAndFree }), let paidVoice,
+           await !paidVoice.decision().permitsPaidVoice {
+            return .dropped(.noVoice)
+        }
         // The time it will be on air (Echo, #347): now plus what is left before the boundary.
         let toAir = end - ContinuousClock.now + boundaryMargin
         let airTime = now().addingTimeInterval(seconds(toAir))
@@ -471,6 +501,10 @@ public actor DJBreakPreparer {
     var testInFlight: Set<Int> { Set(tasks.keys) }
     /// Test hook: why boundary `k`'s time-check line was dropped before the take, if it was.
     func testTimeCheckDrop(afterTrack k: Int) -> DJTimeCheckDropReason? { timeCheckDrops[k] }
+    /// Test hook: boundary `k`'s time-check state (planned check, recorded drop, render deadline).
+    func testTimeCheckState(afterTrack k: Int) -> (planned: Bool, drop: DJTimeCheckDropReason?, deadline: Bool) {
+        (timeChecks[k] != nil, timeCheckDrops[k], timeCheckDeadlines[k] != nil)
+    }
     /// Test hook: the recorded outcome for boundary `k`.
     func testResult(afterTrack k: Int) -> DJBreakOutcome? { results[k] }
     /// Test hook: records an outcome as if a render for `k` had finished with it.
@@ -492,7 +526,7 @@ public actor DJBreakPreparer {
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
         let timeCheck = timeChecks.removeValue(forKey: k), earlyDrop = timeCheckDrops.removeValue(forKey: k)
         let timeCheckDeadline = timeCheckDeadlines.removeValue(forKey: k)
-        defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k); taken.insert(k) }
+        defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k); taken.insert(k); takeTokens[k] = nil }
         guard natural else {
             tasks[k]?.cancel()
             let wasPlanned = tasks[k] != nil || results.removeValue(forKey: k) != nil
@@ -513,6 +547,73 @@ public actor DJBreakPreparer {
         results[k] = .skipped(.notReadyAtBoundary)   // a late finish must not replace this
         emit(.skipped(afterTrack: k, .notReadyAtBoundary))
         return .skipped(.notReadyAtBoundary)
+    }
+
+    /// How long the boundary waits for Pro + consent before skipping a paid or bundled break.
+    static let paidVoiceTakeCheckTimeout: Duration = .milliseconds(300)
+
+    /// `takeBreak` plus the paid-voice re-check (E1, -Echo): a ready break that carries a
+    /// bundled clip or paid-route audio is handed out only if Pro + consent still allow it now.
+    /// Otherwise it is skipped as `.paidVoiceRevoked` (reported like any skip), never played.
+    /// One gate call, and only for a break that has paid audio. Never touches a break on air.
+    ///
+    /// The check is bounded by `paidVoiceTakeCheckTimeout` (Sentinel, #255): music never waits
+    /// on a provider. No answer in time fails closed, the same `.paidVoiceRevoked` skip.
+    public func takeCheckedBreak(afterTrack k: Int) async -> DJBreakOutcome {
+        let outcome = takeBreak(afterTrack: k)
+        guard case .ready(let ready) = outcome, let paidVoice, ready.clips.contains(where: usesPaidVoice) else {
+            return outcome
+        }
+        nextTakeToken &+= 1
+        let token = nextTakeToken
+        takeTokens[k] = token
+        let permitted = (try? await VoiceRenderer.withTimeout(Self.paidVoiceTakeCheckTimeout) {
+            await paidVoice.decision().permitsPaidVoice
+        }) ?? false   // timed out or cancelled: fail closed
+        // A cancelAll() or a re-take of `k` during the check (Fry, Sentinel, #255) superseded it:
+        // write nothing, report nothing, hand nothing out. A stale result would block prepare at
+        // `k` in the next queue or overwrite the new take's result.
+        guard takeTokens[k] == token else { return .skipped(.cancelled) }
+        takeTokens[k] = nil
+        guard permitted else {
+            results[k] = .skipped(.paidVoiceRevoked)
+            emit(.skipped(afterTrack: k, .paidVoiceRevoked))
+            return .skipped(.paidVoiceRevoked)
+        }
+        return outcome
+    }
+
+    /// Pro or consent may have ended (E1, -Echo). If the gate now denies, drops every break
+    /// that is rendering with a paid route available, or is ready with paid or bundled audio,
+    /// and reports each as `.paidVoiceRevoked`; returns those boundaries so the session can
+    /// prepare them again (the per-cue gate then keeps them on-device). Taken breaks (on air)
+    /// are never touched. With access still allowed, nothing changes.
+    public func dropPaidVoiceBreaks() async -> [Int] {
+        guard let paidVoice, await !paidVoice.decision().permitsPaidVoice else { return [] }
+        let mayRenderPaid = renderer.routes.contains { !$0.isLocalAndFree }
+        var dropped: [Int] = []
+        for k in Set(tasks.keys).union(results.keys).sorted() where !taken.contains(k) {
+            let paid: Bool
+            if tasks[k] != nil { paid = mayRenderPaid }
+            else if case .ready(let ready)? = results[k] { paid = ready.clips.contains(where: usesPaidVoice) }
+            else { paid = false }
+            guard paid else { continue }
+            tasks.removeValue(forKey: k)?.cancel()
+            results[k] = nil
+            // #347 time-check state goes with the dropped render; a re-prepare sets it afresh.
+            timeChecks[k] = nil
+            timeCheckDrops[k] = nil
+            timeCheckDeadlines[k] = nil
+            dropped.append(k)
+            emit(.skipped(afterTrack: k, .paidVoiceRevoked))
+        }
+        return dropped
+    }
+
+    /// Audio from a bundled clip or from a route that is paid or leaves the device.
+    private func usesPaidVoice(_ clip: RenderedClip) -> Bool {
+        clip.audio.providerID == BundledClipResolver.providerID
+            || renderer.routes.contains { !$0.isLocalAndFree && $0.providerID == clip.audio.providerID }
     }
 
     /// #347, at the take: a time-check line that aired would say the time it was rendered for.
@@ -602,6 +703,7 @@ public actor DJBreakPreparer {
         openForRearm.removeAll()
         rearmed.removeAll()
         taken.removeAll()
+        takeTokens.removeAll()
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
@@ -624,6 +726,7 @@ public actor DJBreakPreparer {
         // that is the playing song's, and if the talk-over already took it early, a duplicate
         // `onSongStarted(k)` must still never render it a second time.
         taken.formIntersection(kept)
+        takeTokens = takeTokens.filter { kept.contains($0.key) }
         openForRearm.formIntersection(kept)   // a dropped boundary can't be re-armed by a seek
         rearmed.formIntersection(kept)
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
@@ -656,15 +759,18 @@ public actor DJBreakPreparer {
 
     /// One pooled cap for the whole break (no separate closing cap).
     static func render(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
-                       cap: Double, bundled: BundledClipResolver? = nil) async -> DJBreakOutcome {
+                       cap: Double, bundled: BundledClipResolver? = nil,
+                       paidVoice: ProVoiceAccess? = nil) async -> DJBreakOutcome {
         await render(djBreak, renderer: renderer, userID: userID, stationID: stationID,
-                     cap: BreakCap(main: cap, closingCueID: nil, closing: 0), bundled: bundled)
+                     cap: BreakCap(main: cap, closingCueID: nil, closing: 0), bundled: bundled, paidVoice: paidVoice)
     }
 
     static func render(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
-                       cap: BreakCap, bundled: BundledClipResolver? = nil) async -> DJBreakOutcome {
+                       cap: BreakCap, bundled: BundledClipResolver? = nil,
+                       paidVoice: ProVoiceAccess? = nil) async -> DJBreakOutcome {
         let first: Pass
-        switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID, bundled: bundled) {
+        switch await renderCues(djBreak, renderer: renderer, userID: userID, stationID: stationID, bundled: bundled,
+                                paidVoice: paidVoice) {
         case .success(let pass): first = pass
         case .failure(let skip): return .skipped(skip.reason)
         }
@@ -677,7 +783,8 @@ public actor DJBreakPreparer {
             return .skipped(.overBreakBudget)
         }
         // The fallback's first route is on-device, so the bundle never resolves on this retry.
-        switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID, bundled: bundled) {
+        switch await renderCues(djBreak, renderer: fallback, userID: userID, stationID: stationID, bundled: bundled,
+                                paidVoice: paidVoice) {
         case .success(let retry):
             return cap.fitting(retry).map { ready(djBreak, $0) } ?? .skipped(.overBreakBudget)
         case .failure(let skip): return .skipped(skip.reason)  // the retry's own reason (Fry, #158)
@@ -768,15 +875,25 @@ public actor DJBreakPreparer {
                                       trimmedCueIDs: fitted.trimmed))
     }
 
-    private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
-                                   bundled: BundledClipResolver?) async
+    private static func renderCues(_ djBreak: DJBreak, renderer full: VoiceRenderer, userID: String, stationID: String,
+                                   bundled: BundledClipResolver?, paidVoice: ProVoiceAccess?) async
         -> Result<(cues: [NarrationCue], clips: [RenderedClip]), Skip> {
+        let mayRenderPaid = full.routes.contains { !$0.isLocalAndFree }
         var cues: [NarrationCue] = []
         var clips: [RenderedClip] = []
         for var cue in djBreak.cues {
             // The only cancellation whose result is kept is the preparation deadline: takeBreak,
             // cancelAll and purge record their own outcome first and ignore this one.
             if Task.isCancelled { return .failure(Skip(reason: .timedOut)) }
+            // Paid-voice gate, per cue (-Echo): Pro + consent are asked now, before the bundle,
+            // the cache or any provider. A denial narrows this cue to the on-device routes
+            // (the existing `onDeviceOnly` view, same budget and cache), so neither a bundled
+            // clip, a cached paid clip nor the proxy is used; no on-device route fails closed.
+            var renderer = full
+            if mayRenderPaid, let paidVoice, await !paidVoice.decision().permitsPaidVoice {
+                guard let local = full.onDeviceOnly else { return .failure(Skip(reason: .renderFailed)) }
+                renderer = local
+            }
             // A whole presenter line whose text hash is in the bundle plays the bundled clip, with
             // its measured seconds, and makes no proxy call. Anything else: today's path.
             // (One voice per break, if a later live clip falls to on-device, is a follow-up.)
