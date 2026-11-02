@@ -310,10 +310,7 @@ public struct DJScriptWriter: Sendable {
         self.shapePicker = shapes.map { DJBreakShapePicker(config: $0, seed: seed &+ 0x5851_F42D_4C95_7F2D) }
         self.recentTemplates = RecentSpokenTemplates(window: shapes?.recentBreakWindow ?? 1, hereWindow: shapes?.hereWindow ?? 1)
         self.combined = TemplatePool(shapes?.combinedLines(for: tone) ?? [])
-        let phrases = shapes?.timeCheckPhrases(for: tone) ?? DJTimeCheckPhrases(on: [], comingUp: [], justAfter: [])
-        self.timeCheckPools = Dictionary(uniqueKeysWithValues: DJTimeCheckRelation.allCases.map {
-            ($0, TemplatePool(phrases.templates(for: $0)))
-        })
+        self.timeCheckPools = Self.makeTimeCheckPools(shapes, tone)
         self.rng = SeededGenerator(seed: seed)
         self.editorial = SeededGenerator(seed: seed &+ 0x9E37_79B9_7F4A_7C15)
         self.phrasing = SeededGenerator(seed: seed &+ 0x3C6E_F372_FE94_F82B)
@@ -329,13 +326,16 @@ public struct DJScriptWriter: Sendable {
     }
 
     /// Swaps the phrase bank (a station's DJ personality changed, -Fry). Only which copy the
-    /// pools pick from changes: the RNG streams, so where breaks fall and which shape each one
-    /// takes, the anti-repeat memory, the greeting state and the time-check pools stay. A no-op
-    /// for the current tone, so a replan with the same personality keeps the pools' rotation.
+    /// pools pick from changes, time-check wording included (#354: each tone has its own bank,
+    /// and a `DJBreakShapeConfig.timeChecks` override still wins). The RNG streams, so where
+    /// breaks fall and which shape each one takes, the anti-repeat memory, the greeting state
+    /// and the time-check spacing log stay. A no-op for the current tone, so a replan with the
+    /// same personality keeps the pools' rotation.
     public mutating func setTone(_ newTone: EditorialTone) {
         guard newTone != tone else { return }
         tone = newTone
         combined = TemplatePool(shapes?.combinedLines(for: newTone) ?? [])
+        timeCheckPools = Self.makeTimeCheckPools(shapes, newTone)
         backAnnounce = TemplatePool(newTone.backAnnounce)
         closing = TemplatePool(newTone.closing)
         artistFocus = TemplatePool(newTone.artistFocus)
@@ -345,6 +345,14 @@ public struct DJScriptWriter: Sendable {
         briefingLead = TemplatePool(newTone.briefingLead)
         briefingOutro = TemplatePool(newTone.briefingOutro)
         greetings = newTone.greetings.mapValues { TemplatePool($0) }
+    }
+
+    /// The tone's time-check bank by relation (empty without shapes: no time checks).
+    private static func makeTimeCheckPools(_ shapes: DJBreakShapeConfig?, _ tone: EditorialTone) -> [DJTimeCheckRelation: TemplatePool] {
+        let phrases = shapes?.timeCheckPhrases(for: tone) ?? DJTimeCheckPhrases(on: [], comingUp: [], justAfter: [])
+        return Dictionary(uniqueKeysWithValues: DJTimeCheckRelation.allCases.map {
+            ($0, TemplatePool(phrases.templates(for: $0)))
+        })
     }
 
     /// - Parameters:
