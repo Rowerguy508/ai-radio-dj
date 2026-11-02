@@ -3,10 +3,18 @@ import Foundation
 /// Light cleanup of track metadata before the DJ says it. MusicKit titles often carry catalog
 /// suffixes a radio host would never read aloud: "(Remastered 2011)", " - 2009 Remaster",
 /// "[Explicit]", "(Deluxe Edition)". Those are dropped. A featured artist is kept and spoken
-/// naturally: "(feat. X)" becomes "featuring X"; "(with X)" is left as written, since it is not
+/// naturally: "(feat. X)" becomes "featuring X"; "(with X)" keeps its words, since it is not
 /// always an artist credit ("(with Strings)"). Nothing is added: the result only ever
 /// contains words that were already in the metadata (narration reliability, not a feature).
 /// If cleanup would leave nothing, the original text is spoken unchanged.
+///
+/// Kept version tags are spoken without their brackets (-Echo): a trailing "(Live 2014)",
+/// "[Acoustic]" or a dash suffix naming the recording (" - Live 2011 Remaster") becomes
+/// ", Live 2014", so a voice never reads or stumbles over brackets. Several trailing tags become
+/// a comma chain ("Song, Live, Acoustic"). Casing is preserved exactly as written: no word is
+/// lowercased, so proper nouns ("Clean Bandit Remix") stay intact. Only trailing tags are
+/// rewritten; a title that is only a bracket, or text whose brackets are nested or unbalanced,
+/// is spoken unchanged rather than mangled.
 public enum SpokenTitle {
     /// Catalog-only tags. A bracketed or dash suffix is dropped only when it is exactly one of
     /// these, ignoring years and ordinals, optionally followed by "version" ("Clean Version").
@@ -22,13 +30,111 @@ public enum SpokenTitle {
     /// The title as it should be spoken.
     public static func clean(_ raw: String) -> String {
         let original = collapse(raw)
+        // Nested or unbalanced brackets: any rewrite could cut words, so speak it as written.
+        guard bracketsAreWellFormed(original) else { return original }
         var text = original
         text = replace(text, #"\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+([^\)\]]+?)\s*[\)\]]"#) { " featuring " + $0[0] }
         text = replace(text, #"\s*[\(\[]([^\)\]]*)[\)\]]"#) { isCatalogTag($0[0]) ? "" : nil }
         text = replace(text, #"\s+[-–—]\s+([^-–—]+)$"#) { isCatalogTag($0[0]) ? "" : nil }
         text = replace(text, #"\s+(?:feat\.|ft\.)\s+"#) { _ in " featuring " }
+        text = speakKeptTags(collapse(text))
+        // A dangling comma would meet the template's own punctuation ("{title}." -> ", ." or ",,").
+        while text.last == "," { text.removeLast() }
         text = collapse(text)
         return text.isEmpty ? original : text
+    }
+
+    /// Rewrites the trailing kept tags as a comma chain: "Song (Live) [Acoustic]" becomes
+    /// "Song, Live, Acoustic"; "Song - Live 2011 Remaster" becomes "Song, Live 2011 Remaster".
+    /// Same words, same order, same case; only brackets and the dash become commas. A dash
+    /// suffix is rewritten only when it names the recording (remix, mix, live, acoustic, demo),
+    /// so titles like "Re-Make - Re-Model" are untouched. If no title text would be left outside
+    /// brackets ("(Live)", "(Live) (Remix)"), the text is returned unchanged.
+    static func speakKeptTags(_ text: String) -> String {
+        var head = text
+        var tags: [String] = []
+        while true {
+            if let (rest, inner) = trailingBracket(head) {
+                head = rest
+                let tag = trimTag(inner)
+                if !tag.isEmpty { tags.insert(tag, at: 0) }
+            } else if let (rest, inner) = trailingRecordingDash(head) {
+                head = rest
+                let tag = trimTag(inner)
+                if !tag.isEmpty { tags.insert(tag, at: 0) }
+            } else {
+                break
+            }
+        }
+        guard head != text else { return text }
+        head = collapse(head)
+        // Nothing but brackets left (or nothing at all): leave the title as written.
+        guard hasTextOutsideBrackets(head) else { return text }
+        while let last = head.last, ",;:".contains(last) { head.removeLast() }
+        head = collapse(head)
+        guard !head.isEmpty else { return text }
+        return ([head] + tags).joined(separator: ", ")
+    }
+
+    /// The last bracket group if the text ends with one: (text before it, inner text).
+    private static func trailingBracket(_ text: String) -> (String, String)? {
+        let trimmed = collapse(text)
+        guard let close = trimmed.last, close == ")" || close == "]" else { return nil }
+        let open: Character = close == ")" ? "(" : "["
+        guard let openIndex = trimmed.lastIndex(of: open) else { return nil }
+        let inner = String(trimmed[trimmed.index(after: openIndex)..<trimmed.index(before: trimmed.endIndex)])
+        guard !inner.contains(where: { "()[]".contains($0) }) else { return nil }
+        return (String(trimmed[..<openIndex]), inner)
+    }
+
+    /// A trailing " - X" / " – X" / " — X" suffix that names the recording.
+    private static func trailingRecordingDash(_ text: String) -> (String, String)? {
+        let trimmed = collapse(text)
+        guard let regex = try? NSRegularExpression(pattern: #"\s+[-–—]\s+([^-–—()\[\]]+)$"#),
+              let match = regex.firstMatch(in: trimmed, range: NSRange(location: 0, length: (trimmed as NSString).length))
+        else { return nil }
+        let ns = trimmed as NSString
+        let inner = ns.substring(with: match.range(at: 1))
+        let lower = inner.lowercased()
+        guard recordingWords.contains(where: { lower.contains($0) }) else { return nil }
+        return (ns.substring(to: match.range.location), inner)
+    }
+
+    /// Tag text without surrounding spaces or separator punctuation, so the chain never gets ",,".
+    private static func trimTag(_ inner: String) -> String {
+        var tag = collapse(inner)
+        while let first = tag.first, ",;:".contains(first) { tag.removeFirst() }
+        while let last = tag.last, ",;:".contains(last) { tag.removeLast() }
+        return collapse(tag)
+    }
+
+    private static func hasTextOutsideBrackets(_ text: String) -> Bool {
+        var depth = 0
+        for char in text {
+            if char == "(" || char == "[" { depth += 1 } else if char == ")" || char == "]" { depth -= 1 }
+            else if depth == 0, !char.isWhitespace { return true }
+        }
+        return false
+    }
+
+    /// True when every "(" and "[" closes with its own kind and no bracket sits inside another.
+    static func bracketsAreWellFormed(_ text: String) -> Bool {
+        var open: Character?
+        for char in text {
+            switch char {
+            case "(", "[":
+                if open != nil { return false }
+                open = char
+            case ")":
+                if open != "(" { return false }
+                open = nil
+            case "]":
+                if open != "[" { return false }
+                open = nil
+            default: continue
+            }
+        }
+        return open == nil
     }
 
     /// An artist credit as it should be spoken: "feat." and "ft." become "featuring".
