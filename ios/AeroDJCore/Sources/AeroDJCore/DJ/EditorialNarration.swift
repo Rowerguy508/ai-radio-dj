@@ -31,6 +31,8 @@ public struct EditorialTone: Equatable, Sendable {
     public var briefingOutro: [String]
     /// The first break of a session.
     public var greetings: [DayPart: [String]]
+    /// The show opener's station and mood lines (`DJShowOpener.swift`), after the greeting.
+    public var opener: DJOpenerPhrases
     /// One breath that names both songs: "that was X, here's Y" (lane 2's combined shape).
     /// `{title}`/`{artist}` are the song that just played, `{nextTitle}`/`{nextArtist}` the next
     /// one; every line names both. Never `{station}`. Empty: the combined shape falls back to
@@ -38,12 +40,14 @@ public struct EditorialTone: Equatable, Sendable {
     public var combined: [String]
 
     public init(backAnnounce: [String], closing: [String], artistFocus: [String], stationID: [String],
+                opener: DJOpenerPhrases = .warm,
                 atmosphere: [DayPart: [String]], continuation: [String], briefingLead: [String],
                 briefingOutro: [String], greetings: [DayPart: [String]], combined: [String] = []) {
         self.backAnnounce = backAnnounce
         self.closing = closing
         self.artistFocus = artistFocus
         self.stationID = stationID
+        self.opener = opener
         self.atmosphere = atmosphere
         self.continuation = continuation
         self.briefingLead = briefingLead
@@ -111,6 +115,7 @@ public struct EditorialTone: Equatable, Sendable {
             "{station}, keeping you company.",
             "Right here on {station}.",
         ],
+        opener: .warm,
         atmosphere: [
             .earlyMorning: ["Quiet start — no rush.", "Early one. Take it slow.", "Still early out there.",
                             "The day's just getting going."],
@@ -219,6 +224,7 @@ public struct EditorialTone: Equatable, Sendable {
             "Right where you should be, {station}.",
             "This is {station}. Here we go.",
         ],
+        opener: .upbeat,
         atmosphere: [
             .earlyMorning: ["Early start. Let's get moving.", "Up and at it.", "Fresh start out there.",
                             "Early crew, this one's for you."],
@@ -329,6 +335,7 @@ public struct EditorialTone: Equatable, Sendable {
             "{station}. Make yourself at home.",
             "This is {station}. Take your time.",
         ],
+        opener: .laidBack,
         atmosphere: [
             .earlyMorning: ["Soft start this morning.", "Early and easy.", "Slow start, nothing to chase.",
                             "Early hours. Breathe easy."],
@@ -438,6 +445,7 @@ public struct EditorialTone: Equatable, Sendable {
             "We're {station}.",
             "{station}. Stay put.",
         ],
+        opener: .minimal,
         atmosphere: [
             .earlyMorning: ["Early.", "Early start.", "Quiet, early.", "Early hours."],
             .morning: ["Morning.", "Morning, steady.", "Morning set.", "Morning's going."],

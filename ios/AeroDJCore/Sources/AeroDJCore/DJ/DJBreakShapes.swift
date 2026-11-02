@@ -34,6 +34,10 @@ public enum DJBreakShape: String, CaseIterable, Sendable {
     case timeCheckIntro
     /// A short station ID, then the closing line.
     case stationID
+    /// The first break of a session (build 34): greeting and station, a mood line, the time when
+    /// it can be given truthfully, then the first closing line. Planned by the writer, never by
+    /// the picker; capped by `DJCadence.maxOpenerBreakSeconds`.
+    case showOpener
 }
 
 /// Tuning for natural shapes. Values are the defaults reviewers check against.
@@ -66,6 +70,9 @@ public struct DJBreakShapeConfig: Equatable, Sendable {
     public var timeCheckMaxDriftSeconds: Double
     /// Time-check copy. Lives here next to `combined` until Echo moves it into `EditorialTone`.
     public var timeChecks: DJTimeCheckPhrases
+    /// Build 34: the session's first break (no briefing) is a show opener. False keeps the
+    /// short greeting.
+    public var showOpener = true
 
     public init(weights: [DJBreakShape: Int] = DJBreakShapeConfig.defaultWeights, recentBreakWindow: Int = 6,
                 hereWindow: Int = 3, maxBreakSeconds: Int = 12, maxCuesPerBreak: Int = 4,
@@ -149,6 +156,8 @@ public struct DJBreakShapePicker: Sendable {
             case .stationID:
                 return context.stationIDUsable && context.canForwardSell
                     && lastShape != .stationID && breaksSinceGreeting >= config.stationIDGraceBreaks
+            case .showOpener:
+                return false   // the writer plans the opener; the picker never draws it
             }
         }
     }

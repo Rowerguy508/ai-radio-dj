@@ -187,7 +187,7 @@ final class RenderedOrdinaryCapTests: XCTestCase {
                                shapes: DJBreakShapeConfig(weights: [.classic: 1]))
         w.extraLineSource = WeatherExtra()
         let tracks = (0..<40).map { DJTrack(id: "t\($0)", title: "T\($0)", artist: "A\($0)", origin: .catalog) }
-        return w.plan(tracks: tracks, briefing: nil, hour: 15).breaks.filter { $0.shape != nil }
+        return w.plan(tracks: tracks, briefing: nil, hour: 15).breaks.filter { $0.isPickedShape }
     }
 
     /// Natural breaks list their optional lines last-placed first, so the extra (weather) line,

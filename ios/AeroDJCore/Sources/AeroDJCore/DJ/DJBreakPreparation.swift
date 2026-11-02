@@ -190,12 +190,17 @@ public actor DJBreakPreparer {
         // line included, is also capped at `maxOrdinaryBreakSeconds` (12 s): optional lines are
         // dropped in the planner's order to fit, and the break is skipped if opener plus closing
         // alone run over it.
+        // Build 34: the show opener (`DJBreakShape.showOpener`, never with briefing content) has
+        // its own cap, `maxOpenerBreakSeconds` (22 s), for the main segment and the whole break.
         self.breakCap = { djBreak in
-            djBreak.hasBriefing
-                ? BreakCap(main: Double(cadence.maxBriefingBreakSeconds), closingCueID: nil, closing: 0)
-                : BreakCap(main: Double(cadence.maxTransitionSeconds), closingCueID: djBreak.talkOverCueID,
-                           closing: Double(cadence.maxClosingSeconds),
-                           whole: Double(cadence.maxOrdinaryBreakSeconds), optional: djBreak.optionalCueIDs)
+            if djBreak.hasBriefing {
+                return BreakCap(main: Double(cadence.maxBriefingBreakSeconds), closingCueID: nil, closing: 0)
+            }
+            let opener = djBreak.shape == .showOpener
+            return BreakCap(main: Double(opener ? cadence.maxOpenerBreakSeconds : cadence.maxTransitionSeconds),
+                            closingCueID: djBreak.talkOverCueID, closing: Double(cadence.maxClosingSeconds),
+                            whole: Double(opener ? cadence.maxOpenerBreakSeconds : cadence.maxOrdinaryBreakSeconds),
+                            optional: djBreak.optionalCueIDs)
         }
     }
 
