@@ -237,50 +237,80 @@ public actor DJBreakPreparer {
         let now = now, sleepUntil = sleepUntil
         timeChecks[k] = timeCheck
         timeCheckDrops[k] = nil
-        tasks[k] = Task {
-            let outcome: DJBreakOutcome
-            guard let renderer else { self.finish(k, .skipped(.renderFailed)); return }
-            guard !rest.cues.isEmpty else { self.finish(k, .skipped(.notPlanned)); return }
-            do {
-                outcome = try await VoiceRenderer.withTimeout(deadline) {
-                    await Self.render(rest, renderer: renderer, userID: userID, stationID: stationID, cap: cap)
-                }
-            } catch {
-                outcome = .skipped(.timedOut)
-            }
-            self.finish(k, outcome)
-            guard let timeCheck, let plannedLine, case .ready(let main) = outcome else { return }
+        // The task holds the preparer weakly and touches it only in short actor hops, so a
+        // preparer nobody holds any more is freed and its `deinit` cancels the task. A long
+        // time-check wait never outlives its preparer (a leaked wait woke up during a later,
+        // unrelated test when the macOS abort hit, #347 at ffe040c). The render steps are
+        // static functions that return values: no closure, `let` or result is held across
+        // an await except the escaping `@Sendable` work given to `withTimeout`. -Fry
+        tasks[k] = Task { [weak self] in
+            let outcome = await Self.renderRest(rest, renderer: renderer, userID: userID, stationID: stationID,
+                                                cap: cap, deadline: deadline)
+            await self?.finish(k, outcome)
+            guard let timeCheck, let plannedLine, let renderer, case .ready(let main) = outcome else { return }
             // Same task, same deadline: wait for the time-check window (cancelled by takeBreak,
-            // cancelAll or purge like any render), then read the clock and render the line.
+            // cancelAll, purge or deinit like any render), then read the clock and render the line.
             // Cancelled here or below: taken first (`takeBreak` reports it) or cancelled.
-            do { try await sleepUntil(end - Self.timeCheckLead) } catch { return }
+            let late = await Self.renderTimeCheck(timeCheck, plannedLine, after: main, in: djBreak, renderer: renderer,
+                                                  userID: userID, stationID: stationID, end: end,
+                                                  now: now, sleepUntil: sleepUntil)
             guard !Task.isCancelled else { return }
-            guard let voice = Self.sameVoice(as: main, in: renderer) else { return self.dropTimeCheck(k, .noVoice) }
-            // The time it will be on air (Echo, #347): now plus what is left before the boundary.
-            let toAir = end - ContinuousClock.now + Self.boundaryMargin
-            guard let text = timeCheck.text(at: now().addingTimeInterval(Self.seconds(toAir))) else {
-                return self.dropTimeCheck(k, .renderFailed)
+            switch late {
+            case .cancelled: return
+            case .dropped(let reason): await self?.dropTimeCheck(k, reason)
+            case .rendered(let line, let clip): await self?.addTimeCheck(k, line, clip, to: main, in: djBreak, cap: cap)
             }
-            let line = Self.cue(plannedLine, saying: text)
-            let attribution = djBreak.attributions[line.id]
-            let left = end - ContinuousClock.now
-            guard left > .zero else { return self.dropTimeCheck(k, .late) }
-            let rendered: Result<RenderedClip, VoiceRenderer.Failure>?
-            do {
-                rendered = try await VoiceRenderer.withTimeout(left) {
-                    await voice.render(line, userID: userID, stationID: stationID, attribution: attribution)
-                }
-            } catch {
-                rendered = nil
-            }
-            guard !Task.isCancelled else { return }
-            let clip: RenderedClip
-            switch rendered {
-            case .success(let c)?: clip = c
-            case .failure(let failure)?: return self.dropTimeCheck(k, Self.timeCheckDropReason(failure))
-            case nil: return self.dropTimeCheck(k, .late)
-            }
-            self.addTimeCheck(k, line, clip, to: main, in: djBreak, cap: cap)
+        }
+    }
+
+    deinit {
+        for task in tasks.values { task.cancel() }
+    }
+
+    /// Step 1 of a prepare task: every cue but the held-back time check, under the deadline.
+    nonisolated static func renderRest(_ rest: DJBreak, renderer: VoiceRenderer?, userID: String, stationID: String,
+                                       cap: BreakCap, deadline: Duration) async -> DJBreakOutcome {
+        guard let renderer else { return .skipped(.renderFailed) }
+        guard !rest.cues.isEmpty else { return .skipped(.notPlanned) }
+        let work: @Sendable () async -> DJBreakOutcome = {
+            await render(rest, renderer: renderer, userID: userID, stationID: stationID, cap: cap)
+        }
+        guard let outcome = try? await VoiceRenderer.withTimeout(deadline, work) else { return .skipped(.timedOut) }
+        return outcome
+    }
+
+    enum LateTimeCheck: Sendable {
+        case cancelled
+        case dropped(DJTimeCheckDropReason)
+        case rendered(NarrationCue, RenderedClip)
+    }
+
+    /// Step 2: wait for the time-check window, write the line for its expected air time and
+    /// render it alone in the break's voice, inside what is left of the deadline.
+    nonisolated static func renderTimeCheck(_ timeCheck: DJPlannedTimeCheck, _ plannedLine: NarrationCue,
+                                            after main: PreparedDJBreak, in djBreak: DJBreak, renderer: VoiceRenderer,
+                                            userID: String, stationID: String, end: ContinuousClock.Instant,
+                                            now: @escaping @Sendable () -> Date,
+                                            sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void)
+        async -> LateTimeCheck {
+        guard (try? await sleepUntil(end - timeCheckLead)) != nil, !Task.isCancelled else { return .cancelled }
+        guard let voice = sameVoice(as: main, in: renderer) else { return .dropped(.noVoice) }
+        // The time it will be on air (Echo, #347): now plus what is left before the boundary.
+        let toAir = end - ContinuousClock.now + boundaryMargin
+        guard let text = timeCheck.text(at: now().addingTimeInterval(seconds(toAir))) else { return .dropped(.renderFailed) }
+        let line = cue(plannedLine, saying: text)
+        let attribution = djBreak.attributions[line.id]
+        let left = end - ContinuousClock.now
+        guard left > .zero else { return .dropped(.late) }
+        let work: @Sendable () async -> Result<RenderedClip, VoiceRenderer.Failure> = {
+            await voice.render(line, userID: userID, stationID: stationID, attribution: attribution)
+        }
+        guard let rendered = try? await VoiceRenderer.withTimeout(left, work) else {
+            return Task.isCancelled ? .cancelled : .dropped(.late)
+        }
+        switch rendered {
+        case .success(let clip): return .rendered(line, clip)
+        case .failure(let failure): return .dropped(timeCheckDropReason(failure))
         }
     }
 

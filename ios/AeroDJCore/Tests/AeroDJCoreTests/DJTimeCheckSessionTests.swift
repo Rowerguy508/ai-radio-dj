@@ -33,7 +33,9 @@ final class DJTimeCheckSessionTests: XCTestCase {
         }
     }
 
-    private func rig(seed: UInt64, clock: Clock) async -> DJBreakSession {
+    private func rig(seed: UInt64, clock: Clock,
+                     sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = DJBreakPreparer.sleep(until:))
+        async -> DJBreakSession {
         let config = StationConfiguration(commentary: .frequent)
         let station = StationConfigurationModel(
             store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
@@ -42,7 +44,7 @@ final class DJTimeCheckSessionTests: XCTestCase {
         let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: TimeVoice(), voice: djVoice)],
                                      budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence(),
-                                       now: { clock.now })
+                                       now: { clock.now }, sleepUntil: sleepUntil)
         let session = DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: seed,
                                      hour: { 7 }, now: { clock.now }, calendar: eastern, clockStyle: .twelveHour)
         await session.start()
@@ -116,6 +118,49 @@ final class DJTimeCheckSessionTests: XCTestCase {
         XCTAssertFalse(stale, "the plan-time reading never airs")
         XCTAssertEqual(aired.cues.last?.id, planned.cues.last?.id, "the closing line stays last")
         XCTAssertNil(aired.droppedTimeCheck)
+    }
+
+    // MARK: Teardown (macOS abort at ffe040c)
+
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var isSet: Bool { lock.withLock { value } }
+        func set() { lock.withLock { value = true } }
+    }
+
+    /// A session dropped without `stop()` frees its preparer, which cancels a pending
+    /// time-check wait, so it never wakes inside a later test.
+    func testDroppedSessionCancelsItsTimeCheckWait() async {
+        let clock = Clock(eastern.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 7, minute: 40))!)
+        let waiting = Flag(), cancelled = Flag()
+        let sleepUntil: @Sendable (ContinuousClock.Instant) async throws -> Void = { _ in
+            waiting.set()
+            do { try await Task.sleep(for: .seconds(30)) } catch { cancelled.set(); throw error }
+        }
+        var found = false
+        for seed in UInt64(0)..<60 where !found {
+            var session: DJBreakSession? = await rig(seed: seed, clock: clock, sleepUntil: sleepUntil)
+            await session?.queueStarted(djTracks(90))
+            if let (k, _) = session?.testPlannedBreaks.first(where: { $0.value.timeCheckCueID != nil }) {
+                found = true
+                await session?.songStarted(index: k, remaining: .seconds(180))
+                var isWaiting = false
+                for _ in 0..<500 where !isWaiting {
+                    isWaiting = waiting.isSet
+                    if !isWaiting { try? await Task.sleep(for: .milliseconds(10)) }
+                }
+                XCTAssertTrue(isWaiting)
+            }
+            session = nil
+        }
+        XCTAssertTrue(found, "a seed planned a time check")
+        var gone = false
+        for _ in 0..<500 where !gone {
+            gone = cancelled.isSet
+            if !gone { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        XCTAssertTrue(gone, "the wait is cancelled once nothing holds the session")
     }
 
     // MARK: Stale at the take (Echo blocker 1, #347)

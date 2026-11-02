@@ -247,6 +247,38 @@ final class DJTimeCheckRenderTests: XCTestCase {
         XCTAssertLessThan(wait, .seconds(129))
     }
 
+    // MARK: Teardown (macOS abort at ffe040c)
+
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var isSet: Bool { lock.withLock { value } }
+        func set() { lock.withLock { value = true } }
+    }
+
+    /// A preparer nobody holds is freed, and its time-check wait is cancelled with it: a
+    /// long wait never wakes up later inside another test.
+    func testFreedPreparerCancelsItsTimeCheckWait() async {
+        let clock = Clock(date(9, 40))
+        let waiting = Flag(), cancelled = Flag()
+        let sleepUntil: @Sendable (ContinuousClock.Instant) async throws -> Void = { _ in
+            waiting.set()
+            do { try await Task.sleep(for: .seconds(30)) } catch { cancelled.set(); throw error }
+        }
+        var p: DJBreakPreparer? = DJBreakPreparer(
+            renderer: VoiceRenderer(routes: [route("device", ScriptedVoice())], budget: VoiceBudget(dailyCapMicrodollars: 0),
+                                    cache: InMemoryAudioCache(), revocations: NarrationRevocations()),
+            userID: "u", stationID: "s", talkOverEnabled: { true }, now: { clock.now }, sleepUntil: sleepUntil)
+        await p?.prepare(timeCheckBreak(), deadline: .seconds(200), onDeviceOnly: false)
+        let isWaiting = await eventually { waiting.isSet }
+        XCTAssertTrue(isWaiting)
+        weak let freed = p
+        p = nil
+        let gone = await eventually { cancelled.isSet }
+        XCTAssertTrue(gone, "the wait is cancelled when the preparer is freed")
+        XCTAssertNil(freed)
+    }
+
     // MARK: Late
 
     func testBreakTakenBeforeTheWindowAirsWithoutTheTimeCheck() async {

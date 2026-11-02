@@ -58,6 +58,7 @@ final class DJBreakShapesSessionTests: XCTestCase {
                 let gap = b.cues.count > 1 && b.talkOverCueID == b.cues.last?.id ? PreparedDJBreak.talkOverGapSeconds : 0
                 XCTAssertLessThanOrEqual(b.estimatedSeconds + gap, 12, "seed \(seed): 12 s cap with the pause")
             }
+            await session.stop()   // no prepare task (or late time-check wait) outlives the seed
         }
     }
 
@@ -72,6 +73,7 @@ final class DJBreakShapesSessionTests: XCTestCase {
             XCTAssertEqual(session.testPlannedBreaks.filter { $0.key <= 12 }.keys.sorted(), kept.keys.sorted(), "seed \(seed): kept")
             XCTAssertNotEqual(session.testPlannedBreaks.keys.filter { $0 > 12 }.sorted().prefix(3), [15, 18, 21], "seed \(seed): re-planned")
             assertNatural(ordered(session.testPlannedBreaks), "seed \(seed) after replan")
+            await session.stop()
         }
     }
 
@@ -86,6 +88,7 @@ final class DJBreakShapesSessionTests: XCTestCase {
             await session.queueStarted((0..<40).map { DJTrack(id: "n\($0)", title: "Tune \($0)", artist: "Band \($0)") })
             let next = ordered(session.testPlannedBreaks)
             assertNatural(played + next, "seed \(seed) across queues")
+            await session.stop()
         }
     }
 }
