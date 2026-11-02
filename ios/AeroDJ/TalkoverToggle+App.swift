@@ -1,42 +1,29 @@
 import AeroDJCore
 import SwiftUI
 
-extension View {
-    /// DJ talk-over switch (-Fry) in an `AERODJ_OWNER_AB` build (TestFlight `owner_ab: true`),
-    /// with or without P0 DIAG. Every other build gets the view unchanged: no switch, and the
-    /// flag stays at its build default (OFF), so Debug, fixture mode and tests never talk over.
-    /// `isTestStation` picks the unset default the coordinator uses (OFF in fixture mode).
-    @ViewBuilder func talkoverToggleEntry(isTestStation: Bool) -> some View {
-        #if AERODJ_OWNER_AB
-        modifier(TalkoverToggleEntry(isTestStation: isTestStation))
-        #else
-        self
-        #endif
-    }
-}
-
-#if AERODJ_OWNER_AB
-/// A toolbar button on the Player screen. Unset shows the coordinator's unset default (ON live,
-/// OFF on the fixture station); flipping it stores a value that applies from the next break.
-private struct TalkoverToggleEntry: ViewModifier {
+/// DJ talk-over and fades as a Settings row (-Fry), in every build. The owner's 2026-11-02
+/// decision replaces #225's owner A/B-only Player toolbar button. Unset shows the coordinator's
+/// unset default (ON on a live station, OFF on the fixture test station); flipping it stores a
+/// value under `DJTalkoverFlag.defaultsKey` that applies from the next DJ break.
+struct TalkoverSettingsRow: View {
     @AppStorage private var enabled: Bool
 
-    init(isTestStation: Bool) {
+    init(isTestStation: Bool, store: UserDefaults = .standard) {
         _enabled = AppStorage(wrappedValue: DJTalkoverFlag.unsetDefault(isTestStation: isTestStation),
-                              DJTalkoverFlag.defaultsKey)
+                              DJTalkoverFlag.defaultsKey, store: store)
     }
 
-    func body(content: Content) -> some View {
-        content.toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Toggle(isOn: $enabled) {
-                    Label("DJ talk-over", systemImage: enabled ? "waveform" : "waveform.slash")
-                }
-                .toggleStyle(.button)
-                .accessibilityIdentifier("owner.talkoverToggle")
-                .accessibilityValue(enabled ? "On" : "Off")
+    var body: some View {
+        Section {
+            Toggle(isOn: $enabled) {
+                Label("DJ talk-over & fades", systemImage: enabled ? "waveform" : "waveform.slash")
             }
+            .accessibilityIdentifier("settings.talkoverToggle")
+            .accessibilityHint("Recommended")
+        } header: {
+            Text("DJ")
+        } footer: {
+            Text("Recommended. The DJ talks over the end of each song while the music dips, and the next song comes back up as the DJ finishes. Turn it off for a pause between songs. Applies from the next DJ break.")
         }
     }
 }
-#endif
