@@ -186,6 +186,7 @@ public final class StationQueueFeed<Item: Sendable> {
     private let day: @MainActor () -> Int
     private let recentlyPlayed: @MainActor () -> Set<String>
     private let ratings: @MainActor () -> StationRatingBias
+    private let songID: @MainActor (Item) -> String?
     private let log: @MainActor (StationQueueEvent) -> Void
     private let refillLead: Int
 
@@ -226,6 +227,9 @@ public final class StationQueueFeed<Item: Sendable> {
     ///   - recentlyPlayed: song IDs to leave out (the current queue's played songs).
     ///   - ratings: the committed station's song ratings (`StationRatingBook.bias`). Applied only to a
     ///     build with the seeds it was made for; its `revision` changing rebuilds, never a station change.
+    ///   - songID: an item's catalog or library song ID, for screening a hand-off against the current
+    ///     never and tired exclusions. `nil` reads a `String` item, or an `Identifiable` item's `String` ID
+    ///     (the app's `Track`).
     ///   - refillLead: start building the refill when this many songs or fewer are left to load.
     public init(resolver: any StationSeedResolver,
                 materialize: @escaping Materialize,
@@ -233,6 +237,7 @@ public final class StationQueueFeed<Item: Sendable> {
                 day: @escaping @MainActor () -> Int = { Int(Date().timeIntervalSinceReferenceDate / 86_400) },
                 recentlyPlayed: @escaping @MainActor () -> Set<String> = { [] },
                 ratings: @escaping @MainActor () -> StationRatingBias = { .none },
+                songID: (@MainActor (Item) -> String?)? = nil,
                 refillLead: Int = 3,
                 log: @escaping @MainActor (StationQueueEvent) -> Void = { _ in }) {
         self.refillLead = max(1, refillLead)
@@ -242,6 +247,7 @@ public final class StationQueueFeed<Item: Sendable> {
         self.day = day
         self.recentlyPlayed = recentlyPlayed
         self.ratings = ratings
+        self.songID = songID ?? { StationQueueSongID.of($0) }
         self.log = log
     }
 
@@ -265,6 +271,26 @@ public final class StationQueueFeed<Item: Sendable> {
     private func currentRatings(for key: StationQueueKey) -> StationRatingBias {
         let bias = ratings()
         return bias.seedsFingerprint == key.seedsFingerprint ? bias : bias.neutralized
+    }
+
+    /// Fry/Orion ruling (PR A follow-up): a hand-off is screened against the station's current never
+    /// and held-tired songs as it is handed over, so a queue built before a rating (the refill while
+    /// its rebuild is still running) never plays a just-excluded song. Order is kept.
+    private func screened(_ items: [Item], for key: StationQueueKey) -> [Item] {
+        let excluded = currentRatings(for: key).excludedSongIDs
+        guard !excluded.isEmpty else { return items }
+        return items.filter { item in songID(item).map { !excluded.contains($0) } ?? true }
+    }
+
+    /// Indices after `playingIndex` in the playing `queue` whose songs the active station's current
+    /// ratings exclude (never, or tired and still held). The feed never edits the playing queue; the
+    /// player uses this when a song is rated to drop those songs and the prepared breaks that name
+    /// them through its existing skip path (`onSongSkipped`: `songSkipped(index:)`, `songCut(afterTrack:)`).
+    public func excludedUpcoming(in queue: [Item], after playingIndex: Int, active: StationConfiguration) -> [Int] {
+        guard let key = StationQueueKey(active) else { return [] }
+        let excluded = currentRatings(for: key).excludedSongIDs
+        guard !excluded.isEmpty else { return [] }
+        return queue.indices.filter { $0 > playingIndex && songID(queue[$0]).map(excluded.contains) == true }
     }
 
     private func isCurrent(_ key: StationQueueKey, _ revision: StationRatingRevision,
@@ -366,10 +392,11 @@ public final class StationQueueFeed<Item: Sendable> {
             return keep(.refill, .notReady)
         }
         // Ratings changed since this queue was built: rebuild for the next refill. The stale queue is
-        // still handed out now, so a rating never strands the station (today's stop path); the
-        // newly excluded songs are only certain to be gone from the next build.
+        // still handed out now, so a rating never strands the station (today's stop path), but
+        // screened: a song excluded since (never, held tired) is dropped as it is handed over, the
+        // last song of the playing queue included.
         if ready.revision != currentRatings(for: key).revision { prefetch(active) }
-        let fresh = ready.items.filter { item in !queue.contains { sameSong($0, item) } }
+        let fresh = screened(ready.items, for: key).filter { item in !queue.contains { sameSong($0, item) } }
         guard !fresh.isEmpty else {
             staged = nil
             prefetch(active)
@@ -379,7 +406,7 @@ public final class StationQueueFeed<Item: Sendable> {
                                         previousKey: playingKey, previousReported: queueStartReported)
         staged = nil
         playingKey = key
-        let refill = [lastSong] + fresh
+        let refill = screened([lastSong], for: key) + fresh
         log(.handedOff(.refill, songs: refill.count))
         // A short refill starts its own refill now (its start skips `queueStarted`'s check).
         if refill.count <= refillLead { prefetch(active) }
@@ -426,12 +453,20 @@ public final class StationQueueFeed<Item: Sendable> {
             prefetch(active)
             return keep(trigger, .notReady)
         }
+        // Built before the current ratings: rebuild, and hand over only what they still allow.
+        if ready.revision != currentRatings(for: key).revision { prefetch(active) }
+        let items = screened(ready.items, for: key)
+        guard !items.isEmpty else {
+            staged = nil
+            prefetch(active)
+            return keep(trigger, .notReady)
+        }
         pendingHandOff = PendingHandOff(trigger: trigger, key: key, revision: ready.revision, items: ready.items,
                                         previousKey: playingKey, previousReported: queueStartReported)
         staged = nil
         playingKey = key
-        log(.handedOff(trigger, songs: ready.items.count))
-        return ready.items
+        log(.handedOff(trigger, songs: items.count))
+        return items
     }
 
     /// #204 (-Atlas): the start of the queue just handed out reported. `.failed` puts the hand-off
@@ -477,5 +512,15 @@ public final class StationQueueFeed<Item: Sendable> {
         guard key != observedKey else { return }
         observedKey = key
         Task { await self.prepare(committed) }
+    }
+}
+
+/// The default song ID for a feed item: a `String` item is its own ID; an `Identifiable` item with a
+/// `String` ID (the app's `Track`, whose `id` is the song ID) uses it. Anything else is never screened.
+enum StationQueueSongID {
+    static func of<Item>(_ item: Item) -> String? {
+        if let id = item as? String { return id }
+        if let identifiable = item as? any Identifiable { return identifiable.id as? String }
+        return nil
     }
 }

@@ -104,9 +104,11 @@ final class StationRatingsFeedTests: XCTestCase {
         _ = await f.prepare(Self.station)
         f.queueStarted(for: Self.station, songCount: 2)
         never("first-core-2")
+        XCTAssertNotEqual(f.stagedRatingRevision, current(f), "the staged queue predates the rating")
         let refill = f.queueForNextSong(after: 0, in: ["q0", "q1"], active: Self.station, playbackMayStart: true, sameSong: ==)
         XCTAssertEqual(refill?.first, "q1", "a rating never strands the station")
-        XCTAssertEqual(refill?.count, 13)
+        XCTAssertEqual(refill?.count, 12, "the stale queue is handed over screened")
+        XCTAssertEqual(refill?.contains("first-core-2"), false, "a just-marked never song never plays, not even once")
         for _ in 0..<200 where f.stagedRatingRevision != current(f) { await Task.yield() }
         XCTAssertEqual(f.stagedRatingRevision, current(f), "the next refill is rebuilt with the rating")
         f.handOffFinished(.started)
@@ -259,6 +261,127 @@ final class StationRatingsFeedTests: XCTestCase {
             XCTAssertEqual(openers(p), [], "\(label): the refill does not re-greet")
             await p.tap(Self.mine(12))
             XCTAssertEqual(openers(p), [], "\(label): nor does the next tap")
+            await p.session.stop()
+        }
+    }
+
+    // MARK: Screening the hand-off (Fry/Orion ruling)
+
+    func testTheLastSongOfThePlayingQueueIsScreenedToo() async {
+        let f = feed()
+        _ = await f.prepare(Self.station)
+        f.queueStarted(for: Self.station, songCount: 2)
+        never("q1")
+        let refill = f.queueForNextSong(after: 0, in: ["q0", "q1"], active: Self.station, playbackMayStart: true, sameSong: ==)
+        XCTAssertEqual(refill?.count, 12)
+        XCTAssertEqual(refill?.contains("q1"), false, "the playing queue's last song was marked never: not handed over")
+        XCTAssertEqual(refill?.first, "first-core-0")
+    }
+
+    func testTiredSongsStillHeldAreScreenedAndEasedBackOnesAreNot() async {
+        let f = feed()
+        _ = await f.prepare(Self.station)
+        let scope = StationRatingScope(recipeID: nil, configuration: Self.station)!
+        book.rate(StationRatingEntry(songID: "first-core-3", artistName: "a", rating: .tired, ratedDay: Self.today,
+                                     origin: .catalog), in: scope, today: Self.today)
+        book.rate(StationRatingEntry(songID: "first-core-4", artistName: "b", rating: .tired,
+                                     ratedDay: Self.today - StationRatingTuning.tiredHoldDays, origin: .catalog),
+                  in: scope, today: Self.today)
+        let items = f.takeForIdleStart(active: Self.station) ?? []
+        XCTAssertFalse(items.contains("first-core-3"), "held tired: out")
+        XCTAssertTrue(items.contains("first-core-4"), "past the hold: back (ranked lower in the next build)")
+    }
+
+    func testAStaleStagedQueueIsScreenedAtAStationSwitchAndRebuilt() async {
+        let other = StationConfiguration(seeds: Self.seeds("other"))
+        let f = feed(biasFor: other)
+        _ = await f.prepare(other)
+        f.queueStarted(for: Self.station, songCount: 12)
+        book.rate(StationRatingEntry(songID: "other-core-0", artistName: "x", rating: .never, ratedDay: Self.today,
+                                     origin: .catalog), in: StationRatingScope(recipeID: nil, configuration: other)!,
+                  today: Self.today)
+        let items = f.takeForBoundary(active: other, playbackMayStart: true) ?? []
+        XCTAssertEqual(items.count, 11)
+        XCTAssertFalse(items.contains("other-core-0"))
+        f.handOffFinished(.failed)
+        let retried = f.takeForIdleStart(active: other) ?? []
+        XCTAssertFalse(retried.contains("other-core-0"), "a failed start's restored queue is screened again")
+    }
+
+    func testAScreenedHandOffThatLeavesNothingKeepsTheQueueAndRebuilds() async {
+        let f = StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: RatingFeedCatalog()),
+                                         materialize: { $0.prefix(1).map(\.id) }, options: .init(limit: 12),
+                                         day: { Self.today },
+                                         ratings: { [unowned self] in self.book.bias(recipeID: nil, configuration: Self.station, today: Self.today) })
+        _ = await f.prepare(Self.station)
+        XCTAssertEqual(f.stagedCount, 1)
+        never("first-core-0")
+        XCTAssertNil(f.takeForIdleStart(active: Self.station), "nothing allowed is left: today's not-ready path")
+    }
+
+    func testExcludedUpcomingFindsOnlyLaterExcludedSongs() async {
+        let f = feed()
+        never("q1"); never("q3")
+        XCTAssertEqual(f.excludedUpcoming(in: ["q0", "q1", "q2", "q3"], after: 0, active: Self.station), [1, 3])
+        XCTAssertEqual(f.excludedUpcoming(in: ["q0", "q1", "q2", "q3"], after: 1, active: Self.station), [3],
+                       "the playing song is never reported")
+        XCTAssertEqual(f.excludedUpcoming(in: ["q0", "q1"], after: 0, active: StationConfiguration(genres: ["jazz"])), [],
+                       "a tags-only station has no ratings")
+    }
+
+    private struct Song: Identifiable, Sendable { let id: String }
+    private struct Numbered: Identifiable, Sendable { let id: Int }
+
+    func testTheDefaultSongIDReadsStringsAndStringIdentifiables() {
+        XCTAssertEqual(StationQueueSongID.of("s1"), "s1")
+        XCTAssertEqual(StationQueueSongID.of(Song(id: "s2")), "s2", "the app's Track is Identifiable by its song ID")
+        XCTAssertNil(StationQueueSongID.of(Numbered(id: 3)))
+        XCTAssertNil(StationQueueSongID.of(3))
+    }
+
+    func testAnInjectedSongIDScreensAnyItem() async {
+        let f = StationQueueFeed<Song>(resolver: CatalogStationSeedResolver(catalog: RatingFeedCatalog()),
+                                       materialize: { $0.map { Song(id: "x:" + $0.id) } }, options: .init(limit: 12),
+                                       day: { Self.today },
+                                       ratings: { [unowned self] in self.book.bias(recipeID: nil, configuration: Self.station, today: Self.today) },
+                                       songID: { String($0.id.dropFirst(2)) })
+        _ = await f.prepare(Self.station)
+        never("first-core-5")
+        let items = f.takeForIdleStart(active: Self.station) ?? []
+        XCTAssertEqual(items.count, 11)
+        XCTAssertFalse(items.map(\.id).contains("x:first-core-5"))
+        XCTAssertTrue(items.map(\.id).contains("x:first-core-4"))
+    }
+
+    /// The scenario that failed on 3 of 5 seeds before the ruling: the refill comes while the rating's
+    /// rebuild may still be running (locally it is still stale on all 5). No wait: the hand-off is screened, so the never song is gone on
+    /// every seed, no planned break names it (Echo), and nothing re-greets.
+    func testARefillDuringTheRebuildNeverPlaysOrNamesTheNeverSong() async {
+        for seed in UInt64(0)..<5 {
+            book = StationRatingBook()
+            let label = "seed \(seed)"
+            let p = await rig(seed: seed)
+            await p.tap(Self.mine(12))
+            let playing = (openers(p).first ?? 0) + 1
+            await p.session.songStarted(index: playing, remaining: .seconds(1))
+            let scope = StationRatingScope(recipeID: nil, configuration: p.station.committedDisplayed)!
+            book.rate(StationRatingEntry(songID: "first-core-1", artistName: "first-core-artist-1", rating: .never,
+                                         ratedDay: 42, origin: .catalog), in: scope, today: 42)
+            book.rate(StationRatingEntry(songID: "first-related-5", artistName: "first-related-artist-5",
+                                         artistID: "first-related-aid-5", rating: .love, ratedDay: 42, origin: .catalog),
+                      in: scope, today: 42)
+            p.feed.ratingsChanged(p.station.committedDisplayed)
+            let handedOff = await p.boundary(after: playing)
+            XCTAssertFalse(handedOff, "\(label): a rating is not a station change")
+
+            let k = p.queue.count - 2
+            await p.session.songStarted(index: k, remaining: .seconds(1))
+            let refilled = await p.boundary(after: k)
+            XCTAssertTrue(refilled, "\(label): the station refills, never stranded")
+            XCTAssertFalse(p.queue.contains("first-core-1"), "\(label): the never song is not handed over")
+            let named = p.session.testPlannedBreaks.values.flatMap(\.cues).filter { $0.text.contains("first-core-1") }
+            XCTAssertEqual(named.count, 0, "\(label): no planned break names the screened song")
+            XCTAssertEqual(openers(p), [], "\(label): the refill does not re-greet")
             await p.session.stop()
         }
     }
