@@ -95,6 +95,14 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// A system interruption arrived after the last playing sample. If the next sample shows
     /// the end, the interruption began inside the end window (between that sample and the end).
     private var interruptionSinceLastPlayingSample = false
+    /// #149 (-Atlas): MusicKit's own queue-finish transition for this entry was observed after
+    /// the last system interruption began, with no playing sample in between: the queue cleared,
+    /// the entry changed, or the playhead was rewound to the start after the entry played through.
+    /// A pause cannot produce those shapes, so this is the one MusicKit signal that a never-ended
+    /// interruption at song end may be released on. A stop near the end is not enough: an
+    /// interruption that pauses the song in its last 1.5 s has that shape too. Cleared by every
+    /// new interruption, so it is always evidence about the latest one.
+    public private(set) var queueFinishedSinceInterruption = false
 
     // Song scrubbing (-Atlas): a user seek is an explicit event, so only `userSeeked` resets
     // per-entry facts. No sample-shape heuristic does (build 18 regressed on one).
@@ -143,6 +151,7 @@ public struct PlaybackBoundaryDetector: Sendable {
         lastSamplePosition = target
         if let uptime { lastSampleUptime = uptime }
         interruptionBeganNearEnd = false
+        queueFinishedSinceInterruption = false
         seekBaseline = SeekBaseline(target: target, settleUntil: uptime.map { $0 + Self.seekSettleSeconds })
     }
 
@@ -151,6 +160,7 @@ public struct PlaybackBoundaryDetector: Sendable {
         userChangePending = true
         endedEntryID = nil
         interruptionBeganNearEnd = false
+        queueFinishedSinceInterruption = false
         endReportedSinceLoad = false
     }
 
@@ -182,6 +192,7 @@ public struct PlaybackBoundaryDetector: Sendable {
             if let seek = seekBaseline, !seek.settled { playClockStopped = true }
         case .systemInterruption:
             interruptionSinceLastPlayingSample = true
+            queueFinishedSinceInterruption = false
             if endReportedSinceLoad || playedThrough || furthestIsNearEnd {
                 interruptionBeganNearEnd = true
             }
@@ -263,8 +274,17 @@ public struct PlaybackBoundaryDetector: Sendable {
         heldByUserOrRoute = false
         interruptionBeganNearEnd = false
         interruptionSinceLastPlayingSample = false
+        queueFinishedSinceInterruption = false
         seekBaseline = nil
         playClockStopped = false
+    }
+
+    /// #149: the departing or current entry played through (or, for a short entry, reached its end
+    /// window), and an interruption arrived since its last playing sample, with no user pause or
+    /// route loss and no app-requested change. With a MusicKit finish shape that is the evidence.
+    private var interruptedEntryPlayedThrough: Bool {
+        interruptionSinceLastPlayingSample && !heldByUserOrRoute && !userChangePending
+            && (playedThrough || reachedEndWithoutSeek)
     }
 
     /// An end is being reported. An interruption since the last playing sample began at the end.
@@ -298,6 +318,7 @@ public struct PlaybackBoundaryDetector: Sendable {
         guard let current = observation.entryID else {
             // Queue emptied. A natural finish of the last item is a boundary.
             let finished = entryID
+            if finished != nil, interruptedEntryPlayedThrough { queueFinishedSinceInterruption = true }
             let neverProgressed = finishingEntryNeverProgressed
             let mayHaveEnded = departingEntryMayHaveEnded && endedEntryID != finished
             entryID = nil
@@ -329,10 +350,12 @@ public struct PlaybackBoundaryDetector: Sendable {
             let neverProgressed = finishingEntryNeverProgressed
             let mayHaveEnded = departingEntryMayHaveEnded && endedEntryID != previous
             let interruptedAtEnd = interruptionSinceLastPlayingSample
+            let finishedUnderInterruption = interruptedEntryPlayedThrough
             userChangePending = false
             entryID = current
             endedEntryID = nil
             resetEntryFacts(observation)
+            if finishedUnderInterruption { queueFinishedSinceInterruption = true }
             // A change while paused cannot be a natural advance, so it is not reported.
             guard mayHaveEnded, !appRequested else { return nil }
             guard !neverProgressed else {
@@ -344,6 +367,8 @@ public struct PlaybackBoundaryDetector: Sendable {
             return .naturalEnd(finishedEntryID: previous)
         }
         if let duration = observation.duration { lastDuration = duration }
+        /// #149: the previous sample's playhead, before this sample updates it.
+        let previousSamplePosition = lastSamplePosition
         // Inside a seek's settle window: a stopped sample is transient and changes nothing (the
         // next stop after the window is still judged as the first stop after playing), and no
         // reported position is trusted. A playing sample there still counts as play time.
@@ -378,6 +403,15 @@ public struct PlaybackBoundaryDetector: Sendable {
             } else {
                 lastPosition = max(lastPosition ?? position, position)
             }
+        }
+        // #149: MusicKit rewound this entry to its start after it played through, after the latest
+        // interruption began. Only the transition counts (the previous sample was not already at
+        // the start), so an entry left sitting at 0:00 is not fresh evidence for a new
+        // interruption. Not only the first stop, so a rewind after a reported stop at the end counts.
+        let minimum = Self.minimumProgress(duration: lastDuration)
+        if !settling, !observation.isPlaying, interruptedEntryPlayedThrough, let position = observation.position,
+           position < minimum, (previousSamplePosition ?? .infinity) >= minimum {
+            queueFinishedSinceInterruption = true
         }
         // Same entry: playback stopped at its end, and the queue kept the entry.
         // Build 18 P0 (-Fry): judged on the first stopped sample after a playing one, from

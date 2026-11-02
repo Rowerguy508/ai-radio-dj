@@ -1,7 +1,10 @@
+#if DEBUG
 import Foundation
 
 /// Shared sample snapshots for SwiftUI previews and tests. The same values drive
 /// both, so a preview shows exactly what the tests check.
+/// Compiled only when DEBUG is set, so Release never builds fixture playback
+/// (re-lands #99 e79738b, -Atlas). `PlaybackFixturesReleaseScanTests` pins every use.
 public enum PlaybackFixtures {
     public static let station = StationRef(id: "morning-calm", name: "Morning Calm")
 
@@ -49,3 +52,4 @@ public enum PlaybackFixtures {
 
     public static let stopped = PlaybackSnapshot(station: station)
 }
+#endif

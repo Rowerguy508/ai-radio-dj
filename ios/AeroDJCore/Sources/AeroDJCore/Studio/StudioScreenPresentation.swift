@@ -177,9 +177,9 @@ public enum NowPlayingContent: Equatable, Sendable {
     public var detail: String? {
         switch self {
         case .connecting: nil
-        case .needsAuthorization: "AeroDJ needs permission before it can play from Apple Music."
-        case .accessDenied: "Allow Apple Music for AeroDJ in Settings to play your station."
-        case .subscriptionRequired: "AeroDJ plays music through your Apple Music subscription."
+        case .needsAuthorization: "\(AppName.display) needs permission before it can play from Apple Music."
+        case .accessDenied: "Allow Apple Music for \(AppName.display) in Settings to play your station."
+        case .subscriptionRequired: "\(AppName.display) plays music through your Apple Music subscription."
         case .nothingPlaying: "Search Apple Music to start your station."
         case .track: nil
         }

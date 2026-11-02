@@ -18,14 +18,14 @@ struct SharedInboxReviewView: View {
             if entries.isEmpty {
                 ContentUnavailableView(
                     "Nothing shared yet", systemImage: "tray",
-                    description: Text("In Mail, Messages or Safari, tap Share and choose AeroDJ.")
+                    description: Text("In Mail, Messages or Safari, tap Share and choose \(AppName.display).")
                 )
             }
             ForEach(entries) { entry in
                 row(entry)
             }
         }
-        .navigationTitle("Shared with AeroDJ")
+        .navigationTitle("Shared with \(AppName.display)")
         .task { perform { [review] in _ = try await review.refresh() } }
         .refreshable { perform { [review] in _ = try await review.refresh() } }
         .alert("Something went wrong", isPresented: Binding(

@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Integration tests for the playing screen in the Debug test station's capture mode
 /// (`-AeroDJTestStation YES -AeroDJStudioCapture YES`): the real `PlayingScreen`, the test
@@ -17,20 +18,23 @@ final class StudioScreenTests: XCTestCase {
     private func launch(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
                         dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                         restoreStationID: String? = nil,
-                        musicAuthStatus: String? = nil) -> XCUIApplication {
+                        musicAuthStatus: String? = nil,
+                        orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
         // Probe the layout before this test's own launch: the probe launches and terminates
         // its own app, so it must never run while the test's app is up.
         _ = isOpenLayout
         return startApp(segment: segment, scenario: scenario, largeText: largeText, dark: dark,
                         contentSize: contentSize, reduceMotion: reduceMotion,
-                        restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus)
+                        restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus,
+                        orientation: orientation)
     }
 
     @MainActor
     private func startApp(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
                           dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                           restoreStationID: String? = nil,
-                          musicAuthStatus: String? = nil) -> XCUIApplication {
+                          musicAuthStatus: String? = nil,
+                          orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
@@ -49,7 +53,7 @@ final class StudioScreenTests: XCTestCase {
         if let musicAuthStatus {
             app.launchArguments += ["-AeroDJMusicAuthStatus", musicAuthStatus]
         }
-        XCUIDevice.shared.orientation = .portrait
+        XCUIDevice.shared.orientation = orientation
         app.launch()
         // The capture view loads the station before rendering. Never screenshot on a timer:
         // wait for loading to end, and fail by name if the capture could not set up.
@@ -499,6 +503,50 @@ final class StudioScreenTests: XCTestCase {
         save(app, isOpenLayout ? "open-ax5-dark" : "closed-ax5-dark")
     }
 
+    /// #310 / #326: at AX5 on a phone the DJ status moves out of the scrolling upper part and
+    /// is pinned above the scrubber. The other AX5 captures have an idle DJ, so this is the one
+    /// that draws the ON AIR pill there: on screen without scrolling, above the scrubber and
+    /// the transport, read after the title. The capture freezes the pill's timer at "0:12"
+    /// (`StudioCaptureOnAir`), so the screenshot is the same every run.
+    @MainActor
+    func testAX5OnAirPinnedAboveScrubber() throws {
+        try XCTSkipIf(isOpenLayout, "The pinned status is the phone-width folded player at AX5")
+        let app = launch(scenario: "onAir", contentSize: Self.ax5)
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15),
+                      "layout.compact expected at AX5:\n\(app.debugDescription)")
+        let any = app.descendants(matching: .any)
+        let onAir = any["dj.onAir"]
+        let scrubber = any["playback.progress"]
+        let play = app.buttons["transport.playPause"]
+        for (name, element) in [("onAir", onAir), ("scrubber", scrubber), ("play", play)] {
+            XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing at AX5\n\(app.debugDescription)")
+        }
+        XCTAssertTrue(shows(app, "Morning Light"))
+        XCTAssertFalse(any["dj.ready"].exists, "On Air replaces the ready line")
+        guard let pill = settledFrame(of: onAir, "dj.onAir") else { return }
+        let window = app.windows.firstMatch.frame
+        let frames = "window \(window) onAir \(pill) scrubber \(scrubber.frame) play \(play.frame)"
+        XCTAssertGreaterThanOrEqual(pill.minY, window.minY, "ON AIR on screen without scrolling: \(frames)")
+        XCTAssertLessThanOrEqual(pill.maxY, window.maxY, "ON AIR on screen without scrolling: \(frames)")
+        XCTAssertLessThanOrEqual(pill.maxY, scrubber.frame.minY + 1, "ON AIR pinned above the scrubber: \(frames)")
+        XCTAssertLessThan(pill.minY, play.frame.minY, "ON AIR above the transport: \(frames)")
+        XCTAssertTrue(play.isHittable, "Play/pause stays reachable at AX5")
+        // #345 review: the pinned pill must not cover the TEST STATION tag (capture mode
+        // always shows it; a real station has none, so only check it when it exists).
+        let tag = any["folded.testStation"]
+        if tag.exists {
+            let chip = tag.frame
+            let both = "\(frames) testStation \(chip)"
+            XCTAssertFalse(chip.intersects(pill), "TEST STATION clear of ON AIR: \(both)")
+            XCTAssertLessThanOrEqual(chip.maxY, pill.minY, "TEST STATION above ON AIR: \(both)")
+            XCTAssertGreaterThanOrEqual(chip.minY, window.minY, "TEST STATION on screen: \(both)")
+        }
+        assertReadingOrder(app, title: "Morning Light", status: "On Air")
+        let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
+        XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
+        save(app, "closed-ax5-onair")
+    }
+
     // MARK: Duo shell, fold, and rotation
 
     /// Tapping a station selects it and shows one studio model. It does not search or play.
@@ -596,6 +644,62 @@ final class StudioScreenTests: XCTestCase {
                           "Compact shows the restored detail\n\(app.debugDescription)")
         }
         XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
+    }
+
+    // MARK: Width-class change keeps the restored station (Fry, #280 review)
+
+    /// Whether the station split in `app` is in regular width: the sidebar is the station list.
+    /// Compact width draws the carousel instead (`StationSplitRoot.stationPicker`).
+    @MainActor
+    private func splitIsRegular(_ app: XCUIApplication) -> Bool {
+        let row = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "stations.row.")).firstMatch
+        return row.waitForExistence(timeout: 5) && !app.descendants(matching: .any)["stations.carousel"].exists
+    }
+
+    @MainActor
+    private func assertRestoredStationVisible(_ app: XCUIApplication, _ name: String, _ message: String,
+                                              file: StaticString = #filePath, line: UInt = #line) {
+        let title = app.descendants(matching: .any)["station.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "\(message): station detail missing\n\(visibleIdentifiers(app))",
+                      file: file, line: line)
+        XCTAssertTrue(title.label.contains(name), "\(message): wrong station \(title.label)", file: file, line: line)
+        XCTAssertTrue(title.isHittable, "\(message): station detail is not on screen\n\(visibleIdentifiers(app))",
+                      file: file, line: line)
+        XCTAssertFalse(app.descendants(matching: .any)["split.placeholder"].exists, message, file: file, line: line)
+        XCTAssertEqual(callLabel(app), "0/0", "\(message): a width change must not search or play", file: file, line: line)
+    }
+
+    /// (b) A Max-class phone in landscape is regular width. Restore there, rotate to portrait
+    /// (compact): the station stays open instead of the carousel. Skips where landscape is
+    /// still compact (smaller phones) and on iPad, where rotation keeps the width class.
+    @MainActor
+    func testRestoreInRegularLandscapeThenPortraitKeepsStation() throws {
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom == .pad, "iPad rotation does not change the width class")
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let app = startApp(scenario: "shell", restoreStationID: morningCalm, orientation: .landscapeLeft)
+        try XCTSkipUnless(splitIsRegular(app), "Landscape is compact on this phone; needs a Plus/Max-class simulator")
+        assertRestoredStationVisible(app, "Morning Calm", "regular landscape restore")
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 10),
+                      "Portrait is the compact player\n\(visibleIdentifiers(app))")
+        assertRestoredStationVisible(app, "Morning Calm", "rotating to portrait")
+    }
+
+    /// (c) The reverse: restore in portrait (compact), rotate to regular landscape, and back.
+    @MainActor
+    func testRestoreInPortraitThenRegularLandscapeKeepsStation() throws {
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom == .pad, "iPad rotation does not change the width class")
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let app = startApp(scenario: "shell", restoreStationID: morningCalm)
+        assertRestoredStationVisible(app, "Morning Calm", "compact portrait restore")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        try XCTSkipUnless(splitIsRegular(app), "Landscape is compact on this phone; needs a Plus/Max-class simulator")
+        assertRestoredStationVisible(app, "Morning Calm", "rotating to regular landscape")
+        XCUIDevice.shared.orientation = .portrait
+        assertRestoredStationVisible(app, "Morning Calm", "rotating back to portrait")
     }
 
     /// Widening from compact to regular keeps the search text and the studio identity, and counts no calls.

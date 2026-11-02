@@ -59,6 +59,8 @@ function deps(limiter: UsageLimiter, o: { fetch?: () => Promise<Response>; now?:
     now: () => o.now ?? NOON,
     timeoutMs: 50,
     requestId: () => 'req-1',
+    // Test-only: these harnesses drive the handler with an in-memory/spy limiter (Fry on #287 gate).
+    testOnlyAllowNonDurableLimiter: true,
   };
   return { d, logs, upstream: () => upstreamCalls };
 }
@@ -479,7 +481,7 @@ test('429/503 log lines carry only requestId, status, chars and the enum reason'
     const { defaultDeps } = await import('../src/handler.js');
     const base = defaultDeps(env());
     const limiter = new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 5, requestsPerMinute: 100 });
-    await handleTts(req('secret listening note'), { ...base, limiter, fetch: (async () => pcm()) as typeof fetch });
+    await handleTts(req('secret listening note'), { ...base, limiter, testOnlyAllowNonDurableLimiter: true, fetch: (async () => pcm()) as typeof fetch });
   } finally {
     spy.mock.restore();
   }

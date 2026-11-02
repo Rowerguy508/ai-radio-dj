@@ -207,6 +207,8 @@ describe('non-store reserve throw → 500 misconfig, Retry-After 3600 (Sentinel 
       now: () => NOON,
       timeoutMs: 50,
       requestId: () => 'req-1',
+      // Test-only: these harnesses drive the handler with an in-memory/spy limiter (Fry on #287 gate).
+      testOnlyAllowNonDurableLimiter: true,
     };
     const res = await handleTts(req, deps);
     return { res, logs, upstream };
