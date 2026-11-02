@@ -34,10 +34,28 @@ public struct ProxyVoiceProvider: VoiceProvider {
         public let upstream: Upstream
         public let maxResponseBytes: Int
         public let sessionToken: @Sendable () async throws -> String
+        /// Set only for the App Attest tester route (#378): requests carry `X-OnAirly-Install-Token`
+        /// and never `Authorization`, and `sessionToken` is not read. Nil keeps the owner-token path.
+        public let installTokens: (any InstallTokenProviding)?
 
         /// Throws `insecureEndpoint` unless `endpoint` is HTTPS on an allowed host.
         public init(endpoint: URL, allowedHosts: Set<String>, upstream: Upstream, maxResponseBytes: Int = 5_000_000,
                     sessionToken: @escaping @Sendable () async throws -> String) throws {
+            try self.init(endpoint: endpoint, allowedHosts: allowedHosts, upstream: upstream,
+                          maxResponseBytes: maxResponseBytes, sessionToken: sessionToken, installTokens: nil)
+        }
+
+        /// The attested tester route (#378): same host pin, install token instead of a session token.
+        public init(endpoint: URL, allowedHosts: Set<String>, upstream: Upstream, maxResponseBytes: Int = 5_000_000,
+                    installTokens: any InstallTokenProviding) throws {
+            try self.init(endpoint: endpoint, allowedHosts: allowedHosts, upstream: upstream,
+                          maxResponseBytes: maxResponseBytes,
+                          sessionToken: { throw VoiceRenderError.insecureEndpoint }, installTokens: installTokens)
+        }
+
+        private init(endpoint: URL, allowedHosts: Set<String>, upstream: Upstream, maxResponseBytes: Int,
+                     sessionToken: @escaping @Sendable () async throws -> String,
+                     installTokens: (any InstallTokenProviding)?) throws {
             guard endpoint.scheme?.lowercased() == "https", let host = endpoint.host?.lowercased(),
                   allowedHosts.contains(host), endpoint.user == nil, endpoint.password == nil else {
                 throw VoiceRenderError.insecureEndpoint
@@ -46,8 +64,12 @@ public struct ProxyVoiceProvider: VoiceProvider {
             self.upstream = upstream
             self.maxResponseBytes = maxResponseBytes
             self.sessionToken = sessionToken
+            self.installTokens = installTokens
         }
     }
+
+    /// The tester route's credential header (#378 §1.1 step 5).
+    public static let installTokenHeader = "X-OnAirly-Install-Token"
 
     public let configuration: Configuration
     private let transport: any HTTPTransport
@@ -69,22 +91,34 @@ public struct ProxyVoiceProvider: VoiceProvider {
         request.httpMethod = "POST"
         request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(try await configuration.sessionToken())", forHTTPHeaderField: "Authorization")
+        var installToken: InstallToken?
+        if let installTokens = configuration.installTokens {
+            // Tester route: the install token only. Never both credentials (400 `mixed_auth`).
+            let token = try await installTokens.installToken()
+            installToken = token
+            request.setValue(token.headerValue, forHTTPHeaderField: Self.installTokenHeader)
+        } else {
+            request.setValue("Bearer \(try await configuration.sessionToken())", forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = try JSONEncoder().encode([
             "upstream": configuration.upstream.rawValue, "voiceId": voice.id, "text": text,
             "format": text.hasPrefix("<speak>") ? "ssml" : "text", "stationId": context.stationID,
         ])
-        let data: Data
-        let response: HTTPURLResponse
-        do {
-            (data, response) = try await transport.send(request)
-        } catch {
-            // Caller cancellation or our own timeout (which cancels this task) is not a proxy failure.
-            if !(error is CancellationError) && !Task.isCancelled { backoff?.recordServerFailure() }
-            throw error
+        var (data, response) = try await send(request)
+        var tokenExpired = response.statusCode == 401 && installToken != nil
+            && PaidVoiceBackoff.ProxyErrorReason.parse(data) == .tokenExpired
+        if tokenExpired, let installTokens = configuration.installTokens, let installToken {
+            // #378 §1.3: an expired install token is refreshed once for this cue. If that fails,
+            // or the proxy says `token_expired` again, this cue goes on-device; nothing is stopped.
+            await installTokens.tokenRejected(installToken)
+            let fresh = try await installTokens.installToken()
+            request.setValue(fresh.headerValue, forHTTPHeaderField: Self.installTokenHeader)
+            (data, response) = try await send(request)
+            tokenExpired = response.statusCode == 401 && PaidVoiceBackoff.ProxyErrorReason.parse(data) == .tokenExpired
         }
         switch response.statusCode {
         case 200: break  // counted as a success only once the audio below is validated
+        case 401 where tokenExpired: break
         case 401: backoff?.recordUnauthorized()
         case 429:
             backoff?.recordRateLimited(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
@@ -108,5 +142,15 @@ public struct ProxyVoiceProvider: VoiceProvider {
         let billed = response.value(forHTTPHeaderField: "X-Billed-Characters").flatMap(Int.init) ?? text.count
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: billed,
                              provider: configuration.upstream.rawValue, cacheKey: nil)
+    }
+
+    private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        do {
+            return try await transport.send(request)
+        } catch {
+            // Caller cancellation or our own timeout (which cancels this task) is not a proxy failure.
+            if !(error is CancellationError) && !Task.isCancelled { backoff?.recordServerFailure() }
+            throw error
+        }
     }
 }

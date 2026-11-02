@@ -29,6 +29,11 @@ extension VoiceRenderer {
         OwnerProxyKeychain.logDecision(composition.decision, routeCount: composition.routes.count)
         return VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
                              revocations: base.revocations)
+        #elseif AERODJ_TESTER_VOICE
+        // Internal TestFlight tester build (#378): ElevenLabs through an App Attest install token,
+        // only after the consent sheet; on-device on any attest failure. AppAttestService+App.swift.
+        return VoiceRenderer(routes: TesterCloudVoice.compose(onDevice: base.routes), budget: base.budget,
+                             cache: base.cache, revocations: base.revocations)
         #else
         return base
         #endif

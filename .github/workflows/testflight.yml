@@ -35,6 +35,14 @@ on:
         required: false
         default: false
         type: boolean
+      tester_voice:
+        # #378: ElevenLabs voice for internal testers via App Attest (AERODJ_TESTER_VOICE),
+        # after a one-time consent sheet. Internal TestFlight only. Needs App Attest enabled on
+        # the App ID and a regenerated app profile (owner, Apple portal).
+        description: Tester cloud voice build (AERODJ_TESTER_VOICE, App Attest). Not for App Store.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -62,6 +70,8 @@ jobs:
       P0_DIAG: ${{ inputs.p0_diag && 'true' || 'false' }}
       # Strict: only a workflow_dispatch run with owner_ab exactly true; anything else is 'false'.
       OWNER_AB: ${{ (github.event_name == 'workflow_dispatch' && inputs.owner_ab == true) && 'true' || 'false' }}
+      # Same strict rule for the App Attest tester voice (#378).
+      TESTER_VOICE: ${{ (github.event_name == 'workflow_dispatch' && inputs.tester_voice == true) && 'true' || 'false' }}
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || 'S85APB73YV' }}
       BUNDLE_APP: com.aerodj.app
       BUNDLE_SHARE: com.aerodj.app.share
@@ -359,6 +369,8 @@ jobs:
           EXPECT=absent
           case " $CONDS " in *" AERODJ_OWNER_AB "*) EXPECT=present
             echo "::warning::Owner A/B build (AERODJ_OWNER_AB). Internal TestFlight only, not for App Store." ;; esac
+          case " $CONDS " in *" AERODJ_TESTER_VOICE "*)
+            echo "::warning::Tester voice build (AERODJ_TESTER_VOICE, App Attest). Internal TestFlight only, not for App Store." ;; esac
           if [ -n "$CONDS" ]; then EXTRA+=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited)$CONDS"); fi
           "$RUNNER_TEMP/owner-ab/check-owner-ab-build-settings.sh" "$EXPECT" "${EXTRA[@]}"
           xcodebuild archive \
@@ -392,7 +404,8 @@ jobs:
               "manageAppVersionAndBuildNumber": False,
               "provisioningProfiles": {app: app_uuid, share: share_uuid},
           }
-          if os.environ.get("P0_DIAG") == "true" or os.environ.get("OWNER_AB") == "true":
+          if (os.environ.get("P0_DIAG") == "true" or os.environ.get("OWNER_AB") == "true"
+                  or os.environ.get("TESTER_VOICE") == "true"):
               # App Store Connect then refuses this build for App Store review and for
               # external testers. TEMPORARY P0 (#121 / #133). -Atlas
               data["testFlightInternalTestingOnly"] = True
