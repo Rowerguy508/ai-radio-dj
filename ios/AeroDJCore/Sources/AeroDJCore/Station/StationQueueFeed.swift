@@ -25,6 +25,9 @@ import Observation
 // - Library seeds play only themselves: `StationPoolBuilder.build(_:configuration:)` validates the
 //   configuration (reach clamped to `.only`) and the resolver never expands a library seed.
 // - Logs are `StationQueueEvent`s: enums, bools and counts only. No seed, song, artist or ID.
+// - Song ratings (-Nova) are an input, not part of the key: a new `StationRatingBias.revision`
+//   rebuilds the staged queue in `prepare`, `prefetch` and the refill, but the boundary hand-off and
+//   `playingKey` compare the key only, so a rating is never a station change (and never re-greets).
 
 /// What a station queue is built from. Two configurations with the same key build the same queue.
 /// Names do not count (a renamed pick plays the same songs). Never logged.
@@ -65,6 +68,22 @@ public struct StationQueueKey: Hashable, Sendable {
         mix(reach.rawValue)
         mix(String(discoveryMillis))
         mix(String(day))
+        return hash
+    }
+
+    /// The seed part only (what #362 compares), FNV-1a: an unsaved station's ratings scope, and the
+    /// guard that keeps a ratings bias on the seeds it was made for. Stable across launches.
+    public var seedsFingerprint: UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        func mix(_ text: String) {
+            for byte in text.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 0x0000_0100_0000_01B3
+            }
+            hash ^= 0x1F
+            hash &*= 0x0000_0100_0000_01B3
+        }
+        for seed in seeds { mix(seed.kind.rawValue); mix(seed.source.rawValue); mix(seed.catalogID) }
         return hash
     }
 }
@@ -166,11 +185,15 @@ public final class StationQueueFeed<Item: Sendable> {
     private let options: StationPoolBuilder.Options
     private let day: @MainActor () -> Int
     private let recentlyPlayed: @MainActor () -> Set<String>
+    private let ratings: @MainActor () -> StationRatingBias
     private let log: @MainActor (StationQueueEvent) -> Void
     private let refillLead: Int
 
-    private var staged: (key: StationQueueKey, items: [Item])?
-    private var building: StationQueueKey?
+    private var staged: (key: StationQueueKey, revision: StationRatingRevision, items: [Item])?
+    private var building: (key: StationQueueKey, revision: StationRatingRevision)?
+    /// Song ID -> catalog artist ID from the last build, for love's discovery steering (the app's
+    /// `Track` has no artist ID). Never logged.
+    private var lastBuildArtistIDs: [String: String] = [:]
     private var generation = 0
     /// The station the playing queue belongs to. `nil` before the first queue start, and for a
     /// queue started on a station with no seeds (see `queueStartReported`).
@@ -190,6 +213,7 @@ public final class StationQueueFeed<Item: Sendable> {
     private struct PendingHandOff {
         let trigger: StationQueueTrigger
         let key: StationQueueKey
+        let revision: StationRatingRevision
         let items: [Item]
         let previousKey: StationQueueKey?
         let previousReported: Bool
@@ -200,12 +224,15 @@ public final class StationQueueFeed<Item: Sendable> {
     ///   - options: `limit` and `artistGap` for one queue; `shuffleSeed` and `excludedSongIDs` are set per build.
     ///   - day: a day number for the shuffle seed (the app passes days since the reference date).
     ///   - recentlyPlayed: song IDs to leave out (the current queue's played songs).
+    ///   - ratings: the committed station's song ratings (`StationRatingBook.bias`). Applied only to a
+    ///     build with the seeds it was made for; its `revision` changing rebuilds, never a station change.
     ///   - refillLead: start building the refill when this many songs or fewer are left to load.
     public init(resolver: any StationSeedResolver,
                 materialize: @escaping Materialize,
                 options: StationPoolBuilder.Options = .init(),
                 day: @escaping @MainActor () -> Int = { Int(Date().timeIntervalSinceReferenceDate / 86_400) },
                 recentlyPlayed: @escaping @MainActor () -> Set<String> = { [] },
+                ratings: @escaping @MainActor () -> StationRatingBias = { .none },
                 refillLead: Int = 3,
                 log: @escaping @MainActor (StationQueueEvent) -> Void = { _ in }) {
         self.refillLead = max(1, refillLead)
@@ -214,6 +241,7 @@ public final class StationQueueFeed<Item: Sendable> {
         self.options = options
         self.day = day
         self.recentlyPlayed = recentlyPlayed
+        self.ratings = ratings
         self.log = log
     }
 
@@ -221,7 +249,28 @@ public final class StationQueueFeed<Item: Sendable> {
     public var stagedCount: Int? { staged?.items.count }
     public var stagedKey: StationQueueKey? { staged?.key }
     /// The station whose queue is being built, `nil` when no build is running.
-    public var buildingKey: StationQueueKey? { building }
+    public var buildingKey: StationQueueKey? { building?.key }
+    /// The ratings revision the staged queue was built with.
+    public var stagedRatingRevision: StationRatingRevision? { staged?.revision }
+
+    /// The catalog artist ID of `songID` in the last build, if the catalog gave one. The app stores
+    /// it with a love rating so love can steer discovery; matching itself is by artist name.
+    public func artistID(forSong songID: String) -> String? { lastBuildArtistIDs[songID] }
+
+    /// A song was rated: rebuild the committed station's staged queue with the new ratings (in the
+    /// background). Never touches playback or `playingKey`; songs already queued keep playing.
+    public func ratingsChanged(_ committed: StationConfiguration) { prefetch(committed) }
+
+    /// The bias for a build of `key`: a bias made for other seeds keeps its revision but does nothing.
+    private func currentRatings(for key: StationQueueKey) -> StationRatingBias {
+        let bias = ratings()
+        return bias.seedsFingerprint == key.seedsFingerprint ? bias : bias.neutralized
+    }
+
+    private func isCurrent(_ key: StationQueueKey, _ revision: StationRatingRevision,
+                           against target: StationQueueKey, _ current: StationRatingRevision) -> Bool {
+        key == target && revision == current
+    }
 
     // MARK: Building
 
@@ -236,23 +285,28 @@ public final class StationQueueFeed<Item: Sendable> {
             log(.notBuilt(.noSeeds, failedLookups: 0))
             return .skipped(.noSeeds)
         }
-        if staged?.key == key || building == key { return .unchanged }
+        let bias = currentRatings(for: key)
+        if let s = staged, isCurrent(s.key, s.revision, against: key, bias.revision) { return .unchanged }
+        if let b = building, isCurrent(b.key, b.revision, against: key, bias.revision) { return .unchanged }
         generation += 1
         let mine = generation
-        building = key
+        building = (key, bias.revision)
         let config = configuration.validated()
-        let pool = await resolver.resolve(seeds: config.seeds, reach: config.reach)
+        let pool = await resolver.resolve(seeds: config.seeds, reach: config.reach, affinity: bias.affinityArtists)
         guard mine == generation else { return superseded() }
         var opts = options
         opts.shuffleSeed = key.shuffleSeed(day: day())
         opts.excludedSongIDs = options.excludedSongIDs.union(recentlyPlayed())
+        opts.ratings = bias
         let picks = StationPoolBuilder.build(pool, configuration: config, options: opts)
         guard !picks.isEmpty else { return finish(mine, .emptyPool, failed: pool.failedLookups) }
         let items = await materialize(picks)
         guard mine == generation else { return superseded() }
         guard !items.isEmpty else { return finish(mine, .unplayable, failed: pool.failedLookups) }
         building = nil
-        staged = (key, items)
+        staged = (key, bias.revision, items)
+        lastBuildArtistIDs = Dictionary(picks.compactMap { c in c.artistID.map { (c.id, $0) } },
+                                        uniquingKeysWith: { first, _ in first })
         log(.built(songs: items.count, poolSongs: pool.count, failedLookups: pool.failedLookups,
                    libraryLimited: pool.libraryReachLimited))
         return .ready(songs: items.count)
@@ -311,13 +365,17 @@ public final class StationQueueFeed<Item: Sendable> {
             prefetch(active)
             return keep(.refill, .notReady)
         }
+        // Ratings changed since this queue was built: rebuild for the next refill. The stale queue is
+        // still handed out now, so a rating never strands the station (today's stop path); the
+        // newly excluded songs are only certain to be gone from the next build.
+        if ready.revision != currentRatings(for: key).revision { prefetch(active) }
         let fresh = ready.items.filter { item in !queue.contains { sameSong($0, item) } }
         guard !fresh.isEmpty else {
             staged = nil
             prefetch(active)
             return keep(.refill, .notReady)
         }
-        pendingHandOff = PendingHandOff(trigger: .refill, key: key, items: ready.items,
+        pendingHandOff = PendingHandOff(trigger: .refill, key: key, revision: ready.revision, items: ready.items,
                                         previousKey: playingKey, previousReported: queueStartReported)
         staged = nil
         playingKey = key
@@ -330,7 +388,10 @@ public final class StationQueueFeed<Item: Sendable> {
 
     /// Builds `configuration`'s queue in the background unless it is staged or building.
     private func prefetch(_ configuration: StationConfiguration) {
-        guard let key = StationQueueKey(configuration), staged?.key != key, building != key else { return }
+        guard let key = StationQueueKey(configuration) else { return }
+        let revision = currentRatings(for: key).revision
+        if let s = staged, isCurrent(s.key, s.revision, against: key, revision) { return }
+        if let b = building, isCurrent(b.key, b.revision, against: key, revision) { return }
         Task { await self.prepare(configuration) }
     }
 
@@ -365,7 +426,7 @@ public final class StationQueueFeed<Item: Sendable> {
             prefetch(active)
             return keep(trigger, .notReady)
         }
-        pendingHandOff = PendingHandOff(trigger: trigger, key: key, items: ready.items,
+        pendingHandOff = PendingHandOff(trigger: trigger, key: key, revision: ready.revision, items: ready.items,
                                         previousKey: playingKey, previousReported: queueStartReported)
         staged = nil
         playingKey = key
@@ -383,7 +444,7 @@ public final class StationQueueFeed<Item: Sendable> {
         guard result == .failed else { return }
         playingKey = handOff.previousKey
         queueStartReported = handOff.previousReported
-        if staged == nil { staged = (handOff.key, handOff.items) }
+        if staged == nil { staged = (handOff.key, handOff.revision, handOff.items) }
         log(.handOffFailed(handOff.trigger))
     }
 
