@@ -140,6 +140,7 @@ public final class DJBreakSession {
             for await change in changes {
                 guard let self, !Task.isCancelled else { return }
                 await self.stationChanged(change)
+                self.testOnStationChangeHandled?(change)
             }
         }
     }
@@ -675,6 +676,9 @@ public final class DJBreakSession {
     var testPlannedBreaks: [Int: DJBreak] { breaks }
     /// Test hook: the phrase bank the session's writer plans with.
     var testWriterTone: EditorialTone { writer.tone }
+    /// Test hook: called after the `start()` observer has handled a station change (any replan
+    /// it causes is done), so a test can wait for it instead of racing the change stream.
+    var testOnStationChangeHandled: ((StationConfigurationChange) -> Void)?
     /// Test hook: the preparer this session hands breaks to.
     var testPreparer: DJBreakPreparer { preparer }
     /// Test hook: background tap setup has not finished planning.

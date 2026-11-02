@@ -239,7 +239,7 @@ public enum ConnectionUnavailableReason: Equatable, Sendable {
 
     public var description: String {
         switch self {
-        case .markedPrivate: return "Not used: marked private in Obsidian (aerodj-sensitivity: blocked)."
+        case .markedPrivate: return "Not used: marked private in the note (aerodj-sensitivity: blocked)."
         case .calendarAccess(let a): return "Unavailable: \(CalendarConnectionState(access: a).description)"
         case .file(let r):
             switch r {
