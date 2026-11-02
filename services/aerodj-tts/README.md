@@ -388,6 +388,32 @@ Test root CAs can be injected by code only, never by env, and only on a Preview 
 Development deployment; anywhere else that is 500 `misconfig`. The assertion path
 that uses the stored key is PR 4.
 
+### `POST /api/attest/token` and install tokens (#378, off by default)
+
+Off unless **both** `AERODJ_TTS_ATTEST_ENABLED` and `AERODJ_TTS_TESTER_VOICE_ENABLED` are
+exactly `true` (503 `disabled`, Retry-After 3600, before any store call). TestFlight
+installs only: register sets `tier: "tester"` on the key record only for
+`apple_validation_category_01 == 2`; any other or no category is 403 `no_entitlement`.
+
+1. `POST /api/attest/challenge {purpose:"tok"}` + `X-OnAirly-Key` → key-bound challenge.
+2. `POST /api/attest/token {challenge}` + `X-OnAirly-Key` + `X-OnAirly-Assertion` (base64
+   CBOR App Attest assertion over `"onairly-tok-v1\n" + challenge + "\n" + hex(sha256(rawBody))`,
+   body ≤ 1 KiB) → 200 `{token, expiresIn:1800}`. One Lua script: single-use challenge,
+   key record present, not on the revocation list, counter > stored (then committed),
+   ≤ 96 mints per key per UTC day (429 `rate`), 90-day TTL refresh.
+3. `POST /api/tts` + `X-OnAirly-Install-Token` → charged to the install (1,500/day), the
+   tester pool (6,000/day) and the global ceiling (9,000/day) in one atomic script that
+   also re-checks the key record and revocation list. Refusals: 429 `install_daily` or
+   `global_daily` (pool full; logged `tester_pool`), Retry-After to 00:00 UTC; 401
+   `token_expired` (bad or expired token); 401 `reattest` (record gone or revoked).
+   Upstream non-2xx refunds install, pool and global once.
+
+More than one of `Authorization`, `X-OnAirly-Install-Token`, `X-OnAirly-Assertion` on
+`/api/tts` (or `Authorization` / an install token on `/api/attest/token`) is 400
+`mixed_auth`. The owner bearer path is unchanged. Revoke keys with
+`npx tsx scripts/revoke-installs.ts production < keyids.txt` (owner's shell; entries live
+90 days, like the key record).
+
 ## Logging and privacy
 
 Each request logs exactly one JSON line: `{ requestId, status, chars }`.
@@ -396,6 +422,8 @@ integer HTTP status) and `upstreamCode`: the body's `detail.status` if it
 matches `^[a-z0-9_]{1,64}$`, otherwise `other`. At most 4 KB of the error body
 is read for this and then dropped. Text, headers, tokens, voice IDs, station
 IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
+Install tokens, App Attest keys and keyIds, challenges and assertions are never logged
+either (`test/install-token.test.ts`); refusals log enum reasons only.
 
 ## Environment variables
 
@@ -408,8 +436,8 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_MAX_TEXT_CHARS` | no | Default 600. |
 | `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP` | no | Global daily ceiling. Default: `AERODJ_TTS_DAILY_CHAR_CAP`, else 9000. |
 | `AERODJ_TTS_DAILY_CHAR_CAP` | no | Legacy name, used for the global ceiling when the new name is unset. |
-| `AERODJ_TTS_OWNER_DAILY_CHAR_CAP` | no | Owner bucket cap. Default: the global ceiling. |
-| `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP` | no | Per-install cap. Default 1500. Inert until per-install auth lands. |
+| `AERODJ_TTS_OWNER_DAILY_CHAR_CAP` | no | Owner bucket cap. Default: the global ceiling; **3000 (the owner share) once tester voice is on** (#378). |
+| `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP` | no | Per-install cap (spoken chars per UTC day). Default 1500. Applies to install-token requests (#378). |
 | `AERODJ_TTS_NONPROD_DAILY_CHAR_CAP` | no | Preview/Development daily sub-cap, also charged to the shared global key. Default and maximum 1000 (only lower values apply). Ignored on Production. |
 | `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. Plain integer 1-600; anything else uses 12. |
 | `AERODJ_TTS_PRO_DAILY_CHARS` | no | Per Pro subscriber daily chars. Default 12000, clamped to the global ceiling. Plain integer 600-10,000,000; anything else makes Pro requests 500 `misconfig`. |
@@ -424,6 +452,9 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `AERODJ_TTS_BUNDLE_ID` | no | If set, must equal `com.aerodj.app` (from `config/storekit.json`); anything else → 500 `misconfig`. It cannot change the bundle. |
 | `AERODJ_TTS_APP_ATTEST_ENV` | no | Unset or `production`: only the production `aaguid`. `development` also accepts `appattestdevelop` (and validation category 3), **only** on a Preview/Development deployment with no `ELEVENLABS_API_KEY`; anywhere else, or any other value → 500 `misconfig`. |
 | `AERODJ_TTS_ENROLL_DAILY_CAP` | no | Verified enrollments per UTC day overall (default 20, owner decision 2026-10-29). Plain integer 1-100000; anything else uses the default. |
+| `AERODJ_TTS_TESTER_VOICE_ENABLED` | no | Tester voice kill switch (#378). Only exactly `true` (and `AERODJ_TTS_ATTEST_ENABLED=true`) enables `/api/attest/token` and install tokens on `/api/tts`; anything else (`TRUE`, `1`, empty) is off: 503 `disabled`. **Leave unset until the owner OKs it at deploy.** |
+| `AERODJ_TTS_INSTALL_TOKEN_HMAC_KEY` | before tester voice is enabled | Server-only. Dedicated key for install tokens, at least 32 bytes, **created by the owner**, pasted directly into Vercel (Production). Must differ from the challenge key; missing, short or equal → 500 `misconfig` on the install paths. Rotating it invalidates every live token (30 min max). |
+| `AERODJ_TTS_TESTER_POOL_DAILY_CHAR_CAP` | no | Spoken chars per UTC day that all TestFlight installs together may use. Default 6000. Always clamped to global − owner cap, so testers can never spend the owner share; nothing left → install requests 500 `misconfig`. |
 | `AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP` | no | Verified enrollments per UTC day per device bucket (keyed hash of the client network; see above) (default 3, owner decision 2026-10-29). Plain integer 1-1000; anything else uses the default. |
 
 ## Deploy (owner only, after Sentinel's review)
