@@ -80,10 +80,31 @@ public enum StationRatingTuning {
     // Limits
     public static let maxEntriesPerStation = 500
 
-    /// `0.5^(ageDays / halfLife)`; 1 for a future or same-day rating.
+    // Day numbers (Sentinel B1): a saved `ratedDay` is days since the reference date (2001-01-01).
+    /// Days a rating may plausibly carry: 1901 through about 3001. Anything outside (a corrupt or
+    /// hand-edited file: `Int.min`, `Int.max`) is read as `implausibleDay`, i.e. long ago, so it has
+    /// already done its work: tired is expired, like and love have decayed to nothing, and never stays
+    /// permanent (its effect never depended on the day, so a corrupt day never brings a song back).
+    public static let plausibleDays: ClosedRange<Int> = -36_525...365_250
+    /// Where an implausible day lands: the start of `plausibleDays`.
+    public static var implausibleDay: Int { plausibleDays.lowerBound }
+
+    /// `day` if plausible, else `implausibleDay`.
+    public static func sanitizedDay(_ day: Int) -> Int { plausibleDays.contains(day) ? day : implausibleDay }
+
+    /// Whole days from `ratedDay` to `today`, never trapping: 0 for the same day or a future day;
+    /// `Int.max` when the difference overflows (an absurd `today`), which reads as long expired.
+    static func ageDays(today: Int, ratedDay: Int) -> Int {
+        let (age, overflow) = today.subtractingReportingOverflow(ratedDay)
+        if overflow { return today > ratedDay ? Int.max : 0 }
+        return max(0, age)
+    }
+
+    /// `0.5^(ageDays / halfLife)`; 1 for a future or same-day rating, never NaN.
     static func decay(ageDays: Int, halfLife: Double) -> Double {
-        guard ageDays > 0, halfLife > 0 else { return 1 }
-        return pow(0.5, Double(ageDays) / halfLife)
+        guard ageDays > 0, halfLife.isFinite, halfLife > 0 else { return 1 }
+        let d = pow(0.5, Double(ageDays) / halfLife)
+        return d.isFinite ? d : 0
     }
 }
 
@@ -117,7 +138,8 @@ public struct StationRatingEntry: Codable, Equatable, Sendable {
     /// Catalog artist ID when known (from the feed's last build); used only for love's discovery steering.
     public let artistID: String?
     public let rating: SongRating
-    /// Day number the rating was set (the feed's day: days since the reference date).
+    /// Day number the rating was set (the feed's day: days since the reference date). Always within
+    /// `StationRatingTuning.plausibleDays`: `init` (and so decoding) maps anything else to `implausibleDay`.
     public let ratedDay: Int
     /// Where the song entered the queue. Only `.catalog` songs steer discovery.
     public let origin: TrackOrigin
@@ -129,7 +151,7 @@ public struct StationRatingEntry: Codable, Equatable, Sendable {
         let id = artistID?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.artistID = (id?.isEmpty ?? true) ? nil : id
         self.rating = rating
-        self.ratedDay = ratedDay
+        self.ratedDay = StationRatingTuning.sanitizedDay(ratedDay)
         self.origin = origin
     }
 
@@ -139,7 +161,7 @@ public struct StationRatingEntry: Codable, Equatable, Sendable {
     }
 
     /// Days since the rating (0 on the day, never negative).
-    func age(today: Int) -> Int { max(0, today - ratedDay) }
+    func age(today: Int) -> Int { StationRatingTuning.ageDays(today: today, ratedDay: ratedDay) }
 
     private enum CodingKeys: String, CodingKey { case songID, artistName, artistID, rating, ratedDay, origin }
 
@@ -150,7 +172,9 @@ public struct StationRatingEntry: Codable, Equatable, Sendable {
                   artistName: try c.decode(String.self, forKey: .artistName),
                   artistID: try c.decodeIfPresent(String.self, forKey: .artistID),
                   rating: try c.decode(SongRating.self, forKey: .rating),
-                  ratedDay: try c.decode(Int.self, forKey: .ratedDay),
+                  // A missing, fractional or out-of-Int day reads as implausible (long ago) rather than
+                  // failing the whole file: a never with a bad day must still load and stay a never.
+                  ratedDay: (try? c.decode(Int.self, forKey: .ratedDay)) ?? StationRatingTuning.implausibleDay,
                   // Fail closed: an unknown origin is personal and never steers discovery.
                   origin: (try? c.decodeIfPresent(TrackOrigin.self, forKey: .origin)) ?? .unknown)
     }
@@ -176,9 +200,17 @@ public struct StationRatings: Codable, Equatable, Sendable {
         try c.encode(entries.values.sorted { $0.songID < $1.songID }, forKey: .entries)
     }
 
+    /// Sentinel B2: a loaded station is trimmed to `maxEntriesPerStation` in the same eviction order,
+    /// except that every never is kept (dropping one would bring back a song the listener banned), so a
+    /// file with more than the limit of nevers loads them all and nothing else. `today` is the decoder's
+    /// `StationRatingBook.todayKey` when given (PR B's file store passes it), else the station's newest
+    /// rating day, so a load never reads the clock.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(entries: try c.decode([StationRatingEntry].self, forKey: .entries))
+        let today = (decoder.userInfo[StationRatingBook.todayKey] as? Int)
+            ?? entries.values.map(\.ratedDay).max() ?? 0
+        enforceLimit(today: today, evictingNevers: false)
     }
 
     public var isEmpty: Bool { entries.isEmpty }
@@ -217,11 +249,13 @@ public struct StationRatings: Codable, Equatable, Sendable {
         }
     }
 
-    mutating func enforceLimit(today: Int, keeping newest: String? = nil) {
+    /// Evicts down to `maxEntriesPerStation`. `evictingNevers` false (a load) never evicts a never, so
+    /// the station may stay over the limit when nevers alone exceed it.
+    mutating func enforceLimit(today: Int, keeping newest: String? = nil, evictingNevers: Bool = true) {
         let limit = StationRatingTuning.maxEntriesPerStation
         guard entries.count > limit else { return }
         let order = entries.values
-            .filter { $0.songID != newest }
+            .filter { $0.songID != newest && (evictingNevers || $0.rating != .never) }
             .sorted {
                 let (ra, rb) = (Self.evictionRank($0, today: today), Self.evictionRank($1, today: today))
                 if ra != rb { return ra < rb }
@@ -307,6 +341,7 @@ public struct StationRatingBias: Equatable, Sendable {
     /// Song plus artist, clamped to `scoreRange`.
     public func score(songID: String, artistName: String) -> Double {
         let raw = (songScores[songID] ?? 0) + (artistScores[StationRatingEntry.artistKey(artistName)] ?? 0)
+        guard raw.isFinite else { return 0 }   // never NaN into the re-rank's Int conversion
         return min(max(raw, StationRatingTuning.scoreRange.lowerBound), StationRatingTuning.scoreRange.upperBound)
     }
 
@@ -406,6 +441,9 @@ public struct StationRatingBook: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey { case version, stations }
 
+    /// Decoder `userInfo` key for today's day number, used to trim an over-full station on load.
+    public static let todayKey = CodingUserInfoKey(rawValue: "aerodj.stationRatings.today")!
+
     public init(stations: [String: StationRatings] = [:]) {
         version = Self.formatVersion
         self.stations = stations
@@ -425,7 +463,7 @@ public struct StationRatingBook: Codable, Equatable, Sendable {
         var station = ratings(for: scope)
         let result = station.rate(entry, today: today)
         stations[scope.storageKey] = station.isEmpty ? nil : station
-        changes += 1
+        changes &+= 1
         return result
     }
 
@@ -434,19 +472,19 @@ public struct StationRatingBook: Codable, Equatable, Sendable {
         var station = ratings(for: scope)
         station.clear(songID: songID)
         stations[scope.storageKey] = station.isEmpty ? nil : station
-        changes += 1
+        changes &+= 1
     }
 
     /// The per-station "Clear ratings", and deleting a station.
     public mutating func clearStation(_ scope: StationRatingScope) {
         stations[scope.storageKey] = nil
-        changes += 1
+        changes &+= 1
     }
 
     /// Settings "Clear all ratings", a data reset, or a consent withdrawal (wired in PR B).
     public mutating func clearAll() {
         stations = [:]
-        changes += 1
+        changes &+= 1
     }
 
     /// Drops expired tired entries everywhere.
@@ -456,7 +494,7 @@ public struct StationRatingBook: Codable, Equatable, Sendable {
             station.prune(today: today)
             if !station.isEmpty { next[key] = station }
         }
-        if next != stations { stations = next; changes += 1 }
+        if next != stations { stations = next; changes &+= 1 }
     }
 
     /// The bias for the station `configuration` is (saved as `recipeID`, if any) on `today`.
