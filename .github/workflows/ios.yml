@@ -16,6 +16,8 @@ permissions:
 # same-repo pull_request events, and only once the repo variable AERODJ_SELF_HOSTED is '1'.
 # The repo is public, so fork PRs (head repo != this repo), pushes and every other event
 # always use GitHub-hosted macos-latest. testflight.yml stays GitHub-hosted. -Atlas
+# Exception: "iOS simulator build" (StoreKit tests) is always GitHub-hosted until the Mac's
+# SKTestSession Code=3 is fixed (#383 / #384). -Orion
 jobs:
   changes:
     runs-on: ubuntu-latest
@@ -69,40 +71,15 @@ jobs:
     name: iOS simulator build
     needs: changes
     if: needs.changes.outputs.ios == 'true'
-    runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
-    timeout-minutes: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
+    # Always GitHub-hosted (Orion's call, #384): on the self-hosted Mac every SKTestSession call
+    # fails with SKInternalErrorDomain Code=3 and the StoreKit tests get 0 products, wherever
+    # DerivedData lives (run 41543137869). Back on the Mac only once that is fixed; see #383.
+    runs-on: macos-latest
     env:
       XCODEGEN_VERSION: 2.46.0
       DERIVED_DATA: ios/build/DerivedData
     steps:
       - uses: actions/checkout@v4
-      - name: Self-hosted prep (volume check, DerivedData on the internal disk)
-        # Self-hosted only (claudio-mini, workdir on /Volumes/AeroDJWork). Simulator services
-        # (CoreSimulator, simctl, StoreKit test agent) stall or get "permission denied" on the
-        # removable volume, so this job's DerivedData lives on the internal disk via a symlink
-        # at the same $DERIVED_DATA path. Hosted runners skip this step. -Orion
-        if: runner.environment == 'self-hosted'
-        timeout-minutes: 3
-        run: |
-          set -euo pipefail
-          # Fail fast if the work volume hangs (a pending removable-volume prompt blocked it for an hour).
-          perl -e 'alarm 5; exec @ARGV' ls "$GITHUB_WORKSPACE" >/dev/null \
-            || { echo "::error::Reading $GITHUB_WORKSPACE did not return within 5 s; check the Mac for a removable-volume permission prompt."; exit 1; }
-          # One runner, one job at a time: clear earlier jobs' DerivedData (internal disk has ~15 GiB free).
-          DD_ROOT="$HOME/ci-dd"
-          mkdir -p "$DD_ROOT"
-          find "$DD_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          rm -rf "$HOME/ci-rec"
-          DD="$DD_ROOT/simulator-build"
-          mkdir -p "$DD" "$(dirname "$DERIVED_DATA")"
-          rm -rf "$DERIVED_DATA"
-          ln -s "$DD" "$DERIVED_DATA"
-          ls -ld "$DERIVED_DATA"
-          FREE_KB=$(df -k "$HOME" | awk 'NR==2 {print $4}')
-          echo "Internal disk free: $((FREE_KB / 1024 / 1024)) GiB"
-          if [ "$FREE_KB" -lt $((8 * 1024 * 1024)) ]; then
-            echo "::warning::Less than 8 GiB free on the internal disk"
-          fi
       - name: Install pinned XcodeGen
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
@@ -195,16 +172,7 @@ jobs:
                       | select(.name | startswith("iPhone"))] | last | .udid // empty')
           test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
-      - name: Pre-boot the simulator (self-hosted)
-        # Hosted runners let xcodebuild boot it, as before. On the Mac a stuck boot fails
-        # here in 5 minutes instead of eating the test step. -Orion
-        if: runner.environment == 'self-hosted'
-        timeout-minutes: 5
-        run: |
-          xcrun simctl boot "$SIM_UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$SIM_UDID" -b
       - name: Run unit tests on simulator
-        timeout-minutes: ${{ runner.environment == 'self-hosted' && 25 || 360 }}
         run: |
           xcodebuild test \
             -project ios/AeroDJ.xcodeproj \
@@ -212,13 +180,6 @@ jobs:
             -destination "id=$SIM_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
-      - name: Self-hosted cleanup (stop tests and simulators)
-        if: always() && runner.environment == 'self-hosted'
-        timeout-minutes: 3
-        run: |
-          pkill -f 'xcodebuild test' || true
-          pkill -f 'simctl io' || true
-          xcrun simctl shutdown all || true
 
   device-build:
     name: iOS device build (unsigned)
@@ -364,32 +325,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Self-hosted prep (volume check, DerivedData on the internal disk)
-        # Self-hosted only (claudio-mini, workdir on /Volumes/AeroDJWork). Simulator services
-        # (CoreSimulator, simctl, StoreKit test agent) stall or get "permission denied" on the
-        # removable volume, so this job's DerivedData lives on the internal disk via a symlink
-        # at the same $DERIVED_DATA path. Hosted runners skip this step. -Orion
+        # See the script: simulator services stall or are denied on the removable work volume. -Orion
         if: runner.environment == 'self-hosted'
         timeout-minutes: 3
-        run: |
-          set -euo pipefail
-          # Fail fast if the work volume hangs (a pending removable-volume prompt blocked it for an hour).
-          perl -e 'alarm 5; exec @ARGV' ls "$GITHUB_WORKSPACE" >/dev/null \
-            || { echo "::error::Reading $GITHUB_WORKSPACE did not return within 5 s; check the Mac for a removable-volume permission prompt."; exit 1; }
-          # One runner, one job at a time: clear earlier jobs' DerivedData (internal disk has ~15 GiB free).
-          DD_ROOT="$HOME/ci-dd"
-          mkdir -p "$DD_ROOT"
-          find "$DD_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          rm -rf "$HOME/ci-rec"
-          DD="$DD_ROOT/runtime-mode"
-          mkdir -p "$DD" "$(dirname "$DERIVED_DATA")"
-          rm -rf "$DERIVED_DATA"
-          ln -s "$DD" "$DERIVED_DATA"
-          ls -ld "$DERIVED_DATA"
-          FREE_KB=$(df -k "$HOME" | awk 'NR==2 {print $4}')
-          echo "Internal disk free: $((FREE_KB / 1024 / 1024)) GiB"
-          if [ "$FREE_KB" -lt $((8 * 1024 * 1024)) ]; then
-            echo "::warning::Less than 8 GiB free on the internal disk"
-          fi
+        run: ios/scripts/ci-selfhosted-prep.sh runtime-mode
       - name: Install pinned XcodeGen
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
@@ -459,10 +398,7 @@ jobs:
       - name: Self-hosted cleanup (stop tests and simulators)
         if: always() && runner.environment == 'self-hosted'
         timeout-minutes: 3
-        run: |
-          pkill -f 'xcodebuild test' || true
-          pkill -f 'simctl io' || true
-          xcrun simctl shutdown all || true
+        run: ios/scripts/ci-selfhosted-cleanup.sh
 
   studio-screenshots:
     name: Studio UI tests and screenshots (closed + open)
@@ -477,32 +413,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Self-hosted prep (volume check, DerivedData on the internal disk)
-        # Self-hosted only (claudio-mini, workdir on /Volumes/AeroDJWork). Simulator services
-        # (CoreSimulator, simctl, StoreKit test agent) stall or get "permission denied" on the
-        # removable volume, so this job's DerivedData lives on the internal disk via a symlink
-        # at the same $DERIVED_DATA path. Hosted runners skip this step. -Orion
+        # See the script: simulator services stall or are denied on the removable work volume. -Orion
         if: runner.environment == 'self-hosted'
         timeout-minutes: 3
-        run: |
-          set -euo pipefail
-          # Fail fast if the work volume hangs (a pending removable-volume prompt blocked it for an hour).
-          perl -e 'alarm 5; exec @ARGV' ls "$GITHUB_WORKSPACE" >/dev/null \
-            || { echo "::error::Reading $GITHUB_WORKSPACE did not return within 5 s; check the Mac for a removable-volume permission prompt."; exit 1; }
-          # One runner, one job at a time: clear earlier jobs' DerivedData (internal disk has ~15 GiB free).
-          DD_ROOT="$HOME/ci-dd"
-          mkdir -p "$DD_ROOT"
-          find "$DD_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          rm -rf "$HOME/ci-rec"
-          DD="$DD_ROOT/studio-screenshots"
-          mkdir -p "$DD" "$(dirname "$DERIVED_DATA")"
-          rm -rf "$DERIVED_DATA"
-          ln -s "$DD" "$DERIVED_DATA"
-          ls -ld "$DERIVED_DATA"
-          FREE_KB=$(df -k "$HOME" | awk 'NR==2 {print $4}')
-          echo "Internal disk free: $((FREE_KB / 1024 / 1024)) GiB"
-          if [ "$FREE_KB" -lt $((8 * 1024 * 1024)) ]; then
-            echo "::warning::Less than 8 GiB free on the internal disk"
-          fi
+        run: ios/scripts/ci-selfhosted-prep.sh studio-screenshots
       - name: Install pinned XcodeGen
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
@@ -581,8 +495,8 @@ jobs:
           # records to the internal disk and the file is copied into $SHOTS. Hosted: unchanged. -Orion
           OUT="$SHOTS/walkthrough-closed.mp4"
           if [ "$RUNNER_ENV" = "self-hosted" ]; then
-            mkdir -p "$HOME/ci-rec"
-            OUT="$HOME/ci-rec/walkthrough-closed.mp4"
+            mkdir -p "$HOME/ci-rec/studio-screenshots"
+            OUT="$HOME/ci-rec/studio-screenshots/walkthrough-closed.mp4"
           fi
           xcrun simctl io "$PHONE_UDID" recordVideo --codec h264 --force "$OUT" &
           REC=$!
@@ -602,7 +516,10 @@ jobs:
           kill -INT "$REC" 2>/dev/null || true
           wait "$REC" || true
           if [ "$OUT" != "$SHOTS/walkthrough-closed.mp4" ]; then
-            cp "$OUT" "$SHOTS/walkthrough-closed.mp4"
+            cp "$OUT" "$SHOTS/walkthrough-closed.mp4" || {
+              echo "::error::Could not copy the walkthrough video into \$SHOTS (walkthrough test exit status: ${STATUS:-0})"
+              exit 1
+            }
           fi
           ls -la "$SHOTS"/*.mp4
           exit ${STATUS:-0}
@@ -671,7 +588,4 @@ jobs:
       - name: Self-hosted cleanup (stop tests and simulators)
         if: always() && runner.environment == 'self-hosted'
         timeout-minutes: 3
-        run: |
-          pkill -f 'xcodebuild test' || true
-          pkill -f 'simctl io' || true
-          xcrun simctl shutdown all || true
+        run: ios/scripts/ci-selfhosted-cleanup.sh
