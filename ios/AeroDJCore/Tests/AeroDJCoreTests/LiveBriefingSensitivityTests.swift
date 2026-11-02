@@ -7,7 +7,7 @@ import FoundationNetworking
 // Nigel's report (relayed by Orion): the live `StudioPresentationModel.liveQueueBriefing` passed
 // an empty `sensitivityByItemID`, and a missing id is `.blocked`, so the live briefing was silent.
 // These tests run the path exactly as the app wires it: a real `ConnectionsModel` inside a real
-// `StudioPresentationModel`, read through `LiveQueueBriefing.provider(studio:days:)`.
+// `StudioPresentationModel`, read through `LiveQueueBriefing.provider(studio:)`.
 // Fixture titles only; assertion messages print counts and ids, never cue text.
 
 private struct FixtureProvider: ConnectionItemProvider {
@@ -21,25 +21,9 @@ private struct NoPurge: NarrationPurging {
     func purge(sourceItemIDs: Set<UUID>) async {}
 }
 
-/// Mutable clock and time zone for `BriefingDayLedger` (the device "flies").
-final class DayClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var date: Date
-    private var zone: TimeZone
-    init(_ date: Date, _ zone: TimeZone) { self.date = date; self.zone = zone }
-    var now: Date { get { lock.withLock { date } } set { lock.withLock { date = newValue } } }
-    var timeZone: TimeZone { get { lock.withLock { zone } } set { lock.withLock { zone = newValue } } }
-    func ledger(_ store: any BriefingDayStore = InMemoryBriefingDayStore()) -> BriefingDayLedger {
-        BriefingDayLedger(store: store, now: { [unowned self] in self.now }, timeZone: { [unowned self] in self.timeZone })
-    }
-}
-
 @MainActor
 class LiveBriefingFixture: XCTestCase {
     let utcZone = TimeZone(identifier: "UTC")!
-    let newYork = TimeZone(identifier: "America/New_York")!
-    let tokyo = TimeZone(identifier: "Asia/Tokyo")!
-    let honolulu = TimeZone(identifier: "Pacific/Honolulu")!
 
     func calendar(_ zone: TimeZone) -> Calendar {
         var c = Calendar(identifier: .gregorian)
@@ -79,11 +63,11 @@ class LiveBriefingFixture: XCTestCase {
         (handoff?.cues ?? []).filter(\.isContent).compactMap(\.sourceItemID)
     }
 
-    /// The live provider at 08:00 UTC with a fresh ledger: what the app would queue.
+    /// The live provider at 08:00 UTC with a fresh #332 ledger: what the app would queue.
     func liveQueued(_ studio: StudioPresentationModel) -> NarrationHandoff? {
         let now = eight
-        return LiveQueueBriefing.provider(studio: studio, days: .inMemory(now: { now }), now: { now },
-                                          calendar: calendar(utcZone))().forQueue()
+        return LiveQueueBriefing.provider(studio: studio, now: { now }, calendar: calendar(utcZone),
+                                          ledger: PersonalUpdateLedger())().forQueue()
     }
 }
 
@@ -196,10 +180,11 @@ final class LiveBriefingSensitivityTests: LiveBriefingFixture {
         XCTAssertEqual(Set(contentIDs(handoff)), [event, shared, note])
 
         // Cloud voice on: every gate of `PremiumVoiceRoutes.compose` passes, ElevenLabs is first.
+        // A current catalog voice, not a fixed id (f601577 retired the old lineup).
         let transport = BodyRecorder()
         let device = VoiceRoute(providerID: "avspeech", provider: DeviceVoice(), voice: VoiceProfile(id: "standard", name: "Host"))
         let composed = PremiumVoiceRoutes.compose(
-            onDevice: [device], paidProvidersEnabled: true, selectedVoiceID: "g7LVvkPWALzPxOQbF6OE",
+            onDevice: [device], paidProvidersEnabled: true, selectedVoiceID: PremiumVoiceCatalog.voices[0].id,
             credentials: PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!, token: "fixture-token"),
             pinnedHosts: ["aerodj-tts.vercel.app"], transport: transport)
         guard case .included = composed.decision else { return XCTFail("cloud voice must be on for this gate") }
@@ -239,190 +224,5 @@ final class LiveBriefingSensitivityTests: LiveBriefingFixture {
         for title in titles {
             XCTAssertFalse(sent.contains { $0.contains(title) }, "no personal text reached the cloud route")
         }
-    }
-}
-
-// MARK: Once a day, at any hour (owner, Oct 29)
-
-final class BriefingOncePerDayTests: LiveBriefingFixture {
-    private func oneRowStudio() async -> (StudioPresentationModel, UUID) {
-        let id = UUID()
-        let studio = await liveStudio([
-            ConnectionItem(id: id, integration: .calendar, title: "Fixture standup", state: .approved, sensitivity: .low),
-        ])
-        return (studio, id)
-    }
-
-    private func fires(_ studio: StudioPresentationModel, _ days: BriefingDayLedger, _ clock: DayClock) -> Bool {
-        let handoff = LiveQueueBriefing.provider(studio: studio, days: days, calendar: calendar(clock.timeZone))()
-        return !contentIDs(handoff.forQueue()).isEmpty
-    }
-
-    func testFiresOnTheFirstSessionOfTheDayAtAnyHour() async {
-        let (studio, _) = await oneRowStudio()
-        for hour in [3, 14, 23] {
-            let clock = DayClock(at(newYork, 2026, 10, 29, hour), newYork)
-            XCTAssertTrue(fires(studio, clock.ledger(), clock), "first session at \(hour):00 briefs")
-        }
-    }
-
-    func testDoesNotFireASecondTimeTheSameDay() async {
-        let (studio, _) = await oneRowStudio()
-        let clock = DayClock(at(newYork, 2026, 10, 29, 3), newYork)
-        let days = clock.ledger()
-        XCTAssertTrue(fires(studio, days, clock))
-        days.markBriefedToday()
-        for hour in [3, 9, 14, 23] {
-            clock.now = at(newYork, 2026, 10, 29, hour, 59)
-            XCTAssertFalse(fires(studio, days, clock), "already briefed: \(hour):59 stays quiet")
-        }
-    }
-
-    func testFiresAgainAfterLocalMidnight() async {
-        let (studio, _) = await oneRowStudio()
-        let clock = DayClock(at(newYork, 2026, 10, 29, 23, 30), newYork)
-        let days = clock.ledger()
-        days.markBriefedToday()
-        XCTAssertFalse(fires(studio, days, clock))
-        clock.now = at(newYork, 2026, 10, 30, 0, 10)   // 40 minutes later, a new local day
-        XCTAssertTrue(fires(studio, days, clock), "a new local day briefs again")
-    }
-
-    func testFlyingEastPastMidnightIsANewDay() async {
-        let (studio, _) = await oneRowStudio()
-        // Briefed 20:00 Oct 29 in New York (00:00Z Oct 30).
-        let clock = DayClock(at(newYork, 2026, 10, 29, 20), newYork)
-        let days = clock.ledger()
-        days.markBriefedToday()
-        XCTAssertEqual(days.today, LocalDay(year: 2026, month: 10, day: 29))
-        // Three hours later the phone is in Tokyo: 12:00 Oct 30 there.
-        clock.now = clock.now.addingTimeInterval(3 * 3600)
-        clock.timeZone = tokyo
-        XCTAssertEqual(days.today, LocalDay(year: 2026, month: 10, day: 30))
-        XCTAssertTrue(fires(studio, days, clock), "past local midnight in the new zone: a new day")
-    }
-
-    func testGoingBackWestIntoABriefedDayDoesNotBriefAgain() async {
-        let (studio, _) = await oneRowStudio()
-        // Briefed 08:00 Oct 30 in Tokyo (23:00Z Oct 29).
-        let clock = DayClock(at(tokyo, 2026, 10, 30, 8), tokyo)
-        let days = clock.ledger()
-        days.markBriefedToday()
-        // Three hours later in Honolulu: 16:00 Oct 29 there, a day that is already behind us.
-        clock.now = clock.now.addingTimeInterval(3 * 3600)
-        clock.timeZone = honolulu
-        XCTAssertEqual(days.today, LocalDay(year: 2026, month: 10, day: 29))
-        XCTAssertFalse(fires(studio, days, clock), "west into an already-briefed day: no second briefing")
-        days.markBriefedToday()
-        XCTAssertEqual(days.today < LocalDay(year: 2026, month: 10, day: 30), true)
-        // The next local day after the briefed one still briefs.
-        clock.now = at(honolulu, 2026, 10, 31, 7)
-        XCTAssertTrue(fires(studio, days, clock))
-    }
-
-    func testStoresOnlyTheLocalDayInUserDefaults() {
-        let suite = "onairly.briefing.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let clock = DayClock(at(newYork, 2026, 10, 29, 23, 45), newYork)
-        let days = clock.ledger(UserDefaultsBriefingDayStore(defaults: defaults))
-        XCTAssertFalse(days.hasBriefedToday)
-        days.markBriefedToday()
-        XCTAssertEqual(defaults.string(forKey: UserDefaultsBriefingDayStore.defaultKey), "2026-10-29",
-                       "the local calendar day, not a timestamp")
-        let reread = clock.ledger(UserDefaultsBriefingDayStore(defaults: defaults))
-        XCTAssertTrue(reread.hasBriefedToday, "survives a relaunch")
-    }
-
-    // The marker is set when the briefing's audio starts, not when it is planned or handed out.
-
-    private func session(_ days: BriefingDayLedger) async -> (DJBreakSession, DJPresentationStore) {
-        let config = StationConfiguration(commentary: .frequent)
-        let station = StationConfigurationModel(
-            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
-            consent: StaticIntegrationConsent([.calendar: .granted]))
-        await station.load()
-        let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
-                                     budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
-        let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence())
-        let dj = DJPresentationStore()
-        let session = DJBreakSession(preparer: preparer, station: station, dj: dj, seed: 1, hour: { 14 },
-                                     now: { days.now() }, briefingDays: days)
-        await session.start()
-        return (session, dj)
-    }
-
-    private func briefing(_ item: UUID) -> NarrationHandoff {
-        let cue = NarrationCue(id: UUID(), order: 1, group: 0, kind: .upcomingEvent, text: "From your calendar: fixture standup.",
-                               estimatedSeconds: 3, maxSeconds: 20, sourceItemID: item, source: .calendar, provenance: "fixture:c1")
-        return NarrationHandoff(cues: [cue], maxSpokenSeconds: 60, experienceSeconds: 600)
-    }
-
-    private func readyBreak(_ s: DJBreakSession, _ dj: DJPresentationStore, item: UUID, source: ConnectionItem) async {
-        await s.queueStarted(djTracks(8), briefing: briefing(item), sources: [source])
-        await s.songStarted(index: 0, remaining: .seconds(180))
-        for await state in dj.updates() { if case .ready = state { return } }
-    }
-
-    func testMarkerIsSetOnlyWhenTheBriefingStartsPlaying() async {
-        let clock = DayClock(at(newYork, 2026, 10, 29, 14), newYork)
-        let days = clock.ledger()
-        let (s, dj) = await session(days)
-        let item = UUID()
-        let source = ConnectionItem(id: item, integration: .calendar, title: "Fixture standup", state: .approved, sensitivity: .low)
-
-        // Planned, rendered, handed out, then the audio fails: not briefed, it may run later today.
-        await readyBreak(s, dj, item: item, source: source)
-        XCTAssertFalse(days.hasBriefedToday, "planned and rendered is not played")
-        let failed = await s.naturalBoundary(afterTrack: 0)
-        XCTAssertTrue(failed?.includesBriefing ?? false)
-        XCTAssertFalse(days.hasBriefedToday, "handed out is not played")
-        s.playbackFailed(afterTrack: 0)
-        XCTAssertFalse(days.hasBriefedToday, "a failed briefing can still run later today")
-
-        // Planned and cut before its boundary (skipped): still not briefed.
-        await readyBreak(s, dj, item: item, source: source)
-        await s.songCut(afterTrack: 0)
-        XCTAssertFalse(days.hasBriefedToday, "a skipped briefing can still run later today")
-
-        // Later the same day it plays: now it is briefed.
-        await readyBreak(s, dj, item: item, source: source)
-        _ = await s.naturalBoundary(afterTrack: 0)
-        s.playbackStarted(afterTrack: 0)
-        XCTAssertTrue(days.hasBriefedToday, "audible briefing marks the day")
-        s.playbackFinished(afterTrack: 0)
-    }
-
-    func testAPlainBreakDoesNotMarkTheDay() async {
-        let clock = DayClock(at(newYork, 2026, 10, 29, 14), newYork)
-        let days = clock.ledger()
-        let (s, dj) = await session(days)
-        await s.queueStarted(djTracks(8))
-        await s.songStarted(index: 0, remaining: .seconds(180))
-        guard s.plannedBoundaries.first == 0 else { return XCTFail("seed 1 plans break 0") }
-        for await state in dj.updates() { if case .ready = state { break } }
-        _ = await s.naturalBoundary(afterTrack: 0)
-        s.playbackStarted(afterTrack: 0)
-        XCTAssertFalse(days.hasBriefedToday, "only a briefing break marks the day")
-    }
-
-    /// Provider and session share one ledger, as `PlayerView` wires it.
-    func testPlayedBriefingSilencesTheProviderForTheRestOfTheDay() async {
-        let (studio, row) = await oneRowStudio()
-        let clock = DayClock(at(newYork, 2026, 10, 29, 3), newYork)
-        let days = clock.ledger()
-        let (s, dj) = await session(days)
-        let handoff = LiveQueueBriefing.provider(studio: studio, days: days, calendar: calendar(newYork))().forQueue()
-        XCTAssertEqual(contentIDs(handoff), [row])
-        let source = studio.connections.items[0]
-        await s.queueStarted(djTracks(8), briefing: handoff, sources: [source])
-        await s.songStarted(index: 0, remaining: .seconds(180))
-        for await state in dj.updates() { if case .ready = state { break } }
-        _ = await s.naturalBoundary(afterTrack: 0)
-        s.playbackStarted(afterTrack: 0)
-        clock.now = at(newYork, 2026, 10, 29, 22)
-        XCTAssertFalse(fires(studio, days, clock), "second session the same day: no briefing")
-        clock.now = at(newYork, 2026, 10, 30, 6)
-        XCTAssertTrue(fires(studio, days, clock), "next day: briefs again")
     }
 }
