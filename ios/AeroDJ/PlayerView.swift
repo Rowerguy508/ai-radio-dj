@@ -35,7 +35,7 @@ struct PlayerView: View {
                       access: access,
                       snapshot: music.snapshot,
                       actions: .live(music),
-                      search: .live(music, station: stationRef, djSession: djSession, briefing: LiveQueueBriefing.provider(studio: studio)),
+                      search: .live(music, station: stationRef, djSession: djSession, briefing: djSession.briefingProvider(studio: studio)),
                       studio: studio,
                       isTestStation: isTestStation,
                       timeSource: .live)
@@ -45,7 +45,7 @@ struct PlayerView: View {
         .navigationTitle(station.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .talkoverToggleEntry() // DJ talk-over switch: AERODJ_OWNER_AB only; a no-op otherwise (-Fry)
+        .talkoverToggleEntry(isTestStation: isTestStation) // DJ talk-over switch: AERODJ_OWNER_AB only; a no-op otherwise (-Fry)
         // Fry #110: Tune Save/Discard waits on real transport. Callbacks + auth refresh stay
         // on PlaybackSessionBinder (once-only); do not authorize() here.
         .task { await reportPlaybackActivity(music.snapshot) }

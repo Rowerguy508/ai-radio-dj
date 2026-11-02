@@ -116,6 +116,7 @@ final class StudioScreenPresentationTests: XCTestCase {
 
     // MARK: Now Playing gate
 
+    #if DEBUG // PlaybackFixtures is Debug-only; `swift test -c release` builds this file too.
     func testTransportOnlyWithAControllableTrack() {
         let playing = PlaybackFixtures.playing
         XCTAssertEqual(NowPlayingContent.resolve(access: .checking, snapshot: playing), .connecting)
@@ -129,6 +130,7 @@ final class StudioScreenPresentationTests: XCTestCase {
         }
         XCTAssertTrue(NowPlayingContent.track(PlaybackFixtures.songs[0]).showsTransport)
     }
+    #endif
 
     // MARK: Errors (#60 review P1: no dead CTA; recoverable retry resumes)
 

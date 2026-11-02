@@ -1,0 +1,113 @@
+name: iOS (iPad)
+
+# v1 ships on iPhone and iPad. The iPad unit-test run lives in its own workflow so ios.yml
+# (and the required `iOS simulator build` iPhone check) stays exactly as it was, and so it
+# never queues on pull requests: GitHub's macOS queue is backed up and iPhone checks come
+# first. It runs after a push to integration/device-duo that touches the app, or by hand
+# (Actions > iOS (iPad) > Run workflow). Non-blocking: continue-on-error, and it is not a
+# required check. Make it required once it has been green for a while. -Atlas
+on:
+  push:
+    branches: [integration/device-duo]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-ipad.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes a queued or running iPad run.
+concurrency:
+  group: ios-ipad-${{ github.ref }}
+  cancel-in-progress: true
+
+# Same runs-on expression as the macOS jobs in ios.yml. This workflow has no pull_request
+# trigger, so it always resolves to GitHub-hosted macos-latest. -Atlas
+jobs:
+  simulator-tests-ipad:
+    name: iOS (iPad, non-blocking)
+    continue-on-error: true
+    runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      DERIVED_DATA: ios/build/DerivedData-ipad
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Select Xcode
+        # Same rule as the iPhone job: the self-hosted Mac must already have Xcode.app selected.
+        env:
+          RUNNER_ENV: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          want=/Applications/Xcode.app/Contents/Developer
+          if [ "$(xcode-select -p)" = "$want" ]; then
+            echo "Xcode already selected: $want"
+          elif [ "$RUNNER_ENV" = "github-hosted" ]; then
+            sudo xcode-select -s /Applications/Xcode.app
+          else
+            echo "::error::Self-hosted runner has $(xcode-select -p) selected; run 'sudo xcode-select -s /Applications/Xcode.app' on the Mac once."
+            exit 1
+          fi
+          xcodebuild -version
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading component"
+            xcodebuild -downloadComponent MetalToolchain
+            if ! xcrun metal --version; then
+              echo "::error::Metal toolchain still unavailable after xcodebuild -downloadComponent MetalToolchain"
+              exit 1
+            fi
+          fi
+      - name: Pick an available iPad simulator
+        # Newest iOS runtime that has an available iPad. Within it, prefer the base iPad, then
+        # iPad Air, iPad Pro, iPad mini, then any iPad. No hard-coded model name. Fails loudly
+        # (never skips) when the image has no iPad device on any iOS runtime.
+        run: |
+          set -euo pipefail
+          PICK=$(xcrun simctl list devices available -j | jq -r '
+            def ver: (capture("iOS-(?<v>[0-9-]+)$").v // "0") | split("-") | map(tonumber);
+            def rank: if test("^iPad \\(") then 0 elif test("^iPad Air") then 1
+                      elif test("^iPad Pro") then 2 elif test("^iPad mini") then 3 else 4 end;
+            [.devices | to_entries[] | select(.key | test("SimRuntime\\.iOS-"))
+              | .key as $rt | .value[] | select(.name | startswith("iPad"))
+              | {udid, name, rt: $rt, v: ($rt | ver), r: (.name | rank)}]
+            | sort_by(.v) | (last.v // null) as $top
+            | map(select(.v == $top)) | sort_by(.r, .name) | first
+            | if . == null then empty else "\(.udid)\t\(.name)\t\(.rt)" end')
+          if [ -z "$PICK" ]; then
+            echo "::error::No available iPad simulator on any iOS runtime"
+            xcrun simctl list runtimes
+            xcrun simctl list devices available
+            exit 1
+          fi
+          IFS=$'\t' read -r UDID NAME RUNTIME <<<"$PICK"
+          echo "Using $NAME ($RUNTIME) $UDID"
+          echo "iPad simulator: $NAME, ${RUNTIME##*.}, $UDID" >> "$GITHUB_STEP_SUMMARY"
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+      - name: Boot the iPad simulator
+        # Boot before the run: a cold iPad booted by xcodebuild mid-run was flaky in the Studio job.
+        run: |
+          xcrun simctl boot "$SIM_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
+      - name: Run unit tests on iPad simulator
+        run: |
+          xcodebuild test \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -destination "id=$SIM_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO

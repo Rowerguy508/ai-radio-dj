@@ -16,11 +16,24 @@ export class FakeRedis {
   /** Every command a script issued, in order. */
   readonly commands: string[][] = [];
 
+  /**
+   * Opt-in: drop a key whose expiry is at or before `now()` when a command touches it,
+   * like Redis' lazy expiry. Off by default so suites that predate it keep their behaviour.
+   */
+  evictExpired = false;
+
   constructor(public now: () => number = () => Date.UTC(2026, 9, 28, 12)) {}
 
   private command(args: string[]): string | number | false {
     this.commands.push(args);
     const [verb, key, ...rest] = args;
+    if (this.evictExpired) {
+      const at = this.expiresAt.get(key);
+      if (at !== undefined && at <= this.now()) {
+        this.data.delete(key);
+        this.expiresAt.delete(key);
+      }
+    }
     switch (verb.toUpperCase()) {
       case 'GET':
         return this.data.get(key) ?? false;
@@ -44,6 +57,8 @@ export class FakeRedis {
         return current + by;
       }
       case 'EXPIRE':
+        // Like Redis: 0 and no TTL for a missing key.
+        if (!this.data.has(key)) return 0;
         this.expiresAt.set(key, this.now() + Number(rest[0]) * 1000);
         return 1;
       case 'PEXPIRE':

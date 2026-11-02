@@ -39,7 +39,8 @@ struct AppDependencies {
     func start() async {
         await studio.start()
         await djSession.start()
-        stationQueue?.start()
+        // #332: station starts read the same briefing provider as a song tap.
+        stationQueue?.start(briefing: djSession.briefingProvider(studio: studio))
     }
 
     static func make(defaults: UserDefaults = .standard) -> AppDependencies {
@@ -76,7 +77,9 @@ struct AppDependencies {
         // reads (DIAG override, else the AERODJ_OWNER_AB build default). P0 build 26, -Fry.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
                                        talkOverEnabled: { DJTalkoverFlag.isEnabled() })
-        let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
+        // #332: one once-a-day ledger for song taps and station starts, kept across relaunches.
+        let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj,
+                                       personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()))
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
@@ -128,16 +131,20 @@ struct AppDependencies {
         let voice = TestStation.makeRenderer(routes: VoiceRoute.onDeviceRoutes(),
                                              cache: InMemoryAudioCache(maxAge: TestStation.cacheRetention))
         let dj = DJPresentationStore()
-        // Fixture mode: talk-over is OFF regardless of the build, as for the coordinator below.
+        // Fixture mode: the same flag and unset default as the coordinator below (OFF unless an
+        // owner A/B build's toggle was explicitly set ON). #225 removed `buildDefault:`; this call
+        // from fe63f91 was missed in that merge and broke the app build on integration. -Fry
         let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,
                                        cadence: TestStation.cadence,
-                                       talkOverEnabled: { DJTalkoverFlag.isEnabled(buildDefault: false) })
+                                       talkOverEnabled: {
+                                           DJTalkoverFlag.isEnabled(unsetDefault: DJTalkoverFlag.unsetDefault(isTestStation: true))
+                                       })
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         // Fixture mode: talk-over is OFF unless an owner A/B build's toggle was explicitly set ON.
         // Outside an owner A/B build it is OFF whatever was saved (DJTalkoverFlag).
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession,
-                                           unsetDefault: false)
+                                           unsetDefault: DJTalkoverFlag.unsetDefault(isTestStation: true))
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).

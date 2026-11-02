@@ -36,6 +36,11 @@ public enum DJTalkoverFlag {
     /// What an unset toggle shows in the owner A/B build (ON). OFF in every other build.
     public static let buildDefault = isOwnerABBuild
 
+    /// What an unset toggle means: ON on the live station, OFF on the fixture test station. The
+    /// coordinator and the owner A/B toggle both use this, so the toggle never shows ON while
+    /// talk-over is off.
+    public static func unsetDefault(isTestStation: Bool) -> Bool { !isTestStation }
+
     /// The decision, pure. ON only in an owner A/B build whose saved toggle is ON, or unset with
     /// `unsetDefault` ON. Outside an owner A/B build it is OFF whatever was saved (fail-closed).
     public static func isEnabled(ownerABBuild: Bool, saved: Bool?, unsetDefault: Bool = true) -> Bool {

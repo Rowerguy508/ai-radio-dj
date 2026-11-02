@@ -143,7 +143,9 @@ Accepts `{ keyId, attestationObject, challenge }`. Order:
 1. Body cap 16 KB on raw bytes, before parsing (413 `too_large`).
 2. Stateless challenge check, purpose `attest` (no Redis).
 3. Full verification per Apple ("Validating apps that connect to your
-   server"): `clientDataHash = SHA256(challenge)`;
+   server"): `clientDataHash = SHA256(challenge)`, over the UTF-8 bytes of the
+   challenge string exactly as returned (not its base64url-decoded bytes; Fry
+   #246 rec. 3);
    `nonce = SHA256(authData ‖ clientDataHash)` equals the value at OID
    `1.2.840.113635.100.8.2`; x5c chain to the pinned **Apple App Attestation
    Root CA** verified without the system trust store, with validity dates;
@@ -161,8 +163,24 @@ Accepts `{ keyId, attestationObject, challenge }`. Order:
    enrollment counter therefore counts only verified attestations. The
    script checks the enroll cap **before** incrementing: a refusal (429
    `enroll`) writes no key record and does not increment the counter.
+   **Caps (owner, 2026-10-29): 20 a day overall, 3 a day per device.** The
+   per-device sub-cap keys on a day-scoped HMAC of the client network (IPv4,
+   or IPv6 /64, from Vercel's `x-vercel-forwarded-for` only; missing or
+   unparseable is 400 `network` before the challenge is consumed or any
+   store call, never a shared bucket), plus a per-install sub-cap of 3/day
+   on a day-scoped HMAC of the app's `installId` (Keychain UUID v4; missing
+   or invalid is 400 `install`, same rules), both checked
+   before the global cap so a device-capped request spends no global budget.
+   No raw IP is stored or logged (the §4.1.1 "stores no IP" rule holds for
+   addresses; the hash lives 2 days). It is a per-network cap: NAT/CGNAT
+   users share it, network-hoppers get more. A true per-device key would need
+   a client contract change (open question for iOS) or DeviceCheck (phase 2).
    Key record: `{ pubKeySpki, counter: 0, env, createdDay, revoked: false }`,
-   90-day sliding TTL. Success returns 204.
+   90-day sliding TTL (owner, 2026-10-29): set on register, refreshed to 90
+   days on every successful use; unused for 90 days → expired → unknown key. Success returns 204. Unless `VERCEL_ENV` is exactly
+   `production`, every key this script touches is prefixed `nonprod:`, so a
+   Preview deployment sharing the Upstash database never writes a record
+   Production trusts (PR 3b).
 
 #### 4.1.3 `POST /api/tts` and `POST /api/entitlement` (assertion-signed)
 
@@ -435,11 +453,14 @@ in an A/B build that has both paths (Fry B1), with an iOS test.
   purchase policy. **Orion's interim defaults until the owner answers:**
   `installsPerPurchase: 5`, `allowSandboxInProduction: false` (Sandbox
   rejected on Production), `honorGracePeriod: false` (no grace period),
-  `allowFamilyShared: false` (Family Sharing off). Each is one value, so a
-  change is a one-line edit plus a deploy. The loader fails closed: a
+  Family Sharing off. Each is one value, so a
+  change is a one-line edit plus a deploy. (Family Sharing moved out of this
+  file on #264: its single setting is the env var
+  `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED`, default off, strict `true`/`false`;
+  the loader refuses a leftover `allowFamilyShared` key.) The loader fails closed: a
   missing or non-boolean policy value, or `installsPerPurchase` outside the
   integers 1-10, makes the proxy refuse to start. `honorGracePeriod` and
-  `allowFamilyShared` must match the ASC settings (Billing Grace Period,
+  `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED` must match the ASC settings (Billing Grace Period,
   Family Sharing); `allowSandboxInProduction` stays `false` while any public
   TestFlight link exists.
 - **App-side Pro gate (owned by Fry on `fry/storekit-config`, credit Fry and
@@ -632,12 +653,13 @@ decides otherwise.** Per Apple (ASC help "Turn on Family Sharing for In-App
 Purchases" and the StoreKit article "Supporting Family Sharing in your app",
 as cited by Sentinel), once enabled for a product it **cannot be turned off**.
 Each paid listener costs ElevenLabs credits. Only `PURCHASED` is accepted.
-If the owner ever enables it, `allowFamilyShared: true` in the config accepts
-`FAMILY_SHARED`; whether a family member's transaction carries its own
+If the owner ever enables it, `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED=true`
+(exactly; anything else but unset/`false` is 500 `misconfig` on the Pro path) accepts
+`FAMILY_SHARED`; missing or unknown ownership is refused either way; whether a family member's transaction carries its own
 `originalTransactionId` or the purchaser's is **unverified** in Apple's docs,
 so PR 6 tests both and the cap applies per `originalTransactionId` either way
 (at worst a family shares 5 slots). Revoking Family Sharing arrives as
-`REVOKE` (§5.6). The ASC toggle and `allowFamilyShared` must stay in step.
+`REVOKE` (§5.6). The ASC toggle and `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED` must stay in step.
 
 ### 5.6 Expiry, refund and revocation
 

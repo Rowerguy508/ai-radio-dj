@@ -125,7 +125,7 @@ final class TalkoverCoordinator {
 
     init(music: MusicKitService, interlude: InterludePlaybackAdapter, djSession: DJBreakSession,
          defaults: UserDefaults = .standard, ownerABBuild: Bool = DJTalkoverFlag.isOwnerABBuild,
-         unsetDefault: Bool = true) {
+         unsetDefault: Bool = DJTalkoverFlag.unsetDefault(isTestStation: false)) {
         self.music = music
         self.interlude = interlude
         self.djSession = djSession

@@ -24,6 +24,11 @@ public final class DJBreakSession {
     private let dj: DJPresentationStore
     private let base: DJCadence
     private let hour: () -> Int
+    /// Lane 2 time checks: the listener's calendar (time zone) and clock style. The plan only
+    /// reserves a time-check slot; `DJBreakPreparer` writes and renders the line about 75 s
+    /// before the boundary, from its own injected clock (Orion option (a), #347).
+    private let calendar: Calendar
+    private let clockStyle: DJClockStyle
     private var writer: DJScriptWriter
     private var tracks: [DJTrack] = []
     private var briefing: NarrationHandoff?
@@ -91,18 +96,30 @@ public final class DJBreakSession {
     /// Each boundary re-checks them against `now` (expiry), independent of `refresh()`.
     private var sources: [UUID: ConnectionItem] = [:]
     private let now: () -> Date
+    /// #332 (-Fry): the once-a-day ledger. The app passes ONE instance and reads it back here for
+    /// every `LiveQueueBriefing.provider` (song tap and station start), so all share the limit.
+    public let personalUpdates: PersonalUpdateLedger
+    /// Personal cues of the break handed out at `afterTrack`, recorded on the ledger only when
+    /// its audio actually starts (`playbackStarted`). A break dropped, failed or replaced before
+    /// that is never recorded, so the update keeps its chance later that day.
+    private var handedOutPersonal: (afterTrack: Int, cues: [NarrationCue])?
 
     public init(preparer: DJBreakPreparer, station: StationConfigurationModel, dj: DJPresentationStore,
                 base: DJCadence = .init(), seed: UInt64 = .random(in: .min ... .max),
                 hour: @escaping () -> Int = { Calendar.current.component(.hour, from: Date()) },
-                now: @escaping () -> Date = { Date() }) {
+                now: @escaping () -> Date = { Date() },
+                personalUpdates: PersonalUpdateLedger = PersonalUpdateLedger(),
+                calendar: Calendar = .autoupdatingCurrent, clockStyle: DJClockStyle? = nil) {
         self.preparer = preparer
         self.now = now
+        self.calendar = calendar
+        self.clockStyle = clockStyle ?? DJClockStyle(locale: calendar.locale ?? .autoupdatingCurrent)
+        self.personalUpdates = personalUpdates
         self.station = station
         self.dj = dj
         self.base = base
         self.hour = hour
-        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed)
+        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed, shapes: .natural)
     }
 
     /// Forwards preparer events to the DJ status and follows station changes. Call once.
@@ -225,6 +242,7 @@ public final class DJBreakSession {
         // of its sources must not stop this queue's break.
         pendingStop = nil
         onAir = nil
+        handedOutPersonal = nil
         self.sources = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         // Integrations withdrawn while this setup was in flight: drop their tap-time
         // ConnectionItem snapshots so mayBeNarrated fails closed (sources are snapshots,
@@ -248,6 +266,9 @@ public final class DJBreakSession {
             }
         }
         deliveredBriefing = []
+        // Lane 2: the old queue's breaks after the song playing now never air; the DJ's
+        // anti-repeat and shape memory forget them (the ones that aired stay remembered).
+        writer.forgetPlannedBreaks(breaks.filter { $0.key > (playing ?? -1) }.map(\.value))
         playing = nil
         breaks = [:]
         // Same key the feed gives a new queue (`queueStarted(for: committedDisplayed)`). A save
@@ -409,6 +430,9 @@ public final class DJBreakSession {
             // Kept only if the closing cue survived; the hooks recompute from the kept clips.
             talkOverCueID: ready.talkOverCueID.flatMap { kept.contains($0) ? $0 : nil })
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
+        // #332: recorded on the ledger in `playbackStarted`, once this break is audible.
+        let personal = prepared.cues.filter { $0.isContent && $0.sourceItemID != nil }
+        handedOutPersonal = personal.isEmpty ? nil : (k, personal)
         onAir = (k, Set(prepared.cues.compactMap(\.sourceItemID)), ready.includesBriefing)
         return prepared
     }
@@ -433,12 +457,20 @@ public final class DJBreakSession {
     }
 
     /// Player audio callbacks. `playbackStarted` only once DJ audio is actually audible.
-    public func playbackStarted(afterTrack k: Int) { dj.send(.playbackStarted(afterTrack: k)) }
+    public func playbackStarted(afterTrack k: Int) {
+        // #332: only a break that actually aired counts toward the once-a-day limit.
+        if let aired = handedOutPersonal, aired.afterTrack == k {
+            handedOutPersonal = nil
+            personalUpdates.recordAired(aired.cues, at: now())
+        }
+        dj.send(.playbackStarted(afterTrack: k))
+    }
     public func playbackFinished(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFinished(afterTrack: k)) }
     public func playbackFailed(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFailed(afterTrack: k)) }
 
     private func endOnAir(_ k: Int) {
         if onAir?.afterTrack == k { onAir = nil }
+        if handedOutPersonal?.afterTrack == k { handedOutPersonal = nil }   // never audible
         if pendingStop?.afterTrack == k { pendingStop = nil }   // nothing left to stop
     }
 
@@ -449,6 +481,7 @@ public final class DJBreakSession {
         breaks = [:]
         playing = nil
         onAir = nil
+        handedOutPersonal = nil
         pendingStop = nil
         dj.send(.sessionStopped)
     }
@@ -594,6 +627,8 @@ public final class DJBreakSession {
         let cadence = station.active.cadence(base: base)
         plannedWith = cadence
         writer.cadence = cadence
+        // Lane 2: breaks past `kept` are planned away before airing; forget them first.
+        writer.forgetPlannedBreaks(breaks.filter { $0.key > kept }.map(\.value))
         breaks = breaks.filter { $0.key <= kept }
         guard first < tracks.count - 1 else { return }
         let lastBreak = breaks.keys.max()
@@ -604,12 +639,20 @@ public final class DJBreakSession {
         }
         // Plan the suffix starting at the song before `first`, then shift indices back.
         let offset = first
-        let plan = writer.plan(tracks: Array(tracks[offset...]), briefing: remainingBriefing, hour: hour())
+        // Lane 2 time checks: the planning clock (spacing, calendar, style) is read once, here.
+        // The spoken time is not: the preparer reads its clock when the line renders.
+        let clock = DJPlanClock(now: now(), calendar: calendar, style: clockStyle)
+        let plan = writer.plan(tracks: Array(tracks[offset...]), briefing: remainingBriefing, hour: hour(), clock: clock)
+        var tooClose: [DJBreak] = []
+        defer { writer.forgetPlannedBreaks(tooClose) }   // planned, never kept: never airs
         for b in plan.breaks {
             let k = b.afterTrack + offset
-            if let lastBreak, k - lastBreak <= cadence.minSongsBetweenBreaks { continue }
+            if let lastBreak, k - lastBreak <= cadence.minSongsBetweenBreaks { tooClose.append(b); continue }
             var shifted = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
             shifted.talkOverCueID = b.talkOverCueID
+            shifted.shape = b.shape
+            shifted.optionalCueIDs = b.optionalCueIDs   // #320's measured-audio trim order
+            shifted.timeCheck = b.timeCheck
             breaks[k] = shifted
         }
     }
@@ -618,6 +661,10 @@ public final class DJBreakSession {
     var testLastSongStartRemaining: Duration?
     /// Test hook: the planned boundaries.
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
+    /// Test hook: the planned breaks by boundary (what `replan` wrote).
+    var testPlannedBreaks: [Int: DJBreak] { breaks }
+    /// Test hook: the preparer this session hands breaks to.
+    var testPreparer: DJBreakPreparer { preparer }
     /// Test hook: background tap setup has not finished planning.
     var testQueueSetupPending: Bool { queueSetupPending }
     /// Test hook (#116): the song start held until the new queue is planned.

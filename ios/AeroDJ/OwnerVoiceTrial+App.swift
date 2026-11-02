@@ -24,7 +24,8 @@ extension VoiceRenderer {
             onDevice: base.routes,
             paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled,
             selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
-            credentials: OwnerProxyKeychain.load())
+            credentials: OwnerProxyKeychain.load(),
+            backoff: OwnerVoiceTrial.proxyBackoff)
         OwnerProxyKeychain.logDecision(composition.decision, routeCount: composition.routes.count)
         return VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
                              revocations: base.revocations)
@@ -46,6 +47,12 @@ extension View {
 }
 
 #if AERODJ_OWNER_AB
+extension OwnerVoiceTrial {
+    /// One backoff for the proxy route, persisted in UserDefaults so a relaunch during a 429
+    /// suspension goes straight to the on-device voice (see `PaidVoiceBackoff`).
+    static let proxyBackoff = PaidVoiceBackoff(store: UserDefaultsPaidVoiceBackoffStore())
+}
+
 /// Keychain entry (this device only, when unlocked) for the proxy endpoint and owner token.
 enum OwnerProxyKeychain {
     private static let service = "com.aerodj.owner-ab.tts-proxy"
@@ -169,6 +176,10 @@ private struct OwnerVoicePickerSheet: View {
                         enteredToken: token, hasSavedToken: OwnerProxyKeychain.hasToken)))
                         .font(.footnote.monospaced())
                         .accessibilityIdentifier("ownerVoiceTrial.status")
+                    // Read-only: reason and resume time of any 429 / 5xx backoff.
+                    Text(OwnerVoiceTrial.proxyBackoff.statusLine())
+                        .font(.footnote.monospaced())
+                        .accessibilityIdentifier("ownerVoiceTrial.backoff")
                 }
             }
             .navigationTitle("Owner voice test")

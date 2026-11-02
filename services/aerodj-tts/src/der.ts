@@ -77,3 +77,53 @@ export function certificateExtensionOids(der: Uint8Array): string[] {
     return decodeOid(der.subarray(oid.start, oid.end));
   });
 }
+
+/** Every extension of a DER certificate as `{ oid, value }` (value = extnValue contents). */
+function certificateExtensions(der: Uint8Array): { oid: string; value: Uint8Array }[] {
+  const cert = readTlv(der, 0, der.length);
+  if (cert.tag !== 0x30 || cert.end !== der.length) throw new DerError('certificate');
+  const [tbs] = children(der, cert);
+  if (!tbs || tbs.tag !== 0x30) throw new DerError('tbs');
+  const ext = children(der, tbs).find((item) => item.tag === 0xa3);
+  if (!ext) return [];
+  const [list] = children(der, ext);
+  if (!list || list.tag !== 0x30) throw new DerError('extensions');
+  return children(der, list).map((extension) => {
+    if (extension.tag !== 0x30) throw new DerError('extension');
+    const parts = children(der, extension);
+    const [oid] = parts;
+    if (!oid || oid.tag !== 0x06) throw new DerError('extension oid');
+    // extnID, [critical BOOLEAN], extnValue OCTET STRING.
+    const value = parts[parts.length - 1];
+    if (parts.length < 2 || parts.length > 3 || value.tag !== 0x04) throw new DerError('extension value');
+    if (parts.length === 3 && parts[1].tag !== 0x01) throw new DerError('extension critical');
+    return { oid: decodeOid(der.subarray(oid.start, oid.end)), value: der.subarray(value.start, value.end) };
+  });
+}
+
+/**
+ * The extnValue contents of the extension `oid`, or undefined when absent.
+ * A certificate carrying the same extension twice is refused (RFC 5280 §4.2).
+ */
+export function certificateExtensionValue(der: Uint8Array, oid: string): Uint8Array | undefined {
+  const matches = certificateExtensions(der).filter((e) => e.oid === oid);
+  if (matches.length > 1) throw new DerError('duplicate extension');
+  return matches[0]?.value;
+}
+
+/**
+ * App Attest nonce extension (OID 1.2.840.113635.100.8.2): a DER
+ * `SEQUENCE { [1] EXPLICIT OCTET STRING }`. Returns the single 32-byte octet
+ * string; anything else (extra items, other tags, trailing bytes) throws.
+ */
+export function appAttestNonceFromExtension(value: Uint8Array): Uint8Array {
+  const seq = readTlv(value, 0, value.length);
+  if (seq.tag !== 0x30 || seq.end !== value.length) throw new DerError('nonce sequence');
+  const items = children(value, seq);
+  if (items.length !== 1 || items[0].tag !== 0xa1) throw new DerError('nonce tag');
+  const inner = children(value, items[0]);
+  if (inner.length !== 1 || inner[0].tag !== 0x04) throw new DerError('nonce octet string');
+  const nonce = value.subarray(inner[0].start, inner[0].end);
+  if (nonce.length !== 32) throw new DerError('nonce length');
+  return nonce;
+}
