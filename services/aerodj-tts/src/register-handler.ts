@@ -1,4 +1,5 @@
 import crypto, { type X509Certificate } from 'node:crypto';
+import { TESTFLIGHT_VALIDATION_CATEGORY } from './app-attest-assertion.js';
 import { attestClientDataHash, MAX_ATTESTATION_BYTES, verifyAttestation, type AttestationFailure } from './app-attest-verify.js';
 import { registerConfig } from './attest-config.js';
 import {
@@ -244,6 +245,8 @@ export async function handleRegister(request: Request, deps: RegisterDeps): Prom
         env: verified.attestation.environment,
         createdDay: day,
         revoked: false,
+        // #378 §1.5: TestFlight (category 2) only. App Store (4) or no category: no tier.
+        ...(verified.attestation.validationCategory === TESTFLIGHT_VALIDATION_CATEGORY ? { tier: 'tester' as const } : {}),
       },
       { usedTtlSeconds: USED_TTL_SECONDS, enrollCap: config.enrollCap, enrollDeviceCap: config.enrollDeviceCap, enrollInstallCap: config.enrollInstallCap },
     );
