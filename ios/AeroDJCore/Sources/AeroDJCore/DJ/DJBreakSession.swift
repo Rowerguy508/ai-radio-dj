@@ -78,6 +78,11 @@ public final class DJBreakSession {
     /// The committed station when the pending queue was reserved, to catch a save that lands
     /// between the tap and `queueStarted` (the feed keys the queue inside `music.play`).
     private var reservedStation: StationQueueKey??
+    /// Show opener on a new station (-Fry, for Echo's #359): the seeds of the station the last
+    /// queue was started for. nil until the first queue. `queueStarted` reopens the show
+    /// (`DJScriptWriter.greetAgain()`) only when these differ: a restart or re-queue on the same
+    /// station, a skip, or a personality, cadence, reach or discovery edit never replays it.
+    private var openedStation: Set<StationQueueKey.SeedID>?
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -283,7 +288,19 @@ public final class DJBreakSession {
         if let reserved = reservedStation, reserved != committed { queueStation = .unknown }
         else { queueStation = .known(committed) }
         reservedStation = nil
+        // A different station opens the show again. Its old queue's opener, if it already aired,
+        // stays remembered by `forgetPlannedBreaks` above, so without this the new station would
+        // start with no opener. Anti-repeat memory is kept: the new opener won't echo the old one.
+        let opened = Self.openerStation(station.committedDisplayed)
+        if let previous = openedStation, previous != opened { writer.greetAgain() }
+        openedStation = opened
         replan(from: 0, keepingThrough: -1)
+    }
+
+    /// What makes a station "another station" for the show opener: its seeds (kind, source and
+    /// catalog id), order ignored. Empty for a station with no seeds (tags only).
+    nonisolated static func openerStation(_ configuration: StationConfiguration) -> Set<StationQueueKey.SeedID> {
+        Set(StationQueueKey(configuration)?.seeds ?? [])
     }
 
     /// The station the planned queue belongs to. `unknown` fails closed.
