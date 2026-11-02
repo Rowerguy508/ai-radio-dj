@@ -370,7 +370,8 @@ final class TalkoverCoordinator {
             music.skipInterlude()
             return
         }
-        await interlude.play(clips: clips, line: line, afterTrack: k)
+        await interlude.play(clips: clips, line: line, afterTrack: k,
+                            resumeLines: BreakResumeLine.lines(for: h.prepared))
     }
 
     // MARK: Private

@@ -445,11 +445,16 @@ public final class DJBreakSession {
             return nil
         }
         let kept = Set(cues.map(\.id))
-        let prepared = cues.count == ready.cues.count ? ready : PreparedDJBreak(
+        var prepared = cues.count == ready.cues.count ? ready : PreparedDJBreak(
             afterTrack: k, cues: cues, clips: ready.clips.filter { kept.contains($0.cueID) },
             attributions: ready.attributions.filter { kept.contains($0.key) },
             // Kept only if the closing cue survived; the hooks recompute from the kept clips.
             talkOverCueID: ready.talkOverCueID.flatMap { kept.contains($0) ? $0 : nil })
+        if prepared != ready, let check = ready.timeCheck, kept.contains(check.cueID) {
+            // The time-check line survived: keep what a resume re-checks it with (#379 N1).
+            prepared.timeCheck = check
+            prepared.timeCheckAirTime = ready.timeCheckAirTime
+        }
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
         // #332: recorded on the ledger in `playbackStarted`, once this break is audible.
         let personal = prepared.cues.filter { $0.isContent && $0.sourceItemID != nil }

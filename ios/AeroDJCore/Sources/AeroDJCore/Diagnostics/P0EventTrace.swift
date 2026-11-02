@@ -38,6 +38,9 @@ public enum P0TraceEvent: String, Equatable, Sendable, CaseIterable {
     case appLifecycle
     /// DJ talk-over (flagged): a plan, a timing miss, a cancel or a measured start latency.
     case talkover
+    /// A break paused by a system interruption dropped lines (#379 N2): lines skipped on
+    /// resume (`resumeDrop`) or the rest of the break (`breakDropped`), counted by kind.
+    case breakInterruption
 }
 
 public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
@@ -60,6 +63,8 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     // Echo's #374 follow-up (-Fry): MusicKit `playbackStatus == .playing` before and right after
     // the duck activation, and in the settle, duck-to-voice (end of the lead) and unduck rows
     case musicBefore, musicAfter, music
+    // #379 N2 (-Fry): the paused line, lines dropped, of which time checks and other lines
+    case line, dropped, timeChecks, otherCues
 }
 
 extension P0TraceCode {
@@ -99,6 +104,9 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case noClosingLine, closingTooLong, nextTrackTooShort, nextTrackUnknown, introTooShort
     case voiceStartLate, nextStartLate, nextStartEarly, endAfterPlayCue, voiceEndedFirst
     case seekOutOfWindow, seekWhileSpeaking, skip, userStop, interruption, routeRemoved, revoked, voiceFailed
+    // break interruption drops (#379 N2): row kind, then `BreakResumeDrop.Reason` (same raw values)
+    case resumeDrop, breakDropped
+    case stale, allStale, noResume, musicPlaying, pauseExpired
 }
 
 public enum P0TraceValue: Equatable, Sendable {
@@ -682,6 +690,17 @@ extension P0EventTrace {
         [(.otherAudio, .bool(s.otherAudio)), (.secondaryHint, .bool(s.secondaryHint)), (.outVol, number(s.outputVolumePercent)),
          (.music, flag(s.musicPlaying))]
     }
+    /// #379 N2 (-Fry): lines a paused break dropped, by kind, and why. Counts and codes only.
+    @discardableResult
+    public mutating func breakInterruptionDrop(_ drop: BreakResumeDrop, afterTrack: Int?,
+                                               at t: TimeInterval) -> P0TraceRow {
+        record(.breakInterruption, at: t, [(.kind, .code(drop.breakDropped ? .breakDropped : .resumeDrop)),
+                                           (.reason, .code(P0TraceCode(rawValue: drop.reason.rawValue) ?? .unknown)),
+                                           (.after, Self.number(afterTrack)), (.line, .int(drop.line)),
+                                           (.dropped, .int(drop.count)), (.timeChecks, .int(drop.timeChecks)),
+                                           (.otherCues, .int(drop.other))])
+    }
+
     private static func flag(_ b: Bool?) -> P0TraceValue { b.map { .bool($0) } ?? .missing }
     private static func number(_ i: Int?) -> P0TraceValue { i.map { .int($0) } ?? .missing }
 }

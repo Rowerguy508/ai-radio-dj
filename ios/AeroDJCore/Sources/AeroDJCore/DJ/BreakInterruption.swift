@@ -21,6 +21,11 @@ public enum BreakInterruptionAcknowledgement {
     public static let line = "Sorry, little interruption there."
     /// Bound for the rendered clip: a longer clip is not used (the script resumes without it).
     public static let maxSeconds = 4
+    /// No apology for a very short interruption (Echo, #379 N3): one that lasted less than this,
+    /// from `.began` to `.ended`, resumes the script at once with no acknowledgement. 2 s covers
+    /// a blip (a notification sound, a Siri call that is cancelled at once) without hiding a real
+    /// interruption, where a listener noticed the gap. Exactly 2 s or longer is apologized for.
+    public static let minInterruptionSeconds: Double = 2
 
     /// The cue the app renders. A local-only cue (no attribution): `VoiceRenderer` sends it to
     /// on-device, free routes only, so no paid or cloud voice is ever asked for it.
@@ -37,6 +42,11 @@ public enum BreakInterruptionAcknowledgement {
 /// - `.ended` with `shouldResume`: one short acknowledgement (`BreakInterruptionAcknowledgement`),
 ///   then the planned script again FROM THE INTERRUPTED LINE (that line restarts from its
 ///   beginning). No acknowledgement clip ready: the script resumes at once (music never waits).
+///   No acknowledgement for an interruption shorter than
+///   `BreakInterruptionAcknowledgement.minInterruptionSeconds`, and at most ONE per break: a
+///   later interruption in the same break resumes without one (#379 N3). Lines that are no
+///   longer true when the script resumes (a time check past its window) are dropped by
+///   `BreakResumePlan`, not by this machine.
 /// - `.ended` without `shouldResume`, or no `.ended` within `maxPausedSeconds`: stays held;
 ///   nothing restarts on its own.
 /// - Talk-over: the voice is pinned to the song's outro, which moved on while the system held
@@ -73,6 +83,10 @@ public struct BreakInterruptionState: Equatable, Sendable {
 
     public private(set) var phase: Phase = .idle
     public private(set) var kind: BreakInterruptionKind = .boundary
+    /// The acknowledgement already started in this break (at most one per break).
+    public private(set) var apologized = false
+    /// When the current interruption began (caller's monotonic seconds).
+    private var beganAt: Double = 0
 
     public init() {}
 
@@ -90,6 +104,7 @@ public struct BreakInterruptionState: Equatable, Sendable {
     public mutating func breakStarted(_ kind: BreakInterruptionKind) {
         self.kind = kind
         phase = .speaking(line: 0)
+        apologized = false
     }
 
     /// Script line `index` started. Only tracked while speaking (the acknowledgement and a
@@ -103,10 +118,11 @@ public struct BreakInterruptionState: Equatable, Sendable {
     public mutating func breakEnded() {
         phase = .idle
         kind = .boundary
+        apologized = false
     }
 
-    /// `AVAudioSession.interruptionNotification` `.began`.
-    public mutating func interruptionBegan() -> Action {
+    /// `AVAudioSession.interruptionNotification` `.began`, at `uptime` (monotonic seconds).
+    public mutating func interruptionBegan(at uptime: Double) -> Action {
         switch phase {
         case .idle, .paused, .held:
             return .none
@@ -116,22 +132,30 @@ public struct BreakInterruptionState: Equatable, Sendable {
                 return .stopTalkover
             }
             phase = .paused(line: line)
+            beganAt = uptime
             return .pause(line: line)
         case .acknowledging(let resumeLine):
-            // The acknowledgement itself was interrupted: the script line is still owed.
+            // The acknowledgement itself was interrupted: the script line is still owed. The
+            // apology counts as said (at most one per break): it is not played again.
             phase = .paused(line: resumeLine)
+            beganAt = uptime
             return .pause(line: resumeLine)
         }
     }
 
-    /// `.ended`. `acknowledgementReady`: an acknowledgement clip is decoded and playable now.
-    public mutating func interruptionEnded(shouldResume: Bool, acknowledgementReady: Bool) -> Action {
+    /// `.ended` at `uptime` (same clock as `interruptionBegan`). `acknowledgementReady`: an
+    /// acknowledgement clip is decoded and playable now. The acknowledgement plays only when it
+    /// is ready, none was played in this break yet, and the interruption lasted at least
+    /// `BreakInterruptionAcknowledgement.minInterruptionSeconds`.
+    public mutating func interruptionEnded(shouldResume: Bool, acknowledgementReady: Bool, at uptime: Double) -> Action {
         guard case .paused(let line) = phase else { return .none }
         guard shouldResume else {
             phase = .held(line: line)
             return .stayPaused(line: line)
         }
-        if acknowledgementReady {
+        let long = uptime - beganAt >= BreakInterruptionAcknowledgement.minInterruptionSeconds
+        if acknowledgementReady, !apologized, long {
+            apologized = true
             phase = .acknowledging(resumeLine: line)
             return .playAcknowledgement(thenLine: line)
         }
@@ -156,5 +180,131 @@ public struct BreakInterruptionState: Equatable, Sendable {
         guard case .acknowledging(let line) = phase else { return .none }
         phase = .speaking(line: line)
         return .resume(fromLine: line)
+    }
+}
+
+// MARK: - Resume validity (#379 N1, Echo)
+
+/// What a resumed script needs to know about one of its lines (one per clip, in play order).
+public struct BreakResumeLine: Equatable, Sendable {
+    public enum Sensitivity: Equatable, Sendable {
+        /// Still true whenever it airs.
+        case none
+        /// A time check: its plan, the words rendered, and the air time they were written for
+        /// (`PreparedDJBreak.timeCheckAirTime`). Re-checked with the take-time rule
+        /// (`DJBreakPreparer.timeCheckStillTrue`) at the moment it would air after the resume.
+        case timeCheck(DJPlannedTimeCheck, text: String, airTime: Date?)
+    }
+
+    /// The clip's rendered length, in seconds.
+    public let seconds: Double
+    public let sensitivity: Sensitivity
+
+    public init(seconds: Double, sensitivity: Sensitivity = .none) {
+        self.seconds = seconds
+        self.sensitivity = sensitivity
+    }
+
+    /// One line per clip of `prepared`, in clip order. The time-check clip (when it is still in
+    /// the break, `PreparedDJBreak.timeCheck`) carries its plan, words and air time.
+    public static func lines(for prepared: PreparedDJBreak) -> [BreakResumeLine] {
+        prepared.clips.map { clip in
+            guard let check = prepared.timeCheck, clip.cueID == check.cueID else {
+                return BreakResumeLine(seconds: clip.audio.seconds)
+            }
+            let text = prepared.cues.first { $0.id == check.cueID }?.text ?? ""
+            return BreakResumeLine(seconds: clip.audio.seconds,
+                                   sensitivity: .timeCheck(check, text: text, airTime: prepared.timeCheckAirTime))
+        }
+    }
+
+    /// Whether the line is still true if it starts airing at `date`.
+    public func stillTrue(airingAt date: Date) -> Bool {
+        switch sensitivity {
+        case .none: return true
+        case .timeCheck(let check, let text, let airTime):
+            return DJBreakPreparer.timeCheckStillTrue(check, saying: text, airTime: airTime, now: date)
+        }
+    }
+
+    var dropKind: BreakResumeDrop.Kind {
+        if case .timeCheck = sensitivity { return .timeCheck }
+        return .other
+    }
+}
+
+/// Lines of a paused break that did not air, by kind, and why (#379 N2, for the P0 trace).
+/// Counts and codes only; no text.
+public struct BreakResumeDrop: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable { case timeCheck, other }
+
+    public enum Reason: String, Equatable, Sendable, CaseIterable {
+        /// On resume, a time-sensitive line was past its window and was skipped; the rest aired.
+        case stale
+        /// On resume, every line still to play was past its window: the break was dropped.
+        case allStale
+        /// `.ended` without `shouldResume`: the break was dropped.
+        case noResume
+        /// `.ended` with `shouldResume` while the listener already had music playing.
+        case musicPlaying
+        /// No `.ended` within `BreakInterruptionState.maxPausedSeconds`.
+        case pauseExpired
+    }
+
+    public let reason: Reason
+    /// The line the break was paused at.
+    public let line: Int
+    public let timeChecks: Int
+    public let other: Int
+    public var count: Int { timeChecks + other }
+    /// Whether the whole break was dropped (no line from `line` on aired).
+    public var breakDropped: Bool { reason != .stale }
+
+    public init(reason: Reason, line: Int, timeChecks: Int, other: Int) {
+        self.reason = reason
+        self.line = line
+        self.timeChecks = timeChecks
+        self.other = other
+    }
+
+    /// Every line from `line` on, dropped for `reason`.
+    public static func remaining(_ lines: [BreakResumeLine], from line: Int, reason: Reason) -> BreakResumeDrop {
+        let rest = lines.indices.contains(line) ? Array(lines[line...]) : []
+        let checks = rest.filter { $0.dropKind == .timeCheck }.count
+        return BreakResumeDrop(reason: reason, line: line, timeChecks: checks, other: rest.count - checks)
+    }
+}
+
+/// Which lines a resumed break still plays (#379 N1, Echo: a time check resumed after a pause
+/// could air up to ~49 s late and name the wrong minute). Each line from the interrupted one on
+/// is checked at the moment it would START airing: `now`, plus `leadSeconds` (the
+/// acknowledgement, when it plays first), plus the kept lines before it. A time check that is
+/// no longer true then (`DJBreakPreparer.timeCheckStillTrue`, the same rule as at the take:
+/// within `timeCheckTolerance` of its air time and its rounded-time claim still true) is
+/// dropped rather than spoken; other lines always play. Pure; the caller reads the clock.
+public struct BreakResumePlan: Equatable, Sendable {
+    /// Script line indices to play, in order.
+    public let lines: [Int]
+    /// What was dropped, when anything was (`.stale`, or `.allStale` when nothing is left).
+    public let drop: BreakResumeDrop?
+
+    public static func plan(from line: Int, lines: [BreakResumeLine], now: Date, leadSeconds: Double = 0) -> BreakResumePlan {
+        guard line >= 0, line < lines.count else { return BreakResumePlan(lines: [], drop: nil) }
+        var kept: [Int] = [], checks = 0, other = 0
+        var offset = max(0, leadSeconds)
+        for index in line..<lines.count {
+            let entry = lines[index]
+            if entry.stillTrue(airingAt: now.addingTimeInterval(offset)) {
+                kept.append(index)
+                offset += max(0, entry.seconds)
+            } else if entry.dropKind == .timeCheck {
+                checks += 1
+            } else {
+                other += 1
+            }
+        }
+        guard checks + other > 0 else { return BreakResumePlan(lines: kept, drop: nil) }
+        let reason: BreakResumeDrop.Reason = kept.isEmpty ? .allStale : .stale
+        return BreakResumePlan(lines: kept, drop: BreakResumeDrop(reason: reason, line: line, timeChecks: checks, other: other))
     }
 }

@@ -341,6 +341,11 @@ final class P0EventTraceTests: XCTestCase {
         trace.talkoverDuckToVoice(ms: 600, musicPlaying: false, afterTrack: 0, at: 9)
         trace.talkoverUnduck(errorCode: 560030580, released: false, sample, afterTrack: 0, at: 9)
         trace.talkoverUnduck(errorCode: 0, released: true, sample, afterTrack: 0, at: 9)
+        // #379 N2: every break-interruption drop reason fits the closed shape.
+        for r in BreakResumeDrop.Reason.allCases {
+            trace.breakInterruptionDrop(BreakResumeDrop(reason: r, line: 1, timeChecks: 1, other: 2), afterTrack: 0, at: 9)
+        }
+        trace.breakInterruptionDrop(BreakResumeDrop(reason: .stale, line: 0, timeChecks: 1, other: 0), afterTrack: nil, at: 9)
         XCTAssertFalse(trace.rows.contains { $0.detail.contains("=unknown") }, "every talk-over code has a trace code")
         shapes += trace.rows
         XCTAssertEqual(Set(shapes.map(\.event)), Set(P0TraceEvent.allCases), "every event kind is checked")
@@ -369,6 +374,27 @@ final class P0EventTraceTests: XCTestCase {
     /// Echo's #374 follow-up (-Fry): MusicKit's playing state before and right after the duck
     /// activation, at the settle, at the voice start (end of the duck lead) and at the unduck.
     /// Booleans only; nil renders as "-".
+    /// #379 N2 (-Fry): lines a paused break dropped, counted by kind, codes and counts only.
+    func testBreakInterruptionDropRowsCountTheDroppedLinesByKind() {
+        var trace = P0EventTrace()
+        let skipped = trace.breakInterruptionDrop(BreakResumeDrop(reason: .stale, line: 1, timeChecks: 1, other: 0),
+                                                  afterTrack: 4, at: 2)
+        XCTAssertEqual(skipped.event, .breakInterruption)
+        XCTAssertEqual(skipped.detail, "kind=resumeDrop reason=stale after=4 line=1 dropped=1 timeChecks=1 otherCues=0")
+        let held = trace.breakInterruptionDrop(BreakResumeDrop(reason: .noResume, line: 0, timeChecks: 1, other: 2),
+                                               afterTrack: 4, at: 3)
+        XCTAssertEqual(held.detail, "kind=breakDropped reason=noResume after=4 line=0 dropped=3 timeChecks=1 otherCues=2")
+        for (reason, code) in [(BreakResumeDrop.Reason.allStale, "allStale"), (.musicPlaying, "musicPlaying"),
+                               (.pauseExpired, "pauseExpired")] {
+            let row = trace.breakInterruptionDrop(BreakResumeDrop(reason: reason, line: 2, timeChecks: 0, other: 1),
+                                                  afterTrack: nil, at: 4)
+            XCTAssertEqual(row.detail, "kind=breakDropped reason=\(code) after=- line=2 dropped=1 timeChecks=0 otherCues=1")
+        }
+        for reason in BreakResumeDrop.Reason.allCases {
+            XCTAssertNotNil(P0TraceCode(rawValue: reason.rawValue), "\(reason) has its own trace code")
+        }
+    }
+
     func testDuckProbeRowsCarryMusicKitPlayingState() {
         var trace = P0EventTrace()
         let probe = trace.talkoverDuckProbe(TalkoverDuckProbe(otherBefore: true, hintBefore: false, activated: true,

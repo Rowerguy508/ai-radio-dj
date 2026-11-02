@@ -148,7 +148,8 @@ enum PlaybackSessionBinder {
                             reportUnplayed(.emptyLine)
                             break
                         }
-                        await interlude.play(clips: clips, line: line, afterTrack: finishedIndex)
+                        await interlude.play(clips: clips, line: line, afterTrack: finishedIndex,
+                                            resumeLines: BreakResumeLine.lines(for: breakToPlay))
                     case .continueMusic:
                         // Close the early hand-out. A later stop must see idle, not a break
                         // that will never play.
