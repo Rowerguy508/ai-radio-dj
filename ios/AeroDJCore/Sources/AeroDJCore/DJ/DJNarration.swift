@@ -292,7 +292,7 @@ public struct DJScriptWriter: Sendable {
     /// Natural breaks planned so far (id: first cue), newest last, for `forgetPlannedBreaks`.
     private var shapeLog: [(id: UUID, shape: DJBreakShape)] = []
     private var combined: TemplatePool
-    /// Time-check pools by relation (`DJBreakShapeConfig.timeChecks`).
+    /// Time-check pools by relation: the tone's bank (`DJBreakShapeConfig.timeCheckPhrases(for:)`).
     private var timeCheckPools: [DJTimeCheckRelation: TemplatePool]
     /// Planned time checks (id: the break's first cue; at: the clock reading spoken), newest
     /// last, for the wall-time spacing rule. Forgotten with their break on a replan.
@@ -310,7 +310,7 @@ public struct DJScriptWriter: Sendable {
         self.shapePicker = shapes.map { DJBreakShapePicker(config: $0, seed: seed &+ 0x5851_F42D_4C95_7F2D) }
         self.recentTemplates = RecentSpokenTemplates(window: shapes?.recentBreakWindow ?? 1, hereWindow: shapes?.hereWindow ?? 1)
         self.combined = TemplatePool(shapes?.combinedLines(for: tone) ?? [])
-        let phrases = shapes?.timeChecks ?? DJTimeCheckPhrases(on: [], comingUp: [], justAfter: [])
+        let phrases = shapes?.timeCheckPhrases(for: tone) ?? DJTimeCheckPhrases(on: [], comingUp: [], justAfter: [])
         self.timeCheckPools = Dictionary(uniqueKeysWithValues: DJTimeCheckRelation.allCases.map {
             ($0, TemplatePool(phrases.templates(for: $0)))
         })
