@@ -19,9 +19,12 @@ import { decodeCbor, type CborValue } from './cbor.js';
  * 7. if the iOS 27+ extensions map carries `apple_validation_category_01`, it is returned
  *    so the caller can require TestFlight (2).
  *
- * UNVERIFIED ON DEVICE: the signature convention (step 3) follows Apple's text and several
- * open-source verifiers; only a real device assertion proves it. Tests use a P-256 key signing
- * the same way.
+ * Step 3 convention, checked against GENUINE device assertions (test/app-attest-assertion.test.ts,
+ * fixtures from veehaitch/devicecheck-appattest, Apple-rooted key, and uebelack/node-app-attest):
+ * the device signature is ECDSA over SHA256(nonce), so `crypto.verify('sha256', nonce, …)` is
+ * correct. Do NOT "fix" this to one hash over authenticatorData ‖ clientDataHash: that rejects
+ * every real device and the fixture tests fail (#380 P1 review). Not yet run with an assertion
+ * from our own app on a device.
  */
 
 export const MAX_ASSERTION_BYTES = 2 * 1024;
