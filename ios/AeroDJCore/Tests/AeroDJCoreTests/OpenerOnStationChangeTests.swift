@@ -1,9 +1,11 @@
 import XCTest
 @testable import AeroDJCore
 
-/// Echo's #359 show opener, per station (-Fry): `queueStarted` for a different station (other
-/// seeds or genre tags, Echo on #362) opens the show again, once. A restart or re-queue on the same station, a skip, or a
-/// personality-only change never replays it. Deterministic: no render runs (every song start is
+/// Echo's #359 show opener, per station (-Fry): `queueStarted` for a different station opens the
+/// show again, once. "Different" is the feed's own rule (#362 P1): another `StationQueueKey`
+/// (seeds, reach, discovery). A restart or re-queue on the same station, a skip, or a genre, mood
+/// or personality edit never replays it. The live path through `StationQueueFeed` is in
+/// `OpenerThroughStationQueueFeedTests`. Deterministic: no render runs (every song start is
 /// inside the boundary margin) and station edits are awaited through `testOnStationChangeHandled`.
 private struct SilentVoice: VoiceProvider {
     func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
@@ -119,46 +121,41 @@ final class OpenerOnStationChangeTests: XCTestCase {
         }
     }
 
-    func testSeedsAreIdentityAndToneEditsAreNot() async {
-        var a = StationConfiguration()
-        a.seeds = Self.seeded("x") + [StationSeed(kind: .genre, catalogID: "g", name: "Genre")]
-        var b = a
-        b.personality = .minimal; b.discovery = 0.9; b.reach = .broad; b.energy = 0.1
-        b.seeds = b.seeds.reversed()
-        XCTAssertEqual(DJBreakSession.openerStation(a), DJBreakSession.openerStation(b))
-        b.seeds = Self.seeded("y")
-        XCTAssertNotEqual(DJBreakSession.openerStation(a), DJBreakSession.openerStation(b))
-        XCTAssertEqual(DJBreakSession.openerStation(StationConfiguration()), .init(seeds: [], genres: []))
+    // (d) Genre tags are not in the feed's key, so a genre edit never starts a new station queue;
+    // a later re-queue (a tap) on the same station does not re-greet either. Seeded and tags-only.
+    func testAGenreEditDoesNotReGreetOnTheNextQueue() async {
+        for tagsOnly in [false, true] {
+            for seed in UInt64(0)..<10 {
+                let (session, station) = await rig(seed: seed, tagsOnly: tagsOnly)
+                await session.queueStarted(djTracks(30))
+                await airTheOpener(session, "seed \(seed) tagsOnly \(tagsOnly)")
+
+                await save(session, station) { await station.setGenres(["house", "disco"]) }
+                XCTAssertEqual(station.committedDisplayed.genres, ["house", "disco"])
+                await session.queueStarted(djTracks(30))
+                XCTAssertEqual(openers(session), [], "seed \(seed) tagsOnly \(tagsOnly): genres are not in the feed's key")
+                await session.stop()
+            }
+        }
     }
 
-    /// Echo on #362: identity is seeds plus genre tags, order and case ignored; moods are tone.
-    func testGenresAreIdentityAndMoodsAreNot() async {
-        let a = StationConfiguration(genres: ["Jazz", "soul"], moods: ["mellow"])
-        var b = StationConfiguration(genres: ["soul", "jazz"], moods: ["upbeat", "late night"])
-        b.personality = .laidBack; b.briefing.enabled = !a.briefing.enabled
-        XCTAssertEqual(DJBreakSession.openerStation(a), DJBreakSession.openerStation(b))
-        b.genres = ["house"]
-        XCTAssertNotEqual(DJBreakSession.openerStation(a), DJBreakSession.openerStation(b))
-    }
-
-    // (d) A station built from tags alone re-greets once when its tags change.
-    func testATagsOnlyStationWhoseTagsChangeReGreetsOnce() async {
-        for seed in UInt64(0)..<10 {
-            let (session, station) = await rig(seed: seed, tagsOnly: true)
-            XCTAssertTrue(station.committedDisplayed.seeds.isEmpty)
-            await session.queueStarted(djTracks(30))
-            await airTheOpener(session, "seed \(seed) jazz")
-
-            await save(session, station) { await station.setGenres(["house", "disco"]) }
-            XCTAssertEqual(station.committedDisplayed.genres, ["house", "disco"])
-            await session.queueStarted(djTracks(30))
-            XCTAssertEqual(openers(session).count, 1, "seed \(seed): new tags open the show once")
-            XCTAssertEqual(openers(session).first, session.plannedBoundaries.first, "seed \(seed): as its first break")
-
-            await airTheOpener(session, "seed \(seed) house")
-            await session.queueStarted(djTracks(30))
-            XCTAssertEqual(openers(session), [], "seed \(seed): a re-queue on the new tags does not open it again")
-            await session.stop()
+    // (f) Reach and discovery are in the feed's key (the feed builds and hands off a new queue for
+    // them), so the next queue opens the show again, once, like a seeds change.
+    func testAReachOrDiscoveryEditReGreetsOnceLikeTheFeed() async {
+        for edit in ["reach", "discovery"] {
+            for seed in UInt64(0)..<5 {
+                let (session, station) = await rig(seed: seed)
+                await session.queueStarted(djTracks(30))
+                await airTheOpener(session, "seed \(seed) \(edit)")
+                let before = StationQueueKey(station.committedDisplayed)
+                await save(session, station) {
+                    if edit == "reach" { await station.setReach(.broad) } else { await station.setDiscovery(0.9) }
+                }
+                XCTAssertNotEqual(StationQueueKey(station.committedDisplayed), before, "\(edit) is in the key")
+                await session.queueStarted(djTracks(30))
+                XCTAssertEqual(openers(session).count, 1, "seed \(seed) \(edit): a new station queue opens the show once")
+                await session.stop()
+            }
         }
     }
 

@@ -78,12 +78,16 @@ public final class DJBreakSession {
     /// The committed station when the pending queue was reserved, to catch a save that lands
     /// between the tap and `queueStarted` (the feed keys the queue inside `music.play`).
     private var reservedStation: StationQueueKey??
-    /// Show opener on a new station (-Fry, for Echo's #359): the identity of the station the last
-    /// queue was started for. nil until the first queue. `queueStarted` reopens the show
-    /// (`DJScriptWriter.greetAgain()`) only when it differs: a restart or re-queue on the same
-    /// station, a skip, or a mood, personality, briefing, cadence, reach or discovery edit never
-    /// replays it.
-    private var openedStation: OpenerStation?
+    /// Show opener on a new station (-Fry, for Echo's #359): the `StationQueueKey` of the station
+    /// the last queue was started for (outer nil: no queue yet). `queueStarted` reopens the show
+    /// (`DJScriptWriter.greetAgain()`) only when the new queue's key differs. That is the feed's
+    /// own rule (#362 P1): `StationQueueFeed` hands off a new station queue exactly when the
+    /// active key differs from the playing queue's (`take`), and every queue start records
+    /// `StationQueueKey(committedDisplayed)`, the same value read here. So a seeds, reach or
+    /// discovery change re-greets; a refill, a re-queue or restart on the same station, a skip, or a
+    /// genre, mood, personality, energy or briefing edit (none is in the key, so the feed never
+    /// starts a new queue for it) does not. A tags-only station has no key (nil), like the feed.
+    private var openedStation: StationQueueKey??
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -292,24 +296,9 @@ public final class DJBreakSession {
         // A different station opens the show again. Its old queue's opener, if it already aired,
         // stays remembered by `forgetPlannedBreaks` above, so without this the new station would
         // start with no opener. Anti-repeat memory is kept: the new opener won't echo the old one.
-        let opened = Self.openerStation(station.committedDisplayed)
-        if let previous = openedStation, previous != opened { writer.greetAgain() }
-        openedStation = opened
+        if let previous = openedStation, previous != committed { writer.greetAgain() }
+        openedStation = .some(committed)
         replan(from: 0, keepingThrough: -1)
-    }
-
-    /// What makes a station "another station" for the show opener (Echo, #362): its seeds and its
-    /// genre tags, order ignored. Moods are tone, not identity: they live in their own field
-    /// (`StationConfiguration.moods`) and are left out, like personality, energy, discovery, reach,
-    /// commentary and the briefing. A tags-only station is identified by its genres alone.
-    struct OpenerStation: Equatable, Sendable {
-        let seeds: Set<StationQueueKey.SeedID>
-        let genres: Set<String>
-    }
-
-    nonisolated static func openerStation(_ configuration: StationConfiguration) -> OpenerStation {
-        let config = configuration.validated()   // genres trimmed, lowercased, de-duplicated
-        return OpenerStation(seeds: Set(StationQueueKey(config)?.seeds ?? []), genres: Set(config.genres))
     }
 
     /// The station the planned queue belongs to. `unknown` fails closed.
