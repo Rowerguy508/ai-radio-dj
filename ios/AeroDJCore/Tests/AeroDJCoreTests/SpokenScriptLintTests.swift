@@ -483,6 +483,44 @@ final class SpokenScriptLintTests: XCTestCase {
         XCTAssertEqual(SpokenTitle.clean("Song ()"), "Song")
     }
 
+    /// #352 review follow-ups (-Fry's nits, -Echo).
+    func testDashSuffixesThatDoNotNameARecordingAreLeftAsWritten() {
+        // Nit 2: plain words after a dash reach the recording-word gate and must stay as written.
+        for raw in ["Song - Part Two", "Song – Part Two", "Song — Interlude", "Clocks - Reprise"] {
+            XCTAssertEqual(SpokenTitle.clean(raw), raw, raw)
+        }
+        XCTAssertEqual(SpokenTitle.clean("Song - Part Two (Live)"), "Song - Part Two, Live")
+    }
+
+    func testMalformedBracketsStillDropCatalogTags() {
+        // Nit 1: odd brackets only skip the tag rewrite; catalog tags still drop as before #352.
+        XCTAssertEqual(SpokenTitle.clean("Song [Explicit] (Remix (Edit))"), "Song (Remix (Edit))")
+        XCTAssertEqual(SpokenTitle.clean("Song (Live [2014]) [Explicit]"), "Song (Live [2014])")
+        // A stray closing bracket before a kept tag leaves the tag as written.
+        XCTAssertEqual(SpokenTitle.clean("Song] (Live)"), "Song] (Live)")
+    }
+
+    func testSeparatorsAfterTheLastTagDoNotKeepItsBrackets() {
+        // Nit 3: trailing separators go before the rewrite, so the tag still loses its brackets.
+        XCTAssertEqual(SpokenTitle.clean("Song (Live) ,"), "Song, Live")
+        XCTAssertEqual(SpokenTitle.clean("Song (Live);"), "Song, Live")
+        XCTAssertEqual(SpokenTitle.clean("Song [Acoustic] :"), "Song, Acoustic")
+    }
+
+    func testTitlesEndingASentenceTakeNoCommaBeforeTheirTags() {
+        // Nit 4: "Help!, Live" read oddly; same words, no comma after "!", "?" or ".".
+        XCTAssertEqual(SpokenTitle.clean("Help! (Live)"), "Help! Live")
+        XCTAssertEqual(SpokenTitle.clean("Why? (Acoustic) [Live]"), "Why? Acoustic, Live")
+        XCTAssertEqual(SpokenTitle.clean("Song. - Live 2011"), "Song. Live 2011")
+        XCTAssertEqual(SpokenTitle.clean("Help! (2009 Digital Remaster)"), "Help!")
+        for raw in ["Help! (Live)", "Why? (Acoustic) [Live]"] {
+            XCTAssertEqual(Self.words(SpokenTitle.clean(raw)), Self.words(raw), raw)
+            let line = TemplatePool.fill("That's {title}, from {artist}.", ["title": raw, "artist": "M83"])!
+            XCTAssertNil(line.range(of: #"[!?.],"#, options: .regularExpression), line)
+            XCTAssertFalse(line.contains("(") || line.contains(")"), line)
+        }
+    }
+
     func testTemplateFillNeverMakesCommaRuns() {
         for template in ["{title} there.", "That's {title}, from {artist}.", "Up next: {nextTitle}!", "{title}?"] {
             for raw in ["Ocean Avenue (Live 2014)", "Song (Live) [Acoustic]", "Song, (Live)", "Song,", "Song ( Live , )",

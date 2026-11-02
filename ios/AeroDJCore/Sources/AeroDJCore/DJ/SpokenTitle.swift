@@ -14,7 +14,8 @@ import Foundation
 /// a comma chain ("Song, Live, Acoustic"). Casing is preserved exactly as written: no word is
 /// lowercased, so proper nouns ("Clean Bandit Remix") stay intact. Only trailing tags are
 /// rewritten; a title that is only a bracket, or text whose brackets are nested or unbalanced,
-/// is spoken unchanged rather than mangled.
+/// keeps its kept tags as written rather than mangled (catalog tags still drop). A title that
+/// ends with "!", "?" or "." takes no comma before its tags: "Help! (Live)" is "Help! Live".
 public enum SpokenTitle {
     /// Catalog-only tags. A bracketed or dash suffix is dropped only when it is exactly one of
     /// these, ignoring years and ordinals, optionally followed by "version" ("Clean Version").
@@ -30,13 +31,14 @@ public enum SpokenTitle {
     /// The title as it should be spoken.
     public static func clean(_ raw: String) -> String {
         let original = collapse(raw)
-        // Nested or unbalanced brackets: any rewrite could cut words, so speak it as written.
-        guard bracketsAreWellFormed(original) else { return original }
         var text = original
         text = replace(text, #"\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+([^\)\]]+?)\s*[\)\]]"#) { " featuring " + $0[0] }
         text = replace(text, #"\s*[\(\[]([^\)\]]*)[\)\]]"#) { isCatalogTag($0[0]) ? "" : nil }
         text = replace(text, #"\s+[-–—]\s+([^-–—]+)$"#) { isCatalogTag($0[0]) ? "" : nil }
         text = replace(text, #"\s+(?:feat\.|ft\.)\s+"#) { _ in " featuring " }
+        // Stray separators after the last tag ("Song (Live) ,") go first, so the tag still ends the title.
+        text = collapse(text)
+        while let last = text.last, ",;:".contains(last) { text.removeLast() }
         text = speakKeptTags(collapse(text))
         // A dangling comma would meet the template's own punctuation ("{title}." -> ", ." or ",,").
         while text.last == "," { text.removeLast() }
@@ -51,6 +53,9 @@ public enum SpokenTitle {
     /// so titles like "Re-Make - Re-Model" are untouched. If no title text would be left outside
     /// brackets ("(Live)", "(Live) (Remix)"), the text is returned unchanged.
     static func speakKeptTags(_ text: String) -> String {
+        // Nested or unbalanced brackets: any rewrite could cut words, so the tags stay as written.
+        // Only this rewrite is skipped; catalog tags and "feat." were already handled by `clean`.
+        guard bracketsAreWellFormed(text) else { return text }
         var head = text
         var tags: [String] = []
         while true {
@@ -73,7 +78,10 @@ public enum SpokenTitle {
         while let last = head.last, ",;:".contains(last) { head.removeLast() }
         head = collapse(head)
         guard !head.isEmpty else { return text }
-        return ([head] + tags).joined(separator: ", ")
+        guard !tags.isEmpty else { return head }   // only empty brackets: "Song ()" is "Song"
+        // A title that already ends a sentence ("Help!", "Song.") takes no comma: "Help! Live".
+        let joiner = head.last.map { "!?.".contains($0) } == true ? " " : ", "
+        return head + joiner + tags.joined(separator: ", ")
     }
 
     /// The last bracket group if the text ends with one: (text before it, inner text).
