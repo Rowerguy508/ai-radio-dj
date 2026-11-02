@@ -496,6 +496,10 @@ public actor DJBreakPreparer {
     var testInFlight: Set<Int> { Set(tasks.keys) }
     /// Test hook: why boundary `k`'s time-check line was dropped before the take, if it was.
     func testTimeCheckDrop(afterTrack k: Int) -> DJTimeCheckDropReason? { timeCheckDrops[k] }
+    /// Test hook: boundary `k`'s time-check state (planned check, recorded drop, render deadline).
+    func testTimeCheckState(afterTrack k: Int) -> (planned: Bool, drop: DJTimeCheckDropReason?, deadline: Bool) {
+        (timeChecks[k] != nil, timeCheckDrops[k], timeCheckDeadlines[k] != nil)
+    }
     /// Test hook: the recorded outcome for boundary `k`.
     func testResult(afterTrack k: Int) -> DJBreakOutcome? { results[k] }
     /// Test hook: records an outcome as if a render for `k` had finished with it.
