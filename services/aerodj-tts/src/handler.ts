@@ -30,12 +30,101 @@ export const MAX_DURATION_SECONDS = 600; // matches ProxyVoiceProvider duration 
 const DEFAULT_MAX_TEXT_CHARS = 600;
 const DEFAULT_MODEL_ID = 'eleven_flash_v2_5';
 /**
- * ElevenLabs voice_settings sent on every render (owner-approved radio tuning).
- * Fixed server-side: the request contract carries no voice settings, so nothing a
- * client sends can change them. Deliberately no `style` (owner decision) and
- * no `use_speaker_boost`. `speed` stays inside the approved [1.0, 1.05] range.
+ * ElevenLabs voice_settings for the v2-family models (Flash v2.5, Turbo v2.5, Multilingual v2):
+ * the owner-approved radio tuning (intonation plan, 2026-11-02: stability 0.40 -> 0.32 for a
+ * livelier read, speed 1.0 -> 1.03, still inside the approved [1.0, 1.05]). Fixed server-side:
+ * the request contract carries no voice settings, so nothing a client sends can change them.
+ * Deliberately no `style` (style stays 0 = the API default; owner decision) and no
+ * `use_speaker_boost` (the API default applies).
  */
-export const VOICE_SETTINGS = Object.freeze({ stability: 0.4, similarity_boost: 0.75, speed: 1.0 });
+export const VOICE_SETTINGS = Object.freeze({ stability: 0.32, similarity_boost: 0.75, speed: 1.03 });
+/**
+ * Eleven v4 / v4 Turbo take only Stability and Similarity (no style, no speed), so they get
+ * just those two. Same values as the v2 family.
+ */
+export const V4_VOICE_SETTINGS = Object.freeze({ stability: 0.32, similarity_boost: 0.75 });
+/**
+ * Eleven v3's stability is a three-step control (0 Creative, 0.5 Natural, 1 Robust): Natural.
+ * No speed or style.
+ */
+export const V3_VOICE_SETTINGS = Object.freeze({ stability: 0.5, similarity_boost: 0.75 });
+
+export type ModelFamily = 'v2' | 'v3' | 'v4';
+
+/** Which settings family a model id belongs to. Anything unrecognised is treated as v2. */
+export function modelFamily(modelId: string): ModelFamily {
+  if (/^eleven_v4(?:_|$)/.test(modelId)) return 'v4';
+  if (/^eleven_v3(?:_|$)/.test(modelId)) return 'v3';
+  return 'v2';
+}
+
+/** The voice_settings sent for a model: only the fields that model supports. */
+export function voiceSettingsFor(modelId: string): Readonly<Record<string, number>> {
+  const family = modelFamily(modelId);
+  return family === 'v4' ? V4_VOICE_SETTINGS : family === 'v3' ? V3_VOICE_SETTINGS : VOICE_SETTINGS;
+}
+
+/** v3 and v4 read square-bracket audio tags; the v2 family would speak them aloud. */
+export function supportsAudioTags(modelId: string): boolean {
+  return modelFamily(modelId) !== 'v2';
+}
+
+/** Request stitching (previous_text / next_text / previous_request_ids) is not available on Eleven v3. */
+export function supportsStitching(modelId: string): boolean {
+  return modelFamily(modelId) !== 'v3';
+}
+
+/**
+ * The only audio tags the proxy lets through, and only to a model that reads tags. Any other
+ * bracket (a song title like "Song [Live]", or text a caller put in brackets) loses its
+ * brackets, so nothing a title or user text contains can become an audio tag.
+ */
+export const ALLOWED_AUDIO_TAGS: readonly string[] = Object.freeze(['warmly', 'relaxed', 'chuckles', 'softly', 'excited']);
+const ALLOWED_TAG = new RegExp(`\\[\\s*(${ALLOWED_AUDIO_TAGS.join('|')})\\s*\\]`, 'gi');
+
+/**
+ * Removes every `[` and `]`. With `keepAllowedTags` (v3/v4 main text only) an exact allowlisted
+ * tag survives as `[tag]`; otherwise allowlisted tags are dropped entirely (a v2 model would read
+ * "warmly" aloud). The text between tags is cleaned piece by piece, so a stray bracket can never
+ * pair with a kept tag. Whitespace is collapsed.
+ */
+export function sanitizeBrackets(text: string, keepAllowedTags: boolean): string {
+  const out: string[] = [];
+  let last = 0;
+  for (const match of text.matchAll(ALLOWED_TAG)) {
+    out.push(text.slice(last, match.index).replace(/[[\]]/g, ' '));
+    out.push(keepAllowedTags ? ` [${match[1].toLowerCase()}] ` : ' ');
+    last = (match.index ?? 0) + match[0].length;
+  }
+  out.push(text.slice(last).replace(/[[\]]/g, ' '));
+  return out.join('').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Optional stitching context (`previousText` / `nextText`): the neighbouring lines of the same
+ * DJ break, so ElevenLabs intonates each line as part of one thought instead of a lone sentence.
+ * Not spoken and not charged to our caps (ElevenLabs bills the spoken text; X-Billed-Characters
+ * reports its character-cost header). Each side is trimmed to this many characters: previous
+ * keeps its end, next keeps its start, the parts nearest the spoken line.
+ */
+export const MAX_CONTEXT_CHARS = 300;
+/** ElevenLabs request ids we forward as `previous_request_ids` (at most 3, per its API). */
+export const MAX_PREVIOUS_REQUEST_IDS = 3;
+const REQUEST_ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Reads an optional context field: absent/null = none, a string = sanitised context (brackets
+ * removed, whitespace collapsed, trimmed to MAX_CONTEXT_CHARS), anything else = invalid (400).
+ */
+function contextField(value: unknown, format: 'text' | 'ssml', keep: 'start' | 'end'): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  if (value.length > MAX_CONTEXT_CHARS * 8) return undefined;
+  const plain = sanitizeBrackets(format === 'ssml' ? ssmlToPlainText(value) : value, false);
+  if (plain.length <= MAX_CONTEXT_CHARS) return plain;
+  return (keep === 'end' ? plain.slice(-MAX_CONTEXT_CHARS) : plain.slice(0, MAX_CONTEXT_CHARS)).trim();
+}
+
 const UPSTREAM_TIMEOUT_MS = 15_000;
 /**
  * Until per-install attestation lands, the owner bearer is the only authenticated caller,
@@ -401,6 +490,23 @@ export function secondsUntilNextUtcDay(now: number): number {
   return Math.max(1, Math.ceil((next.getTime() - now) / 1000));
 }
 
+/**
+ * The ElevenLabs request body. Context fields are added only when present and only for a model
+ * that supports request stitching (not v3); voice_settings carry only the fields the model takes.
+ */
+export function upstreamBody(
+  text: string,
+  modelId: string,
+  context: { previousText?: string | null; nextText?: string | null; previousRequestIds?: string[] } = {},
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { text, model_id: modelId, voice_settings: voiceSettingsFor(modelId) };
+  if (!supportsStitching(modelId)) return body;
+  if (context.previousText) body.previous_text = context.previousText;
+  if (context.nextText) body.next_text = context.nextText;
+  if (context.previousRequestIds && context.previousRequestIds.length > 0) body.previous_request_ids = context.previousRequestIds;
+  return body;
+}
+
 export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsResponse> {
   const requestId = deps.requestId();
   let chars = 0;
@@ -499,8 +605,22 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   const maxChars = positiveInt(deps.env.AERODJ_TTS_MAX_TEXT_CHARS, DEFAULT_MAX_TEXT_CHARS);
   // SSML markup is allowed some headroom before stripping; the spoken text is capped below.
   if (body.text.length > (format === 'ssml' ? maxChars * 4 : maxChars)) return fail(400);
-  const text = format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim();
+  const modelId = deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID;
+  // Square brackets never reach a model as text: only allowlisted audio tags, and only to a model
+  // that reads tags (v3/v4). A title like "Song [Live]" is spoken as "Song Live".
+  const text = sanitizeBrackets(format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim(), supportsAudioTags(modelId));
   if (text.length === 0 || text.length > maxChars) return fail(400);
+  // Optional stitching context (older app builds send none; the request is then unchanged).
+  const previousText = contextField(body.previousText, format, 'end');
+  const nextText = contextField(body.nextText, format, 'start');
+  if (previousText === undefined || nextText === undefined) return fail(400);
+  let previousRequestIds: string[] = [];
+  if (body.previousRequestIds !== undefined && body.previousRequestIds !== null) {
+    const ids = body.previousRequestIds;
+    if (!Array.isArray(ids) || ids.length > MAX_PREVIOUS_REQUEST_IDS) return fail(400);
+    if (!ids.every((id): id is string => typeof id === 'string' && REQUEST_ID_SHAPE.test(id))) return fail(400);
+    previousRequestIds = ids;
+  }
   chars = text.length;
 
   // --- Daily budgets: atomic reserve-before-render, so concurrent requests cannot jointly
@@ -570,16 +690,13 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
   let pcm: Buffer;
   let upstreamCost: string | null;
+  let upstreamRequestId: string | null = null;
   try {
     const url = `${ELEVENLABS_BASE}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=pcm_22050`;
     const upstream = await deps.fetch(url, {
       method: 'POST',
       headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json', Accept: 'audio/pcm' },
-      body: JSON.stringify({
-        text,
-        model_id: deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
-        voice_settings: VOICE_SETTINGS,
-      }),
+      body: JSON.stringify(upstreamBody(text, modelId, { previousText, nextText, previousRequestIds })),
       signal: controller.signal,
     });
     if (!upstream.ok) {
@@ -591,6 +708,8 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
       return fail(502, {}, { upstreamStatus: upstream.status, upstreamCode });
     }
     upstreamCost = upstream.headers.get('character-cost');
+    const rawUpstreamId = upstream.headers.get('request-id')?.trim();
+    upstreamRequestId = rawUpstreamId && REQUEST_ID_SHAPE.test(rawUpstreamId) ? rawUpstreamId : null;
     pcm = Buffer.from(await upstream.arrayBuffer());
   } catch {
     return fail(controller.signal.aborted ? 504 : 502);
@@ -616,6 +735,8 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
       'X-Audio-Duration': String(duration),
       'X-Billed-Characters': String(cost),
       'X-Request-Id': requestId,
+      // ElevenLabs' own request id (shape-checked), for a later `previousRequestIds`.
+      ...(upstreamRequestId !== null ? { 'X-Upstream-Request-Id': upstreamRequestId } : {}),
     },
     body: wav,
   };
