@@ -325,7 +325,7 @@ final class DJSessionEndToEndTests: XCTestCase {
         XCTAssertEqual(Set(prepared.attributions.keys), Set(prepared.cues.map(\.id)), "every spoken cue carries attribution")
     }
 
-    private func waitUntil(_ condition: @Sendable () async -> Bool) async throws {
+    private func waitUntil(_ condition: @escaping @Sendable () async -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(3)
         while await !condition() {
             guard ContinuousClock.now < deadline else { return XCTFail("condition not met in time") }

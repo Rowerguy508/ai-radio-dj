@@ -53,7 +53,7 @@ final class DJBreakSessionTests: XCTestCase {
         return Rig(session: session, station: station, dj: dj, preparer: preparer, cache: cache)
     }
 
-    private func until(_ condition: @MainActor () -> Bool, _ message: String = "") async {
+    private func until(_ condition: @escaping @MainActor () -> Bool, _ message: String = "") async {
         for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(condition(), message)
     }

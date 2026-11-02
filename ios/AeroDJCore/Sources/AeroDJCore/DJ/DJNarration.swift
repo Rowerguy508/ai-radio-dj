@@ -217,6 +217,13 @@ public struct DJBreak: Equatable, Sendable {
     public var optionalCueIDs: [UUID] = []
     /// The natural shape this break was planned in (lane 2). Nil: the classic planner.
     public var shape: DJBreakShape? = nil
+    /// The time check (lane 2 part 2), if this break has one. Presenter text only. Its words are
+    /// written at render time (`DJBreakPreparer`), never from the plan-time reading.
+    public var timeCheck: DJPlannedTimeCheck? = nil
+    /// The time-check cue's id (`timeCheck?.cueID`).
+    public var timeCheckCueID: UUID? { timeCheck?.cueID }
+    /// When the time check was planned (`DJPlanClock.now` at planning; spacing only).
+    public var timeCheckPlannedAt: Date? { timeCheck?.plannedAt }
     public var briefingCueIDs: [UUID] { cues.filter(\.isContent).map(\.id) }
     public var hasBriefing: Bool { cues.contains { $0.isContent } }
     public var estimatedSeconds: Double { cues.reduce(0) { $0 + $1.plannedSeconds } }
@@ -243,6 +250,9 @@ public struct OrdinaryBreakCapReport: Equatable, Sendable {
     /// Boundaries where the required lines alone (opener and closing) exceed a cap, so the
     /// boundary stays music-only. Never cut mid-line.
     public var skippedOverCap: [Int] = []
+    /// #347: time-check lines that did not air, by boundary (cue ID and reason code only).
+    /// Not counted in `trimmedOptionalLines`: a time check is never trimmed to fit, only dropped.
+    public var droppedTimeChecks: [Int: DJTimeCheckDrop] = [:]
     public init() {}
 }
 
@@ -282,6 +292,13 @@ public struct DJScriptWriter: Sendable {
     /// Natural breaks planned so far (id: first cue), newest last, for `forgetPlannedBreaks`.
     private var shapeLog: [(id: UUID, shape: DJBreakShape)] = []
     private var combined: TemplatePool
+    /// Time-check pools by relation (`DJBreakShapeConfig.timeChecks`).
+    private var timeCheckPools: [DJTimeCheckRelation: TemplatePool]
+    /// Planned time checks (id: the break's first cue; at: the clock reading spoken), newest
+    /// last, for the wall-time spacing rule. Forgotten with their break on a replan.
+    private var timeCheckLog: [(id: UUID, at: Date)] = []
+    /// The clock of the plan in progress. Nil: no time checks (the caller gave no clock).
+    private var planClock: DJPlanClock?
 
     public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = DJScriptWriter.builtInStationName,
                 tone: EditorialTone = .warm, shapes: DJBreakShapeConfig? = nil) {
@@ -293,6 +310,10 @@ public struct DJScriptWriter: Sendable {
         self.shapePicker = shapes.map { DJBreakShapePicker(config: $0, seed: seed &+ 0x5851_F42D_4C95_7F2D) }
         self.recentTemplates = RecentSpokenTemplates(window: shapes?.recentBreakWindow ?? 1, hereWindow: shapes?.hereWindow ?? 1)
         self.combined = TemplatePool(shapes?.combinedLines(for: tone) ?? [])
+        let phrases = shapes?.timeChecks ?? DJTimeCheckPhrases(on: [], comingUp: [], justAfter: [])
+        self.timeCheckPools = Dictionary(uniqueKeysWithValues: DJTimeCheckRelation.allCases.map {
+            ($0, TemplatePool(phrases.templates(for: $0)))
+        })
         self.rng = SeededGenerator(seed: seed)
         self.editorial = SeededGenerator(seed: seed &+ 0x9E37_79B9_7F4A_7C15)
         self.phrasing = SeededGenerator(seed: seed &+ 0x3C6E_F372_FE94_F82B)
@@ -312,7 +333,12 @@ public struct DJScriptWriter: Sendable {
     ///   - briefing: approved narration from `BriefingScript.handoff`; may be empty.
     ///   - hour: local hour, for time-of-day phrasing.
     ///   - stationName: overrides `self.stationName` for this plan. Default keeps the writer's name.
-    public mutating func plan(tracks: [DJTrack], briefing: NarrationHandoff?, hour: Int, stationName: String? = nil) -> DJSessionPlan {
+    ///   - clock: the planning clock (lane 2 time checks). Nil: no time checks in this plan. The
+    ///     spoken time is `clock.now`, read once here; nothing in the writer reads the system clock.
+    public mutating func plan(tracks: [DJTrack], briefing: NarrationHandoff?, hour: Int, stationName: String? = nil,
+                              clock: DJPlanClock? = nil) -> DJSessionPlan {
+        planClock = clock
+        defer { planClock = nil }
         let station = stationName ?? self.stationName
         let dayPart = DayPart(hour: hour)
         // Briefing content in priority order; opener/closer framing is replaced by DJ phrasing.
@@ -544,6 +570,7 @@ public struct DJScriptWriter: Sendable {
         let ids = Set(discarded.compactMap { $0.cues.first?.id })
         guard !ids.isEmpty else { return }
         recentTemplates.forget(ids: ids)
+        timeCheckLog.removeAll { ids.contains($0.id) }
         let before = shapeLog.count
         shapeLog.removeAll { ids.contains($0.id) }
         picker.restore(lastShape: shapeLog.last?.shape, forgetting: before - shapeLog.count)
@@ -552,6 +579,8 @@ public struct DJScriptWriter: Sendable {
 
     /// Test hook: breaks in the cross-pool memory.
     var testRememberedBreaks: Int { recentTemplates.count }
+    /// Test hook: planned time checks still counted for spacing.
+    var testTimeCheckCount: Int { timeCheckLog.count }
     /// Test hook: the shape the next pick avoids.
     var testLastShape: DJBreakShape? { shapePicker?.lastShape }
 
@@ -578,7 +607,7 @@ public struct DJScriptWriter: Sendable {
         let context = DJBreakShapeContext(canBackAnnounce: fits(backAnnounce, metadata),
                                           canForwardSell: fits(closing, nextValues),
                                           stationIDUsable: stationName.map { fits(stationIDs, ["station": $0]) } ?? false,
-                                          timeCheckAvailable: false)
+                                          timeCheckAvailable: timeCheckReading(boundary: boundary, config: config) != nil)
         guard let shape = picker.pick(context) else { return .notApplicable }
 
         struct Line { var template: String; var text: String; var attribution: SpokenAttribution; var optional: Bool }
@@ -619,6 +648,7 @@ public struct DJScriptWriter: Sendable {
         let prevAttribution = SpokenAttribution.trackMetadata(trackIDs: [prev.id])
         let nextAttribution = SpokenAttribution.trackMetadata(trackIDs: [next.id])
         var closingIndex: Int?
+        var timeCheckLine: (template: String, relation: DJTimeCheckRelation, at: Date)?
         switch shape {
         case .classic:
             if phrasing.next() % 100 >= 20 || !draw(&artistFocus, metadata, prevAttribution) {
@@ -641,7 +671,18 @@ public struct DJScriptWriter: Sendable {
                 closingIndex = lines.count - 1
             }
         case .timeCheckIntro:
-            return .notApplicable   // no clock source in this slice
+            // The time check is optional (dropped first-but-one to fit the cap, never after the
+            // closing line). Presenter text only: no station name, no personal text.
+            if let reading = timeCheckReading(boundary: boundary, config: config),
+               var pool = timeCheckPools[reading.relation] {
+                if draw(&pool, ["time": reading.time], .presenter, optional: true) {
+                    timeCheckLine = (lines[lines.count - 1].template, reading.relation, reading.at)
+                }
+                timeCheckPools[reading.relation] = pool
+            }
+            if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
+            // A time check never airs alone: without a closing line it is not spoken.
+            else if timeCheckLine != nil { lines.removeAll { $0.template == timeCheckLine?.template }; timeCheckLine = nil }
         case .stationID:
             if let stationName {
                 let attribution: SpokenAttribution = stationName == Self.builtInStationName ? .presenter : .stationName
@@ -698,6 +739,15 @@ public struct DJScriptWriter: Sendable {
         var planned = DJBreak(afterTrack: boundary, cues: cues, attributions: attributions)
         if closingTalksOver() { planned.talkOverCueID = cues.last?.id }
         planned.shape = shape
+        if let timeCheckLine, let index = lines.firstIndex(where: { $0.optional && $0.template == timeCheckLine.template }),
+           let id = cues.first?.id {
+            planned.timeCheck = DJPlannedTimeCheck(
+                cueID: cues[index].id, plannedAt: timeCheckLine.at,
+                templates: timeCheckTemplates(drawn: timeCheckLine.template, relation: timeCheckLine.relation),
+                calendar: planClock?.calendar ?? .autoupdatingCurrent, style: planClock?.style ?? .twelveHour)
+            timeCheckLog.append((id, timeCheckLine.at))
+            if timeCheckLog.count > RecentSpokenTemplates.historyLimit { timeCheckLog.removeFirst() }
+        }
         // #320's measured-audio trim drops these in order, the same order as the fit above: the
         // last optional line first, so the extra (weather) line before the closing line goes first,
         // then continuation, then color. Never the opener, a required line or the closing line.
@@ -710,6 +760,35 @@ public struct DJScriptWriter: Sendable {
             if shapeLog.count > RecentSpokenTemplates.historyLimit { shapeLog.removeFirst(shapeLog.count - RecentSpokenTemplates.historyLimit) }
         }
         return .planned(planned)
+    }
+
+    /// The time check this boundary may speak, or nil when a rule rules it out:
+    ///   - no planning clock (the caller gave none),
+    ///   - the boundary's known air time is more than `timeCheckMaxDriftSeconds` from `clock.now`
+    ///     (the spoken time would be wrong on air),
+    ///   - another planned or aired time check is within `timeCheckMinSpacingSeconds` of wall time.
+    /// The first-break-after-the-greeting and not-twice-in-a-row rules live in the picker.
+    private func timeCheckReading(boundary: Int, config: DJBreakShapeConfig)
+        -> (time: String, relation: DJTimeCheckRelation, at: Date)? {
+        guard let clock = planClock else { return nil }
+        if let air = clock.airTimes[boundary],
+           abs(air.timeIntervalSince(clock.now)) > config.timeCheckMaxDriftSeconds { return nil }
+        guard !timeCheckLog.contains(where: { abs(clock.now.timeIntervalSince($0.at)) < config.timeCheckMinSpacingSeconds })
+        else { return nil }
+        let reading = DJTimeCheck.reading(clock.now, calendar: clock.calendar, style: clock.style)
+        return (reading.time, reading.relation, clock.now)
+    }
+
+    /// The drawn phrasing's slot in its relation's pool, applied to every relation's pool, so the
+    /// render-time reading keeps the plan's pick whichever way the clock then rounds.
+    private func timeCheckTemplates(drawn: String, relation: DJTimeCheckRelation) -> [DJTimeCheckRelation: String] {
+        let slot = timeCheckPools[relation]?.templates.firstIndex(of: drawn) ?? 0
+        var out: [DJTimeCheckRelation: String] = [:]
+        for r in DJTimeCheckRelation.allCases {
+            guard let list = timeCheckPools[r]?.templates, !list.isEmpty else { continue }
+            out[r] = r == relation ? drawn : list[slot % list.count]
+        }
+        return out
     }
 
     private func estimate(_ text: String?) -> Double {

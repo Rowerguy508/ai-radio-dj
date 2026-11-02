@@ -24,6 +24,11 @@ public final class DJBreakSession {
     private let dj: DJPresentationStore
     private let base: DJCadence
     private let hour: () -> Int
+    /// Lane 2 time checks: the listener's calendar (time zone) and clock style. The plan only
+    /// reserves a time-check slot; `DJBreakPreparer` writes and renders the line about 75 s
+    /// before the boundary, from its own injected clock (Orion option (a), #347).
+    private let calendar: Calendar
+    private let clockStyle: DJClockStyle
     private var writer: DJScriptWriter
     private var tracks: [DJTrack] = []
     private var briefing: NarrationHandoff?
@@ -103,9 +108,12 @@ public final class DJBreakSession {
                 base: DJCadence = .init(), seed: UInt64 = .random(in: .min ... .max),
                 hour: @escaping () -> Int = { Calendar.current.component(.hour, from: Date()) },
                 now: @escaping () -> Date = { Date() },
-                personalUpdates: PersonalUpdateLedger = PersonalUpdateLedger()) {
+                personalUpdates: PersonalUpdateLedger = PersonalUpdateLedger(),
+                calendar: Calendar = .autoupdatingCurrent, clockStyle: DJClockStyle? = nil) {
         self.preparer = preparer
         self.now = now
+        self.calendar = calendar
+        self.clockStyle = clockStyle ?? DJClockStyle(locale: calendar.locale ?? .autoupdatingCurrent)
         self.personalUpdates = personalUpdates
         self.station = station
         self.dj = dj
@@ -631,7 +639,10 @@ public final class DJBreakSession {
         }
         // Plan the suffix starting at the song before `first`, then shift indices back.
         let offset = first
-        let plan = writer.plan(tracks: Array(tracks[offset...]), briefing: remainingBriefing, hour: hour())
+        // Lane 2 time checks: the planning clock (spacing, calendar, style) is read once, here.
+        // The spoken time is not: the preparer reads its clock when the line renders.
+        let clock = DJPlanClock(now: now(), calendar: calendar, style: clockStyle)
+        let plan = writer.plan(tracks: Array(tracks[offset...]), briefing: remainingBriefing, hour: hour(), clock: clock)
         var tooClose: [DJBreak] = []
         defer { writer.forgetPlannedBreaks(tooClose) }   // planned, never kept: never airs
         for b in plan.breaks {
@@ -640,6 +651,8 @@ public final class DJBreakSession {
             var shifted = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
             shifted.talkOverCueID = b.talkOverCueID
             shifted.shape = b.shape
+            shifted.optionalCueIDs = b.optionalCueIDs   // #320's measured-audio trim order
+            shifted.timeCheck = b.timeCheck
             breaks[k] = shifted
         }
     }
@@ -650,6 +663,8 @@ public final class DJBreakSession {
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: the planned breaks by boundary (what `replan` wrote).
     var testPlannedBreaks: [Int: DJBreak] { breaks }
+    /// Test hook: the preparer this session hands breaks to.
+    var testPreparer: DJBreakPreparer { preparer }
     /// Test hook: background tap setup has not finished planning.
     var testQueueSetupPending: Bool { queueSetupPending }
     /// Test hook (#116): the song start held until the new queue is planned.
