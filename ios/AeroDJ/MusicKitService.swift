@@ -432,6 +432,7 @@ final class MusicKitService: ObservableObject {
         }
         queueIndex = index
         currentTrack = queue[index]
+        updateRemoteNextEnabled()
         // Build 9 P0: every queue load is the app's own change. Without this, loading the
         // next song (`startNextTrack`) while MusicKit still reported `.playing` could read as
         // a natural end of the entry just replaced, and advance again: the auto-skip chain.
@@ -1087,9 +1088,13 @@ final class MusicKitService: ObservableObject {
         center.nextTrackCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
             guard Thread.isMainThread else {
-                // Off-main delivery (not expected): the queue cannot be read here. The hop
-                // re-decides; a skip with no next song stops the queue like the in-app Skip.
-                Task { @MainActor in _ = try? await self.skip() }
+                // Off-main delivery (not expected): the queue cannot be read here, so the
+                // decision is made after the hop. The command reports success either way.
+                Task { @MainActor in
+                    guard RemoteNextCommand.decide(queueIndex: self.queueIndex,
+                                                   queueCount: self.queue.count) == .skip else { return }
+                    _ = try? await self.skip()
+                }
                 return .success
             }
             return MainActor.assumeIsolated {
