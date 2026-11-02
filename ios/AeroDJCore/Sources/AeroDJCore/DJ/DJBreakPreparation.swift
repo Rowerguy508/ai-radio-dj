@@ -141,6 +141,10 @@ public actor DJBreakPreparer {
     /// dropped before the take (late, failed, over cap, no voice). Read and cleared by `takeBreak`.
     private var timeChecks: [Int: DJPlannedTimeCheck] = [:]
     private var timeCheckDrops: [Int: DJTimeCheckDropReason] = [:]
+    /// The render deadline of each boundary's time-check line. At the take, a line that is not
+    /// there and has no recorded reason is `.late` once this has passed, whether or not the
+    /// prepare task got to record it first, so the reason never depends on task scheduling.
+    private var timeCheckDeadlines: [Int: ContinuousClock.Instant] = [:]
     private var timeCheckDropObservers: [@Sendable (Int, DJTimeCheckDrop) -> Void] = []
     /// Lane 2 time checks (Orion option (a), #347): the clock the time-check line is read from
     /// when it renders, and the wait until its render starts. Injected; Core never calls `Date()`.
@@ -253,6 +257,7 @@ public actor DJBreakPreparer {
         let now = now, sleepUntil = sleepUntil
         timeChecks[k] = timeCheck
         timeCheckDrops[k] = nil
+        timeCheckDeadlines[k] = timeCheck == nil ? nil : end
         // The task holds the preparer weakly and touches it only in short actor hops, so a
         // preparer nobody holds any more is freed and its `deinit` cancels the task. A long
         // time-check wait never outlives its preparer (a leaked wait woke up during a later,
@@ -452,6 +457,8 @@ public actor DJBreakPreparer {
     func testTaken(afterTrack k: Int) -> Bool { taken.contains(k) }
     /// Test hook: boundaries with a render in flight.
     var testInFlight: Set<Int> { Set(tasks.keys) }
+    /// Test hook: why boundary `k`'s time-check line was dropped before the take, if it was.
+    func testTimeCheckDrop(afterTrack k: Int) -> DJTimeCheckDropReason? { timeCheckDrops[k] }
     /// Test hook: the recorded outcome for boundary `k`.
     func testResult(afterTrack k: Int) -> DJBreakOutcome? { results[k] }
     /// Test hook: records an outcome as if a render for `k` had finished with it.
@@ -472,6 +479,7 @@ public actor DJBreakPreparer {
 
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
         let timeCheck = timeChecks.removeValue(forKey: k), earlyDrop = timeCheckDrops.removeValue(forKey: k)
+        let timeCheckDeadline = timeCheckDeadlines.removeValue(forKey: k)
         defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k); taken.insert(k) }
         guard natural else {
             tasks[k]?.cancel()
@@ -483,7 +491,10 @@ public actor DJBreakPreparer {
         if let result = results.removeValue(forKey: k) {
             tasks[k]?.cancel()   // a time-check line still rendering is dropped (#347)
             guard let timeCheck, case .ready(let prepared) = result else { return result }
-            return .ready(checkTimeCheck(timeCheck, in: prepared, droppedEarlier: earlyDrop))
+            // Past the line's render deadline it can no longer air: `.late`, even if the prepare
+            // task has not yet woken to record that (it would race this take). Before it: `.taken`.
+            let missing = earlyDrop ?? (timeCheckDeadline.map { ContinuousClock.now >= $0 } == true ? .late : nil)
+            return .ready(checkTimeCheck(timeCheck, in: prepared, droppedEarlier: missing))
         }
         guard let task = tasks[k] else { return .skipped(.notPlanned) }
         task.cancel()
@@ -495,8 +506,8 @@ public actor DJBreakPreparer {
     /// #347, at the take: a time-check line that aired would say the time it was rendered for.
     /// It is kept while it is still true within `timeCheckTolerance` (Echo, #347 follow-up), so a
     /// take just past a minute or a rounding edge keeps a correct line. Further off (a pause, a
-    /// seek back), only that clip is dropped (`.stale`). A line that is not there was dropped earlier (its reason) or was still
-    /// waiting or rendering (`.taken`). Every drop is set on the break and emitted.
+    /// seek back), only that clip is dropped (`.stale`). A line that is not there was dropped earlier (its reason), had
+    /// passed its render deadline (`.late`, set by `takeBreak`), or was still waiting or rendering (`.taken`). Every drop is set on the break and emitted.
     private func checkTimeCheck(_ timeCheck: DJPlannedTimeCheck, in prepared: PreparedDJBreak,
                                 droppedEarlier: DJTimeCheckDropReason?) -> PreparedDJBreak {
         let id = timeCheck.cueID, k = prepared.afterTrack
@@ -575,6 +586,7 @@ public actor DJBreakPreparer {
         planned.removeAll()
         timeChecks.removeAll()
         timeCheckDrops.removeAll()
+        timeCheckDeadlines.removeAll()
         openForRearm.removeAll()
         rearmed.removeAll()
         taken.removeAll()
@@ -594,6 +606,7 @@ public actor DJBreakPreparer {
             planned[k] = nil
             timeChecks[k] = nil
             timeCheckDrops[k] = nil
+            timeCheckDeadlines[k] = nil
         }
         // Stale marks are cleared as for a new queue (Sentinel #210), except a kept boundary:
         // that is the playing song's, and if the talk-over already took it early, a duplicate
@@ -612,6 +625,7 @@ public actor DJBreakPreparer {
             planned[k] = nil
             timeChecks[k] = nil
             timeCheckDrops[k] = nil
+            timeCheckDeadlines[k] = nil
             results[k] = .skipped(.sourceRevoked)
             emit(.skipped(afterTrack: k, .sourceRevoked))
         }

@@ -500,9 +500,35 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let planned = timeCheckBreak()
         let drops = await drops(p)
         await p.prepare(planned, deadline: .milliseconds(100), onDeviceOnly: false)
-        try? await Task.sleep(for: .milliseconds(400))
+        // Explicit ordering, no fixed sleep: the take comes only once the prepare task itself has
+        // woken and recorded the drop, so this covers that path whatever the scheduler does.
+        let recorded = await eventually { await p.testTimeCheckDrop(afterTrack: 0) != nil }
+        XCTAssertTrue(recorded, "the prepare task records the drop before the take")
         XCTAssertEqual(voice.texts, [Self.closingText], "never sent")
         assertDropped(await p.takeBreak(afterTrack: 0), planned, .late, drops)
+    }
+
+    func testTimeCheckPastItsDeadlineAtTheTakeIsLateEvenBeforeTheTaskRecordsIt() async {
+        let clock = Clock(date(9, 40))
+        let voice = ScriptedVoice()
+        // The window wait does not return before the take (it is cancelled there): the prepare
+        // task never gets to record anything. The take comes after the render deadline, so the
+        // line could no longer air: `.late`, not `.taken` (the reason must not depend on which of
+        // the take and the task's wake-up runs first).
+        let p = preparer([route("device", voice)], clock: clock, sleepUntil: { _ in try await Task.sleep(for: .seconds(60)) })
+        let planned = timeCheckBreak()
+        let drops = await drops(p)
+        await p.prepare(planned, deadline: .milliseconds(50), onDeviceOnly: false)
+        let isReady = await eventually { await p.isReady(afterTrack: 0) }
+        XCTAssertTrue(isReady, "the rest of the break is ready on its own")
+        try? await Task.sleep(for: .milliseconds(100))   // at least past the 50 ms deadline
+        let unrecorded = await p.testTimeCheckDrop(afterTrack: 0)
+        XCTAssertNil(unrecorded, "the task is still waiting")
+        let outcome = await p.takeBreak(afterTrack: 0)
+        guard case .ready(let b) = outcome else { return XCTFail("the break must still air") }
+        assertRestOnly(b, planned)
+        assertDropped(outcome, planned, .late, drops)
+        XCTAssertEqual(voice.texts, [Self.closingText], "never sent")
     }
 
     // MARK: Failed
