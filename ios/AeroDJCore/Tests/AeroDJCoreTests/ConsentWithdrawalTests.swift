@@ -81,7 +81,7 @@ private actor FlakyProvider: ConnectionItemProvider {
 final class ConsentWithdrawalTests: XCTestCase {
     let now = Date(timeIntervalSince1970: 1_800_000_000)
 
-    private func until(_ condition: @MainActor () -> Bool, _ message: String = "") async {
+    private func until(_ condition: @escaping @MainActor () -> Bool, _ message: String = "") async {
         for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(condition(), message)
     }
