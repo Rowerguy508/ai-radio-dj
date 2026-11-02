@@ -61,9 +61,10 @@ export function attestUsedKey(keyspace: Keyspace, challenge: string): string {
 
 /**
  * 90-day sliding TTL (note §4.1.2; owner decision 2026-10-29): set on register and
- * refreshed on every successful use of the key (`touchKey`, called by the assertion
- * path after the assertion verifies), not only on register. A key unused for 90 days
- * expires and its next assertion fails as an unknown key.
+ * refreshed on every successful token mint (`MINT_TOKEN_SCRIPT`, after the assertion
+ * verifies), together with the `ctr:` counter key. `touchKey` (`attest-key-use.ts`) does
+ * the same refresh but has no request-path caller yet. A key that mints no token for 90
+ * days expires and its next assertion fails as an unknown key.
  */
 export const KEY_RECORD_TTL_SECONDS = 90 * 86_400;
 /** Single-use mark lifetime for `tok` challenges: longer than the 120 s TTL + skew (design: 240). */
@@ -93,8 +94,10 @@ export function counterKey(keyspace: Keyspace, keyId: Buffer): string {
 /**
  * `revoked:{aerodj-tts}:<b64url keyId>`: the per-install revocation list (#378 §1.6). Present =
  * revoked: no new token is minted for the key and every live token for it is refused on
- * the next `/api/tts` (checked inside the reserve script). No TTL, so it outlives the key
- * record; only the owner adds or removes entries (`scripts/revoke-installs.ts`).
+ * the next `/api/tts` (checked inside the reserve script). `REVOKE_KEY_SCRIPT` sets a fixed
+ * 90-day TTL (KEY_RECORD_TTL_SECONDS) from the time of revocation; that is enough because a
+ * key record unused for 90 days has expired and can never mint again. Only the owner adds
+ * entries (`scripts/revoke-installs.ts`); no request path writes or removes one.
  */
 export function revokedKey(keyspace: Keyspace, keyId: Buffer): string {
   return `${prefix(keyspace)}revoked:{aerodj-tts}:${keyId.toString('base64url')}`;
