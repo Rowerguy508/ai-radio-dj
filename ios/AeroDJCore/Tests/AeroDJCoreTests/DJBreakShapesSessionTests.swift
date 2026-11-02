@@ -68,8 +68,18 @@ final class DJBreakShapesSessionTests: XCTestCase {
             await session.queueStarted(djTracks(90))
             await session.songStarted(index: 12, remaining: .seconds(180))
             let kept = session.testPlannedBreaks.filter { $0.key <= 12 }
+            // The session handles the change on its own observer task: wait for that, not a
+            // guess (asserting straight after the save raced the change stream, -Fry).
+            let (handled, signal) = AsyncStream<Void>.makeStream()
+            session.testOnStationChangeHandled = { if $0.active.commentary == .chatty { signal.yield() } }
+            let timeout = Task { try? await Task.sleep(for: .seconds(10)); signal.finish() }   // a hang guard only
             await station.setCommentary(.chatty)          // cadence change: re-plans after the playing song
             await station.saveChanges()
+            var replanned = false
+            for await _ in handled { replanned = true; break }
+            timeout.cancel()
+            session.testOnStationChangeHandled = nil
+            XCTAssertTrue(replanned, "seed \(seed): the session handled the chatty change")
             XCTAssertEqual(session.testPlannedBreaks.filter { $0.key <= 12 }.keys.sorted(), kept.keys.sorted(), "seed \(seed): kept")
             XCTAssertNotEqual(session.testPlannedBreaks.keys.filter { $0 > 12 }.sorted().prefix(3), [15, 18, 21], "seed \(seed): re-planned")
             assertNatural(ordered(session.testPlannedBreaks), "seed \(seed) after replan")
