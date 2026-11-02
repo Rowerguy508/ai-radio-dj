@@ -624,20 +624,22 @@ public struct VoiceRenderer: Sendable {
     }
 
     /// The neighbouring lines of `cue` in `cues` (one break, in air order) that may be sent as
-    /// stitching context. A neighbour is included only when it may itself leave the device
-    /// (`mayLeaveDevice` with its own attribution), so a personal line never rides along as
-    /// context. Empty when `cue` is not in `cues`.
+    /// stitching context. All or nothing (Sentinel, #364 N2): context is sent only when every
+    /// adjacent line passes `mayLeaveDevice` with its own attribution. If either neighbour is
+    /// local-only (personal context, a station name, library or unknown-origin track metadata,
+    /// a briefing, a missing attribution…), the result is `.none`: no context at all, never a
+    /// redacted line and never just the other side. Empty when `cue` is not in `cues`.
     public static func neighbours(of cue: NarrationCue, in cues: [NarrationCue],
                                   attributions: [UUID: SpokenAttribution]) -> SpeechNeighbours {
         guard let index = cues.firstIndex(where: { $0.id == cue.id }) else { return .none }
-        func eligible(_ i: Int) -> String? {
+        let adjacent = [index - 1, index + 1].filter { cues.indices.contains($0) }.map { cues[$0] }
+        guard adjacent.allSatisfy({ mayLeaveDevice($0, attribution: attributions[$0.id]) }) else { return .none }
+        func text(_ i: Int) -> String? {
             guard cues.indices.contains(i) else { return nil }
-            let other = cues[i]
-            guard mayLeaveDevice(other, attribution: attributions[other.id]) else { return nil }
-            let text = other.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = cues[i].text.trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : text
         }
-        return SpeechNeighbours(previous: eligible(index - 1), next: eligible(index + 1))
+        return SpeechNeighbours(previous: text(index - 1), next: text(index + 1))
     }
 
     public func render(_ handoff: NarrationHandoff, userID: String, stationID: String) async -> RenderedNarration {

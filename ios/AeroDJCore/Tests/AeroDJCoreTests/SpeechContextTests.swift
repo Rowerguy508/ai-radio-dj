@@ -140,12 +140,62 @@ final class SpeechContextTests: XCTestCase {
         let after = transition("Here's Skinny Love.")
         let cues = [before, line, after]
         let attributions: [UUID: SpokenAttribution] = [before.id: .personalContext(itemID: UUID(), source: .calendar, provenance: "test:item"), line.id: .presenter, after.id: .presenter]
-        let n = VoiceRenderer.neighbours(of: line, in: cues, attributions: attributions)
-        XCTAssertNil(n.previous, "a personal line is local-only, so it is never sent as context")
-        XCTAssertEqual(n.next, "Here's Skinny Love.")
-        // Missing attribution is local-only too (fail closed).
-        XCTAssertNil(VoiceRenderer.neighbours(of: line, in: cues, attributions: [line.id: .presenter]).next)
+        XCTAssertEqual(VoiceRenderer.neighbours(of: line, in: cues, attributions: attributions), .none,
+                       "a local-only neighbour means no context at all: not a redacted line, not just the other side")
+        // Missing attribution on a neighbour is local-only too (fail closed).
+        XCTAssertEqual(VoiceRenderer.neighbours(of: line, in: [line, after], attributions: [line.id: .presenter]), .none)
         XCTAssertEqual(VoiceRenderer.neighbours(of: transition("Not in the break."), in: cues, attributions: attributions), .none)
+    }
+
+    func testContextOnlyWhenEveryNeighbourMayLeaveTheDevice() {
+        let before = transition("Mm, nice.")
+        let line = transition("That was Holocene.")
+        let after = transition("Here's Skinny Love.")
+        let cues = [before, line, after]
+        let catalog = SpokenAttribution.trackMetadata(trackIDs: ["t"], origin: .catalog)
+        // Both neighbours eligible: both are sent.
+        XCTAssertEqual(VoiceRenderer.neighbours(of: line, in: cues,
+                                                attributions: [before.id: .presenter, line.id: .presenter, after.id: catalog]),
+                       SpeechNeighbours(previous: "Mm, nice.", next: "Here's Skinny Love."))
+        // An edge line with one eligible neighbour still gets that one.
+        XCTAssertEqual(VoiceRenderer.neighbours(of: before, in: cues, attributions: [before.id: .presenter, line.id: .presenter]),
+                       SpeechNeighbours(previous: nil, next: "That was Holocene."))
+        // Every local-only attribution on either side drops all context.
+        let localOnly: [SpokenAttribution] = [
+            .personalContext(itemID: UUID(), source: .calendar, provenance: "test:item"),
+            .stationName,
+            .trackMetadata(trackIDs: ["t"], origin: .library),
+            .trackMetadata(trackIDs: ["t"], origin: .unknown),
+        ]
+        for attribution in localOnly {
+            for side in [before.id, after.id] {
+                var a: [UUID: SpokenAttribution] = [before.id: .presenter, line.id: .presenter, after.id: .presenter]
+                a[side] = attribution
+                XCTAssertEqual(VoiceRenderer.neighbours(of: line, in: cues, attributions: a), .none, "\(attribution)")
+            }
+        }
+        // A sourced (briefing) neighbour is local-only even when attributed as the presenter.
+        let briefing = personal("Your 3 p.m. is the dentist.")
+        XCTAssertEqual(VoiceRenderer.neighbours(of: line, in: [briefing, line, after],
+                                                attributions: [briefing.id: .presenter, line.id: .presenter, after.id: .presenter]),
+                       .none)
+    }
+
+    func testALocalOnlyNeighbourSendsNoContextToTheCloudVoice() async {
+        let spy = ContextSpy()
+        let r = renderer([cloud(spy)])
+        let before = personal("Dentist at 3.")
+        let line = transition("That was Holocene.")
+        let after = transition("Here's Skinny Love.")
+        let neighbours = VoiceRenderer.neighbours(of: line, in: [before, line, after],
+                                                  attributions: [before.id: .personalContext(itemID: UUID(), source: .calendar, provenance: "test:item"),
+                                                                 line.id: .presenter, after.id: .presenter])
+        guard case .success(let clip) = await r.render(line, userID: "u", stationID: "s", attribution: .presenter,
+                                                       neighbours: neighbours) else { return XCTFail("render") }
+        XCTAssertEqual(spy.calls.count, 1, "the eligible line itself still renders in the cloud")
+        XCTAssertNil(spy.calls.first?.context.previousText)
+        XCTAssertNil(spy.calls.first?.context.nextText)
+        XCTAssertEqual(clip.cacheKey, VoiceRenderer.cacheKey(text: "That was Holocene.", route: cloud(spy)), "no-context key")
     }
 
     func testALocalOnlyCueSendsNoContextAnywhere() async {
