@@ -78,6 +78,16 @@ public final class DJBreakSession {
     /// The committed station when the pending queue was reserved, to catch a save that lands
     /// between the tap and `queueStarted` (the feed keys the queue inside `music.play`).
     private var reservedStation: StationQueueKey??
+    /// Show opener on a new station (-Fry, for Echo's #359): the `StationQueueKey` of the station
+    /// the last queue was started for (outer nil: no queue yet). This is the value the feed records
+    /// for every queue start (`StationQueueKey(committedDisplayed)`), and `queueStarted` reopens the
+    /// show (`DJScriptWriter.greetAgain()`) only when its SEED part differs (Echo, #362): reach and
+    /// discovery are tuning sliders on the same station, so their new queue keeps the show going.
+    /// A refill, a re-queue or restart on the same station, a skip, or a genre, mood, personality,
+    /// energy or briefing edit never re-greets (none is in the key; the feed starts no new queue for
+    /// them). A tags-only station has no key (nil); switching between two tags-only stations does
+    /// not re-greet (known gap until stations have a real id).
+    private var openedStation: StationQueueKey??
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -283,6 +293,11 @@ public final class DJBreakSession {
         if let reserved = reservedStation, reserved != committed { queueStation = .unknown }
         else { queueStation = .known(committed) }
         reservedStation = nil
+        // A different station opens the show again. Its old queue's opener, if it already aired,
+        // stays remembered by `forgetPlannedBreaks` above, so without this the new station would
+        // start with no opener. Anti-repeat memory is kept: the new opener won't echo the old one.
+        if let previous = openedStation, previous?.seeds != committed?.seeds { writer.greetAgain() }
+        openedStation = .some(committed)
         replan(from: 0, keepingThrough: -1)
     }
 
