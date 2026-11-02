@@ -169,10 +169,16 @@ public actor DJBreakPreparer {
     public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
                 talkOverEnabled: @escaping @Sendable () -> Bool = { DJTalkoverFlag.isEnabled() },
                 now: @escaping @Sendable () -> Date = DJBreakPreparer.systemNow,
-                sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = DJBreakPreparer.sleep(until:)) {
+                sleepUntil: (@Sendable (ContinuousClock.Instant) async throws -> Void)? = nil) {
         self.renderer = renderer
         self.now = now
-        self.sleepUntil = sleepUntil
+        // Nil default, filled in here: an async function value in a default argument is emitted
+        // into every client object, and Swift 6.3.3 gives those copies a smaller async context
+        // than the library's own (32 vs 48 bytes). When the linker pairs the library body with a
+        // client's size record, the wait writes past its allocation and the task allocator aborts
+        // with "freed pointer was not the last allocation" (macOS CI at ffe040c and 45044e7;
+        // swiftlang/swift#92017). Here the wait is emitted once, in this module. -Fry
+        self.sleepUntil = sleepUntil ?? DJBreakPreparer.sleep(until:)
         self.userID = userID
         self.stationID = stationID
         self.talkOverEnabled = talkOverEnabled
