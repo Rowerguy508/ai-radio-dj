@@ -81,7 +81,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
 
     private func renderer(_ routes: [VoiceRoute], cache: any AudioCache = InMemoryAudioCache(),
                           revocations: NarrationRevocations = NarrationRevocations()) -> VoiceRenderer {
-        VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, revocations: revocations)
+        VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache, revocations: revocations, cloudConsent: .inMemory(.accepted))
     }
 
     private func outcome(_ preparer: DJBreakPreparer, afterTrack k: Int) async -> DJBreakOutcome {
@@ -107,6 +107,8 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
     }
 
     // 1b. In a mixed break, presenter/metadata lines may go off-device; the personal line may not.
+    // One voice per break (#267): the personal line is on-device, so the whole break is then
+    // re-rendered on-device and plays in that voice.
     func testMixedBreakSendsOnlyTheNonPersonalLinesOffDevice() async {
         let spy = OffDeviceSpy()
         let preparer = DJBreakPreparer(renderer: renderer([cloudRoute(spy), deviceRoute()]), userID: "u", stationID: "s")
@@ -123,7 +125,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         XCTAssertFalse(spy.received.contains { $0.contains("dentist") }, "personal cue text reached an off-device route")
         XCTAssertEqual(spy.received.count, 2)
         guard case .ready(let prepared) = result else { return XCTFail("\(result)") }
-        XCTAssertEqual(prepared.clips.map(\.audio.providerID), ["cloud", "device", "cloud"])
+        XCTAssertEqual(prepared.clips.map(\.audio.providerID), ["device", "device", "device"])
     }
 
     // 2. Missing attribution: local only, on the direct path, the handoff path and the break path.
@@ -196,7 +198,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000)
         let cache = KeyRecordingCache()
         let device = deviceRoute()
-        let r = VoiceRenderer(routes: [paid, device], budget: budget, cache: cache, revocations: NarrationRevocations())
+        let r = VoiceRenderer(routes: [paid, device], budget: budget, cache: cache, revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
         let item = UUID()
         let attribution = SpokenAttribution.personalContext(itemID: item, source: .calendar, provenance: "test:item")
         let result = await r.render(personalCue(item), userID: "u", stationID: "s", attribution: attribution)
@@ -209,7 +211,7 @@ final class PerCueLocalOnlyRoutingTests: XCTestCase {
         let touched = await cache.touched
         XCTAssertFalse(touched.contains(VoiceRenderer.cacheKey(text: SpeechDelivery.speakable(personalText), route: paid)))
 
-        let paidOnly = VoiceRenderer(routes: [paid], budget: budget, cache: InMemoryAudioCache(), revocations: NarrationRevocations())
+        let paidOnly = VoiceRenderer(routes: [paid], budget: budget, cache: InMemoryAudioCache(), revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted))
         let closed = await paidOnly.render(personalCue(item), userID: "u", stationID: "s", attribution: attribution)
         guard case .failure(let f) = closed else { return XCTFail("must fail closed, never fall back to a paid voice") }
         XCTAssertEqual(f.reason, .renderFailed)

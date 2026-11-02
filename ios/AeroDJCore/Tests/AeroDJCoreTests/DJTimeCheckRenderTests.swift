@@ -93,7 +93,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
                           sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = { _ in })
         -> DJBreakPreparer {
         let p = DJBreakPreparer(renderer: VoiceRenderer(routes: routes, budget: budget, cache: InMemoryAudioCache(),
-                                                        revocations: NarrationRevocations()),
+                                                        revocations: NarrationRevocations(), cloudConsent: .inMemory(.accepted)),
                                 userID: "u", stationID: "s", talkOverEnabled: { true }, now: { clock.now }, sleepUntil: sleepUntil)
         made.append(p)
         return p
@@ -707,7 +707,8 @@ final class DJTimeCheckRenderTests: XCTestCase {
                               sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void) -> DJBreakPreparer {
         let budget = VoiceBudget(dailyCapMicrodollars: 1_000_000, calendar: eastern, now: { clock.now })
         let p = DJBreakPreparer(renderer: VoiceRenderer(routes: [route("paid", paid, microdollarsPerThousand: 1000)], budget: budget,
-                                                        cache: InMemoryAudioCache(), revocations: NarrationRevocations()),
+                                                        cache: InMemoryAudioCache(), revocations: NarrationRevocations(),
+                                                        cloudConsent: .inMemory(.accepted)),
                                 userID: "u", stationID: "s", paidVoice: access, talkOverEnabled: { true },
                                 now: { clock.now }, sleepUntil: sleepUntil)
         made.append(p)

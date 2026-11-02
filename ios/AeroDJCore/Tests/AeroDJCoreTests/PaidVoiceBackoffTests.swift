@@ -105,7 +105,8 @@ final class PaidVoiceBackoffTests: XCTestCase {
         let c = PremiumVoiceRoutes.compose(onDevice: device, paidProvidersEnabled: true, access: .allowed, selectedVoiceID: nathan,
                                            credentials: creds, transport: transport, backoff: backoff)
         XCTAssertEqual(c.routes.count, 2)
-        return VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
+        return VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),
+                             cloudConsent: .inMemory(.accepted))
     }
 
     /// A distinct line each time, so the audio cache never answers for the proxy.

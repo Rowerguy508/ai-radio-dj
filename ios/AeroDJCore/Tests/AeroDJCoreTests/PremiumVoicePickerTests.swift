@@ -187,7 +187,7 @@ final class PremiumVoicePickerTests: XCTestCase {
         let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, access: .allowed, selectedVoiceID: nathan,
                                            credentials: creds, pinnedHosts: pinned, transport: transport)
         let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
-                                     cache: InMemoryAudioCache())
+                                     cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
         guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s", attribution: .presenter) else {
             return XCTFail("proxy route should render")
         }
@@ -205,7 +205,7 @@ final class PremiumVoicePickerTests: XCTestCase {
             let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, access: .allowed, selectedVoiceID: nathan,
                                                credentials: creds, pinnedHosts: pinned, transport: transport)
             let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
-                                         cache: InMemoryAudioCache())
+                                         cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
             guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s", attribution: .presenter) else {
                 return XCTFail("on-device must rescue status \(status)")
             }
@@ -223,7 +223,7 @@ final class PremiumVoicePickerTests: XCTestCase {
         let c = PremiumVoiceRoutes.compose(onDevice: device(), paidProvidersEnabled: true, access: .allowed, selectedVoiceID: nathan,
                                            credentials: creds, pinnedHosts: pinned, transport: transport)
         let renderer = VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0),
-                                     cache: InMemoryAudioCache())
+                                     cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
         guard case .success(let clip) = await renderer.render(cue(), userID: "u", stationID: "s", attribution: .presenter) else {
             return XCTFail("on-device must rescue an over-cap clip")
         }
@@ -284,8 +284,8 @@ final class PremiumVoicePickerTests: XCTestCase {
             paidProvidersEnabled: true, selectedVoiceID: juniper, endpoint: PremiumVoiceRoutes.defaultEndpoint,
             enteredToken: "", hasSavedToken: true),
                        PremiumVoiceRoutes.compose(onDevice: [], paidProvidersEnabled: true, access: ProVoiceGate.ownerPickerAccess,
-                                                  selectedVoiceID: juniper,
-                                                  credentials: creds).decision, "defaults to compose's pins and the build's picker access")
+                                                  selectedVoiceID: juniper, credentials: creds).decision,
+                       "defaults to compose's pins and the build's picker access")
     }
 
     /// Security review: the sheet's check only reads the pin; running it never widens it.

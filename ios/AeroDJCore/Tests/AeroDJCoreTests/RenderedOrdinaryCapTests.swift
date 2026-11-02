@@ -61,6 +61,17 @@ final class RenderedOrdinaryCapTests: XCTestCase {
         return await preparer.takeBreak(afterTrack: djBreak.afterTrack)
     }
 
+    /// The first pass's early stop (#293: stop spending once a pass can only be skipped) counts
+    /// only required lines: an optional line that pushes the main clips past 15 s is trimmed by
+    /// the 12 s cap, so the closing line is still rendered and the break airs. -Nova
+    func testAnOptionalLineOverTheMainCapIsTrimmedNotAnEarlyStop() async throws {
+        let (b, opener, color, cont, closing) = ordinaryBreak()
+        let outcome = await prepare(b, ["Opener": 4, "Color": 2, "Cont": 10, "Closing": 3])   // 16 s before closing
+        guard case .ready(let ready) = outcome else { return XCTFail("must trim the continuation, not skip: \(outcome)") }
+        XCTAssertEqual(ready.cues.map(\.id), [opener, color, closing])
+        XCTAssertEqual(ready.trimmedCueIDs, [cont])
+    }
+
     func testARenderedTotalOf12point5DropsTheContinuationAndKeepsTheClosingLine() async throws {
         let (b, opener, color, cont, closing) = ordinaryBreak()
         let outcome = await prepare(b, ["Opener": 4, "Color": 2, "Cont": 3, "Closing": 3.5])   // 12.5 s

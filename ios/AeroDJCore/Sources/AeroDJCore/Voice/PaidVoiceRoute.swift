@@ -66,8 +66,10 @@ public struct PaidVoice: Sendable {
                                                      access: setupDeferredToPerCueGate, selectedVoiceID: selectedVoiceID,
                                                      credentials: credentials, pinnedHosts: pinnedHosts,
                                                      transport: transport)
+        // Keeps the base renderer's cloud-voice consent store (the render-time gate), so the
+        // composition never swaps it for a default one (-Nova).
         return PaidVoice(renderer: VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
-                                                 revocations: base.revocations),
+                                                 revocations: base.revocations, cloudConsent: base.cloudConsent),
                          access: access, decision: composition.decision)
     }
 
