@@ -231,6 +231,162 @@ final class DJTimeCheckRenderTests: XCTestCase {
         XCTAssertEqual(drops.all, [])
     }
 
+    // MARK: ±90 s tolerance at the take (Echo, #347 follow-up)
+
+    /// A ready break whose time-check line was rendered with the clock at `renderAt` (it is
+    /// written for about 63 s later, its expected air time). Returns the break as prepared.
+    private func ready(renderedAt renderAt: Date, _ clock: Clock) async -> (DJBreakPreparer, DJBreak, Drops, PreparedDJBreak?) {
+        let p = preparer([route("device", ScriptedVoice())], clock: clock, sleepUntil: { _ in clock.now = renderAt })
+        let planned = timeCheckBreak()
+        let drops = await drops(p)
+        await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
+        let added = await eventually { await Self.ready(p)?.cues.count == 2 }
+        XCTAssertTrue(added)
+        return (p, planned, drops, await Self.ready(p))
+    }
+
+    func testTheReadyBreakRecordsTheTimeCheckAirTime() async {
+        let clock = Clock(date(9, 40))
+        let (_, planned, _, ready) = await ready(renderedAt: date(9, 52), clock)
+        guard let b = ready else { return XCTFail("ready") }
+        let air = b.timeCheckAirTime
+        XCTAssertNotNil(air, "recorded with the line")
+        // The 60 s deadline plus the 3 s boundary margin, less the few ms the render took.
+        XCTAssertEqual(air?.timeIntervalSince(date(9, 52)) ?? 0, 63, accuracy: 1)
+        XCTAssertEqual(air.flatMap { planned.timeCheck?.text(at: $0) }, b.cues.first?.text, "the line is the reading at its air time")
+    }
+
+    /// The exact-text check dropped these: the take crosses a rounding edge, so the line for the
+    /// take's clock reads differently, but the line's claim about its time is still true.
+    func testATakeJustPastARoundingEdgeKeepsTheLine() async {
+        let cases: [(renderAt: Date, takeAfterAir: TimeInterval, said: String)] = [
+            (date(9, 52).addingTimeInterval(7), -20, "Almost 9:55."),     // air 9:53:10, take 9:52:50 reads "Just after 9:50."
+            (date(9, 51).addingTimeInterval(50), 30, "Just after 9:50."), // air 9:52:53, take 9:53:23 reads "Almost 9:55."
+            (date(9, 56).addingTimeInterval(20), 45, "Just after 9:55."),   // take 9:58:08 reads "Almost 10 o'clock."
+            (date(9, 54).addingTimeInterval(30), -60, "It's 9:55."),        // take 9:54:33 reads "Almost 9:55."
+        ]
+        for c in cases {
+            let clock = Clock(date(9, 40))
+            let (p, planned, drops, ready) = await ready(renderedAt: c.renderAt, clock)
+            guard let b = ready else { return XCTFail("\(c.said): ready") }
+            XCTAssertEqual(b.cues.first?.text, c.said)
+            let take = (b.timeCheckAirTime ?? .distantPast).addingTimeInterval(c.takeAfterAir)
+            XCTAssertNotEqual(planned.timeCheck?.text(at: take), c.said, "\(c.said): the take reads differently")
+            clock.now = take
+            guard case .ready(let taken) = await p.takeBreak(afterTrack: 0) else { return XCTFail("airs") }
+            XCTAssertEqual(taken.cues.map(\.text), [c.said, Self.closingText], "\(c.said) kept")
+            XCTAssertNil(taken.droppedTimeCheck)
+            XCTAssertEqual(drops.all, [])
+        }
+    }
+
+    /// Up to 90 s either side of the expected air time is kept; past it the line is dropped as
+    /// stale. 10 ms off the edge, since Date arithmetic is not exact at whole seconds. Past the
+    /// edge the line still matches a reading inside the window, so only the air-time bound drops it.
+    func testToleranceIsNinetySecondsEitherSideOfTheAirTime() async {
+        for (offset, keeps) in [(-90.01, false), (-89.99, true), (0, true), (89.99, true), (90.01, false), (91, false)] {
+            let clock = Clock(date(9, 40))
+            let (p, planned, drops, ready) = await ready(renderedAt: date(9, 52), clock)
+            guard let b = ready else { return XCTFail("\(offset): ready") }
+            clock.now = (b.timeCheckAirTime ?? .distantPast).addingTimeInterval(offset)
+            let outcome = await p.takeBreak(afterTrack: 0)
+            if keeps {
+                guard case .ready(let taken) = outcome else { return XCTFail("\(offset): airs") }
+                XCTAssertEqual(taken.cues.map(\.text), ["Almost 9:55.", Self.closingText], "\(offset) s: kept")
+                XCTAssertEqual(drops.all, [], "\(offset) s")
+            } else {
+                assertDropped(outcome, planned, .stale, drops)
+                if case .ready(let taken) = outcome { assertRestOnly(taken, planned) }
+            }
+        }
+    }
+
+    /// The direction rule on its own (Echo, #357). `air` is when the line was written for.
+    private func still(_ text: String, air: Date, at now: Date, calendar: Calendar? = nil,
+                       style: DJClockStyle = .twelveHour) -> Bool {
+        let b = timeCheckBreak().timeCheck!
+        let tc = DJPlannedTimeCheck(cueID: b.cueID, plannedAt: b.plannedAt, templates: b.templates,
+                                    calendar: calendar ?? eastern, style: style)
+        return DJBreakPreparer.timeCheckStillTrue(tc, saying: text, airTime: air, now: now)
+    }
+
+    private func at(_ hour: Int, _ minute: Int, _ seconds: TimeInterval) -> Date {
+        date(hour, minute).addingTimeInterval(seconds)
+    }
+
+    /// Echo's repro: inside ±90 s the old sampled check kept a wrong-direction line.
+    func testEchosReprosAreDropped() {
+        XCTAssertFalse(still("Almost 9:55.", air: at(9, 54, 59), at: at(9, 56, 29)), "Almost 9:55 at 9:56:29")
+        XCTAssertFalse(still("Just after 9:50.", air: at(9, 52, 59), at: at(9, 54, 29)), "Just after 9:50 at 9:54:29 (269 s on)")
+    }
+
+    func testAlmostNeverAirsAtOrAfterItsTime() {
+        let air = at(9, 54, 59)   // "Almost 9:55."
+        XCTAssertTrue(still("Almost 9:55.", air: air, at: at(9, 54, 59.99)))
+        XCTAssertFalse(still("Almost 9:55.", air: air, at: at(9, 55, 0)), "at T")
+        XCTAssertFalse(still("Almost 9:55.", air: air, at: at(9, 55, 1)))
+        // The earliest edge: written at 9:53:00 (T − 120 s), taken 90 s early is T − 210 s.
+        XCTAssertTrue(still("Almost 9:55.", air: at(9, 53, 0), at: at(9, 51, 30.01)))
+        XCTAssertFalse(still("Almost 9:55.", air: at(9, 53, 0.02), at: at(9, 51, 29.99)), "T − 210 s and more (air-time guard holds)")
+    }
+
+    func testComingUpOnFollowsTheSameRule() {
+        let b = timeCheckBreak().timeCheck!
+        let tc = DJPlannedTimeCheck(cueID: b.cueID, plannedAt: b.plannedAt,
+                                    templates: [.on: "It's {time}.", .comingUp: "Coming up on {time}.", .justAfter: "Just after {time}."],
+                                    calendar: eastern, style: .twelveHour)
+        let air = at(9, 58, 30)
+        XCTAssertEqual(tc.text(at: air), "Coming up on 10 o'clock.")
+        XCTAssertTrue(DJBreakPreparer.timeCheckStillTrue(tc, saying: "Coming up on 10 o'clock.", airTime: air, now: at(9, 59, 59.99)))
+        XCTAssertFalse(DJBreakPreparer.timeCheckStillTrue(tc, saying: "Coming up on 10 o'clock.", airTime: air, now: date(10, 0)))
+    }
+
+    func testJustAfterNeverAirsBeforeItsTime() {
+        let air = at(9, 51, 0)   // "Just after 9:50.", T + 60 s
+        XCTAssertTrue(still("Just after 9:50.", air: air, at: date(9, 50)), "at T")
+        XCTAssertFalse(still("Just after 9:50.", air: air, at: at(9, 49, 59.99)), "before T")
+        // The latest edge: written at 9:52:59, T + 210 s.
+        let late = at(9, 52, 59)
+        XCTAssertTrue(still("Just after 9:50.", air: late, at: at(9, 53, 29.99)))
+        XCTAssertFalse(still("Just after 9:50.", air: late, at: at(9, 53, 30.01)), "past T + 210 s")
+    }
+
+    func testItsOnlyWithinItsRoundingWindow() {
+        // Written at 9:55:59, the latest "It's 9:55.": the air-time guard allows to 9:57:29.
+        let late = at(9, 55, 59)
+        XCTAssertTrue(still("It's 9:55.", air: late, at: at(9, 56, 59.99)), "T + 119.99 s")
+        XCTAssertFalse(still("It's 9:55.", air: late, at: date(9, 57)), "T + 120 s")
+        XCTAssertFalse(still("It's 9:55.", air: late, at: at(9, 57, 29)), "inside ±90 s, past the window")
+        // Written at 9:55:00: 90 s early is T − 90 s, inside the window.
+        XCTAssertTrue(still("It's 9:55.", air: date(9, 55), at: at(9, 53, 30)), "T − 90 s")
+    }
+
+    /// T is an instant: midnight and the 12 h/24 h wrap need no special case.
+    func testMidnightAndTheTwelveHourWrap() {
+        let beforeMidnight = at(23, 58, 30)
+        XCTAssertEqual(timeCheckBreak().timeCheck!.text(at: beforeMidnight), "Almost midnight.")
+        XCTAssertTrue(still("Almost midnight.", air: beforeMidnight, at: at(23, 59, 59.99)))
+        XCTAssertFalse(still("Almost midnight.", air: beforeMidnight, at: date(23, 59).addingTimeInterval(60)), "at midnight")
+        let afterMidnight = date(23, 59).addingTimeInterval(120)   // 0:01 the next day
+        XCTAssertTrue(still("Just after midnight.", air: afterMidnight, at: afterMidnight.addingTimeInterval(-60)), "at midnight")
+        XCTAssertFalse(still("Just after midnight.", air: afterMidnight, at: afterMidnight.addingTimeInterval(-60.01)), "before midnight")
+        // 12:58 rounds to 1 o'clock (12 h) and 13:00 (24 h).
+        XCTAssertFalse(still("Almost 1 o'clock.", air: at(12, 58, 50), at: date(13, 0)))
+        XCTAssertTrue(still("Almost 1 o'clock.", air: at(12, 58, 0), at: at(12, 59, 29)))
+        XCTAssertFalse(still("Almost 13:00.", air: at(12, 58, 50), at: date(13, 0), style: .twentyFourHour))
+        XCTAssertTrue(still("Almost 13:00.", air: at(12, 58, 0), at: at(12, 59, 29), style: .twentyFourHour))
+    }
+
+    func testTheWordsMustBeTheLineForTheAirTimeAndAirTimeIsRequired() {
+        let air = at(9, 53, 0)
+        XCTAssertTrue(still("Almost 9:55.", air: air, at: air))
+        XCTAssertFalse(still("Almost 10 o'clock.", air: air, at: air), "not what was written for 9:53")
+        XCTAssertFalse(still("It's 9:40.", air: air, at: air), "the plan-time words")
+        let tc = timeCheckBreak().timeCheck!
+        XCTAssertFalse(DJBreakPreparer.timeCheckStillTrue(tc, saying: "Almost 9:55.", airTime: nil, now: air),
+                       "no recorded air time fails closed")
+    }
+
     func testTimeCheckWaitsForItsWindowBeforeTheDeadline() async {
         let clock = Clock(date(9, 40))
         final class Seen: @unchecked Sendable { var at: ContinuousClock.Instant? }
@@ -344,9 +500,35 @@ final class DJTimeCheckRenderTests: XCTestCase {
         let planned = timeCheckBreak()
         let drops = await drops(p)
         await p.prepare(planned, deadline: .milliseconds(100), onDeviceOnly: false)
-        try? await Task.sleep(for: .milliseconds(400))
+        // Explicit ordering, no fixed sleep: the take comes only once the prepare task itself has
+        // woken and recorded the drop, so this covers that path whatever the scheduler does.
+        let recorded = await eventually { await p.testTimeCheckDrop(afterTrack: 0) != nil }
+        XCTAssertTrue(recorded, "the prepare task records the drop before the take")
         XCTAssertEqual(voice.texts, [Self.closingText], "never sent")
         assertDropped(await p.takeBreak(afterTrack: 0), planned, .late, drops)
+    }
+
+    func testTimeCheckPastItsDeadlineAtTheTakeIsLateEvenBeforeTheTaskRecordsIt() async {
+        let clock = Clock(date(9, 40))
+        let voice = ScriptedVoice()
+        // The window wait does not return before the take (it is cancelled there): the prepare
+        // task never gets to record anything. The take comes after the render deadline, so the
+        // line could no longer air: `.late`, not `.taken` (the reason must not depend on which of
+        // the take and the task's wake-up runs first).
+        let p = preparer([route("device", voice)], clock: clock, sleepUntil: { _ in try await Task.sleep(for: .seconds(60)) })
+        let planned = timeCheckBreak()
+        let drops = await drops(p)
+        await p.prepare(planned, deadline: .milliseconds(50), onDeviceOnly: false)
+        let isReady = await eventually { await p.isReady(afterTrack: 0) }
+        XCTAssertTrue(isReady, "the rest of the break is ready on its own")
+        try? await Task.sleep(for: .milliseconds(100))   // at least past the 50 ms deadline
+        let unrecorded = await p.testTimeCheckDrop(afterTrack: 0)
+        XCTAssertNil(unrecorded, "the task is still waiting")
+        let outcome = await p.takeBreak(afterTrack: 0)
+        guard case .ready(let b) = outcome else { return XCTFail("the break must still air") }
+        assertRestOnly(b, planned)
+        assertDropped(outcome, planned, .late, drops)
+        XCTAssertEqual(voice.texts, [Self.closingText], "never sent")
     }
 
     // MARK: Failed
