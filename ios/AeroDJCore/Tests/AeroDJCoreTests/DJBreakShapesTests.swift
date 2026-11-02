@@ -35,7 +35,7 @@ final class DJBreakShapesTests: XCTestCase {
                                extra: (any DJBreakExtraLineSource)? = nil) -> [DJBreak] {
         var writer = DJScriptWriter(cadence: cadence ?? dense, seed: seed, tone: tone, shapes: config)
         writer.extraLineSource = extra
-        return writer.plan(tracks: tracks, briefing: nil, hour: 10).breaks.filter { $0.shape != nil }
+        return writer.plan(tracks: tracks, briefing: nil, hour: 10).breaks.filter { $0.isPickedShape }
     }
 
     private func bigTone() -> EditorialTone {
@@ -73,7 +73,7 @@ final class DJBreakShapesTests: XCTestCase {
                 }
                 XCTAssertEqual(Set(current).count, current.count, "seed \(seed): same line twice in one break")
             }
-            let natural = all.filter { $0.shape != nil }.map { $0.cues.map(\.text) }
+            let natural = all.filter { $0.isPickedShape }.map { $0.cues.map(\.text) }
             for i in natural.indices.dropFirst() {
                 r.openerPairs += 1
                 if RecentSpokenTemplates.firstWord(natural[i][0]) == RecentSpokenTemplates.firstWord(natural[i - 1][0]) { r.sameFirstWord += 1 }
@@ -107,7 +107,7 @@ final class DJBreakShapesTests: XCTestCase {
             for b in naturalBreaks(seed: seed, tracks: djTracks(30, origin: .catalog)) { counts[b.shape!, default: 0] += 1 }
         }
         let total = counts.values.reduce(0, +)
-        for shape in DJBreakShape.allCases where shape != .timeCheckIntro {
+        for shape in DJBreakShape.allCases where shape != .timeCheckIntro && shape != .showOpener {
             XCTAssertGreaterThan(counts[shape] ?? 0, total / 50, "\(shape) should air: \(counts)")
         }
         XCTAssertNil(counts[.timeCheckIntro], "no clock source in this slice")
@@ -198,12 +198,12 @@ final class DJBreakShapesTests: XCTestCase {
         var writer = DJScriptWriter(cadence: DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1, maxTransitionSeconds: 20,
                                                        maxClosingSeconds: 8),
                                     seed: 4, tone: tone, shapes: classicOnly)
-        let natural = writer.plan(tracks: tracks, briefing: nil, hour: 10).breaks.filter { $0.shape != nil }
+        let natural = writer.plan(tracks: tracks, briefing: nil, hour: 10).breaks.filter { $0.isPickedShape }
         XCTAssertTrue(natural.isEmpty, "6 s + 0.3 s pause + 6 s is over 12 s: music only, got \(natural.map { $0.cues.map(\.text) })")
         var writer2 = DJScriptWriter(cadence: DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1, maxTransitionSeconds: 20,
                                                         maxClosingSeconds: 8, maxOrdinaryBreakSeconds: 13),
                                      seed: 4, tone: tone, shapes: classicOnly)
-        XCTAssertFalse(writer2.plan(tracks: tracks, briefing: nil, hour: 10).breaks.filter { $0.shape != nil }.isEmpty)
+        XCTAssertFalse(writer2.plan(tracks: tracks, briefing: nil, hour: 10).breaks.filter { $0.isPickedShape }.isEmpty)
     }
 
     /// #339 follow-up (-Fry): a station whose cadence sets a lower ordinary cap gets natural breaks
@@ -290,8 +290,8 @@ final class DJBreakShapesTests: XCTestCase {
         let config = DJBreakShapeConfig(weights: [.comingUpOnly: 1, .backAnnounceOnly: 1])
         var writer = DJScriptWriter(cadence: dense, seed: 1, tone: tone, shapes: config)
         let breaks = writer.plan(tracks: djTracks(30), briefing: nil, hour: 10).breaks
-        XCTAssertLessThanOrEqual(breaks.count, 1, "at most the classic greeting break")
-        XCTAssertTrue(breaks.allSatisfy { $0.shape == nil }, "every over-cap natural break stays music-only")
+        XCTAssertLessThanOrEqual(breaks.count, 1, "at most the opening break (show opener or classic greeting)")
+        XCTAssertTrue(breaks.allSatisfy { !$0.isPickedShape }, "every over-cap natural break stays music-only")
     }
 
     func testCombinedLineNamesBothTracksAtTheMostRestrictiveOrigin() {
@@ -476,7 +476,7 @@ final class DJBreakShapesTests: XCTestCase {
         let briefing = plan.breaks.filter(\.hasBriefing)
         XCTAssertEqual(briefing.count, 1)
         XCTAssertNil(briefing[0].shape)
-        XCTAssertTrue(plan.breaks.contains { $0.shape != nil })
+        XCTAssertTrue(plan.breaks.contains { $0.isPickedShape })
     }
 
     func testNaturalLinesPassTheCopyLint() {
