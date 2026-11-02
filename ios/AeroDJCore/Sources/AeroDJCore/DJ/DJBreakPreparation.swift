@@ -318,8 +318,8 @@ public actor DJBreakPreparer {
 
     /// Step 1 of a prepare task: every cue but the held-back time check, under the deadline.
     nonisolated static func renderRest(_ rest: DJBreak, renderer: VoiceRenderer?, userID: String, stationID: String,
-                                       cap: BreakCap, deadline: Duration, bundled: BundledClipResolver?,
-                                       paidVoice: ProVoiceAccess?) async -> DJBreakOutcome {
+                                       cap: BreakCap, deadline: Duration, bundled: BundledClipResolver? = nil,
+                                       paidVoice: ProVoiceAccess? = nil) async -> DJBreakOutcome {
         guard let renderer else { return .skipped(.renderFailed) }
         guard !rest.cues.isEmpty else { return .skipped(.notPlanned) }
         let work: @Sendable () async -> DJBreakOutcome = {
@@ -347,11 +347,12 @@ public actor DJBreakPreparer {
         async -> LateTimeCheck {
         guard (try? await sleepUntil(end - timeCheckLead)) != nil, !Task.isCancelled else { return .cancelled }
         guard let voice = sameVoice(as: main, in: renderer) else { return .dropped(.noVoice) }
-        // Paid-voice gate (-Echo, #255) for the late line too: Pro + consent are asked before a
-        // paid route renders it. A denial drops only this line (never re-voiced on-device).
+        // Paid-voice gate for this cue too (-Echo, #255): the line is never re-voiced, so with
+        // Pro or consent gone a paid-route voice is not available for it and the line is dropped
+        // before any provider is asked. The rest of the break is re-checked at the take.
         if voice.routes.contains(where: { !$0.isLocalAndFree }), let paidVoice,
            await !paidVoice.decision().permitsPaidVoice {
-            return .dropped(.renderFailed)
+            return .dropped(.noVoice)
         }
         // The time it will be on air (Echo, #347): now plus what is left before the boundary.
         let toAir = end - ContinuousClock.now + boundaryMargin
@@ -591,8 +592,10 @@ public actor DJBreakPreparer {
             guard paid else { continue }
             tasks.removeValue(forKey: k)?.cancel()
             results[k] = nil
+            // #347 time-check state goes with the dropped render; a re-prepare sets it afresh.
             timeChecks[k] = nil
             timeCheckDrops[k] = nil
+            timeCheckDeadlines[k] = nil
             dropped.append(k)
             emit(.skipped(afterTrack: k, .paidVoiceRevoked))
         }
