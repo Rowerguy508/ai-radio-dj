@@ -184,7 +184,7 @@ final class LiveBriefingSensitivityTests: LiveBriefingFixture {
         let transport = BodyRecorder()
         let device = VoiceRoute(providerID: "avspeech", provider: DeviceVoice(), voice: VoiceProfile(id: "standard", name: "Host"))
         let composed = PremiumVoiceRoutes.compose(
-            onDevice: [device], paidProvidersEnabled: true, selectedVoiceID: PremiumVoiceCatalog.voices[0].id,
+            onDevice: [device], paidProvidersEnabled: true, access: .allowed, selectedVoiceID: PremiumVoiceCatalog.voices[0].id,
             credentials: PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!, token: "fixture-token"),
             pinnedHosts: ["aerodj-tts.vercel.app"], transport: transport)
         guard case .included = composed.decision else { return XCTFail("cloud voice must be on for this gate") }

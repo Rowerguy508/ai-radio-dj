@@ -23,7 +23,7 @@ extension VoiceRenderer {
         let composition = PremiumVoiceRoutes.compose(
             onDevice: base.routes,
             paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled,
-            selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
+            access: .ownerTrial, selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
             credentials: OwnerProxyKeychain.load(),
             backoff: OwnerVoiceTrial.proxyBackoff)
         OwnerProxyKeychain.logDecision(composition.decision, routeCount: composition.routes.count)
