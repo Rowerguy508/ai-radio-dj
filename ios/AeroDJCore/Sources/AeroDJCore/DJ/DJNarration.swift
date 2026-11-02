@@ -77,7 +77,7 @@ public struct DJCadence: Equatable, Sendable {
     /// `maxBriefingBreakSeconds`; ordinary breaks keep `maxOrdinaryBreakSeconds`.
     public var maxOpenerBreakSeconds: Int
 
-    /// Build 34 default: the longest estimated opener is 16.3 s (warm, three-line greeting,
+    /// Build 34 default: the longest estimated opener is 17.3 s (warm, three-line greeting,
     /// station line, setup, time check, closing), so 22 s leaves headroom for slower voices.
     public static let defaultMaxOpenerBreakSeconds = 22
     /// #332 default: one personal update per break.
