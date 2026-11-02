@@ -521,6 +521,86 @@ final class SpokenScriptLintTests: XCTestCase {
         }
     }
 
+    /// #353 blocker (-Fry): a nested group is never cut in half by the catalog or "feat." rewrite.
+    func testNestedBracketGroupsAreNeverCutInHalf() {
+        XCTAssertEqual(SpokenTitle.clean("Song (Remastered [2011])"), "Song (Remastered [2011])")
+        XCTAssertEqual(SpokenTitle.clean("Song [Remastered (2011)]"), "Song [Remastered (2011)]")
+        XCTAssertEqual(SpokenTitle.clean("Song (feat. X [Y])"), "Song (feat. X [Y])")
+        XCTAssertEqual(SpokenTitle.clean("Song [Explicit] (Remix (Edit))"), "Song (Remix (Edit))")
+        // Found by the property check below: a catalog dash suffix inside a group no longer eats its ")".
+        XCTAssertEqual(SpokenTitle.clean("Song (Dreams - 2004 Remaster)"), "Song, Dreams - 2004 Remaster")
+        XCTAssertEqual(SpokenTitle.clean("Song - Remastered (2011)"), "Song")
+    }
+
+    /// Every bracketed or dashed title fixture in this file, alone and with tags added around it:
+    /// cleanup never leaves an unbalanced bracket or a lone ")" / "]" that the raw title did not have.
+    static let bracketTitleFixtures: [String] = [
+        "Midnight City (Remastered 2011)", "Dreams - 2004 Remaster", "Hold On [Explicit]", "Sunflower (feat. Swae Lee)",
+        "Ocean Avenue (Live 2014)", "Rather Be (Clean Bandit Remix)", "Song - Live 2011", "Song (with Strings) [Acoustic]",
+        "Help! (Live)", "Dreams - Remastered", "Let It Be (Remastered 2009)", "Hold On (Clean)",
+        "Rumours (Deluxe Edition)", "Song (Single Version)", "Song (40th Anniversary Edition)", "Sunflower [feat. Swae Lee]",
+        "Sunflower (ft. Swae Lee) [Explicit]", "Holocene (Live)", "Midnight City (Eric Prydz Remix)", "Song - Acoustic",
+        "Re-Make - Re-Model", "(Remastered)", "Rather Be - Clean Bandit Remix", "Song (Mono Remix)",
+        "Song (Stereo Mix)", "Song (Live 2011 Remaster)", "Song - Live 2011 Remaster", "Song (Live Edition)",
+        "Song (Acoustic Version)", "Song (Demo Remastered)", "Song (LIVE)", "Song (with Strings)",
+        "Ocean Avenue [Live 2014]", "Song – Acoustic", "Song (Live) [Acoustic]", "Song (Live) [Explicit]",
+        "Song (Remastered 2011) - Live 2011", "Sunflower (feat. Swae Lee) (Live)", "Song (Remastered 2011)", "Song (Live 2014",
+        "Song Live 2014)", "Song (Live [2014])", "Song (Live 2014]", "(Live)",
+        "(Live) (Remix)", "(I Can't Get No) Satisfaction", "Song, (Live)", "Song ( Live , )",
+        "Song ()", "Song - Part Two", "Song – Part Two", "Song — Interlude",
+        "Clocks - Reprise", "Song - Part Two (Live)", "Song - Part Two, Live", "Song [Explicit] (Remix (Edit))",
+        "Song (Remix (Edit))", "Song (Live [2014]) [Explicit]", "Song] (Live)", "Song (Live) ,",
+        "Song (Live);", "Song [Acoustic] :", "Why? (Acoustic) [Live]", "Song. - Live 2011",
+        "Help! (2009 Digital Remaster)", "Song [Acoustic]", "Song (Live) [Demo]", "Let It Be - Remastered 2009",
+        "Song (Remastered Version)", "Song (Clean Version)", "Song (Mono)", "Song [Stereo]",
+        "Rumours (Super Deluxe Edition)", "Song (Bonus Track Version)", "Sunflower (Featuring Swae Lee)", "Sunflower ft. Swae Lee - Remastered",
+        "Mix (Remastered)", "Mix (Remastered). Stick around.", "Song (Remastered [2011])", "Song [Remastered (2011)]",
+        "Song (feat. X [Y])", "Song [feat. X (Y)]", "Song (Explicit [Live])",
+    ]
+
+    func testCleanupNeverLeavesAnUnbalancedBracket() {
+        let fixtures = Self.bracketTitleFixtures + Self.samples.map(\.title)
+        var inputs: [String] = []
+        for raw in fixtures {
+            inputs += [raw, raw + " (Live)", raw + " [Explicit]", raw + " - Live 2011", "Song (" + raw + ")",
+                       "Song [" + raw + "]", "Song (Remastered [" + raw + "])", "Song (feat. X [" + raw + "])"]
+        }
+        for raw in inputs {
+            let spoken = SpokenTitle.clean(raw)
+            if Self.bracketsBalance(raw) { XCTAssertTrue(Self.bracketsBalance(spoken), "\(raw) -> \(spoken)") }
+            if !Self.hasLoneCloser(raw) { XCTAssertFalse(Self.hasLoneCloser(spoken), "\(raw) -> \(spoken)") }
+        }
+    }
+
+    /// Brackets close in order and with their own kind (nesting allowed).
+    private static func bracketsBalance(_ text: String) -> Bool {
+        var stack: [Character] = []
+        for char in text {
+            switch char {
+            case "(", "[": stack.append(char)
+            case ")": guard stack.popLast() == "(" else { return false }
+            case "]": guard stack.popLast() == "[" else { return false }
+            default: continue
+            }
+        }
+        return stack.isEmpty
+    }
+
+    /// A ")" or "]" with no open bracket of its own kind before it.
+    private static func hasLoneCloser(_ text: String) -> Bool {
+        var round = 0, square = 0
+        for char in text {
+            switch char {
+            case "(": round += 1
+            case "[": square += 1
+            case ")": if round == 0 { return true }; round -= 1
+            case "]": if square == 0 { return true }; square -= 1
+            default: continue
+            }
+        }
+        return false
+    }
+
     func testTemplateFillNeverMakesCommaRuns() {
         for template in ["{title} there.", "That's {title}, from {artist}.", "Up next: {nextTitle}!", "{title}?"] {
             for raw in ["Ocean Avenue (Live 2014)", "Song (Live) [Acoustic]", "Song, (Live)", "Song,", "Song ( Live , )",

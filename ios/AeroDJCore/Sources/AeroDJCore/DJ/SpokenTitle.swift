@@ -32,9 +32,13 @@ public enum SpokenTitle {
     public static func clean(_ raw: String) -> String {
         let original = collapse(raw)
         var text = original
-        text = replace(text, #"\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+([^\)\]]+?)\s*[\)\]]"#) { " featuring " + $0[0] }
-        text = replace(text, #"\s*[\(\[]([^\)\]]*)[\)\]]"#) { isCatalogTag($0[0]) ? "" : nil }
-        text = replace(text, #"\s+[-–—]\s+([^-–—]+)$"#) { isCatalogTag($0[0]) ? "" : nil }
+        // Only innermost, same-kind groups: a nested group is never cut in half ("Song (Remastered [2011])").
+        text = replace(text, #"\s*(?:\(\s*(?:feat\.?|ft\.?|featuring)\s+([^\(\)\[\]]+?)\s*\)|\[\s*(?:feat\.?|ft\.?|featuring)\s+([^\(\)\[\]]+?)\s*\])"#) {
+            " featuring " + ($0[0].isEmpty ? $0[1] : $0[0])
+        }
+        text = replace(text, #"\s*(?:\(([^\(\)\[\]]*)\)|\[([^\(\)\[\]]*)\])"#) { isCatalogTag($0[0].isEmpty ? $0[1] : $0[0]) ? "" : nil }
+        // A dash suffix that would end inside a bracket group ("Song (Dreams - 2004 Remaster)") is not a suffix.
+        text = replace(text, #"\s+[-–—]\s+([^-–—]+)$"#) { isCatalogTag($0[0]) && bracketsAreWellFormed($0[0]) ? "" : nil }
         text = replace(text, #"\s+(?:feat\.|ft\.)\s+"#) { _ in " featuring " }
         // Stray separators after the last tag ("Song (Live) ,") go first, so the tag still ends the title.
         text = collapse(text)
