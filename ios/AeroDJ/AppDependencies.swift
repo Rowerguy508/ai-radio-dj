@@ -39,7 +39,8 @@ struct AppDependencies {
     func start() async {
         await studio.start()
         await djSession.start()
-        stationQueue?.start()
+        // #332: station starts read the same briefing provider as a song tap.
+        stationQueue?.start(briefing: djSession.briefingProvider(studio: studio))
     }
 
     static func make(defaults: UserDefaults = .standard) -> AppDependencies {
@@ -85,7 +86,9 @@ struct AppDependencies {
         // reads (DIAG override, else the AERODJ_OWNER_AB build default). P0 build 26, -Fry.
         let preparer = DJBreakPreparer(voice: paidVoice, userID: "listener", stationID: "default", cadence: DJCadence(),
                                        talkOverEnabled: { DJTalkoverFlag.isEnabled() }, bundledClips: bundledClips)
-        let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
+        // #332: one once-a-day ledger for song taps and station starts, kept across relaunches.
+        let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj,
+                                       personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()))
         // Pro and consent changes reach this session (SubscriptionModel, CloudVoiceConsentModel; E1).
         PaidVoiceAccessRelay.session = djSession
         // A consent revoke deletes cached cloud clips from the live renderer's cache (N4).

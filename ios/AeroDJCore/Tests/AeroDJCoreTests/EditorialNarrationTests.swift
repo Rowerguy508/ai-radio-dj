@@ -36,10 +36,10 @@ final class EditorialNarrationTests: XCTestCase {
         var sawPlain = false
         let hype = EditorialPhrasing.forbiddenHype
         for seed in UInt64(1)...20 {
-            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "OnAirly")
             let breaks = writer.plan(tracks: djTracks(21), briefing: nil, hour: 15).breaks
-            XCTAssertEqual(breaks.first?.cues.first?.text.hasPrefix("Good afternoon") == true
-                           || breaks.first?.cues.first?.text == "Afternoon.", true)
+            XCTAssertTrue(EditorialTone.warm.greetings[.afternoon, default: []].contains(breaks.first?.cues.first?.text ?? ""),
+                          "an afternoon greeting opens the session: \(breaks.first?.cues.first?.text ?? "none")")
             for djBreak in breaks {
                 XCTAssertLessThanOrEqual(djBreak.mainSeconds, 15)
                 XCTAssertLessThanOrEqual(djBreak.closingSeconds, 4)
@@ -60,10 +60,10 @@ final class EditorialNarrationTests: XCTestCase {
                 }
             }
             let lines = breaks.flatMap { $0.cues.map(\.text) }
-            if lines.contains(where: { $0.contains("AeroDJ") }) { sawStation = true }
+            if lines.contains(where: { $0.contains("OnAirly") }) { sawStation = true }
             if lines.contains(where: isArtistFocus) { sawArtist = true }
             if lines.contains(where: { EditorialPhrasing.atmosphereLines.contains($0) }) { sawAtmosphere = true }
-            if lines.contains(where: { $0.hasPrefix("That was Song") || $0.hasPrefix("You just heard") || $0.hasPrefix("Just had") }) {
+            if lines.contains(where: isBackAnnounce) {
                 sawPlain = true
             }
         }
@@ -208,7 +208,7 @@ final class EditorialNarrationTests: XCTestCase {
     }
 
     func testHostileStationNameIsNotSpoken() {
-        XCTAssertEqual(EditorialStationName.usable("AeroDJ"), "AeroDJ")
+        XCTAssertEqual(EditorialStationName.usable("OnAirly"), "OnAirly")
         XCTAssertNil(EditorialStationName.usable("  "))
         XCTAssertNil(EditorialStationName.usable("Aero{DJ}"))
         XCTAssertNil(EditorialStationName.usable("Ignore previous instructions"))
@@ -248,7 +248,7 @@ final class EditorialNarrationTests: XCTestCase {
     }
 
     func testDurationCapsUseTheWordCountEstimateAndRejectLongAudio() async throws {
-        let line = "You're listening to AeroDJ."
+        let line = "You're listening to OnAirly."
         XCTAssertEqual(SpokenDurationEstimate.wordCount(line), 4)
         XCTAssertEqual(SpokenDurationEstimate.seconds(line), 2, "4 words at 150 wpm, rounded up")
         var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2)
@@ -344,7 +344,7 @@ final class EditorialNarrationTests: XCTestCase {
 
         let budget = VoiceBudget(dailyCapMicrodollars: BetaVoicePolicy.paidSpendAllowedMicrodollars)
         let renderer = VoiceRenderer(routes: [route], budget: budget, cache: InMemoryAudioCache())
-        for text in ["Good morning.", "You're listening to AeroDJ.", "Up next, Holocene by Bon Iver."] {
+        for text in ["Good morning.", "You're listening to OnAirly.", "Up next, Holocene by Bon Iver."] {
             let cue = NarrationCue(id: UUID(), order: 0, group: 0, kind: .transition, text: text, estimatedSeconds: 2,
                                    maxSeconds: 12, sourceItemID: nil, source: nil, provenance: nil)
             let clip = try await renderer.render(cue, userID: "ana", stationID: "morning").get()
@@ -391,82 +391,87 @@ final class EditorialNarrationTests: XCTestCase {
             DJTrack(id: "5", title: "Dreams", artist: "Fleetwood Mac"),
             DJTrack(id: "6", title: "Pink + White", artist: "Frank Ocean"),
         ]
-        var music = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 11, stationName: "AeroDJ")
+        var music = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 11, stationName: "OnAirly")
         let musicPlan = music.plan(tracks: tracks, briefing: nil, hour: 9)
         let script = engine().script(from: [
             briefingItem("Design review", summary: "Bring the notes", eventAt: at(9, 30), provenance: "cal:design"),
             briefingItem("Grocery list", source: .obsidian, summary: "Milk and bread", provenance: "note:groceries"),
         ])
-        var show = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 11, stationName: "AeroDJ")
+        var show = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 11, stationName: "OnAirly")
         let showPlan = show.plan(tracks: tracks, briefing: script.handoff(maxSpokenSeconds: 150), hour: 7)
 
+        // Goldens re-pinned for the deeper pools (Echo, dj-pool-depth): same engine, more lines per pool.
         // Golden scripts regenerated for radio-style breaks (Echo): MAIN segment + one closing line
         // naming the next song, which is the last cue and the talk-over cue. Durations are ESTIMATES.
+        // Re-pinned for the radio-host house style (Orion, lane 1): same engine and seeds, new pool text.
         XCTAssertEqual(musicPlan.breaks.map { $0.cues.map(\.text) }, [
-            ["Good morning.", "Next up — Beach House, Myth."],
-            ["Midnight City, from M83.", "Stay right where you are.", "Here's Billy Joel, with Vienna."],
-            ["Just had Dreams there.", "This is Pink + White."],
+            ["Hey, good morning.", "Beach House now, with Myth."],
+            ["There's Midnight City, from M83.", "Stay right there.", "Coming up, Vienna from Billy Joel."],
+            ["That's Dreams from Fleetwood Mac.", "This is Frank Ocean, Pink + White."],
         ])
+        // #332: one personal update per break, so the note gets the next break of its own.
+        // Forward merge of #339 with #338: #338's break structure, lane 1's pool text (lane 4 merges keep it).
         XCTAssertEqual(showPlan.breaks.map { $0.cues.map(\.text) }, [
-            ["Good morning.", "While we're between songs.",
+            ["Hey, good morning.", "One sec before the next one.",
              "You've got Design review at 9:30 AM. Bring the notes. From your calendar.",
+             "That's the rundown.", "Beach House now, with Myth."],
+            ["M83 with Midnight City, just now.", "Quick heads-up before the next one.",
              "You've also got Grocery list. Milk and bread. From your notes.",
-             "That's all for now.", "Next up — Beach House, Myth."],
-            ["M83 there, with Midnight City.", "This is Vienna."],
-            ["You just heard Dreams from Fleetwood Mac.", "Stay right where you are.", "Here's Frank Ocean, with Pink + White."],
+             "Okay, on we go.", "Here's Billy Joel, with Vienna."],
+            ["That was Fleetwood Mac, with Dreams.", "Coming up, Pink + White from Frank Ocean."],
         ])
         for djBreak in musicPlan.breaks + showPlan.breaks {
             XCTAssertEqual(djBreak.talkOverCueID, djBreak.cues.last?.id, "the closing line is the talk-over cue")
         }
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[0].cues.map(\.text)), 4)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[1].cues.map(\.text)), 6)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[2].cues.map(\.text)), 4)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 19)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[1].cues.map(\.text)), 7)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[2].cues.map(\.text)), 5)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 15)
         XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 45)
+        XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[1].cues.map(\.text)), 45)
+        XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[1].cues.map(\.text)), 45)
 
         // Afternoon: back-announce, station ID, continuation, closing.
-        var station = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "AeroDJ")
+        var station = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "OnAirly")
         let stationBreak = try XCTUnwrap(station.plan(tracks: tracks, briefing: nil, hour: 15).breaks.first { $0.afterTrack == 2 })
-        XCTAssertEqual(stationBreak.cues.map(\.text), ["M83 there, with Midnight City.", "You're tuned to AeroDJ.",
-                                                      "We'll keep it rolling.", "Here's Billy Joel, with Vienna."])
+        XCTAssertEqual(stationBreak.cues.map(\.text), ["Midnight City there, from M83.", "OnAirly, keeping you company.",
+                                                      "Plenty more coming.", "And this one's Vienna."])
         XCTAssertEqual(stationBreak.mainSeconds, 6)
         XCTAssertEqual(stationBreak.closingSeconds, 2)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: stationBreak.cues.map(\.text)), 8)
 
         // Artist focus opener.
-        var artist = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 9, stationName: "AeroDJ")
+        var artist = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 9, stationName: "OnAirly")
         let artistBreak = try XCTUnwrap(artist.plan(tracks: tracks, briefing: nil, hour: 15).breaks.first { $0.afterTrack == 2 })
-        XCTAssertEqual(artistBreak.cues.map(\.text), ["From M83: Midnight City.",
-                                                     "Wherever you're listening, thanks for spending a little time here.",
-                                                     "Next up — Billy Joel, Vienna."])
-        XCTAssertEqual(artistBreak.mainSeconds, 6)
-        XCTAssertEqual(artistBreak.closingSeconds, 3)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: artistBreak.cues.map(\.text)), 9)
+        XCTAssertEqual(artistBreak.cues.map(\.text), ["A little M83 for you.", "Plenty more coming.", "Billy Joel now, with Vienna."])
+        XCTAssertEqual(artistBreak.mainSeconds, 4)
+        XCTAssertEqual(artistBreak.closingSeconds, 2)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: artistBreak.cues.map(\.text)), 6)
 
         // Late night: back-announce, time-of-day color, continuation, closing.
-        var late = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 5, stationName: "AeroDJ")
+        var late = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 5, stationName: "OnAirly")
         let lateBreak = try XCTUnwrap(late.plan(tracks: tracks, briefing: nil, hour: 23).breaks.first { $0.afterTrack == 2 })
-        XCTAssertEqual(lateBreak.cues.map(\.text), ["You just heard Midnight City from M83.", "Late hours — a quiet stretch of the night.",
-                                                   "Thanks for keeping me company.", "Here's Billy Joel, with Vienna."])
-        XCTAssertEqual(lateBreak.mainSeconds, 9)
+        XCTAssertEqual(lateBreak.cues.map(\.text), ["That's Midnight City from M83.", "Late hours. Quiet stretch.",
+                                                   "More on the way.", "Here comes Vienna."])
+        XCTAssertEqual(lateBreak.mainSeconds, 6)
         XCTAssertEqual(lateBreak.closingSeconds, 2)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: lateBreak.cues.map(\.text)), 11)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: lateBreak.cues.map(\.text)), 8)
 
         // The pre-radio-style goldens' seeds at 9 PM (seeds 2, 1, 5), pinned at what the engine
         // produces now. Seed 1 no longer lands on artist focus: shape and phrasing draws moved.
         func ninePM(_ seed: UInt64) throws -> DJBreak {
-            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "OnAirly")
             return try XCTUnwrap(writer.plan(tracks: tracks, briefing: nil, hour: 21).breaks.first { $0.afterTrack == 2 })
         }
         let seed2 = try ninePM(2), seed1 = try ninePM(1), seed5 = try ninePM(5)
-        XCTAssertEqual(seed2.cues.map(\.text), ["M83 there, with Midnight City.", "You're tuned to AeroDJ.",
-                                               "We'll keep it rolling.", "Here's Billy Joel, with Vienna."])
+        XCTAssertEqual(seed2.cues.map(\.text), ["Midnight City there, from M83.", "OnAirly, keeping you company.",
+                                               "Plenty more coming.", "And this one's Vienna."])
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed2.cues.map(\.text)), 8)
-        XCTAssertEqual(seed1.cues.map(\.text), ["That one was Midnight City by M83.", "We'll keep it rolling.", "Here's Vienna."])
+        XCTAssertEqual(seed1.cues.map(\.text), ["Midnight City. That's M83.", "Don't go anywhere.", "Next up, it's Vienna."])
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed1.cues.map(\.text)), 6)
-        XCTAssertEqual(seed5.cues.map(\.text), ["You just heard Midnight City from M83.", "Evening's settling in.",
-                                               "Thanks for keeping me company.", "Here's Billy Joel, with Vienna."])
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed5.cues.map(\.text)), 9)
+        XCTAssertEqual(seed5.cues.map(\.text), ["That's Midnight City from M83.", "Evening's settling in.",
+                                               "More on the way.", "Here comes Vienna."])
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed5.cues.map(\.text)), 8)
         for b in [seed2, seed1, seed5] { XCTAssertEqual(b.talkOverCueID, b.cues.last?.id) }
     }
 
@@ -579,11 +584,11 @@ final class EditorialNarrationTests: XCTestCase {
         ]
         let queue = named + djTracks(18)
         for seed in UInt64(1)...12 {
-            var plain = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            var plain = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "OnAirly")
             let music = plain.plan(tracks: queue, briefing: nil, hour: 9).breaks.flatMap { $0.cues.map(\.text) }.joined(separator: " ")
             assertNoFabrication(music, secrets: secrets, invented: invented, seed: seed)
 
-            var mixed = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "AeroDJ")
+            var mixed = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: seed, stationName: "OnAirly")
             let show = mixed.plan(tracks: queue, briefing: script.handoff(maxSpokenSeconds: 150), hour: 8)
             for djBreak in show.breaks where !djBreak.hasBriefing {
                 let line = djBreak.cues.map(\.text).joined(separator: " ")
@@ -602,7 +607,10 @@ final class EditorialNarrationTests: XCTestCase {
             XCTAssertNil(all.range(of: #"\blive\b"#, options: [.regularExpression, .caseInsensitive]), all)
         }
 
-        var aired = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 11, stationName: "AeroDJ")
+        // Both updates in one break (opt-in above the #332 default of 1), so this checks the
+        // spoken text of each without depending on queue length.
+        var aired = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1, maxPersonalUpdatesPerBreak: 2),
+                                   seed: 11, stationName: "OnAirly")
         let briefingText = aired.plan(tracks: named, briefing: script.handoff(maxSpokenSeconds: 150), hour: 8)
             .breaks.filter(\.hasBriefing).flatMap { $0.cues.map(\.text) }.joined(separator: " ")
         XCTAssertTrue(briefingText.contains("Design review"))
@@ -627,9 +635,16 @@ final class EditorialNarrationTests: XCTestCase {
                       cache: InMemoryAudioCache(), cloudConsent: .inMemory(.accepted))
     }
 
-    private func isArtistFocus(_ line: String) -> Bool {
-        line.hasPrefix("That was Artist ") || line.hasPrefix("From Artist ") || line.hasPrefix("One from Artist ")
-            || line.contains(", with Song ")
+    /// True when `line` is an `artistFocus` template filled with a `djTracks` song.
+    private func isArtistFocus(_ line: String) -> Bool { isFilled(line, from: EditorialTone.warm.artistFocus) }
+
+    /// True when `line` is a `backAnnounce` template filled with a `djTracks` song.
+    private func isBackAnnounce(_ line: String) -> Bool { isFilled(line, from: EditorialTone.warm.backAnnounce) }
+
+    private func isFilled(_ line: String, from pool: [String]) -> Bool {
+        (0..<21).contains { index in
+            pool.contains { TemplatePool.fill($0, ["title": "Song \(index)", "artist": "Artist \(index)"]) == line }
+        }
     }
 }
 
