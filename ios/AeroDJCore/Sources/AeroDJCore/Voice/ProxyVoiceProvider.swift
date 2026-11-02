@@ -105,29 +105,21 @@ public struct ProxyVoiceProvider: VoiceProvider {
             "format": text.hasPrefix("<speak>") ? "ssml" : "text", "stationId": context.stationID,
         ])
         var (data, response) = try await send(request)
-        var tokenExpired = response.statusCode == 401 && installToken != nil
+        let tokenExpired = response.statusCode == 401 && installToken != nil
             && PaidVoiceBackoff.ProxyErrorReason.parse(data) == .tokenExpired
         if tokenExpired, let installTokens = configuration.installTokens, let installToken {
-            // #378 §1.3: an expired install token is refreshed once for this cue. If that fails,
-            // or the proxy says `token_expired` again, this cue goes on-device; nothing is stopped.
+            // #380: `token_expired` covers every install-token failure. Re-mint once for this cue;
+            // a freshly minted token refused again stops the route for the launch (below), so
+            // there is never a mint loop.
             await installTokens.tokenRejected(installToken)
             let fresh = try await installTokens.installToken()
             request.setValue(fresh.headerValue, forHTTPHeaderField: Self.installTokenHeader)
             (data, response) = try await send(request)
-            tokenExpired = response.statusCode == 401 && PaidVoiceBackoff.ProxyErrorReason.parse(data) == .tokenExpired
         }
-        switch response.statusCode {
-        case 200: break  // counted as a success only once the audio below is validated
-        case 401 where tokenExpired: break
-        case 401: backoff?.recordUnauthorized()
-        case 429:
-            backoff?.recordRateLimited(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
-                                       reason: PaidVoiceBackoff.ProxyErrorReason.parse(data))
-        case 503:
-            backoff?.recordServiceUnavailable(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
-                                              reason: PaidVoiceBackoff.ProxyErrorReason.parse(data))
-        case 500...599: backoff?.recordServerFailure()
-        default: break
+        if let installTokens = configuration.installTokens {
+            await recordInstallAnswer(response, data: data, installTokens: installTokens)
+        } else {
+            recordOwnerAnswer(response, data: data)
         }
         guard response.statusCode == 200 else { throw VoiceRenderError.invalidResponse("status \(response.statusCode)") }
         guard let type = response.value(forHTTPHeaderField: "Content-Type")?.lowercased(), type.hasPrefix("audio/") else {
@@ -142,6 +134,42 @@ public struct ProxyVoiceProvider: VoiceProvider {
         let billed = response.value(forHTTPHeaderField: "X-Billed-Characters").flatMap(Int.init) ?? text.count
         return VoiceArtifact(data: data, durationSeconds: seconds, billableUnits: billed,
                              provider: configuration.upstream.rawValue, cacheKey: nil)
+    }
+
+    /// The owner (Bearer) path's answer handling, unchanged from before #378.
+    private func recordOwnerAnswer(_ response: HTTPURLResponse, data: Data) {
+        switch response.statusCode {
+        case 200: break  // counted as a success only once the audio below is validated
+        case 401: backoff?.recordUnauthorized()
+        case 429:
+            backoff?.recordRateLimited(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
+                                       reason: PaidVoiceBackoff.ProxyErrorReason.parse(data))
+        case 503:
+            backoff?.recordServiceUnavailable(retryAfter: response.value(forHTTPHeaderField: "Retry-After"),
+                                              reason: PaidVoiceBackoff.ProxyErrorReason.parse(data))
+        case 500...599: backoff?.recordServerFailure()
+        default: break
+        }
+    }
+
+    /// The install-token path (#380 contract). Every refusal sends the cue on-device and none
+    /// can hot-loop: 429 and 503 honor Retry-After (daily caps: next UTC midnight); 401
+    /// (including a re-minted token refused again), 403 and `mixed_auth` stop the route for the
+    /// launch; 401 `reattest` hands the key back to the token source (register again at most
+    /// once per launch, then it stops); other 4xx (400, 413) and 5xx (500 `misconfig`) back off.
+    private func recordInstallAnswer(_ response: HTTPURLResponse, data: Data,
+                                     installTokens: any InstallTokenProviding) async {
+        let reason = PaidVoiceBackoff.ProxyErrorReason.parse(data)
+        let retryAfter = response.value(forHTTPHeaderField: "Retry-After")
+        switch response.statusCode {
+        case 200: break  // counted as a success only once the audio below is validated
+        case 401 where reason == .reattest: await installTokens.keyRejected()
+        case 401, 403: backoff?.recordUnauthorized()
+        case 400 where reason == .mixedAuth: backoff?.recordUnauthorized()
+        case 429: backoff?.recordRateLimited(retryAfter: retryAfter, reason: reason)
+        case 503: backoff?.recordServiceUnavailable(retryAfter: retryAfter, reason: reason)
+        default: backoff?.recordServerFailure()
+        }
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {

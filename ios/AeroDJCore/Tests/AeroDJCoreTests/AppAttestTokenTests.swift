@@ -84,7 +84,18 @@ private struct SeenRequest: Sendable {
         headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
     }
     var json: [String: Any] { ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any]) ?? [:] }
+    /// Lowercased header names, for exact header-set checks.
+    var headerNames: Set<String> { Set(headers.keys.map { $0.lowercased() }) }
+    var text: String { String(decoding: body, as: UTF8.self) }
 }
+
+/// #380 header sets, per endpoint.
+private let challengeHeaders: Set<String> = ["content-type"]
+private let tokenHeaders: Set<String> = ["content-type", "x-onairly-key", "x-onairly-assertion"]
+private let ttsHeaders: Set<String> = ["content-type", "x-onairly-install-token"]
+
+/// Seconds from `t0` (2027-01-15T08:00:00Z) to the next UTC midnight: the server's daily Retry-After.
+private let untilUTCMidnight = 57_600
 
 /// The proxy, per #378: attest challenge, register, tok challenge, token, tts. Each endpoint
 /// answers from its own queue (the last reply repeats); the defaults are the happy path.
@@ -227,14 +238,33 @@ final class InstallTokenClientTests: XCTestCase {
         }
     }
 
-    func testTokChallengeRequestIsKeyBoundAndCarriesNothingElse() throws {
-        let r = try client.challengeRequest(keyId: keyID(3))
+    func testTokChallengeBodyIsExactlyPurposeAndKeyIdAndNoHeader() throws {
+        // A key ID with `+` and `/`: sent raw (JSONEncoder would write `\/`), byte for byte.
+        let key = Data([0xfb, 0xff] + [UInt8](repeating: 0xfe, count: 30)).base64EncodedString()
+        XCTAssertTrue(key.contains("+") && key.contains("/"), key)
+        let r = try XCTUnwrap(client.challengeRequest(keyId: key))
         XCTAssertEqual(r.url?.path, "/api/attest/challenge")
         XCTAssertEqual(r.httpMethod, "POST")
-        XCTAssertEqual(r.value(forHTTPHeaderField: "X-OnAirly-Key"), keyID(3))
-        XCTAssertNil(r.value(forHTTPHeaderField: "Authorization"))
-        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(r.httpBody)) as? [String: String])
-        XCTAssertEqual(body, ["purpose": "tok", "keyId": keyID(3)])
+        XCTAssertEqual(r.httpBody.map { String(decoding: $0, as: UTF8.self) }, #"{"purpose":"tok","keyId":"\#(key)"}"#)
+        XCTAssertEqual(Set((r.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() }), challengeHeaders,
+                       "no X-OnAirly-Key (dropped by #380), no Authorization")
+        XCTAssertEqual(InstallTokenClient.challengeBody(keyId: key), r.httpBody)
+    }
+
+    func testOnlyACanonical32ByteStandardBase64KeyIdIsEverSent() {
+        let valid = keyID(9)
+        XCTAssertEqual(valid.utf8.count, 44)
+        XCTAssertNotNil(InstallTokenClient.challengeBody(keyId: valid))
+        let urlSafe = Data([0xfb, 0xff] + [UInt8](repeating: 0xfe, count: 30)).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        let nonCanonical = String(valid.dropLast(2)) + "R="  // nonzero pad bits
+        for bad in ["", String(valid.dropLast()), Data(repeating: 1, count: 31).base64EncodedString(),
+                    Data(repeating: 1, count: 33).base64EncodedString(), urlSafe, nonCanonical,
+                    valid + " ", "\"" + valid.dropFirst()] {
+            XCTAssertNil(InstallTokenClient.challengeBody(keyId: bad), bad)
+            XCTAssertNil(client.challengeRequest(keyId: bad), bad)
+            XCTAssertNil(client.tokenRequest(keyId: bad, body: Data(#"{"challenge":"c"}"#.utf8), assertion: Data([1])), bad)
+        }
     }
 
     func testTokenBodyAndClientDataFollowTheContract() throws {
@@ -252,15 +282,26 @@ final class InstallTokenClientTests: XCTestCase {
         }
     }
 
-    func testTokenRequestSendsKeyAndStandardBase64AssertionAndNoAuthorization() {
-        let body = InstallTokenClient.tokenBody(challenge: "c1")!
-        let r = client.tokenRequest(keyId: keyID(4), body: body, assertion: Data([0xfb, 0xff]))
+    func testTokenRequestHasExactlyKeyAssertionAndTheChallengeBody() throws {
+        let body = try XCTUnwrap(InstallTokenClient.tokenBody(challenge: "c1"))
+        let r = try XCTUnwrap(client.tokenRequest(keyId: keyID(4), body: body, assertion: Data([0xfb, 0xff])))
         XCTAssertEqual(r.url?.path, "/api/attest/token")
-        XCTAssertEqual(r.value(forHTTPHeaderField: "X-OnAirly-Key"), keyID(4))
-        XCTAssertEqual(r.value(forHTTPHeaderField: "X-OnAirly-Assertion"), "+/8=")
-        XCTAssertNil(r.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(Set((r.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() }), tokenHeaders,
+                       "never Authorization or X-OnAirly-Install-Token (400 mixed_auth)")
+        XCTAssertEqual(r.value(forHTTPHeaderField: "X-OnAirly-Key"), keyID(4), "the key ID only here, not in the body")
+        XCTAssertEqual(r.value(forHTTPHeaderField: "X-OnAirly-Assertion"), "+/8=", "standard, padded, canonical")
         XCTAssertEqual(r.httpBody, body, "the exact bytes the assertion covers")
-        XCTAssertLessThanOrEqual(body.count, 1024)
+        XCTAssertEqual(String(decoding: body, as: UTF8.self), #"{"challenge":"c1"}"#)
+        // Padding is kept for every length (1, 2 and 3 bytes mod 3).
+        for (raw, b64) in [(Data([0xff]), "/w=="), (Data([0xff, 0xfe]), "//4="), (Data([0xff, 0xfe, 0xfd]), "//79")] {
+            let req = try XCTUnwrap(client.tokenRequest(keyId: keyID(4), body: body, assertion: raw))
+            XCTAssertEqual(req.value(forHTTPHeaderField: "X-OnAirly-Assertion"), b64)
+        }
+        // Over the server's 1 KiB cap, empty, or without an assertion: nothing is built.
+        XCTAssertNil(client.tokenRequest(keyId: keyID(4), body: Data(count: 1025), assertion: Data([1])))
+        XCTAssertNil(client.tokenRequest(keyId: keyID(4), body: Data(), assertion: Data([1])))
+        XCTAssertNil(client.tokenRequest(keyId: keyID(4), body: body, assertion: Data()))
+        XCTAssertNotNil(client.tokenRequest(keyId: keyID(4), body: Data(count: 1024), assertion: Data([1])))
     }
 
     func testParsesOnlyAWellFormedToken() {
@@ -390,14 +431,17 @@ final class InstallTokenSourceTests: XCTestCase {
         let token = await rig.tokenValue()
         XCTAssertNotNil(token)
         let tok = try XCTUnwrap(rig.proxy.seen.first { $0.path == "/api/attest/challenge" })
-        XCTAssertEqual(tok.json["purpose"] as? String, "tok")
-        XCTAssertEqual(tok.header("X-OnAirly-Key"), keyID(200))
+        XCTAssertEqual(tok.text, #"{"purpose":"tok","keyId":"\#(keyID(200))"}"#, "exact wire bytes")
+        XCTAssertEqual(tok.headerNames, challengeHeaders)
         let mint = try XCTUnwrap(rig.proxy.seen.first { $0.path == "/api/attest/token" })
         let challenge = "ch_1-SECRET"  // the fake proxy's answer to the first request
-        XCTAssertEqual(mint.body, InstallTokenClient.tokenBody(challenge: challenge))
-        XCTAssertEqual(rig.device.assertionHashes, [InstallTokenClient.assertionClientDataHash(challenge: challenge, body: mint.body)])
+        XCTAssertEqual(mint.text, #"{"challenge":"ch_1-SECRET"}"#, "exactly one field; the key ID is header-only")
+        XCTAssertEqual(mint.headerNames, tokenHeaders)
+        XCTAssertEqual(mint.header("X-OnAirly-Key"), keyID(200))
+        // The signed clientData is rebuilt here from the bytes the server received.
+        let clientData = Data(("onairly-tok-v1\n" + challenge + "\n" + AttestHash.sha256Hex(mint.body)).utf8)
+        XCTAssertEqual(rig.device.assertionHashes, [AttestHash.sha256(clientData)])
         XCTAssertEqual(mint.header("X-OnAirly-Assertion"), Data("assertion-SECRET".utf8).base64EncodedString())
-        XCTAssertNil(mint.header("Authorization"))
         XCTAssertEqual(rig.device.generated, [], "a registered key is reused, never regenerated")
     }
 
@@ -500,9 +544,25 @@ final class InstallTokenSourceTests: XCTestCase {
         XCTAssertEqual(rig.backoff.suspendedUntil(), t0.addingTimeInterval(3600))
     }
 
+    func testMintServerTroubleBacksOffForItsRetryAfter() async {
+        for (reply, seconds) in [(Reply.reason(500, "misconfig", retryAfter: "300"), 300.0),
+                                 (.reason(503, "store", retryAfter: "120"), 120), (.reason(429, "rate", retryAfter: "\(untilUTCMidnight)"), Double(untilUTCMidnight))] {
+            let rig = Rig(registered: true)
+            rig.proxy.script(.token, [reply])
+            let got = await rig.token()
+            XCTAssertEqual(got, .failure(.backingOff), "\(reply.status)")
+            XCTAssertFalse(rig.backoff.isStoppedForThisLaunch, "\(reply.status)")
+            XCTAssertEqual(rig.backoff.suspendedUntil(), t0.addingTimeInterval(seconds), "\(reply.status)")
+            let calls = rig.proxy.total
+            let again = await rig.token()
+            XCTAssertEqual(again, .failure(.backingOff))
+            XCTAssertEqual(rig.proxy.total, calls, "no hot loop")
+        }
+    }
+
     func testHardFailuresStopForThisLaunch() async {
         for reply in [Reply.reason(403, "no_entitlement"), .reason(401, "assertion"), .reason(400, "mixed_auth"),
-                      .reason(400, "bad_request"), .json(200, "{}"), .reason(418, "teapot")] {
+                      .reason(400, "bad_request"), .reason(413, "too_large"), .json(200, "{}"), .reason(418, "teapot")] {
             let rig = Rig(registered: true)
             rig.proxy.script(.token, [reply])
             let got17 = await rig.token()
@@ -638,6 +698,27 @@ final class InstallTokenSourceTests: XCTestCase {
 // MARK: - Proxy, renderer, policy
 
 final class AttestedVoiceRouteTests: XCTestCase {
+    func testEveryEndpointGetsExactlyItsHeaderSet() async throws {
+        let rig = Rig()
+        let (r, _) = rig.renderer()
+        _ = await render(r)
+        await rig.source.waitForEnrollment()
+        let got = await render(r)
+        XCTAssertEqual(got, PremiumVoiceRoutes.providerID)
+        let paths = rig.proxy.seen.map(\.path)
+        XCTAssertEqual(paths, ["/api/attest/challenge", "/api/attest/register", "/api/attest/challenge",
+                               "/api/attest/token", "/api/tts"])
+        for seen in rig.proxy.seen {
+            switch seen.path {
+            case "/api/attest/challenge": XCTAssertEqual(seen.headerNames, challengeHeaders, seen.text)
+            case "/api/attest/token": XCTAssertEqual(seen.headerNames, tokenHeaders)
+            case "/api/tts": XCTAssertEqual(seen.headerNames, ttsHeaders, "no Authorization, no X-OnAirly-Assertion")
+            default: XCTAssertNil(seen.header("Authorization"))
+            }
+            XCTAssertLessThanOrEqual(seen.body.count, seen.path == "/api/tts" ? 64 * 1024 : 1024)
+        }
+    }
+
     func testTTSSendsOnlyTheInstallTokenNeverAuthorization() async throws {
         let rig = Rig(registered: true)
         let (r, decision) = rig.renderer()
@@ -702,14 +783,91 @@ final class AttestedVoiceRouteTests: XCTestCase {
         XCTAssertFalse(rig.backoff.isStoppedForThisLaunch)
     }
 
-    func testSecondTokenExpiredGoesOnDeviceForTheCueWithoutStopping() async {
+    func testAReMintedTokenRefusedAgainStopsWithoutALoop() async {
+        // #380: `token_expired` covers every token failure; re-mint once, then stop.
         let rig = Rig(registered: true)
         rig.proxy.script(.tts, [.reason(401, "token_expired")])
         let (r, _) = rig.renderer()
         let got35 = await render(r)
         XCTAssertEqual(got35, "device")
         XCTAssertEqual(rig.proxy.count("/api/tts"), 2, "no third try")
-        XCTAssertFalse(rig.backoff.isStoppedForThisLaunch)
+        XCTAssertEqual(rig.proxy.count("/api/attest/token"), 2, "one re-mint")
+        XCTAssertTrue(rig.backoff.isStoppedForThisLaunch)
+        let calls = rig.proxy.total
+        for _ in 0..<3 {
+            let got = await render(r)
+            XCTAssertEqual(got, "device")
+        }
+        XCTAssertEqual(rig.proxy.total, calls, "no mint loop on later cues")
+    }
+
+    func testTTSReattestRegistersAgainOnceThenFallsBackOnDevice() async {
+        let rig = Rig(registered: true)
+        rig.proxy.script(.tts, [.reason(401, "reattest")])
+        let (r, _) = rig.renderer()
+        let first = await render(r)
+        XCTAssertEqual(first, "device")
+        XCTAssertFalse(rig.backoff.isStoppedForThisLaunch, "a reattest is not a stop the first time")
+        await rig.source.waitForEnrollment()
+        XCTAssertEqual(rig.device.generated.count, 1, "a new key")
+        XCTAssertEqual(rig.proxy.count("/api/attest/register"), 1)
+        XCTAssertEqual(rig.proxy.count("/api/tts"), 1, "no tts retry inside the cue")
+
+        // The new key's token is refused with reattest again: no second registration, stop.
+        let second = await render(r)
+        XCTAssertEqual(second, "device")
+        await rig.source.waitForEnrollment()
+        XCTAssertEqual(rig.device.generated.count, 1, "registered again at most once")
+        XCTAssertEqual(rig.proxy.count("/api/attest/register"), 1)
+        XCTAssertTrue(rig.backoff.isStoppedForThisLaunch)
+        let calls = rig.proxy.total
+        let third = await render(r)
+        XCTAssertEqual(third, "device")
+        XCTAssertEqual(rig.proxy.total, calls)
+    }
+
+    /// #380 status table on /api/tts (install-token path): every answer goes on-device for the
+    /// cue, and the next cue makes no request, so nothing hot-loops.
+    func testEveryTTSRefusalFallsBackAndTheNextCueMakesNoRequest() async {
+        enum Want { case stopped, until(TimeInterval), backoff }
+        let midnight = "\(untilUTCMidnight)"
+        let cases: [(Reply, Want)] = [
+            (.reason(403, "no_entitlement"), .stopped),
+            (.json(403, #"{"error":"forbidden"}"#), .stopped),
+            (.reason(401, "assertion"), .stopped),
+            (.reason(400, "mixed_auth"), .stopped),
+            (.reason(503, "disabled", retryAfter: "3600"), .until(3600)),
+            (.reason(503, "store", retryAfter: "120"), .until(120)),
+            (.reason(429, "rate", retryAfter: "90"), .until(90)),
+            (.reason(429, "install_daily", retryAfter: midnight), .until(TimeInterval(untilUTCMidnight))),
+            (.reason(429, "global_daily", retryAfter: midnight), .until(TimeInterval(untilUTCMidnight))),
+            (.reason(429, "install_daily"), .until(TimeInterval(untilUTCMidnight))),
+            (.reason(400, "bad_request"), .backoff),
+            (.json(413, #"{"error":"too_large"}"#), .backoff),
+            (.reason(500, "misconfig"), .backoff),
+        ]
+        for (reply, want) in cases {
+            let rig = Rig(registered: true)
+            rig.proxy.script(.tts, [reply])
+            let (r, _) = rig.renderer()
+            let got = await render(r)
+            let label = "\(reply.status) \(String(decoding: reply.body, as: UTF8.self))"
+            XCTAssertEqual(got, "device", label)
+            XCTAssertEqual(rig.proxy.count("/api/tts"), 1, label)
+            switch want {
+            case .stopped: XCTAssertTrue(rig.backoff.isStoppedForThisLaunch, label)
+            case .until(let s):
+                XCTAssertFalse(rig.backoff.isStoppedForThisLaunch, label)
+                XCTAssertEqual(rig.backoff.suspendedUntil(), t0.addingTimeInterval(s), label)
+            case .backoff:
+                XCTAssertFalse(rig.backoff.isStoppedForThisLaunch, label)
+                XCTAssertNotNil(rig.backoff.suspendedUntil(), label)
+            }
+            let calls = rig.proxy.total
+            let next = await render(r)
+            XCTAssertEqual(next, "device", label)
+            XCTAssertEqual(rig.proxy.total, calls, "no request while backing off: \(label)")
+        }
     }
 
     func testOther401OnTTSStopsThePaidRouteForTheLaunch() async {
@@ -783,6 +941,25 @@ final class AttestedVoiceRouteTests: XCTestCase {
                                                        context: RequestContext(stationID: "s", isReusableGeneric: false))
         XCTAssertEqual(owner.total, 1, "the owner path never retries")
         XCTAssertTrue(backoff.isStoppedForThisLaunch)
+    }
+
+    func testOwnerPathIgnoresTheInstallTokenStatusTable() async throws {
+        // The owner (Bearer) path keeps its pre-#378 handling: 403/400/413 change nothing.
+        for status in [403, 400, 413] {
+            let owner = FakeProxy()
+            owner.script(.tts, [.reason(status, "mixed_auth")])
+            let backoff = PaidVoiceBackoff()
+            let creds = PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!, token: "owner-tok")
+            let c = PremiumVoiceRoutes.compose(onDevice: [], paidProvidersEnabled: true, access: .allowed,
+                                               selectedVoiceID: PremiumVoiceCatalog.voices[0].id, credentials: creds,
+                                               transport: owner, backoff: backoff)
+            let ownerRoute = try XCTUnwrap(c.routes.first)
+            _ = try? await ownerRoute.provider.synthesize("Hi", voice: ownerRoute.voice,
+                                                           context: RequestContext(stationID: "s", isReusableGeneric: false))
+            XCTAssertFalse(backoff.isStoppedForThisLaunch, "\(status)")
+            XCTAssertNil(backoff.suspendedUntil(), "\(status)")
+            XCTAssertEqual(owner.seen.first?.headerNames, ["content-type", "authorization"])
+        }
     }
 
     func testUnsupportedOrNonTesterBuildsComposeOnlyOnDevice() async {
@@ -877,5 +1054,92 @@ final class TesterVoiceBuildFlagTests: XCTestCase {
         #else
         XCTAssertFalse(TesterVoice.enabled, "Release and Debug builds have no attested route")
         #endif
+    }
+}
+
+// MARK: - Token storage and logging (source scan)
+
+/// #380 security asks: the install token lives in memory only (never UserDefaults, a file or a
+/// log); the only Keychain items this feature writes (key ID, install ID) are this-device-only;
+/// no token, assertion, challenge or key ID is ever logged.
+final class InstallTokenStorageScanTests: XCTestCase {
+    private let iosRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+
+    private func source(_ relative: String) throws -> String {
+        try String(contentsOf: iosRoot.appendingPathComponent(relative), encoding: .utf8)
+    }
+
+    private func swiftFiles(_ relative: String) throws -> [(String, String)] {
+        let dir = iosRoot.appendingPathComponent(relative)
+        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".swift") }.sorted()
+        return try names.map { ($0, try String(contentsOf: dir.appendingPathComponent($0), encoding: .utf8)) }
+    }
+
+    private func matches(_ pattern: String, in text: String) -> [String] {
+        let re = try! NSRegularExpression(pattern: pattern)
+        return re.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
+            Range($0.range(at: $0.numberOfRanges > 1 ? 1 : 0), in: text).map { String(text[$0]) }
+        }
+    }
+
+    func testKeychainItemsAreThisDeviceOnly() throws {
+        let attest = try swiftFiles("AeroDJCore/Sources/AeroDJCore/Attest")
+        XCTAssertFalse(attest.isEmpty)
+        for (name, text) in attest {
+            for constant in matches(#"kSecAttrAccessible[A-Za-z]+"#, in: text) {
+                XCTAssertTrue(constant.hasSuffix("ThisDeviceOnly"), "\(name): \(constant)")
+            }
+        }
+        for file in ["AttestKeyIDStore.swift", "AttestInstallID.swift"] {
+            let text = try XCTUnwrap(attest.first { $0.0 == file }?.1, file)
+            XCTAssertTrue(text.contains("static var accessibility: CFString { kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly }"), file)
+            XCTAssertTrue(text.contains("kSecAttrAccessible as String: Self.accessibility")
+                          || text.contains("kSecAttrAccessible as String] = accessibility"), file)
+        }
+        XCTAssertEqual(AttestKeyIDKeychain.accessibilityName, "kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly")
+    }
+
+    func testTheInstallTokenIsNeverPersistedOrEncodable() throws {
+        let client = try source("AeroDJCore/Sources/AeroDJCore/Attest/InstallTokenClient.swift")
+        let declaration = try XCTUnwrap(matches(#"public struct InstallToken:[^{]*\{"#, in: client).first)
+        for banned in ["Codable", "Encodable", "Decodable"] { XCTAssertFalse(declaration.contains(banned), declaration) }
+        // The raw token is read in exactly one place: the X-OnAirly-Install-Token header.
+        var readers: [String] = []
+        for dir in ["AeroDJCore/Sources/AeroDJCore/Attest", "AeroDJCore/Sources/AeroDJCore/Voice", "AeroDJ"] {
+            for (name, text) in try swiftFiles(dir) where text.contains(".headerValue") { readers.append(name) }
+        }
+        XCTAssertEqual(readers, ["ProxyVoiceProvider.swift"])
+        let proxy = try source("AeroDJCore/Sources/AeroDJCore/Voice/ProxyVoiceProvider.swift")
+        XCTAssertEqual(matches(#"\.headerValue[^\n]*"#, in: proxy).filter { !$0.contains("forHTTPHeaderField: Self.installTokenHeader)") }, [])
+        // Nothing in the feature writes UserDefaults except the shared backoff store.
+        for (name, text) in try swiftFiles("AeroDJCore/Sources/AeroDJCore/Attest") {
+            XCTAssertFalse(text.contains("UserDefaults"), name)
+            XCTAssertFalse(text.contains("FileManager"), name)
+        }
+        let app = try source("AeroDJ/AppAttestService+App.swift")
+        XCTAssertEqual(matches(#"UserDefaults[^\n]*"#, in: app),
+                       [#"UserDefaultsPaidVoiceBackoffStore(key: "voice.paidBackoff.tester.v1"))"#])
+    }
+
+    func testNothingInTheFeatureLogsASecret() throws {
+        var core = try swiftFiles("AeroDJCore/Sources/AeroDJCore/Attest")
+        core.append(("ProxyVoiceProvider.swift", try source("AeroDJCore/Sources/AeroDJCore/Voice/ProxyVoiceProvider.swift")))
+        for (name, text) in core {
+            for call in ["print(", "debugPrint(", "NSLog(", "os_log(", "Logger(", "dump("] {
+                XCTAssertFalse(text.contains(call), "\(name) calls \(call)")
+            }
+        }
+        // The app's only log lines interpolate enum codes and counts, never a value.
+        let allowed: Set<String> = ["entry.event.rawValue", "entry.outcome", "entry.status ?? 0", "onDevice.count",
+                                    "index", "composition.routes.count", "reason.rawValue"]
+        for file in ["AeroDJ/AppAttestService+App.swift", "AeroDJ/TesterVoiceConsent+App.swift"] {
+            let text = try source(file)
+            for line in text.split(separator: "\n") where line.contains("log.") || line.contains("print(") || line.contains("NSLog") {
+                for value in matches(#"\\\(([^,)]+(?:\?\? 0)?)"#, in: String(line)) {
+                    XCTAssertTrue(allowed.contains(value), "\(file): \(value) in \(line)")
+                }
+            }
+        }
     }
 }

@@ -38,8 +38,10 @@ public final class PaidVoiceBackoff: @unchecked Sendable {
         case rate, enroll, store, disabled, reattest, assertion
         case installDaily = "install_daily"
         case globalDaily = "global_daily"
-        /// 401 on `/api/tts` for an expired install token (#378 §1.3): refresh once for that cue.
+        /// 401 on `/api/tts` for any install-token failure (#378 §1.3, #380): re-mint once.
         case tokenExpired = "token_expired"
+        /// 400 on `/api/tts` or `/api/attest/token`: two credentials on one request (#380).
+        case mixedAuth = "mixed_auth"
 
         /// Reads `reason` from a small JSON error body. Nil for a large, non-JSON or unknown body.
         public static func parse(_ body: Data) -> ProxyErrorReason? {

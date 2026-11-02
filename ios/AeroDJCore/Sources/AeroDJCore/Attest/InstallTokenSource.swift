@@ -9,6 +9,9 @@ public protocol InstallTokenProviding: Sendable {
     func installToken() async throws -> InstallToken
     /// The proxy answered 401 `token_expired` for `token`: drop it so the next call mints anew.
     func tokenRejected(_ token: InstallToken) async
+    /// The proxy answered 401 `reattest` (key record gone or revoked): register a new key, at
+    /// most once per launch; a second time stops the route until the next launch.
+    func keyRejected() async
 }
 
 /// The App Attest client's state machine (#378, -Atlas). Pure logic, Linux-tested with fakes;
@@ -143,6 +146,10 @@ public actor InstallTokenSource: InstallTokenProviding {
 
     public func tokenRejected(_ token: InstallToken) async {
         if cached == token { cached = nil }
+    }
+
+    public func keyRejected() async {
+        reattest()
     }
 
     /// Starts enrollment in the background if there is consent, a supported device and no key.

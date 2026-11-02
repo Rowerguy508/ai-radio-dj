@@ -22,15 +22,18 @@ public struct InstallToken: Sendable, Equatable, CustomStringConvertible, Custom
 /// Requests and answers for the install-token mint (#378 §1.1 steps 3 and 4), against Sentinel's
 /// server PR. Builds requests and parses answers only; `InstallTokenSource` drives it.
 ///
-/// Contract (from #378; the token endpoint is not in the repo yet, see the PR's assumptions):
-/// - `POST /api/attest/challenge` `{purpose:"tok", keyId}` + `X-OnAirly-Key: <keyId>` →
-///   200 `{challenge, expiresIn:120}`. The key ID goes in the body (the existing handler's
-///   `keyId` field binds it into the MAC) and in the header (#378's table); both are the same value.
-/// - `POST /api/attest/token` `{challenge}` + `X-OnAirly-Key` + `X-OnAirly-Assertion` (standard
-///   base64 of the assertion CBOR) → 200 `{token, expiresIn:1800}`.
-/// - Assertion `clientData = "onairly-tok-v1\n" + challenge + "\n" + hex(sha256(rawBody))`;
-///   the device signs `clientDataHash = SHA-256(clientData)`.
-/// - Never sends `Authorization` (400 `mixed_auth`), the install ID, or any DJ text.
+/// Contract: Sentinel's #380 at 5e6c57d (`challenge-handler.ts`, `token-handler.ts`).
+/// - `POST /api/attest/challenge`, body exactly `{"purpose":"tok","keyId":"<keyId>"}` (any other
+///   field is 400) and no `X-OnAirly-*` header → 200 `{challenge, expiresIn:120}`.
+/// - `POST /api/attest/token`, body exactly `{"challenge":"…"}` (≤ 1 KiB, one field), the key ID
+///   ONLY in `X-OnAirly-Key`, and `X-OnAirly-Assertion` = canonical padded standard base64 of the
+///   assertion CBOR → 200 `{token, expiresIn:1800}`.
+/// - The key ID is the App Attest key ID as DeviceCheck returns it: canonical standard base64 of
+///   32 bytes (44 characters), which is what the server's `parseKeyId` accepts.
+/// - Assertion `clientData = "onairly-tok-v1\n" + challenge + "\n" + hex(sha256(rawBody))`, over the
+///   exact body bytes this client sends; the device signs `clientDataHash = SHA-256(clientData)`.
+/// - Never sends `Authorization` or `X-OnAirly-Install-Token` (400 `mixed_auth`), the install
+///   ID, or any DJ text.
 public struct InstallTokenClient: Sendable {
     public static let clientDataPrefix = "onairly-tok-v1"
     public static let keyHeader = "X-OnAirly-Key"
@@ -39,6 +42,8 @@ public struct InstallTokenClient: Sendable {
     public static let expiresInRange: ClosedRange<Int> = 60...3600
     /// Short: a mint runs while a break is being prepared and must never hold it up for long.
     public static let requestTimeout: TimeInterval = 8
+    /// The server's body cap on `/api/attest/challenge` and `/api/attest/token` (`BODY_CAPS.challenge`).
+    public static let maxBodyBytes = 1024
 
     /// A failed challenge or mint. No payload beyond the enum, status and Retry-After.
     public struct Failure: Error, Equatable, Sendable {
@@ -71,14 +76,21 @@ public struct InstallTokenClient: Sendable {
 
     // MARK: Requests (pure)
 
-    func challengeRequest(keyId: String) throws -> URLRequest {
+    /// The exact `/api/attest/challenge` body: `{"purpose":"tok","keyId":"<keyId>"}` and nothing
+    /// else. nil unless `keyId` is a valid App Attest key ID (no JSON escaping is ever needed:
+    /// standard base64 has no quote or backslash, and `/` is sent unescaped).
+    public static func challengeBody(keyId: String) -> Data? {
+        guard AttestKeyID.isValid(keyId) else { return nil }
+        return Data("{\"purpose\":\"tok\",\"keyId\":\"\(keyId)\"}".utf8)
+    }
+
+    func challengeRequest(keyId: String) -> URLRequest? {
+        guard let body = Self.challengeBody(keyId: keyId) else { return nil }
         var request = URLRequest(url: baseURL.appendingPathComponent("api/attest/challenge"))
         request.httpMethod = "POST"
         request.timeoutInterval = Self.requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(keyId, forHTTPHeaderField: Self.keyHeader)
-        struct Body: Encodable { let purpose: String; let keyId: String }
-        request.httpBody = try JSONEncoder().encode(Body(purpose: "tok", keyId: keyId))
+        request.httpBody = body
         return request
     }
 
@@ -87,7 +99,8 @@ public struct InstallTokenClient: Sendable {
     public static func tokenBody(challenge: String) -> Data? {
         guard !challenge.isEmpty, challenge.utf8.count <= 128,
               challenge.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else { return nil }
-        return Data("{\"challenge\":\"\(challenge)\"}".utf8)
+        let body = Data("{\"challenge\":\"\(challenge)\"}".utf8)
+        return body.count <= maxBodyBytes ? body : nil
     }
 
     /// `"onairly-tok-v1\n" + challenge + "\n" + hex(sha256(body))`.
@@ -100,7 +113,10 @@ public struct InstallTokenClient: Sendable {
         AttestHash.sha256(assertionClientData(challenge: challenge, body: body))
     }
 
-    func tokenRequest(keyId: String, body: Data, assertion: Data) -> URLRequest {
+    /// The `/api/attest/token` request: exactly `body` on the wire (the bytes the assertion's
+    /// clientData hashed) and exactly three headers. nil for an invalid key ID or an oversized body.
+    func tokenRequest(keyId: String, body: Data, assertion: Data) -> URLRequest? {
+        guard AttestKeyID.isValid(keyId), !body.isEmpty, body.count <= Self.maxBodyBytes, !assertion.isEmpty else { return nil }
         var request = URLRequest(url: baseURL.appendingPathComponent("api/attest/token"))
         request.httpMethod = "POST"
         request.timeoutInterval = Self.requestTimeout
@@ -115,7 +131,7 @@ public struct InstallTokenClient: Sendable {
 
     /// A `tok` challenge bound to `keyId`.
     public func challenge(keyId: String) async -> Result<String, Failure> {
-        guard let request = try? challengeRequest(keyId: keyId) else {
+        guard let request = challengeRequest(keyId: keyId) else {
             return .failure(Failure(reason: .unexpected, status: nil, retryAfter: nil))
         }
         switch await send(request) {
@@ -133,7 +149,10 @@ public struct InstallTokenClient: Sendable {
     /// Mints a token with an assertion over `body` (from `tokenBody(challenge:)`). `startedAt` is
     /// taken before the request, so the local expiry is never later than the server's.
     public func mint(keyId: String, body: Data, assertion: Data, startedAt: Date) async -> Result<InstallToken, Failure> {
-        switch await send(tokenRequest(keyId: keyId, body: body, assertion: assertion)) {
+        guard let request = tokenRequest(keyId: keyId, body: body, assertion: assertion) else {
+            return .failure(Failure(reason: .unexpected, status: nil, retryAfter: nil))
+        }
+        switch await send(request) {
         case .failure(let failure): return .failure(failure)
         case .success(let (data, response)):
             guard response.statusCode == 200 else { return .failure(Self.failure(status: response.statusCode, data: data, response: response)) }
