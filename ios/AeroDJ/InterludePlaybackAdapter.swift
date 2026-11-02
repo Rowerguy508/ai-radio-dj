@@ -320,6 +320,18 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         log.notice("\(PlaybackLog.interludeStop(reason: .sourceRevoked), privacy: .public)")
         log.notice("\(PlaybackLog.breakEnd(after: self.breakTrack, result: .revoked), privacy: .public)")
         onPlayback?(.revoked(afterTrack: breakTrack))
+        // F3 (-Fry): leave `.transition` before anything resumes. A call that is still
+        // ringing here must find no active break when it ends, or music stays paused.
+        let cancel = HeldBoundaryStopReport.cancellation(
+            afterTrack: breakTrack, mayAutoResume: resumeMusic, phase: music.audioState)
+        switch cancel.audioEvent {
+        case .noInterlude?:
+            music.skipInterlude()
+        case .interludeEnded?:
+            music.endInterlude()
+        default:
+            break
+        }
         if resumeMusic, !music.currentEntryAlreadyFinished {
             await music.resumeIfAllowed()
         }

@@ -132,12 +132,16 @@ struct BleedNowPlaying: View {
                     StationSoundRow(tags: soundTags, action: onTune)
                 }
             case .nothingPlaying:
-                NowPlayingPlaceholder(content: content, actions: actions)
-                if let search {
-                    StartListeningView(search: search, model: studioSearch)
+                VStack(alignment: .leading, spacing: 12) {
+                    NowPlayingPlaceholder(content: content, actions: actions)
+                    if let search {
+                        StartListeningView(search: search, model: studioSearch)
+                    }
                 }
+                .modifier(BleedStateScrim())
             default:
                 NowPlayingPlaceholder(content: content, actions: actions)
+                    .modifier(BleedStateScrim())
             }
         }
     }
@@ -146,6 +150,38 @@ struct BleedNowPlaying: View {
         PlaybackChromeBar(content: content, snapshot: snapshot, actions: actions, dj: dj,
                           timeSource: timeSource, showsUpNext: showsUpNext,
                           onQueue: onQueue, onTune: onTune, onReview: onReview)
+    }
+}
+
+/// #312: state copy drawn straight on station art (open layout) was ~3.25:1. A slab-coloured
+/// scrim behind it brings light type past 4.5:1 on any art. It is a background with negative
+/// padding. Only on art (`onSlab`); the accessibility-size column sits on the system
+/// background and is untouched.
+///
+/// `BleedNowPlaying.titleBlock` pads the copy 20 pt from the art's sides but only 12 pt from its
+/// top, so a uniform 10 pt bleed left the slab 10 pt in at the sides and 2 pt at the top. When
+/// the slab is drawn, the copy and slab move down `topShift` (outside the background, so both
+/// move together): copy 20 pt from the top like the sides, slab 10 pt in on every edge. With
+/// no slab (playing title, accessibility column) nothing moves.
+struct BleedStateScrim: ViewModifier {
+    @Environment(\.onSlab) private var onSlab
+
+    /// How far the slab reaches past the copy on every edge.
+    static let bleed: CGFloat = 10
+    /// 20 pt side padding minus the 12 pt `titleBlock` top padding.
+    static let topShift: CGFloat = 8
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if onSlab {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(AeroDJPalette.slab.opacity(0.72))
+                        .padding(-Self.bleed)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.top, onSlab ? Self.topShift : 0)
     }
 }
 
@@ -302,6 +338,7 @@ struct TrackBlock: View {
     }
 }
 
+#if DEBUG
 #Preview("Compact playing") {
     CompactPlayer(station: PlaybackFixtures.station,
                   content: .track(PlaybackFixtures.songs[0]),
@@ -326,3 +363,4 @@ struct TrackBlock: View {
                   soundTags: [], search: nil, studioSearch: StudioSearchModel(query: ""),
                   onOpenWorkspace: {}, onTune: {}, onReview: {})
 }
+#endif

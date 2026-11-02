@@ -39,7 +39,8 @@ struct AppDependencies {
     func start() async {
         await studio.start()
         await djSession.start()
-        stationQueue?.start()
+        // #332: station starts read the same briefing provider as a song tap.
+        stationQueue?.start(briefing: djSession.briefingProvider(studio: studio))
     }
 
     static func make(defaults: UserDefaults = .standard) -> AppDependencies {
@@ -84,7 +85,9 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
                                        talkOverEnabled: { DJTalkoverFlag.isEnabled() },
                                        bundledClips: bundledClips)
-        let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj)
+        // #332: one once-a-day ledger for song taps and station starts, kept across relaunches.
+        let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj,
+                                       personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()))
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)

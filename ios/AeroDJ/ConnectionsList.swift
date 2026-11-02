@@ -152,7 +152,7 @@ private struct SourceCard: View {
                 .fixedSize(horizontal: false, vertical: true)
             Text(row.scope)
                 .font(.caption)
-                .foregroundStyle(AeroDJPalette.secondaryText)
+                .foregroundStyle(AeroDJPalette.cardCaptionText)
                 .fixedSize(horizontal: false, vertical: true)
 
             let actions = row.actions
@@ -165,7 +165,7 @@ private struct SourceCard: View {
             ForEach(unavailableReasons(actions), id: \.self) { reason in
                 Label(reason, systemImage: "info.circle")
                     .font(.caption)
-                    .foregroundStyle(AeroDJPalette.secondaryText)
+                    .foregroundStyle(AeroDJPalette.cardCaptionText)
             }
         }
         .padding(14)
@@ -235,7 +235,7 @@ private struct CalendarPickerSheet: View {
                                                         set: { on in if on { selection.insert(cal.id) } else { selection.remove(cal.id) } }))
                     }
                 } footer: {
-                    Text(failed ? "Couldn't save your choice. Try again." : "AeroDJ reads today's events only from the calendars you pick.")
+                    Text(failed ? "Couldn't save your choice. Try again." : "\(AppName.display) reads today's events only from the calendars you pick.")
                 }
             }
             .overlay {
@@ -271,7 +271,7 @@ private struct ItemReviewSheet: View {
         switch integration {
         case .calendar: "No events today in the calendars you chose."
         case .obsidian: "Notes you pick appear here for your OK."
-        case .shareInbox: "Items you share to AeroDJ appear here."
+        case .shareInbox: "Items you share to \(AppName.display) appear here."
         }
     }
 
