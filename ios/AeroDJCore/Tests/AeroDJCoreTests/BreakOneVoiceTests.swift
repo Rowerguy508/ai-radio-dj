@@ -118,7 +118,9 @@ final class BreakOneVoiceTests: XCTestCase {
                 let r = renderer(cloud, device, cache: cache)
                 holder.renderer = r
                 assertOneVoice(await prepare(r), "device", "standard", "\(name)/\(purge)")
-                XCTAssertEqual(cloud.calls, 3, "\(name)/\(purge): no second cloud pass")
+                // The first pass stops at the mismatch: cue 3 never reaches the cloud (it would be
+                // charged and discarded), and there is no second cloud pass.
+                XCTAssertEqual(cloud.calls, 2, "\(name)/\(purge): stopped at cue 2, no second cloud pass")
             }
         }
     }
@@ -130,7 +132,7 @@ final class BreakOneVoiceTests: XCTestCase {
             let device = CountingDevice()
             let r = renderer(cloud, device, cache: cache)
             assertOneVoice(await prepare(r), "device", "standard", name)
-            XCTAssertEqual(cloud.calls, 3, name)
+            XCTAssertEqual(cloud.calls, 2, "\(name): stopped at cue 2's fallback, cue 3 never sent")
         }
     }
 
@@ -166,6 +168,9 @@ final class BreakOneVoiceTests: XCTestCase {
         let outcome = await prepare(renderer(cloud, device, deviceTimeout: .milliseconds(50)))
         XCTAssertEqual(outcome, .skipped(.timedOut), "the retry's own skip reason")
         XCTAssertEqual(device.calls, 2, "first pass cue 2, then the retry's cue 1")
+        // Sentinel N2: cue 1 in the cloud, cue 2's refused cloud request, then the pass stops;
+        // the failed retry is on-device only and sends nothing to the cloud.
+        XCTAssertEqual(cloud.calls, 2, "no cloud request after the mismatch, none in the retry")
     }
 
     /// Mixed and over the cap: one whole-break retry, and when that is still over the cap the
@@ -177,9 +182,10 @@ final class BreakOneVoiceTests: XCTestCase {
         // pass reaches the provider and a second retry would show in the call count.
         let outcome = await prepare(renderer(cloud, device, cache: NoCache()), cap: 12)
         XCTAssertEqual(outcome, .skipped(.overBreakBudget))
-        // First pass: cue 2 on-device (1 call). One retry: all 3 cues (3 calls). A second would be 3 more.
+        // First pass: cue 2 on-device (1 call), then it stops. One retry: all 3 cues (3 calls).
+        // A second retry would be 3 more.
         XCTAssertEqual(device.calls, 4, "exactly one on-device retry")
-        XCTAssertEqual(cloud.calls, 3)
+        XCTAssertEqual(cloud.calls, 2, "the first pass stops at the mismatch on cue 2")
     }
 
     /// Mixed and over the cap, with the on-device retry under it: ready, all on-device.
@@ -226,7 +232,7 @@ final class BreakOneVoiceTests: XCTestCase {
             _ = await Self.result(preparer, 0)
             let taken = await preparer.takeCheckedBreak(afterTrack: 0)
             assertOneVoice(taken, "device", "standard", "\(name): the take")
-            XCTAssertEqual(cloud.calls, 3, "\(name): precondition, the sweep landed on cue 2's cloud render")
+            XCTAssertEqual(cloud.calls, 2, "\(name): precondition, the sweep landed on cue 2's cloud render (then it stops)")
         }
     }
 
