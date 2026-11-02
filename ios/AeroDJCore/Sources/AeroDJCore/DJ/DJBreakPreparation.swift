@@ -330,8 +330,11 @@ public actor DJBreakPreparer {
         let attribution = djBreak.attributions[line.id]
         let left = end - ContinuousClock.now
         guard left > .zero else { return .dropped(.late) }
+        // Still rendered alone and late (#347), but with its planned neighbours as context so it
+        // is voiced as part of the break, not as a lone sentence.
+        let neighbours = VoiceRenderer.neighbours(of: plannedLine, in: djBreak.cues, attributions: djBreak.attributions)
         let work: @Sendable () async -> Result<RenderedClip, VoiceRenderer.Failure> = {
-            await voice.render(line, userID: userID, stationID: stationID, attribution: attribution)
+            await voice.render(line, userID: userID, stationID: stationID, attribution: attribution, neighbours: neighbours)
         }
         guard let rendered = try? await VoiceRenderer.withTimeout(left, work) else {
             return Task.isCancelled ? .cancelled : .dropped(.late)
@@ -768,8 +771,9 @@ public actor DJBreakPreparer {
             // The only cancellation whose result is kept is the preparation deadline: takeBreak,
             // cancelAll and purge record their own outcome first and ignore this one.
             if Task.isCancelled { return .failure(Skip(reason: .timedOut)) }
+            let neighbours = VoiceRenderer.neighbours(of: cue, in: djBreak.cues, attributions: djBreak.attributions)
             switch await renderer.render(cue, userID: userID, stationID: stationID,
-                                         attribution: djBreak.attributions[cue.id]) {
+                                         attribution: djBreak.attributions[cue.id], neighbours: neighbours) {
             case .success(let clip):
                 cue.renderedSeconds = clip.audio.seconds
                 cue.voiceID = clip.audio.voiceID
