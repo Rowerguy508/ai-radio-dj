@@ -2,7 +2,7 @@ import XCTest
 @testable import AeroDJCore
 
 /// Echo's #359 show opener, per station (-Fry): `queueStarted` for a different station (other
-/// seeds) opens the show again, once. A restart or re-queue on the same station, a skip, or a
+/// seeds or genre tags, Echo on #362) opens the show again, once. A restart or re-queue on the same station, a skip, or a
 /// personality-only change never replays it. Deterministic: no render runs (every song start is
 /// inside the boundary margin) and station edits are awaited through `testOnStationChangeHandled`.
 private struct SilentVoice: VoiceProvider {
@@ -17,9 +17,9 @@ final class OpenerOnStationChangeTests: XCTestCase {
         [StationSeed(kind: .artist, catalogID: id, name: "Artist \(id)")]
     }
 
-    private func rig(seed: UInt64) async -> (DJBreakSession, StationConfigurationModel) {
-        var config = StationConfiguration(commentary: .frequent)
-        config.seeds = Self.seeded("first")
+    private func rig(seed: UInt64, tagsOnly: Bool = false) async -> (DJBreakSession, StationConfigurationModel) {
+        var config = StationConfiguration(genres: ["jazz", "soul"], moods: ["mellow"], commentary: .frequent)
+        if !tagsOnly { config.seeds = Self.seeded("first") }
         let station = StationConfigurationModel(
             store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
             consent: StaticIntegrationConsent([:]))
@@ -119,7 +119,7 @@ final class OpenerOnStationChangeTests: XCTestCase {
         }
     }
 
-    func testOnlySeedsMakeAnotherStation() async {
+    func testSeedsAreIdentityAndToneEditsAreNot() async {
         var a = StationConfiguration()
         a.seeds = Self.seeded("x") + [StationSeed(kind: .genre, catalogID: "g", name: "Genre")]
         var b = a
@@ -128,6 +128,54 @@ final class OpenerOnStationChangeTests: XCTestCase {
         XCTAssertEqual(DJBreakSession.openerStation(a), DJBreakSession.openerStation(b))
         b.seeds = Self.seeded("y")
         XCTAssertNotEqual(DJBreakSession.openerStation(a), DJBreakSession.openerStation(b))
-        XCTAssertEqual(DJBreakSession.openerStation(StationConfiguration()), [])
+        XCTAssertEqual(DJBreakSession.openerStation(StationConfiguration()), .init(seeds: [], genres: []))
+    }
+
+    /// Echo on #362: identity is seeds plus genre tags, order and case ignored; moods are tone.
+    func testGenresAreIdentityAndMoodsAreNot() async {
+        let a = StationConfiguration(genres: ["Jazz", "soul"], moods: ["mellow"])
+        var b = StationConfiguration(genres: ["soul", "jazz"], moods: ["upbeat", "late night"])
+        b.personality = .laidBack; b.briefing.enabled = !a.briefing.enabled
+        XCTAssertEqual(DJBreakSession.openerStation(a), DJBreakSession.openerStation(b))
+        b.genres = ["house"]
+        XCTAssertNotEqual(DJBreakSession.openerStation(a), DJBreakSession.openerStation(b))
+    }
+
+    // (d) A station built from tags alone re-greets once when its tags change.
+    func testATagsOnlyStationWhoseTagsChangeReGreetsOnce() async {
+        for seed in UInt64(0)..<10 {
+            let (session, station) = await rig(seed: seed, tagsOnly: true)
+            XCTAssertTrue(station.committedDisplayed.seeds.isEmpty)
+            await session.queueStarted(djTracks(30))
+            await airTheOpener(session, "seed \(seed) jazz")
+
+            await save(session, station) { await station.setGenres(["house", "disco"]) }
+            XCTAssertEqual(station.committedDisplayed.genres, ["house", "disco"])
+            await session.queueStarted(djTracks(30))
+            XCTAssertEqual(openers(session).count, 1, "seed \(seed): new tags open the show once")
+            XCTAssertEqual(openers(session).first, session.plannedBoundaries.first, "seed \(seed): as its first break")
+
+            await airTheOpener(session, "seed \(seed) house")
+            await session.queueStarted(djTracks(30))
+            XCTAssertEqual(openers(session), [], "seed \(seed): a re-queue on the new tags does not open it again")
+            await session.stop()
+        }
+    }
+
+    // (e) A mood-only edit does not re-greet, on a seeded or a tags-only station.
+    func testAMoodOnlyEditDoesNotReGreet() async {
+        for tagsOnly in [false, true] {
+            for seed in UInt64(0)..<10 {
+                let (session, station) = await rig(seed: seed, tagsOnly: tagsOnly)
+                await session.queueStarted(djTracks(30))
+                await airTheOpener(session, "seed \(seed) tagsOnly \(tagsOnly)")
+
+                await save(session, station) { await station.setMoods(["upbeat", "late night"]) }
+                XCTAssertEqual(station.committedDisplayed.moods, ["upbeat", "late night"])
+                await session.queueStarted(djTracks(30))
+                XCTAssertEqual(openers(session), [], "seed \(seed) tagsOnly \(tagsOnly): mood is tone, not a new station")
+                await session.stop()
+            }
+        }
     }
 }

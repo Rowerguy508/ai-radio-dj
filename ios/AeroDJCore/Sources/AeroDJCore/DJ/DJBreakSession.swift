@@ -78,11 +78,12 @@ public final class DJBreakSession {
     /// The committed station when the pending queue was reserved, to catch a save that lands
     /// between the tap and `queueStarted` (the feed keys the queue inside `music.play`).
     private var reservedStation: StationQueueKey??
-    /// Show opener on a new station (-Fry, for Echo's #359): the seeds of the station the last
+    /// Show opener on a new station (-Fry, for Echo's #359): the identity of the station the last
     /// queue was started for. nil until the first queue. `queueStarted` reopens the show
-    /// (`DJScriptWriter.greetAgain()`) only when these differ: a restart or re-queue on the same
-    /// station, a skip, or a personality, cadence, reach or discovery edit never replays it.
-    private var openedStation: Set<StationQueueKey.SeedID>?
+    /// (`DJScriptWriter.greetAgain()`) only when it differs: a restart or re-queue on the same
+    /// station, a skip, or a mood, personality, briefing, cadence, reach or discovery edit never
+    /// replays it.
+    private var openedStation: OpenerStation?
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -297,10 +298,18 @@ public final class DJBreakSession {
         replan(from: 0, keepingThrough: -1)
     }
 
-    /// What makes a station "another station" for the show opener: its seeds (kind, source and
-    /// catalog id), order ignored. Empty for a station with no seeds (tags only).
-    nonisolated static func openerStation(_ configuration: StationConfiguration) -> Set<StationQueueKey.SeedID> {
-        Set(StationQueueKey(configuration)?.seeds ?? [])
+    /// What makes a station "another station" for the show opener (Echo, #362): its seeds and its
+    /// genre tags, order ignored. Moods are tone, not identity: they live in their own field
+    /// (`StationConfiguration.moods`) and are left out, like personality, energy, discovery, reach,
+    /// commentary and the briefing. A tags-only station is identified by its genres alone.
+    struct OpenerStation: Equatable, Sendable {
+        let seeds: Set<StationQueueKey.SeedID>
+        let genres: Set<String>
+    }
+
+    nonisolated static func openerStation(_ configuration: StationConfiguration) -> OpenerStation {
+        let config = configuration.validated()   // genres trimmed, lowercased, de-duplicated
+        return OpenerStation(seeds: Set(StationQueueKey(config)?.seeds ?? []), genres: Set(config.genres))
     }
 
     /// The station the planned queue belongs to. `unknown` fails closed.
