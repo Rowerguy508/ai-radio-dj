@@ -155,32 +155,33 @@ struct BleedNowPlaying: View {
 
 /// #312: state copy drawn straight on station art (open layout) was ~3.25:1. A slab-coloured
 /// scrim behind it brings light type past 4.5:1 on any art. It is a background with negative
-/// padding, so no frame moves. Only on art (`onSlab`); the accessibility-size column sits on
-/// the system background and is untouched.
+/// padding. Only on art (`onSlab`); the accessibility-size column sits on the system
+/// background and is untouched.
 ///
-/// The copy sits 20 pt in from the art's sides but only 12 pt down from its top
-/// (`BleedNowPlaying.titleBlock`). A uniform -10 bleed left the slab 10 pt in at the sides and
-/// 2 pt at the top, so it looked clipped. The top bleed is trimmed so the slab is inset from
-/// the art's top by the same 10 pt as its sides; the copy itself does not move.
+/// `BleedNowPlaying.titleBlock` pads the copy 20 pt from the art's sides but only 12 pt from its
+/// top, so a uniform 10 pt bleed left the slab 10 pt in at the sides and 2 pt at the top. When
+/// the slab is drawn, the copy and slab move down `topShift` (outside the background, so both
+/// move together): copy 20 pt from the top like the sides, slab 10 pt in on every edge. With
+/// no slab (playing title, accessibility column) nothing moves.
 struct BleedStateScrim: ViewModifier {
     @Environment(\.onSlab) private var onSlab
 
-    /// How far the slab reaches past the copy at the sides and bottom.
+    /// How far the slab reaches past the copy on every edge.
     static let bleed: CGFloat = 10
-    /// How far the slab reaches above the copy: 12 pt title top padding minus a 10 pt inset
-    /// from the art's top edge, matching the 20 - 10 = 10 pt side inset.
-    static let topBleed: CGFloat = 2
+    /// 20 pt side padding minus the 12 pt `titleBlock` top padding.
+    static let topShift: CGFloat = 8
 
     func body(content: Content) -> some View {
-        content.background {
-            if onSlab {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(AeroDJPalette.slab.opacity(0.72))
-                    .padding(EdgeInsets(top: -Self.topBleed, leading: -Self.bleed,
-                                        bottom: -Self.bleed, trailing: -Self.bleed))
-                    .accessibilityHidden(true)
+        content
+            .background {
+                if onSlab {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(AeroDJPalette.slab.opacity(0.72))
+                        .padding(-Self.bleed)
+                        .accessibilityHidden(true)
+                }
             }
-        }
+            .padding(.top, onSlab ? Self.topShift : 0)
     }
 }
 
