@@ -73,10 +73,18 @@ struct AppDependencies {
         }
         let dj = DJPresentationStore()
         // One preparer per launch: revoking a source purges prepared breaks as well as cached audio.
+        // Bundled presenter clips (Fry): build 27 ships an empty manifest, so nothing resolves and
+        // every cue takes today's path. A missing or malformed resource is also empty.
+        let bundledClips = BundledClipResolver(
+            manifest: .load(contentsOf: Bundle.main.url(forResource: BundledClipManifest.resourceName,
+                                                        withExtension: BundledClipManifest.resourceExtension)),
+            directory: Bundle.main.resourceURL ?? Bundle.main.bundleURL,
+            access: .buildDefault)
         // The 4 s closing cap applies only while talk-over is on: the same flag the coordinator
-        // reads (DIAG override, else the AERODJ_OWNER_AB build default). P0 build 26, -Fry.
+        // reads (the Settings toggle, else ON on a live station). P0 build 26, -Fry.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
-                                       talkOverEnabled: { DJTalkoverFlag.isEnabled() })
+                                       talkOverEnabled: { DJTalkoverFlag.isEnabled() },
+                                       bundledClips: bundledClips)
         // #332: one once-a-day ledger for song taps and station starts, kept across relaunches.
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj,
                                        personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()))
@@ -131,8 +139,8 @@ struct AppDependencies {
         let voice = TestStation.makeRenderer(routes: VoiceRoute.onDeviceRoutes(),
                                              cache: InMemoryAudioCache(maxAge: TestStation.cacheRetention))
         let dj = DJPresentationStore()
-        // Fixture mode: the same flag and unset default as the coordinator below (OFF unless an
-        // owner A/B build's toggle was explicitly set ON). #225 removed `buildDefault:`; this call
+        // Fixture mode: the same flag and unset default as the coordinator below (OFF unless the
+        // Settings toggle was explicitly set ON). #225 removed `buildDefault:`; this call
         // from fe63f91 was missed in that merge and broke the app build on integration. -Fry
         let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,
                                        cadence: TestStation.cadence,
@@ -141,8 +149,8 @@ struct AppDependencies {
                                        })
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
-        // Fixture mode: talk-over is OFF unless an owner A/B build's toggle was explicitly set ON.
-        // Outside an owner A/B build it is OFF whatever was saved (DJTalkoverFlag).
+        // Fixture mode: talk-over is OFF unless the Settings toggle was explicitly set ON. The
+        // saved value is honoured in every build (DJTalkoverFlag).
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession,
                                            unsetDefault: DJTalkoverFlag.unsetDefault(isTestStation: true))
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)

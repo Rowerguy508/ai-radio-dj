@@ -102,7 +102,7 @@ final class PaidVoiceBackoffTests: XCTestCase {
 
     private func renderer(_ transport: ScriptedTransport, _ backoff: PaidVoiceBackoff?) -> VoiceRenderer {
         let device = [VoiceRoute(providerID: "device", provider: LocalVoice(), voice: VoiceProfile(id: "host", name: "Host"))]
-        let c = PremiumVoiceRoutes.compose(onDevice: device, paidProvidersEnabled: true, selectedVoiceID: nathan,
+        let c = PremiumVoiceRoutes.compose(onDevice: device, paidProvidersEnabled: true, access: .allowed, selectedVoiceID: nathan,
                                            credentials: creds, transport: transport, backoff: backoff)
         XCTAssertEqual(c.routes.count, 2)
         return VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
@@ -279,7 +279,7 @@ final class PaidVoiceBackoffTests: XCTestCase {
         let other = PaidVoiceBackoff(now: { clock.now })
         let hanging = HangingTransport()
         let device = [VoiceRoute(providerID: "device", provider: LocalVoice(), voice: VoiceProfile(id: "host", name: "Host"))]
-        let c = PremiumVoiceRoutes.compose(onDevice: device, paidProvidersEnabled: true, selectedVoiceID: nathan,
+        let c = PremiumVoiceRoutes.compose(onDevice: device, paidProvidersEnabled: true, access: .allowed, selectedVoiceID: nathan,
                                            credentials: creds, transport: hanging, backoff: other)
         guard let proxy = c.routes.first(where: { $0.providerID != "device" }) else { return XCTFail("no proxy route") }
         // Drive the provider directly: the renderer returns on cancellation without waiting for the
