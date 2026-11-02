@@ -54,7 +54,11 @@ final class DJBreakShapesSessionTests: XCTestCase {
             await session.queueStarted(djTracks(90))
             let plan = ordered(session.testPlannedBreaks)
             assertNatural(plan, "seed \(seed)")
-            for b in plan where b.shape != nil {
+            // Build 34: the session opens the show with no change to DJBreakSession; 22 s cap.
+            XCTAssertEqual(plan.first?.shape, .showOpener, "seed \(seed)")
+            XCTAssertEqual(plan.filter { $0.shape == .showOpener }.count, 1, "seed \(seed)")
+            if let opener = plan.first { XCTAssertLessThanOrEqual(DJScriptWriter.wholeSeconds(opener), 22, "seed \(seed)") }
+            for b in plan where b.isPickedShape {
                 let gap = b.cues.count > 1 && b.talkOverCueID == b.cues.last?.id ? PreparedDJBreak.talkOverGapSeconds : 0
                 XCTAssertLessThanOrEqual(b.estimatedSeconds + gap, 12, "seed \(seed): 12 s cap with the pause")
             }

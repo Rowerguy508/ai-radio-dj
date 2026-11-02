@@ -129,7 +129,7 @@ final class DJTimeCheckToneTests: XCTestCase {
                     XCTAssertEqual(b.attributions[cue.id], .presenter, name)
                     XCTAssertEqual(tc.text(at: date(9, 58)), TemplatePool.fill(phrases.comingUp[slot], ["time": "10 o'clock"]), name)
                     XCTAssertEqual(tc.text(at: date(12, 1)), TemplatePool.fill(phrases.justAfter[slot], ["time": "noon"]), name)
-                    XCTAssertLessThanOrEqual(breakSeconds(b), Double(dense.maxOrdinaryBreakSeconds), "\(name): 12 s cap")
+                    XCTAssertLessThanOrEqual(breakSeconds(b), capSeconds(b), "\(name): 12 s cap, 22 s for the show opener")
                 }
             }
             XCTAssertEqual(used, Set(phrases.on), "\(name): every slot airs")
@@ -208,14 +208,20 @@ final class DJTimeCheckToneTests: XCTestCase {
         }
     }
 
-    /// Whole sessions per persona with the real natural weights stay inside the 12 s cap.
+    /// Build 34: the session's show opener keeps its own 22 s cap; every other break keeps 12 s.
+    private func capSeconds(_ b: DJBreak) -> Double {
+        Double(b.shape == .showOpener ? dense.maxOpenerBreakSeconds : dense.maxOrdinaryBreakSeconds)
+    }
+
+    /// Whole sessions per persona with the real natural weights stay inside the 12 s cap
+    /// (the show opener inside its 22 s cap).
     func testNaturalSessionsPerToneStayInsideTheCap() {
         for (name, tone) in Self.tones {
             for seed in UInt64(0)..<30 {
                 var writer = DJScriptWriter(cadence: dense, seed: seed, tone: tone, shapes: .natural)
                 let plan = writer.plan(tracks: djTracks(40), briefing: nil, hour: 9, clock: clock(9, 40))
                 for b in plan.breaks where b.timeCheck != nil {
-                    XCTAssertLessThanOrEqual(breakSeconds(b), Double(dense.maxOrdinaryBreakSeconds), "\(name) seed \(seed)")
+                    XCTAssertLessThanOrEqual(breakSeconds(b), capSeconds(b), "\(name) seed \(seed)")
                 }
             }
         }

@@ -172,7 +172,7 @@ final class DJTimeCheckTests: XCTestCase {
     func testNeverInTheFirstBreakAfterTheGreetingAndNeverTwiceInARow() {
         for seed in UInt64(0)..<50 {
             var writer = DJScriptWriter(cadence: dense, seed: seed, shapes: heavy(spacing: 0))
-            let natural = writer.plan(tracks: djTracks(40), briefing: nil, hour: 9, clock: clock(9, 10)).breaks.filter { $0.shape != nil }
+            let natural = writer.plan(tracks: djTracks(40), briefing: nil, hour: 9, clock: clock(9, 10)).breaks.filter { $0.isPickedShape }
             XCTAssertNotEqual(natural.first?.shape, .timeCheckIntro, "seed \(seed): first break after the greeting")
             XCTAssertEqual(natural.dropFirst().first?.shape, .timeCheckIntro, "seed \(seed): allowed from the second")
             for (a, b) in zip(natural, natural.dropFirst()) {
@@ -226,7 +226,7 @@ final class DJTimeCheckTests: XCTestCase {
             var roomy = DJScriptWriter(cadence: dense, seed: seed, shapes: heavy(spacing: 0))
             roomy.extraLineSource = FixedExtraLine()
             let plan = roomy.plan(tracks: djTracks(30), briefing: nil, hour: 9, clock: clock(9, 40))
-            let withTime = plan.breaks.filter { $0.timeCheckCueID != nil }
+            let withTime = plan.breaks.filter { $0.timeCheckCueID != nil && $0.isPickedShape }
             XCTAssertFalse(withTime.isEmpty, "seed \(seed)")
             for b in withTime {
                 XCTAssertEqual(b.cues.first?.id, b.timeCheckCueID, "time check opens the break")
@@ -245,7 +245,9 @@ final class DJTimeCheckTests: XCTestCase {
                 XCTAssertEqual(b.cues.count, 1)
                 XCTAssertFalse(b.cues[0].text.contains(":") || b.cues[0].text.contains("o'clock"), b.cues[0].text)
             }
-            XCTAssertEqual(tight.testTimeCheckCount, 0, "a dropped time check does not count toward spacing")
+            // Build 34: the show opener keeps its own 22 s cap, so its time check stays.
+            let openerChecks = tightPlan.breaks.filter { $0.shape == .showOpener && $0.timeCheckCueID != nil }.count
+            XCTAssertEqual(tight.testTimeCheckCount, openerChecks, "a dropped time check does not count toward spacing")
         }
         // Extra line goes first: at any cap, a break whose roomy plan had a time check never keeps
         // the extra line and drops the time check; some cap keeps the time check with the extra
@@ -275,7 +277,7 @@ final class DJTimeCheckTests: XCTestCase {
         var picked = 0, total = 0
         for seed in UInt64(0)..<200 {
             var writer = DJScriptWriter(cadence: dense, seed: seed, shapes: DJBreakShapeConfig(timeCheckMinSpacingSeconds: 0))
-            let natural = writer.plan(tracks: djTracks(30), briefing: nil, hour: 9, clock: clock(9, 40)).breaks.filter { $0.shape != nil }
+            let natural = writer.plan(tracks: djTracks(30), briefing: nil, hour: 9, clock: clock(9, 40)).breaks.filter { $0.isPickedShape }
             total += natural.count
             picked += natural.filter { $0.shape == .timeCheckIntro }.count
         }
