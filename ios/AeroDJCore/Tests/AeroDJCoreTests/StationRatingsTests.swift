@@ -137,7 +137,7 @@ final class StationRatingsTests: XCTestCase {
 
     // MARK: Limits
 
-    func testFiveHundredPerStationEvictsExpiredTiredThenLikesThenLovesThenNevers() {
+    func testFiveHundredNonNeversEvictExpiredTiredThenLikesThenLovesThenActiveTiredAndNeverANever() {
         let today = 1_000
         var seed: [StationRatingEntry] = [
             rated("expired", .tired, day: today - 40),
@@ -145,17 +145,21 @@ final class StationRatingsTests: XCTestCase {
             rated("love-old", .love, day: 10), rated("love-new", .love, day: 60),
             rated("tired-old", .tired, day: today - 2), rated("tired-new", .tired, day: today - 1),
         ]
-        seed += (0..<(T.maxEntriesPerStation - seed.count)).map { rated(String(format: "never-%03d", $0), .never, day: 5) }
+        seed += (0..<(T.maxEntriesPerStation - seed.count)).map { rated(String(format: "filler-%03d", $0), .tired, day: today) }
+        seed += (0..<50).map { rated(String(format: "never-%03d", $0), .never, day: 5) }
         var station = StationRatings(entries: seed)
-        XCTAssertEqual(station.count, 500)
-        let order = ["expired", "like-old", "like-new", "love-old", "love-new", "tired-old", "tired-new", "never-000", "never-001"]
+        XCTAssertEqual(station.count, 550)
+        let order = ["expired", "like-old", "like-new", "love-old", "love-new", "tired-old", "tired-new", "filler-000"]
         for (i, victim) in order.enumerated() {
             XCTAssertNotNil(station.rating(for: victim), "\(victim) is still there before step \(i)")
-            station.rate(rated("added-\(i)", .never, day: today), today: today)
-            XCTAssertEqual(station.count, 500, "step \(i)")
+            station.rate(rated("zz-added-\(i)", .tired, day: today), today: today)
+            XCTAssertEqual(station.count, 550, "step \(i)")
             XCTAssertNil(station.rating(for: victim), "step \(i) evicts \(victim)")
-            XCTAssertEqual(station.rating(for: "added-\(i)"), .never, "the new rating is kept")
+            XCTAssertEqual(station.rating(for: "zz-added-\(i)"), .tired, "the new rating is kept")
+            XCTAssertEqual(station.entries.values.filter { $0.rating == .never }.count, 50, "no never is evicted")
         }
+        station.rate(rated("one-more-never", .never, day: today), today: today)
+        XCTAssertEqual(station.count, 551, "a never is outside the 500 cap")
     }
 
     func testPruneDropsOnlyExpiredTired() {

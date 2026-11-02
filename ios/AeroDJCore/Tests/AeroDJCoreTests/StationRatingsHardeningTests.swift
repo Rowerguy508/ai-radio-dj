@@ -2,9 +2,10 @@ import XCTest
 @testable import AeroDJCore
 
 /// Sentinel's #369 blockers (-Nova): a corrupt or hand-edited ratings file can never trap, and a
-/// load never holds more than the per-station limit (every never kept).
+/// load holds no more than the per-station caps.
 /// B1: day differences are overflow-safe; an implausible `ratedDay` reads as long ago (expired),
-/// a future one as age 0. B2: decoding trims to 500 in the eviction order, never evicting a never.
+/// a future one as age 0. B2 with Orion's ruling: a save and a load trim the same way, 500 non-nevers
+/// in the eviction order (never evicting a never) and 2000 nevers, oldest first.
 final class StationRatingsHardeningTests: XCTestCase {
     private typealias T = StationRatingTuning
     private static let seeds = [StationSeed(kind: .artist, catalogID: "seed", name: "Seed", source: .catalog)]
@@ -104,12 +105,14 @@ final class StationRatingsHardeningTests: XCTestCase {
                                          ratedDay: [Int.min, Int.max, 0, 9_500][i % 4], origin: .catalog),
                       in: Self.scope, today: [Int.min, Int.max][i % 2])
         }
-        XCTAssertLessThanOrEqual(book.ratings(for: Self.scope).count, T.maxEntriesPerStation)
+        let station = book.ratings(for: Self.scope)
+        XCTAssertLessThanOrEqual(station.entries.values.filter { $0.rating != .never }.count, T.maxEntriesPerStation)
+        XCTAssertLessThanOrEqual(station.entries.values.filter { $0.rating == .never }.count, T.maxNeversPerStation)
     }
 
     // MARK: B2: the limit on load
 
-    func testLoadingTwoThousandEntriesKeepsAtMostFiveHundredAndEveryNever() throws {
+    func testLoadingTwoThousandEntriesKeepsFiveHundredNonNeversAndEveryNever() throws {
         let today = 9_500
         var entries: [(String, String, String)] = []
         for i in 0..<2000 {
@@ -120,7 +123,8 @@ final class StationRatingsHardeningTests: XCTestCase {
         XCTAssertEqual(nevers.count, 500)
         for todayKey in [Optional(today), nil] {
             let station = try load(json(entries), today: todayKey).ratings(for: Self.scope)
-            XCTAssertLessThanOrEqual(station.count, T.maxEntriesPerStation)
+            XCTAssertEqual(station.entries.values.filter { $0.rating != .never }.count, T.maxEntriesPerStation)
+            XCTAssertEqual(station.count, 1000)
             XCTAssertTrue(nevers.isSubset(of: Set(station.entries.keys)), "every never kept")
         }
     }
@@ -129,23 +133,99 @@ final class StationRatingsHardeningTests: XCTestCase {
         let today = 9_500
         var entries: [(String, String, String)] = []
         for i in 0..<300 { entries.append((String(format: "never%03d", i), "never", "\(today)")) }
-        for i in 0..<150 { entries.append((String(format: "love%03d", i), "love", "\(today - i)")) }
-        for i in 0..<150 { entries.append((String(format: "like%03d", i), "like", "\(today)")) }
+        for i in 0..<350 { entries.append((String(format: "love%03d", i), "love", "\(today - i)")) }
+        for i in 0..<250 { entries.append((String(format: "like%03d", i), "like", "\(today - i)")) }
         for i in 0..<50 { entries.append((String(format: "tired%03d", i), "tired", "\(today - 40)")) }  // expired
         let station = try load(json(entries), today: today).ratings(for: Self.scope)
-        XCTAssertEqual(station.count, 500)
+        XCTAssertEqual(station.count, 800, "500 non-nevers plus every never")
         let kept = station.entries.values
         XCTAssertEqual(kept.filter { $0.rating == .tired }.count, 0, "expired tired go first")
-        XCTAssertEqual(kept.filter { $0.rating == .like }.count, 50, "then likes")
-        XCTAssertEqual(kept.filter { $0.rating == .love }.count, 150)
+        XCTAssertEqual(kept.filter { $0.rating == .like }.count, 150, "then the oldest likes")
+        XCTAssertNil(station.rating(for: "like249"))
+        XCTAssertEqual(station.rating(for: "like149"), .like)
+        XCTAssertEqual(kept.filter { $0.rating == .love }.count, 350)
         XCTAssertEqual(kept.filter { $0.rating == .never }.count, 300)
     }
 
-    func testMoreNeversThanTheLimitAllLoadAndNothingElseDoes() throws {
-        var entries: [(String, String, String)] = (0..<700).map { (String(format: "n%03d", $0), "never", "9000") }
-        entries += (0..<20).map { (String(format: "l%03d", $0), "love", "9000") }
-        let station = try load(json(entries), today: 9_500).ratings(for: Self.scope)
-        XCTAssertEqual(station.count, 700)
-        XCTAssertTrue(station.entries.values.allSatisfy { $0.rating == .never })
+    // MARK: Orion's ruling: separate caps, the same on save and load
+
+    private func entries(nevers: Int, others: Int, today: Int) -> [(song: String, rating: String, day: String)] {
+        var list: [(song: String, rating: String, day: String)] = []
+        for i in 0..<nevers { list.append((String(format: "n%05d", i), "never", "\(today - 3000 + i)")) }
+        let kinds = ["like", "love", "tired"]
+        for i in 0..<others { list.append((String(format: "o%05d", i), kinds[i % 3], "\(today - 3000 + i)")) }
+        return list
+    }
+
+    /// (1) Save: a full station plus many nevers; a new rating evicts a non-never, never a never.
+    func testASaveOverTheCapEvictsANonNeverAndNeverANever() {
+        let today = 9_500
+        var station = StationRatings(entries:
+            (0..<500).map { StationRatingEntry(songID: String(format: "love%03d", $0), artistName: "a", rating: .love,
+                                               ratedDay: today - 500 + $0, origin: .catalog) }
+            + (0..<1500).map { StationRatingEntry(songID: String(format: "never%04d", $0), artistName: "b", rating: .never,
+                                                  ratedDay: today - 9000 + $0, origin: .catalog) })
+        station.rate(StationRatingEntry(songID: "new-love", artistName: "c", rating: .love, ratedDay: today,
+                                        origin: .catalog), today: today)
+        XCTAssertEqual(station.rating(for: "new-love"), .love)
+        XCTAssertNil(station.rating(for: "love000"), "the oldest love goes")
+        XCTAssertEqual(station.entries.values.filter { $0.rating != .never }.count, 500)
+        XCTAssertEqual(station.entries.values.filter { $0.rating == .never }.count, 1500, "every never kept, even the oldest")
+        XCTAssertEqual(station.rating(for: "never0000"), .never)
+        station.rate(StationRatingEntry(songID: "new-never", artistName: "c", rating: .never, ratedDay: today,
+                                        origin: .catalog), today: today)
+        XCTAssertEqual(station.count, 2001, "a never is outside the 500 cap: nothing goes")
+    }
+
+    /// (2) Load: 700 nevers plus 600 others gives all 700 nevers plus 500 others.
+    func testALoadOfSevenHundredNeversAndSixHundredOthersKeepsAllNeversAndFiveHundredOthers() throws {
+        let today = 9_500
+        let input = entries(nevers: 700, others: 600, today: today)
+        let station = try load(json(input), today: today).ratings(for: Self.scope)
+        let kept = station.entries.values
+        XCTAssertEqual(kept.filter { $0.rating == .never }.count, 700)
+        XCTAssertEqual(kept.filter { $0.rating != .never }.count, 500)
+        XCTAssertEqual(station.count, 1200)
+    }
+
+    /// (3) The nevers ceiling: past 2000 the oldest nevers go, on save and on load.
+    func testPastTwoThousandTheOldestNeversGoOnSaveAndOnLoad() throws {
+        let today = 9_500
+        let input = entries(nevers: 2005, others: 10, today: today)
+        let loaded = try load(json(input), today: today).ratings(for: Self.scope)
+        XCTAssertEqual(loaded.entries.values.filter { $0.rating == .never }.count, T.maxNeversPerStation)
+        for i in 0..<5 { XCTAssertNil(loaded.rating(for: String(format: "n%05d", i)), "load drops the oldest never \(i)") }
+        XCTAssertEqual(loaded.rating(for: "n00005"), .never)
+        XCTAssertEqual(loaded.entries.values.filter { $0.rating != .never }.count, 10, "the others are untouched")
+
+        var saved = StationRatings(entries: (0..<T.maxNeversPerStation).map {
+            StationRatingEntry(songID: String(format: "n%05d", $0), artistName: "a", rating: .never,
+                               ratedDay: today - 3000 + $0, origin: .catalog)
+        })
+        saved.rate(StationRatingEntry(songID: "zz-new-never", artistName: "a", rating: .never, ratedDay: today,
+                                      origin: .catalog), today: today)
+        XCTAssertEqual(saved.count, T.maxNeversPerStation)
+        XCTAssertNil(saved.rating(for: "n00000"), "save drops the oldest never")
+        XCTAssertEqual(saved.rating(for: "zz-new-never"), .never)
+    }
+
+    /// (4) The same entries give the same station whether rated one by one (saves) or loaded at once,
+    /// including the case a just-made exemption would break (a fresh like once no older like is left).
+    func testASaveAndALoadOfTheSameEntriesGiveTheSameStation() throws {
+        let today = 9_500
+        let input = entries(nevers: 2300, others: 1200, today: today).sorted { Int($0.day)! < Int($1.day)! }
+        var saved = StationRatings()
+        for e in input {
+            saved.rate(StationRatingEntry(songID: e.song, artistName: "A \(e.song)", artistID: "aid-\(e.song)",
+                                          rating: SongRating(rawValue: e.rating)!, ratedDay: Int(e.day)!, origin: .catalog),
+                       today: today)
+        }
+        let loaded = try load(json(input), today: today).ratings(for: Self.scope)
+        XCTAssertEqual(loaded.entries.values.filter { $0.rating == .never }.count, T.maxNeversPerStation)
+        XCTAssertEqual(loaded.entries.values.filter { $0.rating != .never }.count, T.maxEntriesPerStation)
+        XCTAssertEqual(saved, loaded)
+        // And a saved station reloads unchanged.
+        let reloaded = try JSONDecoder().decode(StationRatings.self, from: JSONEncoder().encode(saved))
+        XCTAssertEqual(reloaded, saved)
     }
 }

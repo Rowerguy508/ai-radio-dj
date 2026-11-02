@@ -78,7 +78,11 @@ public enum StationRatingTuning {
     public static let affinityTierShare = 0.20
 
     // Limits
+    /// Non-never ratings per station (tired, like, love). Orion's ruling (#369): the general cap
+    /// never evicts a never, on save or on load.
     public static let maxEntriesPerStation = 500
+    /// Never ratings per station: their own ceiling. Past it, the oldest nevers go first.
+    public static let maxNeversPerStation = 2000
 
     // Day numbers (Sentinel B1): a saved `ratedDay` is days since the reference date (2001-01-01).
     /// Days a rating may plausibly carry: 1901 through about 3001. Anything outside (a corrupt or
@@ -183,7 +187,8 @@ public struct StationRatingEntry: Codable, Equatable, Sendable {
     func isExpired(today: Int) -> Bool { rating == .tired && age(today: today) >= StationRatingTuning.tiredEndDay }
 }
 
-/// One station's ratings: at most one per song, at most `maxEntriesPerStation`.
+/// One station's ratings: at most one per song; at most `maxEntriesPerStation` tired, like and love
+/// ratings, plus at most `maxNeversPerStation` nevers.
 public struct StationRatings: Codable, Equatable, Sendable {
     public private(set) var entries: [String: StationRatingEntry]
 
@@ -200,9 +205,9 @@ public struct StationRatings: Codable, Equatable, Sendable {
         try c.encode(entries.values.sorted { $0.songID < $1.songID }, forKey: .entries)
     }
 
-    /// Sentinel B2: a loaded station is trimmed to `maxEntriesPerStation` in the same eviction order,
-    /// except that every never is kept (dropping one would bring back a song the listener banned), so a
-    /// file with more than the limit of nevers loads them all and nothing else. `today` is the decoder's
+    /// Sentinel B2: a loaded station is trimmed by the same `enforceLimit` as a save: non-nevers to
+    /// `maxEntriesPerStation` in the eviction order, nevers to `maxNeversPerStation` oldest first. A load
+    /// and a save give the same station for the same entries. `today` is the decoder's
     /// `StationRatingBook.todayKey` when given (PR B's file store passes it), else the station's newest
     /// rating day, so a load never reads the clock.
     public init(from decoder: Decoder) throws {
@@ -210,7 +215,7 @@ public struct StationRatings: Codable, Equatable, Sendable {
         self.init(entries: try c.decode([StationRatingEntry].self, forKey: .entries))
         let today = (decoder.userInfo[StationRatingBook.todayKey] as? Int)
             ?? entries.values.map(\.ratedDay).max() ?? 0
-        enforceLimit(today: today, evictingNevers: false)
+        enforceLimit(today: today)
     }
 
     public var isEmpty: Bool { entries.isEmpty }
@@ -218,7 +223,7 @@ public struct StationRatings: Codable, Equatable, Sendable {
     public func rating(for songID: String) -> SongRating? { entries[songID]?.rating }
 
     /// Sets `entry`. The same level again clears the song (the menu's toggle). Returns the song's
-    /// rating afterwards. Over the limit, evicts in `evictionOrder`.
+    /// rating afterwards. Over a cap, evicts through `enforceLimit` (the same trim as a load).
     @discardableResult
     public mutating func rate(_ entry: StationRatingEntry, today: Int) -> SongRating? {
         if entries[entry.songID]?.rating == entry.rating {
@@ -226,7 +231,7 @@ public struct StationRatings: Codable, Equatable, Sendable {
             return nil
         }
         entries[entry.songID] = entry
-        enforceLimit(today: today, keeping: entry.songID)
+        enforceLimit(today: today)
         return entries[entry.songID]?.rating
     }
 
@@ -237,8 +242,8 @@ public struct StationRatings: Codable, Equatable, Sendable {
         entries = entries.filter { !$0.value.isExpired(today: today) }
     }
 
-    /// Who goes first when the station is full: expired tired, then the oldest like, then the
-    /// oldest love, then active tired (oldest first), then never last. Ties: the lower song ID.
+    /// Who goes first when the non-never group is full: expired tired, then the oldest like, then the
+    /// oldest love, then active tired (oldest first). Nevers are their own group (oldest first).
     static func evictionRank(_ e: StationRatingEntry, today: Int) -> Int {
         if e.isExpired(today: today) { return 0 }
         switch e.rating {
@@ -249,20 +254,29 @@ public struct StationRatings: Codable, Equatable, Sendable {
         }
     }
 
-    /// Evicts down to `maxEntriesPerStation`. `evictingNevers` false (a load) never evicts a never, so
-    /// the station may stay over the limit when nevers alone exceed it.
-    mutating func enforceLimit(today: Int, keeping newest: String? = nil, evictingNevers: Bool = true) {
-        let limit = StationRatingTuning.maxEntriesPerStation
-        guard entries.count > limit else { return }
-        let order = entries.values
-            .filter { $0.songID != newest && (evictingNevers || $0.rating != .never) }
+    /// The one trim, for a save (`rate`) and a load (`init(from:)`). Two separate caps (Orion, #369):
+    /// - tired, like and love: at most `maxEntriesPerStation`, evicting expired tired, then the oldest
+    ///   likes, then the oldest loves, then active tired (oldest first). A never is never in this group.
+    /// - never: at most `maxNeversPerStation`, evicting the oldest nevers.
+    /// Ties: the lower song ID. The rating just made gets no exemption, so a save and a load of the
+    /// same entries always agree; it can only go first when everything else in its group outranks it
+    /// (a fresh like on a station already full of loves and active tired, with no older like).
+    mutating func enforceLimit(today: Int) {
+        trim(limit: StationRatingTuning.maxEntriesPerStation, today: today) { $0.rating != .never }
+        trim(limit: StationRatingTuning.maxNeversPerStation, today: today) { $0.rating == .never }
+    }
+
+    private mutating func trim(limit: Int, today: Int, _ inGroup: (StationRatingEntry) -> Bool) {
+        let group = entries.values.filter(inGroup)
+        guard group.count > limit else { return }
+        let order = group
             .sorted {
                 let (ra, rb) = (Self.evictionRank($0, today: today), Self.evictionRank($1, today: today))
                 if ra != rb { return ra < rb }
                 if $0.ratedDay != $1.ratedDay { return $0.ratedDay < $1.ratedDay }
                 return $0.songID < $1.songID
             }
-        for victim in order.prefix(entries.count - limit) { entries[victim.songID] = nil }
+        for victim in order.prefix(group.count - limit) { entries[victim.songID] = nil }
     }
 }
 
