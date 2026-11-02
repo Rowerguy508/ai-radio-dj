@@ -2,8 +2,8 @@ import XCTest
 @testable import AeroDJCore
 
 /// Echo's #359 show opener, per station (-Fry): `queueStarted` for a different station opens the
-/// show again, once. "Different" is the feed's own rule (#362 P1): another `StationQueueKey`
-/// (seeds, reach, discovery). A restart or re-queue on the same station, a skip, or a genre, mood
+/// show again, once. "Different" is the seed part of the feed's `StationQueueKey` (#362 P1, Echo):
+/// reach and discovery are tuning sliders on the same station. A restart or re-queue on the same station, a skip, or a genre, mood
 /// or personality edit never replays it. The live path through `StationQueueFeed` is in
 /// `OpenerThroughStationQueueFeedTests`. Deterministic: no render runs (every song start is
 /// inside the boundary margin) and station edits are awaited through `testOnStationChangeHandled`.
@@ -139,9 +139,9 @@ final class OpenerOnStationChangeTests: XCTestCase {
         }
     }
 
-    // (f) Reach and discovery are in the feed's key (the feed builds and hands off a new queue for
-    // them), so the next queue opens the show again, once, like a seeds change.
-    func testAReachOrDiscoveryEditReGreetsOnceLikeTheFeed() async {
+    // (f) Reach and discovery are in the feed's key (the feed builds a new queue for them), but they
+    // tune the same station (Echo, #362): only the key's seeds count, so no opener.
+    func testAReachOrDiscoveryEditDoesNotReGreet() async {
         for edit in ["reach", "discovery"] {
             for seed in UInt64(0)..<5 {
                 let (session, station) = await rig(seed: seed)
@@ -153,7 +153,7 @@ final class OpenerOnStationChangeTests: XCTestCase {
                 }
                 XCTAssertNotEqual(StationQueueKey(station.committedDisplayed), before, "\(edit) is in the key")
                 await session.queueStarted(djTracks(30))
-                XCTAssertEqual(openers(session).count, 1, "seed \(seed) \(edit): a new station queue opens the show once")
+                XCTAssertEqual(openers(session), [], "seed \(seed) \(edit): a tuning slider, not a new station")
                 await session.stop()
             }
         }

@@ -79,14 +79,14 @@ public final class DJBreakSession {
     /// between the tap and `queueStarted` (the feed keys the queue inside `music.play`).
     private var reservedStation: StationQueueKey??
     /// Show opener on a new station (-Fry, for Echo's #359): the `StationQueueKey` of the station
-    /// the last queue was started for (outer nil: no queue yet). `queueStarted` reopens the show
-    /// (`DJScriptWriter.greetAgain()`) only when the new queue's key differs. That is the feed's
-    /// own rule (#362 P1): `StationQueueFeed` hands off a new station queue exactly when the
-    /// active key differs from the playing queue's (`take`), and every queue start records
-    /// `StationQueueKey(committedDisplayed)`, the same value read here. So a seeds, reach or
-    /// discovery change re-greets; a refill, a re-queue or restart on the same station, a skip, or a
-    /// genre, mood, personality, energy or briefing edit (none is in the key, so the feed never
-    /// starts a new queue for it) does not. A tags-only station has no key (nil), like the feed.
+    /// the last queue was started for (outer nil: no queue yet). This is the value the feed records
+    /// for every queue start (`StationQueueKey(committedDisplayed)`), and `queueStarted` reopens the
+    /// show (`DJScriptWriter.greetAgain()`) only when its SEED part differs (Echo, #362): reach and
+    /// discovery are tuning sliders on the same station, so their new queue keeps the show going.
+    /// A refill, a re-queue or restart on the same station, a skip, or a genre, mood, personality,
+    /// energy or briefing edit never re-greets (none is in the key; the feed starts no new queue for
+    /// them). A tags-only station has no key (nil); switching between two tags-only stations does
+    /// not re-greet (known gap until stations have a real id).
     private var openedStation: StationQueueKey??
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
@@ -296,7 +296,7 @@ public final class DJBreakSession {
         // A different station opens the show again. Its old queue's opener, if it already aired,
         // stays remembered by `forgetPlannedBreaks` above, so without this the new station would
         // start with no opener. Anti-repeat memory is kept: the new opener won't echo the old one.
-        if let previous = openedStation, previous != committed { writer.greetAgain() }
+        if let previous = openedStation, previous?.seeds != committed?.seeds { writer.greetAgain() }
         openedStation = .some(committed)
         replan(from: 0, keepingThrough: -1)
     }

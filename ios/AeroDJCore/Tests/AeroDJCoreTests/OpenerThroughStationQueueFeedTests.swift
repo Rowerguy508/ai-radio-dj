@@ -2,7 +2,8 @@ import XCTest
 @testable import AeroDJCore
 
 /// #362 P1 (lead, 13:37Z): the show opener replays only when the live path really starts a new
-/// station queue. A committed station edit goes through `StationQueueFeed` (prepare, then the
+/// station queue, and (Echo) only when its seeds changed: a reach or discovery edit starts a new
+/// queue for the same station. A committed station edit goes through `StationQueueFeed` (prepare, then the
 /// natural-boundary `queueForNextSong`) into `DJBreakSession`, wired the way the app's
 /// `StationQueuePlayer` wires them: a hand-off starts with `reserveQueueSetup` +
 /// `beginQueueInBackground`, a tap reports `feed.queueStarted(for:)` too. No test here calls
@@ -165,6 +166,33 @@ final class OpenerThroughStationQueueFeedTests: XCTestCase {
                 await p.tap(Self.mine(12))
                 XCTAssertEqual(openers(p), [], "\(label): a same-station re-queue does not re-greet")
                 await p.session.stop()
+            }
+        }
+    }
+
+    // Reach and discovery edits: the feed does start a new queue at the boundary (both are in its
+    // key), but they tune the same station (Echo, #362), so no opener. Tags-only: no key, no queue.
+    func testAReachOrDiscoveryEditThroughTheFeedStartsAQueueButNoOpener() async {
+        for edit in ["reach", "discovery"] {
+            for tagsOnly in [false, true] {
+                for seed in UInt64(0)..<5 {
+                    let label = "seed \(seed) tagsOnly \(tagsOnly) \(edit)"
+                    let p = await rig(seed: seed, tagsOnly: tagsOnly)
+                    await tapAndAirTheOpener(p, label)
+                    let playing = (openers(p).first ?? 0) + 1
+                    let kept = openers(p)
+
+                    await save(p) {
+                        if edit == "reach" { await p.station.setReach(.broad) } else { await p.station.setDiscovery(0.9) }
+                    }
+                    let handedOff = await p.boundary(after: playing)
+                    XCTAssertEqual(handedOff, !tagsOnly, "\(label): the feed starts a new queue for a seeded station")
+                    XCTAssertEqual(p.queueStarts, tagsOnly ? 1 : 2, label)
+                    XCTAssertEqual(openers(p), handedOff ? [] : kept, "\(label): a tuning slider, not a new station")
+                    await p.tap(Self.mine(12))
+                    XCTAssertEqual(openers(p), [], "\(label): nor on the next tap")
+                    await p.session.stop()
+                }
             }
         }
     }
