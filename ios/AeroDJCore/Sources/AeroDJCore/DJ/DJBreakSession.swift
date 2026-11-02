@@ -34,6 +34,8 @@ public final class DJBreakSession {
     private var briefing: NarrationHandoff?
     private var breaks: [Int: DJBreak] = [:]
     private var plannedWith: DJCadence?
+    /// The DJ personality the current plan was written in (its tone picks the copy bank).
+    private var plannedPersonality: DJPersonality?
     /// Why the last `naturalBoundary` handed out no break, and whether the cadence had planned
     /// one there. Read-only; nothing decides on it (the P0 trace's boundary row reads it).
     public private(set) var lastNoBreak: (reason: DJBreakSkipReason, cadencePlanned: Bool)?
@@ -119,7 +121,10 @@ public final class DJBreakSession {
         self.dj = dj
         self.base = base
         self.hour = hour
-        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed, shapes: .natural)
+        // The station's DJ personality picks the copy bank (lane 4, docs/dj-persona.md). Only the
+        // words change: no new data, request or provider (-Fry, agreed with Echo).
+        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed,
+                                     tone: .forPersonality(station.active.personality), shapes: .natural)
     }
 
     /// Forwards preparer events to the DJ status and follows station changes. Call once.
@@ -618,7 +623,10 @@ public final class DJBreakSession {
     }
 
     private func replanIfCadenceChanged(after k: Int) {
-        guard station.active.cadence(base: base) != plannedWith else { return }
+        // A personality change re-plans too, even when its cadence is the same (warm, upbeat
+        // and laid-back share one), so the breaks still to come speak in the new tone.
+        guard station.active.cadence(base: base) != plannedWith
+                || station.active.personality != plannedPersonality else { return }
         replan(from: k + 1, keepingThrough: k)
     }
 
@@ -628,6 +636,8 @@ public final class DJBreakSession {
         let cadence = station.active.cadence(base: base)
         plannedWith = cadence
         writer.cadence = cadence
+        plannedPersonality = station.active.personality
+        writer.setTone(.forPersonality(station.active.personality))
         // Lane 2: breaks past `kept` are planned away before airing; forget them first.
         writer.forgetPlannedBreaks(breaks.filter { $0.key > kept }.map(\.value))
         breaks = breaks.filter { $0.key <= kept }
@@ -664,6 +674,8 @@ public final class DJBreakSession {
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: the planned breaks by boundary (what `replan` wrote).
     var testPlannedBreaks: [Int: DJBreak] { breaks }
+    /// Test hook: the phrase bank the session's writer plans with.
+    var testWriterTone: EditorialTone { writer.tone }
     /// Test hook: called after the `start()` observer has handled a station change (any replan
     /// it causes is done), so a test can wait for it instead of racing the change stream.
     var testOnStationChangeHandled: ((StationConfigurationChange) -> Void)?

@@ -278,8 +278,8 @@ public struct DJScriptWriter: Sendable {
     public var cadence: DJCadence
     /// Spoken in station IDs. Unusable names (empty, braces, instruction-shaped) are skipped.
     public var stationName: String
-    /// The phrase bank. Swapping it changes the words, never the engine.
-    public let tone: EditorialTone
+    /// The phrase bank. Swapping it changes the words, never the engine. Set with `setTone`.
+    public private(set) var tone: EditorialTone
     /// Talk/silence rolls only, so phrasing changes never move where breaks fall.
     private var rng: SeededGenerator
     /// Chooses the break shape.
@@ -325,10 +325,7 @@ public struct DJScriptWriter: Sendable {
         self.shapePicker = shapes.map { DJBreakShapePicker(config: $0, seed: seed &+ 0x5851_F42D_4C95_7F2D) }
         self.recentTemplates = RecentSpokenTemplates(window: shapes?.recentBreakWindow ?? 1, hereWindow: shapes?.hereWindow ?? 1)
         self.combined = TemplatePool(shapes?.combinedLines(for: tone) ?? [])
-        let phrases = shapes?.timeCheckPhrases(for: tone) ?? DJTimeCheckPhrases(on: [], comingUp: [], justAfter: [])
-        self.timeCheckPools = Dictionary(uniqueKeysWithValues: DJTimeCheckRelation.allCases.map {
-            ($0, TemplatePool(phrases.templates(for: $0)))
-        })
+        self.timeCheckPools = Self.makeTimeCheckPools(shapes, tone)
         self.openerStation = TemplatePool(tone.opener.station)
         self.openerSetup = tone.opener.setup.mapValues { TemplatePool($0) }
         self.rng = SeededGenerator(seed: seed)
@@ -343,6 +340,38 @@ public struct DJScriptWriter: Sendable {
         briefingLead = TemplatePool(tone.briefingLead)
         briefingOutro = TemplatePool(tone.briefingOutro)
         greetings = tone.greetings.mapValues { TemplatePool($0) }
+    }
+
+    /// Swaps the phrase bank (a station's DJ personality changed, -Fry). Only which copy the
+    /// pools pick from changes, time-check wording included (#354: each tone has its own bank,
+    /// and a `DJBreakShapeConfig.timeChecks` override still wins). The RNG streams, so where
+    /// breaks fall and which shape each one takes, the anti-repeat memory, the greeting state
+    /// and the time-check spacing log stay. A no-op for the current tone, so a replan with the
+    /// same personality keeps the pools' rotation.
+    public mutating func setTone(_ newTone: EditorialTone) {
+        guard newTone != tone else { return }
+        tone = newTone
+        combined = TemplatePool(shapes?.combinedLines(for: newTone) ?? [])
+        timeCheckPools = Self.makeTimeCheckPools(shapes, newTone)
+        openerStation = TemplatePool(newTone.opener.station)
+        openerSetup = newTone.opener.setup.mapValues { TemplatePool($0) }
+        backAnnounce = TemplatePool(newTone.backAnnounce)
+        closing = TemplatePool(newTone.closing)
+        artistFocus = TemplatePool(newTone.artistFocus)
+        stationIDs = TemplatePool(newTone.stationID)
+        continuation = TemplatePool(newTone.continuation)
+        atmosphere = newTone.atmosphere.mapValues { TemplatePool($0) }
+        briefingLead = TemplatePool(newTone.briefingLead)
+        briefingOutro = TemplatePool(newTone.briefingOutro)
+        greetings = newTone.greetings.mapValues { TemplatePool($0) }
+    }
+
+    /// The tone's time-check bank by relation (empty without shapes: no time checks).
+    private static func makeTimeCheckPools(_ shapes: DJBreakShapeConfig?, _ tone: EditorialTone) -> [DJTimeCheckRelation: TemplatePool] {
+        let phrases = shapes?.timeCheckPhrases(for: tone) ?? DJTimeCheckPhrases(on: [], comingUp: [], justAfter: [])
+        return Dictionary(uniqueKeysWithValues: DJTimeCheckRelation.allCases.map {
+            ($0, TemplatePool(phrases.templates(for: $0)))
+        })
     }
 
     /// - Parameters:
@@ -621,6 +650,10 @@ public struct DJScriptWriter: Sendable {
     var testTimeCheckCount: Int { timeCheckLog.count }
     /// Test hook: the shape the next pick avoids.
     var testLastShape: DJBreakShape? { shapePicker?.lastShape }
+    /// Test hook: the show-opener pools' templates (station lines, mood lines by day part).
+    var testOpenerTemplates: DJOpenerPhrases {
+        DJOpenerPhrases(station: openerStation.templates, setup: openerSetup.mapValues(\.templates))
+    }
 
     enum NaturalOutcome {
         case planned(DJBreak)
