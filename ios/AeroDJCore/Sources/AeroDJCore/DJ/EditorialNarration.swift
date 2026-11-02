@@ -36,10 +36,16 @@ public struct EditorialTone: Equatable, Sendable {
     /// one; every line names both. Never `{station}`. Empty: the combined shape falls back to
     /// the closing line.
     public var combined: [String]
+    /// Spoken time checks (#347's `timeCheckIntro` shape), one pool per rounding relation, the
+    /// same number of templates in each and slot-aligned (slot i of `on`, `comingUp` and
+    /// `justAfter` is one phrasing). `{time}` only; one sentence, seven words or fewer, ending in
+    /// a period. The time itself always comes from `DJTimeCheck`, never from the copy.
+    public var timeChecks: DJTimeCheckPhrases
 
     public init(backAnnounce: [String], closing: [String], artistFocus: [String], stationID: [String],
                 atmosphere: [DayPart: [String]], continuation: [String], briefingLead: [String],
-                briefingOutro: [String], greetings: [DayPart: [String]], combined: [String] = []) {
+                briefingOutro: [String], greetings: [DayPart: [String]], combined: [String] = [],
+                timeChecks: DJTimeCheckPhrases = DJTimeCheckPhrases()) {
         self.backAnnounce = backAnnounce
         self.closing = closing
         self.artistFocus = artistFocus
@@ -50,6 +56,7 @@ public struct EditorialTone: Equatable, Sendable {
         self.briefingOutro = briefingOutro
         self.greetings = greetings
         self.combined = combined
+        self.timeChecks = timeChecks
     }
 
     /// Default: warm and conversational, in the house style below.
@@ -169,7 +176,9 @@ public struct EditorialTone: Equatable, Sendable {
             "{artist}, {title}. And this one's {nextArtist}.",
             "Out of {artist}, into {nextArtist}.",
             "{title} there. Up next, {nextArtist}.",
-        ]
+        ],
+        // Fry's #347 copy, verbatim: `DJTimeCheckPhrases`' defaults are warm's bank.
+        timeChecks: DJTimeCheckPhrases()
     )
 
     /// Brighter and forward-selling, still in the house style: no hype words, no claims about the
@@ -279,7 +288,12 @@ public struct EditorialTone: Equatable, Sendable {
             "Here's {nextTitle}, right after {title}.",
             "{artist} with {title}. Rolling on, {nextTitle}.",
             "That was {title}. Let's hit {nextTitle}.",
-        ]
+        ],
+        timeChecks: DJTimeCheckPhrases(
+            on: ["It's {time} right now.", "Quick time check, it's {time}.", "Clock says {time}."],
+            comingUp: ["Coming right up on {time}.", "Quick time check, almost {time}.", "Clock says nearly {time}."],
+            justAfter: ["Just past {time} right now.", "Quick time check, just past {time}.", "Clock says just after {time}."]
+        )
     )
 
     /// Soft and easy: slower words, no rush. Same contract as `warm`; mood only, no claims
@@ -388,7 +402,12 @@ public struct EditorialTone: Equatable, Sendable {
             "{title} just went by. Now it's {nextTitle}.",
             "So that's {artist}. Let's hang with {nextArtist}.",
             "{artist}, {title}. And now, {nextTitle}. Easy.",
-        ]
+        ],
+        timeChecks: DJTimeCheckPhrases(
+            on: ["It's {time} now.", "For the record, it's {time}.", "Clock reads {time}."],
+            comingUp: ["Creeping up on {time}.", "For the record, almost {time}.", "Clock reads nearly {time}."],
+            justAfter: ["A touch past {time}.", "For the record, just past {time}.", "Clock reads just after {time}."]
+        )
     )
 
     /// Names, mostly. Short, flat and informational: "{artist}. {title}." Pairs with
@@ -493,7 +512,12 @@ public struct EditorialTone: Equatable, Sendable {
             "{title}. Up next, {nextArtist}.",
             "That was {artist}. This is {nextArtist}.",
             "Here's {nextTitle}, after {title}.",
-        ]
+        ],
+        timeChecks: DJTimeCheckPhrases(
+            on: ["It's {time}.", "Time check, {time}.", "The time, {time}."],
+            comingUp: ["Almost {time}.", "Time check, almost {time}.", "The time, nearly {time}."],
+            justAfter: ["Just past {time}.", "Time check, just past {time}.", "The time, just after {time}."]
+        )
     )
 
     /// The phrasing bank for a station's existing `DJPersonality` (lane 4, docs/dj-persona.md).
@@ -511,6 +535,12 @@ public struct EditorialTone: Equatable, Sendable {
     public var allLines: [String] {
         backAnnounce + closing + artistFocus + stationID + continuation + briefingLead + briefingOutro
             + atmosphere.values.flatMap { $0 } + greetings.values.flatMap { $0 } + combined
+    }
+
+    /// Every time-check template, all relations (for scans in tests). Not in `allLines`: these
+    /// are the one place a line says a clock time, so the no-clock-times scans skip them.
+    public var allTimeCheckLines: [String] {
+        DJTimeCheckRelation.allCases.flatMap { timeChecks.templates(for: $0) }
     }
 }
 
