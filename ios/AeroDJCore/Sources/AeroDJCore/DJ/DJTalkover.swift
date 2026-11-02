@@ -117,6 +117,10 @@ public struct TalkoverConfig: Equatable, Sendable {
     /// The planner must decide at least this long before the voice starts (take the break,
     /// decode, set the session). A seek that lands closer to the end is a hard break.
     public var armLead: Double = 1.5
+    /// The duck (session activation with `.duckOthers`) runs this long before the voice, so the
+    /// system's duck ramp is down before the first word (-Fry). It sits inside `armLead`: the
+    /// plan always leaves `armLead` between the decision and the voice start.
+    public var duckLead: Double = 0.6
     /// Longest break the talk-over handles. Echo's approved budget: MAIN about 15 s, the 0.3 s
     /// gap, a closing line about 3 s, so about 18.5 s; 20 leaves slack for rendering.
     public var maxVoiceSeconds: Double = 20
@@ -609,19 +613,37 @@ public struct TalkoverBook: Equatable, Sendable {
 /// The session's own report around the talk-over duck activation (DIAG only, codes only).
 /// `otherBefore`/`hintBefore`: `isOtherAudioPlaying` / `secondaryAudioShouldBeSilencedHint`
 /// before `setActive(true)`; `otherAfter`/`hintAfter` right after. See docs/dj-talkover.md.
+///
+/// Added with the session-order fix (-Fry): `activeBefore` is the app's own record of whether
+/// it had activated the session (AVAudioSession has no public getter); `preDeactivateCode` is
+/// the error code of the quiet `setActive(false)` that makes the activation a fresh one (0 ok);
+/// `optionsRaw` / `duckOthersSet` are `categoryOptions` read back after `setCategory`;
+/// `outputVolumePercent` is `outputVolume` x 100. All optional: nil renders as "-".
 public struct TalkoverDuckProbe: Equatable, Sendable {
     public var otherBefore: Bool
     public var hintBefore: Bool
     public var activated: Bool
     public var otherAfter: Bool
     public var hintAfter: Bool
+    public var activeBefore: Bool?
+    public var preDeactivateCode: Int?
+    public var optionsRaw: Int?
+    public var duckOthersSet: Bool?
+    public var outputVolumePercent: Int?
 
-    public init(otherBefore: Bool, hintBefore: Bool, activated: Bool, otherAfter: Bool, hintAfter: Bool) {
+    public init(otherBefore: Bool, hintBefore: Bool, activated: Bool, otherAfter: Bool, hintAfter: Bool,
+                activeBefore: Bool? = nil, preDeactivateCode: Int? = nil, optionsRaw: Int? = nil,
+                duckOthersSet: Bool? = nil, outputVolumePercent: Int? = nil) {
         self.otherBefore = otherBefore
         self.hintBefore = hintBefore
         self.activated = activated
         self.otherAfter = otherAfter
         self.hintAfter = hintAfter
+        self.activeBefore = activeBefore
+        self.preDeactivateCode = preDeactivateCode
+        self.optionsRaw = optionsRaw
+        self.duckOthersSet = duckOthersSet
+        self.outputVolumePercent = outputVolumePercent
     }
 }
 
