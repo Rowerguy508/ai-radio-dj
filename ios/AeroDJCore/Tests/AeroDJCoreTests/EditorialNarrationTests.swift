@@ -404,28 +404,29 @@ final class EditorialNarrationTests: XCTestCase {
         // Golden scripts regenerated for radio-style breaks (Echo): MAIN segment + one closing line
         // naming the next song, which is the last cue and the talk-over cue. Durations are ESTIMATES.
         // Re-pinned for the radio-host house style (Orion, lane 1): same engine and seeds, new pool text.
+        // Re-pinned for warm's casual pass (build 34 owner note, Echo): same engine, seeds and slots.
         XCTAssertEqual(musicPlan.breaks.map { $0.cues.map(\.text) }, [
-            ["Hey, good morning.", "Beach House now, with Myth."],
-            ["There's Midnight City, from M83.", "Stay right there.", "Coming up, Vienna from Billy Joel."],
-            ["That's Dreams from Fleetwood Mac.", "This is Frank Ocean, Pink + White."],
+            ["Hey, good morning.", "Here's Beach House now, Myth."],
+            ["There you go, Midnight City from M83.", "Stay right there.", "Alright, Vienna from Billy Joel."],
+            ["So that's Dreams from Fleetwood Mac.", "We're going with Frank Ocean, Pink + White."],
         ])
         // #332: one personal update per break, so the note gets the next break of its own.
         // Forward merge of #339 with #338: #338's break structure, lane 1's pool text (lane 4 merges keep it).
         XCTAssertEqual(showPlan.breaks.map { $0.cues.map(\.text) }, [
             ["Hey, good morning.", "One sec before the next one.",
              "You've got Design review at 9:30 AM. Bring the notes. From your calendar.",
-             "That's the rundown.", "Beach House now, with Myth."],
-            ["M83 with Midnight City, just now.", "Quick heads-up before the next one.",
+             "That's the rundown.", "Here's Beach House now, Myth."],
+            ["Okay, that's Midnight City. M83.", "Quick heads-up before the next one.",
              "You've also got Grocery list. Milk and bread. From your notes.",
-             "Okay, on we go.", "Here's Billy Joel, with Vienna."],
-            ["That was Fleetwood Mac, with Dreams.", "Coming up, Pink + White from Frank Ocean."],
+             "Okay, on we go.", "Let's hear Vienna by Billy Joel."],
+            ["That's Fleetwood Mac, with Dreams.", "Alright, Pink + White from Frank Ocean."],
         ])
         for djBreak in musicPlan.breaks + showPlan.breaks {
             XCTAssertEqual(djBreak.talkOverCueID, djBreak.cues.last?.id, "the closing line is the talk-over cue")
         }
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[0].cues.map(\.text)), 4)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[1].cues.map(\.text)), 7)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[2].cues.map(\.text)), 5)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: musicPlan.breaks[2].cues.map(\.text)), 7)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 15)
         XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[0].cues.map(\.text)), 45)
         XCTAssertLessThanOrEqual(SpokenDurationEstimate.seconds(of: showPlan.breaks[1].cues.map(\.text)), 45)
@@ -434,16 +435,16 @@ final class EditorialNarrationTests: XCTestCase {
         // Afternoon: back-announce, station ID, continuation, closing.
         var station = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 2, stationName: "OnAirly")
         let stationBreak = try XCTUnwrap(station.plan(tracks: tracks, briefing: nil, hour: 15).breaks.first { $0.afterTrack == 2 })
-        XCTAssertEqual(stationBreak.cues.map(\.text), ["Midnight City there, from M83.", "OnAirly, keeping you company.",
-                                                      "Plenty more coming.", "And this one's Vienna."])
-        XCTAssertEqual(stationBreak.mainSeconds, 6)
+        XCTAssertEqual(stationBreak.cues.map(\.text), ["That one's Midnight City, by M83.", "OnAirly's got you covered.",
+                                                      "We've got plenty more.", "And this one's Vienna."])
+        XCTAssertEqual(stationBreak.mainSeconds, 7)
         XCTAssertEqual(stationBreak.closingSeconds, 2)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: stationBreak.cues.map(\.text)), 8)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: stationBreak.cues.map(\.text)), 9)
 
         // Artist focus opener.
         var artist = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 9, stationName: "OnAirly")
         let artistBreak = try XCTUnwrap(artist.plan(tracks: tracks, briefing: nil, hour: 15).breaks.first { $0.afterTrack == 2 })
-        XCTAssertEqual(artistBreak.cues.map(\.text), ["A little M83 for you.", "Plenty more coming.", "Billy Joel now, with Vienna."])
+        XCTAssertEqual(artistBreak.cues.map(\.text), ["A little M83 for you.", "We've got plenty more.", "Here's Billy Joel now, Vienna."])
         XCTAssertEqual(artistBreak.mainSeconds, 4)
         XCTAssertEqual(artistBreak.closingSeconds, 2)
         XCTAssertEqual(SpokenDurationEstimate.seconds(of: artistBreak.cues.map(\.text)), 6)
@@ -451,11 +452,11 @@ final class EditorialNarrationTests: XCTestCase {
         // Late night: back-announce, time-of-day color, continuation, closing.
         var late = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 1), seed: 5, stationName: "OnAirly")
         let lateBreak = try XCTUnwrap(late.plan(tracks: tracks, briefing: nil, hour: 23).breaks.first { $0.afterTrack == 2 })
-        XCTAssertEqual(lateBreak.cues.map(\.text), ["That's Midnight City from M83.", "Late hours. Quiet stretch.",
-                                                   "More on the way.", "Here comes Vienna."])
-        XCTAssertEqual(lateBreak.mainSeconds, 6)
+        XCTAssertEqual(lateBreak.cues.map(\.text), ["So that's Midnight City from M83.", "It's late. Quiet stretch now.",
+                                                   "There's more on the way.", "Here comes Vienna."])
+        XCTAssertEqual(lateBreak.mainSeconds, 7)
         XCTAssertEqual(lateBreak.closingSeconds, 2)
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: lateBreak.cues.map(\.text)), 8)
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: lateBreak.cues.map(\.text)), 9)
 
         // The pre-radio-style goldens' seeds at 9 PM (seeds 2, 1, 5), pinned at what the engine
         // produces now. Seed 1 no longer lands on artist focus: shape and phrasing draws moved.
@@ -464,14 +465,14 @@ final class EditorialNarrationTests: XCTestCase {
             return try XCTUnwrap(writer.plan(tracks: tracks, briefing: nil, hour: 21).breaks.first { $0.afterTrack == 2 })
         }
         let seed2 = try ninePM(2), seed1 = try ninePM(1), seed5 = try ninePM(5)
-        XCTAssertEqual(seed2.cues.map(\.text), ["Midnight City there, from M83.", "OnAirly, keeping you company.",
-                                               "Plenty more coming.", "And this one's Vienna."])
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed2.cues.map(\.text)), 8)
-        XCTAssertEqual(seed1.cues.map(\.text), ["Midnight City. That's M83.", "Don't go anywhere.", "Next up, it's Vienna."])
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed1.cues.map(\.text)), 6)
-        XCTAssertEqual(seed5.cues.map(\.text), ["That's Midnight City from M83.", "Evening's settling in.",
-                                               "More on the way.", "Here comes Vienna."])
-        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed5.cues.map(\.text)), 8)
+        XCTAssertEqual(seed2.cues.map(\.text), ["That one's Midnight City, by M83.", "OnAirly's got you covered.",
+                                               "We've got plenty more.", "And this one's Vienna."])
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed2.cues.map(\.text)), 9)
+        XCTAssertEqual(seed1.cues.map(\.text), ["Midnight City. That's M83, by the way.", "Don't go anywhere.", "Next up, it's Vienna."])
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed1.cues.map(\.text)), 7)
+        XCTAssertEqual(seed5.cues.map(\.text), ["So that's Midnight City from M83.", "Evening's settling in.",
+                                               "There's more on the way.", "Here comes Vienna."])
+        XCTAssertEqual(SpokenDurationEstimate.seconds(of: seed5.cues.map(\.text)), 9)
         for b in [seed2, seed1, seed5] { XCTAssertEqual(b.talkOverCueID, b.cues.last?.id) }
     }
 
