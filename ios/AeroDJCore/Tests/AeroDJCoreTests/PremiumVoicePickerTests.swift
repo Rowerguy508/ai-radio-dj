@@ -279,8 +279,9 @@ final class PremiumVoicePickerTests: XCTestCase {
         XCTAssertEqual(PremiumVoicePickerStatus.pendingDecision(
             paidProvidersEnabled: true, selectedVoiceID: juniper, endpoint: PremiumVoiceRoutes.defaultEndpoint,
             enteredToken: "", hasSavedToken: true),
-                       PremiumVoiceRoutes.compose(onDevice: [], paidProvidersEnabled: true, access: .allowed, selectedVoiceID: juniper,
-                                                  credentials: creds).decision, "defaults to compose's pins")
+                       PremiumVoiceRoutes.compose(onDevice: [], paidProvidersEnabled: true, access: ProVoiceGate.ownerPickerAccess,
+                                                  selectedVoiceID: juniper,
+                                                  credentials: creds).decision, "defaults to compose's pins and the build's picker access")
     }
 
     /// Security review: the sheet's check only reads the pin; running it never widens it.
