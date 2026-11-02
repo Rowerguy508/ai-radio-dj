@@ -57,6 +57,9 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     // session-order fix (-Fry): app-tracked active, quiet pre-deactivation error code, category
     // options read back, duckOthers set, output volume percent, unduck error code
     case activeBefore, preOff, opts, duckSet, outVol, err
+    // Echo's #374 follow-up (-Fry): MusicKit `playbackStatus == .playing` before and right after
+    // the duck activation, and in the settle, duck-to-voice (end of the lead) and unduck rows
+    case musicBefore, musicAfter, music
 }
 
 extension P0TraceCode {
@@ -633,7 +636,8 @@ extension P0EventTrace {
                                   (.otherAfter, .bool(p.otherAfter)), (.hintAfter, .bool(p.hintAfter)),
                                   (.activeBefore, Self.flag(p.activeBefore)), (.preOff, Self.number(p.preDeactivateCode)),
                                   (.opts, Self.number(p.optionsRaw)), (.duckSet, Self.flag(p.duckOthersSet)),
-                                  (.outVol, Self.number(p.outputVolumePercent))])
+                                  (.outVol, Self.number(p.outputVolumePercent)),
+                                  (.musicBefore, Self.flag(p.musicBefore)), (.musicAfter, Self.flag(p.musicAfter))])
     }
 
     /// The session 0.5 s after the duck activation (`kind=duckSettled`), and right after the
@@ -643,10 +647,13 @@ extension P0EventTrace {
         public var otherAudio: Bool
         public var secondaryHint: Bool
         public var outputVolumePercent: Int?
-        public init(otherAudio: Bool, secondaryHint: Bool, outputVolumePercent: Int?) {
+        /// Echo's #374 follow-up: MusicKit `playbackStatus == .playing` at this sample (nil: not read).
+        public var musicPlaying: Bool?
+        public init(otherAudio: Bool, secondaryHint: Bool, outputVolumePercent: Int?, musicPlaying: Bool? = nil) {
             self.otherAudio = otherAudio
             self.secondaryHint = secondaryHint
             self.outputVolumePercent = outputVolumePercent
+            self.musicPlaying = musicPlaying
         }
     }
 
@@ -655,10 +662,13 @@ extension P0EventTrace {
         record(.talkover, at: t, [(.kind, .code(.duckSettled)), (.after, .int(afterTrack))] + Self.pairs(s))
     }
 
-    /// Milliseconds from the duck activation to the voice's real start.
+    /// Milliseconds from the duck activation to the voice's real start, and (Echo's #374
+    /// follow-up) whether MusicKit was still playing then, at the end of the duck lead.
     @discardableResult
-    public mutating func talkoverDuckToVoice(ms: Int?, afterTrack: Int, at t: TimeInterval) -> P0TraceRow {
-        record(.talkover, at: t, [(.kind, .code(.duckVoice)), (.after, .int(afterTrack)), (.ms, Self.number(ms))])
+    public mutating func talkoverDuckToVoice(ms: Int?, musicPlaying: Bool? = nil, afterTrack: Int,
+                                             at t: TimeInterval) -> P0TraceRow {
+        record(.talkover, at: t, [(.kind, .code(.duckVoice)), (.after, .int(afterTrack)), (.ms, Self.number(ms)),
+                                  (.music, Self.flag(musicPlaying))])
     }
 
     @discardableResult
@@ -669,7 +679,8 @@ extension P0EventTrace {
     }
 
     private static func pairs(_ s: TalkoverSessionSample) -> [(P0TraceKey, P0TraceValue)] {
-        [(.otherAudio, .bool(s.otherAudio)), (.secondaryHint, .bool(s.secondaryHint)), (.outVol, number(s.outputVolumePercent))]
+        [(.otherAudio, .bool(s.otherAudio)), (.secondaryHint, .bool(s.secondaryHint)), (.outVol, number(s.outputVolumePercent)),
+         (.music, flag(s.musicPlaying))]
     }
     private static func flag(_ b: Bool?) -> P0TraceValue { b.map { .bool($0) } ?? .missing }
     private static func number(_ i: Int?) -> P0TraceValue { i.map { .int($0) } ?? .missing }
