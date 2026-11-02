@@ -265,8 +265,8 @@ public struct DJScriptWriter: Sendable {
     public var cadence: DJCadence
     /// Spoken in station IDs. Unusable names (empty, braces, instruction-shaped) are skipped.
     public var stationName: String
-    /// The phrase bank. Swapping it changes the words, never the engine.
-    public let tone: EditorialTone
+    /// The phrase bank. Swapping it changes the words, never the engine. Set with `setTone`.
+    public private(set) var tone: EditorialTone
     /// Talk/silence rolls only, so phrasing changes never move where breaks fall.
     private var rng: SeededGenerator
     /// Chooses the break shape.
@@ -326,6 +326,25 @@ public struct DJScriptWriter: Sendable {
         briefingLead = TemplatePool(tone.briefingLead)
         briefingOutro = TemplatePool(tone.briefingOutro)
         greetings = tone.greetings.mapValues { TemplatePool($0) }
+    }
+
+    /// Swaps the phrase bank (a station's DJ personality changed, -Fry). Only which copy the
+    /// pools pick from changes: the RNG streams, so where breaks fall and which shape each one
+    /// takes, the anti-repeat memory, the greeting state and the time-check pools stay. A no-op
+    /// for the current tone, so a replan with the same personality keeps the pools' rotation.
+    public mutating func setTone(_ newTone: EditorialTone) {
+        guard newTone != tone else { return }
+        tone = newTone
+        combined = TemplatePool(shapes?.combinedLines(for: newTone) ?? [])
+        backAnnounce = TemplatePool(newTone.backAnnounce)
+        closing = TemplatePool(newTone.closing)
+        artistFocus = TemplatePool(newTone.artistFocus)
+        stationIDs = TemplatePool(newTone.stationID)
+        continuation = TemplatePool(newTone.continuation)
+        atmosphere = newTone.atmosphere.mapValues { TemplatePool($0) }
+        briefingLead = TemplatePool(newTone.briefingLead)
+        briefingOutro = TemplatePool(newTone.briefingOutro)
+        greetings = newTone.greetings.mapValues { TemplatePool($0) }
     }
 
     /// - Parameters:
