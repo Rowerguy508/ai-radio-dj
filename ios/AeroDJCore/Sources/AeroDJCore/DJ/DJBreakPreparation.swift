@@ -78,6 +78,9 @@ public struct PreparedDJBreak: Equatable, Sendable {
     /// The planned time-check line, when it does not air in this break, and why (#347).
     /// Set by `takeBreak`; reason code and cue ID only.
     public var droppedTimeCheck: DJTimeCheckDrop? = nil
+    /// The clock reading the time-check line was written for (its expected air time), while
+    /// that line is in the break. `takeBreak` checks it against the clock at the take.
+    public var timeCheckAirTime: Date? = nil
 
     /// Speech gap before the closing line, in seconds. A pause between two lines of speech,
     /// not compensation for player latency.
@@ -138,6 +141,10 @@ public actor DJBreakPreparer {
     /// dropped before the take (late, failed, over cap, no voice). Read and cleared by `takeBreak`.
     private var timeChecks: [Int: DJPlannedTimeCheck] = [:]
     private var timeCheckDrops: [Int: DJTimeCheckDropReason] = [:]
+    /// The render deadline of each boundary's time-check line. At the take, a line that is not
+    /// there and has no recorded reason is `.late` once this has passed, whether or not the
+    /// prepare task got to record it first, so the reason never depends on task scheduling.
+    private var timeCheckDeadlines: [Int: ContinuousClock.Instant] = [:]
     private var timeCheckDropObservers: [@Sendable (Int, DJTimeCheckDrop) -> Void] = []
     /// Lane 2 time checks (Orion option (a), #347): the clock the time-check line is read from
     /// when it renders, and the wait until its render starts. Injected; Core never calls `Date()`.
@@ -151,8 +158,15 @@ public actor DJBreakPreparer {
     /// The default gap between the render deadline and the boundary (`deadline(remainingInSong:)`).
     public static let boundaryMargin: Duration = .seconds(3)
 
-    /// The production clock and wait, as plain nonisolated functions (not closure literals in a
-    /// default argument), so nothing the prepare task calls carries the caller's isolation.
+    /// The production clock and wait, as plain nonisolated functions, so nothing the prepare task
+    /// calls carries the caller's isolation. The init takes `sleepUntil` as an optional and falls
+    /// back to `sleep(until:)` in its body, never as a default argument: an async function value in
+    /// a public default argument is emitted into every client object, and with Xcode 26.5/26.6
+    /// (Swift 6.3.x) those copies can record a smaller async context than the library's body uses.
+    /// If the macOS linker pairs them, the wait writes past its task allocation and the next
+    /// `swift_task_dealloc` aborts with "freed pointer was not the last allocation"
+    /// (swiftlang/swift#92017; macOS CI on #347). `systemNow` is synchronous, so it has no async
+    /// context and may stay a default. -Fry
     @Sendable public nonisolated static func systemNow() -> Date { Date() }
     @Sendable public nonisolated static func sleep(until deadline: ContinuousClock.Instant) async throws {
         try await Task.sleep(until: deadline, clock: .continuous)
@@ -248,6 +262,7 @@ public actor DJBreakPreparer {
         let now = now, sleepUntil = sleepUntil
         timeChecks[k] = timeCheck
         timeCheckDrops[k] = nil
+        timeCheckDeadlines[k] = timeCheck == nil ? nil : end
         // The task holds the preparer weakly and touches it only in short actor hops, so a
         // preparer nobody holds any more is freed and its `deinit` cancels the task. A long
         // time-check wait never outlives its preparer (a leaked wait woke up during a later,
@@ -269,7 +284,8 @@ public actor DJBreakPreparer {
             switch late {
             case .cancelled: return
             case .dropped(let reason): await self?.dropTimeCheck(k, reason)
-            case .rendered(let line, let clip): await self?.addTimeCheck(k, line, clip, to: main, in: djBreak, cap: cap)
+            case .rendered(let line, let clip, let airTime):
+                await self?.addTimeCheck(k, line, clip, airTime: airTime, to: main, in: djBreak, cap: cap)
             }
         }
     }
@@ -293,7 +309,7 @@ public actor DJBreakPreparer {
     enum LateTimeCheck: Sendable {
         case cancelled
         case dropped(DJTimeCheckDropReason)
-        case rendered(NarrationCue, RenderedClip)
+        case rendered(NarrationCue, RenderedClip, airTime: Date)
     }
 
     /// Step 2: wait for the time-check window, write the line for its expected air time and
@@ -308,7 +324,8 @@ public actor DJBreakPreparer {
         guard let voice = sameVoice(as: main, in: renderer) else { return .dropped(.noVoice) }
         // The time it will be on air (Echo, #347): now plus what is left before the boundary.
         let toAir = end - ContinuousClock.now + boundaryMargin
-        guard let text = timeCheck.text(at: now().addingTimeInterval(seconds(toAir))) else { return .dropped(.renderFailed) }
+        let airTime = now().addingTimeInterval(seconds(toAir))
+        guard let text = timeCheck.text(at: airTime) else { return .dropped(.renderFailed) }
         let line = cue(plannedLine, saying: text)
         let attribution = djBreak.attributions[line.id]
         let left = end - ContinuousClock.now
@@ -320,7 +337,7 @@ public actor DJBreakPreparer {
             return Task.isCancelled ? .cancelled : .dropped(.late)
         }
         switch rendered {
-        case .success(let clip): return .rendered(line, clip)
+        case .success(let clip): return .rendered(line, clip, airTime: airTime)
         case .failure(let failure): return .dropped(timeCheckDropReason(failure))
         }
     }
@@ -377,8 +394,8 @@ public actor DJBreakPreparer {
     /// and the whole break still fits its caps, the 12 s whole-break cap included (#320). The
     /// late line is never a reason to trim another line: over a cap, it alone is dropped and the
     /// break airs as prepared. Its slot counts only the planned cues before it that were kept.
-    private func addTimeCheck(_ k: Int, _ line: NarrationCue, _ clip: RenderedClip, to main: PreparedDJBreak,
-                              in djBreak: DJBreak, cap: BreakCap) {
+    private func addTimeCheck(_ k: Int, _ line: NarrationCue, _ clip: RenderedClip, airTime: Date,
+                              to main: PreparedDJBreak, in djBreak: DJBreak, cap: BreakCap) {
         guard tasks[k] != nil, case .ready(let current)? = results[k], current == main else { return }
         let before = Set(djBreak.cues.prefix { $0.id != line.id }.map(\.id))
         let slot = main.cues.filter { before.contains($0.id) }.count
@@ -396,10 +413,12 @@ public actor DJBreakPreparer {
             return dropTimeCheck(k, .overCap)
         }
         let kept = Set(cues.map(\.id))
-        results[k] = .ready(PreparedDJBreak(afterTrack: k, cues: cues, clips: clips,
-                                            attributions: djBreak.attributions.filter { kept.contains($0.key) },
-                                            talkOverCueID: fit == .keepMarker ? djBreak.talkOverCueID : nil,
-                                            trimmedCueIDs: main.trimmedCueIDs))
+        var ready = PreparedDJBreak(afterTrack: k, cues: cues, clips: clips,
+                                    attributions: djBreak.attributions.filter { kept.contains($0.key) },
+                                    talkOverCueID: fit == .keepMarker ? djBreak.talkOverCueID : nil,
+                                    trimmedCueIDs: main.trimmedCueIDs)
+        ready.timeCheckAirTime = airTime
+        results[k] = .ready(ready)
     }
 
     /// Song scrubbing (-Atlas): a user seek changed the time left before boundary `k`.
@@ -443,6 +462,8 @@ public actor DJBreakPreparer {
     func testTaken(afterTrack k: Int) -> Bool { taken.contains(k) }
     /// Test hook: boundaries with a render in flight.
     var testInFlight: Set<Int> { Set(tasks.keys) }
+    /// Test hook: why boundary `k`'s time-check line was dropped before the take, if it was.
+    func testTimeCheckDrop(afterTrack k: Int) -> DJTimeCheckDropReason? { timeCheckDrops[k] }
     /// Test hook: the recorded outcome for boundary `k`.
     func testResult(afterTrack k: Int) -> DJBreakOutcome? { results[k] }
     /// Test hook: records an outcome as if a render for `k` had finished with it.
@@ -463,6 +484,7 @@ public actor DJBreakPreparer {
 
     public func takeBreak(afterTrack k: Int, natural: Bool = true) -> DJBreakOutcome {
         let timeCheck = timeChecks.removeValue(forKey: k), earlyDrop = timeCheckDrops.removeValue(forKey: k)
+        let timeCheckDeadline = timeCheckDeadlines.removeValue(forKey: k)
         defer { tasks[k] = nil; planned[k] = nil; openForRearm.remove(k); rearmed.remove(k); taken.insert(k) }
         guard natural else {
             tasks[k]?.cancel()
@@ -474,7 +496,10 @@ public actor DJBreakPreparer {
         if let result = results.removeValue(forKey: k) {
             tasks[k]?.cancel()   // a time-check line still rendering is dropped (#347)
             guard let timeCheck, case .ready(let prepared) = result else { return result }
-            return .ready(checkTimeCheck(timeCheck, in: prepared, droppedEarlier: earlyDrop))
+            // Past the line's render deadline it can no longer air: `.late`, even if the prepare
+            // task has not yet woken to record that (it would race this take). Before it: `.taken`.
+            let missing = earlyDrop ?? (timeCheckDeadline.map { ContinuousClock.now >= $0 } == true ? .late : nil)
+            return .ready(checkTimeCheck(timeCheck, in: prepared, droppedEarlier: missing))
         }
         guard let task = tasks[k] else { return .skipped(.notPlanned) }
         task.cancel()
@@ -484,15 +509,17 @@ public actor DJBreakPreparer {
     }
 
     /// #347, at the take: a time-check line that aired would say the time it was rendered for.
-    /// When the clock now reads differently (a pause, a seek back), only that clip is dropped
-    /// (`.stale`). A line that is not there was dropped earlier (its reason) or was still
-    /// waiting or rendering (`.taken`). Every drop is set on the break and emitted.
+    /// It is kept while it is still true within `timeCheckTolerance` (Echo, #347 follow-up), so a
+    /// take just past a minute or a rounding edge keeps a correct line. Further off (a pause, a
+    /// seek back), only that clip is dropped (`.stale`). A line that is not there was dropped earlier (its reason), had
+    /// passed its render deadline (`.late`, set by `takeBreak`), or was still waiting or rendering (`.taken`). Every drop is set on the break and emitted.
     private func checkTimeCheck(_ timeCheck: DJPlannedTimeCheck, in prepared: PreparedDJBreak,
                                 droppedEarlier: DJTimeCheckDropReason?) -> PreparedDJBreak {
         let id = timeCheck.cueID, k = prepared.afterTrack
         var result = prepared
         if let index = prepared.cues.firstIndex(where: { $0.id == id }) {
-            guard timeCheck.text(at: now()) != prepared.cues[index].text else { return prepared }
+            guard !Self.timeCheckStillTrue(timeCheck, saying: prepared.cues[index].text,
+                                           airTime: prepared.timeCheckAirTime, now: now()) else { return prepared }
             var cues = prepared.cues, clips = prepared.clips
             cues.remove(at: index)
             clips.removeAll { $0.cueID == id }
@@ -508,6 +535,50 @@ public actor DJBreakPreparer {
         return result
     }
 
+    /// How far the clock at the take may be from the time-check line's expected air time (Echo).
+    public static let timeCheckTolerance: TimeInterval = 90
+
+    /// How far from its rounded time T each kind of line may air (Echo, #357): the rounding gap
+    /// at the air time (up to 2 min) plus `timeCheckTolerance`.
+    public static let timeCheckComingUpLead: TimeInterval = 210
+    public static let timeCheckJustAfterLag: TimeInterval = 210
+    public static let timeCheckOnSpread: TimeInterval = 120
+
+    /// Whether a time-check line written for `airTime` may still air at `now`. Both must hold:
+    /// - `now` is within `timeCheckTolerance` of `airTime` (either side);
+    /// - what the line claims about its rounded time T (read at `airTime` in the planned check's
+    ///   calendar) is still true at `now`, by direction (Echo, #357):
+    ///   - "Almost / Coming up on T": −210 s ≤ now − T < 0 (never at or after T);
+    ///   - "Just after T": 0 ≤ now − T ≤ 210 s (never before T);
+    ///   - "It's T": |now − T| < 120 s.
+    /// T is an instant, so midnight and the 12 h/24 h wrap need no special case. The words must be
+    /// the line rendered for `airTime`; anything else, or no air time, fails closed.
+    nonisolated static func timeCheckStillTrue(_ timeCheck: DJPlannedTimeCheck, saying text: String,
+                                               airTime: Date?, now: Date) -> Bool {
+        guard let airTime, abs(now.timeIntervalSince(airTime)) <= timeCheckTolerance,
+              timeCheck.text(at: airTime) == text,
+              let claim = roundedTime(at: airTime, calendar: timeCheck.calendar) else { return false }
+        let fromT = now.timeIntervalSince(claim.time)
+        switch claim.relation {
+        case .comingUp: return fromT >= -timeCheckComingUpLead && fromT < 0
+        case .justAfter: return fromT >= 0 && fromT <= timeCheckJustAfterLag
+        case .on: return abs(fromT) < timeCheckOnSpread
+        }
+    }
+
+    /// The rounded time T a line read at `date` names, as an instant (the start of T's minute),
+    /// and which way it rounded. Same rounding as `DJTimeCheck.rounded`.
+    nonisolated static func roundedTime(at date: Date, calendar: Calendar) -> (time: Date, relation: DJTimeCheckRelation)? {
+        guard let minuteStart = calendar.dateInterval(of: .minute, for: date)?.start else { return nil }
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        guard let hour = parts.hour, let minute = parts.minute else { return nil }
+        let raw = hour * 60 + minute
+        let r = DJTimeCheck.rounded(hour: hour, minute: minute)
+        var delta = r.hour * 60 + r.minute - raw
+        if delta < -12 * 60 { delta += 24 * 60 }   // 23:58 rounds to 0:00, two minutes on
+        return (minuteStart.addingTimeInterval(TimeInterval(delta * 60)), r.relation)
+    }
+
     /// Cancels preparation for boundaries that will not happen (station change, queue replaced, stop).
     /// In-flight renders are cancelled (their cost reservations are released), prepared audio is
     /// discarded, and each dropped break is reported as `.skipped(.cancelled)` so no UI keeps
@@ -520,6 +591,7 @@ public actor DJBreakPreparer {
         planned.removeAll()
         timeChecks.removeAll()
         timeCheckDrops.removeAll()
+        timeCheckDeadlines.removeAll()
         openForRearm.removeAll()
         rearmed.removeAll()
         taken.removeAll()
@@ -539,6 +611,7 @@ public actor DJBreakPreparer {
             planned[k] = nil
             timeChecks[k] = nil
             timeCheckDrops[k] = nil
+            timeCheckDeadlines[k] = nil
         }
         // Stale marks are cleared as for a new queue (Sentinel #210), except a kept boundary:
         // that is the playing song's, and if the talk-over already took it early, a duplicate
@@ -557,6 +630,7 @@ public actor DJBreakPreparer {
             planned[k] = nil
             timeChecks[k] = nil
             timeCheckDrops[k] = nil
+            timeCheckDeadlines[k] = nil
             results[k] = .skipped(.sourceRevoked)
             emit(.skipped(afterTrack: k, .sourceRevoked))
         }
