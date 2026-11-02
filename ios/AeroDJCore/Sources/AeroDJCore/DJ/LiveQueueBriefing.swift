@@ -23,9 +23,10 @@ public protocol LiveQueueStudio: AnyObject {
 
 extension StudioPresentationModel: LiveQueueStudio {
     public var liveQueueBriefing: LiveQueueBriefingInput {
-        // Rows do not carry `aerodj-sensitivity`. An unknown id is blocked below.
+        // The map `ConnectionsModel` builds (`ConnectionItem.sensitivityMap`), not a copy.
+        // A row with no sensitivity is absent from it and is blocked below.
         LiveQueueBriefingInput(items: connections.items, preferences: station.active.briefing,
-                               sensitivityByItemID: [:])
+                               sensitivityByItemID: connections.sensitivityByItemID)
     }
 }
 
