@@ -241,7 +241,7 @@ final class SpeechContextTests: XCTestCase {
 
     func testElevenLabsRouteSendsContextButNoTags() {
         let c = PremiumVoiceRoutes.compose(
-            onDevice: [VoiceRoute(providerID: "device", provider: ContextSpy(), voice: djVoice)], paidProvidersEnabled: true,
+            onDevice: [VoiceRoute(providerID: "device", provider: ContextSpy(), voice: djVoice)], paidProvidersEnabled: true, access: .allowed,
             selectedVoiceID: "x70vRnQBMBu4FAYhjJbO",
             credentials: PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!, token: "t"),
             pinnedHosts: ["aerodj-tts.vercel.app"])
