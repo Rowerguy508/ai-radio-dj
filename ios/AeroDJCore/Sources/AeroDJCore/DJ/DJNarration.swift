@@ -353,6 +353,8 @@ public struct DJScriptWriter: Sendable {
         tone = newTone
         combined = TemplatePool(shapes?.combinedLines(for: newTone) ?? [])
         timeCheckPools = Self.makeTimeCheckPools(shapes, newTone)
+        openerStation = TemplatePool(newTone.opener.station)
+        openerSetup = newTone.opener.setup.mapValues { TemplatePool($0) }
         backAnnounce = TemplatePool(newTone.backAnnounce)
         closing = TemplatePool(newTone.closing)
         artistFocus = TemplatePool(newTone.artistFocus)
@@ -648,6 +650,10 @@ public struct DJScriptWriter: Sendable {
     var testTimeCheckCount: Int { timeCheckLog.count }
     /// Test hook: the shape the next pick avoids.
     var testLastShape: DJBreakShape? { shapePicker?.lastShape }
+    /// Test hook: the show-opener pools' templates (station lines, mood lines by day part).
+    var testOpenerTemplates: DJOpenerPhrases {
+        DJOpenerPhrases(station: openerStation.templates, setup: openerSetup.mapValues(\.templates))
+    }
 
     enum NaturalOutcome {
         case planned(DJBreak)

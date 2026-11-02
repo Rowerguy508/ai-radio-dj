@@ -49,8 +49,12 @@ final class DJPersonaToneSessionTests: XCTestCase {
         }
     }
 
+    /// Every line the tone can plan, including #359's show opener: its mood lines alone, and its
+    /// welcome cue (a day-part greeting, then a station line, joined as one cue).
     private func bank(_ p: DJPersonality) -> [NSRegularExpression] {
-        EditorialTone.forPersonality(p).allLines.map(Self.pattern)
+        let tone = EditorialTone.forPersonality(p)
+        let welcomes = tone.greetings.values.flatMap { $0 }.flatMap { g in tone.opener.station.map { g + " " + $0 } }
+        return (tone.allLines + tone.opener.allLines + welcomes).map(Self.pattern)
     }
 
     func testDefaultStationSpeaksWarm() async {
@@ -135,5 +139,18 @@ final class DJPersonaToneSessionTests: XCTestCase {
         XCTAssertFalse(before.isEmpty)
         XCTAssertEqual(writer.plan(tracks: djTracks(20), briefing: nil, hour: 14).breaks.flatMap(\.cues).map(\.text),
                        control.plan(tracks: djTracks(20), briefing: nil, hour: 14).breaks.flatMap(\.cues).map(\.text))
+    }
+
+    /// `setTone` rebuilds the show-opener pools too (-Fry, after #359): before, a personality
+    /// change kept the old tone's station and mood lines for the next show opener.
+    func testSetToneRebuildsTheOpenerPools() async {
+        for target in DJPersonality.allCases where target != .warm {
+            var writer = DJScriptWriter(seed: 3, tone: .warm, shapes: .natural)
+            XCTAssertEqual(writer.testOpenerTemplates, EditorialTone.warm.opener)
+            let tone = EditorialTone.forPersonality(target)
+            XCTAssertNotEqual(tone.opener, EditorialTone.warm.opener, "\(target): its own opener lines")
+            writer.setTone(tone)
+            XCTAssertEqual(writer.testOpenerTemplates, tone.opener, "\(target): opener pools follow the new tone")
+        }
     }
 }
