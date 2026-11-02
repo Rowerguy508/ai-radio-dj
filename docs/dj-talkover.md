@@ -191,6 +191,7 @@ the planner inserts the gap with `play(atTime:)` rather than expecting it in the
   explicitly set ON. `swift test` tests pass `unsetDefault` explicitly where it matters.
 - The key is unchanged, so a value saved by the old owner A/B toolbar toggle carries over: a saved
   OFF stays OFF until the listener turns it back on in Settings.
+- Live and fixture modes share the one key, so a value saved in either mode applies in both.
 - The toggle is **Settings > DJ > "DJ talk-over & fades"**, footnote "Recommended" (id
   `settings.talkoverToggle`, `ios/AeroDJ/TalkoverToggle+App.swift`). Settings is a sheet opened from
   the gear (id `stations.settings`) at the top left of the Stations list (`ios/AeroDJ/SettingsView.swift`).

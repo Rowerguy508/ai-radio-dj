@@ -23,7 +23,7 @@ struct TalkoverSettingsRow: View {
         } header: {
             Text("DJ")
         } footer: {
-            Text("Recommended. The DJ talks over the end of each song while the music dips, and the next song comes back up as the DJ finishes. Turn it off for a pause between songs. Applies from the next DJ break.")
+            Text("Recommended. The DJ talks over the end of each song instead of stopping the music. Turn it off for a pause between songs. Applies from the next DJ break.")
         }
     }
 }
