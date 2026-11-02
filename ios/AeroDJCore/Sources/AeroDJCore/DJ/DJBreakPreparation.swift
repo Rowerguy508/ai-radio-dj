@@ -181,8 +181,8 @@ public actor DJBreakPreparer {
         case skipped(afterTrack: Int, DJBreakSkipReason)
     }
 
-    /// `talkOverEnabled` defaults to `DJTalkoverFlag.isEnabled()` (the DIAG override, else the
-    /// `AERODJ_OWNER_AB` build default), the same flag `TalkoverCoordinator` reads.
+    /// `talkOverEnabled` defaults to `DJTalkoverFlag.isEnabled()` (the saved Settings toggle, else
+    /// ON as on a live station), the same flag `TalkoverCoordinator` reads.
     public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
                 talkOverEnabled: @escaping @Sendable () -> Bool = { DJTalkoverFlag.isEnabled() },
                 bundledClips: BundledClipResolver? = nil,
