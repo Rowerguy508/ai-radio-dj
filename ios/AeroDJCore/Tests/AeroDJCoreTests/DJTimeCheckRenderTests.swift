@@ -256,11 +256,12 @@ final class DJTimeCheckRenderTests: XCTestCase {
         XCTAssertEqual(air.flatMap { planned.timeCheck?.text(at: $0) }, b.cues.first?.text, "the line is the reading at its air time")
     }
 
-    /// The exact-text check dropped these: the take crosses a minute or rounding edge, so the
-    /// line for the take's clock reads differently, but the line is still true.
+    /// The exact-text check dropped these: the take crosses a rounding edge, so the line for the
+    /// take's clock reads differently, but the line's claim about its time is still true.
     func testATakeJustPastARoundingEdgeKeepsTheLine() async {
         let cases: [(renderAt: Date, takeAfterAir: TimeInterval, said: String)] = [
-            (date(9, 53), 67, "Almost 9:55."),          // take at 9:55:10 reads "It's 9:55."
+            (date(9, 52).addingTimeInterval(7), -20, "Almost 9:55."),     // air 9:53:10, take 9:52:50 reads "Just after 9:50."
+            (date(9, 51).addingTimeInterval(50), 30, "Just after 9:50."), // air 9:52:53, take 9:53:23 reads "Almost 9:55."
             (date(9, 56).addingTimeInterval(20), 45, "Just after 9:55."),   // take 9:58:08 reads "Almost 10 o'clock."
             (date(9, 54).addingTimeInterval(30), -60, "It's 9:55."),        // take 9:54:33 reads "Almost 9:55."
         ]
@@ -300,24 +301,88 @@ final class DJTimeCheckRenderTests: XCTestCase {
         }
     }
 
-    /// The second rule on its own: the words must be a reading somewhere in now ± 90 s.
-    func testTheLineMustDescribeATimeInsideTheWindow() {
+    /// The direction rule on its own (Echo, #357). `air` is when the line was written for.
+    private func still(_ text: String, air: Date, at now: Date, calendar: Calendar? = nil,
+                       style: DJClockStyle = .twelveHour) -> Bool {
+        let b = timeCheckBreak().timeCheck!
+        let tc = DJPlannedTimeCheck(cueID: b.cueID, plannedAt: b.plannedAt, templates: b.templates,
+                                    calendar: calendar ?? eastern, style: style)
+        return DJBreakPreparer.timeCheckStillTrue(tc, saying: text, airTime: air, now: now)
+    }
+
+    private func at(_ hour: Int, _ minute: Int, _ seconds: TimeInterval) -> Date {
+        date(hour, minute).addingTimeInterval(seconds)
+    }
+
+    /// Echo's repro: inside ±90 s the old sampled check kept a wrong-direction line.
+    func testEchosReprosAreDropped() {
+        XCTAssertFalse(still("Almost 9:55.", air: at(9, 54, 59), at: at(9, 56, 29)), "Almost 9:55 at 9:56:29")
+        XCTAssertFalse(still("Just after 9:50.", air: at(9, 52, 59), at: at(9, 54, 29)), "Just after 9:50 at 9:54:29 (269 s on)")
+    }
+
+    func testAlmostNeverAirsAtOrAfterItsTime() {
+        let air = at(9, 54, 59)   // "Almost 9:55."
+        XCTAssertTrue(still("Almost 9:55.", air: air, at: at(9, 54, 59.99)))
+        XCTAssertFalse(still("Almost 9:55.", air: air, at: at(9, 55, 0)), "at T")
+        XCTAssertFalse(still("Almost 9:55.", air: air, at: at(9, 55, 1)))
+        // The earliest edge: written at 9:53:00 (T − 120 s), taken 90 s early is T − 210 s.
+        XCTAssertTrue(still("Almost 9:55.", air: at(9, 53, 0), at: at(9, 51, 30.01)))
+        XCTAssertFalse(still("Almost 9:55.", air: at(9, 53, 0.02), at: at(9, 51, 29.99)), "T − 210 s and more (air-time guard holds)")
+    }
+
+    func testComingUpOnFollowsTheSameRule() {
+        let b = timeCheckBreak().timeCheck!
+        let tc = DJPlannedTimeCheck(cueID: b.cueID, plannedAt: b.plannedAt,
+                                    templates: [.on: "It's {time}.", .comingUp: "Coming up on {time}.", .justAfter: "Just after {time}."],
+                                    calendar: eastern, style: .twelveHour)
+        let air = at(9, 58, 30)
+        XCTAssertEqual(tc.text(at: air), "Coming up on 10 o'clock.")
+        XCTAssertTrue(DJBreakPreparer.timeCheckStillTrue(tc, saying: "Coming up on 10 o'clock.", airTime: air, now: at(9, 59, 59.99)))
+        XCTAssertFalse(DJBreakPreparer.timeCheckStillTrue(tc, saying: "Coming up on 10 o'clock.", airTime: air, now: date(10, 0)))
+    }
+
+    func testJustAfterNeverAirsBeforeItsTime() {
+        let air = at(9, 51, 0)   // "Just after 9:50.", T + 60 s
+        XCTAssertTrue(still("Just after 9:50.", air: air, at: date(9, 50)), "at T")
+        XCTAssertFalse(still("Just after 9:50.", air: air, at: at(9, 49, 59.99)), "before T")
+        // The latest edge: written at 9:52:59, T + 210 s.
+        let late = at(9, 52, 59)
+        XCTAssertTrue(still("Just after 9:50.", air: late, at: at(9, 53, 29.99)))
+        XCTAssertFalse(still("Just after 9:50.", air: late, at: at(9, 53, 30.01)), "past T + 210 s")
+    }
+
+    func testItsOnlyWithinItsRoundingWindow() {
+        // Written at 9:55:59, the latest "It's 9:55.": the air-time guard allows to 9:57:29.
+        let late = at(9, 55, 59)
+        XCTAssertTrue(still("It's 9:55.", air: late, at: at(9, 56, 59.99)), "T + 119.99 s")
+        XCTAssertFalse(still("It's 9:55.", air: late, at: date(9, 57)), "T + 120 s")
+        XCTAssertFalse(still("It's 9:55.", air: late, at: at(9, 57, 29)), "inside ±90 s, past the window")
+        // Written at 9:55:00: 90 s early is T − 90 s, inside the window.
+        XCTAssertTrue(still("It's 9:55.", air: date(9, 55), at: at(9, 53, 30)), "T − 90 s")
+    }
+
+    /// T is an instant: midnight and the 12 h/24 h wrap need no special case.
+    func testMidnightAndTheTwelveHourWrap() {
+        let beforeMidnight = at(23, 58, 30)
+        XCTAssertEqual(timeCheckBreak().timeCheck!.text(at: beforeMidnight), "Almost midnight.")
+        XCTAssertTrue(still("Almost midnight.", air: beforeMidnight, at: at(23, 59, 59.99)))
+        XCTAssertFalse(still("Almost midnight.", air: beforeMidnight, at: date(23, 59).addingTimeInterval(60)), "at midnight")
+        let afterMidnight = date(23, 59).addingTimeInterval(120)   // 0:01 the next day
+        XCTAssertTrue(still("Just after midnight.", air: afterMidnight, at: afterMidnight.addingTimeInterval(-60)), "at midnight")
+        XCTAssertFalse(still("Just after midnight.", air: afterMidnight, at: afterMidnight.addingTimeInterval(-60.01)), "before midnight")
+        // 12:58 rounds to 1 o'clock (12 h) and 13:00 (24 h).
+        XCTAssertFalse(still("Almost 1 o'clock.", air: at(12, 58, 50), at: date(13, 0)))
+        XCTAssertTrue(still("Almost 1 o'clock.", air: at(12, 58, 0), at: at(12, 59, 29)))
+        XCTAssertFalse(still("Almost 13:00.", air: at(12, 58, 50), at: date(13, 0), style: .twentyFourHour))
+        XCTAssertTrue(still("Almost 13:00.", air: at(12, 58, 0), at: at(12, 59, 29), style: .twentyFourHour))
+    }
+
+    func testTheWordsMustBeTheLineForTheAirTimeAndAirTimeIsRequired() {
+        let air = at(9, 53, 0)
+        XCTAssertTrue(still("Almost 9:55.", air: air, at: air))
+        XCTAssertFalse(still("Almost 10 o'clock.", air: air, at: air), "not what was written for 9:53")
+        XCTAssertFalse(still("It's 9:40.", air: air, at: air), "the plan-time words")
         let tc = timeCheckBreak().timeCheck!
-        let air = date(9, 53)
-        func still(_ text: String, _ now: Date, air: Date? = nil) -> Bool {
-            DJBreakPreparer.timeCheckStillTrue(tc, saying: text, airTime: air ?? now, now: now)
-        }
-        XCTAssertTrue(still("Almost 9:55.", air))
-        XCTAssertFalse(still("Almost 10 o'clock.", air), "a reading from 9:58, outside 9:51:30-9:54:30")
-        XCTAssertFalse(still("It's 9:40.", air), "the plan-time words")
-        // "Just after 9:50." reads from 9:51:00 to 9:52:59: the window's first edge decides.
-        XCTAssertTrue(still("Just after 9:50.", date(9, 54).addingTimeInterval(29.5)), "window from 9:52:59.5")
-        XCTAssertFalse(still("Just after 9:50.", date(9, 54).addingTimeInterval(30.5)), "window from 9:53:00.5")
-        // "Almost 10 o'clock." reads from 9:58:00: the window's last edge decides.
-        XCTAssertTrue(still("Almost 10 o'clock.", date(9, 56).addingTimeInterval(30.5)), "window to 9:58:00.5")
-        XCTAssertFalse(still("Almost 10 o'clock.", date(9, 56).addingTimeInterval(29.5)), "window to 9:57:59.5")
-        // "It's 9:55." reads only from 9:55:00 to 9:55:59, inside 9:54:00-9:57:00: no edge decides.
-        XCTAssertTrue(still("It's 9:55.", date(9, 55).addingTimeInterval(30)), "a reading inside the window")
         XCTAssertFalse(DJBreakPreparer.timeCheckStillTrue(tc, saying: "Almost 9:55.", airTime: nil, now: air),
                        "no recorded air time fails closed")
     }

@@ -522,18 +522,45 @@ public actor DJBreakPreparer {
     /// How far the clock at the take may be from the time-check line's expected air time (Echo).
     public static let timeCheckTolerance: TimeInterval = 90
 
+    /// How far from its rounded time T each kind of line may air (Echo, #357): the rounding gap
+    /// at the air time (up to 2 min) plus `timeCheckTolerance`.
+    public static let timeCheckComingUpLead: TimeInterval = 210
+    public static let timeCheckJustAfterLag: TimeInterval = 210
+    public static let timeCheckOnSpread: TimeInterval = 120
+
     /// Whether a time-check line written for `airTime` may still air at `now`. Both must hold:
     /// - `now` is within `timeCheckTolerance` of `airTime` (either side);
-    /// - `text` is what the line says for some clock reading in `now ± timeCheckTolerance`: it
-    ///   still describes a time inside that window. Readings change only on minute edges, so
-    ///   readings 30 s apart (any gap up to 60 s would do) from one end of the window to the
-    ///   other land in every minute it touches.
-    /// No air time (never recorded) fails closed.
+    /// - what the line claims about its rounded time T (read at `airTime` in the planned check's
+    ///   calendar) is still true at `now`, by direction (Echo, #357):
+    ///   - "Almost / Coming up on T": −210 s ≤ now − T < 0 (never at or after T);
+    ///   - "Just after T": 0 ≤ now − T ≤ 210 s (never before T);
+    ///   - "It's T": |now − T| < 120 s.
+    /// T is an instant, so midnight and the 12 h/24 h wrap need no special case. The words must be
+    /// the line rendered for `airTime`; anything else, or no air time, fails closed.
     nonisolated static func timeCheckStillTrue(_ timeCheck: DJPlannedTimeCheck, saying text: String,
                                                airTime: Date?, now: Date) -> Bool {
-        guard let airTime, abs(now.timeIntervalSince(airTime)) <= timeCheckTolerance else { return false }
-        let samples = stride(from: -timeCheckTolerance, through: timeCheckTolerance, by: 30)
-        return samples.contains { timeCheck.text(at: now.addingTimeInterval($0)) == text }
+        guard let airTime, abs(now.timeIntervalSince(airTime)) <= timeCheckTolerance,
+              timeCheck.text(at: airTime) == text,
+              let claim = roundedTime(at: airTime, calendar: timeCheck.calendar) else { return false }
+        let fromT = now.timeIntervalSince(claim.time)
+        switch claim.relation {
+        case .comingUp: return fromT >= -timeCheckComingUpLead && fromT < 0
+        case .justAfter: return fromT >= 0 && fromT <= timeCheckJustAfterLag
+        case .on: return abs(fromT) < timeCheckOnSpread
+        }
+    }
+
+    /// The rounded time T a line read at `date` names, as an instant (the start of T's minute),
+    /// and which way it rounded. Same rounding as `DJTimeCheck.rounded`.
+    nonisolated static func roundedTime(at date: Date, calendar: Calendar) -> (time: Date, relation: DJTimeCheckRelation)? {
+        guard let minuteStart = calendar.dateInterval(of: .minute, for: date)?.start else { return nil }
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        guard let hour = parts.hour, let minute = parts.minute else { return nil }
+        let raw = hour * 60 + minute
+        let r = DJTimeCheck.rounded(hour: hour, minute: minute)
+        var delta = r.hour * 60 + r.minute - raw
+        if delta < -12 * 60 { delta += 24 * 60 }   // 23:58 rounds to 0:00, two minutes on
+        return (minuteStart.addingTimeInterval(TimeInterval(delta * 60)), r.relation)
     }
 
     /// Cancels preparation for boundaries that will not happen (station change, queue replaced, stop).
