@@ -254,15 +254,15 @@ final class SpokenScriptLintTests: XCTestCase {
     /// just played and the next one, from track metadata only, and leans on "Here's" at most once.
     func testCombinedBanksNameBothSongsInTheHouseStyle() {
         XCTAssertEqual(EditorialTone.warm.combined, [
-            "That was {title}. Here's {nextTitle}.",
-            "{artist} there. And here's {nextArtist}.",
-            "That's {title}. Coming up, {nextTitle}.",
-            "{title}, from {artist}. Now, {nextTitle}.",
-            "That was {artist}. Next, {nextArtist}.",
+            "That was {title}. Now here's {nextTitle}.",
+            "{artist} there. Now let's hear {nextArtist}.",
+            "That's {title}. We'll go to {nextTitle} next.",
+            "{title}, from {artist}. Next it's {nextTitle}.",
+            "Okay, that's {artist}. Here comes {nextArtist}.",
             "{artist}, {title}. And this one's {nextArtist}.",
-            "Out of {artist}, into {nextArtist}.",
-            "{title} there. Up next, {nextArtist}.",
-        ], "warm keeps #344's combined lines verbatim")
+            "We're going from {artist} to {nextArtist}.",
+            "{title} there. Up next, it's {nextArtist}.",
+        ], "warm's combined lines: #344's slots, re-pinned for the casual pass (build 34 owner note)")
         for (name, tone) in Self.tones {
             XCTAssertTrue((8...12).contains(tone.combined.count), "\(name).combined has \(tone.combined.count) lines")
             XCTAssertLessThanOrEqual(tone.combined.filter { $0.lowercased().hasPrefix("here's") }.count, 1,
