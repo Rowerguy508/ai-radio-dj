@@ -94,7 +94,7 @@ private final class MemoryBackoffStore: PaidVoiceBackoffStore, @unchecked Sendab
 }
 
 final class PaidVoiceBackoffTests: XCTestCase {
-    private let sawyer = "8dEUmyPMdDdK91vboYih"
+    private let nathan = "x70vRnQBMBu4FAYhjJbO"
     private let creds = PremiumProxyCredentials(endpoint: URL(string: "https://aerodj-tts.vercel.app/api/tts")!,
                                                 token: "owner-test-token")
     /// 2027-01-15 08:00:00 UTC: 16 h before the next UTC midnight.
@@ -102,7 +102,7 @@ final class PaidVoiceBackoffTests: XCTestCase {
 
     private func renderer(_ transport: ScriptedTransport, _ backoff: PaidVoiceBackoff?) -> VoiceRenderer {
         let device = [VoiceRoute(providerID: "device", provider: LocalVoice(), voice: VoiceProfile(id: "host", name: "Host"))]
-        let c = PremiumVoiceRoutes.compose(onDevice: device, paidProvidersEnabled: true, selectedVoiceID: sawyer,
+        let c = PremiumVoiceRoutes.compose(onDevice: device, paidProvidersEnabled: true, selectedVoiceID: nathan,
                                            credentials: creds, transport: transport, backoff: backoff)
         XCTAssertEqual(c.routes.count, 2)
         return VoiceRenderer(routes: c.routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
@@ -198,7 +198,7 @@ final class PaidVoiceBackoffTests: XCTestCase {
                                                           upstream: .elevenlabs, sessionToken: { reads.count += 1; return "t" })
         let provider = ProxyVoiceProvider(configuration: config, transport: transport, backoff: backoff)
         do {
-            _ = try await provider.synthesize("Hi", voice: VoiceProfile(id: sawyer, name: "S"),
+            _ = try await provider.synthesize("Hi", voice: VoiceProfile(id: nathan, name: "S"),
                                               context: RequestContext(stationID: "s", isReusableGeneric: false))
             XCTFail("suspended provider must throw")
         } catch {
@@ -279,7 +279,7 @@ final class PaidVoiceBackoffTests: XCTestCase {
         let other = PaidVoiceBackoff(now: { clock.now })
         let hanging = HangingTransport()
         let device = [VoiceRoute(providerID: "device", provider: LocalVoice(), voice: VoiceProfile(id: "host", name: "Host"))]
-        let c = PremiumVoiceRoutes.compose(onDevice: device, paidProvidersEnabled: true, selectedVoiceID: sawyer,
+        let c = PremiumVoiceRoutes.compose(onDevice: device, paidProvidersEnabled: true, selectedVoiceID: nathan,
                                            credentials: creds, transport: hanging, backoff: other)
         guard let proxy = c.routes.first(where: { $0.providerID != "device" }) else { return XCTFail("no proxy route") }
         // Drive the provider directly: the renderer returns on cancellation without waiting for the

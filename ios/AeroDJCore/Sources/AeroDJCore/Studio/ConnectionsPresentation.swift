@@ -69,13 +69,13 @@ public struct CalendarConnectionState: Equatable, Sendable {
 
     public var description: String {
         switch access {
-        case .notDetermined: return "AeroDJ hasn't asked to read your calendar yet."
+        case .notDetermined: return "\(AppName.display) hasn't asked to read your calendar yet."
         case .denied: return "Calendar access is off. You can turn it on in Settings."
         case .restricted: return "Calendar access is restricted on this device, for example by Screen Time or device management."
-        case .writeOnly: return "AeroDJ can only add events, not read them. Briefings need Full Access, which you can allow in Settings."
+        case .writeOnly: return "\(AppName.display) can only add events, not read them. Briefings need Full Access, which you can allow in Settings."
         case .fullAccess:
             let n = readableSelection.count
-            if n == 0 { return "No calendars chosen. AeroDJ reads only the calendars you pick." }
+            if n == 0 { return "No calendars chosen. \(AppName.display) reads only the calendars you pick." }
             return "Reading today's events from \(n) of \(calendars.count) \(calendars.count == 1 ? "calendar" : "calendars")."
         }
     }
@@ -113,10 +113,10 @@ public enum ObsidianSelectionState: Equatable, Sendable {
 
     public var description: String {
         switch self {
-        case .notSelected: "No notes chosen. AeroDJ reads only the Markdown files you pick."
+        case .notSelected: "No notes chosen. \(AppName.display) reads only the Markdown files you pick."
         case .valid(let n): "Using \(n) \(n == 1 ? "file" : "files") you picked. Nothing else in your vault is read."
         case .stale: "A file you picked was moved or renamed. Choose it again to keep using it."
-        case .missing: "The files you picked are gone, or AeroDJ lost access to them. Choose them again."
+        case .missing: "The files you picked are gone, or \(AppName.display) lost access to them. Choose them again."
         case .notDownloaded: "The files you picked are in iCloud and not downloaded. Download them in Files, then come back."
         }
     }
@@ -147,7 +147,7 @@ public struct SharedImportsState: Equatable, Sendable {
             return "\(waitingForReview) shared \(waitingForReview == 1 ? "item is" : "items are") waiting for your review."
         }
         if approved > 0 { return "\(approved) shared \(approved == 1 ? "item" : "items") approved for briefings." }
-        return "Nothing shared yet. Use the Share button in Mail or Messages to send something to AeroDJ."
+        return "Nothing shared yet. Use the Share button in Mail or Messages to send something to \(AppName.display)."
     }
 }
 
@@ -170,9 +170,9 @@ public struct ConnectionSourceRow: Equatable, Sendable, Identifiable {
     /// Fixed privacy scope copy. Always shown; it never changes with state.
     public var scope: String {
         switch integration {
-        case .calendar: "Reads today's events from calendars you choose. Read-only: AeroDJ never adds or changes events."
+        case .calendar: "Reads today's events from calendars you choose. Read-only: \(AppName.display) never adds or changes events."
         case .obsidian: "Reads only the Markdown files you pick. Stays on this device."
-        case .shareInbox: "Only what you share to AeroDJ from Mail, Messages or other apps. AeroDJ never opens your mailbox or messages."
+        case .shareInbox: "Only what you share to \(AppName.display) from Mail, Messages or other apps. \(AppName.display) never opens your mailbox or messages."
         }
     }
 
@@ -244,7 +244,7 @@ public enum ConnectionUnavailableReason: Equatable, Sendable {
         case .file(let r):
             switch r {
             case .bookmarkStale: return "Unavailable: the file was moved or renamed. Choose it again."
-            case .notFound, .accessDenied: return "Unavailable: the file is gone or AeroDJ lost access."
+            case .notFound, .accessDenied: return "Unavailable: the file is gone or \(AppName.display) lost access."
             case .notDownloaded: return "Unavailable: the file is in iCloud and not downloaded."
             case .optedOut: return "Not used: the note asks not to be read (aerodj: false or private: true)."
             case .tooLarge: return "Not used: the file is too large."
