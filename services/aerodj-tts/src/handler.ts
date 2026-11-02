@@ -88,6 +88,16 @@ const ALLOWED_TAG = new RegExp(`\\[\\s*(${ALLOWED_AUDIO_TAGS.join('|')})\\s*\\]`
  * "warmly" aloud). The text between tags is cleaned piece by piece, so a stray bracket can never
  * pair with a kept tag. Whitespace is collapsed.
  */
+/**
+ * Spoken-text sanitiser for every model: removes every `[` and `]` (allowlisted tag words
+ * included) and keeps the words, so "Kiss Me [Softly] Tonight" is spoken as "Kiss Me Softly
+ * Tonight" and can never reach a tag-reading model (v3/v4) as a delivery tag. The app sends DJ
+ * copy on this route tag-free, and no request field opts into tags, so nothing legitimate is lost.
+ */
+export function stripAllBrackets(text: string): string {
+  return text.replace(/[[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export function sanitizeBrackets(text: string, keepAllowedTags: boolean): string {
   const out: string[] = [];
   let last = 0;
@@ -606,9 +616,9 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   // SSML markup is allowed some headroom before stripping; the spoken text is capped below.
   if (body.text.length > (format === 'ssml' ? maxChars * 4 : maxChars)) return fail(400);
   const modelId = deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID;
-  // Square brackets never reach a model as text: only allowlisted audio tags, and only to a model
-  // that reads tags (v3/v4). A title like "Song [Live]" is spoken as "Song Live".
-  const text = sanitizeBrackets(format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim(), supportsAudioTags(modelId));
+  // Square brackets never reach any model, allowlisted tags included: a title like "Song [Live]"
+  // is spoken as "Song Live", and "Kiss Me [Softly] Tonight" can't become a v4 delivery tag.
+  const text = stripAllBrackets(format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim());
   if (text.length === 0 || text.length > maxChars) return fail(400);
   // Optional stitching context (older app builds send none; the request is then unchanged).
   const previousText = contextField(body.previousText, format, 'end');
