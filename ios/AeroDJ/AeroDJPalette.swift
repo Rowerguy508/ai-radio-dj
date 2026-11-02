@@ -11,6 +11,10 @@ import UIKit
 enum AeroDJPalette {
     /// Body and caption text. 4.5:1 on system backgrounds and on the station wash.
     static var secondaryText: Color { color(light: 0x4A4A50, dark: 0xD1D1D6, lightHC: 0x3C3C43, darkHC: 0xEBEBF5) }
+    /// Captions on the translucent Connections card (#311). The light sheet is glass over the
+    /// dark player, so the card can read as mid grey (~0xABABAC measured) where
+    /// `secondaryText` is only ~3.8:1. This ink is >= 6:1 there and ~14:1 on white. Dark is unchanged.
+    static var cardCaptionText: Color { color(light: 0x2C2C30, dark: 0xD1D1D6, lightHC: 0x1C1C1E, darkHC: 0xEBEBF5) }
     /// Connected / active. 4.5:1 on the card and on its own 12% wash.
     static var statusPositive: Color { color(light: 0x085C32, dark: 0x5FE08A, lightHC: 0x064E2A, darkHC: 0xA7F3D0) }
     /// Pending. 4.5:1 on the card and on its own 12% wash.

@@ -60,14 +60,14 @@ final class StaleUpNextDropTests: XCTestCase {
     }
 
     @MainActor
-    private func until(_ condition: @MainActor () -> Bool, _ message: String = "") async {
+    private func until(_ condition: @escaping @MainActor () -> Bool, _ message: String = "") async {
         for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(condition(), message)
     }
 
     /// Song 0 plays and its break renders, then the edit is saved mid-song (pending).
     @MainActor
-    private func readyBreakAfterSongZero(_ r: Rig, edit: () async -> Void) async {
+    private func readyBreakAfterSongZero(_ r: Rig, edit: @escaping @MainActor () async -> Void) async {
         XCTAssertEqual(r.session.plannedBoundaries.first, 0)
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready before the boundary")

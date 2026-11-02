@@ -394,7 +394,12 @@ final class DJBreakShapesTests: XCTestCase {
                        [.classic, .comingUpOnly])
         XCTAssertEqual(Set(picker.eligible(.init(canBackAnnounce: true, canForwardSell: false))), [.classic, .backAnnounceOnly])
         XCTAssertEqual(picker.eligible(.init(canBackAnnounce: false, canForwardSell: false)), [])
-        XCTAssertTrue(picker.eligible(.init(timeCheckAvailable: true)).contains(.timeCheckIntro))
+        XCTAssertFalse(picker.eligible(.init(timeCheckAvailable: true)).contains(.timeCheckIntro),
+                       "never the first break after the greeting")
+        var later = picker
+        later.record(.classic)
+        XCTAssertTrue(later.eligible(.init(timeCheckAvailable: true)).contains(.timeCheckIntro))
+        XCTAssertFalse(later.eligible(.init(canForwardSell: false, timeCheckAvailable: true)).contains(.timeCheckIntro))
 
         let blank = (0..<30).map { DJTrack(id: "t\($0)", title: $0 % 2 == 0 ? "" : "Song", artist: $0 % 2 == 0 ? "" : "Band", origin: .catalog) }
         for b in naturalBreaks(seed: 5, tracks: blank) {
