@@ -15,6 +15,8 @@ struct StationListView: View {
         Station.defaultStations + CreatedStations.entries(from: dependencies.studio.recipes.recipes).map(Station.init(created:))
     }
     @State private var showSharedInbox = false
+    /// Settings sheet (gear on the Stations list), every build (-Fry).
+    @State private var showSettings = false
     /// One add-station flow per presentation (nil when closed). Never created in the Test Station.
     @State private var stationCreation: StationCreationModel?
     /// "Couldn't start that station" (core decides; `StationStartToast` draws it). Row taps only.
@@ -58,7 +60,8 @@ struct StationListView: View {
                                  _ = await dependencies.studio.applyRecipe(recipeID)
                              }
                          },
-                         onAddStation: addStationAction) { station in
+                         onAddStation: addStationAction,
+                         onOpenSettings: { showSettings = true }) { station in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation)
@@ -67,6 +70,9 @@ struct StationListView: View {
             .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
         }
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(isPresented: $showSettings, isTestStation: dependencies.mode == .testStation)
+        }
         .sheet(isPresented: $showSharedInbox) {
             // Always a NavigationStack with Done. An empty `if` body left an undismissable sheet.
             SharedInboxSheet(isPresented: $showSharedInbox) {
@@ -112,6 +118,8 @@ struct StationSplitRoot<Detail: View>: View {
     var onUserOpenedStation: ((Station.ID) async -> Void)? = nil
     /// Opens the add-station walkthrough. Nil hides the + button.
     var onAddStation: (() -> Void)? = nil
+    /// Opens Settings. Nil hides the gear (StudioCapture passes none).
+    var onOpenSettings: (() -> Void)? = nil
     private let detail: (Station) -> Detail
 
     /// The one source of truth for both layouts: the selected station, whether restore has
@@ -129,12 +137,14 @@ struct StationSplitRoot<Detail: View>: View {
     init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
          onUserOpenedStation: ((Station.ID) async -> Void)? = nil,
          onAddStation: (() -> Void)? = nil,
+         onOpenSettings: (() -> Void)? = nil,
          @ViewBuilder detail: @escaping (Station) -> Detail) {
         self.stations = stations
         self.showsSharedInbox = showsSharedInbox
         self._showSharedInbox = showSharedInbox
         self.onUserOpenedStation = onUserOpenedStation
         self.onAddStation = onAddStation
+        self.onOpenSettings = onOpenSettings
         self.detail = detail
     }
 
@@ -162,6 +172,14 @@ struct StationSplitRoot<Detail: View>: View {
             // iOS 17 keeps the system large title. Rows and selection are untouched.
             .morphingLargeTitle("Stations", subtitle: "Your AI-hosted radio, on Apple Music")
             .toolbar {
+                if let onOpenSettings {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: onOpenSettings) {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                        .accessibilityIdentifier("stations.settings")
+                    }
+                }
                 // The real App Group inbox is never opened in the test station: its
                 // data must not appear next to fixtures.
                 if showsSharedInbox {
