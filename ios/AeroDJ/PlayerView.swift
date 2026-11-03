@@ -45,7 +45,6 @@ struct PlayerView: View {
         .navigationTitle(station.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .talkoverToggleEntry(isTestStation: isTestStation) // DJ talk-over switch: AERODJ_OWNER_AB only; a no-op otherwise (-Fry)
         .modifier(SongRatingToastHost()) // Station ratings' Undo toast; nothing without a controller (-Nova)
         // Fry #110: Tune Save/Discard waits on real transport. Callbacks + auth refresh stay
         // on PlaybackSessionBinder (once-only); do not authorize() here.

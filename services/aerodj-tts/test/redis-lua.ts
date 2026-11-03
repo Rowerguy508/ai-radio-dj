@@ -70,7 +70,7 @@ export class FakeRedis {
   }
 
   /** EVAL script numkeys key... arg... -> integer reply (Lua number), or null for nil/false. */
-  eval(script: string, keys: string[], args: string[]): number | null {
+  eval(script: string, keys: string[], args: string[]): number | string | null {
     const L: LuaState = lauxlib.luaL_newstate();
     lualib.luaL_openlibs(L);
     const pushArray = (name: string, values: string[]) => {
@@ -116,6 +116,7 @@ export class FakeRedis {
     const t = lua.lua_type(L, -1);
     if (t === lua.LUA_TNIL || (t === lua.LUA_TBOOLEAN && !lua.lua_toboolean(L, -1))) return null;
     if (t === lua.LUA_TNUMBER) return Math.trunc(lua.lua_tonumber(L, -1)); // Redis: number -> integer reply
+    if (t === lua.LUA_TSTRING) return lua.lua_tojsstring(L, -1); // Redis: string -> bulk string reply (GET_KEY_SCRIPT)
     throw new Error('unsupported script return type');
   }
 

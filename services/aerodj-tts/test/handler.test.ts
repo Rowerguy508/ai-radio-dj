@@ -291,7 +291,7 @@ test('success: upstream request shape is correct', async () => {
   assert.deepEqual(JSON.parse(String(init.body)), {
     text: 'Hello from the DJ booth.',
     model_id: 'eleven_multilingual_v2',
-    voice_settings: { stability: 0.4, similarity_boost: 0.75, speed: 1 },
+    voice_settings: { stability: 0.32, similarity_boost: 0.75, speed: 1.03 },
   });
 });
 
@@ -308,7 +308,7 @@ test('voice_settings: exact body with the default flash model, no style, no spea
   const sent = JSON.parse(String(h.calls[0].init.body)) as Record<string, unknown>;
   assert.deepEqual(Object.keys(sent).sort(), ['model_id', 'text', 'voice_settings']);
   assert.equal(sent.model_id, 'eleven_flash_v2_5');
-  assert.deepEqual(sent.voice_settings, { stability: 0.4, similarity_boost: 0.75, speed: 1 });
+  assert.deepEqual(sent.voice_settings, { stability: 0.32, similarity_boost: 0.75, speed: 1.03 });
   const vs = sent.voice_settings as Record<string, unknown>;
   assert.ok(!('style' in vs), 'style must never be sent');
   assert.ok(!('use_speaker_boost' in vs), 'use_speaker_boost is not sent');
@@ -335,7 +335,7 @@ test('voice_settings: client-supplied settings, style, speed or model are ignore
   assert.deepEqual(sent, {
     text: 'Hello from the DJ booth.',
     model_id: 'eleven_flash_v2_5',
-    voice_settings: { stability: 0.4, similarity_boost: 0.75, speed: 1 },
+    voice_settings: { stability: 0.32, similarity_boost: 0.75, speed: 1.03 },
   });
   assert.ok(!String(h.calls[0].init.body).includes('style'));
 });
@@ -343,7 +343,7 @@ test('voice_settings: client-supplied settings, style, speed or model are ignore
 test('voice_settings: the same settings ride on SSML renders', async () => {
   const h = harness();
   await handleTts(request({ text: '<speak>Next up.</speak>', format: 'ssml' }), h.deps);
-  assert.deepEqual(JSON.parse(String(h.calls[0].init.body)).voice_settings, { stability: 0.4, similarity_boost: 0.75, speed: 1 });
+  assert.deepEqual(JSON.parse(String(h.calls[0].init.body)).voice_settings, { stability: 0.32, similarity_boost: 0.75, speed: 1.03 });
 });
 
 test('voice_settings do not change cap accounting: a 9,000-char daily cap still holds exactly', async () => {

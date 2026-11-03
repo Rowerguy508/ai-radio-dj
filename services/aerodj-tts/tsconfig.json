@@ -17,6 +17,7 @@
     "api/**/*.ts",
     "src/**/*.ts",
     "test/**/*.ts",
+    "scripts/**/*.ts",
     "config/*.json"
   ]
 }
