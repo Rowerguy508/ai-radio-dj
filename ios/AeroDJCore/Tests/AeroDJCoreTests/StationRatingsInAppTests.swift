@@ -26,7 +26,9 @@ final class StationRatingsInAppTests: XCTestCase {
         StationRatedSong(songID: id, artistName: "Artist \(id)", artistID: "aid-\(id)", origin: origin)
     }
     private func model(_ store: any StationRatingStore) -> StationRatingsModel {
-        StationRatingsModel(store: store, today: { Self.today })
+        // Its own defaults: a purge-all's pending flag never reaches another test.
+        StationRatingsModel(store: store, today: { Self.today },
+                            defaults: UserDefaults(suiteName: "ratings-\(UUID().uuidString)")!)
     }
 
     // MARK: FileStationRatingStore

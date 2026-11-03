@@ -110,11 +110,14 @@ public final class SongRatingController {
         await hooks.ratingsChanged()
     }
 
-    /// Settings "Clear all ratings": deletes the file.
-    public func clearAll() async {
-        await ratings.clearAll()
+    /// Settings "Clear all ratings": deletes the file. False when it could not be deleted: the
+    /// ratings are all still there (memory matches the file) and Settings says so.
+    @discardableResult
+    public func clearAll() async -> Bool {
+        let cleared = await ratings.clearAll()
         toast = nil
         await hooks.ratingsChanged()
+        return cleared
     }
 
     /// A saved station was deleted: its ratings go with it (scope §5).

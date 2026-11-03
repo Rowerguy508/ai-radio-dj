@@ -719,9 +719,19 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     /// PR B (-Nova): a rating dropped the paused break's boundary. Ends as a finished break, no
-    /// apology and no line, so music follows as after any break. Nothing about the rating is logged.
+    /// apology and no line, so music follows as after any break. Nothing about the rating is logged;
+    /// the lines it did not air are, by kind (counts only, #387 N1, like `traceDrop`).
     private func endWithdrawnBreak(line: Int) {
-        log.notice("dj break withdrawn before resume line=\(line, privacy: .public)")
+        let lines = resumeLines.count == scriptPlayers.count
+            ? resumeLines : scriptPlayers.map { BreakResumeLine(seconds: $0.duration) }
+        let withdrawn = StationRatingWithdrawnLines.remaining(lines, from: line)
+        log.notice("dj break withdrawn before resume line=\(line, privacy: .public) dropped=\(withdrawn.count, privacy: .public) timeChecks=\(withdrawn.timeChecks, privacy: .public)")
+        #if AERODJ_P0_DIAG
+        if withdrawn.count > 0 {
+            let k = breakTrack
+            P0EventTraceHost.shared.talkover { trace, t in _ = trace.breakInterruptionWithdrawn(withdrawn, afterTrack: k, at: t) }
+        }
+        #endif
         queue = []
         let player = clipPlayer
         clipPlayer = nil
