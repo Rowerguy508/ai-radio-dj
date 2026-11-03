@@ -419,32 +419,63 @@ private struct FoldedTitleBlock: View {
     let isTestStation: Bool
     /// Wide column: centred under the centred art.
     var centered = false
+    /// Station ratings (-Nova, PR B). Nil or unavailable: the block is exactly the labels, as before.
+    @Environment(\.songRating) private var songRating
 
     var body: some View {
         VStack(alignment: centered ? .center : .leading, spacing: 4) {
-            VStack(alignment: centered ? .center : .leading, spacing: 4) {
-                Text(track.title)
-                    .font(.system(.title2, weight: .bold))
-                    .tracking(-0.4)
-                    .foregroundStyle(.white)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(track.artistName)
-                    .font(.body)
-                    .foregroundStyle(FoldedStyle.secondaryInk)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+            if let songRating, songRating.isAvailable {
+                // Station ratings (-Nova, PR B): the button trails the artist line (under the
+                // centred labels in the wide column); the labels stay one accessibility element.
+                if centered {
+                    labels
+                    SongRatingButton(controller: songRating, track: track, ink: FoldedStyle.secondaryInk)
+                } else {
+                    HStack(alignment: .foldedRatingArtistLine, spacing: 8) {
+                        labels.frame(maxWidth: .infinity, alignment: .leading)
+                        SongRatingButton(controller: songRating, track: track, ink: FoldedStyle.secondaryInk)
+                            .alignmentGuide(.foldedRatingArtistLine) { $0[VerticalAlignment.center] }
+                    }
+                }
+            } else {
+                labels
             }
-            .multilineTextAlignment(centered ? .center : .leading)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(track.title), \(track.artistName)")
-            .accessibilityAddTraits(.isHeader)
             if isTestStation {
                 FoldedTestStationTag().padding(.top, 4)
             }
         }
         .frame(maxWidth: .infinity, alignment: centered ? .center : .leading)
     }
+
+    private var labels: some View {
+        VStack(alignment: centered ? .center : .leading, spacing: 4) {
+            Text(track.title)
+                .font(.system(.title2, weight: .bold))
+                .tracking(-0.4)
+                .foregroundStyle(.white)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(track.artistName)
+                .font(.body)
+                .foregroundStyle(FoldedStyle.secondaryInk)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                // Read only by the rated row above; no effect on the plain block.
+                .alignmentGuide(.foldedRatingArtistLine) { $0[VerticalAlignment.center] }
+        }
+        .multilineTextAlignment(centered ? .center : .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(track.title), \(track.artistName)")
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+private extension VerticalAlignment {
+    /// The artist line's centre: where the folded rating button sits (-Nova, PR B).
+    enum FoldedRatingArtistLine: AlignmentID {
+        static func defaultValue(in d: ViewDimensions) -> CGFloat { d[VerticalAlignment.center] }
+    }
+    static let foldedRatingArtistLine = VerticalAlignment(FoldedRatingArtistLine.self)
 }
 
 /// Debug fixture label so a screenshot can't pass for a listener's real station.

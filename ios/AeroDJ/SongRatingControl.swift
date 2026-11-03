@@ -54,7 +54,7 @@ extension SongRatingController {
 private struct SongRatingKey: EnvironmentKey { static let defaultValue: SongRatingController? = nil }
 
 extension EnvironmentValues {
-    /// Set once at the app root (AeroDJApp). Only `TrackBlock`, `PlayerView` (the toast) and the recipe
+    /// Set once at the app root (AeroDJApp). Only `TrackBlock` and `FoldedTitleBlock` (the button), the toast and the recipe
     /// delete read it; with nil (previews, StudioCapture's existing scenarios) nothing changes.
     var songRating: SongRatingController? {
         get { self[SongRatingKey.self] }
