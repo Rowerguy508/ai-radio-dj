@@ -34,20 +34,81 @@ private struct TesterCloudVoiceConsentGate: ViewModifier {
             }
             .sheet(isPresented: $isPresented) {
                 TesterCloudVoiceConsentSheet { accepted in
-                    if accepted { TesterCloudVoice.consentStore.accept() } else { TesterCloudVoice.consentStore.decline() }
+                    TesterCloudVoice.record(accepted: accepted)
                     isPresented = false
-                    if accepted, let tokens = TesterCloudVoice.tokens {
-                        // Enrollment starts in the background; the first break never waits on it.
-                        Task.detached(priority: .utility) { await tokens.prepare() }
-                    }
                 }
                 .presentationDetents([.large])
             }
     }
 }
 
-/// #258's copy, minus `switchBack` ("…in Settings"): the Cloud voice toggle it points to ships
-/// with #258, not in this build, so the line would promise a control testers can't find.
+extension TesterCloudVoice {
+    /// Set once at launch (`AppDependencies.live`): the launch's preparer and renderer, so a
+    /// withdrawal drops prepared cloud breaks and deletes cached cloud clips (Echo's N2 on #395).
+    @MainActor static var preparer: DJBreakPreparer?
+    @MainActor static var renderer: VoiceRenderer?
+
+    /// The one place the tester build records an answer (the sheet and the Cloud voice toggle).
+    /// Accept: enrollment starts in the background; the first break never waits on it.
+    /// Decline or toggle off: the next render is on-device (the token source reads the store per
+    /// request), prepared breaks with cloud audio are dropped and cached cloud clips deleted. -Nova
+    @MainActor static func record(accepted: Bool) {
+        if accepted {
+            consentStore.accept()
+            if let tokens { Task.detached(priority: .utility) { await tokens.prepare() } }
+        } else {
+            consentStore.decline()
+            let preparer = preparer, renderer = renderer
+            Task {
+                await preparer?.dropCloudVoiceBreaks()
+                await renderer?.purgeCloudClips()
+            }
+        }
+    }
+}
+
+/// Tune → DJ: the "Cloud voice" switch for testers (Sentinel's N1 on #395), the minimal piece of
+/// #258's `CloudVoiceToggleCard` this build needs: same copy, same identifier, same store. On is
+/// only reachable through the consent sheet; off takes effect for the next DJ line. Compiled only
+/// in the tester build, so no other build's Tune screen or snapshot changes. -Nova
+struct TesterCloudVoiceToggleCard: View {
+    @State private var granted = TesterCloudVoice.consentStore.isGranted
+    @State private var asking = false
+
+    var body: some View {
+        if CloudVoiceConsentPrompt.isCloudVoiceOfferedInThisBuild(selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID) {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(CloudVoiceConsentCopy.toggleTitle, isOn: Binding(get: { granted }, set: { on in
+                    if on {
+                        asking = true
+                    } else {
+                        TesterCloudVoice.record(accepted: false)
+                        granted = false
+                    }
+                }))
+                .accessibilityIdentifier("tune.cloudVoiceToggle")
+                Text(CloudVoiceConsentCopy.footer)
+                    .font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .workspaceCardBackground(Color(.tertiarySystemFill).opacity(0.6))
+            .onAppear { granted = TesterCloudVoice.consentStore.isGranted }
+            .sheet(isPresented: $asking, onDismiss: { granted = TesterCloudVoice.consentStore.isGranted }) {
+                TesterCloudVoiceConsentSheet { accepted in
+                    TesterCloudVoice.record(accepted: accepted)
+                    granted = accepted
+                    asking = false
+                }
+                .presentationDetents([.large])
+            }
+        }
+    }
+}
+
+/// #258's copy, minus `switchBack` ("…in Settings"): the tester build's Cloud voice toggle is in
+/// Tune → DJ (`TesterCloudVoiceToggleCard`), not Settings, so the line would point testers to the
+/// wrong screen. The copy itself is left to Atlas's consent-text fix on #395 (N2).
 private struct TesterCloudVoiceConsentSheet: View {
     let answer: (Bool) -> Void
 
@@ -89,3 +150,25 @@ private struct TesterCloudVoiceConsentSheet: View {
     }
 }
 #endif
+
+/// Launch wiring for the tester build's cloud-voice consent (Echo's N2 on #395); nil and a no-op
+/// in every other build, owner A/B builds included. -Nova
+enum TesterCloudVoiceConsentHooks {
+    /// The preparer's per-take consent check: the tester build only.
+    static var preparerConsent: (@Sendable () -> Bool)? {
+        #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
+        let store = TesterCloudVoice.consentStore
+        return { store.isGranted }
+        #else
+        return nil
+        #endif
+    }
+
+    /// Lets a decline reach this launch's preparer and renderer.
+    @MainActor static func attach(preparer: DJBreakPreparer, renderer: VoiceRenderer) {
+        #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
+        TesterCloudVoice.preparer = preparer
+        TesterCloudVoice.renderer = renderer
+        #endif
+    }
+}

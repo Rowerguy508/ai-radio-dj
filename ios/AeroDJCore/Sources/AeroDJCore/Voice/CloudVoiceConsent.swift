@@ -108,6 +108,27 @@ public enum CloudVoiceConsentPrompt {
         paidProvidersEnabled && selectedVoiceID != nil
     }
 
+    /// The same question with the build flags passed in, so every combination is testable on
+    /// Linux (Sentinel's N1 on #395, -Nova):
+    /// - `AERODJ_OWNER_AB` (owner A/B): unchanged, a paid provider enabled and a voice selected.
+    ///   It wins over the tester flag, because the tester voice is compiled only as
+    ///   `AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB`.
+    /// - `AERODJ_TESTER_VOICE` alone (internal TestFlight tester build): always offered. The
+    ///   tester route falls back to the catalog's first voice (`TesterVoice.voiceID`), so no
+    ///   selection is needed, and testers must be able to turn the cloud voice off.
+    /// - Neither flag (Debug, Release, App Store): never offered, whatever else is passed.
+    public static func isCloudVoiceOffered(ownerABBuild: Bool, testerVoiceBuild: Bool,
+                                           paidProvidersEnabled: Bool, selectedVoiceID: String?) -> Bool {
+        if ownerABBuild { return isCloudVoiceOffered(paidProvidersEnabled: paidProvidersEnabled, selectedVoiceID: selectedVoiceID) }
+        return testerVoiceBuild
+    }
+
+    /// `isCloudVoiceOffered` for the build this module was compiled as.
+    public static func isCloudVoiceOfferedInThisBuild(selectedVoiceID: String?) -> Bool {
+        isCloudVoiceOffered(ownerABBuild: OwnerVoiceTrial.paidProvidersEnabled, testerVoiceBuild: TesterVoice.enabled,
+                            paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled, selectedVoiceID: selectedVoiceID)
+    }
+
     public static func shouldPresent(cloudVoiceOffered: Bool, state: CloudVoiceConsentState) -> Bool {
         cloudVoiceOffered && state == .undecided
     }

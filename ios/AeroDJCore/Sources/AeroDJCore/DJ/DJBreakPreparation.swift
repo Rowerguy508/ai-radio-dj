@@ -29,6 +29,10 @@ public enum DJBreakSkipReason: String, Codable, Equatable, Sendable, CaseIterabl
     /// Build 18 P0: the system was still holding playback (a call, another app's audio) when
     /// the break would have started, so it was skipped.
     case interrupted
+    /// Cloud-voice consent was withdrawn (declined, or the Cloud voice toggle turned off) after
+    /// this break was rendered with a cloud voice: it is not played (Echo's N2 on #395). Same
+    /// case and raw value as #258's paid-voice revocation, so the two converge when it lands.
+    case paidVoiceRevoked
 }
 
 /// Why a planned time-check line did not air (#347). Only that line is dropped; the rest of
@@ -124,6 +128,11 @@ public actor DJBreakPreparer {
     /// Bundled pre-rendered presenter lines, tried per whole cue before the renderer. Nil or an
     /// empty manifest (build 27) changes nothing.
     private let bundledClips: BundledClipResolver?
+    /// Whether the listener's cloud-voice consent is granted right now (`CloudVoiceConsentStore.isGranted`),
+    /// read when consent is withdrawn (`dropCloudVoiceBreaks`) and again at every take, so a
+    /// break rendered in a cloud voice never plays after a decline. Nil: no cloud-consent check
+    /// (every build without the tester voice, and tests whose renderer has no cloud route). -Nova
+    private let cloudVoiceConsent: (@Sendable () -> Bool)?
     /// Whether DJ talk-over is on, read when a render starts (`prepare`, `rearm`). P0 build 26
     /// (-Fry): the 4 s closing cap is a talk-over cap, so it only applies while this is true.
     private let talkOverEnabled: @Sendable () -> Bool
@@ -188,11 +197,13 @@ public actor DJBreakPreparer {
     /// ON as on a live station), the same flag `TalkoverCoordinator` reads.
     public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
                 talkOverEnabled: @escaping @Sendable () -> Bool = { DJTalkoverFlag.isEnabled() },
+                cloudVoiceConsent: (@Sendable () -> Bool)? = nil,
                 bundledClips: BundledClipResolver? = nil,
                 now: @escaping @Sendable () -> Date = DJBreakPreparer.systemNow,
                 sleepUntil: (@Sendable (ContinuousClock.Instant) async throws -> Void)? = nil) {
         self.renderer = renderer
         self.bundledClips = bundledClips
+        self.cloudVoiceConsent = cloudVoiceConsent
         self.now = now
         // Nil default, filled in here: an async function value in a default argument is emitted
         // into every client object, and Swift 6.3.3 gives those copies a smaller async context
@@ -506,6 +517,12 @@ public actor DJBreakPreparer {
         }
         if let result = results.removeValue(forKey: k) {
             tasks[k]?.cancel()   // a time-check line still rendering is dropped (#347)
+            // Cloud-voice consent re-check at the take (Echo's N2 on #395): a break that finished
+            // rendering in a cloud voice after a decline (or raced `dropCloudVoiceBreaks`) is not played.
+            if case .ready(let prepared) = result, cloudVoiceWithdrawn, usesCloudVoice(prepared) {
+                emit(.skipped(afterTrack: k, .paidVoiceRevoked))
+                return .skipped(.paidVoiceRevoked)
+            }
             guard let timeCheck, case .ready(let prepared) = result else { return result }
             // Past the line's render deadline it can no longer air: `.late`, even if the prepare
             // task has not yet woken to record that (it would race this take). Before it: `.taken`.
@@ -638,6 +655,43 @@ public actor DJBreakPreparer {
             results[k] = .skipped(.sourceRevoked)
             emit(.skipped(afterTrack: k, .sourceRevoked))
         }
+    }
+
+    /// Cloud-voice consent was withdrawn (declined, or the Cloud voice toggle turned off): every
+    /// prepared break with a clip rendered in a cloud voice is dropped as `.paidVoiceRevoked`,
+    /// so its audio is never played (Echo's N2 on #395). On-device breaks are kept. A break still
+    /// rendering is left to finish: its remaining cues go on-device (the tester route's token
+    /// source refuses without consent), and the take re-checks it, so if any of its clips came
+    /// from a cloud voice it is dropped then. Returns the dropped boundaries. Does nothing while
+    /// consent is granted, or without a consent check. Pair with `VoiceRenderer.purgeCloudClips()`. -Nova
+    @discardableResult
+    public func dropCloudVoiceBreaks() -> [Int] {
+        guard cloudVoiceWithdrawn else { return [] }
+        let dropped = results.compactMap { k, outcome -> Int? in
+            guard case .ready(let prepared) = outcome, usesCloudVoice(prepared) else { return nil }
+            return k
+        }.sorted()
+        for k in dropped {
+            tasks.removeValue(forKey: k)?.cancel()   // a time-check line still waiting for its window
+            planned[k] = nil
+            timeChecks[k] = nil
+            timeCheckDrops[k] = nil
+            timeCheckDeadlines[k] = nil
+            results[k] = .skipped(.paidVoiceRevoked)
+            emit(.skipped(afterTrack: k, .paidVoiceRevoked))
+        }
+        return dropped
+    }
+
+    /// True when there is a consent check and it reads "not granted" now.
+    private var cloudVoiceWithdrawn: Bool { cloudVoiceConsent.map { !$0() } ?? false }
+
+    /// Whether any clip of `prepared` came from a route of this renderer that is not local and
+    /// free (a cloud or paid voice). A cache hit carries the provider that rendered it, so cached
+    /// cloud audio counts too. Bundled clips are not a renderer route and are left to their own gate.
+    private func usesCloudVoice(_ prepared: PreparedDJBreak) -> Bool {
+        let cloud = Set(renderer.routes.filter { !$0.isLocalAndFree }.map(\.providerID))
+        return !cloud.isEmpty && prepared.clips.contains { cloud.contains($0.audio.providerID) }
     }
 
     private func finish(_ k: Int, _ outcome: DJBreakOutcome) {

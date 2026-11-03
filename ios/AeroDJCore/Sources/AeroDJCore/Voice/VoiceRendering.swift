@@ -210,6 +210,15 @@ public protocol AudioCache: Sendable {
     /// Removes every clip derived from any personal item, whatever its id. For when consent
     /// cannot be checked per item (live mode does not persist consent across launches).
     func purgeAllPersonal() async
+    /// Removes every clip not rendered by one of `providerIDs` (cloud-voice consent withdrawn,
+    /// Echo's N2 on #395: cloud and paid clips go, on-device clips stay). Unattributable entries
+    /// are removed too. Same shape as #258's, so the two converge when it lands. -Nova
+    func purgeClips(keepingProviders providerIDs: Set<String>) async
+}
+
+extension AudioCache {
+    /// Test doubles that never hold cloud audio. Both shipping caches implement this.
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {}
 }
 
 /// Enforces the 7-day cap on a schedule, not only when a clip is read: an expired clip that
@@ -302,6 +311,9 @@ public actor InMemoryAudioCache: AudioCache {
         clips = clips.filter { t.timeIntervalSince($0.value.createdAt) <= maxAge }
     }
     public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
+    public func purgeClips(keepingProviders providerIDs: Set<String>) {
+        clips = clips.filter { providerIDs.contains($0.value.providerID) }
+    }
     public var count: Int { clips.count }
 }
 
@@ -409,6 +421,10 @@ public struct FileAudioCache: AudioCache {
 
     public func purgeAllPersonal() async {
         removeGroups { clip in clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
+    }
+
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {
+        removeGroups { clip in clip.map { !providerIDs.contains($0.providerID) } ?? true }
     }
 
     public func store(_ audio: CachedAudio, for key: String) async {
@@ -591,6 +607,14 @@ public struct VoiceRenderer: Sendable {
         let local = routes.filter(\.isLocalAndFree)
         guard !local.isEmpty else { return nil }
         return VoiceRenderer(routes: local, budget: budget, cache: cache, revocations: revocations)
+    }
+
+    /// Cloud-voice consent withdrawn (Echo's N2 on #395): deletes every cached clip that was not
+    /// rendered by one of this renderer's on-device, free routes, so a cloud clip is never served
+    /// again from the cache (the cache is read before a route's provider, and so before the tester
+    /// route's consent check). On-device clips stay. -Nova
+    public func purgeCloudClips() async {
+        await cache.purgeClips(keepingProviders: Set(routes.filter(\.isLocalAndFree).map(\.providerID)))
     }
 
     /// Attempt detail for an off-device or paid route skipped for a local-only cue. Fixed text, no cue text.
