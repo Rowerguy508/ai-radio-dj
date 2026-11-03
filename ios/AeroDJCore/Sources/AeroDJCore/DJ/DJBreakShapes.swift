@@ -317,9 +317,20 @@ public struct RecentSpokenTemplates: Sendable {
 public struct DJExtraLine: Equatable, Sendable {
     public var text: String
     public var attribution: SpokenAttribution
+    /// #200 (-Echo): the provider fact the line was written from (`BroadcastFact.provenance`).
+    /// Non-nil keeps the line on the device (`VoiceRenderer.mayLeaveDevice` needs no provenance).
+    public var provenance: String?
+    /// #200: when that fact stops being true. Carried onto the cue (`NarrationCue.expiresAt`).
+    public var expiresAt: Date?
     public init(text: String, attribution: SpokenAttribution) {
         self.text = text
         self.attribution = attribution
+    }
+    public init(text: String, attribution: SpokenAttribution, provenance: String?, expiresAt: Date?) {
+        self.text = text
+        self.attribution = attribution
+        self.provenance = provenance
+        self.expiresAt = expiresAt
     }
 }
 

@@ -39,11 +39,14 @@ public struct NarrationCue: Identifiable, Codable, Equatable, Sendable {
     public var providerID: String?
     /// Cache key of the rendered clip (hash of text + voice + provider + format).
     public var audioCacheKey: String?
+    /// #200 (-Echo): when the provider fact behind this line stops being true (weather, news).
+    /// `DJBreakPreparer.takeBreak` drops a line at or past it, never airs it late. Nil: no expiry.
+    public var expiresAt: Date?
 
     public init(id: UUID, order: Int, group: Int, kind: BriefingScriptSegment.Kind, text: String,
                 estimatedSeconds: Int, maxSeconds: Int, sourceItemID: UUID?, source: ContextSourceKind?,
                 provenance: String?, renderedSeconds: Double? = nil, voiceID: String? = nil,
-                providerID: String? = nil, audioCacheKey: String? = nil) {
+                providerID: String? = nil, audioCacheKey: String? = nil, expiresAt: Date? = nil) {
         self.id = id
         self.order = order
         self.group = group
@@ -58,6 +61,7 @@ public struct NarrationCue: Identifiable, Codable, Equatable, Sendable {
         self.voiceID = voiceID
         self.providerID = providerID
         self.audioCacheKey = audioCacheKey
+        self.expiresAt = expiresAt
     }
 
     /// Seconds the scheduler should plan with: measured when rendered, else estimated.

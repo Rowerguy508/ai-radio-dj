@@ -13,6 +13,7 @@
 | Files / Obsidian | `UIDocumentPickerViewController` / `.fileImporter` + security-scoped bookmarks | **None** — access is granted by the user's selection | On import | Pair `startAccessingSecurityScopedResource()` / `stop…`; on `bookmarkDataIsStale` or a moved/deleted file, drop access and ask the user to re-select |
 | Share Extension | `NSExtension` (`com.apple.share-services`) | `NSExtensionActivationRule` limited to text + 1 web URL; `com.apple.security.application-groups` entitlement on app **and** extension | When the user shares | Nothing stored; extension cancels with an error |
 | Microphone | `AVAudioApplication.requestRecordPermission` | `NSMicrophoneUsageDescription` | **Optional, later** (live interruption) | Feature hidden |
+| Approximate location (#200) | Core Location (`requestWhenInUseAuthorization`, `kCLLocationAccuracyReduced`) | `NSLocationWhenInUseUsageDescription`; `NSLocationDefaultAccuracyReduced` = true; never temporary full accuracy | **Optional**: only after the in-app explainer, for local weather/news | Offer a typed city or ZIP; with neither, weather and local-news lines are omitted (count only). City/region only to a news provider; coarse coordinate to WeatherKit (Apple); never to the voice service |
 | Notifications | `UNUserNotificationCenter.requestAuthorization` | **None** (runtime prompt, no purpose string) | **Optional** | Feature hidden |
 
 **Rules:**

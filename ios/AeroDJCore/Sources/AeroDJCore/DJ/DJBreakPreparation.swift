@@ -161,6 +161,9 @@ public actor DJBreakPreparer {
     /// prepare task got to record it first, so the reason never depends on task scheduling.
     private var timeCheckDeadlines: [Int: ContinuousClock.Instant] = [:]
     private var timeCheckDropObservers: [@Sendable (Int, DJTimeCheckDrop) -> Void] = []
+    /// #200: see `observeFactCueDrops` and `setFactCueGate`.
+    private var factCueDropObservers: [@Sendable (Int, FactCueDropCounts) -> Void] = []
+    private var factCueGate: (@Sendable (NarrationCue) -> Bool)?
     /// Lane 2 time checks (Orion option (a), #347): the clock the time-check line is read from
     /// when it renders, and the wait until its render starts. Injected; Core never calls `Date()`.
     private let now: @Sendable () -> Date
@@ -241,6 +244,15 @@ public actor DJBreakPreparer {
 
     /// #347: told when a break is taken without its planned time-check line (boundary, cue ID
     /// and reason code only). Line-level, so separate from the break events the Studio shows.
+    /// #200 (-Echo): told when `takeBreak` drops provider-fact lines (boundary and counts only).
+    public func observeFactCueDrops(_ observer: @escaping @Sendable (Int, FactCueDropCounts) -> Void) {
+        factCueDropObservers.append(observer)
+    }
+
+    /// #200: whether a provider-fact cue may still air (location consent, a source turned off).
+    /// Nil: every unexpired fact cue may air. Read at the take.
+    public func setFactCueGate(_ gate: (@Sendable (NarrationCue) -> Bool)?) { factCueGate = gate }
+
     public func observeTimeCheckDrops(_ observer: @escaping @Sendable (Int, DJTimeCheckDrop) -> Void) {
         timeCheckDropObservers.append(observer)
     }
@@ -407,7 +419,8 @@ public actor DJBreakPreparer {
         let seconds = DefaultBriefingPlanner.estimatedSpokenSeconds(for: text)
         return NarrationCue(id: planned.id, order: planned.order, group: planned.group, kind: planned.kind, text: text,
                             estimatedSeconds: seconds, maxSeconds: max(planned.maxSeconds, 8, seconds * 2),
-                            sourceItemID: planned.sourceItemID, source: planned.source, provenance: planned.provenance)
+                            sourceItemID: planned.sourceItemID, source: planned.source, provenance: planned.provenance,
+                            expiresAt: planned.expiresAt)
     }
 
     /// Adds the late time-check clip to boundary `k`'s ready break, in its planned place, when
@@ -523,6 +536,9 @@ public actor DJBreakPreparer {
                 emit(.skipped(afterTrack: k, .paidVoiceRevoked))
                 return .skipped(.paidVoiceRevoked)
             }
+            // #200 (-Echo): a provider-fact line (weather, news) past its expiry, or one its gate
+            // no longer allows (location consent withdrawn), is dropped here, never aired late.
+            let result = checkFactCues(result, afterTrack: k)
             guard let timeCheck, case .ready(let prepared) = result else { return result }
             // Past the line's render deadline it can no longer air: `.late`, even if the prepare
             // task has not yet woken to record that (it would race this take). Before it: `.taken`.
@@ -534,6 +550,38 @@ public actor DJBreakPreparer {
         results[k] = .skipped(.notReadyAtBoundary)   // a late finish must not replace this
         emit(.skipped(afterTrack: k, .notReadyAtBoundary))
         return .skipped(.notReadyAtBoundary)
+    }
+
+    /// #200 (-Echo), at the take: drops every cue with an `expiresAt` at or before `now()`, or that
+    /// `factCueGate` refuses. Only those lines go; the rest of the break is unchanged (shorter, so
+    /// every cap still holds). A dropped closing cue takes its talk-over marker with it.
+    private func checkFactCues(_ outcome: DJBreakOutcome, afterTrack k: Int) -> DJBreakOutcome {
+        guard case .ready(let prepared) = outcome else { return outcome }
+        let at = now()
+        let gate = factCueGate
+        var counts = FactCueDropCounts()
+        var dropIDs: Set<UUID> = []
+        for cue in prepared.cues where cue.expiresAt != nil || FactProvenance.isFact(cue.provenance) {
+            if let expiry = cue.expiresAt, expiry <= at { counts.expired += 1; dropIDs.insert(cue.id) }
+            else if let gate, !gate(cue) { counts.notAllowed += 1; dropIDs.insert(cue.id) }
+        }
+        guard !dropIDs.isEmpty else { return outcome }
+        let cues = prepared.cues.filter { !dropIDs.contains($0.id) }
+        counts.kept = cues.count
+        for observer in factCueDropObservers { observer(k, counts) }
+        // Never in practice: a fact line is an optional extra beside required lines. Fail closed.
+        guard !cues.isEmpty else {
+            emit(.skipped(afterTrack: k, .sourceRevoked))
+            return .skipped(.sourceRevoked)
+        }
+        var result = PreparedDJBreak(afterTrack: k, cues: cues, clips: prepared.clips.filter { !dropIDs.contains($0.cueID) },
+                                     attributions: prepared.attributions.filter { !dropIDs.contains($0.key) },
+                                     talkOverCueID: prepared.talkOverCueID.flatMap { dropIDs.contains($0) ? nil : $0 },
+                                     trimmedCueIDs: prepared.trimmedCueIDs)
+        result.droppedTimeCheck = prepared.droppedTimeCheck
+        result.timeCheckAirTime = prepared.timeCheckAirTime
+        result.timeCheck = prepared.timeCheck
+        return .ready(result)
     }
 
     /// #347, at the take: a time-check line that aired would say the time it was rendered for.
