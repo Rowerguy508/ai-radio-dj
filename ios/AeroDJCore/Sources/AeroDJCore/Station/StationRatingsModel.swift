@@ -106,6 +106,11 @@ public final class StationRatingsModel {
 
     public var canRate: Bool { loadState == .loaded }
 
+    /// Sentinel's #389 N1 (#388): a purge-all is still waiting for its delete, so ratings are locked
+    /// (the launch retry failed too). Settings says so next to "Clear all ratings", whose tap is the
+    /// retry. Observed through `loadState`, so it clears the moment a retried delete works.
+    public var isPausedUntilCleared: Bool { loadState == .purgePending }
+
     public func rating(for songID: String, in scope: StationRatingScope?) -> SongRating? {
         guard let scope else { return nil }
         return book.rating(for: songID, in: scope)
@@ -375,6 +380,36 @@ public enum SongRatingPresentation {
     public static let clearAllFooter = "Ratings stay on this device and are not backed up. Clearing them can't be undone."
     /// Settings, when the ratings file could not be deleted (the ratings are still there).
     public static let clearAllFailed = "Couldn't clear ratings. Try again."
+    /// Settings, while a purge-all is still waiting for its delete (Sentinel's #389 N1): ratings are
+    /// locked until it goes through, and "Clear all ratings" retries it.
+    public static let clearAllPending = "Ratings are paused until they finish clearing. Try Clear all again."
+
+    /// The one line Settings shows above the "Clear all ratings" footer, or nil (the default:
+    /// nothing changes). Paused wins over a failed tap: that tap was the retry, and the paused
+    /// line already says to try again.
+    public enum ClearAllNotice: Equatable, Sendable {
+        case pending
+        case failed
+
+        public var text: String {
+            switch self {
+            case .pending: SongRatingPresentation.clearAllPending
+            case .failed: SongRatingPresentation.clearAllFailed
+            }
+        }
+
+        public var accessibilityIdentifier: String {
+            switch self {
+            case .pending: "settings.clearAllRatings.pending"
+            case .failed: "settings.clearAllRatings.failed"
+            }
+        }
+    }
+
+    public static func clearAllNotice(pausedUntilCleared: Bool, clearFailed: Bool) -> ClearAllNotice? {
+        if pausedUntilCleared { return .pending }
+        return clearFailed ? .failed : nil
+    }
     public static let undoTitle = "Undo"
 
     public static func symbol(_ rating: SongRating?) -> String {

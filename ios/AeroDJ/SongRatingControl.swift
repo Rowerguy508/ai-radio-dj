@@ -171,6 +171,7 @@ struct SongRatingToastHost: ViewModifier {
 
 /// "Clear all ratings" in Settings (#372's Form, below the talk-over row), with a confirmation.
 /// Deletes the ratings file. When that fails the ratings are still there, and the footer says so.
+/// While a purge-all still waits for its delete, ratings are paused and the footer says that instead.
 struct StationRatingsSettingsSection: View {
     let controller: SongRatingController
     @State private var confirming = false
@@ -192,10 +193,12 @@ struct StationRatingsSettingsSection: View {
             Text("Ratings")
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                if clearFailed {
-                    Text(SongRatingPresentation.clearAllFailed)
+                // Sentinel's #389 N1: a purge still waiting for its delete says so (ratings are locked).
+                if let notice = SongRatingPresentation.clearAllNotice(
+                    pausedUntilCleared: controller.ratings.isPausedUntilCleared, clearFailed: clearFailed) {
+                    Text(notice.text)
                         .foregroundStyle(.red)
-                        .accessibilityIdentifier("settings.clearAllRatings.failed")
+                        .accessibilityIdentifier(notice.accessibilityIdentifier)
                 }
                 Text(SongRatingPresentation.clearAllFooter)
             }
