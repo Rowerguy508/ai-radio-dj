@@ -420,6 +420,7 @@ struct PendingChangesCard: View {
 struct RecipesSection: View {
     let studio: StudioPresentationModel
     let editable: Bool
+    @Environment(\.songRating) private var songRating
     @State private var name = ""
     @State private var message: String?
     @State private var renaming: StationRecipe?
@@ -448,7 +449,13 @@ struct RecipesSection: View {
                     }
                     .buttonStyle(.borderless)
                     Button(role: .destructive) {
-                        Task { if case .failure(let e) = await studio.recipes.delete(recipe.id) { message = e.userMessage } }
+                        Task {
+                            switch await studio.recipes.delete(recipe.id) {
+                            case .failure(let e): message = e.userMessage
+                            // A deleted station's ratings go with it (-Nova, PR B).
+                            case .success: songRating?.stationDeleted(recipeID: recipe.id)
+                            }
+                        }
                     } label: {
                         Label("Delete \(recipe.name)", systemImage: "trash").labelStyle(.iconOnly).frame(width: 44, height: 44)
                     }

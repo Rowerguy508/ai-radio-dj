@@ -302,16 +302,41 @@ private struct ColumnLabel: ViewModifier {
     }
 }
 
+private extension VerticalAlignment {
+    /// The artist line's centre: where the rating button sits (-Nova, PR B).
+    enum RatingArtistLine: AlignmentID {
+        static func defaultValue(in d: ViewDimensions) -> CGFloat { d[VerticalAlignment.center] }
+    }
+    static let ratingArtistLine = VerticalAlignment(RatingArtistLine.self)
+}
+
 /// Serif title, then artist and station in the system face. All of it wraps on the slab.
 struct TrackBlock: View {
     let track: TrackInfo
     let stationName: String?
     @Environment(\.onSlab) private var onSlab
+    /// Station ratings (-Nova, PR B). Nil or unavailable (tags-only station, ratings not loaded):
+    /// the block is exactly the labels below, as before.
+    @Environment(\.songRating) private var songRating
 
     private var titleInk: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
     private var secondaryInk: Color { onSlab ? AeroDJPalette.slabSecondary : Color.secondary }
 
     var body: some View {
+        if let songRating, songRating.isAvailable {
+            // The rating button trails the artist line; the labels stay one accessibility element.
+            HStack(alignment: .ratingArtistLine, spacing: 8) {
+                labels
+                SongRatingButton(controller: songRating, track: track, ink: secondaryInk)
+                    .alignmentGuide(.ratingArtistLine) { $0[VerticalAlignment.center] }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            labels
+        }
+    }
+
+    private var labels: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(track.title)
                 .font(.system(.largeTitle, design: .serif))
@@ -321,6 +346,8 @@ struct TrackBlock: View {
                 .font(.body)
                 .foregroundStyle(secondaryInk)
                 .modifier(ColumnLabel())
+                // Read only by the rated layout above; no effect on the plain block.
+                .alignmentGuide(.ratingArtistLine) { $0[VerticalAlignment.center] }
             if let stationName, !stationName.isEmpty {
                 Text(stationName)
                     .font(.subheadline)

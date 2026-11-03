@@ -38,6 +38,9 @@ public enum P0TraceEvent: String, Equatable, Sendable, CaseIterable {
     case appLifecycle
     /// DJ talk-over (flagged): a plan, a timing miss, a cancel or a measured start latency.
     case talkover
+    /// A break paused by a system interruption dropped lines (#379 N2): lines skipped on
+    /// resume (`resumeDrop`) or the rest of the break (`breakDropped`), counted by kind.
+    case breakInterruption
 }
 
 public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
@@ -54,6 +57,14 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     case kind, mode, intro, outro, voice, play, unduck, lat, ms, measured
     // talk-over duck probe (before activation: otherAudio, secondaryHint; after: these two)
     case otherAfter, hintAfter, activated
+    // session-order fix (-Fry): app-tracked active, quiet pre-deactivation error code, category
+    // options read back, duckOthers set, output volume percent, unduck error code
+    case activeBefore, preOff, opts, duckSet, outVol, err
+    // Echo's #374 follow-up (-Fry): MusicKit `playbackStatus == .playing` before and right after
+    // the duck activation, and in the settle, duck-to-voice (end of the lead) and unduck rows
+    case musicBefore, musicAfter, music
+    // #379 N2 (-Fry): the paused line, lines dropped, of which time checks and other lines
+    case line, dropped, timeChecks, otherCues
 }
 
 extension P0TraceCode {
@@ -87,11 +98,17 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case willResignActive, didEnterBackground, willEnterForeground, didBecomeActive
     // talk-over (row kind, mode, hard-break and intro-skip reasons, misses, cancels)
     case decision, miss, cancel, latency, duckProbe, hardBreak, used
+    case duckSettled, duckVoice, unduckProbe, duckReleased
     case outroAndIntro, outroOnly
     case flagOff, durationUnknown, trackTooShort, voiceTooLong, voiceInvalid, tooLateToArm, outroTooShort, endedBeforeVoice
     case noClosingLine, closingTooLong, nextTrackTooShort, nextTrackUnknown, introTooShort
     case voiceStartLate, nextStartLate, nextStartEarly, endAfterPlayCue, voiceEndedFirst
     case seekOutOfWindow, seekWhileSpeaking, skip, userStop, interruption, routeRemoved, revoked, voiceFailed
+    // break interruption drops (#379 N2): row kind, then `BreakResumeDrop.Reason` (same raw values)
+    case resumeDrop, breakDropped
+    case stale, allStale, noResume, musicPlaying, pauseExpired
+    /// #387 N1: a rating withdrew the paused break (`StationRatingResumeGate`).
+    case ratingWithdrawn
 }
 
 public enum P0TraceValue: Equatable, Sendable {
@@ -626,7 +643,77 @@ extension P0EventTrace {
         record(.talkover, at: t, [(.kind, .code(.duckProbe)), (.after, .int(afterTrack)),
                                   (.otherAudio, .bool(p.otherBefore)), (.secondaryHint, .bool(p.hintBefore)),
                                   (.activated, .bool(p.activated)),
-                                  (.otherAfter, .bool(p.otherAfter)), (.hintAfter, .bool(p.hintAfter))])
+                                  (.otherAfter, .bool(p.otherAfter)), (.hintAfter, .bool(p.hintAfter)),
+                                  (.activeBefore, Self.flag(p.activeBefore)), (.preOff, Self.number(p.preDeactivateCode)),
+                                  (.opts, Self.number(p.optionsRaw)), (.duckSet, Self.flag(p.duckOthersSet)),
+                                  (.outVol, Self.number(p.outputVolumePercent)),
+                                  (.musicBefore, Self.flag(p.musicBefore)), (.musicAfter, Self.flag(p.musicAfter))])
     }
+
+    /// The session 0.5 s after the duck activation (`kind=duckSettled`), and right after the
+    /// unduck (`kind=unduckProbe`, with the deactivation's error code, 0 when it succeeded) or
+    /// the release of a duck whose voice never spoke (`kind=duckReleased`).
+    public struct TalkoverSessionSample: Equatable, Sendable {
+        public var otherAudio: Bool
+        public var secondaryHint: Bool
+        public var outputVolumePercent: Int?
+        /// Echo's #374 follow-up: MusicKit `playbackStatus == .playing` at this sample (nil: not read).
+        public var musicPlaying: Bool?
+        public init(otherAudio: Bool, secondaryHint: Bool, outputVolumePercent: Int?, musicPlaying: Bool? = nil) {
+            self.otherAudio = otherAudio
+            self.secondaryHint = secondaryHint
+            self.outputVolumePercent = outputVolumePercent
+            self.musicPlaying = musicPlaying
+        }
+    }
+
+    @discardableResult
+    public mutating func talkoverDuckSettled(_ s: TalkoverSessionSample, afterTrack: Int, at t: TimeInterval) -> P0TraceRow {
+        record(.talkover, at: t, [(.kind, .code(.duckSettled)), (.after, .int(afterTrack))] + Self.pairs(s))
+    }
+
+    /// Milliseconds from the duck activation to the voice's real start, and (Echo's #374
+    /// follow-up) whether MusicKit was still playing then, at the end of the duck lead.
+    @discardableResult
+    public mutating func talkoverDuckToVoice(ms: Int?, musicPlaying: Bool? = nil, afterTrack: Int,
+                                             at t: TimeInterval) -> P0TraceRow {
+        record(.talkover, at: t, [(.kind, .code(.duckVoice)), (.after, .int(afterTrack)), (.ms, Self.number(ms)),
+                                  (.music, Self.flag(musicPlaying))])
+    }
+
+    @discardableResult
+    public mutating func talkoverUnduck(errorCode: Int, released: Bool, _ s: TalkoverSessionSample,
+                                        afterTrack: Int, at t: TimeInterval) -> P0TraceRow {
+        record(.talkover, at: t, [(.kind, .code(released ? .duckReleased : .unduckProbe)), (.after, .int(afterTrack)),
+                                  (.err, .int(errorCode))] + Self.pairs(s))
+    }
+
+    private static func pairs(_ s: TalkoverSessionSample) -> [(P0TraceKey, P0TraceValue)] {
+        [(.otherAudio, .bool(s.otherAudio)), (.secondaryHint, .bool(s.secondaryHint)), (.outVol, number(s.outputVolumePercent)),
+         (.music, flag(s.musicPlaying))]
+    }
+    /// #379 N2 (-Fry): lines a paused break dropped, by kind, and why. Counts and codes only.
+    @discardableResult
+    public mutating func breakInterruptionDrop(_ drop: BreakResumeDrop, afterTrack: Int?,
+                                               at t: TimeInterval) -> P0TraceRow {
+        record(.breakInterruption, at: t, [(.kind, .code(drop.breakDropped ? .breakDropped : .resumeDrop)),
+                                           (.reason, .code(P0TraceCode(rawValue: drop.reason.rawValue) ?? .unknown)),
+                                           (.after, Self.number(afterTrack)), (.line, .int(drop.line)),
+                                           (.dropped, .int(drop.count)), (.timeChecks, .int(drop.timeChecks)),
+                                           (.otherCues, .int(drop.other))])
+    }
+    /// #387 N1 (-Nova): lines a break withdrawn by a rating (`StationRatingResumeGate`) did not
+    /// air, by kind, in the same row shape. Counts and codes only; nothing about the rating.
+    @discardableResult
+    public mutating func breakInterruptionWithdrawn(_ withdrawn: StationRatingWithdrawnLines, afterTrack: Int?,
+                                                    at t: TimeInterval) -> P0TraceRow {
+        record(.breakInterruption, at: t, [(.kind, .code(.breakDropped)), (.reason, .code(.ratingWithdrawn)),
+                                           (.after, Self.number(afterTrack)), (.line, .int(withdrawn.line)),
+                                           (.dropped, .int(withdrawn.count)), (.timeChecks, .int(withdrawn.timeChecks)),
+                                           (.otherCues, .int(withdrawn.other))])
+    }
+
+    private static func flag(_ b: Bool?) -> P0TraceValue { b.map { .bool($0) } ?? .missing }
+    private static func number(_ i: Int?) -> P0TraceValue { i.map { .int($0) } ?? .missing }
 }
 #endif

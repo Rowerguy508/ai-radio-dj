@@ -34,10 +34,16 @@ struct AppDependencies {
     /// DJ talk-over (-Fry, flagged; docs/dj-talkover.md). App-scoped like the interlude, so a
     /// fold or a view change never touches a voice in flight.
     let talkover: TalkoverCoordinator
+    /// Station ratings (-Nova, PR B): the one book, loaded at launch.
+    let ratings: StationRatingsModel
+    /// The rating button's controller, injected at the app root as `\.songRating`.
+    let songRating: SongRatingController
 
     /// Starts the Studio and the DJ session once per launch.
     func start() async {
         await studio.start()
+        // Before the station queue's first build, so it is screened from the start.
+        await ratings.load()
         await djSession.start()
         // #332: station starts read the same briefing provider as a song tap.
         stationQueue?.start(briefing: djSession.briefingProvider(studio: studio))
@@ -89,6 +95,7 @@ struct AppDependencies {
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj,
                                        personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()))
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
+        interlude.acknowledgementClip = interruptionAcknowledgement(voice: voice, userID: "listener", stationID: "default")
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
@@ -102,6 +109,24 @@ struct AppDependencies {
             purger: purger)
         let recipes = StationRecipeLibrary(store: FileStationRecipeStore(fileURL: supportURL("StationRecipes/recipes.json")))
         let catalogSource = MusicCatalogSeedSource()   // one actor: seed search and genres (-Atlas)
+        let studio = StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
+                                             // Add-station search (Atlas): catalog + on-device library playlists.
+                                             seedSearch: catalogSource,
+                                             // Genres from Apple Music: the same actor and cache as seedSearch (-Atlas).
+                                             // Feeds Tune > Genres chips and the add-station genre step.
+                                             genreProvider: catalogSource,
+                                             seedSearchFailureKind: StudioSearchModel.searchFailureKind)
+        // Station ratings (-Nova, PR B): on this device only, not backed up; "purge all" deletes them.
+        let ratings = StationRatingsModel(store: FileStationRatingStore(fileURL: FileStationRatingStore.defaultURL(
+            applicationSupport: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0])))
+        ratings.listen(to: .shared)
+        let stationQueue = StationQueuePlayer(
+            music: MusicKitService.shared, station: station, djSession: djSession, talkover: talkover,
+            ratings: { [weak studio, weak station] in
+                guard let station else { return .none }
+                return ratings.bias(recipeID: SongRatingController.liveRecipeID(studio: studio, station: station),
+                                    configuration: station.committedDisplayed)
+            })
         return AppDependencies(
             mode: .live,
             // Calendar: only calendars the listener chose. Notes: only approved picked notes.
@@ -112,17 +137,14 @@ struct AppDependencies {
             playback: MusicKitService.shared,
             interlude: interlude,
             dj: dj,
-            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
-                                            // Add-station search (Atlas): catalog + on-device library playlists.
-                                            seedSearch: catalogSource,
-                                            // Genres from Apple Music: the same actor and cache as seedSearch (-Atlas).
-                                            // Feeds Tune > Genres chips and the add-station genre step.
-                                            genreProvider: catalogSource,
-                                            seedSearchFailureKind: StudioSearchModel.searchFailureKind),
+            studio: studio,
             djSession: djSession,
             pickedNotes: composition.notes,
-            stationQueue: StationQueuePlayer(music: MusicKitService.shared, station: station, djSession: djSession),
-            talkover: talkover)
+            stationQueue: stationQueue,
+            talkover: talkover,
+            ratings: ratings,
+            songRating: .live(ratings: ratings, station: station, studio: studio, music: MusicKitService.shared,
+                              queue: stationQueue))
     }
 
     #if DEBUG
@@ -149,6 +171,8 @@ struct AppDependencies {
                                        })
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
+        interlude.acknowledgementClip = interruptionAcknowledgement(voice: voice, userID: TestStation.userID,
+                                                                    stationID: TestStation.stationID)
         // Fixture mode: talk-over is OFF unless the Settings toggle was explicitly set ON. The
         // saved value is honoured in every build (DJTalkoverFlag).
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession,
@@ -164,6 +188,11 @@ struct AppDependencies {
             providers: composition.providers,
             purger: purger)
         let recipes = StationRecipeLibrary(store: InMemoryStationRecipeStore())
+        // Test Station: fixed genre fixture (no network, stable screenshots).
+        let studio = StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
+                                             genreProvider: StaticGenreProvider.fixture)
+        // In memory: a test-station session never touches the live ratings file (-Nova, PR B).
+        let ratings = StationRatingsModel(store: InMemoryStationRatingStore())
         return AppDependencies(
             mode: .testStation,
             contextSources: composition.contextSources,
@@ -173,13 +202,14 @@ struct AppDependencies {
             playback: MusicKitService.shared,
             interlude: interlude,
             dj: dj,
-            // Test Station: fixed genre fixture (no network, stable screenshots).
-            studio: StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
-                                            genreProvider: StaticGenreProvider.fixture),
+            studio: studio,
             djSession: djSession,
             pickedNotes: nil,
             stationQueue: nil,
-            talkover: talkover)
+            talkover: talkover,
+            ratings: ratings,
+            songRating: .live(ratings: ratings, station: station, studio: studio, music: MusicKitService.shared,
+                              queue: nil))
     }
     #endif
 
@@ -202,6 +232,21 @@ struct AppDependencies {
         }
         session.onBreakMustStop = hook
         return interlude
+    }
+
+    /// The "sorry, little interruption" line after a system interruption (-Fry). The existing
+    /// voice path and its fallback, with NO attribution: `VoiceRenderer` then uses on-device,
+    /// free routes only (`mayLeaveDevice` is false), so no paid or cloud voice is asked for it.
+    /// Nil when nothing renders; the break then resumes without it.
+    private static func interruptionAcknowledgement(voice: VoiceRenderer, userID: String,
+                                                    stationID: String) -> @MainActor () async -> Data? {
+        {
+            switch await voice.render(BreakInterruptionAcknowledgement.cue(), userID: userID, stationID: stationID,
+                                      attribution: nil) {
+            case .success(let clip): return clip.audio.data
+            case .failure: return nil
+            }
+        }
     }
 
     /// Song scrubbing (-Atlas): the one production assignment of `onSongSeeked`. A committed

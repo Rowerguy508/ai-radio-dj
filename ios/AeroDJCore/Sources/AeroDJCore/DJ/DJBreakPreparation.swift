@@ -81,6 +81,9 @@ public struct PreparedDJBreak: Equatable, Sendable {
     /// The clock reading the time-check line was written for (its expected air time), while
     /// that line is in the break. `takeBreak` checks it against the clock at the take.
     public var timeCheckAirTime: Date? = nil
+    /// The planned time check whose line is in this break (set with `timeCheckAirTime`), so a
+    /// break resumed after an interruption can re-check that line (#379 N1, `BreakResumePlan`).
+    public var timeCheck: DJPlannedTimeCheck? = nil
 
     /// Speech gap before the closing line, in seconds. A pause between two lines of speech,
     /// not compensation for player latency.
@@ -425,6 +428,7 @@ public actor DJBreakPreparer {
                                     talkOverCueID: fit == .keepMarker ? djBreak.talkOverCueID : nil,
                                     trimmedCueIDs: main.trimmedCueIDs)
         ready.timeCheckAirTime = airTime
+        ready.timeCheck = djBreak.timeCheck
         results[k] = .ready(ready)
     }
 

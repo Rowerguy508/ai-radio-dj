@@ -45,6 +45,8 @@ jobs:
         working-directory: ios/AeroDJCore
       - name: Fixture scan fails closed (fake DerivedData test)
         run: ios/scripts/check-release-excludes-preview-fixtures-test.sh
+      - name: StoreKit 0-test guard fails closed (fake xcresulttool test)
+        run: ios/scripts/check-xcresult-test-count-test.sh
       - name: Release build excludes the debug test station and PlaybackFixtures
         run: ios/scripts/check-release-excludes-test-station.sh
       - name: Release build cannot enable paid voices
@@ -165,21 +167,46 @@ jobs:
               echo "$key still names AeroDJ"; exit 1
             fi
           done
-      - name: Pick an available iPhone simulator
+      - name: Pick an iPhone simulator on iOS 26.2 (StoreKit tests)
+        # TEMPORARY WORKAROUND: remove this pin once Apple ships a simulator runtime fix.
+        # This job runs AeroDJStoreKitTests. They pass on iOS 26.2 but fail on iOS 26.5 with
+        # SKTestSession SKInternalErrorDomain Code=3 and 0 products (reported, not confirmed by
+        # Apple). The old `last` pick only landed on 26.2 by simctl ordering; pin it explicitly.
+        # Same device as before within 26.2 (last iPhone). Fails loudly when 26.2 has no iPhone.
         run: |
-          UDID=$(xcrun simctl list devices available -j \
-            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
-                      | select(.name | startswith("iPhone"))] | last | .udid // empty')
-          test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
+          set -euo pipefail
+          RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-26-2
+          PICK=$(xcrun simctl list devices available -j | jq -r --arg rt "$RUNTIME" '
+            .devices[$rt] // [] | map(select(.name | startswith("iPhone"))) | last
+            | if . == null then empty else "\(.udid)\t\(.name)" end')
+          if [ -z "$PICK" ]; then
+            echo "::error::No available iPhone on the iOS 26.2 runtime ($RUNTIME) for StoreKit tests"
+            xcrun simctl list runtimes
+            exit 1
+          fi
+          IFS=$'\t' read -r UDID NAME <<<"$PICK"
+          VERSION=$(xcrun simctl list runtimes -j | jq -r --arg rt "$RUNTIME" '.runtimes[] | select(.identifier == $rt) | .version')
+          echo "Picked simulator: name=$NAME udid=$UDID runtime=$RUNTIME version=$VERSION"
+          echo "iPhone simulator: $NAME, ${RUNTIME##*.} ($VERSION), $UDID" >> "$GITHUB_STEP_SUMMARY"
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
       - name: Run unit tests on simulator
+        # The AeroDJ scheme's tests: AeroDJCoreTests and AeroDJStoreKitTests. The result bundle and
+        # log feed the StoreKit 0-test guard below.
         run: |
+          set -euo pipefail
           xcodebuild test \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJ \
             -destination "id=$SIM_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
-            CODE_SIGNING_ALLOWED=NO
+            -resultBundlePath "$RUNNER_TEMP/sim-tests.xcresult" \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/sim-tests.log"
+      - name: StoreKit tests actually ran (at least 11 executed, skips excluded)
+        # Sentinel's N2 (#391): a scheme change or a target that silently drops out would otherwise
+        # pass with 0 StoreKit tests. 11 is the current count in AeroDJStoreKitTests. -Fry
+        run: |
+          ios/scripts/check-xcresult-test-count.sh --bundle AeroDJStoreKitTests --min 11 \
+            --xcresult "$RUNNER_TEMP/sim-tests.xcresult" --log "$RUNNER_TEMP/sim-tests.log"
 
   device-build:
     name: iOS device build (unsigned)
