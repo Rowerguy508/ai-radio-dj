@@ -4,8 +4,11 @@ name: iOS (iPad)
 # (and the required `iOS simulator build` iPhone check) stays exactly as it was, and so it
 # never queues on pull requests: GitHub's macOS queue is backed up and iPhone checks come
 # first. It runs after a push to integration/device-duo that touches the app, or by hand
-# (Actions > iOS (iPad) > Run workflow). Non-blocking: continue-on-error, and it is not a
-# required check. Make it required once it has been green for a while. -Atlas
+# (Actions > iOS (iPad) > Run workflow). It is not a required check. -Atlas
+# Blocking split (follow-up to #391, Echo's nit): the job is no longer continue-on-error. Only
+# the newest-runtime steps (boot + non-StoreKit unit tests) are step-level continue-on-error, and
+# a failure there is surfaced as a ::warning::. The build, the iOS 26.2 StoreKit tests and their
+# 0-test guard (Sentinel's N2) fail the job. -Fry
 on:
   push:
     branches: [integration/device-duo]
@@ -26,8 +29,9 @@ concurrency:
 # trigger, so it always resolves to GitHub-hosted macos-latest. -Atlas
 jobs:
   simulator-tests-ipad:
-    name: iOS (iPad, non-blocking)
-    continue-on-error: true
+    # Renamed from "iOS (iPad, non-blocking)". Not a required check (this workflow never runs on
+    # pull requests), so the rename does not affect branch protection. -Fry
+    name: iOS (iPad)
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     env:
       XCODEGEN_VERSION: 2.46.0
@@ -124,6 +128,9 @@ jobs:
           echo "SK_UDID=$UDID" >> "$GITHUB_ENV"
       - name: Boot the iPad simulator
         # Boot before the run: a cold iPad booted by xcodebuild mid-run was flaky in the Studio job.
+        # Newest runtime only (non-blocking): the StoreKit step boots its own 26.2 iPad.
+        id: boot
+        continue-on-error: true
         run: |
           xcrun simctl boot "$SIM_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$SIM_UDID" -b
@@ -137,6 +144,9 @@ jobs:
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO
       - name: Run unit tests on iPad simulator (newest iOS)
+        # Non-blocking (step-level): the newest runtime is still being proven on iPad.
+        id: newest
+        continue-on-error: true
         run: |
           xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
@@ -146,13 +156,32 @@ jobs:
             -skip-testing:AeroDJStoreKitTests \
             CODE_SIGNING_ALLOWED=NO
       - name: Run StoreKit tests on iPad simulator (iOS 26.2)
+        # Blocking. The result bundle and log feed the 0-test guard below.
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
+          set -euo pipefail
           xcrun simctl shutdown "$SIM_UDID" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/storekit-ipad.xcresult"
           xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJ \
             -destination "id=$SK_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
             -only-testing:AeroDJStoreKitTests \
-            CODE_SIGNING_ALLOWED=NO
+            -resultBundlePath "$RUNNER_TEMP/storekit-ipad.xcresult" \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/storekit-ipad.log"
+      - name: StoreKit tests actually ran (at least 11 executed, skips excluded)
+        # Sentinel's N2: xcodebuild passes when -only-testing matches nothing. 11 is the current
+        # count in AeroDJStoreKitTests; raise it when tests are added, lower it only on purpose.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          ios/scripts/check-xcresult-test-count.sh --bundle AeroDJStoreKitTests --min 11 \
+            --xcresult "$RUNNER_TEMP/storekit-ipad.xcresult" --log "$RUNNER_TEMP/storekit-ipad.log"
+      - name: Report non-blocking newest-iOS failures
+        if: ${{ !cancelled() && (steps.boot.outcome == 'failure' || steps.newest.outcome == 'failure') }}
+        env:
+          BOOT: ${{ steps.boot.outcome }}
+          NEWEST: ${{ steps.newest.outcome }}
+        run: |
+          echo "::warning::Newest-iOS iPad steps failed (non-blocking): boot=$BOOT unit-tests=$NEWEST. The job result reflects the build and the iOS 26.2 StoreKit tests only."
+          echo "Non-blocking newest-iOS iPad failure: boot=$BOOT, unit tests=$NEWEST" >> "$GITHUB_STEP_SUMMARY"
