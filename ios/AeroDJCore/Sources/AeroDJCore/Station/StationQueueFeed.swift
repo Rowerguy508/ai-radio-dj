@@ -393,20 +393,26 @@ public final class StationQueueFeed<Item: Sendable> {
         }
         // Ratings changed since this queue was built: rebuild for the next refill. The stale queue is
         // still handed out now, so a rating never strands the station (today's stop path), but
-        // screened: a song excluded since (never, held tired) is dropped as it is handed over, the
-        // last song of the playing queue included.
+        // screened: a song excluded since (never, held tired) is dropped as it is handed over.
         if ready.revision != currentRatings(for: key).revision { prefetch(active) }
-        let fresh = screened(ready.items, for: key).filter { item in !queue.contains { sameSong($0, item) } }
+        let allowed = screened(ready.items, for: key)
+        let fresh = allowed.filter { item in !queue.contains { sameSong($0, item) } }
         guard !fresh.isEmpty else {
             staged = nil
             prefetch(active)
             return keep(.refill, .notReady)
         }
-        pendingHandOff = PendingHandOff(trigger: .refill, key: key, revision: ready.revision, items: ready.items,
+        // Fry nit 1 (PR B): a failed start restores the screened list, never the unscreened build.
+        pendingHandOff = PendingHandOff(trigger: .refill, key: key, revision: ready.revision, items: allowed,
                                         previousKey: playingKey, previousReported: queueStartReported)
         staged = nil
         playingKey = key
-        let refill = screened([lastSong], for: key) + fresh
+        // Echo (PR B): the last song is NOT screened. It is the song the DJ's break at this boundary
+        // has already introduced ("up next") and the player loads next; dropping it here would make
+        // the break name one song and a different one play. A never on it is handled by the player
+        // instead: rating the playing song skips it, and rating it while queued drops it and the
+        // breaks that name it through the skip path (`excludedUpcoming`, PR B).
+        let refill = [lastSong] + fresh
         log(.handedOff(.refill, songs: refill.count))
         // A short refill starts its own refill now (its start skips `queueStarted`'s check).
         if refill.count <= refillLead { prefetch(active) }
@@ -461,7 +467,8 @@ public final class StationQueueFeed<Item: Sendable> {
             prefetch(active)
             return keep(trigger, .notReady)
         }
-        pendingHandOff = PendingHandOff(trigger: trigger, key: key, revision: ready.revision, items: ready.items,
+        // Fry nit 1 (PR B): a failed start restores the screened list, never the unscreened build.
+        pendingHandOff = PendingHandOff(trigger: trigger, key: key, revision: ready.revision, items: items,
                                         previousKey: playingKey, previousReported: queueStartReported)
         staged = nil
         playingKey = key

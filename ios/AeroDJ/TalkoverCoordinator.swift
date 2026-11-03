@@ -178,6 +178,16 @@ final class TalkoverCoordinator {
         book.songSkipped(key(index))
     }
 
+    /// A rating dropped the break after song `k` (PR B, `StationQueuePlayer.ratingChanged`). Unlike
+    /// `songSkipped`, song `k` may still be on air and keeps playing: only a run or a held break for
+    /// boundary `k` goes; the song's own state is kept.
+    func breakDropped(afterTrack k: Int) {
+        // A take still awaiting the session for k must not hold what it gets back (the token guards).
+        if taking != nil, song?.index == k { generation += 1 }
+        if run?.afterTrack == k { cancelRun(.skip) }
+        if held?.afterTrack == k { drop(k) }
+    }
+
     /// `onSongSeeked` (AppDependencies.wireSongSeek).
     func songSeeked(index: Int) {
         guard var r = run, r.afterTrack == index else { return }

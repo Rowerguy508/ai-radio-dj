@@ -69,6 +69,13 @@ enum StudioCaptureScenario: String {
     /// folded player draws the ON AIR pill. At AX5 on a phone it is pinned above the
     /// scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
     case onAir
+    /// Station ratings (-Nova, PR B): `playing` with the rating button, unrated, with its
+    /// first-time "Rate" label. The other scenarios get no rating controller, so they are unchanged.
+    case ratingFirstTime
+    /// The playing song rated Like it (plus.circle), label already seen.
+    case ratingLiked
+    /// A queued song just rated Never: the Undo toast over the player (no skip in a capture).
+    case ratingNever
 
     var access: PlaybackAccess {
         switch self {
@@ -109,6 +116,8 @@ struct StudioCaptureView: View {
     /// Set when the station never finished loading. The capture refuses to render a screenshot
     /// that depends on timing; UI tests fail on `capture.failed` (StudioScreenTests.launch).
     @State private var failure: String?
+    /// Only the rating scenarios set one; nil keeps every other capture as it was (-Nova, PR B).
+    @State private var captureRating: SongRatingController?
 
     private var showsProbe: Bool {
         loaded && (scenario == .resize || scenario == .resizeTune)
@@ -152,6 +161,7 @@ struct StudioCaptureView: View {
                                       timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
                     }
                 }
+                .modifier(SongRatingToastHost())
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -170,6 +180,8 @@ struct StudioCaptureView: View {
             }
         }
         .preferredColorScheme(UserDefaults.standard.bool(forKey: StudioCapture.darkKey) ? .dark : nil)
+        // Replaces the app root's controller: nil outside the rating scenarios.
+        .environment(\.songRating, captureRating)
         .task {
             // The app root's task starts Studio (b39d15f). Wait for that load to finish rather
             // than loading again: a second load would overwrite the scenario's edits below.
@@ -214,6 +226,14 @@ struct StudioCaptureView: View {
                 await studio.station.setEnergy(0.85)
                 await studio.station.setGenres(["pop", "indie", "synthwave"])
                 await studio.station.saveChanges()
+            case .ratingFirstTime:
+                captureRating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id)
+            case .ratingLiked:
+                captureRating = await SongRatingController.fixture(rated: .like, songID: PlaybackFixtures.songs[0].id, labelSeen: true)
+            case .ratingNever:
+                let rating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id, labelSeen: true)
+                await rating.rate(.never, songID: PlaybackFixtures.songs[1].id, artistName: PlaybackFixtures.songs[1].artistName)
+                captureRating = rating
             default:
                 break
             }

@@ -267,15 +267,44 @@ final class StationRatingsFeedTests: XCTestCase {
 
     // MARK: Screening the hand-off (Fry/Orion ruling)
 
-    func testTheLastSongOfThePlayingQueueIsScreenedToo() async {
+    /// Echo (PR B): the refill's last song is the playing queue's next song. The break at this boundary
+    /// has already introduced it, so it is kept even when marked never since; only the staged
+    /// station songs are screened. (Before PR B it was dropped, and a different song played.)
+    func testTheLastSongOfThePlayingQueueIsKeptForItsIntro() async {
         let f = feed()
         _ = await f.prepare(Self.station)
         f.queueStarted(for: Self.station, songCount: 2)
         never("q1")
+        never("first-core-3")
+        let refill = f.queueForNextSong(after: 0, in: ["q0", "q1"], active: Self.station, playbackMayStart: true, sameSong: ==)
+        XCTAssertEqual(refill?.first, "q1", "the introduced song plays: the break and the song agree")
+        XCTAssertEqual(refill?.count, 12, "[q1] + 11 staged songs")
+        XCTAssertEqual(refill?.contains("first-core-3"), false, "the staged station songs are still screened")
+    }
+
+    // MARK: Fry nit 1 (PR B): a failed hand-off restores the screened list
+
+    func testAFailedRefillRestoresTheScreenedList() async {
+        let f = feed()
+        _ = await f.prepare(Self.station)
+        f.queueStarted(for: Self.station, songCount: 2)
+        never("first-core-2")
         let refill = f.queueForNextSong(after: 0, in: ["q0", "q1"], active: Self.station, playbackMayStart: true, sameSong: ==)
         XCTAssertEqual(refill?.count, 12)
-        XCTAssertEqual(refill?.contains("q1"), false, "the playing queue's last song was marked never: not handed over")
-        XCTAssertEqual(refill?.first, "first-core-0")
+        f.handOffFinished(.failed)
+        XCTAssertEqual(f.stagedCount, 11, "restored without the never song, not the unscreened build of 12")
+        let retried = f.takeForIdleStart(active: Self.station) ?? []
+        XCTAssertFalse(retried.contains("first-core-2"))
+    }
+
+    func testAFailedStartRestoresTheScreenedList() async {
+        let f = feed()
+        _ = await f.prepare(Self.station)
+        never("first-core-4")
+        let items = f.takeForIdleStart(active: Self.station) ?? []
+        XCTAssertEqual(items.count, 11)
+        f.handOffFinished(.failed)
+        XCTAssertEqual(f.stagedCount, 11, "restored without the never song, not the unscreened build of 12")
     }
 
     func testTiredSongsStillHeldAreScreenedAndEasedBackOnesAreNot() async {
@@ -384,6 +413,77 @@ final class StationRatingsFeedTests: XCTestCase {
             XCTAssertEqual(openers(p), [], "\(label): the refill does not re-greet")
             await p.session.stop()
         }
+    }
+
+    // MARK: Fry nit 2 (PR B): a queued song rated never is never named or aired by a break
+
+    /// True when `text` names `mine-<j>` (not `mine-<j>0`).
+    private static func names(_ text: String, _ j: Int) -> Bool {
+        let needle = "mine-\(j)"
+        var rest = text[...]
+        while let r = rest.range(of: needle) {
+            if r.upperBound == rest.endIndex || !rest[r.upperBound].isNumber { return true }
+            rest = rest[r.upperBound...]
+        }
+        return false
+    }
+
+    /// The player's rating path (`StationQueuePlayer.ratingChanged`, PR B) through the real feed and
+    /// DJ session: `excludedUpcoming` finds the queued never song, `StationRatingBreakDrop` gives the
+    /// boundaries on both sides of it, and `songCut` drops them (the skip path). Then the queue plays
+    /// out: no break that airs names the song, and no break still planned to air names it.
+    func testARatedQueuedSongIsNeverNamedOrAiredByABreak() async {
+        var covered = 0
+        for seed in UInt64(0)..<5 {
+            book = StationRatingBook()
+            let label = "seed \(seed)"
+            let p = await rig(seed: seed)
+            await p.tap(Self.mine(12))
+            let playing = (openers(p).first ?? 0) + 1
+            await p.session.songStarted(index: playing, remaining: .seconds(1))
+            // A later break that introduces its next song ("up next"): that song is the one rated.
+            guard let b = p.session.testPlannedBreaks.keys.sorted().first(where: { k in
+                k > playing && k + 1 < 12
+                    && p.session.testPlannedBreaks[k]!.cues.contains { Self.names($0.text, k + 1) }
+            }) else { continue }
+            let j = b + 1
+            covered += 1
+
+            let scope = StationRatingScope(recipeID: nil, configuration: p.station.committedDisplayed)!
+            book.rate(StationRatingEntry(songID: "mine-\(j)", artistName: "Artist mine-\(j)", rating: .never,
+                                         ratedDay: 42, origin: .catalog), in: scope, today: 42)
+            p.feed.ratingsChanged(p.station.committedDisplayed)
+            let upcoming = p.feed.excludedUpcoming(in: p.queue, after: playing, active: p.station.active)
+            XCTAssertEqual(upcoming, [j], label)
+            let dropped = StationRatingBreakDrop.boundaries(forUpcoming: upcoming, playing: playing)
+            XCTAssertEqual(dropped, [j - 1, j], label)
+            for k in dropped { await p.session.songCut(afterTrack: k) }
+
+            // Play the queue out, letting every planned break render before its boundary.
+            var aired = 0
+            for k in (playing + 1)..<11 {
+                await p.session.songStarted(index: k, remaining: .seconds(240))
+                // Dropped ones too (they never become ready), so the test fails if the drop is removed.
+                if p.session.testPlannedBreaks[k] != nil {
+                    for _ in 0..<200 {
+                        if await p.session.breakIsReady(afterTrack: k) { break }
+                        try? await Task.sleep(for: .milliseconds(5))
+                    }
+                }
+                let handed = await p.session.naturalBoundary(afterTrack: k)
+                if dropped.contains(k) { XCTAssertNil(handed, "\(label): the break at \(k) was dropped") }
+                guard let handed else { continue }
+                aired += 1
+                let spoken = handed.clips.map { String(decoding: $0.audio.data, as: UTF8.self) }.joined(separator: " ")
+                XCTAssertFalse(Self.names(spoken, j), "\(label): the break at \(k) names the never song")
+            }
+            XCTAssertGreaterThan(aired, 0, "\(label): other breaks still air")
+            let stillPlanned = p.session.testPlannedBreaks.filter { !dropped.contains($0.key) && $0.key > playing }
+            let naming = stillPlanned.values.flatMap(\.cues).filter { Self.names($0.text, j) }
+            XCTAssertEqual(naming.count, 0, "\(label): no break left to air names the never song")
+            await p.session.stop()
+        }
+        XCTAssertGreaterThan(covered, 0, "at least one seed plans an intro for a later song")
     }
 
     // MARK: Privacy (Sentinel): personal context under mayLeaveDevice

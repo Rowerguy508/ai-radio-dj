@@ -30,6 +30,8 @@ final class StationQueuePlayer {
     private let music: MusicKitService
     private let station: StationConfigurationModel
     private let djSession: DJBreakSession
+    /// DJ talk-over: a rating that drops a break also drops a talk-over held or running for it (PR B).
+    private let talkover: TalkoverCoordinator?
     /// Set only between this type's `music.play` call and its synchronous queue assignment, so the
     /// hand-off's own queue keeps the key the feed gave it (a change saved meanwhile still applies).
     private var ownQueueStarting = false
@@ -37,11 +39,16 @@ final class StationQueuePlayer {
     /// Nil until `start(briefing:)`: no personal update (fails closed).
     private var briefing: (@MainActor () -> ApprovedShowHandoff)?
 
+    /// `ratings`: the committed station's song ratings (`StationRatingsModel.bias`, PR B). Read on
+    /// every build and hand-off; never logged, never passed to the DJ or a voice.
     init(music: MusicKitService, station: StationConfigurationModel, djSession: DJBreakSession,
+         talkover: TalkoverCoordinator? = nil,
+         ratings: @escaping @MainActor () -> StationRatingBias = { .none },
          source: MusicCatalogSeedSource = MusicCatalogSeedSource()) {
         self.music = music
         self.station = station
         self.djSession = djSession
+        self.talkover = talkover
         let log = Logger(subsystem: "com.aerodj.app", category: "stationQueue")
         feed = StationQueueFeed<Track>(
             resolver: CatalogStationSeedResolver(catalog: source),
@@ -52,6 +59,7 @@ final class StationQueuePlayer {
                 let current = queue.firstIndex { $0.id == music.currentTrack?.id } ?? -1
                 return Set(queue.prefix(current + 1).map(\.id))
             },
+            ratings: ratings,
             log: { event in log.notice("\(event.diagnostics, privacy: .public)") })
         createdStart = CreatedStationStarter(feed: feed)
     }
@@ -102,6 +110,29 @@ final class StationQueuePlayer {
             .notice("createdStationOpen \(String(describing: outcome), privacy: .public)")
         return outcome
     }
+
+    /// A song was rated, a rating undone, or ratings cleared (PR B, -Nova). Never logged.
+    /// 1. The staged queue is rebuilt in the background with the new ratings (`ratingsChanged`).
+    /// 2. Songs still queued after the playing one that the station now excludes (never, held tired)
+    ///    lose every prepared break that could name them: the boundary before each ("up next") and
+    ///    after it ("that was"). This is the skip path's cut (`DJBreakSession.songCut`), so a cut
+    ///    boundary is never prepared again in this queue; a talk-over held or running for it is
+    ///    dropped too. The songs themselves are not skipped ahead of time (that waits on #373):
+    ///    a queued never still plays once, with no break naming it. The playing song is the
+    ///    caller's (a never on it skips through `MusicKitService.skip()`).
+    func ratingChanged() async {
+        feed.ratingsChanged(station.committedDisplayed)
+        let queue = music.queue
+        let playing = queue.firstIndex { $0.id == music.currentTrack?.id } ?? -1
+        let upcoming = feed.excludedUpcoming(in: queue, after: playing, active: station.active)
+        for k in StationRatingBreakDrop.boundaries(forUpcoming: upcoming, playing: playing) {
+            talkover?.breakDropped(afterTrack: k)
+            await djSession.songCut(afterTrack: k)
+        }
+    }
+
+    /// The catalog artist ID the last build saw for `songID` (love's discovery steering only).
+    func artistID(forSong songID: String) -> String? { feed.artistID(forSong: songID) }
 
     /// A built-in station row was tapped (Fry #213 nit 2): a created-station tap still waiting for
     /// its queue does not start.

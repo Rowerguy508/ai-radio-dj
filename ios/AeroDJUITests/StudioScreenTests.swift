@@ -796,6 +796,51 @@ final class StudioScreenTests: XCTestCase {
         assertReadingOrder(app, title: "Morning Light")
     }
 
+    /// Station ratings (-Nova, PR B): the button sits on the now-playing block only in the rating
+    /// scenarios; `playing` (and every other scenario) has none, so those screenshots are unchanged.
+    @MainActor
+    func testRatingButtonOnNowPlaying() throws {
+        let plain = launch(scenario: "playing")
+        XCTAssertTrue(shows(plain, "Morning Light"))
+        XCTAssertFalse(plain.buttons["nowPlaying.rating"].exists, "no rating controller, no button")
+        plain.terminate()
+
+        let app = launch(scenario: "ratingFirstTime")
+        let button = app.buttons["nowPlaying.rating"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10), "rating button:\n\(app.debugDescription)")
+        XCTAssertTrue(button.label.contains("not rated"), button.label)
+        XCTAssertTrue(button.isHittable)
+        XCTAssertGreaterThanOrEqual(button.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(button.frame.height, 44)
+        XCTAssertTrue(shows(app, "Rate"), "first-time label")
+        XCTAssertTrue(shows(app, "Morning Light, The Calm Collective"), "the labels stay one element")
+        save(app, "rating-first-time")
+        button.tap()
+        for item in ["More like this", "Like it", "Tired of it", "Never play on this station"] {
+            XCTAssertTrue(app.buttons[item].waitForExistence(timeout: 5), "\(item) in the menu")
+        }
+        save(app, "rating-menu")
+    }
+
+    @MainActor
+    func testRatedSongAndNeverToast() throws {
+        let liked = launch(scenario: "ratingLiked")
+        let button = liked.buttons["nowPlaying.rating"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        XCTAssertTrue(button.label.contains("Like it"), button.label)
+        save(liked, "rating-liked")
+        liked.terminate()
+
+        let app = launch(scenario: "ratingNever")
+        let toast = app.descendants(matching: .any)["nowPlaying.ratingToast"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 5), "never toast:\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Won't play on this station again."))
+        XCTAssertTrue(app.buttons["nowPlaying.rating.undo"].isHittable)
+        save(app, "rating-never-toast")
+        app.buttons["nowPlaying.rating.undo"].tap()
+        XCTAssertTrue(toast.waitForNonExistence(timeout: 3), "undo hides the toast")
+    }
+
     /// Compact empty state: submit search shows fixture results and does not play.
     @MainActor
     func testCompactSearchShowsFixtureResults() throws {
