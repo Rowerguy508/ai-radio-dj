@@ -68,7 +68,6 @@ struct SongRatingButton: View {
     let track: TrackInfo
     var ink: Color
     @State private var confirmingClearStation = false
-    @State private var confirmingClearAll = false
 
     var body: some View {
         let current = controller.rating(for: track.id)
@@ -90,9 +89,6 @@ struct SongRatingButton: View {
             }
             Divider()
             Button(SongRatingPresentation.clearStationTitle, role: .destructive) { confirmingClearStation = true }
-            // FORWARD-MERGE(#372): interim spot for "Clear all ratings" until #372's Settings lands;
-            // then remove this item and its dialog and host `StationRatingsSettingsSection` there.
-            Button(SongRatingPresentation.clearAllTitle, role: .destructive) { confirmingClearAll = true }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: SongRatingPresentation.symbol(current))
@@ -113,14 +109,6 @@ struct SongRatingButton: View {
             Button(SongRatingPresentation.clearStationTitle, role: .destructive) {
                 Task { await controller.clearStation() }
             }
-        }
-        .confirmationDialog(SongRatingPresentation.clearAllTitle, isPresented: $confirmingClearAll,
-                            titleVisibility: .visible) {
-            Button(SongRatingPresentation.clearAllTitle, role: .destructive) {
-                Task { await controller.clearAll() }
-            }
-        } message: {
-            Text(SongRatingPresentation.clearAllFooter)
         }
     }
 }
@@ -178,10 +166,8 @@ struct SongRatingToastHost: ViewModifier {
     }
 }
 
-/// "Clear all ratings", with a confirmation. Deletes the ratings file.
-// FORWARD-MERGE(#372): move this section into #372's SettingsView Form (below TalkoverSettingsRow)
-// and drop the interim menu item in `SongRatingButton`. #372 is not on this base (b232005), so
-// nothing hosts this section yet.
+/// "Clear all ratings" in Settings (#372's Form, below the talk-over row), with a confirmation.
+/// Deletes the ratings file.
 struct StationRatingsSettingsSection: View {
     let controller: SongRatingController
     @State private var confirming = false
