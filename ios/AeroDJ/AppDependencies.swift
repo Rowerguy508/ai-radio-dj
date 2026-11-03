@@ -127,6 +127,15 @@ struct AppDependencies {
                 return ratings.bias(recipeID: SongRatingController.liveRecipeID(studio: studio, station: station),
                                     configuration: station.committedDisplayed)
             })
+        // Sentinel's #396 N1: a purge-all (consent withdrawal) also drops the DJ session's excluded
+        // songs and rebuilds the staged queue without the old ratings. Set before `load()` (start).
+        ratings.resetOnPurge(session: djSession, rebuildQueue: { [weak stationQueue] in stationQueue?.ratingsPurged() })
+        #if AERODJ_P0_DIAG
+        // Echo's #396 room N1: a break narrowed for an excluded song leaves a counts-only row.
+        djSession.onExcludedCuesDropped = { k, counts in
+            P0EventTraceHost.shared.talkover { trace, t in _ = trace.breakNarrowed(counts, afterTrack: k, at: t) }
+        }
+        #endif
         return AppDependencies(
             mode: .live,
             // Calendar: only calendars the listener chose. Notes: only approved picked notes.
@@ -192,7 +201,14 @@ struct AppDependencies {
         let studio = StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
                                              genreProvider: StaticGenreProvider.fixture)
         // In memory: a test-station session never touches the live ratings file (-Nova, PR B).
-        let ratings = StationRatingsModel(store: InMemoryStationRatingStore())
+        // Its own defaults suite too (Fry's #387 Debug nit, #388): a delete here can neither set
+        // nor clear the live AeroDJRatingsPurgePending flag. Each launch starts unlocked.
+        // Sentinel's #396 N3: never .standard (the live flag). Debug only, so a hard stop is safe.
+        guard let ratingsDefaults = UserDefaults(suiteName: "AeroDJRatingsTestStation") else {
+            fatalError("Test Station ratings suite unavailable")
+        }
+        ratingsDefaults.removeObject(forKey: StationRatingsModel.purgePendingKey)
+        let ratings = StationRatingsModel(store: InMemoryStationRatingStore(), defaults: ratingsDefaults)
         return AppDependencies(
             mode: .testStation,
             contextSources: composition.contextSources,

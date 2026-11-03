@@ -486,6 +486,196 @@ final class StationRatingsFeedTests: XCTestCase {
         XCTAssertGreaterThan(covered, 0, "at least one seed plans an intro for a later song")
     }
 
+    /// #388 (Echo's #387 N2, -Nova): the rating path narrows instead of cutting. With the queued
+    /// never song excluded (`DJBreakSession.songsExcluded`), the breaks on both sides of it still
+    /// air, minus exactly the cues attributed to it; no cue that airs names it, and no briefing or
+    /// other cue is lost. An Undo (an empty set) puts the cues back.
+    func testAnExcludedQueuedSongLosesOnlyTheCuesThatNameIt() async {
+        var covered = 0
+        var keptAround = 0
+        var undone = 0
+        var narrowedRows = 0
+        for seed in UInt64(0)..<24 {
+            book = StationRatingBook()
+            let label = "seed \(seed)"
+            let p = await rig(seed: seed)
+            await p.tap(Self.mine(12))
+            let playing = (openers(p).first ?? 0) + 1
+            await p.session.songStarted(index: playing, remaining: .seconds(1))
+            guard let b = p.session.testPlannedBreaks.keys.sorted().first(where: { k in
+                k > playing && k + 1 < 12
+                    && p.session.testPlannedBreaks[k]!.cues.contains { Self.names($0.text, k + 1) }
+            }) else { continue }
+            let j = b + 1
+            covered += 1
+            let undo = seed % 2 == 1
+            var rows: [Int: ExcludedCueCounts] = [:]
+            p.session.onExcludedCuesDropped = { k, counts in
+                XCTAssertNil(rows[k], "\(label): one row per boundary")
+                rows[k] = counts
+            }
+            p.session.songsExcluded(["mine-\(j)"])
+            if undo { p.session.songsExcluded([]) }
+            XCTAssertEqual(p.session.excludedSongIDs, undo ? [] : ["mine-\(j)"], label)
+            for k in (playing + 1)..<11 {
+                await p.session.songStarted(index: k, remaining: .seconds(240))
+                if p.session.testPlannedBreaks[k] != nil {
+                    for _ in 0..<200 {
+                        if await p.session.breakIsReady(afterTrack: k) { break }
+                        try? await Task.sleep(for: .milliseconds(5))
+                    }
+                }
+                let planned = p.session.testPlannedBreaks[k]
+                let handed = await p.session.naturalBoundary(afterTrack: k)
+                guard let handed else { continue }
+                let spoken = handed.clips.map { String(decoding: $0.audio.data, as: UTF8.self) }.joined(separator: " ")
+                if undo {
+                    if k == b { XCTAssertTrue(Self.names(spoken, j), "\(label): Undo puts the intro back"); undone += 1 }
+                    XCTAssertNil(rows[k], "\(label): nothing narrowed after an Undo, no row")
+                    continue
+                }
+                XCTAssertFalse(Self.names(spoken, j), "\(label): the break at \(k) names the excluded song")
+                if let planned, k == j - 1 || k == j {
+                    // Exactly the cues attributed to the song went; every other planned cue that rendered airs.
+                    let naming = Set(planned.cues.filter { cue in
+                        guard case .trackMetadata(let ids, _)? = planned.attributions[cue.id] else { return false }
+                        return ids.contains("mine-\(j)")
+                    }.map(\.id))
+                    XCTAssertTrue(handed.cues.allSatisfy { !naming.contains($0.id) }, label)
+                    XCTAssertEqual(handed.cues.filter(\.isContent).count, planned.cues.filter(\.isContent).count,
+                                   "\(label): no briefing cue is omitted")
+                    // Echo's #396 room N1: one counts-only row when (and only when) cues went.
+                    if naming.isEmpty {
+                        XCTAssertNil(rows[k], label)
+                    } else if let row = rows[k] {
+                        XCTAssertGreaterThan(row.dropped, 0, label)
+                        XCTAssertLessThanOrEqual(row.dropped, naming.count, label)
+                        XCTAssertEqual(row.briefing, 0, "\(label): a briefing item never names a song")
+                        XCTAssertEqual(row.kept, handed.cues.count, label)
+                        narrowedRows += 1
+                    } else {
+                        XCTFail("\(label): the break at \(k) lost cues without a row")
+                    }
+                    keptAround += 1
+                }
+            }
+            await p.session.stop()
+        }
+        XCTAssertGreaterThan(covered, 1)
+        XCTAssertGreaterThan(keptAround, 0, "a break next to the excluded song still airs")
+        XCTAssertGreaterThan(undone, 0)
+        XCTAssertGreaterThan(narrowedRows, 0, "a narrowed break leaves a counts-only row")
+    }
+
+    /// The exclusions belong to the queue they were set for: a new queue starts with none.
+    func testANewQueueStartsWithNoExcludedSongs() async {
+        book = StationRatingBook()
+        let p = await rig(seed: 0)
+        await p.tap(Self.mine(12))
+        p.session.songsExcluded(["mine-4"])
+        await p.tap(Self.mine(10))
+        XCTAssertEqual(p.session.excludedSongIDs, [])
+        await p.session.stop()
+    }
+
+    // MARK: Purge-all (Sentinel's #396 N1): nothing the old ratings steered outlives it
+
+    /// Saves work; deleting fails while `failing` is on.
+    private actor PurgeStore: StationRatingStore {
+        private var book = StationRatingBook()
+        private var failing: Bool
+        init(failing: Bool) { self.failing = failing }
+        func load() async throws -> StationRatingBook { book }
+        func save(_ book: StationRatingBook) async throws { self.book = book }
+        func deleteAll() async throws {
+            if failing { throw StationRatingStoreError.deleteFailed }
+            book = StationRatingBook()
+        }
+    }
+
+    private func purgeRig(_ ratings: StationRatingsModel, rebuilds: @escaping @MainActor () -> Void = {}) async -> Player {
+        let p = await rig(seed: 0)
+        let station = p.station
+        // The app's wiring: the same model steers the feed and is reset on purge.
+        let player = Player(station: station, session: p.session) { [unowned station] in
+            ratings.bias(recipeID: nil, configuration: station.committedDisplayed)
+        }
+        ratings.resetOnPurge(session: p.session) { [unowned player, unowned station] in
+            rebuilds()
+            player.feed.ratingsChanged(station.committedDisplayed)
+        }
+        _ = await player.feed.prepare(station.committedDisplayed)
+        return player
+    }
+
+    private func revision(_ ratings: StationRatingsModel, _ p: Player) -> StationRatingRevision {
+        ratings.bias(recipeID: nil, configuration: p.station.committedDisplayed).revision
+    }
+
+    private func settle(_ ratings: StationRatingsModel, _ p: Player) async {
+        for _ in 0..<400 where p.feed.stagedRatingRevision != revision(ratings, p) { await Task.yield() }
+    }
+
+    func testAPurgeAllClearsTheExcludedSongsAndRebuildsTheStagedQueue() async {
+        for failing in [false, true] {
+            let label = failing ? "delete fails" : "delete works"
+            let ratings = StationRatingsModel(store: PurgeStore(failing: failing), today: { 42 },
+                                              defaults: UserDefaults(suiteName: "ratings-\(UUID().uuidString)")!)
+            await ratings.load()
+            let p = await purgeRig(ratings)
+            let scope = StationRatingScope(recipeID: nil, configuration: p.station.committedDisplayed)!
+            ratings.rate(.never, song: StationRatedSong(songID: "first-core-2", artistName: "someone"), in: scope)
+            p.feed.ratingsChanged(p.station.committedDisplayed)
+            await settle(ratings, p)
+            XCTAssertEqual(p.feed.stagedCount, 11, label)
+            p.session.songsExcluded(["first-core-2"])
+            let staleRevision = p.feed.stagedRatingRevision
+
+            let purged = await ratings.purgeAll()
+            XCTAssertEqual(purged, !failing, label)
+            XCTAssertEqual(p.session.excludedSongIDs, [], "\(label): the DJ session forgets the excluded song")
+            await settle(ratings, p)
+            XCTAssertNotEqual(p.feed.stagedRatingRevision, staleRevision, label)
+            XCTAssertEqual(p.feed.stagedRatingRevision, revision(ratings, p), "\(label): rebuilt without the old ratings")
+            XCTAssertEqual(p.feed.stagedCount, 12, "\(label): the never song is no longer screened out")
+            await p.session.stop()
+        }
+    }
+
+    func testALaunchWithAPendingPurgeClearsTheExcludedSongsBeforeItsRetry() async {
+        let store = PurgeStore(failing: true)
+        let defaults = UserDefaults(suiteName: "ratings-\(UUID().uuidString)")!
+        let first = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        await first.load()
+        await first.purgeAll()
+
+        let relaunched = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        var rebuilds = 0
+        let p = await purgeRig(relaunched) { rebuilds += 1 }
+        p.session.songsExcluded(["first-core-2"])
+        await relaunched.load()
+        XCTAssertEqual(relaunched.loadState, .purgePending)
+        XCTAssertEqual(p.session.excludedSongIDs, [])
+        XCTAssertEqual(rebuilds, 1, "the pending-purge path rebuilds the staged queue too")
+        await p.session.stop()
+    }
+
+    func testOnlyAPurgeRunsTheReset() async {
+        let ratings = StationRatingsModel(store: PurgeStore(failing: false), today: { 42 },
+                                          defaults: UserDefaults(suiteName: "ratings-\(UUID().uuidString)")!)
+        var rebuilds = 0
+        let p = await purgeRig(ratings) { rebuilds += 1 }
+        await ratings.load()
+        let scope = StationRatingScope(recipeID: nil, configuration: p.station.committedDisplayed)!
+        ratings.rate(.never, song: StationRatedSong(songID: "first-core-2", artistName: "someone"), in: scope)
+        await ratings.clearAll()   // Settings: SongRatingController calls ratingsChanged itself
+        XCTAssertEqual(rebuilds, 0, "a plain load, rating or Settings clear is not a purge")
+        await ratings.purgeAll()
+        await ratings.purgeAll()
+        XCTAssertEqual(rebuilds, 2, "once per purge-all")
+        await p.session.stop()
+    }
+
     // MARK: Privacy (Sentinel): personal context under mayLeaveDevice
 
     /// Ratings are personal context: a cue carrying their attribution never leaves the device, even

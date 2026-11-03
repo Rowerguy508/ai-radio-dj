@@ -39,12 +39,18 @@ extension SongRatingController {
     /// Screenshots and previews (StudioCapture): an in-memory book, fixed day, no playback.
     static func fixture(rated: SongRating? = nil, songID: String, labelSeen: Bool = false) async -> SongRatingController {
         let scope = StationRatingScope.seeds(0xA11CE)
-        let ratings = StationRatingsModel(store: InMemoryStationRatingStore(), today: { 20_000 })
+        // Its own suite (Fry's #387 Debug nit, #388): the fixture's ratings model reads and writes the
+        // purge flag here, never the live AeroDJRatingsPurgePending. Cleared so captures start unlocked.
+        // Sentinel's #396 N3: never .standard (the live flag). Debug only, so a hard stop is safe.
+        guard let defaults = UserDefaults(suiteName: "AeroDJRatingsFixture") else {
+            fatalError("ratings fixture suite unavailable")
+        }
+        defaults.removeObject(forKey: StationRatingsModel.purgePendingKey)
+        let ratings = StationRatingsModel(store: InMemoryStationRatingStore(), today: { 20_000 }, defaults: defaults)
         await ratings.load()
         if let rated {
             ratings.rate(rated, song: StationRatedSong(songID: songID, artistName: "Fixture"), in: scope)
         }
-        let defaults = UserDefaults(suiteName: "AeroDJRatingsFixture") ?? .standard
         defaults.set(labelSeen, forKey: SongRatingPresentation.labelSeenKey)
         return SongRatingController(ratings: ratings, hooks: .init(scope: { scope }), defaults: defaults)
     }
@@ -168,6 +174,7 @@ struct SongRatingToastHost: ViewModifier {
 
 /// "Clear all ratings" in Settings (#372's Form, below the talk-over row), with a confirmation.
 /// Deletes the ratings file. When that fails the ratings are still there, and the footer says so.
+/// While a purge-all still waits for its delete, ratings are paused and the footer says that instead.
 struct StationRatingsSettingsSection: View {
     let controller: SongRatingController
     @State private var confirming = false
@@ -189,10 +196,12 @@ struct StationRatingsSettingsSection: View {
             Text("Ratings")
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                if clearFailed {
-                    Text(SongRatingPresentation.clearAllFailed)
+                // Sentinel's #389 N1: a purge still waiting for its delete says so (ratings are locked).
+                if let notice = SongRatingPresentation.clearAllNotice(
+                    pausedUntilCleared: controller.ratings.isPausedUntilCleared, clearFailed: clearFailed) {
+                    Text(notice.text)
                         .foregroundStyle(.red)
-                        .accessibilityIdentifier("settings.clearAllRatings.failed")
+                        .accessibilityIdentifier(notice.accessibilityIdentifier)
                 }
                 Text(SongRatingPresentation.clearAllFooter)
             }

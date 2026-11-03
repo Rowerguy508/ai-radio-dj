@@ -111,24 +111,35 @@ final class StationQueuePlayer {
         return outcome
     }
 
-    /// A song was rated, a rating undone, or ratings cleared (PR B, -Nova). Never logged.
+    /// A song was rated, a rating undone, or ratings cleared (PR B, #388, -Nova). Never logged.
     /// 1. The staged queue is rebuilt in the background with the new ratings (`ratingsChanged`).
     /// 2. Songs still queued after the playing one that the station now excludes (never, held tired)
-    ///    lose every prepared break that could name them: the boundary before each ("up next") and
-    ///    after it ("that was"). This is the skip path's cut (`DJBreakSession.songCut`), so a cut
-    ///    boundary is never prepared again in this queue; a talk-over held or running for it is
-    ///    dropped too. The songs themselves are not skipped ahead of time (that waits on #373):
-    ///    a queued never still plays once, with no break naming it. The playing song is the
-    ///    caller's (a never on it skips through `MusicKitService.skip()`).
+    ///    are handed to the DJ session as song IDs (`songsExcluded`, replacing the last set so an
+    ///    Undo restores): every break it hands out drops exactly the cues attributed to them
+    ///    (`SpokenAttribution.trackMetadata`), and keeps briefing items, time checks and every other
+    ///    line (Echo's #387 N2; before, the whole break on both sides of the song was cut).
+    /// 3. The talk-over coordinator acts on what is already taken (`TalkoverCoordinator.ratingChanged`):
+    ///    a talk-over line on air that names the song fades and its break is dropped; a held break is
+    ///    narrowed; a paused gap break that names it is withdrawn.
+    ///    The songs themselves are not skipped ahead of time (that waits on #373): a queued never
+    ///    still plays once, with no line naming it. The playing song is the caller's (a never on it
+    ///    skips through `MusicKitService.skip()`, which stops its break).
     func ratingChanged() async {
         feed.ratingsChanged(station.committedDisplayed)
         let queue = music.queue
         let playing = queue.firstIndex { $0.id == music.currentTrack?.id } ?? -1
         let upcoming = feed.excludedUpcoming(in: queue, after: playing, active: station.active)
-        for k in StationRatingBreakDrop.boundaries(forUpcoming: upcoming, playing: playing) {
-            talkover?.breakDropped(afterTrack: k)
-            await djSession.songCut(afterTrack: k)
-        }
+        let excluded = Set(upcoming.map { queue[$0].id })
+        djSession.songsExcluded(excluded)
+        talkover?.ratingChanged(excluded: excluded,
+                                boundaries: StationRatingBreakDrop.boundaries(forUpcoming: upcoming, playing: playing))
+    }
+
+    /// A purge-all emptied the ratings (Sentinel's #396 N1, via `StationRatingsModel.resetOnPurge`,
+    /// which also clears the DJ session's excluded songs): the staged queue is rebuilt in the
+    /// background without them. Songs already queued keep playing. Never logged.
+    func ratingsPurged() {
+        feed.ratingsChanged(station.committedDisplayed)
     }
 
     /// The catalog artist ID the last build saw for `songID` (love's discovery steering only).

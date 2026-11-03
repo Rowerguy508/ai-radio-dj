@@ -259,6 +259,8 @@ public final class DJBreakSession {
         pendingStop = nil
         onAir = nil
         handedOutPersonal = nil
+        // #388: the old queue's exclusions belong to its station; the next `ratingChanged` sets them.
+        excludedSongIDs = []
         self.sources = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         // Integrations withdrawn while this setup was in flight: drop their tap-time
         // ConnectionItem snapshots so mayBeNarrated fails closed (sources are snapshots,
@@ -420,9 +422,21 @@ public final class DJBreakSession {
             guard let staleNext, case .trackMetadata(let ids, _)? = ready.attributions[cue.id] else { return false }
             return ids.contains(staleNext)
         }
-        let cues = ready.cues.filter { cue in
+        // #388 (Echo's #387 N2, -Nova): a song the station now leaves out drops exactly the cues
+        // attributed to it, not the whole break: briefing items and a time check never name a song.
+        func namesExcluded(_ cue: NarrationCue) -> Bool {
+            guard !excludedSongIDs.isEmpty, case .trackMetadata(let ids, _)? = ready.attributions[cue.id] else { return false }
+            return !excludedSongIDs.isDisjoint(with: ids)
+        }
+        let allowed = ready.cues.filter { cue in
             (cue.sourceItemID.map { !lapsed.contains($0) } ?? true) && mayBeNarrated(cue, at: handOut)
                 && !namesStaleNext(cue)
+        }
+        let cues = allowed.filter { !namesExcluded($0) }
+        if cues.count != allowed.count {
+            // Echo's #396 room N1: counts only, for the P0 trace (the app's hook).
+            onExcludedCuesDropped?(k, ExcludedCueCounts(dropped: allowed.filter(namesExcluded),
+                                                        timeCheckCueID: ready.timeCheck?.cueID, kept: cues.count))
         }
         // Commentary or the briefing turned off while this call was suspended (before the
         // on-air marker exists, so `stationChanged` had nothing to stop): not handed out.
@@ -475,6 +489,17 @@ public final class DJBreakSession {
     public func talkoverDropped(afterTrack k: Int) {
         endOnAir(k)
         dj.send(.breakSkipped(afterTrack: k, .cancelled))
+    }
+
+    /// Songs still queued that the station now leaves out, from the app's station queue (#388,
+    /// -Nova). Song IDs only: nothing says why. Replaces the last set, so an Undo puts the cues back. `naturalBoundary` drops exactly the cues attributed to these songs
+    /// (`SpokenAttribution.trackMetadata`) after its last await. IDs only; never logged.
+    public private(set) var excludedSongIDs: Set<String> = []
+    /// Echo's #396 room N1: `naturalBoundary` dropped cues for `excludedSongIDs` at boundary `k`.
+    /// Counts by kind only (the app writes a P0 diag row). Never given a cue, an ID or text.
+    public var onExcludedCuesDropped: (@MainActor (_ afterTrack: Int, ExcludedCueCounts) -> Void)?
+    public func songsExcluded(_ songIDs: Set<String>) {
+        excludedSongIDs = songIDs
     }
 
     /// Song `k` was cut (skip, queue change): its break is dropped, never played after a cut song.

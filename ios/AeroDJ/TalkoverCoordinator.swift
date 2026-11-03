@@ -233,6 +233,8 @@ final class TalkoverCoordinator {
     private var generation = 0
     /// The boundary whose gap fallback was handed out to the interlude (once per boundary).
     private var handedOut: Int?
+    /// #388 (-Nova): what each line of the talk-over on air names, for a never while it speaks.
+    private var ratingCut = StationRatingTalkoverCut()
 
     init(music: MusicKitService, interlude: InterludePlaybackAdapter, djSession: DJBreakSession,
          defaults: UserDefaults = .standard,
@@ -288,16 +290,53 @@ final class TalkoverCoordinator {
         book.songSkipped(key(index))
     }
 
-    /// A rating dropped the break after song `k` (PR B, `StationQueuePlayer.ratingChanged`). Unlike
-    /// `songSkipped`, song `k` may still be on air and keeps playing: only a run or a held break for
-    /// boundary `k` goes; the song's own state is kept.
-    func breakDropped(afterTrack k: Int) {
-        // A take still awaiting the session for k must not hold what it gets back (the token guards).
-        if taking != nil, song?.index == k { generation += 1 }
-        if run?.afterTrack == k { cancelRun(.skip) }
-        if held?.afterTrack == k { drop(k) }
-        // A gap break for k paused by an interruption (#379) must not resume and re-air it.
-        interlude.boundaryDropped(afterTrack: k)
+    /// The listener's ratings changed (PR B, #388; `StationQueuePlayer.ratingChanged`). `excluded`:
+    /// queued songs the station now leaves out; `boundaries`: the breaks that could name them
+    /// (`StationRatingBreakDrop`). Decided by each line's song IDs (`SpokenAttribution.trackMetadata`),
+    /// never by text, and never logged with a song or a rating. Song `k` itself keeps playing.
+    /// - A talk-over speaking a line that names one: that line fades (`TalkoverVoiceRamp.fadeSeconds`)
+    ///   and the rest of its break is dropped, once (Orion's spec). One that does not: it plays on,
+    ///   and only its queued lines that name the song are dropped. The run is cancelled only with its
+    ///   voice stopping (Fry #387 nit 1: a cancelled run with a live voice let the next song start
+    ///   under it).
+    /// - A break taken early and not spoken (held, maybe armed): narrowed to the lines that do not
+    ///   name the song (Echo's #387 N2); an armed run is cancelled so the narrowed break plays in the
+    ///   gap. Nothing left: dropped.
+    /// - A gap break paused by an interruption (#379): withdrawn only if one of its lines names it.
+    /// A take still waiting on the session is narrowed by the session itself (`songsExcluded`).
+    func ratingChanged(excluded: Set<String>, boundaries: [Int]) {
+        switch ratingCut.ratingChanged(excluded: excluded, speakingLine: interlude.talkoverSpeakingLine) {
+        case let .fadeAndDropBreak(k, dropped):
+            trace(.ratedNever(dropped, k))
+            // Sentinel's #396 N2: these two lines are Debug only (nothing in Release os_log); P0 diag
+            // builds keep the trace row above. Codes and counts only.
+            #if DEBUG
+            log.notice("dj talkover faded, break dropped after=\(k, privacy: .public) line=\(dropped.line, privacy: .public) dropped=\(dropped.count, privacy: .public)")
+            #endif
+            interlude.fadeOutTalkover(seconds: TalkoverVoiceRamp.fadeSeconds)
+            if run?.afterTrack == k { cancelRun(.skip) }   // its voice is fading out right now
+            if held?.afterTrack == k { drop(k) }
+        case let .dropQueued(k, lines):
+            #if DEBUG
+            log.notice("dj talkover lines dropped after=\(k, privacy: .public) dropped=\(lines.count, privacy: .public)")
+            #endif
+            interlude.dropQueuedTalkoverLines(lines)
+        case .none:
+            break
+        }
+        if let h = held, !(run?.afterTrack == h.afterTrack && run?.isSpeaking == true) {
+            let k = h.afterTrack
+            let rest = StationRatingBreakNarrowing.narrowed(h.prepared, excluding: excluded)
+            if rest != h.prepared {
+                if let counts = StationRatingBreakNarrowing.droppedCounts(h.prepared, excluding: excluded) {
+                    trace(.narrowed(counts, k))
+                }
+                // The armed voice was decoded from the old lines: it must not speak them.
+                if run?.afterTrack == k { cancelRun(.skip) }
+                if let rest { held = (k, rest) } else { drop(k) }
+            }
+        }
+        for k in boundaries { interlude.boundaryDropped(afterTrack: k, excluding: excluded) }
     }
 
     /// `onSongSeeked` (AppDependencies.wireSongSeek).
@@ -381,7 +420,8 @@ final class TalkoverCoordinator {
             return
         }
         await interlude.play(clips: clips, line: line, afterTrack: k,
-                            resumeLines: BreakResumeLine.lines(for: h.prepared))
+                            resumeLines: BreakResumeLine.lines(for: h.prepared),
+                            ratingLines: StationRatingBreakLine.lines(for: h.prepared))
     }
 
     // MARK: Private
@@ -414,10 +454,18 @@ final class TalkoverCoordinator {
             return
         }
         guard token == generation, song?.index == k else { book.release(key(k)); return }
-        guard let prepared = await djSession.naturalBoundary(afterTrack: k) else {
+        guard let taken = await djSession.naturalBoundary(afterTrack: k) else {
             return // owned: the boundary skips (consent or stale-next dropped everything)
         }
         guard token == generation, song?.index == k else { djSession.talkoverDropped(afterTrack: k); return }
+        // #388: the session filtered at its last await; a rating since then narrows here too.
+        if let counts = StationRatingBreakNarrowing.droppedCounts(taken, excluding: djSession.excludedSongIDs) {
+            trace(.narrowed(counts, k))   // Echo's #396 room N1: counts only
+        }
+        guard let prepared = StationRatingBreakNarrowing.narrowed(taken, excluding: djSession.excludedSongIDs) else {
+            djSession.talkoverDropped(afterTrack: k)
+            return // owned: the boundary skips, as when the session drops everything
+        }
         held = (k, prepared)
         let players = interlude.decodeTalkover(prepared.clips.map(\.audio.data))
         guard let resolved = TalkoverClips.resolve(decoded: players.map { $0?.duration }, voice: prepared.talkoverVoice) else {
@@ -459,8 +507,18 @@ final class TalkoverCoordinator {
         }
         let line = prepared.cues.filter { !(resolved.droppedClosing && $0.id == prepared.talkOverCueID) }
             .map(\.text).joined(separator: " ")
+        // #388: one per clip handed to the voice, in order (`chosen` is a prefix of the clips).
+        let ratingLines = Array(StationRatingBreakLine.lines(for: prepared).prefix(chosen.count))
+        let resumeLines = Array(BreakResumeLine.lines(for: prepared).prefix(chosen.count))
         let voiceTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // Fry #387 nit 2: a drop or stop between `stillArmed` and this task (one hop) cancelled
+            // the run; the voice must not start for it. The duck was taken: release it.
+            guard self.run?.afterTrack == k, self.run?.cancelled == nil, self.run?.phase == .armed else {
+                self.interlude.releaseTalkoverDuck()
+                self.book.retireIfDone()
+                return
+            }
             let position = self.music.playbackTime
             let outcome = await self.interlude.playTalkover(
                 players: chosen, gains: gains, closingGap: resolved.closingGap, line: line, afterTrack: k,
@@ -468,7 +526,10 @@ final class TalkoverCoordinator {
                     guard let self else { return }
                     self.run?.voiceStarted(at: at, songPosition: position, config: self.config)
                     self.held = nil // spoken now: never replayed in the gap
+                    self.ratingCut.speechStarted(afterTrack: k, lines: chosen.count == ratingLines.count ? ratingLines : [],
+                                                 resumeLines: resumeLines)
                 })
+            if self.ratingCut.afterTrack == k { self.ratingCut.speechEnded() }
             if outcome == .finished { self.run?.voiceFinished(at: ProcessInfo.processInfo.systemUptime) }
             // Not finished and not cancelled: it never started, or it failed mid-line. Either way
             // the run ends here, so it can retire (it never stays `.speaking`).
@@ -601,6 +662,10 @@ final class TalkoverCoordinator {
         case miss(TalkoverMiss, Int, Double?)
         case cancel(TalkoverCancel, Int)
         case latency(measured: Double, next: Double, Int)
+        /// #388: counts and codes only (`StationRatingWithdrawnLines`).
+        case ratedNever(StationRatingWithdrawnLines, Int)
+        /// Echo's #396 room N1: a held or taken break lost the cues naming an excluded song (counts only).
+        case narrowed(ExcludedCueCounts, Int)
     }
 
     private func trace(_ event: TraceEvent) {
@@ -611,6 +676,8 @@ final class TalkoverCoordinator {
             case let .miss(m, k, seconds): _ = trace.talkoverMiss(m, afterTrack: k, seconds: seconds, at: t)
             case let .cancel(c, k): _ = trace.talkoverCancel(c, afterTrack: k, at: t)
             case let .latency(measured, next, k): _ = trace.talkoverLatency(measured: measured, next: next, afterTrack: k, at: t)
+            case let .ratedNever(dropped, k): _ = trace.talkoverRatedNever(dropped, afterTrack: k, at: t)
+            case let .narrowed(counts, k): _ = trace.breakNarrowed(counts, afterTrack: k, at: t)
             }
         }
         #endif

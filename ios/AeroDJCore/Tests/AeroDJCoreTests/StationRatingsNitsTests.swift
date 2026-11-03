@@ -312,10 +312,10 @@ final class StationRatingsNitsTests: XCTestCase {
         let row = trace.breakInterruptionWithdrawn(StationRatingWithdrawnLines(line: 1, timeChecks: 2, other: 1),
                                                    afterTrack: 4, at: 2)
         XCTAssertEqual(row.event, .breakInterruption)
-        XCTAssertEqual(row.detail, "kind=breakDropped reason=ratingWithdrawn after=4 line=1 dropped=3 timeChecks=2 otherCues=1")
+        XCTAssertEqual(row.detail, "kind=breakDropped reason=ratingWithdrawn after=4 line=1 dropped=3 timeChecks=2 otherCues=1 briefingCues=0")
         let unknown = trace.breakInterruptionWithdrawn(StationRatingWithdrawnLines(line: 0, timeChecks: 0, other: 2),
                                                        afterTrack: nil, at: 3)
-        XCTAssertEqual(unknown.detail, "kind=breakDropped reason=ratingWithdrawn after=- line=0 dropped=2 timeChecks=0 otherCues=2")
+        XCTAssertEqual(unknown.detail, "kind=breakDropped reason=ratingWithdrawn after=- line=0 dropped=2 timeChecks=0 otherCues=2 briefingCues=0")
         let codes = Set(P0TraceCode.allCases.map(\.rawValue))
         for row in [row, unknown] {
             for pair in row.detail.split(separator: " ") {

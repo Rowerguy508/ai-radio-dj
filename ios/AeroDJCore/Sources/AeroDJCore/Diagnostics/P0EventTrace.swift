@@ -65,6 +65,10 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     case musicBefore, musicAfter, music
     // #379 N2 (-Fry): the paused line, lines dropped, of which time checks and other lines
     case line, dropped, timeChecks, otherCues
+    // #388 (-Nova): briefing items counted apart from other lines
+    case briefingCues
+    // Echo's #396 room N1: cues a narrowed break kept
+    case kept
 }
 
 extension P0TraceCode {
@@ -109,6 +113,10 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case stale, allStale, noResume, musicPlaying, pauseExpired
     /// #387 N1: a rating withdrew the paused break (`StationRatingResumeGate`).
     case ratingWithdrawn
+    /// #388: a never faded the talk-over line that named the song and dropped the rest of its break.
+    case ratedNever
+    /// Echo's #396 room N1: a break lost only the cues that name a song the station now leaves out.
+    case cuesDropped, ratingNarrowed
 }
 
 public enum P0TraceValue: Equatable, Sendable {
@@ -710,7 +718,29 @@ extension P0EventTrace {
         record(.breakInterruption, at: t, [(.kind, .code(.breakDropped)), (.reason, .code(.ratingWithdrawn)),
                                            (.after, Self.number(afterTrack)), (.line, .int(withdrawn.line)),
                                            (.dropped, .int(withdrawn.count)), (.timeChecks, .int(withdrawn.timeChecks)),
-                                           (.otherCues, .int(withdrawn.other))])
+                                           (.otherCues, .int(withdrawn.other)), (.briefingCues, .int(withdrawn.briefing))])
+    }
+    /// #388 (-Nova): a never faded the talk-over line that named the song (`StationRatingTalkoverCut`)
+    /// and dropped the rest of its break. Same row shape; `line` is the faded line. Counts and codes
+    /// only: never the song, its title or artist, or the rating.
+    @discardableResult
+    public mutating func talkoverRatedNever(_ dropped: StationRatingWithdrawnLines, afterTrack: Int?,
+                                            at t: TimeInterval) -> P0TraceRow {
+        record(.breakInterruption, at: t, [(.kind, .code(.breakDropped)), (.reason, .code(.ratedNever)),
+                                           (.after, Self.number(afterTrack)), (.line, .int(dropped.line)),
+                                           (.dropped, .int(dropped.count)), (.timeChecks, .int(dropped.timeChecks)),
+                                           (.otherCues, .int(dropped.other)), (.briefingCues, .int(dropped.briefing))])
+    }
+    /// Echo's #396 room N1 (#388, -Nova): a break was narrowed to the cues that do not name a song the
+    /// station now leaves out (`DJBreakSession.naturalBoundary`, or a held talk-over break). Same
+    /// counts as `breakInterruptionWithdrawn`, plus how many cues were kept. Counts and codes only:
+    /// never a song, its title or artist, a name, or the rating.
+    @discardableResult
+    public mutating func breakNarrowed(_ counts: ExcludedCueCounts, afterTrack: Int?, at t: TimeInterval) -> P0TraceRow {
+        record(.breakInterruption, at: t, [(.kind, .code(.cuesDropped)), (.reason, .code(.ratingNarrowed)),
+                                           (.after, Self.number(afterTrack)), (.dropped, .int(counts.dropped)),
+                                           (.timeChecks, .int(counts.timeChecks)), (.otherCues, .int(counts.other)),
+                                           (.briefingCues, .int(counts.briefing)), (.kept, .int(counts.kept))])
     }
 
     private static func flag(_ b: Bool?) -> P0TraceValue { b.map { .bool($0) } ?? .missing }

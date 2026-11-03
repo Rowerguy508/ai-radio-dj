@@ -64,6 +64,8 @@ public final class StationRatingsModel {
     @ObservationIgnored private var lastWrite: Task<Void, Never>?
     @ObservationIgnored private var listener: Task<Void, Never>?
     @ObservationIgnored private let defaults: UserDefaults
+    /// Sentinel's #396 N1: run on every purge-all once the book is empty and locked (`resetOnPurge`).
+    @ObservationIgnored private var onPurged: (@MainActor () -> Void)?
 
     /// The feed's day number (days since the reference date).
     public nonisolated static func dayNumber(_ date: Date = Date()) -> Int {
@@ -87,6 +89,7 @@ public final class StationRatingsModel {
         guard loadState == .notLoaded else { return }
         if purgePending {
             loadState = .purgePending
+            onPurged?()
             await retryPurge()
             return
         }
@@ -105,6 +108,11 @@ public final class StationRatingsModel {
     }
 
     public var canRate: Bool { loadState == .loaded }
+
+    /// Sentinel's #389 N1 (#388): a purge-all is still waiting for its delete, so ratings are locked
+    /// (the launch retry failed too). Settings says so next to "Clear all ratings", whose tap is the
+    /// retry. Observed through `loadState`, so it clears the moment a retried delete works.
+    public var isPausedUntilCleared: Bool { loadState == .purgePending }
 
     public func rating(for songID: String, in scope: StationRatingScope?) -> SongRating? {
         guard let scope else { return nil }
@@ -182,7 +190,21 @@ public final class StationRatingsModel {
         defaults.set(true, forKey: Self.purgePendingKey)
         book.clearAll()
         loadState = .purgePending
+        onPurged?()
         return await retryPurge()
+    }
+
+    /// Sentinel's #396 N1 (#388): a purge-all (consent withdrawal, data reset) also clears what the
+    /// old ratings steered outside the book, at once, whether or not the delete works: the DJ
+    /// session's excluded songs (`songsExcluded([])`) and the staged queue, rebuilt by `rebuildQueue`
+    /// with the now-empty book (its revision changed, so the feed rebuilds). Runs on `purgeAll` and on
+    /// a launch whose purge is still pending, before its delete is retried. A Settings "Clear all"
+    /// goes through `SongRatingController`, which already calls `ratingsChanged`. Call once.
+    public func resetOnPurge(session: DJBreakSession, rebuildQueue: @escaping @MainActor () -> Void) {
+        onPurged = { [weak session] in
+            session?.songsExcluded([])
+            rebuildQueue()
+        }
     }
 
     /// The pending purge's delete. The book stays empty and locked until the file is gone.
@@ -262,10 +284,12 @@ extension StationRatingScope {
     }
 }
 
-/// Which prepared breaks a rating drops (-Nova, PR B). A break at boundary k plays between song k and
+/// Which breaks could name a rated song (-Nova, PR B). A break at boundary k plays between song k and
 /// song k + 1 and may name both ("that was k", "up next k + 1"), so a queued song j that is now
-/// excluded loses the breaks at j - 1 and j. Only boundaries still ahead (k >= the playing index):
-/// the break after the playing song is the next one to air.
+/// excluded may be named by the breaks at j - 1 and j. Only boundaries still ahead (k >= the playing
+/// index): the break after the playing song is the next one to air. Since #388 (Echo's #387 N2)
+/// those breaks are narrowed, not cut: only the lines that name the song go
+/// (`StationRatingBreakNarrowing`, `DJBreakSession.songsExcluded`).
 public enum StationRatingBreakDrop {
     public static func boundaries(forUpcoming indices: [Int], playing: Int) -> [Int] {
         Array(Set(indices.flatMap { [$0 - 1, $0] }.filter { $0 >= max(playing, 0) })).sorted()
@@ -283,26 +307,36 @@ public struct StationRatingResumeGate: Equatable, Sendable {
     public private(set) var openBreak: Int?
     /// A rating dropped `openBreak`'s boundary while it was open.
     public private(set) var withdrawn = false
+    /// The open break's lines, one per clip (`StationRatingBreakLine.lines(for:)`). Empty: not known.
+    public private(set) var openLines: [StationRatingBreakLine] = []
 
     public init() {}
 
     /// A gap break for boundary `k` was handed to the player. A new break starts unwithdrawn.
-    public mutating func breakOpened(afterTrack k: Int) {
+    /// `lines`: what each line names (#388, Echo's N2), so a rating withdraws it only when one of
+    /// its lines names the song. Empty: unknown, and any drop of `k` withdraws it (as before).
+    public mutating func breakOpened(afterTrack k: Int, lines: [StationRatingBreakLine] = []) {
         openBreak = k
         withdrawn = false
+        openLines = lines
     }
 
     /// The open break ended (finished, failed, cancelled or revoked).
     public mutating func breakClosed() {
         openBreak = nil
         withdrawn = false
+        openLines = []
     }
 
     /// A rating dropped the break at boundary `k`. True when that is the open break, which then
     /// never resumes after an interruption. Any other boundary changes nothing here.
+    /// `excluding` (#388, Echo's N2): the songs now excluded. When given and the open break's
+    /// lines are known, it is withdrawn only if one of its lines names one of them; a break of
+    /// briefing items or a time check that never names the song still resumes.
     @discardableResult
-    public mutating func boundaryDropped(afterTrack k: Int) -> Bool {
+    public mutating func boundaryDropped(afterTrack k: Int, excluding songIDs: Set<String>? = nil) -> Bool {
         guard openBreak == k else { return false }
+        if let songIDs, !openLines.isEmpty, !openLines.contains(where: { $0.names(songIDs) }) { return false }
         withdrawn = true
         return true
     }
@@ -319,21 +353,31 @@ public struct StationRatingWithdrawnLines: Equatable, Sendable {
     /// The interrupted line (the first one not aired).
     public let line: Int
     public let timeChecks: Int
+    /// Lines that are neither a time check nor a briefing item.
     public let other: Int
+    /// Briefing items (`NarrationCue.isContent`), counted apart from `other` (Echo, #388).
+    public let briefing: Int
 
-    public init(line: Int, timeChecks: Int, other: Int) {
+    public init(line: Int, timeChecks: Int, other: Int, briefing: Int = 0) {
         self.line = line
         self.timeChecks = timeChecks
         self.other = other
+        self.briefing = briefing
     }
 
-    public var count: Int { timeChecks + other }
+    public var count: Int { timeChecks + other + briefing }
 
-    /// Every line from `line` on (none when `line` is out of range).
-    public static func remaining(_ lines: [BreakResumeLine], from line: Int) -> StationRatingWithdrawnLines {
-        let rest = lines.indices.contains(line) ? Array(lines[line...]) : []
-        let checks = rest.filter { $0.dropKind == .timeCheck }.count
-        return StationRatingWithdrawnLines(line: line, timeChecks: checks, other: rest.count - checks)
+    /// Every line from `line` on (none when `line` is out of range). `ratingLines`: one per line
+    /// (`StationRatingBreakLine.lines(for:)`), so briefing items count apart; any other count:
+    /// no line is known to be a briefing item.
+    public static func remaining(_ lines: [BreakResumeLine], from line: Int,
+                                 ratingLines: [StationRatingBreakLine] = []) -> StationRatingWithdrawnLines {
+        let range = lines.indices.contains(line) ? Array(lines.indices[line...]) : []
+        let known = ratingLines.count == lines.count
+        let checks = range.filter { lines[$0].dropKind == .timeCheck }.count
+        let briefing = range.filter { known && lines[$0].dropKind != .timeCheck && ratingLines[$0].isBriefing }.count
+        return StationRatingWithdrawnLines(line: line, timeChecks: checks, other: range.count - checks - briefing,
+                                           briefing: briefing)
     }
 }
 
@@ -353,6 +397,36 @@ public enum SongRatingPresentation {
     public static let clearAllFooter = "Ratings stay on this device and are not backed up. Clearing them can't be undone."
     /// Settings, when the ratings file could not be deleted (the ratings are still there).
     public static let clearAllFailed = "Couldn't clear ratings. Try again."
+    /// Settings, while a purge-all is still waiting for its delete (Sentinel's #389 N1): ratings are
+    /// locked until it goes through, and "Clear all ratings" retries it.
+    public static let clearAllPending = "Ratings are paused until they finish clearing. Try Clear all again."
+
+    /// The one line Settings shows above the "Clear all ratings" footer, or nil (the default:
+    /// nothing changes). Paused wins over a failed tap: that tap was the retry, and the paused
+    /// line already says to try again.
+    public enum ClearAllNotice: Equatable, Sendable {
+        case pending
+        case failed
+
+        public var text: String {
+            switch self {
+            case .pending: SongRatingPresentation.clearAllPending
+            case .failed: SongRatingPresentation.clearAllFailed
+            }
+        }
+
+        public var accessibilityIdentifier: String {
+            switch self {
+            case .pending: "settings.clearAllRatings.pending"
+            case .failed: "settings.clearAllRatings.failed"
+            }
+        }
+    }
+
+    public static func clearAllNotice(pausedUntilCleared: Bool, clearFailed: Bool) -> ClearAllNotice? {
+        if pausedUntilCleared { return .pending }
+        return clearFailed ? .failed : nil
+    }
     public static let undoTitle = "Undo"
 
     public static func symbol(_ rating: SongRating?) -> String {
