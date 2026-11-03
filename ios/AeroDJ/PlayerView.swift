@@ -45,6 +45,7 @@ struct PlayerView: View {
         .navigationTitle(station.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .modifier(SongRatingToastHost()) // Station ratings' Undo toast; nothing without a controller (-Nova)
         // Fry #110: Tune Save/Discard waits on real transport. Callbacks + auth refresh stay
         // on PlaybackSessionBinder (once-only); do not authorize() here.
         .task { await reportPlaybackActivity(music.snapshot) }
