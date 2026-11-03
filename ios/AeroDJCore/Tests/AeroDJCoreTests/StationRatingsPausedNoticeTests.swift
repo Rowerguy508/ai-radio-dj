@@ -135,4 +135,14 @@ final class StationRatingsPausedNoticeTests: XCTestCase {
             XCTAssertTrue(args.contains("defaults:"), "an in-memory ratings model must not use .standard: \(args)")
         }
     }
+
+    /// Sentinel's #396 N1: the live app resets the DJ session and staged queue on purge-all.
+    func testTheLiveAppWiresThePurgeReset() async throws {
+        let deps = try appSource("AppDependencies.swift")
+        XCTAssertTrue(deps.contains("ratings.resetOnPurge(session: djSession, rebuildQueue: { [weak stationQueue] in stationQueue?.ratingsPurged() })"))
+        let queue = try appSource("StationQueuePlayer.swift")
+        guard let start = queue.range(of: "func ratingsPurged() {") else { return XCTFail("ratingsPurged is gone") }
+        let body = queue[start.upperBound...].prefix { $0 != "}" }
+        XCTAssertTrue(body.contains("feed.ratingsChanged(station.committedDisplayed)"))
+    }
 }

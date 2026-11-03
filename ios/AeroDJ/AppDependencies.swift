@@ -127,6 +127,9 @@ struct AppDependencies {
                 return ratings.bias(recipeID: SongRatingController.liveRecipeID(studio: studio, station: station),
                                     configuration: station.committedDisplayed)
             })
+        // Sentinel's #396 N1: a purge-all (consent withdrawal) also drops the DJ session's excluded
+        // songs and rebuilds the staged queue without the old ratings. Set before `load()` (start).
+        ratings.resetOnPurge(session: djSession, rebuildQueue: { [weak stationQueue] in stationQueue?.ratingsPurged() })
         return AppDependencies(
             mode: .live,
             // Calendar: only calendars the listener chose. Notes: only approved picked notes.

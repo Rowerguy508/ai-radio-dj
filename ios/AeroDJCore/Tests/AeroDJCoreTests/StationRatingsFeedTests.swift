@@ -558,6 +558,104 @@ final class StationRatingsFeedTests: XCTestCase {
         await p.session.stop()
     }
 
+    // MARK: Purge-all (Sentinel's #396 N1): nothing the old ratings steered outlives it
+
+    /// Saves work; deleting fails while `failing` is on.
+    private actor PurgeStore: StationRatingStore {
+        private var book = StationRatingBook()
+        private var failing: Bool
+        init(failing: Bool) { self.failing = failing }
+        func load() async throws -> StationRatingBook { book }
+        func save(_ book: StationRatingBook) async throws { self.book = book }
+        func deleteAll() async throws {
+            if failing { throw StationRatingStoreError.deleteFailed }
+            book = StationRatingBook()
+        }
+    }
+
+    private func purgeRig(_ ratings: StationRatingsModel, rebuilds: @escaping @MainActor () -> Void = {}) async -> Player {
+        let p = await rig(seed: 0)
+        let station = p.station
+        // The app's wiring: the same model steers the feed and is reset on purge.
+        let player = Player(station: station, session: p.session) { [unowned station] in
+            ratings.bias(recipeID: nil, configuration: station.committedDisplayed)
+        }
+        ratings.resetOnPurge(session: p.session) { [unowned player, unowned station] in
+            rebuilds()
+            player.feed.ratingsChanged(station.committedDisplayed)
+        }
+        _ = await player.feed.prepare(station.committedDisplayed)
+        return player
+    }
+
+    private func revision(_ ratings: StationRatingsModel, _ p: Player) -> StationRatingRevision {
+        ratings.bias(recipeID: nil, configuration: p.station.committedDisplayed).revision
+    }
+
+    private func settle(_ ratings: StationRatingsModel, _ p: Player) async {
+        for _ in 0..<400 where p.feed.stagedRatingRevision != revision(ratings, p) { await Task.yield() }
+    }
+
+    func testAPurgeAllClearsTheExcludedSongsAndRebuildsTheStagedQueue() async {
+        for failing in [false, true] {
+            let label = failing ? "delete fails" : "delete works"
+            let ratings = StationRatingsModel(store: PurgeStore(failing: failing), today: { 42 },
+                                              defaults: UserDefaults(suiteName: "ratings-\(UUID().uuidString)")!)
+            await ratings.load()
+            let p = await purgeRig(ratings)
+            let scope = StationRatingScope(recipeID: nil, configuration: p.station.committedDisplayed)!
+            ratings.rate(.never, song: StationRatedSong(songID: "first-core-2", artistName: "someone"), in: scope)
+            p.feed.ratingsChanged(p.station.committedDisplayed)
+            await settle(ratings, p)
+            XCTAssertEqual(p.feed.stagedCount, 11, label)
+            p.session.songsExcluded(["first-core-2"])
+            let staleRevision = p.feed.stagedRatingRevision
+
+            let purged = await ratings.purgeAll()
+            XCTAssertEqual(purged, !failing, label)
+            XCTAssertEqual(p.session.excludedSongIDs, [], "\(label): the DJ session forgets the excluded song")
+            await settle(ratings, p)
+            XCTAssertNotEqual(p.feed.stagedRatingRevision, staleRevision, label)
+            XCTAssertEqual(p.feed.stagedRatingRevision, revision(ratings, p), "\(label): rebuilt without the old ratings")
+            XCTAssertEqual(p.feed.stagedCount, 12, "\(label): the never song is no longer screened out")
+            await p.session.stop()
+        }
+    }
+
+    func testALaunchWithAPendingPurgeClearsTheExcludedSongsBeforeItsRetry() async {
+        let store = PurgeStore(failing: true)
+        let defaults = UserDefaults(suiteName: "ratings-\(UUID().uuidString)")!
+        let first = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        await first.load()
+        await first.purgeAll()
+
+        let relaunched = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        var rebuilds = 0
+        let p = await purgeRig(relaunched) { rebuilds += 1 }
+        p.session.songsExcluded(["first-core-2"])
+        await relaunched.load()
+        XCTAssertEqual(relaunched.loadState, .purgePending)
+        XCTAssertEqual(p.session.excludedSongIDs, [])
+        XCTAssertEqual(rebuilds, 1, "the pending-purge path rebuilds the staged queue too")
+        await p.session.stop()
+    }
+
+    func testOnlyAPurgeRunsTheReset() async {
+        let ratings = StationRatingsModel(store: PurgeStore(failing: false), today: { 42 },
+                                          defaults: UserDefaults(suiteName: "ratings-\(UUID().uuidString)")!)
+        var rebuilds = 0
+        let p = await purgeRig(ratings) { rebuilds += 1 }
+        await ratings.load()
+        let scope = StationRatingScope(recipeID: nil, configuration: p.station.committedDisplayed)!
+        ratings.rate(.never, song: StationRatedSong(songID: "first-core-2", artistName: "someone"), in: scope)
+        await ratings.clearAll()   // Settings: SongRatingController calls ratingsChanged itself
+        XCTAssertEqual(rebuilds, 0, "a plain load, rating or Settings clear is not a purge")
+        await ratings.purgeAll()
+        await ratings.purgeAll()
+        XCTAssertEqual(rebuilds, 2, "once per purge-all")
+        await p.session.stop()
+    }
+
     // MARK: Privacy (Sentinel): personal context under mayLeaveDevice
 
     /// Ratings are personal context: a cue carrying their attribution never leaves the device, even

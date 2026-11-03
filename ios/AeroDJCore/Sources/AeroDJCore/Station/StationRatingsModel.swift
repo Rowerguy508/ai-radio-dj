@@ -64,6 +64,8 @@ public final class StationRatingsModel {
     @ObservationIgnored private var lastWrite: Task<Void, Never>?
     @ObservationIgnored private var listener: Task<Void, Never>?
     @ObservationIgnored private let defaults: UserDefaults
+    /// Sentinel's #396 N1: run on every purge-all once the book is empty and locked (`resetOnPurge`).
+    @ObservationIgnored private var onPurged: (@MainActor () -> Void)?
 
     /// The feed's day number (days since the reference date).
     public nonisolated static func dayNumber(_ date: Date = Date()) -> Int {
@@ -87,6 +89,7 @@ public final class StationRatingsModel {
         guard loadState == .notLoaded else { return }
         if purgePending {
             loadState = .purgePending
+            onPurged?()
             await retryPurge()
             return
         }
@@ -187,7 +190,21 @@ public final class StationRatingsModel {
         defaults.set(true, forKey: Self.purgePendingKey)
         book.clearAll()
         loadState = .purgePending
+        onPurged?()
         return await retryPurge()
+    }
+
+    /// Sentinel's #396 N1 (#388): a purge-all (consent withdrawal, data reset) also clears what the
+    /// old ratings steered outside the book, at once, whether or not the delete works: the DJ
+    /// session's excluded songs (`songsExcluded([])`) and the staged queue, rebuilt by `rebuildQueue`
+    /// with the now-empty book (its revision changed, so the feed rebuilds). Runs on `purgeAll` and on
+    /// a launch whose purge is still pending, before its delete is retried. A Settings "Clear all"
+    /// goes through `SongRatingController`, which already calls `ratingsChanged`. Call once.
+    public func resetOnPurge(session: DJBreakSession, rebuildQueue: @escaping @MainActor () -> Void) {
+        onPurged = { [weak session] in
+            session?.songsExcluded([])
+            rebuildQueue()
+        }
     }
 
     /// The pending purge's delete. The book stays empty and locked until the file is gone.

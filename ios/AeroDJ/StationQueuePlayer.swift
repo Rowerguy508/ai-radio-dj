@@ -135,6 +135,13 @@ final class StationQueuePlayer {
                                 boundaries: StationRatingBreakDrop.boundaries(forUpcoming: upcoming, playing: playing))
     }
 
+    /// A purge-all emptied the ratings (Sentinel's #396 N1, via `StationRatingsModel.resetOnPurge`,
+    /// which also clears the DJ session's excluded songs): the staged queue is rebuilt in the
+    /// background without them. Songs already queued keep playing. Never logged.
+    func ratingsPurged() {
+        feed.ratingsChanged(station.committedDisplayed)
+    }
+
     /// The catalog artist ID the last build saw for `songID` (love's discovery steering only).
     func artistID(forSong songID: String) -> String? { feed.artistID(forSong: songID) }
 
