@@ -97,6 +97,7 @@ struct StationListView: View {
         // Live only: lets Connections offer the .md file picker (nil in the test station).
         .environment(\.pickedNotes, dependencies.pickedNotes)
         .ownerVoiceTrialEntry() // AERODJ_OWNER_AB only; a no-op otherwise
+        .testerCloudVoiceConsent() // AERODJ_TESTER_VOICE only; a no-op otherwise
     }
 
     /// The + action, or nil (no button) when the app has no seed search: previews and the Test Station.
