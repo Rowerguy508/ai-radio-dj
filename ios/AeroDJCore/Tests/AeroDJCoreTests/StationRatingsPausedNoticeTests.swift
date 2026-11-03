@@ -125,10 +125,16 @@ final class StationRatingsPausedNoticeTests: XCTestCase {
     func testDebugRatingsModelsUseTheirOwnDefaultsSuite() throws {
         let deps = try appSource("AppDependencies.swift")
         XCTAssertTrue(deps.contains("StationRatingsModel(store: InMemoryStationRatingStore(), defaults: ratingsDefaults)"))
-        XCTAssertTrue(deps.contains("UserDefaults(suiteName: \"AeroDJRatingsTestStation\")"))
+        XCTAssertTrue(deps.contains("guard let ratingsDefaults = UserDefaults(suiteName: \"AeroDJRatingsTestStation\") else {\n            fatalError("))
         let fixture = try appSource("SongRatingControl.swift")
         XCTAssertTrue(fixture.contains("StationRatingsModel(store: InMemoryStationRatingStore(), today: { 20_000 }, defaults: defaults)"))
-        XCTAssertTrue(fixture.contains("UserDefaults(suiteName: \"AeroDJRatingsFixture\")"))
+        XCTAssertTrue(fixture.contains("guard let defaults = UserDefaults(suiteName: \"AeroDJRatingsFixture\") else {\n            fatalError("))
+        // Sentinel's #396 N3: neither Debug suite falls back to .standard (the live pending-purge flag).
+        for name in ["AeroDJRatingsTestStation", "AeroDJRatingsFixture"] {
+            for line in (deps + "\n" + fixture).components(separatedBy: "\n") where line.contains("\"\(name)\"") {
+                XCTAssertFalse(line.contains(".standard"), "\(name) never falls back to .standard: \(line)")
+            }
+        }
         let inMemory = (deps + fixture).components(separatedBy: "StationRatingsModel(store: InMemoryStationRatingStore()")
         for call in inMemory.dropFirst() {
             let args = call.prefix { $0 != "\n" }

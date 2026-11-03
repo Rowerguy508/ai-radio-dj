@@ -197,7 +197,10 @@ struct AppDependencies {
         // In memory: a test-station session never touches the live ratings file (-Nova, PR B).
         // Its own defaults suite too (Fry's #387 Debug nit, #388): a delete here can neither set
         // nor clear the live AeroDJRatingsPurgePending flag. Each launch starts unlocked.
-        let ratingsDefaults = UserDefaults(suiteName: "AeroDJRatingsTestStation") ?? .standard
+        // Sentinel's #396 N3: never .standard (the live flag). Debug only, so a hard stop is safe.
+        guard let ratingsDefaults = UserDefaults(suiteName: "AeroDJRatingsTestStation") else {
+            fatalError("Test Station ratings suite unavailable")
+        }
         ratingsDefaults.removeObject(forKey: StationRatingsModel.purgePendingKey)
         let ratings = StationRatingsModel(store: InMemoryStationRatingStore(), defaults: ratingsDefaults)
         return AppDependencies(

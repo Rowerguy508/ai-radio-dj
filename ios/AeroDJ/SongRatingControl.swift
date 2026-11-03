@@ -41,7 +41,10 @@ extension SongRatingController {
         let scope = StationRatingScope.seeds(0xA11CE)
         // Its own suite (Fry's #387 Debug nit, #388): the fixture's ratings model reads and writes the
         // purge flag here, never the live AeroDJRatingsPurgePending. Cleared so captures start unlocked.
-        let defaults = UserDefaults(suiteName: "AeroDJRatingsFixture") ?? .standard
+        // Sentinel's #396 N3: never .standard (the live flag). Debug only, so a hard stop is safe.
+        guard let defaults = UserDefaults(suiteName: "AeroDJRatingsFixture") else {
+            fatalError("ratings fixture suite unavailable")
+        }
         defaults.removeObject(forKey: StationRatingsModel.purgePendingKey)
         let ratings = StationRatingsModel(store: InMemoryStationRatingStore(), today: { 20_000 }, defaults: defaults)
         await ratings.load()
