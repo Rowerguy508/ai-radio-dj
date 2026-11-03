@@ -36,28 +36,45 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
     private func observer() -> ProEntitlementObserver { ProEntitlementObserver() }
 
     /// Polls (bounded) until the products load from the .storekit file, the session lists no
-    /// transactions and `Transaction.latest(for:)` is nil for every Pro product. Throws, failing
-    /// setUp with what was left, if that never happens; it never lets a test start dirty.
-    private func waitForCleanSlate(timeout: TimeInterval = 10) async throws {
+    /// transactions and `Transaction.latest(for:)` is nil for every Pro product, on
+    /// `requiredCleanPolls` polls in a row with no clear issued in between, so no clear is still
+    /// in flight when the test starts. It clears again only when the session still lists
+    /// transactions. Throws, failing setUp with the last poll's findings, if that never happens.
+    private func waitForCleanSlate(timeout: TimeInterval = 10, requiredCleanPolls: Int = 2) async throws {
         let ids = ProSubscriptionConfig.products.map(\.id)
         let deadline = Date().addingTimeInterval(timeout)
         var leftover: [String] = []
         var loaded = 0
+        var productsError: Error?
+        var cleanPolls = 0
         repeat {
-            loaded = (try? await Product.products(for: ProSubscriptionConfig.productIDs))?.count ?? 0
+            do {
+                loaded = try await Product.products(for: ProSubscriptionConfig.productIDs).count
+                productsError = nil
+            } catch {
+                loaded = 0
+                productsError = error
+            }
             let sessionLeft = session.allTransactions().map { "session:\($0.productIdentifier)" }
-            if !sessionLeft.isEmpty { session.clearTransactions() }
             var latestLeft: [String] = []
             for id in ids {
                 if await Transaction.latest(for: id) != nil { latestLeft.append("latest:\(id)") }
             }
             leftover = sessionLeft + latestLeft
-            if leftover.isEmpty && loaded == ProSubscriptionConfig.productIDs.count { return }
+            if !sessionLeft.isEmpty { session.clearTransactions() } // only when leftovers exist
+            if leftover.isEmpty && loaded == ProSubscriptionConfig.productIDs.count {
+                cleanPolls += 1
+                if cleanPolls >= requiredCleanPolls { return }
+            } else {
+                cleanPolls = 0
+            }
             try await Task.sleep(nanoseconds: 200_000_000)
         } while Date() < deadline
-        throw StoreKitSetUpError(description: "SKTestSession not clean after \(timeout)s: "
-            + "\(loaded)/\(ProSubscriptionConfig.productIDs.count) products loaded, "
-            + "leftover transactions \(leftover)")
+        var why = "SKTestSession not clean after \(timeout)s. Last poll: "
+        why += "\(loaded)/\(ProSubscriptionConfig.productIDs.count) products loaded"
+        if let productsError { why += " (Product.products threw \(productsError))" }
+        why += ", leftover transactions \(leftover)"
+        throw StoreKitSetUpError(description: why)
     }
 
     func testProductsLoadAtTheOwnersPricesInOneGroup() async throws {
@@ -128,6 +145,7 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         let fresh = observer() // a relaunch: nothing in memory
         XCTAssertEqual(fresh.state, .free)
         try await fresh.restore()
+        try await waitForState(fresh) { $0.showsPro } // purchase may not be visible to the first read
         guard case .pro(let id, _) = fresh.state else { return XCTFail("expected .pro, got \(fresh.state)") }
         XCTAssertEqual(id, ProSubscriptionConfig.yearlyProductID)
     }
@@ -136,6 +154,7 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         let o = observer()
         _ = try await session.buyProduct(identifier: ProSubscriptionConfig.monthlyProductID)
         await o.refresh()
+        try await waitForState(o) { $0.showsPro } // purchase may not be visible to the first refresh
         XCTAssertTrue(o.state.showsPro)
 
         try session.expireSubscription(productIdentifier: ProSubscriptionConfig.monthlyProductID)
@@ -147,6 +166,7 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         let o = observer()
         let transaction = try await session.buyProduct(identifier: ProSubscriptionConfig.yearlyProductID)
         await o.refresh()
+        try await waitForState(o) { $0.showsPro } // purchase may not be visible to the first refresh
         XCTAssertTrue(o.state.showsPro)
 
         try session.refundTransaction(identifier: UInt(transaction.id))
@@ -199,6 +219,9 @@ final class ProSubscriptionStoreKitTests: XCTestCase {
         let o = ProEntitlementObserver(now: { clock.now })
         try await session.buyProduct(identifier: ProSubscriptionConfig.monthlyProductID)
         await o.refresh()
+        // Poll refresh() until the purchase shows as .pro before the clock-based checks; the clock
+        // has not moved yet, so this only waits for the transaction to become visible.
+        try await waitForState(o) { $0.showsPro }
         guard case .pro(_, let expiresAt?) = o.state else { return XCTFail("expected .pro, got \(o.state)") }
         let before = await o.currentProEntitlement()
         XCTAssertTrue(before.showsPro)
