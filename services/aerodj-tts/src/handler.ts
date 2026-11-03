@@ -1,10 +1,15 @@
 import crypto from 'node:crypto';
-import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS, paidStopped } from './attest-flags.js';
+import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS, paidStopped, testerVoiceOn } from './attest-flags.js';
+import { keyRecordKey, keyspaceFromEnv, revokedKey } from './attest-store.js';
+import { reserveForInstall } from './install-quota.js';
+import { installTokenKey, tokenKeyId, verifyInstallToken } from './install-token.js';
 import { bearerToken, parseTokenHash, tokenMatches } from './auth.js';
 import {
   DEFAULT_GLOBAL_DAILY_CHAR_CAP,
   DEFAULT_INSTALL_DAILY_CHAR_CAP,
+  DEFAULT_OWNER_SHARE_DAILY_CHAR_CAP,
   DEFAULT_REQUESTS_PER_MINUTE,
+  DEFAULT_TESTER_POOL_DAILY_CHAR_CAP,
   effectiveNonprodCap,
   InMemoryUsageLimiter,
   LimiterStoreError,
@@ -30,12 +35,111 @@ export const MAX_DURATION_SECONDS = 600; // matches ProxyVoiceProvider duration 
 const DEFAULT_MAX_TEXT_CHARS = 600;
 const DEFAULT_MODEL_ID = 'eleven_flash_v2_5';
 /**
- * ElevenLabs voice_settings sent on every render (owner-approved radio tuning).
- * Fixed server-side: the request contract carries no voice settings, so nothing a
- * client sends can change them. Deliberately no `style` (owner decision) and
- * no `use_speaker_boost`. `speed` stays inside the approved [1.0, 1.05] range.
+ * ElevenLabs voice_settings for the v2-family models (Flash v2.5, Turbo v2.5, Multilingual v2):
+ * the owner-approved radio tuning (intonation plan, 2026-11-02: stability 0.40 -> 0.32 for a
+ * livelier read, speed 1.0 -> 1.03, still inside the approved [1.0, 1.05]). Fixed server-side:
+ * the request contract carries no voice settings, so nothing a client sends can change them.
+ * Deliberately no `style` (style stays 0 = the API default; owner decision) and no
+ * `use_speaker_boost` (the API default applies).
  */
-export const VOICE_SETTINGS = Object.freeze({ stability: 0.4, similarity_boost: 0.75, speed: 1.0 });
+export const VOICE_SETTINGS = Object.freeze({ stability: 0.32, similarity_boost: 0.75, speed: 1.03 });
+/**
+ * Eleven v4 / v4 Turbo take only Stability and Similarity (no style, no speed), so they get
+ * just those two. Same values as the v2 family.
+ */
+export const V4_VOICE_SETTINGS = Object.freeze({ stability: 0.32, similarity_boost: 0.75 });
+/**
+ * Eleven v3's stability is a three-step control (0 Creative, 0.5 Natural, 1 Robust): Natural.
+ * No speed or style.
+ */
+export const V3_VOICE_SETTINGS = Object.freeze({ stability: 0.5, similarity_boost: 0.75 });
+
+export type ModelFamily = 'v2' | 'v3' | 'v4';
+
+/** Which settings family a model id belongs to. Anything unrecognised is treated as v2. */
+export function modelFamily(modelId: string): ModelFamily {
+  if (/^eleven_v4(?:_|$)/.test(modelId)) return 'v4';
+  if (/^eleven_v3(?:_|$)/.test(modelId)) return 'v3';
+  return 'v2';
+}
+
+/** The voice_settings sent for a model: only the fields that model supports. */
+export function voiceSettingsFor(modelId: string): Readonly<Record<string, number>> {
+  const family = modelFamily(modelId);
+  return family === 'v4' ? V4_VOICE_SETTINGS : family === 'v3' ? V3_VOICE_SETTINGS : VOICE_SETTINGS;
+}
+
+/** v3 and v4 read square-bracket audio tags; the v2 family would speak them aloud. */
+export function supportsAudioTags(modelId: string): boolean {
+  return modelFamily(modelId) !== 'v2';
+}
+
+/** Request stitching (previous_text / next_text / previous_request_ids) is not available on Eleven v3. */
+export function supportsStitching(modelId: string): boolean {
+  return modelFamily(modelId) !== 'v3';
+}
+
+/**
+ * The only audio tags the proxy lets through, and only to a model that reads tags. Any other
+ * bracket (a song title like "Song [Live]", or text a caller put in brackets) loses its
+ * brackets, so nothing a title or user text contains can become an audio tag.
+ */
+export const ALLOWED_AUDIO_TAGS: readonly string[] = Object.freeze(['warmly', 'relaxed', 'chuckles', 'softly', 'excited']);
+const ALLOWED_TAG = new RegExp(`\\[\\s*(${ALLOWED_AUDIO_TAGS.join('|')})\\s*\\]`, 'gi');
+
+/**
+ * Removes every `[` and `]`. With `keepAllowedTags` (v3/v4 main text only) an exact allowlisted
+ * tag survives as `[tag]`; otherwise allowlisted tags are dropped entirely (a v2 model would read
+ * "warmly" aloud). The text between tags is cleaned piece by piece, so a stray bracket can never
+ * pair with a kept tag. Whitespace is collapsed.
+ */
+/**
+ * Spoken-text sanitiser for every model: removes every `[` and `]` (allowlisted tag words
+ * included) and keeps the words, so "Kiss Me [Softly] Tonight" is spoken as "Kiss Me Softly
+ * Tonight" and can never reach a tag-reading model (v3/v4) as a delivery tag. The app sends DJ
+ * copy on this route tag-free, and no request field opts into tags, so nothing legitimate is lost.
+ */
+export function stripAllBrackets(text: string): string {
+  return text.replace(/[[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export function sanitizeBrackets(text: string, keepAllowedTags: boolean): string {
+  const out: string[] = [];
+  let last = 0;
+  for (const match of text.matchAll(ALLOWED_TAG)) {
+    out.push(text.slice(last, match.index).replace(/[[\]]/g, ' '));
+    out.push(keepAllowedTags ? ` [${match[1].toLowerCase()}] ` : ' ');
+    last = (match.index ?? 0) + match[0].length;
+  }
+  out.push(text.slice(last).replace(/[[\]]/g, ' '));
+  return out.join('').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Optional stitching context (`previousText` / `nextText`): the neighbouring lines of the same
+ * DJ break, so ElevenLabs intonates each line as part of one thought instead of a lone sentence.
+ * Not spoken and not charged to our caps (ElevenLabs bills the spoken text; X-Billed-Characters
+ * reports its character-cost header). Each side is trimmed to this many characters: previous
+ * keeps its end, next keeps its start, the parts nearest the spoken line.
+ */
+export const MAX_CONTEXT_CHARS = 300;
+/** ElevenLabs request ids we forward as `previous_request_ids` (at most 3, per its API). */
+export const MAX_PREVIOUS_REQUEST_IDS = 3;
+const REQUEST_ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Reads an optional context field: absent/null = none, a string = sanitised context (brackets
+ * removed, whitespace collapsed, trimmed to MAX_CONTEXT_CHARS), anything else = invalid (400).
+ */
+function contextField(value: unknown, format: 'text' | 'ssml', keep: 'start' | 'end'): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  if (value.length > MAX_CONTEXT_CHARS * 8) return undefined;
+  const plain = sanitizeBrackets(format === 'ssml' ? ssmlToPlainText(value) : value, false);
+  if (plain.length <= MAX_CONTEXT_CHARS) return plain;
+  return (keep === 'end' ? plain.slice(-MAX_CONTEXT_CHARS) : plain.slice(0, MAX_CONTEXT_CHARS)).trim();
+}
+
 const UPSTREAM_TIMEOUT_MS = 15_000;
 /**
  * Until per-install attestation lands, the owner bearer is the only authenticated caller,
@@ -60,7 +164,7 @@ export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconf
  * Log-only refinements of a wire reason. `no_store` (Fry on #287): ElevenLabs key set but no
  * shared store, so the 500 `misconfig` was the no-store gate.
  */
-export type LogReason = ErrorReason | 'pro_chars' | 'no_store';
+export type LogReason = ErrorReason | 'pro_chars' | 'no_store' | 'tester_pool' | 'reattest' | 'token_expired' | 'mixed_auth';
 
 /**
  * A verified Pro request is charged to its OWN subject (Sentinel's B1 on #264), never the
@@ -236,6 +340,13 @@ export interface TtsRequest {
    * header: api/tts.ts does not set it, so today's owner path never touches the allowance.
    */
   verifiedPro?: ProSubject;
+  /**
+   * #378: the `X-OnAirly-Install-Token` header (TestFlight install token from
+   * /api/attest/token). Present = the install path; the owner path is the request WITHOUT it.
+   */
+  installToken?: string;
+  /** #378: `X-OnAirly-Assertion`. Belongs on /api/attest/token only; on /api/tts it is 400 `mixed_auth`. */
+  assertion?: string;
 }
 
 export interface TtsResponse {
@@ -294,13 +405,20 @@ export function limiterOptions(env: Env): LimiterOptions {
     parseCharCap(env.AERODJ_TTS_DAILY_CHAR_CAP) ??
     DEFAULT_GLOBAL_DAILY_CHAR_CAP;
   const deployment = proDeployment(env);
+  // #378 (owner decision 2026-11-02): with tester voice on, the 9,000 ceiling splits into a
+  // 6,000 tester pool and a 3,000 owner share. With it off, the owner cap is exactly as before.
+  const testers = testerVoiceOn(env);
+  const ownerDefault = testers ? Math.min(DEFAULT_OWNER_SHARE_DAILY_CHAR_CAP, dailyCharCap) : dailyCharCap;
   return {
     dailyCharCap,
+    ...(testers
+      ? { testerPoolDailyCharCap: parseCharCap(env.AERODJ_TTS_TESTER_POOL_DAILY_CHAR_CAP) ?? DEFAULT_TESTER_POOL_DAILY_CHAR_CAP }
+      : {}),
     ...(deployment !== null ? { deployment } : {}),
     ...(deployment !== null && deployment !== 'production'
       ? { nonprodDailyCharCap: effectiveNonprodCap(parseCharCap(env.AERODJ_TTS_NONPROD_DAILY_CHAR_CAP) ?? undefined) }
       : {}),
-    ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? dailyCharCap,
+    ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? ownerDefault,
     installDailyCharCap: parseCharCap(env.AERODJ_TTS_INSTALL_DAILY_CHAR_CAP) ?? DEFAULT_INSTALL_DAILY_CHAR_CAP,
     requestsPerMinute: parseRatePerMinute(env.AERODJ_TTS_RATE_PER_MINUTE) ?? DEFAULT_REQUESTS_PER_MINUTE,
   };
@@ -401,6 +519,23 @@ export function secondsUntilNextUtcDay(now: number): number {
   return Math.max(1, Math.ceil((next.getTime() - now) / 1000));
 }
 
+/**
+ * The ElevenLabs request body. Context fields are added only when present and only for a model
+ * that supports request stitching (not v3); voice_settings carry only the fields the model takes.
+ */
+export function upstreamBody(
+  text: string,
+  modelId: string,
+  context: { previousText?: string | null; nextText?: string | null; previousRequestIds?: string[] } = {},
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { text, model_id: modelId, voice_settings: voiceSettingsFor(modelId) };
+  if (!supportsStitching(modelId)) return body;
+  if (context.previousText) body.previous_text = context.previousText;
+  if (context.nextText) body.next_text = context.nextText;
+  if (context.previousRequestIds && context.previousRequestIds.length > 0) body.previous_request_ids = context.previousRequestIds;
+  return body;
+}
+
 export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsResponse> {
   const requestId = deps.requestId();
   let chars = 0;
@@ -443,12 +578,44 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
 
   // Server misconfiguration: 500 `misconfig` with Retry-After 3600 (note §4.4).
   const misconfigured = (): TtsResponse => refuse(500, 'misconfig', MISCONFIG_RETRY_AFTER_SECONDS);
+  // 400 / 401 with an enum reason and no Retry-After (#378 §1.3): `mixed_auth`, `token_expired`,
+  // `reattest` (key record gone or key on the revocation list: register again).
+  const reject = (status: 400 | 401, reason: 'mixed_auth' | 'token_expired' | 'reattest'): TtsResponse => {
+    deps.log({ requestId, status, chars, reason });
+    return {
+      status,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Request-Id': requestId },
+      body: Buffer.from(JSON.stringify({ error: MESSAGES[status] ?? 'Error', requestId, reason })),
+    };
+  };
 
-  // --- Auth: owner-only bearer token, stored server-side as a SHA-256 hash. ---
-  const expectedHash = parseTokenHash(deps.env.AERODJ_TTS_TOKEN_SHA256);
-  if (!expectedHash) return misconfigured();
-  const token = bearerToken(req.authorization);
-  if (!token || !tokenMatches(token, expectedHash)) return fail(401);
+  // --- #378: one credential per request. An owner bearer plus an install token (or any
+  // assertion on this route) is never resolved by preference: 400 `mixed_auth`. ---
+  if (req.assertion !== undefined || (req.installToken !== undefined && req.authorization !== undefined)) {
+    return reject(400, 'mixed_auth');
+  }
+
+  // --- Auth ---
+  let install: { keyId: string; recordKey: string; revokedKey: string } | undefined;
+  if (req.installToken !== undefined) {
+    // TestFlight install token (#378). Both flags exact `true`, else 503 `disabled` before
+    // any store call. The owner hash is not needed on this path.
+    if (!testerVoiceOn(deps.env)) return refuse(503, 'disabled', DISABLED_RETRY_AFTER_SECONDS);
+    if (req.verifiedPro !== undefined) return misconfigured();
+    const tokenKey = installTokenKey(deps.env);
+    if (!tokenKey) return misconfigured();
+    const keyspace = keyspaceFromEnv(deps.env);
+    const verified = verifyInstallToken(req.installToken, { key: tokenKey, env: keyspace, now: deps.now() });
+    if (!verified.ok) return reject(401, 'token_expired');
+    const keyId = tokenKeyId(verified.claims);
+    install = { keyId: keyId.toString('base64url'), recordKey: keyRecordKey(keyspace, keyId), revokedKey: revokedKey(keyspace, keyId) };
+  } else {
+    // --- Owner-only bearer token, stored server-side as a SHA-256 hash (unchanged). ---
+    const expectedHash = parseTokenHash(deps.env.AERODJ_TTS_TOKEN_SHA256);
+    if (!expectedHash) return misconfigured();
+    const token = bearerToken(req.authorization);
+    if (!token || !tokenMatches(token, expectedHash)) return fail(401);
+  }
 
   const limiter = deps.limiter;
   const apiKey = deps.env.ELEVENLABS_API_KEY?.trim();
@@ -480,7 +647,11 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   }
 
   try {
-    const allowed = pro ? await limiter.allowRequest(pro.bucket, now, pro.rate) : await limiter.allowRequest(SUBJECT_BUCKET, now);
+    const allowed = pro
+      ? await limiter.allowRequest(pro.bucket, now, pro.rate)
+      : install
+        ? await limiter.allowRequest(subjectBucket({ kind: 'install', id: install.keyId }), now)
+        : await limiter.allowRequest(SUBJECT_BUCKET, now);
     if (!allowed) return refuse(429, 'rate', RATE_RETRY_AFTER_SECONDS);
   } catch (error) {
     if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
@@ -499,8 +670,22 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   const maxChars = positiveInt(deps.env.AERODJ_TTS_MAX_TEXT_CHARS, DEFAULT_MAX_TEXT_CHARS);
   // SSML markup is allowed some headroom before stripping; the spoken text is capped below.
   if (body.text.length > (format === 'ssml' ? maxChars * 4 : maxChars)) return fail(400);
-  const text = format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim();
+  const modelId = deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID;
+  // Square brackets never reach any model, allowlisted tags included: a title like "Song [Live]"
+  // is spoken as "Song Live", and "Kiss Me [Softly] Tonight" can't become a v4 delivery tag.
+  const text = stripAllBrackets(format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim());
   if (text.length === 0 || text.length > maxChars) return fail(400);
+  // Optional stitching context (older app builds send none; the request is then unchanged).
+  const previousText = contextField(body.previousText, format, 'end');
+  const nextText = contextField(body.nextText, format, 'start');
+  if (previousText === undefined || nextText === undefined) return fail(400);
+  let previousRequestIds: string[] = [];
+  if (body.previousRequestIds !== undefined && body.previousRequestIds !== null) {
+    const ids = body.previousRequestIds;
+    if (!Array.isArray(ids) || ids.length > MAX_PREVIOUS_REQUEST_IDS) return fail(400);
+    if (!ids.every((id): id is string => typeof id === 'string' && REQUEST_ID_SHAPE.test(id))) return fail(400);
+    previousRequestIds = ids;
+  }
   chars = text.length;
 
   // --- Daily budgets: atomic reserve-before-render, so concurrent requests cannot jointly
@@ -534,6 +719,24 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
     }
     release = () => releasePro(reservation);
     held = { chars: reservation.chars, kind: 'pro_render' };
+  } else if (install) {
+    // TestFlight install (#378): ONE atomic script over key record + revocation list, the
+    // global ceiling, the tester pool (6,000, clamped to global − owner share) and the
+    // install's own 1,500/day. Spoken chars only. Durable store only (503 `store`).
+    if (limiter.durable !== true || !limiter.releaseInstall) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+    const releaseInstall = limiter.releaseInstall.bind(limiter);
+    const result = await reserveForInstall(limiter, install.keyId, chars, now, { recordKey: install.recordKey, revokedKey: install.revokedKey });
+    if (!result.ok) {
+      if (result.reason === 'store') return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+      if (result.reason === 'misconfig') return misconfigured();
+      if (result.reason === 'reattest') return reject(401, 'reattest');
+      if (result.reason === 'install_daily') return refuse(429, 'install_daily', secondsUntilNextUtcDay(now));
+      const detail = 'detail' in result && result.detail === 'tester_pool' ? 'tester_pool' : undefined;
+      return refuse(429, 'global_daily', secondsUntilNextUtcDay(now), detail);
+    }
+    const reservation = result.reservation;
+    release = () => releaseInstall(reservation);
+    held = { chars: reservation.chars };
   } else {
     let reservation: Reservation;
     try {
@@ -570,16 +773,13 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
   let pcm: Buffer;
   let upstreamCost: string | null;
+  let upstreamRequestId: string | null = null;
   try {
     const url = `${ELEVENLABS_BASE}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=pcm_22050`;
     const upstream = await deps.fetch(url, {
       method: 'POST',
       headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json', Accept: 'audio/pcm' },
-      body: JSON.stringify({
-        text,
-        model_id: deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
-        voice_settings: VOICE_SETTINGS,
-      }),
+      body: JSON.stringify(upstreamBody(text, modelId, { previousText, nextText, previousRequestIds })),
       signal: controller.signal,
     });
     if (!upstream.ok) {
@@ -591,6 +791,8 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
       return fail(502, {}, { upstreamStatus: upstream.status, upstreamCode });
     }
     upstreamCost = upstream.headers.get('character-cost');
+    const rawUpstreamId = upstream.headers.get('request-id')?.trim();
+    upstreamRequestId = rawUpstreamId && REQUEST_ID_SHAPE.test(rawUpstreamId) ? rawUpstreamId : null;
     pcm = Buffer.from(await upstream.arrayBuffer());
   } catch {
     return fail(controller.signal.aborted ? 504 : 502);
@@ -616,6 +818,8 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
       'X-Audio-Duration': String(duration),
       'X-Billed-Characters': String(cost),
       'X-Request-Id': requestId,
+      // ElevenLabs' own request id (shape-checked), for a later `previousRequestIds`.
+      ...(upstreamRequestId !== null ? { 'X-Upstream-Request-Id': upstreamRequestId } : {}),
     },
     body: wav,
   };
