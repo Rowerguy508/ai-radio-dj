@@ -192,7 +192,11 @@ struct AppDependencies {
         let studio = StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: dj,
                                              genreProvider: StaticGenreProvider.fixture)
         // In memory: a test-station session never touches the live ratings file (-Nova, PR B).
-        let ratings = StationRatingsModel(store: InMemoryStationRatingStore())
+        // Its own defaults suite too (Fry's #387 Debug nit, #388): a delete here can neither set
+        // nor clear the live AeroDJRatingsPurgePending flag. Each launch starts unlocked.
+        let ratingsDefaults = UserDefaults(suiteName: "AeroDJRatingsTestStation") ?? .standard
+        ratingsDefaults.removeObject(forKey: StationRatingsModel.purgePendingKey)
+        let ratings = StationRatingsModel(store: InMemoryStationRatingStore(), defaults: ratingsDefaults)
         return AppDependencies(
             mode: .testStation,
             contextSources: composition.contextSources,

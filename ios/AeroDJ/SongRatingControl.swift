@@ -39,12 +39,15 @@ extension SongRatingController {
     /// Screenshots and previews (StudioCapture): an in-memory book, fixed day, no playback.
     static func fixture(rated: SongRating? = nil, songID: String, labelSeen: Bool = false) async -> SongRatingController {
         let scope = StationRatingScope.seeds(0xA11CE)
-        let ratings = StationRatingsModel(store: InMemoryStationRatingStore(), today: { 20_000 })
+        // Its own suite (Fry's #387 Debug nit, #388): the fixture's ratings model reads and writes the
+        // purge flag here, never the live AeroDJRatingsPurgePending. Cleared so captures start unlocked.
+        let defaults = UserDefaults(suiteName: "AeroDJRatingsFixture") ?? .standard
+        defaults.removeObject(forKey: StationRatingsModel.purgePendingKey)
+        let ratings = StationRatingsModel(store: InMemoryStationRatingStore(), today: { 20_000 }, defaults: defaults)
         await ratings.load()
         if let rated {
             ratings.rate(rated, song: StationRatedSong(songID: songID, artistName: "Fixture"), in: scope)
         }
-        let defaults = UserDefaults(suiteName: "AeroDJRatingsFixture") ?? .standard
         defaults.set(labelSeen, forKey: SongRatingPresentation.labelSeenKey)
         return SongRatingController(ratings: ratings, hooks: .init(scope: { scope }), defaults: defaults)
     }
