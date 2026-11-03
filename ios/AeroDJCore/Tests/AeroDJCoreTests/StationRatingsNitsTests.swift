@@ -15,25 +15,44 @@ final class StationRatingsNitsTests: XCTestCase {
     private actor DeleteFailsStore: StationRatingStore {
         private(set) var book: StationRatingBook
         private(set) var deletes = 0
+        private(set) var loads = 0
+        private(set) var saves = 0
+        /// The pending-purge flag as each delete saw it (when `flagSuite` is given).
+        private(set) var flagDuringDelete: [Bool] = []
         var failing = true
         let loadError: StationRatingStoreError?
+        private let probe: FlagProbe?
 
-        init(book: StationRatingBook = StationRatingBook(), loadError: StationRatingStoreError? = nil) {
+        init(book: StationRatingBook = StationRatingBook(), loadError: StationRatingStoreError? = nil,
+             probe: FlagProbe? = nil) {
             self.book = book
             self.loadError = loadError
+            self.probe = probe
         }
 
         func load() async throws -> StationRatingBook {
+            loads += 1
             if let loadError { throw loadError }
             return book
         }
-        func save(_ book: StationRatingBook) async throws { self.book = book }
+        func save(_ book: StationRatingBook) async throws {
+            saves += 1
+            self.book = book
+        }
         func deleteAll() async throws {
             deletes += 1
+            if let probe { flagDuringDelete.append(await probe.read()) }
             if failing { throw StationRatingStoreError.deleteFailed }
             book = StationRatingBook()
         }
         func setFailing(_ on: Bool) { failing = on }
+    }
+
+    /// Reads the model's defaults from inside a store call.
+    @MainActor private final class FlagProbe {
+        let defaults: UserDefaults
+        init(_ defaults: UserDefaults) { self.defaults = defaults }
+        func read() -> Bool { defaults.bool(forKey: StationRatingsModel.purgePendingKey) }
     }
 
     private static func song(_ id: String) -> StationRatedSong {
@@ -87,9 +106,37 @@ final class StationRatingsNitsTests: XCTestCase {
         XCTAssertNil(m.rate(.love, song: Self.song("y"), in: Self.scope), "still nothing saved over that file")
     }
 
-    func testAPurgeAllWhoseDeleteFailsKeepsTheBookMatchingTheFile() async throws {
+    // MARK: Sentinel N1 follow-up: a purge-all always goes through
+
+    private func suite() -> UserDefaults { UserDefaults(suiteName: "ratings-\(UUID().uuidString)")! }
+
+    func testAFailedPurgeAllEmptiesAndLocksTheBookAndRefusesRating() async {
         let store = DeleteFailsStore(book: Self.savedBook())
-        let m = StationRatingsModel(store: store, today: { 42 })
+        let defaults = suite()
+        let m = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        await m.load()
+        XCTAssertEqual(m.rating(for: "x", in: Self.scope), .never)
+        let purged = await m.purgeAll()
+        XCTAssertFalse(purged)
+        XCTAssertEqual(m.book, StationRatingBook(), "the withdrawal goes through in memory")
+        XCTAssertTrue(m.bias(recipeID: nil, configuration: Self.station).excludedSongIDs.isEmpty,
+                      "ratings stop steering the queue at once")
+        XCTAssertEqual(m.loadState, .purgePending)
+        XCTAssertFalse(m.canRate)
+        XCTAssertTrue(m.purgePending)
+        XCTAssertTrue(defaults.bool(forKey: StationRatingsModel.purgePendingKey))
+        XCTAssertNil(m.rate(.love, song: Self.song("y"), in: Self.scope), "rating is refused")
+        m.clearStation(Self.scope)
+        await m.flush()
+        let saved = await store.book
+        XCTAssertEqual(saved, Self.savedBook(), "nothing saved while pending (the file is never rewritten)")
+        let saves = await store.saves
+        XCTAssertEqual(saves, 0)
+    }
+
+    func testAPurgeAllFromTheFeedNeverRollsBack() async throws {
+        let store = DeleteFailsStore(book: Self.savedBook())
+        let m = StationRatingsModel(store: store, today: { 42 }, defaults: suite())
         await m.load()
         let feed = NarrationPurgeFeed()
         m.listen(to: feed)
@@ -100,11 +147,113 @@ final class StationRatingsNitsTests: XCTestCase {
         }
         await m.flush()
         for _ in 0..<50 { await Task.yield() }
+        XCTAssertNil(m.rating(for: "x", in: Self.scope), "not put back: the purge stands")
+        XCTAssertEqual(m.loadState, .purgePending)
+        XCTAssertTrue(m.purgePending)
+    }
+
+    func testARelaunchWhoseDeleteStillFailsStaysLockedAndNeverLoadsTheOldRatings() async {
+        let store = DeleteFailsStore(book: Self.savedBook())
+        let defaults = suite()
+        let first = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        await first.load()
+        await first.purgeAll()
+        let loadsBefore = await store.loads
+
+        let relaunched = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        await relaunched.load()
+        let loads = await store.loads
+        XCTAssertEqual(loads, loadsBefore, "the old file is never read")
         let deletes = await store.deletes
-        XCTAssertEqual(deletes, 1, "the purge tried to delete the file")
-        XCTAssertEqual(m.rating(for: "x", in: Self.scope), .never, "not shown as cleared while the file still has it")
+        XCTAssertEqual(deletes, 2, "the delete was retried at load")
+        XCTAssertEqual(relaunched.loadState, .purgePending)
+        XCTAssertEqual(relaunched.book, StationRatingBook())
+        XCTAssertNil(relaunched.rating(for: "x", in: Self.scope))
+        XCTAssertNil(relaunched.rate(.love, song: Self.song("y"), in: Self.scope))
+        XCTAssertTrue(defaults.bool(forKey: StationRatingsModel.purgePendingKey))
+
+        // Settings "Clear all" while pending is a retry too, and stays locked while it fails.
+        let cleared = await relaunched.clearAll()
+        XCTAssertFalse(cleared)
+        XCTAssertEqual(relaunched.loadState, .purgePending)
+        XCTAssertEqual(relaunched.book, StationRatingBook(), "no rollback to the old ratings")
+        XCTAssertTrue(relaunched.purgePending)
+    }
+
+    func testARelaunchWhoseDeleteWorksClearsTheFlagAndUnlocks() async {
+        let store = DeleteFailsStore(book: Self.savedBook())
+        let defaults = suite()
+        let first = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        await first.load()
+        await first.purgeAll()
+        await store.setFailing(false)
+
+        let relaunched = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        await relaunched.load()
+        XCTAssertEqual(relaunched.loadState, .loaded)
+        XCTAssertFalse(relaunched.purgePending)
+        XCTAssertNil(defaults.object(forKey: StationRatingsModel.purgePendingKey))
+        XCTAssertEqual(relaunched.book, StationRatingBook())
         let saved = await store.book
-        XCTAssertEqual(m.book, saved)
+        XCTAssertEqual(saved, StationRatingBook(), "the old ratings are gone")
+        XCTAssertNotNil(relaunched.rate(.love, song: Self.song("y"), in: Self.scope), "rating works again")
+        await relaunched.flush()
+        let after = await store.book
+        XCTAssertEqual(after.rating(for: "y", in: Self.scope), .love)
+    }
+
+    func testALaterClearRetriesAPendingPurgeAndUnlocks() async {
+        let store = DeleteFailsStore(book: Self.savedBook())
+        let defaults = suite()
+        let m = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        await m.load()
+        await m.purgeAll()
+        await store.setFailing(false)
+        let cleared = await m.clearAll()
+        XCTAssertTrue(cleared)
+        XCTAssertEqual(m.loadState, .loaded)
+        XCTAssertFalse(m.purgePending)
+    }
+
+    /// The flag is set before the delete starts and is still set while it runs (so a crash or a
+    /// failure mid-delete retries), and is removed only once a delete has worked.
+    func testThePendingFlagIsNeverClearedBeforeTheFileIsGone() async {
+        let defaults = suite()
+        let store = DeleteFailsStore(book: Self.savedBook(), probe: FlagProbe(defaults))
+        let m = StationRatingsModel(store: store, today: { 42 }, defaults: defaults)
+        await m.load()
+        await m.purgeAll()
+        var seen = await store.flagDuringDelete
+        XCTAssertEqual(seen, [true], "set before the failed delete")
+        XCTAssertTrue(defaults.bool(forKey: StationRatingsModel.purgePendingKey), "kept after it failed")
+
+        await store.setFailing(false)
+        await m.purgeAll()
+        seen = await store.flagDuringDelete
+        XCTAssertEqual(seen, [true, true], "still set while the working delete ran")
+        XCTAssertFalse(defaults.bool(forKey: StationRatingsModel.purgePendingKey), "removed after it")
+
+        // A successful purge also sets it first.
+        let fresh = DeleteFailsStore(probe: FlagProbe(defaults))
+        await fresh.setFailing(false)
+        let other = StationRatingsModel(store: fresh, today: { 42 }, defaults: defaults)
+        await other.load()
+        let purged = await other.purgeAll()
+        XCTAssertTrue(purged)
+        let freshSeen = await fresh.flagDuringDelete
+        XCTAssertEqual(freshSeen, [true])
+        XCTAssertFalse(other.purgePending)
+    }
+
+    /// Settings "Clear all" (not a purge) still rolls back, and never sets the flag.
+    func testSettingsClearAllNeverSetsThePendingFlag() async {
+        let defaults = suite()
+        let m = StationRatingsModel(store: DeleteFailsStore(book: Self.savedBook()), today: { 42 }, defaults: defaults)
+        await m.load()
+        let cleared = await m.clearAll()
+        XCTAssertFalse(cleared)
+        XCTAssertEqual(m.rating(for: "x", in: Self.scope), .never)
+        XCTAssertNil(defaults.object(forKey: StationRatingsModel.purgePendingKey))
     }
 
     func testTheControllerReportsAFailedClearAllForSettings() async {

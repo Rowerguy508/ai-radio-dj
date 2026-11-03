@@ -35,7 +35,9 @@ public struct StationRatingChange: Equatable, Sendable {
 ///   (`rate` returns nil) so a file this build cannot read is never overwritten.
 /// - A corrupt file loads as empty and is replaced at the next save (it could never be read again).
 /// - `listen(to:)` clears everything on a purge-all (`NarrationPurgeFeed` `.all`: consent withdrawal,
-///   data reset), the same as Settings "Clear all ratings".
+///   data reset). Unlike Settings "Clear all ratings" it never rolls back: when the file cannot be
+///   deleted the book stays empty and locked (`purgePending`), a flag in UserDefaults says so across
+///   launches, and every later load or clear retries the delete (Sentinel, #387 N1 follow-up).
 /// Ratings never reach the DJ or a voice: only `StationQueueFeed` reads `bias`.
 @MainActor
 @Observable
@@ -45,7 +47,14 @@ public final class StationRatingsModel {
         case loaded
         /// The saved file is newer than this build, or could not be read: nothing is saved.
         case readOnly
+        /// A purge-all could not delete the file yet: the book is empty, nothing is rated or saved,
+        /// and the old file is never loaded. Ends when a retried delete succeeds.
+        case purgePending
     }
+
+    /// UserDefaults Bool: a purge-all is waiting for the file to be deleted. Holds no rating data;
+    /// set before the delete and removed only after a delete succeeds.
+    public static let purgePendingKey = "AeroDJRatingsPurgePending"
 
     public private(set) var book = StationRatingBook()
     public private(set) var loadState: LoadState = .notLoaded
@@ -54,29 +63,44 @@ public final class StationRatingsModel {
     @ObservationIgnored private let today: @MainActor () -> Int
     @ObservationIgnored private var lastWrite: Task<Void, Never>?
     @ObservationIgnored private var listener: Task<Void, Never>?
+    @ObservationIgnored private let defaults: UserDefaults
 
     /// The feed's day number (days since the reference date).
     public nonisolated static func dayNumber(_ date: Date = Date()) -> Int {
         Int(date.timeIntervalSinceReferenceDate / 86_400)
     }
 
-    public init(store: any StationRatingStore, today: @escaping @MainActor () -> Int = { StationRatingsModel.dayNumber() }) {
+    public init(store: any StationRatingStore, today: @escaping @MainActor () -> Int = { StationRatingsModel.dayNumber() },
+                defaults: UserDefaults = .standard) {
         self.store = store
         self.today = today
+        self.defaults = defaults
     }
 
+    /// A purge-all is still waiting for its delete (survives a relaunch).
+    public var purgePending: Bool { defaults.bool(forKey: Self.purgePendingKey) }
+
     /// Once at launch, before the station queue starts (so its first build has the ratings).
+    /// With a purge pending the file is never read: the delete is retried instead, and the book
+    /// starts empty (unlocked when the delete works, still locked when it fails again).
     public func load() async {
         guard loadState == .notLoaded else { return }
+        if purgePending {
+            loadState = .purgePending
+            await retryPurge()
+            return
+        }
         do {
             var loaded = try await store.load()
+            // A purge-all arrived while the file was being read: it wins.
+            guard loadState == .notLoaded else { return }
             loaded.prune(today: today())
             book = loaded
             loadState = .loaded
         } catch StationRatingStoreError.corrupt {
-            loadState = .loaded
+            if loadState == .notLoaded { loadState = .loaded }
         } catch {
-            loadState = .readOnly
+            if loadState == .notLoaded { loadState = .readOnly }
         }
     }
 
@@ -126,20 +150,57 @@ public final class StationRatingsModel {
         scheduleSave()
     }
 
-    /// Settings "Clear all ratings" and purge-all: empties the book and deletes the file, after any
-    /// save already queued (so nothing written earlier lands after the delete). Allowed read-only
-    /// too: the listener asked for everything to go.
+    /// Settings "Clear all ratings": empties the book and deletes the file, after any save already
+    /// queued (so nothing written earlier lands after the delete). Allowed read-only too.
     /// False when the file could not be deleted (Sentinel, #387 N1): the book and load state go back
     /// to what they were, so memory still matches the file (which still holds those ratings and
     /// would load them at the next launch), and the caller shows an error instead of "cleared".
     /// A rating made while the delete ran is left as it is: its save, queued after the delete,
-    /// writes the book the listener sees.
+    /// writes the book the listener sees. With a purge pending this is that purge's retry: the book
+    /// stays locked during the delete and is unlocked only once the file is gone.
     @discardableResult
     public func clearAll() async -> Bool {
+        if loadState == .purgePending { return await retryPurge() }
         let before = book
         let stateBefore = loadState
         book.clearAll()
         loadState = .loaded
+        let (deleted, marker) = await deleteFile()
+        if !deleted, lastWrite == marker {
+            book = before
+            loadState = stateBefore
+        }
+        return deleted
+    }
+
+    /// Purge-all (consent withdrawal, data reset): the withdrawal always goes through. The flag is
+    /// set first, the book empties and locks at once (ratings stop steering the queue), and the file
+    /// is deleted after any queued save. Only a delete that worked clears the flag and unlocks;
+    /// a failed one leaves both, and the next load or clear tries again. False: still pending.
+    @discardableResult
+    public func purgeAll() async -> Bool {
+        defaults.set(true, forKey: Self.purgePendingKey)
+        book.clearAll()
+        loadState = .purgePending
+        return await retryPurge()
+    }
+
+    /// The pending purge's delete. The book stays empty and locked until the file is gone.
+    @discardableResult
+    private func retryPurge() async -> Bool {
+        book.clearAll()
+        let (deleted, _) = await deleteFile()
+        guard deleted else {
+            defaults.set(true, forKey: Self.purgePendingKey)
+            return false
+        }
+        defaults.removeObject(forKey: Self.purgePendingKey)
+        if loadState == .purgePending { loadState = .loaded }
+        return true
+    }
+
+    /// Deletes the file after every queued save and delete. The marker is `lastWrite` for it.
+    private func deleteFile() async -> (deleted: Bool, marker: Task<Void, Never>) {
         let previous = lastWrite
         let store = store
         let delete = Task { @MainActor () -> Bool in
@@ -153,12 +214,7 @@ public final class StationRatingsModel {
         }
         let marker = Task { @MainActor in _ = await delete.value }
         lastWrite = marker
-        let deleted = await delete.value
-        if !deleted, lastWrite == marker {
-            book = before
-            loadState = stateBefore
-        }
-        return deleted
+        return (await delete.value, marker)
     }
 
     /// Clears everything on every purge-all from now on. Call once.
@@ -168,9 +224,7 @@ public final class StationRatingsModel {
         listener = Task { @MainActor [weak self] in
             for await purge in updates where purge == .all {
                 guard let self else { return }
-                // A failed delete puts the book back (it still matches the file); a purge has no one
-                // to tell, and the ratings stay in effect as the file has them.
-                await self.clearAll()
+                await self.purgeAll()
             }
         }
     }
@@ -184,6 +238,7 @@ public final class StationRatingsModel {
     public func flush() async { await lastWrite?.value }
 
     private func scheduleSave() {
+        guard loadState != .purgePending else { return }
         let snapshot = book
         let previous = lastWrite
         let store = store
