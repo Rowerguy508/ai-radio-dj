@@ -81,6 +81,9 @@ public struct PreparedDJBreak: Equatable, Sendable {
     /// The clock reading the time-check line was written for (its expected air time), while
     /// that line is in the break. `takeBreak` checks it against the clock at the take.
     public var timeCheckAirTime: Date? = nil
+    /// The planned time check whose line is in this break (set with `timeCheckAirTime`), so a
+    /// break resumed after an interruption can re-check that line (#379 N1, `BreakResumePlan`).
+    public var timeCheck: DJPlannedTimeCheck? = nil
 
     /// Speech gap before the closing line, in seconds. A pause between two lines of speech,
     /// not compensation for player latency.
@@ -425,6 +428,7 @@ public actor DJBreakPreparer {
                                     talkOverCueID: fit == .keepMarker ? djBreak.talkOverCueID : nil,
                                     trimmedCueIDs: main.trimmedCueIDs)
         ready.timeCheckAirTime = airTime
+        ready.timeCheck = djBreak.timeCheck
         results[k] = .ready(ready)
     }
 
@@ -574,16 +578,9 @@ public actor DJBreakPreparer {
     }
 
     /// The rounded time T a line read at `date` names, as an instant (the start of T's minute),
-    /// and which way it rounded. Same rounding as `DJTimeCheck.rounded`.
+    /// and which way it rounded. `DJTimeCheck.roundedInstant`, the value the line was written from.
     nonisolated static func roundedTime(at date: Date, calendar: Calendar) -> (time: Date, relation: DJTimeCheckRelation)? {
-        guard let minuteStart = calendar.dateInterval(of: .minute, for: date)?.start else { return nil }
-        let parts = calendar.dateComponents([.hour, .minute], from: date)
-        guard let hour = parts.hour, let minute = parts.minute else { return nil }
-        let raw = hour * 60 + minute
-        let r = DJTimeCheck.rounded(hour: hour, minute: minute)
-        var delta = r.hour * 60 + r.minute - raw
-        if delta < -12 * 60 { delta += 24 * 60 }   // 23:58 rounds to 0:00, two minutes on
-        return (minuteStart.addingTimeInterval(TimeInterval(delta * 60)), r.relation)
+        DJTimeCheck.roundedInstant(at: date, calendar: calendar).map { ($0.time, $0.relation) }
     }
 
     /// Cancels preparation for boundaries that will not happen (station change, queue replaced, stop).

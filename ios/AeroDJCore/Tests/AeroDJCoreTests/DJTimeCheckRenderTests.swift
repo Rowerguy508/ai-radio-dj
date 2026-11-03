@@ -251,6 +251,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
         guard let b = ready else { return XCTFail("ready") }
         let air = b.timeCheckAirTime
         XCTAssertNotNil(air, "recorded with the line")
+        XCTAssertEqual(b.timeCheck, planned.timeCheck, "and its plan, for a resume after an interruption (#379 N1)")
         // The 60 s deadline plus the 3 s boundary margin, less the few ms the render took.
         XCTAssertEqual(air?.timeIntervalSince(date(9, 52)) ?? 0, 63, accuracy: 1)
         XCTAssertEqual(air.flatMap { planned.timeCheck?.text(at: $0) }, b.cues.first?.text, "the line is the reading at its air time")

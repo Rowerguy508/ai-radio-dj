@@ -62,6 +62,13 @@ public struct BoundaryInterpreter: Sendable {
         detector.takeNoProgressEnd()
     }
 
+    /// P0 lock-screen skip (-Echo): true once after MusicKit ended the current song mid-song with
+    /// no cause the app knows of (see `PlaybackBoundaryDetector.takeRemoteSkip()`). The caller
+    /// runs its user-skip path: no break for the cut song, and the next song loads.
+    public mutating func takeRemoteSkip() -> Bool {
+        detector.takeRemoteSkip()
+    }
+
     public mutating func interpret(
         _ observation: PlaybackObservation,
         queueIndex: Int,

@@ -1,6 +1,7 @@
 import AVFoundation
 import AeroDJCore
 import Foundation
+import MusicKit
 import OSLog
 
 // DJ talk-over (owner request on #195, -Fry). Flagged: `DJTalkoverFlag`, a Settings toggle in
@@ -10,34 +11,117 @@ import OSLog
 // first time. The checklist is in the doc and the PR.
 
 /// The app session while the talk-over voice plays. `.duckOthers` lowers other audio while
-/// our session is active, and ends when it is deactivated (`completeNarration` deactivates
-/// with `.notifyOthersOnDeactivation`). Depth and ramp are the system's.
+/// our session is active, and ends when it is deactivated with `.notifyOthersOnDeactivation`.
+/// Depth and ramp are the system's.
 /// https://developer.apple.com/documentation/avfaudio/avaudiosession/categoryoptions-swift.struct/duckothers
+///
+/// Session order (-Fry): Apple says ducking begins when the session is ACTIVATED. The steps are
+/// Core's `TalkoverSessionSequence` (quiet off, duck option, on), so the activation is a real
+/// one even if something activated the session before. Nothing in the talk-over path calls
+/// `prepareToPlay()` before this: that call activates the session too (Apple doc).
 enum TalkoverAudioSession {
     private static let log = Logger(subsystem: "com.aerodj.app", category: "playback")
 
-    /// Category with `.duckOthers` (which implies mixing), then activate: ducking starts here.
-    /// False: nothing changed that matters; the break falls back to the gap.
+    /// The app's own record of whether it activated the session (no public getter exists).
+    /// Set by the duck and by a gap-break clip start; cleared by every release.
+    @MainActor private(set) static var appActivated = false
+    /// Uptime of the last successful duck activation, for the duck-to-voice delay.
+    @MainActor private(set) static var duckedAt: Double?
+
+    @MainActor static func noteImplicitActivation() { appActivated = true }
+    @MainActor static func noteReleased() { appActivated = false; duckedAt = nil }
+
+    /// Runs `TalkoverSessionSequence.duck`. False: the activation failed; the session is
+    /// released again and the break falls back to the gap.
     @MainActor static func duck(afterTrack k: Int) -> Bool {
         let session = AVAudioSession.sharedInstance()
         let otherBefore = session.isOtherAudioPlaying
         let hintBefore = session.secondaryAudioShouldBeSilencedHint
+        let activeBefore = appActivated
+        let musicBefore = musicIsPlaying()
+        var preOffCode = 0
+        var options: AVAudioSession.CategoryOptions?
         var activated = false
         defer {
             probe(TalkoverDuckProbe(otherBefore: otherBefore, hintBefore: hintBefore, activated: activated,
                                     otherAfter: session.isOtherAudioPlaying,
-                                    hintAfter: session.secondaryAudioShouldBeSilencedHint), afterTrack: k)
+                                    hintAfter: session.secondaryAudioShouldBeSilencedHint,
+                                    activeBefore: activeBefore, preDeactivateCode: preOffCode,
+                                    optionsRaw: options.map { Int($0.rawValue) },
+                                    duckOthersSet: options.map { $0.contains(.duckOthers) },
+                                    outputVolumePercent: Int((session.outputVolume * 100).rounded()),
+                                    musicBefore: musicBefore, musicAfter: musicIsPlaying()), afterTrack: k)
         }
         do {
-            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
-            try session.setActive(true)
+            for step in TalkoverSessionSequence.duck {
+                switch step {
+                case .deactivate(let notify):
+                    // Not fatal: an inactive session may report an error here; the activation decides.
+                    let off: AVAudioSession.SetActiveOptions = notify ? [.notifyOthersOnDeactivation] : []
+                    do { try session.setActive(false, options: off) }
+                    catch { preOffCode = (error as NSError).code }
+                case .setDuckCategory:
+                    try session.setCategory(.playback, mode: .default, options: [.duckOthers])
+                    options = session.categoryOptions // read back before the activation
+                case .activate:
+                    try session.setActive(true)
+                case .restoreCategory:
+                    restore()
+                }
+            }
             activated = true
+            appActivated = true
+            duckedAt = ProcessInfo.processInfo.systemUptime
+            settleProbe(afterTrack: k)
             return true
         } catch {
             log.error("talkover duck failed code=\((error as NSError).code, privacy: .public)")
-            restore()
+            _ = release(afterTrack: k, spoken: false)
             return false
         }
+    }
+
+    /// Runs `TalkoverSessionSequence.release`: the unduck after the voice (`spoken`), or the
+    /// release of a duck whose voice never spoke. Returns the deactivation's error code (0: ok).
+    @MainActor @discardableResult
+    static func release(afterTrack k: Int, spoken: Bool) -> Int {
+        let session = AVAudioSession.sharedInstance()
+        var code = 0
+        for step in TalkoverSessionSequence.release {
+            switch step {
+            case .deactivate(let notify):
+                let off: AVAudioSession.SetActiveOptions = notify ? [.notifyOthersOnDeactivation] : []
+                do { try session.setActive(false, options: off) }
+                catch {
+                    let failed = (error as NSError).code
+                    code = failed
+                    log.error("talkover unduck failed code=\(failed, privacy: .public)")
+                }
+            case .restoreCategory:
+                restore()
+            case .setDuckCategory, .activate:
+                break // never part of a release
+            }
+        }
+        noteReleased()
+        #if AERODJ_P0_DIAG
+        let sample = sessionSample()
+        P0EventTraceHost.shared.talkover { trace, t in
+            _ = trace.talkoverUnduck(errorCode: code, released: !spoken, sample, afterTrack: k, at: t)
+        }
+        #endif
+        return code
+    }
+
+    /// The voice really started: DIAG row with the duck-to-voice delay.
+    @MainActor static func voiceStarted(afterTrack k: Int, at uptime: Double) {
+        #if AERODJ_P0_DIAG
+        let ms = TalkoverSessionTiming.duckToVoiceMs(duckedAt: duckedAt, voiceAt: uptime)
+        let music = musicIsPlaying()
+        P0EventTraceHost.shared.talkover { trace, t in
+            _ = trace.talkoverDuckToVoice(ms: ms, musicPlaying: music, afterTrack: k, at: t)
+        }
+        #endif
     }
 
     /// DIAG duck probe (codes only). Release builds log nothing.
@@ -47,7 +131,35 @@ enum TalkoverAudioSession {
         #endif
     }
 
-    /// Back to the app's normal category after the session was released.
+    /// DIAG: the session 0.5 s after the duck, once the system ramp should be down.
+    @MainActor private static func settleProbe(afterTrack k: Int) {
+        #if AERODJ_P0_DIAG
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            let sample = sessionSample()
+            P0EventTraceHost.shared.talkover { trace, t in _ = trace.talkoverDuckSettled(sample, afterTrack: k, at: t) }
+        }
+        #endif
+    }
+
+    #if AERODJ_P0_DIAG
+    @MainActor private static func sessionSample() -> P0EventTrace.TalkoverSessionSample {
+        let session = AVAudioSession.sharedInstance()
+        return P0EventTrace.TalkoverSessionSample(otherAudio: session.isOtherAudioPlaying,
+                                                  secondaryHint: session.secondaryAudioShouldBeSilencedHint,
+                                                  outputVolumePercent: Int((session.outputVolume * 100).rounded()),
+                                                  musicPlaying: musicIsPlaying())
+    }
+    #endif
+
+    /// Echo's #374 follow-up (-Fry): whether Apple Music is playing right now, read from
+    /// `ApplicationMusicPlayer.playbackStatus`. Read-only; DIAG probe rows only. A Duo run shows
+    /// whether the duck (or the lead before the voice) ever pauses Apple Music.
+    @MainActor static func musicIsPlaying() -> Bool {
+        ApplicationMusicPlayer.shared.state.playbackStatus == .playing
+    }
+
+    /// Back to the app's normal category (on an inactive session: activates nothing).
     static func restore() {
         let options: AVAudioSession.CategoryOptions = AppAudioSessionConfig.mixesWithOthers ? [.mixWithOthers] : []
         do {
@@ -266,7 +378,8 @@ final class TalkoverCoordinator {
             music.skipInterlude()
             return
         }
-        await interlude.play(clips: clips, line: line, afterTrack: k)
+        await interlude.play(clips: clips, line: line, afterTrack: k,
+                            resumeLines: BreakResumeLine.lines(for: h.prepared))
     }
 
     // MARK: Private
@@ -318,14 +431,27 @@ final class TalkoverCoordinator {
         run = TalkoverRun(afterTrack: k, plan: plan)
         let chosen = Array(players.prefix(resolved.count).compactMap { $0 })
         let gains = Self.gains(for: prepared, clips: Array(prepared.clips.prefix(resolved.count)))
-        // Wait for the planned start on the song clock.
-        while run?.phase == .armed, song?.index == k {
-            let left = plan.voiceStartAt - music.playbackTime
-            if left <= 0.02 { break }
-            try? await Task.sleep(nanoseconds: UInt64(min(left, 0.25) * 1_000_000_000))
+        // Duck `duckLead` before the voice (Core's `TalkoverSessionTiming`), so the system ramp is
+        // down before the first word, then wait for the planned voice start on the song clock.
+        await waitOnSongClock(until: TalkoverSessionTiming.duckAt(voiceStartAt: plan.voiceStartAt, config: config), afterTrack: k)
+        guard stillArmed(k) else {
+            if song?.index == k, !music.isPlaying { cancelRun(.userStop) }
+            return
         }
-        guard run?.phase == .armed, run?.afterTrack == k, song?.index == k, music.isPlaying else {
-            // Not started (paused, song over or replaced): the boundary or a stop resolves it.
+        guard interlude.duckForTalkover(afterTrack: k) else {
+            // The duck did not activate (or the system holds playback): the gap break takes it.
+            if var r = run, r.cancelled == nil, r.phase != .done {
+                _ = r.stopped(.voiceFailed)
+                run = r
+                trace(.cancel(.voiceFailed, k))
+                book.retireIfDone()
+            }
+            return
+        }
+        await waitOnSongClock(until: plan.voiceStartAt, afterTrack: k)
+        guard stillArmed(k) else {
+            // Ducked but never spoke (paused, song over, replaced, seek or stop): release the duck.
+            interlude.releaseTalkoverDuck()
             if song?.index == k, !music.isPlaying { cancelRun(.userStop) }
             return
         }
@@ -364,6 +490,19 @@ final class TalkoverCoordinator {
 
     private func key(_ k: Int) -> TalkoverBook.Key {
         TalkoverBook.Key(index: k, trackID: music.queue.indices.contains(k) ? music.queue[k].id : "")
+    }
+
+    /// Waits on the song clock while the run for `k` is still armed and song k plays.
+    private func waitOnSongClock(until target: Double, afterTrack k: Int) async {
+        while run?.phase == .armed, song?.index == k {
+            let left = target - music.playbackTime
+            if left <= 0.02 { break }
+            try? await Task.sleep(nanoseconds: UInt64(min(left, 0.25) * 1_000_000_000))
+        }
+    }
+
+    private func stillArmed(_ k: Int) -> Bool {
+        run?.phase == .armed && run?.afterTrack == k && song?.index == k && music.isPlaying
     }
 
     private func waitUntil(_ deadline: Double, afterTrack k: Int) async {

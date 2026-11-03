@@ -65,6 +65,10 @@ public struct PlaybackBoundaryDetector: Sendable {
     public static let minimumProgressForNaturalEnd: TimeInterval = 2.0
     /// Set when a change or clear was refused for lack of progress. Read with `takeNoProgressEnd()`.
     private var noProgressEndPending = false
+    /// P0 lock-screen skip (-Echo): set when MusicKit itself ended this entry mid-song (queue
+    /// cleared, or kept and rewound to the start) with no cause the app knows of. Read with
+    /// `takeRemoteSkip()`. The app's queue holds one song, so a lock-screen Next has this shape.
+    private var remoteSkipPending = false
 
     // Build 18 P0 (-Fry): sticky per-entry facts that a system interruption cannot clear.
     /// Share of the catalog duration that counts as "this entry played through".
@@ -206,6 +210,29 @@ public struct PlaybackBoundaryDetector: Sendable {
         return noProgressEndPending
     }
 
+    /// P0 lock-screen skip (-Echo): true once after MusicKit ended the current entry mid-song with
+    /// no app-requested change, no user pause or route loss, and no interruption since the last
+    /// playing sample. The app treats it as a user skip: no break, the next song loads. Never set
+    /// when the duration or a position is unknown, near the end, or after the song played through,
+    /// so a natural end (even one that happened while the app was suspended) keeps its break.
+    public mutating func takeRemoteSkip() -> Bool {
+        defer { remoteSkipPending = false }
+        return remoteSkipPending
+    }
+
+    /// The entry stopped mid-song and nothing the app knows of explains it. `now` is the uptime
+    /// of the sample that shows the end; the time since the last sample counts as play, so an end
+    /// that may have come naturally during a long gap (suspension) is never a skip.
+    /// Both callers already require no user pause or route loss and no app-requested change.
+    private func endedMidSongWithoutCause(now: TimeInterval?) -> Bool {
+        guard observedPlaying, lastSampleWasPlaying, !interruptionSinceLastPlayingSample, endedEntryID != entryID,
+              let duration = lastDuration, duration > 0, let furthest = lastPosition,
+              let now, let then = lastSampleUptime, now >= then else { return false }
+        guard !(playedThrough || reachedEndWithoutSeek || furthestIsNearEnd) else { return false }
+        let couldHaveReached = max(furthest, lastSamplePosition ?? furthest) + (now - then)
+        return couldHaveReached < duration - Self.endWindowSeconds
+    }
+
     /// The entry that is going away played less than the minimum, by a reported position.
     private var finishingEntryNeverProgressed: Bool {
         // A seek is only offered for a song that started and was confirmed playing.
@@ -321,6 +348,8 @@ public struct PlaybackBoundaryDetector: Sendable {
             if finished != nil, interruptedEntryPlayedThrough { queueFinishedSinceInterruption = true }
             let neverProgressed = finishingEntryNeverProgressed
             let mayHaveEnded = departingEntryMayHaveEnded && endedEntryID != finished
+            let remoteSkip = finished != nil && !neverProgressed
+                && endedMidSongWithoutCause(now: observation.uptime)
             entryID = nil
             lastPosition = nil
             lastSampleWasPlaying = false
@@ -330,6 +359,10 @@ public struct PlaybackBoundaryDetector: Sendable {
             if let finished, mayHaveEnded, !userChangePending {
                 guard !neverProgressed else {
                     noProgressEndPending = true
+                    return nil
+                }
+                guard !remoteSkip else {
+                    remoteSkipPending = true
                     return nil
                 }
                 noteEndReported()
@@ -382,6 +415,11 @@ public struct PlaybackBoundaryDetector: Sendable {
             return nil
         }
         if seekBaseline != nil, !settling { seekBaseline?.settled = true }
+        // P0 lock-screen skip (-Echo): judged on the facts before this sample, like the clear path.
+        let rewoundMidSong = !observation.isPlaying
+            && (observation.position ?? .infinity) < Self.minimumProgress(duration: lastDuration)
+            && (previousSamplePosition ?? 0) >= Self.minimumProgress(duration: lastDuration)
+            && endedMidSongWithoutCause(now: observation.uptime)
         accumulate(observation)
         if settling, seekBaseline?.settleUntil == nil { seekBaseline?.settled = true }
         let firstStopAfterPlaying = lastSampleWasPlaying && !observation.isPlaying
@@ -426,7 +464,10 @@ public struct PlaybackBoundaryDetector: Sendable {
         // too (never after a seek, and never on a user pause or route loss: the guard above).
         let rewoundAfterPlayingThrough = (playedThrough || reachedEndWithoutSeek)
             && (observation.position ?? 0) < Self.minimumProgress(duration: lastDuration)
-        guard stoppedAtEnd || rewoundAfterPlayingThrough else { return nil }
+        guard stoppedAtEnd || rewoundAfterPlayingThrough else {
+            if rewoundMidSong { remoteSkipPending = true }
+            return nil
+        }
         endedEntryID = current
         noteEndReported()
         return .queueFinished(lastEntryID: current)
