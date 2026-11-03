@@ -165,12 +165,27 @@ jobs:
               echo "$key still names AeroDJ"; exit 1
             fi
           done
-      - name: Pick an available iPhone simulator
+      - name: Pick an iPhone simulator on iOS 26.2 (StoreKit tests)
+        # TEMPORARY WORKAROUND: remove this pin once Apple ships a simulator runtime fix.
+        # This job runs AeroDJStoreKitTests. They pass on iOS 26.2 but fail on iOS 26.5 with
+        # SKTestSession SKInternalErrorDomain Code=3 and 0 products (reported, not confirmed by
+        # Apple). The old `last` pick only landed on 26.2 by simctl ordering; pin it explicitly.
+        # Same device as before within 26.2 (last iPhone). Fails loudly when 26.2 has no iPhone.
         run: |
-          UDID=$(xcrun simctl list devices available -j \
-            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
-                      | select(.name | startswith("iPhone"))] | last | .udid // empty')
-          test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
+          set -euo pipefail
+          RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-26-2
+          PICK=$(xcrun simctl list devices available -j | jq -r --arg rt "$RUNTIME" '
+            .devices[$rt] // [] | map(select(.name | startswith("iPhone"))) | last
+            | if . == null then empty else "\(.udid)\t\(.name)" end')
+          if [ -z "$PICK" ]; then
+            echo "::error::No available iPhone on the iOS 26.2 runtime ($RUNTIME) for StoreKit tests"
+            xcrun simctl list runtimes
+            exit 1
+          fi
+          IFS=$'\t' read -r UDID NAME <<<"$PICK"
+          VERSION=$(xcrun simctl list runtimes -j | jq -r --arg rt "$RUNTIME" '.runtimes[] | select(.identifier == $rt) | .version')
+          echo "Picked simulator: name=$NAME udid=$UDID runtime=$RUNTIME version=$VERSION"
+          echo "iPhone simulator: $NAME, ${RUNTIME##*.} ($VERSION), $UDID" >> "$GITHUB_STEP_SUMMARY"
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
       - name: Run unit tests on simulator
         run: |

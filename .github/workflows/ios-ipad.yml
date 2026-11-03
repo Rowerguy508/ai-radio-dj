@@ -95,19 +95,64 @@ jobs:
             exit 1
           fi
           IFS=$'\t' read -r UDID NAME RUNTIME <<<"$PICK"
+          VERSION=$(xcrun simctl list runtimes -j | jq -r --arg rt "$RUNTIME" '.runtimes[] | select(.identifier == $rt) | .version')
           echo "Using $NAME ($RUNTIME) $UDID"
+          echo "Picked simulator: name=$NAME udid=$UDID runtime=$RUNTIME version=$VERSION"
           echo "iPad simulator: $NAME, ${RUNTIME##*.}, $UDID" >> "$GITHUB_STEP_SUMMARY"
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+      - name: Pick an iPad on iOS 26.2 for StoreKit tests
+        # TEMPORARY WORKAROUND: remove this pin once Apple ships a simulator runtime fix.
+        # On the hosted iOS 26.5 runtime every SKTestSession call under xcodebuild fails with
+        # SKInternalErrorDomain Code=3 and 0 products load (reported, not confirmed by Apple; see
+        # the issue linked from the PR). AeroDJStoreKitTests pass on iOS 26.2 (the iPhone lane), so
+        # run them on a 26.2 iPad. Fails loudly (never skips) when the image has no 26.2 iPad.
+        run: |
+          set -euo pipefail
+          RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-26-2
+          PICK=$(xcrun simctl list devices available -j | jq -r --arg rt "$RUNTIME" '
+            .devices[$rt] // [] | map(select(.name | startswith("iPad"))) | sort_by(.name) | first
+            | if . == null then empty else "\(.udid)\t\(.name)" end')
+          if [ -z "$PICK" ]; then
+            echo "::error::No available iPad on the iOS 26.2 runtime ($RUNTIME) for StoreKit tests"
+            xcrun simctl list runtimes
+            exit 1
+          fi
+          IFS=$'\t' read -r UDID NAME <<<"$PICK"
+          VERSION=$(xcrun simctl list runtimes -j | jq -r --arg rt "$RUNTIME" '.runtimes[] | select(.identifier == $rt) | .version')
+          echo "Picked simulator: name=$NAME udid=$UDID runtime=$RUNTIME version=$VERSION"
+          echo "StoreKit iPad simulator: $NAME, ${RUNTIME##*.} ($VERSION), $UDID" >> "$GITHUB_STEP_SUMMARY"
+          echo "SK_UDID=$UDID" >> "$GITHUB_ENV"
       - name: Boot the iPad simulator
         # Boot before the run: a cold iPad booted by xcodebuild mid-run was flaky in the Studio job.
         run: |
           xcrun simctl boot "$SIM_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$SIM_UDID" -b
-      - name: Run unit tests on iPad simulator
+      - name: Build for testing
+        id: build
         run: |
-          xcodebuild test \
+          xcodebuild build-for-testing \
             -project ios/AeroDJ.xcodeproj \
             -scheme AeroDJ \
             -destination "id=$SIM_UDID" \
             -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Run unit tests on iPad simulator (newest iOS)
+        run: |
+          xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -destination "id=$SIM_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -skip-testing:AeroDJStoreKitTests \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Run StoreKit tests on iPad simulator (iOS 26.2)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          xcrun simctl shutdown "$SIM_UDID" 2>/dev/null || true
+          xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -destination "id=$SK_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -only-testing:AeroDJStoreKitTests \
             CODE_SIGNING_ALLOWED=NO
