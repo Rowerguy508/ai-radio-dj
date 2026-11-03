@@ -130,6 +130,12 @@ struct AppDependencies {
         // Sentinel's #396 N1: a purge-all (consent withdrawal) also drops the DJ session's excluded
         // songs and rebuilds the staged queue without the old ratings. Set before `load()` (start).
         ratings.resetOnPurge(session: djSession, rebuildQueue: { [weak stationQueue] in stationQueue?.ratingsPurged() })
+        #if AERODJ_P0_DIAG
+        // Echo's #396 room N1: a break narrowed for an excluded song leaves a counts-only row.
+        djSession.onExcludedCuesDropped = { k, counts in
+            P0EventTraceHost.shared.talkover { trace, t in _ = trace.breakNarrowed(counts, afterTrack: k, at: t) }
+        }
+        #endif
         return AppDependencies(
             mode: .live,
             // Calendar: only calendars the listener chose. Notes: only approved picked notes.

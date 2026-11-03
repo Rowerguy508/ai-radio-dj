@@ -494,6 +494,7 @@ final class StationRatingsFeedTests: XCTestCase {
         var covered = 0
         var keptAround = 0
         var undone = 0
+        var narrowedRows = 0
         for seed in UInt64(0)..<24 {
             book = StationRatingBook()
             let label = "seed \(seed)"
@@ -508,6 +509,11 @@ final class StationRatingsFeedTests: XCTestCase {
             let j = b + 1
             covered += 1
             let undo = seed % 2 == 1
+            var rows: [Int: ExcludedCueCounts] = [:]
+            p.session.onExcludedCuesDropped = { k, counts in
+                XCTAssertNil(rows[k], "\(label): one row per boundary")
+                rows[k] = counts
+            }
             p.session.songsExcluded(["mine-\(j)"])
             if undo { p.session.songsExcluded([]) }
             XCTAssertEqual(p.session.excludedSongIDs, undo ? [] : ["mine-\(j)"], label)
@@ -525,6 +531,7 @@ final class StationRatingsFeedTests: XCTestCase {
                 let spoken = handed.clips.map { String(decoding: $0.audio.data, as: UTF8.self) }.joined(separator: " ")
                 if undo {
                     if k == b { XCTAssertTrue(Self.names(spoken, j), "\(label): Undo puts the intro back"); undone += 1 }
+                    XCTAssertNil(rows[k], "\(label): nothing narrowed after an Undo, no row")
                     continue
                 }
                 XCTAssertFalse(Self.names(spoken, j), "\(label): the break at \(k) names the excluded song")
@@ -537,6 +544,18 @@ final class StationRatingsFeedTests: XCTestCase {
                     XCTAssertTrue(handed.cues.allSatisfy { !naming.contains($0.id) }, label)
                     XCTAssertEqual(handed.cues.filter(\.isContent).count, planned.cues.filter(\.isContent).count,
                                    "\(label): no briefing cue is omitted")
+                    // Echo's #396 room N1: one counts-only row when (and only when) cues went.
+                    if naming.isEmpty {
+                        XCTAssertNil(rows[k], label)
+                    } else if let row = rows[k] {
+                        XCTAssertGreaterThan(row.dropped, 0, label)
+                        XCTAssertLessThanOrEqual(row.dropped, naming.count, label)
+                        XCTAssertEqual(row.briefing, 0, "\(label): a briefing item never names a song")
+                        XCTAssertEqual(row.kept, handed.cues.count, label)
+                        narrowedRows += 1
+                    } else {
+                        XCTFail("\(label): the break at \(k) lost cues without a row")
+                    }
                     keptAround += 1
                 }
             }
@@ -545,6 +564,7 @@ final class StationRatingsFeedTests: XCTestCase {
         XCTAssertGreaterThan(covered, 1)
         XCTAssertGreaterThan(keptAround, 0, "a break next to the excluded song still airs")
         XCTAssertGreaterThan(undone, 0)
+        XCTAssertGreaterThan(narrowedRows, 0, "a narrowed break leaves a counts-only row")
     }
 
     /// The exclusions belong to the queue they were set for: a new queue starts with none.

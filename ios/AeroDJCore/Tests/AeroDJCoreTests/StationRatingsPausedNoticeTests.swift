@@ -173,4 +173,16 @@ final class StationRatingsPausedNoticeTests: XCTestCase {
             }
         }
     }
+
+    /// Echo's #396 room N1: the app writes the counts-only narrowed row from the session and from a
+    /// held or taken talk-over break.
+    func testTheAppTracesEveryNarrowedBreak() async throws {
+        let deps = try appSource("AppDependencies.swift")
+        XCTAssertTrue(deps.contains("djSession.onExcludedCuesDropped = { k, counts in"))
+        XCTAssertTrue(deps.contains("trace.breakNarrowed(counts, afterTrack: k, at: t)"))
+        let talkover = try appSource("TalkoverCoordinator.swift")
+        XCTAssertEqual(talkover.components(separatedBy: "trace(.narrowed(counts, k))").count - 1, 2,
+                       "the held narrowing and the take")
+        XCTAssertTrue(talkover.contains("case let .narrowed(counts, k): _ = trace.breakNarrowed(counts, afterTrack: k, at: t)"))
+    }
 }

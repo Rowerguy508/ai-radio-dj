@@ -328,6 +328,9 @@ final class TalkoverCoordinator {
             let k = h.afterTrack
             let rest = StationRatingBreakNarrowing.narrowed(h.prepared, excluding: excluded)
             if rest != h.prepared {
+                if let counts = StationRatingBreakNarrowing.droppedCounts(h.prepared, excluding: excluded) {
+                    trace(.narrowed(counts, k))
+                }
                 // The armed voice was decoded from the old lines: it must not speak them.
                 if run?.afterTrack == k { cancelRun(.skip) }
                 if let rest { held = (k, rest) } else { drop(k) }
@@ -456,6 +459,9 @@ final class TalkoverCoordinator {
         }
         guard token == generation, song?.index == k else { djSession.talkoverDropped(afterTrack: k); return }
         // #388: the session filtered at its last await; a rating since then narrows here too.
+        if let counts = StationRatingBreakNarrowing.droppedCounts(taken, excluding: djSession.excludedSongIDs) {
+            trace(.narrowed(counts, k))   // Echo's #396 room N1: counts only
+        }
         guard let prepared = StationRatingBreakNarrowing.narrowed(taken, excluding: djSession.excludedSongIDs) else {
             djSession.talkoverDropped(afterTrack: k)
             return // owned: the boundary skips, as when the session drops everything
@@ -658,6 +664,8 @@ final class TalkoverCoordinator {
         case latency(measured: Double, next: Double, Int)
         /// #388: counts and codes only (`StationRatingWithdrawnLines`).
         case ratedNever(StationRatingWithdrawnLines, Int)
+        /// Echo's #396 room N1: a held or taken break lost the cues naming an excluded song (counts only).
+        case narrowed(ExcludedCueCounts, Int)
     }
 
     private func trace(_ event: TraceEvent) {
@@ -669,6 +677,7 @@ final class TalkoverCoordinator {
             case let .cancel(c, k): _ = trace.talkoverCancel(c, afterTrack: k, at: t)
             case let .latency(measured, next, k): _ = trace.talkoverLatency(measured: measured, next: next, afterTrack: k, at: t)
             case let .ratedNever(dropped, k): _ = trace.talkoverRatedNever(dropped, afterTrack: k, at: t)
+            case let .narrowed(counts, k): _ = trace.breakNarrowed(counts, afterTrack: k, at: t)
             }
         }
         #endif

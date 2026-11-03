@@ -207,7 +207,49 @@ final class StationRatingTalkoverTests: XCTestCase {
         XCTAssertEqual(unknown, StationRatingWithdrawnLines(line: 1, timeChecks: 1, other: 3, briefing: 0))
     }
 
+    // MARK: Echo's #396 room N1: what a narrowing dropped, counts only
+
+    func testDroppedCountsCountOnlyTheNamingCuesByKind() {
+        let (prepared, _) = sampleBreak()
+        XCTAssertEqual(StationRatingBreakNarrowing.droppedCounts(prepared, excluding: [never]),
+                       ExcludedCueCounts(timeChecks: 0, briefing: 0, other: 1, kept: 4))
+        XCTAssertEqual(StationRatingBreakNarrowing.droppedCounts(prepared, excluding: [never, other]),
+                       ExcludedCueCounts(timeChecks: 0, briefing: 0, other: 2, kept: 3))
+        XCTAssertNil(StationRatingBreakNarrowing.droppedCounts(prepared, excluding: []), "nothing narrowed, no row")
+        XCTAssertNil(StationRatingBreakNarrowing.droppedCounts(prepared, excluding: ["cat-nobody"]))
+        // Agrees with `narrowed`: kept is what is left.
+        let rest = StationRatingBreakNarrowing.narrowed(prepared, excluding: [never])
+        XCTAssertEqual(rest?.cues.count, 4)
+    }
+
+    func testCountsSplitTimeChecksBriefingAndOtherCues() {
+        let (prepared, cues) = sampleBreak()
+        let counts = ExcludedCueCounts(dropped: [cues[1], cues[2], cues[3], cues[4]],
+                                       timeCheckCueID: prepared.timeCheck?.cueID, kept: 1)
+        XCTAssertEqual(counts, ExcludedCueCounts(timeChecks: 1, briefing: 1, other: 2, kept: 1))
+        XCTAssertEqual(counts.dropped, 4)
+    }
+
     #if DEBUG || AERODJ_P0_DIAG
+    func testTheNarrowedRowIsCodesAndCountsOnly() {
+        var trace = P0EventTrace()
+        let (prepared, _) = sampleBreak()
+        guard let counts = StationRatingBreakNarrowing.droppedCounts(prepared, excluding: [never]) else {
+            return XCTFail("narrows")
+        }
+        let row = trace.breakNarrowed(counts, afterTrack: prepared.afterTrack, at: 5)
+        XCTAssertEqual(row.event, .breakInterruption)
+        XCTAssertEqual(row.detail, "kind=cuesDropped reason=ratingNarrowed after=3 dropped=1 timeChecks=0 otherCues=1 briefingCues=0 kept=4")
+        let codes = Set(P0TraceCode.allCases.map(\.rawValue))
+        for pair in row.detail.split(separator: " ") {
+            let value = String(pair.split(separator: "=", maxSplits: 1)[1])
+            XCTAssertTrue(Int(value) != nil || value == "-" || codes.contains(value), "\(pair) is a number or a code")
+        }
+        for fixture in ["Quillfeather", "Marrow", "Tanglewick", "Osric", never, other, "never", "dentist", "Calendar"] {
+            XCTAssertFalse(row.detail.contains(fixture), "no song, title, artist, rating or briefing text: \(fixture)")
+        }
+    }
+
     func testTheRatedNeverRowIsCodesAndCountsOnly() {
         var trace = P0EventTrace()
         var cut = StationRatingTalkoverCut()

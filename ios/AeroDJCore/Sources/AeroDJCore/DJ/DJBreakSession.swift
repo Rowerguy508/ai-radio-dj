@@ -428,9 +428,15 @@ public final class DJBreakSession {
             guard !excludedSongIDs.isEmpty, case .trackMetadata(let ids, _)? = ready.attributions[cue.id] else { return false }
             return !excludedSongIDs.isDisjoint(with: ids)
         }
-        let cues = ready.cues.filter { cue in
+        let allowed = ready.cues.filter { cue in
             (cue.sourceItemID.map { !lapsed.contains($0) } ?? true) && mayBeNarrated(cue, at: handOut)
-                && !namesStaleNext(cue) && !namesExcluded(cue)
+                && !namesStaleNext(cue)
+        }
+        let cues = allowed.filter { !namesExcluded($0) }
+        if cues.count != allowed.count {
+            // Echo's #396 room N1: counts only, for the P0 trace (the app's hook).
+            onExcludedCuesDropped?(k, ExcludedCueCounts(dropped: allowed.filter(namesExcluded),
+                                                        timeCheckCueID: ready.timeCheck?.cueID, kept: cues.count))
         }
         // Commentary or the briefing turned off while this call was suspended (before the
         // on-air marker exists, so `stationChanged` had nothing to stop): not handed out.
@@ -489,6 +495,9 @@ public final class DJBreakSession {
     /// -Nova). Song IDs only: nothing says why. Replaces the last set, so an Undo puts the cues back. `naturalBoundary` drops exactly the cues attributed to these songs
     /// (`SpokenAttribution.trackMetadata`) after its last await. IDs only; never logged.
     public private(set) var excludedSongIDs: Set<String> = []
+    /// Echo's #396 room N1: `naturalBoundary` dropped cues for `excludedSongIDs` at boundary `k`.
+    /// Counts by kind only (the app writes a P0 diag row). Never given a cue, an ID or text.
+    public var onExcludedCuesDropped: (@MainActor (_ afterTrack: Int, ExcludedCueCounts) -> Void)?
     public func songsExcluded(_ songIDs: Set<String>) {
         excludedSongIDs = songIDs
     }

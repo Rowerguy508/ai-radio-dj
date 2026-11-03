@@ -42,6 +42,15 @@ public enum StationRatingBreakNarrowing {
         return !songIDs.isDisjoint(with: ids)
     }
 
+    /// Echo's #396 room N1: what `narrowed` drops, by kind, for the P0 trace. Nil when no cue names
+    /// one of `songIDs` (nothing is narrowed, no row).
+    public static func droppedCounts(_ prepared: PreparedDJBreak, excluding songIDs: Set<String>) -> ExcludedCueCounts? {
+        let dropped = prepared.cues.filter { names($0, in: prepared, songIDs) }
+        guard !dropped.isEmpty else { return nil }
+        return ExcludedCueCounts(dropped: dropped, timeCheckCueID: prepared.timeCheck?.cueID,
+                                 kept: prepared.cues.count - dropped.count)
+    }
+
     public static func narrowed(_ prepared: PreparedDJBreak, excluding songIDs: Set<String>) -> PreparedDJBreak? {
         let cues = prepared.cues.filter { !names($0, in: prepared, songIDs) }
         guard cues.count != prepared.cues.count else { return prepared }
