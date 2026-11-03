@@ -667,6 +667,41 @@ final class InstallTokenSourceTests: XCTestCase {
         XCTAssertEqual(rig.proxy.total, 0)
     }
 
+    func testMissingAttestEntitlementFallsBackOnDeviceAndStops() async {
+        // A build signed without the App Attest entitlement (every default build since the
+        // split) can still report `isSupported` on a device; DCAppAttestService then fails the
+        // key calls (featureUnsupported -> .unsupported, anything else -> .failed). Each stage
+        // must leave every cue on-device, stop for the launch, and never reach /api/tts.
+        for error in [AppAttestDeviceError.unsupported, .failed] {
+            for stage in ["generate", "attest", "assert"] {
+                let rig = Rig(registered: stage == "assert")
+                switch stage {
+                case "generate": rig.device.generateError = error
+                case "attest": rig.device.attestError = error
+                default: rig.device.failNextAssertions([error, error, error])
+                }
+                let (r, _) = rig.renderer()
+                for _ in 0..<3 {
+                    let got = await render(r)
+                    XCTAssertEqual(got, "device", "\(error) at \(stage)")
+                    await rig.source.waitForEnrollment()
+                    await rig.source.waitForMint()
+                }
+                XCTAssertTrue(rig.backoff.isStoppedForThisLaunch, "\(error) at \(stage)")
+                XCTAssertEqual(rig.proxy.count("/api/tts"), 0, "\(error) at \(stage)")
+                XCTAssertEqual(rig.proxy.count("/api/attest/register"), 0, "\(error) at \(stage)")
+                if stage != "assert" {
+                    XCTAssertNil((rig.keys as! InMemoryAttestKeyIDStorage).stored, "an unattested key is never saved")
+                }
+                let calls = rig.proxy.total, deviceCalls = rig.device.deviceCalls
+                let again = await render(r)
+                XCTAssertEqual(again, "device")
+                XCTAssertEqual(rig.proxy.total, calls, "no retry loop after the stop (\(error) at \(stage))")
+                XCTAssertEqual(rig.device.deviceCalls, deviceCalls, "no device retry after the stop (\(error) at \(stage))")
+            }
+        }
+    }
+
     // Redaction
 
     func testLogsCarryNoTokenKeyChallengeOrAssertion() async {

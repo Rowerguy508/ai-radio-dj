@@ -30,6 +30,11 @@ struct DeviceCheckAppAttestDevice: AppAttestDevice {
     }
 
     /// Codes only: the system error's text never reaches a log or a `VoiceRenderer` attempt.
+    /// A build signed without the App Attest entitlement (every build except a tester_voice=true
+    /// TestFlight archive, since the #378 entitlement split) fails the key calls here; that maps
+    /// to `.unsupported` or `.failed`, which `InstallTokenSource` treats as stop-for-the-launch,
+    /// so every cue stays on the on-device voice (pinned on Linux by
+    /// testMissingAttestEntitlementFallsBackOnDeviceAndStops).
     static func map(_ error: Error) -> AppAttestDeviceError {
         if error is CancellationError { return .failed }
         guard let error = error as? DCError else { return .failed }

@@ -7,6 +7,8 @@
 # The owner trial access (`ownerTrial`, Pro gate bypass, Sentinel B1 on #244) gets the same
 # treatment: absent from Release objects without the flag, present with it.
 set -euo pipefail
+# #378 entitlement split: default and Release builds never carry the App Attest entitlement.
+"$(dirname "$0")/check-attest-entitlement-split.sh"
 cd "$(dirname "$0")/../AeroDJCore"
 marker='AERODJ_OWNER_AB_VOICE_TRIAL_BUILD'
 owner_trial='ownerTrial'
