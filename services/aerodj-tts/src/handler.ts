@@ -1,10 +1,15 @@
 import crypto from 'node:crypto';
-import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS, paidStopped } from './attest-flags.js';
+import { DISABLED_RETRY_AFTER_SECONDS, MISCONFIG_RETRY_AFTER_SECONDS, STORE_RETRY_AFTER_SECONDS, paidStopped, testerVoiceOn } from './attest-flags.js';
+import { keyRecordKey, keyspaceFromEnv, revokedKey } from './attest-store.js';
+import { reserveForInstall } from './install-quota.js';
+import { installTokenKey, tokenKeyId, verifyInstallToken } from './install-token.js';
 import { bearerToken, parseTokenHash, tokenMatches } from './auth.js';
 import {
   DEFAULT_GLOBAL_DAILY_CHAR_CAP,
   DEFAULT_INSTALL_DAILY_CHAR_CAP,
+  DEFAULT_OWNER_SHARE_DAILY_CHAR_CAP,
   DEFAULT_REQUESTS_PER_MINUTE,
+  DEFAULT_TESTER_POOL_DAILY_CHAR_CAP,
   effectiveNonprodCap,
   InMemoryUsageLimiter,
   LimiterStoreError,
@@ -88,6 +93,16 @@ const ALLOWED_TAG = new RegExp(`\\[\\s*(${ALLOWED_AUDIO_TAGS.join('|')})\\s*\\]`
  * "warmly" aloud). The text between tags is cleaned piece by piece, so a stray bracket can never
  * pair with a kept tag. Whitespace is collapsed.
  */
+/**
+ * Spoken-text sanitiser for every model: removes every `[` and `]` (allowlisted tag words
+ * included) and keeps the words, so "Kiss Me [Softly] Tonight" is spoken as "Kiss Me Softly
+ * Tonight" and can never reach a tag-reading model (v3/v4) as a delivery tag. The app sends DJ
+ * copy on this route tag-free, and no request field opts into tags, so nothing legitimate is lost.
+ */
+export function stripAllBrackets(text: string): string {
+  return text.replace(/[[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export function sanitizeBrackets(text: string, keepAllowedTags: boolean): string {
   const out: string[] = [];
   let last = 0;
@@ -149,7 +164,7 @@ export type ErrorReason = 'rate' | QuotaReason | 'store' | 'disabled' | 'misconf
  * Log-only refinements of a wire reason. `no_store` (Fry on #287): ElevenLabs key set but no
  * shared store, so the 500 `misconfig` was the no-store gate.
  */
-export type LogReason = ErrorReason | 'pro_chars' | 'no_store';
+export type LogReason = ErrorReason | 'pro_chars' | 'no_store' | 'tester_pool' | 'reattest' | 'token_expired' | 'mixed_auth';
 
 /**
  * A verified Pro request is charged to its OWN subject (Sentinel's B1 on #264), never the
@@ -325,6 +340,13 @@ export interface TtsRequest {
    * header: api/tts.ts does not set it, so today's owner path never touches the allowance.
    */
   verifiedPro?: ProSubject;
+  /**
+   * #378: the `X-OnAirly-Install-Token` header (TestFlight install token from
+   * /api/attest/token). Present = the install path; the owner path is the request WITHOUT it.
+   */
+  installToken?: string;
+  /** #378: `X-OnAirly-Assertion`. Belongs on /api/attest/token only; on /api/tts it is 400 `mixed_auth`. */
+  assertion?: string;
 }
 
 export interface TtsResponse {
@@ -383,13 +405,20 @@ export function limiterOptions(env: Env): LimiterOptions {
     parseCharCap(env.AERODJ_TTS_DAILY_CHAR_CAP) ??
     DEFAULT_GLOBAL_DAILY_CHAR_CAP;
   const deployment = proDeployment(env);
+  // #378 (owner decision 2026-11-02): with tester voice on, the 9,000 ceiling splits into a
+  // 6,000 tester pool and a 3,000 owner share. With it off, the owner cap is exactly as before.
+  const testers = testerVoiceOn(env);
+  const ownerDefault = testers ? Math.min(DEFAULT_OWNER_SHARE_DAILY_CHAR_CAP, dailyCharCap) : dailyCharCap;
   return {
     dailyCharCap,
+    ...(testers
+      ? { testerPoolDailyCharCap: parseCharCap(env.AERODJ_TTS_TESTER_POOL_DAILY_CHAR_CAP) ?? DEFAULT_TESTER_POOL_DAILY_CHAR_CAP }
+      : {}),
     ...(deployment !== null ? { deployment } : {}),
     ...(deployment !== null && deployment !== 'production'
       ? { nonprodDailyCharCap: effectiveNonprodCap(parseCharCap(env.AERODJ_TTS_NONPROD_DAILY_CHAR_CAP) ?? undefined) }
       : {}),
-    ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? dailyCharCap,
+    ownerDailyCharCap: parseCharCap(env.AERODJ_TTS_OWNER_DAILY_CHAR_CAP) ?? ownerDefault,
     installDailyCharCap: parseCharCap(env.AERODJ_TTS_INSTALL_DAILY_CHAR_CAP) ?? DEFAULT_INSTALL_DAILY_CHAR_CAP,
     requestsPerMinute: parseRatePerMinute(env.AERODJ_TTS_RATE_PER_MINUTE) ?? DEFAULT_REQUESTS_PER_MINUTE,
   };
@@ -549,12 +578,44 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
 
   // Server misconfiguration: 500 `misconfig` with Retry-After 3600 (note §4.4).
   const misconfigured = (): TtsResponse => refuse(500, 'misconfig', MISCONFIG_RETRY_AFTER_SECONDS);
+  // 400 / 401 with an enum reason and no Retry-After (#378 §1.3): `mixed_auth`, `token_expired`,
+  // `reattest` (key record gone or key on the revocation list: register again).
+  const reject = (status: 400 | 401, reason: 'mixed_auth' | 'token_expired' | 'reattest'): TtsResponse => {
+    deps.log({ requestId, status, chars, reason });
+    return {
+      status,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Request-Id': requestId },
+      body: Buffer.from(JSON.stringify({ error: MESSAGES[status] ?? 'Error', requestId, reason })),
+    };
+  };
 
-  // --- Auth: owner-only bearer token, stored server-side as a SHA-256 hash. ---
-  const expectedHash = parseTokenHash(deps.env.AERODJ_TTS_TOKEN_SHA256);
-  if (!expectedHash) return misconfigured();
-  const token = bearerToken(req.authorization);
-  if (!token || !tokenMatches(token, expectedHash)) return fail(401);
+  // --- #378: one credential per request. An owner bearer plus an install token (or any
+  // assertion on this route) is never resolved by preference: 400 `mixed_auth`. ---
+  if (req.assertion !== undefined || (req.installToken !== undefined && req.authorization !== undefined)) {
+    return reject(400, 'mixed_auth');
+  }
+
+  // --- Auth ---
+  let install: { keyId: string; recordKey: string; revokedKey: string } | undefined;
+  if (req.installToken !== undefined) {
+    // TestFlight install token (#378). Both flags exact `true`, else 503 `disabled` before
+    // any store call. The owner hash is not needed on this path.
+    if (!testerVoiceOn(deps.env)) return refuse(503, 'disabled', DISABLED_RETRY_AFTER_SECONDS);
+    if (req.verifiedPro !== undefined) return misconfigured();
+    const tokenKey = installTokenKey(deps.env);
+    if (!tokenKey) return misconfigured();
+    const keyspace = keyspaceFromEnv(deps.env);
+    const verified = verifyInstallToken(req.installToken, { key: tokenKey, env: keyspace, now: deps.now() });
+    if (!verified.ok) return reject(401, 'token_expired');
+    const keyId = tokenKeyId(verified.claims);
+    install = { keyId: keyId.toString('base64url'), recordKey: keyRecordKey(keyspace, keyId), revokedKey: revokedKey(keyspace, keyId) };
+  } else {
+    // --- Owner-only bearer token, stored server-side as a SHA-256 hash (unchanged). ---
+    const expectedHash = parseTokenHash(deps.env.AERODJ_TTS_TOKEN_SHA256);
+    if (!expectedHash) return misconfigured();
+    const token = bearerToken(req.authorization);
+    if (!token || !tokenMatches(token, expectedHash)) return fail(401);
+  }
 
   const limiter = deps.limiter;
   const apiKey = deps.env.ELEVENLABS_API_KEY?.trim();
@@ -586,7 +647,11 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   }
 
   try {
-    const allowed = pro ? await limiter.allowRequest(pro.bucket, now, pro.rate) : await limiter.allowRequest(SUBJECT_BUCKET, now);
+    const allowed = pro
+      ? await limiter.allowRequest(pro.bucket, now, pro.rate)
+      : install
+        ? await limiter.allowRequest(subjectBucket({ kind: 'install', id: install.keyId }), now)
+        : await limiter.allowRequest(SUBJECT_BUCKET, now);
     if (!allowed) return refuse(429, 'rate', RATE_RETRY_AFTER_SECONDS);
   } catch (error) {
     if (error instanceof LimiterStoreError) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
@@ -606,9 +671,9 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   // SSML markup is allowed some headroom before stripping; the spoken text is capped below.
   if (body.text.length > (format === 'ssml' ? maxChars * 4 : maxChars)) return fail(400);
   const modelId = deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID;
-  // Square brackets never reach a model as text: only allowlisted audio tags, and only to a model
-  // that reads tags (v3/v4). A title like "Song [Live]" is spoken as "Song Live".
-  const text = sanitizeBrackets(format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim(), supportsAudioTags(modelId));
+  // Square brackets never reach any model, allowlisted tags included: a title like "Song [Live]"
+  // is spoken as "Song Live", and "Kiss Me [Softly] Tonight" can't become a v4 delivery tag.
+  const text = stripAllBrackets(format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim());
   if (text.length === 0 || text.length > maxChars) return fail(400);
   // Optional stitching context (older app builds send none; the request is then unchanged).
   const previousText = contextField(body.previousText, format, 'end');
@@ -654,6 +719,24 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
     }
     release = () => releasePro(reservation);
     held = { chars: reservation.chars, kind: 'pro_render' };
+  } else if (install) {
+    // TestFlight install (#378): ONE atomic script over key record + revocation list, the
+    // global ceiling, the tester pool (6,000, clamped to global − owner share) and the
+    // install's own 1,500/day. Spoken chars only. Durable store only (503 `store`).
+    if (limiter.durable !== true || !limiter.releaseInstall) return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+    const releaseInstall = limiter.releaseInstall.bind(limiter);
+    const result = await reserveForInstall(limiter, install.keyId, chars, now, { recordKey: install.recordKey, revokedKey: install.revokedKey });
+    if (!result.ok) {
+      if (result.reason === 'store') return refuse(503, 'store', STORE_RETRY_AFTER_SECONDS);
+      if (result.reason === 'misconfig') return misconfigured();
+      if (result.reason === 'reattest') return reject(401, 'reattest');
+      if (result.reason === 'install_daily') return refuse(429, 'install_daily', secondsUntilNextUtcDay(now));
+      const detail = 'detail' in result && result.detail === 'tester_pool' ? 'tester_pool' : undefined;
+      return refuse(429, 'global_daily', secondsUntilNextUtcDay(now), detail);
+    }
+    const reservation = result.reservation;
+    release = () => releaseInstall(reservation);
+    held = { chars: reservation.chars };
   } else {
     let reservation: Reservation;
     try {

@@ -184,8 +184,8 @@ public actor DJBreakPreparer {
         case skipped(afterTrack: Int, DJBreakSkipReason)
     }
 
-    /// `talkOverEnabled` defaults to `DJTalkoverFlag.isEnabled()` (the DIAG override, else the
-    /// `AERODJ_OWNER_AB` build default), the same flag `TalkoverCoordinator` reads.
+    /// `talkOverEnabled` defaults to `DJTalkoverFlag.isEnabled()` (the saved Settings toggle, else
+    /// ON as on a live station), the same flag `TalkoverCoordinator` reads.
     public init(renderer: VoiceRenderer, userID: String, stationID: String, cadence: DJCadence = .init(),
                 talkOverEnabled: @escaping @Sendable () -> Bool = { DJTalkoverFlag.isEnabled() },
                 bundledClips: BundledClipResolver? = nil,
@@ -578,16 +578,9 @@ public actor DJBreakPreparer {
     }
 
     /// The rounded time T a line read at `date` names, as an instant (the start of T's minute),
-    /// and which way it rounded. Same rounding as `DJTimeCheck.rounded`.
+    /// and which way it rounded. `DJTimeCheck.roundedInstant`, the value the line was written from.
     nonisolated static func roundedTime(at date: Date, calendar: Calendar) -> (time: Date, relation: DJTimeCheckRelation)? {
-        guard let minuteStart = calendar.dateInterval(of: .minute, for: date)?.start else { return nil }
-        let parts = calendar.dateComponents([.hour, .minute], from: date)
-        guard let hour = parts.hour, let minute = parts.minute else { return nil }
-        let raw = hour * 60 + minute
-        let r = DJTimeCheck.rounded(hour: hour, minute: minute)
-        var delta = r.hour * 60 + r.minute - raw
-        if delta < -12 * 60 { delta += 24 * 60 }   // 23:58 rounds to 0:00, two minutes on
-        return (minuteStart.addingTimeInterval(TimeInterval(delta * 60)), r.relation)
+        DJTimeCheck.roundedInstant(at: date, calendar: calendar).map { ($0.time, $0.relation) }
     }
 
     /// Cancels preparation for boundaries that will not happen (station change, queue replaced, stop).

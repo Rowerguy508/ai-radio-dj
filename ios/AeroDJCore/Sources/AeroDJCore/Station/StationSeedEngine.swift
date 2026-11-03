@@ -95,6 +95,15 @@ public protocol StationSeedCatalog: Sendable {
 /// Seeds plus reach -> candidates. The resolver decides which tiers to fetch.
 public protocol StationSeedResolver: Sendable {
     func resolve(seeds: [StationSeed], reach: StationReach) async -> StationCandidatePool
+    /// Love steers discovery (-Nova): `affinity` artists add related songs for this build only.
+    /// The default ignores them.
+    func resolve(seeds: [StationSeed], reach: StationReach, affinity: [StationAffinityArtist]) async -> StationCandidatePool
+}
+
+public extension StationSeedResolver {
+    func resolve(seeds: [StationSeed], reach: StationReach, affinity: [StationAffinityArtist]) async -> StationCandidatePool {
+        await resolve(seeds: seeds, reach: reach)
+    }
 }
 
 /// Candidates per tier, each list interleaved across seeds so several artists mix evenly.
@@ -173,6 +182,51 @@ public struct CatalogStationSeedResolver: StationSeedResolver {
         return pool
     }
 
+    /// Love steers discovery without touching seeds: up to `maxAffinityArtists` loved catalog artists
+    /// that are not seeds each get one `relatedSongs` lookup (at most `affinitySongsPerArtist`) through
+    /// a transient catalog seed that is never saved. Their songs join the related tier only when the
+    /// effective reach is `.related` or `.broad` (so never for a library seed), at most
+    /// `affinityTierShare` of that tier, one after every few regular songs. A failed lookup adds nothing.
+    public func resolve(seeds: [StationSeed], reach: StationReach,
+                        affinity: [StationAffinityArtist]) async -> StationCandidatePool {
+        var pool = await resolve(seeds: seeds, reach: reach)
+        let valid = StationConfiguration.normalizedSeeds(seeds)
+        guard reach.effective(for: valid).tiers.contains(.related), !affinity.isEmpty else { return pool }
+        let seedArtistIDs = Set(valid.filter { $0.kind == .artist }.map(\.catalogID))
+        var seenIDs = Set<String>()
+        let artists = affinity.filter { !$0.artistID.isEmpty && !seedArtistIDs.contains($0.artistID) && seenIDs.insert($0.artistID).inserted }
+            .prefix(StationRatingTuning.maxAffinityArtists)
+        var perArtist: [[StationCandidate]] = []
+        for artist in artists {
+            guard let songs = try? await catalog.relatedSongs(for: artist.transientSeed,
+                                                             limit: StationRatingTuning.affinitySongsPerArtist) else { continue }
+            perArtist.append(songs.prefix(StationRatingTuning.affinitySongsPerArtist).enumerated().map { index, song in
+                var s = song
+                s.tier = .related
+                s.isFamiliar = index < limits.familiarHead
+                return s
+            })
+        }
+        let related = pool.songs(.related)
+        let have = Set(related.map(\.id))
+        let extra = Self.roundRobin(perArtist).filter { !have.contains($0.id) }
+        // extra <= share × (related + extra)  <=>  extra <= related × share / (1 - share)
+        let share = StationRatingTuning.affinityTierShare
+        let cap = Int((Double(related.count) * share / (1 - share) + 1e-9).rounded(.down))
+        let added = Array(extra.prefix(cap))
+        guard !added.isEmpty else { return pool }
+        let every = max(1, Int((1 / share).rounded()) - 1)
+        var merged: [StationCandidate] = []
+        var queue = added[...]
+        for (i, song) in related.enumerated() {
+            merged.append(song)
+            if (i + 1) % every == 0, let next = queue.popFirst() { merged.append(next) }
+        }
+        merged.append(contentsOf: queue)
+        pool.byTier[.related] = merged
+        return pool
+    }
+
     private func fetch(_ tier: StationCandidateTier, _ seed: StationSeed) async throws -> [StationCandidate] {
         switch tier {
         case .seed: try await catalog.coreSongs(for: seed, limit: limits.corePerSeed)
@@ -206,12 +260,17 @@ public enum StationPoolBuilder {
         /// bucket with a fixed generator, so a seed (for example the day) varies the
         /// station and tests stay deterministic.
         public var shuffleSeed: UInt64?
+        /// Song ratings for this station (-Nova): exclusions, the re-rank and the artist drop.
+        /// `.none` builds exactly as before.
+        public var ratings: StationRatingBias
 
-        public init(limit: Int = 50, artistGap: Int = 2, excludedSongIDs: Set<String> = [], shuffleSeed: UInt64? = nil) {
+        public init(limit: Int = 50, artistGap: Int = 2, excludedSongIDs: Set<String> = [], shuffleSeed: UInt64? = nil,
+                    ratings: StationRatingBias = .none) {
             self.limit = limit
             self.artistGap = artistGap
             self.excludedSongIDs = excludedSongIDs
             self.shuffleSeed = shuffleSeed
+            self.ratings = ratings
         }
     }
 
@@ -223,8 +282,10 @@ public enum StationPoolBuilder {
         let newShare = StationConfiguration.clampUnit(discovery, fallback: StationConfiguration.default.discovery)
         var rng = options.shuffleSeed.map(SplitMix64.init(seed:))
 
-        // 1. Dedupe across tiers, closest tier first, by ID and by title plus artist.
-        var seenIDs = options.excludedSongIDs
+        let ratings = options.ratings
+        // 1. Dedupe across tiers, closest tier first, by ID and by title plus artist. Never-rated
+        //    songs and tired songs in their hold are left out like recently played ones.
+        var seenIDs = options.excludedSongIDs.union(ratings.excludedSongIDs)
         var seenTitles = Set<String>()
         var tierLists: [[StationCandidate]] = []
         var weights: [Double] = []
@@ -232,6 +293,9 @@ public enum StationPoolBuilder {
             var familiar: [StationCandidate] = []
             var fresh: [StationCandidate] = []
             for c in pool.songs(tier) {
+                // Three never-rated songs drop a non-seed artist from related and broad (the seed
+                // tier is the station itself; a seed artist is only down-weighted).
+                if tier != .seed, ratings.droppedArtists.contains(StationRatingEntry.artistKey(c.track.artistName)) { continue }
                 guard seenIDs.insert(c.id).inserted, seenTitles.insert(c.titleKey).inserted else { continue }
                 var c = c
                 c.tier = tier
@@ -241,6 +305,11 @@ public enum StationPoolBuilder {
                 familiar = shuffled(familiar, &rng!)
                 fresh = shuffled(fresh, &rng!)
             }
+            // Ratings: after the day shuffle, before the weave. `artistGap` spacing still runs last.
+            if !ratings.isNeutral {
+                familiar = reranked(familiar, ratings)
+                fresh = reranked(fresh, ratings)
+            }
             // 2. Discovery: familiar vs new within the tier.
             tierLists.append(weave([familiar, fresh], weights: [1 - newShare, newShare]))
             weights.append(reach.tierWeights[tier] ?? 0)
@@ -249,6 +318,23 @@ public enum StationPoolBuilder {
         let merged = weave(tierLists, weights: weights)
         // 4. Artist spacing, then the limit.
         return spaced(merged, gap: options.artistGap, limit: options.limit)
+    }
+
+    /// Each song moves up (positive score) or down by `round(score × maxMoveShare × length)` places:
+    /// a sort on its target position. On a tie the song that moved up goes first and the one that
+    /// moved down last, so a move lands where it aims; unrated songs keep their relative order.
+    static func reranked(_ list: [StationCandidate], _ ratings: StationRatingBias) -> [StationCandidate] {
+        guard list.count > 1 else { return list }
+        let length = Double(list.count)
+        let targets = list.enumerated().map { index, c -> (target: Int, move: Int, index: Int) in
+            let move = Int((ratings.score(c) * StationRatingTuning.maxMoveShare * length).rounded())
+            return (index - move, move, index)
+        }
+        return targets.sorted {
+            if $0.target != $1.target { return $0.target < $1.target }
+            if $0.move != $1.move { return $0.move > $1.move }
+            return $0.index < $1.index
+        }.map { list[$0.index] }
     }
 
     /// Deterministic weighted interleave. Each slot goes to the list furthest behind its

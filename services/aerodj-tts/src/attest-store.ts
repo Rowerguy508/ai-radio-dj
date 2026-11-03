@@ -61,11 +61,14 @@ export function attestUsedKey(keyspace: Keyspace, challenge: string): string {
 
 /**
  * 90-day sliding TTL (note §4.1.2; owner decision 2026-10-29): set on register and
- * refreshed on every successful use of the key (`touchKey`, called by the assertion
- * path after the assertion verifies), not only on register. A key unused for 90 days
- * expires and its next assertion fails as an unknown key.
+ * refreshed on every successful token mint (`MINT_TOKEN_SCRIPT`, after the assertion
+ * verifies), together with the `ctr:` counter key. `touchKey` (`attest-key-use.ts`) does
+ * the same refresh but has no request-path caller yet. A key that mints no token for 90
+ * days expires and its next assertion fails as an unknown key.
  */
 export const KEY_RECORD_TTL_SECONDS = 90 * 86_400;
+/** Single-use mark lifetime for `tok` challenges: longer than the 120 s TTL + skew (design: 240). */
+export const USED_TTL_FOR_MINT = 300;
 /** The enroll counters (global, per network and per install) outlive their UTC day. */
 export const ENROLL_TTL_SECONDS = 2 * 86_400;
 
@@ -75,7 +78,48 @@ export interface KeyRecord {
   env: 'production' | 'development';
   createdDay: string;
   revoked: false;
+  /**
+   * `tester` (#378 design §1.5) only when the attestation carried
+   * `apple_validation_category_01 == 2` (TestFlight). Absent otherwise (App Store, or iOS 26
+   * and older with no category): such a key can never mint an install token.
+   */
+  tier?: 'tester';
 }
+
+/** `ctr:{aerodj-tts}:<b64url keyId>`: the last committed assertion counter (#378 §1.2). */
+export function counterKey(keyspace: Keyspace, keyId: Buffer): string {
+  return `${prefix(keyspace)}ctr:{aerodj-tts}:${keyId.toString('base64url')}`;
+}
+
+/**
+ * `revoked:{aerodj-tts}:<b64url keyId>`: the per-install revocation list (#378 §1.6). Present =
+ * revoked: no new token is minted for the key and every live token for it is refused on
+ * the next `/api/tts` (checked inside the reserve script). `REVOKE_KEY_SCRIPT` sets a fixed
+ * 90-day TTL (KEY_RECORD_TTL_SECONDS) from the time of revocation; that is enough because a
+ * key record unused for 90 days has expired and can never mint again. Only the owner adds
+ * entries (`scripts/revoke-installs.ts`); no request path writes or removes one.
+ */
+export function revokedKey(keyspace: Keyspace, keyId: Buffer): string {
+  return `${prefix(keyspace)}revoked:{aerodj-tts}:${keyId.toString('base64url')}`;
+}
+
+/** `tokmint:{aerodj-tts}:<b64url keyId>:<UTC day>`: tokens minted today by one key. */
+export function tokenMintKey(keyspace: Keyspace, keyId: Buffer, day: string): string {
+  return `${prefix(keyspace)}tokmint:{aerodj-tts}:${keyId.toString('base64url')}:${day}`;
+}
+
+/** At most 96 tokens per key per UTC day (48 h of 30-minute tokens; design §1.2). */
+export const TOKEN_MINT_DAILY_CAP = 96;
+
+export interface MintKeys {
+  used: string;
+  record: string;
+  counter: string;
+  revoked: string;
+  mint: string;
+}
+
+export type MintOutcome = 'minted' | 'reused' | 'unknown' | 'revoked' | 'counter' | 'rate';
 
 export interface RegisterKeys {
   used: string;
@@ -111,6 +155,10 @@ export interface AttestStore {
    * exists. Writes nothing for a missing key. Throws AttestStoreError.
    */
   touchKey(recordKey: string): Promise<TouchOutcome>;
+  /** GET the key record JSON, or null when absent. Read-only. Throws AttestStoreError. */
+  getKey?(recordKey: string): Promise<string | null>;
+  /** The one #378 §1.2 token-mint script. Throws AttestStoreError. */
+  mintToken?(keys: MintKeys, assertionCounter: number): Promise<MintOutcome>;
   /** The one §4.1.2 step-4 script. Throws AttestStoreError. */
   register(keys: RegisterKeys, record: KeyRecord, options: RegisterOptions): Promise<RegisterOutcome>;
 }
@@ -161,6 +209,45 @@ redis.call('INCR', KEYS[5])
 redis.call('EXPIRE', KEYS[5], ARGV[5])
 return 1`;
 
+/** KEYS: key record. Returns the record string, or nil when absent. */
+/**
+ * Revocation list entry (#378): KEYS[1] `revoked:{aerodj-tts}:<keyId>`, ARGV[1] TTL s (the
+ * 90-day key-record TTL: once the record itself has expired the key can never mint or
+ * spend again anyway, so the entry need not outlive it). Returns 1.
+ */
+export const REVOKE_KEY_SCRIPT = `redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
+return 1`;
+
+export const GET_KEY_SCRIPT = `return redis.call('GET', KEYS[1])`;
+
+/**
+ * Token mint (#378 §1.2), one atomic script, run only AFTER the assertion signature verified
+ * against the stored key. KEYS: used mark, key record, counter, revocation entry, mint counter.
+ * ARGV: used TTL, assertion counter, record TTL, mint cap, mint-counter TTL.
+ * -1 challenge already used (nothing written); -2 key record gone (re-attest; nothing
+ * written); -3 revoked (nothing written); then the challenge is CONSUMED; -4 counter not
+ * above the stored one; then the counter is COMMITTED (it stays committed even if a later
+ * step refuses); -5 mint rate reached; else the mint counter and the 90-day TTLs of record
+ * and counter are refreshed and 1 is returned.
+ */
+export const MINT_TOKEN_SCRIPT = `if redis.call('GET', KEYS[1]) then return -1 end
+if not redis.call('GET', KEYS[2]) then return -2 end
+if redis.call('GET', KEYS[4]) then return -3 end
+redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
+local c = tonumber(ARGV[2])
+local stored = tonumber(redis.call('GET', KEYS[3]) or '0')
+if c <= stored then return -4 end
+redis.call('SET', KEYS[3], ARGV[2], 'EX', ARGV[3])
+local m = tonumber(redis.call('GET', KEYS[5]) or '0')
+if m >= tonumber(ARGV[4]) then return -5 end
+redis.call('INCR', KEYS[5])
+redis.call('EXPIRE', KEYS[5], ARGV[5])
+redis.call('EXPIRE', KEYS[2], ARGV[3])
+return 1`;
+
+/** Token-mint counters outlive their UTC day like the enroll counters. */
+export const TOKEN_MINT_TTL_SECONDS = 2 * 86_400;
+
 export class RedisAttestStore implements AttestStore {
   readonly durable = true;
   constructor(
@@ -169,6 +256,72 @@ export class RedisAttestStore implements AttestStore {
     /** Bound on each Upstash call; a timeout is a store error (503 `store`). */
     private readonly timeoutMs: number = UPSTASH_FETCH_TIMEOUT_MS,
   ) {}
+
+  private async evalRaw(script: string, keys: string[], args: (string | number)[]): Promise<unknown> {
+    const signal = AbortSignal.timeout(this.timeoutMs);
+    let response: Response;
+    try {
+      response = await untilAborted(
+        this.fetchImpl(this.config.url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(['EVAL', script, keys.length, ...keys, ...args.map(String)]),
+          signal,
+        }),
+        signal,
+      );
+    } catch {
+      throw new AttestStoreError('store unreachable');
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new AttestStoreError('store error');
+    }
+    const payload = (await untilAborted(response.json(), signal).catch(() => null)) as { result?: unknown } | null;
+    if (!payload || typeof payload !== 'object' || 'error' in payload || !('result' in payload)) throw new AttestStoreError('store error');
+    return payload.result;
+  }
+
+  async getKey(recordKey: string): Promise<string | null> {
+    const result = await this.evalRaw(GET_KEY_SCRIPT, [recordKey], []);
+    if (result === null) return null;
+    if (typeof result === 'string' && result.length > 0 && result.length <= 4096) return result;
+    throw new AttestStoreError('store error');
+  }
+
+  /** Owner tooling only (`scripts/revoke-installs.ts`): no request path calls this. */
+  async revokeKey(keyspace: Keyspace, keyId: Buffer): Promise<void> {
+    if (!Buffer.isBuffer(keyId) || keyId.length !== 32) throw new TypeError('keyId must be 32 bytes');
+    const result = await this.eval(REVOKE_KEY_SCRIPT, [revokedKey(keyspace, keyId)], [KEY_RECORD_TTL_SECONDS]);
+    if (result !== 1) throw new AttestStoreError('store error');
+  }
+
+  async mintToken(keys: MintKeys, assertionCounter: number): Promise<MintOutcome> {
+    if (!Number.isSafeInteger(assertionCounter) || assertionCounter < 0 || assertionCounter > 0xffffffff) throw new AttestStoreError('bad counter');
+    const result = await this.eval(MINT_TOKEN_SCRIPT, [keys.used, keys.record, keys.counter, keys.revoked, keys.mint], [
+      USED_TTL_FOR_MINT,
+      assertionCounter,
+      KEY_RECORD_TTL_SECONDS,
+      TOKEN_MINT_DAILY_CAP,
+      TOKEN_MINT_TTL_SECONDS,
+    ]);
+    switch (result) {
+      case 1:
+        return 'minted';
+      case -1:
+        return 'reused';
+      case -2:
+        return 'unknown';
+      case -3:
+        return 'revoked';
+      case -4:
+        return 'counter';
+      case -5:
+        return 'rate';
+      default:
+        throw new AttestStoreError('store error');
+    }
+  }
 
   private async eval(script: string, keys: string[], args: (string | number)[]): Promise<number> {
     const signal = AbortSignal.timeout(this.timeoutMs);
