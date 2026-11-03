@@ -6,6 +6,7 @@ import {
   MAX_CONTEXT_CHARS,
   modelFamily,
   sanitizeBrackets,
+  stripAllBrackets,
   upstreamBody,
   V3_VOICE_SETTINGS,
   V4_VOICE_SETTINGS,
@@ -202,11 +203,30 @@ test('on Flash every bracket is removed from the spoken text, and chars are coun
   assert.equal(h.logs.at(-1)?.chars, 'laughs That was Song Live .'.length);
 });
 
-test('on v4 an allowlisted tag survives; any other bracket in the text does not', async () => {
-  const h = harness({ ELEVENLABS_MODEL_ID: 'eleven_v4' });
-  await handleTts(request({ text: '[warmly] That was Song [shouts].', previousText: '[warmly] Hi.' }), h.deps);
-  assert.equal(sent(h).text, '[warmly] That was Song shouts .');
-  assert.equal(sent(h).previous_text, 'Hi.', 'context never carries tags');
+for (const model of ['eleven_v4', 'eleven_v4_turbo', 'eleven_v3', 'eleven_flash_v2_5']) {
+  test(`on ${model} no bracket survives in the spoken text, allowlisted tags included`, async () => {
+    const h = harness({ ELEVENLABS_MODEL_ID: model });
+    const res = await handleTts(request({ text: 'That was Kiss Me [Softly] Tonight.', previousText: '[warmly] Hi.' }), h.deps);
+    assert.equal(res.status, 200);
+    assert.equal(sent(h).text, 'That was Kiss Me Softly Tonight.');
+    if (model !== 'eleven_v3') assert.equal(sent(h).previous_text, 'Hi.', 'context is stripped as before and never carries tags');
+    assert.equal(h.logs.at(-1)?.chars, 'That was Kiss Me Softly Tonight.'.length);
+  });
+
+  test(`on ${model} every allowlisted tag loses its brackets, any case or spacing`, async () => {
+    const h = harness({ ELEVENLABS_MODEL_ID: model });
+    await handleTts(request({ text: '[warmly] [ Relaxed ] [CHUCKLES] [softly] [excited] Song [Live] [[warmly]] [shouts].' }), h.deps);
+    const spoken = sent(h).text;
+    assert.equal(spoken, 'warmly Relaxed CHUCKLES softly excited Song Live warmly shouts .');
+    assert.doesNotMatch(spoken, /[[\]]/);
+  });
+}
+
+test('stripAllBrackets keeps words and drops every bracket', () => {
+  assert.equal(stripAllBrackets('That was Song [Live] from Band.'), 'That was Song Live from Band.');
+  assert.equal(stripAllBrackets('Kiss Me [Softly] Tonight'), 'Kiss Me Softly Tonight');
+  assert.equal(stripAllBrackets('a ] [warmly] [ b'), 'a warmly b');
+  assert.equal(stripAllBrackets('[ ]'), '');
 });
 
 test('text that is only brackets is 400 and nothing is spent', async () => {

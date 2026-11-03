@@ -113,6 +113,27 @@ public enum DJTimeCheck {
         }
     }
 
+    /// The rounded time T a reading at `date` names, as an instant (the start of T's minute), with
+    /// T's hour and minute and which way it rounded. Same rounding as `rounded(hour:minute:)`.
+    /// Nil when `calendar` can't read `date`, or when the clock at that instant does not read
+    /// T: a DST change lies between `date` and T. On a fall-back night (America/New_York, Nov 1,
+    /// 2026) 1:58 EDT rounds to 2:00, but two minutes on the clock reads 1:00 EST, so "Almost 2
+    /// o'clock." would be wrong (Echo, #357); on a spring-forward night 1:58 EST rounds to a 2:00
+    /// that never shows. Nil means no time check (the line drops; the rest of the break airs).
+    public static func roundedInstant(at date: Date, calendar: Calendar)
+        -> (time: Date, hour: Int, minute: Int, relation: DJTimeCheckRelation)? {
+        guard let minuteStart = calendar.dateInterval(of: .minute, for: date)?.start else { return nil }
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        guard let hour = parts.hour, let minute = parts.minute else { return nil }
+        let r = rounded(hour: hour, minute: minute)
+        var delta = r.hour * 60 + r.minute - (hour * 60 + minute)
+        if delta < -12 * 60 { delta += 24 * 60 }   // 23:58 rounds to 0:00, two minutes on
+        let time = minuteStart.addingTimeInterval(TimeInterval(delta * 60))
+        let shown = calendar.dateComponents([.hour, .minute], from: time)
+        guard shown.hour == r.hour, shown.minute == r.minute else { return nil }
+        return (time, r.hour, r.minute, r.relation)
+    }
+
     /// The rounded `{time}` text and its relation for `date` in `calendar`'s time zone.
     public static func reading(_ date: Date, calendar: Calendar, style: DJClockStyle) -> (time: String, relation: DJTimeCheckRelation) {
         let parts = calendar.dateComponents([.hour, .minute], from: date)
@@ -144,10 +165,11 @@ public struct DJPlannedTimeCheck: Equatable, Sendable {
         self.style = style
     }
 
-    /// The line for the clock reading `date`. Nil when no phrasing fits.
+    /// The line for the clock reading `date`. Nil when no phrasing fits, or when a DST change
+    /// lies between `date` and the rounded time it would name (`DJTimeCheck.roundedInstant`).
     public func text(at date: Date) -> String? {
-        let reading = DJTimeCheck.reading(date, calendar: calendar, style: style)
-        guard let template = templates[reading.relation] else { return nil }
-        return TemplatePool.fill(template, ["time": reading.time])
+        guard let t = DJTimeCheck.roundedInstant(at: date, calendar: calendar),
+              let template = templates[t.relation] else { return nil }
+        return TemplatePool.fill(template, ["time": DJTimeCheck.spokenTime(hour: t.hour, minute: t.minute, style: style)])
     }
 }

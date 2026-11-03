@@ -3,8 +3,8 @@ import AeroDJCore
 import Foundation
 import OSLog
 
-// DJ talk-over (owner request on #195, -Fry). Flagged: `DJTalkoverFlag` (ON only in the owner
-// A/B TestFlight build; its toggle rolls it back; other builds ignore the saved toggle). See docs/dj-talkover.md.
+// DJ talk-over (owner request on #195, -Fry). Flagged: `DJTalkoverFlag`, a Settings toggle in
+// every build (unset ON on a live station, OFF on the fixture test station). See docs/dj-talkover.md.
 //
 // NOT device-validated. Nothing here has run on an iPhone; the owner's TestFlight run is the
 // first time. The checklist is in the doc and the PR.
@@ -198,7 +198,6 @@ final class TalkoverCoordinator {
     private let interlude: InterludePlaybackAdapter
     private let djSession: DJBreakSession
     private let defaults: UserDefaults
-    private let ownerABBuild: Bool
     private let unsetDefault: Bool
     private var config = TalkoverConfig()
     private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
@@ -222,18 +221,17 @@ final class TalkoverCoordinator {
     private var handedOut: Int?
 
     init(music: MusicKitService, interlude: InterludePlaybackAdapter, djSession: DJBreakSession,
-         defaults: UserDefaults = .standard, ownerABBuild: Bool = DJTalkoverFlag.isOwnerABBuild,
+         defaults: UserDefaults = .standard,
          unsetDefault: Bool = DJTalkoverFlag.unsetDefault(isTestStation: false)) {
         self.music = music
         self.interlude = interlude
         self.djSession = djSession
         self.defaults = defaults
-        self.ownerABBuild = ownerABBuild
         self.unsetDefault = unsetDefault
         interlude.onStopRequested = { [weak self] reason, afterTrack in self?.stopRequested(reason, afterTrack: afterTrack) }
     }
 
-    var isEnabled: Bool { DJTalkoverFlag.isEnabled(defaults: defaults, ownerABBuild: ownerABBuild, unsetDefault: unsetDefault) }
+    var isEnabled: Bool { DJTalkoverFlag.isEnabled(defaults: defaults, unsetDefault: unsetDefault) }
 
     /// Starts the position watch. 1 Hz until the arm window, 10 Hz inside it; nothing when off.
     func start() {
