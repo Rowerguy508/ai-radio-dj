@@ -283,26 +283,36 @@ public struct StationRatingResumeGate: Equatable, Sendable {
     public private(set) var openBreak: Int?
     /// A rating dropped `openBreak`'s boundary while it was open.
     public private(set) var withdrawn = false
+    /// The open break's lines, one per clip (`StationRatingBreakLine.lines(for:)`). Empty: not known.
+    public private(set) var openLines: [StationRatingBreakLine] = []
 
     public init() {}
 
     /// A gap break for boundary `k` was handed to the player. A new break starts unwithdrawn.
-    public mutating func breakOpened(afterTrack k: Int) {
+    /// `lines`: what each line names (#388, Echo's N2), so a rating withdraws it only when one of
+    /// its lines names the song. Empty: unknown, and any drop of `k` withdraws it (as before).
+    public mutating func breakOpened(afterTrack k: Int, lines: [StationRatingBreakLine] = []) {
         openBreak = k
         withdrawn = false
+        openLines = lines
     }
 
     /// The open break ended (finished, failed, cancelled or revoked).
     public mutating func breakClosed() {
         openBreak = nil
         withdrawn = false
+        openLines = []
     }
 
     /// A rating dropped the break at boundary `k`. True when that is the open break, which then
     /// never resumes after an interruption. Any other boundary changes nothing here.
+    /// `excluding` (#388, Echo's N2): the songs now excluded. When given and the open break's
+    /// lines are known, it is withdrawn only if one of its lines names one of them; a break of
+    /// briefing items or a time check that never names the song still resumes.
     @discardableResult
-    public mutating func boundaryDropped(afterTrack k: Int) -> Bool {
+    public mutating func boundaryDropped(afterTrack k: Int, excluding songIDs: Set<String>? = nil) -> Bool {
         guard openBreak == k else { return false }
+        if let songIDs, !openLines.isEmpty, !openLines.contains(where: { $0.names(songIDs) }) { return false }
         withdrawn = true
         return true
     }
@@ -319,21 +329,31 @@ public struct StationRatingWithdrawnLines: Equatable, Sendable {
     /// The interrupted line (the first one not aired).
     public let line: Int
     public let timeChecks: Int
+    /// Lines that are neither a time check nor a briefing item.
     public let other: Int
+    /// Briefing items (`NarrationCue.isContent`), counted apart from `other` (Echo, #388).
+    public let briefing: Int
 
-    public init(line: Int, timeChecks: Int, other: Int) {
+    public init(line: Int, timeChecks: Int, other: Int, briefing: Int = 0) {
         self.line = line
         self.timeChecks = timeChecks
         self.other = other
+        self.briefing = briefing
     }
 
-    public var count: Int { timeChecks + other }
+    public var count: Int { timeChecks + other + briefing }
 
-    /// Every line from `line` on (none when `line` is out of range).
-    public static func remaining(_ lines: [BreakResumeLine], from line: Int) -> StationRatingWithdrawnLines {
-        let rest = lines.indices.contains(line) ? Array(lines[line...]) : []
-        let checks = rest.filter { $0.dropKind == .timeCheck }.count
-        return StationRatingWithdrawnLines(line: line, timeChecks: checks, other: rest.count - checks)
+    /// Every line from `line` on (none when `line` is out of range). `ratingLines`: one per line
+    /// (`StationRatingBreakLine.lines(for:)`), so briefing items count apart; any other count:
+    /// no line is known to be a briefing item.
+    public static func remaining(_ lines: [BreakResumeLine], from line: Int,
+                                 ratingLines: [StationRatingBreakLine] = []) -> StationRatingWithdrawnLines {
+        let range = lines.indices.contains(line) ? Array(lines.indices[line...]) : []
+        let known = ratingLines.count == lines.count
+        let checks = range.filter { lines[$0].dropKind == .timeCheck }.count
+        let briefing = range.filter { known && lines[$0].dropKind != .timeCheck && ratingLines[$0].isBriefing }.count
+        return StationRatingWithdrawnLines(line: line, timeChecks: checks, other: range.count - checks - briefing,
+                                           briefing: briefing)
     }
 }
 

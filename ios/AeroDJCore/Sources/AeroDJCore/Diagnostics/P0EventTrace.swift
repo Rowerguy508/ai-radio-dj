@@ -65,6 +65,8 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     case musicBefore, musicAfter, music
     // #379 N2 (-Fry): the paused line, lines dropped, of which time checks and other lines
     case line, dropped, timeChecks, otherCues
+    // #388 (-Nova): briefing items counted apart from other lines
+    case briefingCues
 }
 
 extension P0TraceCode {
@@ -109,6 +111,8 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case stale, allStale, noResume, musicPlaying, pauseExpired
     /// #387 N1: a rating withdrew the paused break (`StationRatingResumeGate`).
     case ratingWithdrawn
+    /// #388: a never faded the talk-over line that named the song and dropped the rest of its break.
+    case ratedNever
 }
 
 public enum P0TraceValue: Equatable, Sendable {
@@ -710,7 +714,18 @@ extension P0EventTrace {
         record(.breakInterruption, at: t, [(.kind, .code(.breakDropped)), (.reason, .code(.ratingWithdrawn)),
                                            (.after, Self.number(afterTrack)), (.line, .int(withdrawn.line)),
                                            (.dropped, .int(withdrawn.count)), (.timeChecks, .int(withdrawn.timeChecks)),
-                                           (.otherCues, .int(withdrawn.other))])
+                                           (.otherCues, .int(withdrawn.other)), (.briefingCues, .int(withdrawn.briefing))])
+    }
+    /// #388 (-Nova): a never faded the talk-over line that named the song (`StationRatingTalkoverCut`)
+    /// and dropped the rest of its break. Same row shape; `line` is the faded line. Counts and codes
+    /// only: never the song, its title or artist, or the rating.
+    @discardableResult
+    public mutating func talkoverRatedNever(_ dropped: StationRatingWithdrawnLines, afterTrack: Int?,
+                                            at t: TimeInterval) -> P0TraceRow {
+        record(.breakInterruption, at: t, [(.kind, .code(.breakDropped)), (.reason, .code(.ratedNever)),
+                                           (.after, Self.number(afterTrack)), (.line, .int(dropped.line)),
+                                           (.dropped, .int(dropped.count)), (.timeChecks, .int(dropped.timeChecks)),
+                                           (.otherCues, .int(dropped.other)), (.briefingCues, .int(dropped.briefing))])
     }
 
     private static func flag(_ b: Bool?) -> P0TraceValue { b.map { .bool($0) } ?? .missing }
