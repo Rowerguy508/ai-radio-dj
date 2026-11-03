@@ -262,10 +262,12 @@ extension StationRatingScope {
     }
 }
 
-/// Which prepared breaks a rating drops (-Nova, PR B). A break at boundary k plays between song k and
+/// Which breaks could name a rated song (-Nova, PR B). A break at boundary k plays between song k and
 /// song k + 1 and may name both ("that was k", "up next k + 1"), so a queued song j that is now
-/// excluded loses the breaks at j - 1 and j. Only boundaries still ahead (k >= the playing index):
-/// the break after the playing song is the next one to air.
+/// excluded may be named by the breaks at j - 1 and j. Only boundaries still ahead (k >= the playing
+/// index): the break after the playing song is the next one to air. Since #388 (Echo's #387 N2)
+/// those breaks are narrowed, not cut: only the lines that name the song go
+/// (`StationRatingBreakNarrowing`, `DJBreakSession.songsExcluded`).
 public enum StationRatingBreakDrop {
     public static func boundaries(forUpcoming indices: [Int], playing: Int) -> [Int] {
         Array(Set(indices.flatMap { [$0 - 1, $0] }.filter { $0 >= max(playing, 0) })).sorted()

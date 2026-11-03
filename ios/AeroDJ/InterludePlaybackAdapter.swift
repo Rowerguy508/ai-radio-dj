@@ -75,6 +75,9 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     @Published private(set) var isHeldByInterruption = false
     /// PR B (-Nova): a rating that drops the open gap break's boundary stops its resume.
     private var ratingGate = StationRatingResumeGate()
+    /// #388: one per script line of the open gap break (`StationRatingBreakLine.lines(for:)`): the
+    /// song IDs it names and whether it is a briefing item. Never text. Empty: not known.
+    private var ratingLines: [StationRatingBreakLine] = []
 
     init(music: MusicKitService) {
         self.music = music
@@ -125,14 +128,19 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// once before the first clip and resumed once after the last one. `resumeLines`: one per
     /// clip (`BreakResumeLine.lines(for:)`), so a resume after an interruption can drop a time
     /// check that is no longer true (#379 N1). Any other count: no line is treated as timed.
-    func play(clips: [Data], line: String, afterTrack: Int, resumeLines: [BreakResumeLine]) async {
+    /// `ratingLines` (#388): one per clip (`StationRatingBreakLine.lines(for:)`), so a rating
+    /// withdraws a paused break only when one of its lines names the song. Any other count: unknown.
+    func play(clips: [Data], line: String, afterTrack: Int, resumeLines: [BreakResumeLine],
+              ratingLines: [StationRatingBreakLine] = []) async {
         breakTrack = afterTrack
         guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
             // Handed out, but this break will not start. `.failed` clears `.ready`.
             abandonUnplayedBreak(.notPlayable, afterTrack: afterTrack, skip: .notPlanned)
             return
         }
-        ratingGate.breakOpened(afterTrack: afterTrack)
+        let known = ratingLines.count == clips.count ? ratingLines : []
+        ratingGate.breakOpened(afterTrack: afterTrack, lines: known)
+        self.ratingLines = known
         // The refusal is the stop held from the synchronous boundary hand-out.
         // An interruption that begins and ends during `naturalBoundary` clears the
         // live pause flag and still cancels here. Resume follows that held stop's policy.
@@ -184,6 +192,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         clipPlayer = nil
         scriptPlayers = []
         self.resumeLines = []
+        self.ratingLines = []
     }
 
     /// The break was handed out and audio will not start. Reports `.failed` for `afterTrack`
@@ -626,6 +635,24 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         return outcome
     }
 
+    /// #388: the talk-over line on air now (its index in the clips `playTalkover` got), or nil
+    /// when no talk-over voice is on air (none started, it ended, or it was stopped, including by
+    /// an interruption). The closing line counts from when it is scheduled (during its gap).
+    var talkoverSpeakingLine: Int? {
+        guard finish != nil, duckedFor != nil, let player = clipPlayer else { return nil }
+        return scriptPlayers.firstIndex { $0 === player }
+    }
+
+    /// #388: drops talk-over lines that have not started yet (indices into the clips
+    /// `playTalkover` got); the line on air plays on. Dropping the closing line drops its gap.
+    func dropQueuedTalkoverLines(_ lines: [Int]) {
+        guard finish != nil, duckedFor != nil else { return }
+        let gone = Set(lines.compactMap { scriptPlayers.indices.contains($0) ? ObjectIdentifier(scriptPlayers[$0]) : nil })
+        guard !gone.isEmpty else { return }
+        if let last = queue.last, gone.contains(ObjectIdentifier(last)) { closingGap = 0 }
+        queue.removeAll { gone.contains(ObjectIdentifier($0)) }
+    }
+
     /// A seek while the talk-over speaks: fade the voice out over `seconds`, then stop it.
     /// The break ends as cancelled and is not replayed.
     func fadeOutTalkover(seconds: Double = 0.25) {
@@ -724,8 +751,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     private func endWithdrawnBreak(line: Int) {
         let lines = resumeLines.count == scriptPlayers.count
             ? resumeLines : scriptPlayers.map { BreakResumeLine(seconds: $0.duration) }
-        let withdrawn = StationRatingWithdrawnLines.remaining(lines, from: line)
-        log.notice("dj break withdrawn before resume line=\(line, privacy: .public) dropped=\(withdrawn.count, privacy: .public) timeChecks=\(withdrawn.timeChecks, privacy: .public)")
+        let withdrawn = StationRatingWithdrawnLines.remaining(lines, from: line, ratingLines: ratingLines)
+        log.notice("dj break withdrawn before resume line=\(line, privacy: .public) dropped=\(withdrawn.count, privacy: .public) timeChecks=\(withdrawn.timeChecks, privacy: .public) briefing=\(withdrawn.briefing, privacy: .public)")
         #if AERODJ_P0_DIAG
         if withdrawn.count > 0 {
             let k = breakTrack
@@ -740,10 +767,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         finishBreak(.finished)
     }
 
-    /// A rating dropped the break at boundary `k` (PR B, via `TalkoverCoordinator.breakDropped`).
-    /// When that is the open gap break, a later interruption resume ends it instead of replaying.
-    func boundaryDropped(afterTrack k: Int) {
-        ratingGate.boundaryDropped(afterTrack: k)
+    /// A rating dropped the break at boundary `k` (PR B, via `TalkoverCoordinator.ratingChanged`).
+    /// When that is the open gap break and one of its lines names a song in `excluding` (#388,
+    /// Echo's N2; lines unknown: any), a later interruption resume ends it instead of replaying.
+    func boundaryDropped(afterTrack k: Int, excluding songIDs: Set<String>) {
+        ratingGate.boundaryDropped(afterTrack: k, excluding: songIDs)
     }
 
     /// #379 N2: lines a paused break dropped, by kind (P0 diag builds only; counts and codes).
