@@ -45,9 +45,42 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     private var ramps: [ObjectIdentifier: TalkoverVoiceRamp] = [:]
     private var rampTask: Task<Void, Never>?
 
+    // MARK: Interruption state (-Fry, see docs/dj-break-interruption.md)
+
+    /// What a system interruption (Siri, a call, an alarm) does to the break on air. Core's
+    /// pure state machine; this adapter only executes its actions.
+    private var interruption = BreakInterruptionState()
+    /// The break's script, one player per line, in order. `queue` is rebuilt from it on resume.
+    private var scriptPlayers: [AVAudioPlayer] = []
+    /// One per script line (`BreakResumeLine.lines(for:)`): what a resume re-checks (#379 N1).
+    private var resumeLines: [BreakResumeLine] = []
+    /// The acknowledgement player while it plays (never a script line).
+    private var ackPlayer: AVAudioPlayer?
+    /// The rendered acknowledgement (`BreakInterruptionAcknowledgement.line`), kept for the launch.
+    private var ackData: Data?
+    private var ackRender: Task<Void, Never>?
+    /// Renders the acknowledgement. Set once in `AppDependencies` to the existing voice path with
+    /// no attribution, so only on-device, free routes are used. Nil: resume without it.
+    var acknowledgementClip: (@MainActor () async -> Data?)?
+    /// `.began` notices seen by this adapter's own observer, and untagged `.interruption` stops
+    /// from `MusicKitService` (the same notices, later, through its stream). See `systemInterruptionStop`.
+    private var beganSeen = 0
+    private var beganForwarded = 0
+    /// The observer's view: a `.began` with no `.ended` after it yet.
+    private var sessionInterrupted = false
+    /// True while a system interruption holds the DJ voice of a break (paused, or held after an
+    /// end without `shouldResume`). Observable and read-only, for the #373 stop detection
+    /// (Echo): the app itself is holding its DJ voice; MusicKit is never paused, cleared or
+    /// rewound by this.
+    @Published private(set) var isHeldByInterruption = false
+
     init(music: MusicKitService) {
         self.music = music
         super.init()
+        // Our own observer, so a break pauses before `MusicKitService`'s stream delivers the
+        // same notice. Object nil, as in `AudioSessionMonitor`.
+        NotificationCenter.default.addObserver(self, selector: #selector(sessionInterrupted(_:)),
+                                               name: AVAudioSession.interruptionNotification, object: nil)
     }
 
     var isSpeaking: Bool { finish != nil }
@@ -83,12 +116,14 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     /// Plays one prepared clip. A clip that won't decode skips the break.
     func play(clip: Data, line: String, afterTrack: Int) async {
-        await play(clips: [clip], line: line, afterTrack: afterTrack)
+        await play(clips: [clip], line: line, afterTrack: afterTrack, resumeLines: [])
     }
 
     /// Plays a prepared break: every clip back to back inside ONE break. Music is paused
-    /// once before the first clip and resumed once after the last one.
-    func play(clips: [Data], line: String, afterTrack: Int) async {
+    /// once before the first clip and resumed once after the last one. `resumeLines`: one per
+    /// clip (`BreakResumeLine.lines(for:)`), so a resume after an interruption can drop a time
+    /// check that is no longer true (#379 N1). Any other count: no line is treated as timed.
+    func play(clips: [Data], line: String, afterTrack: Int, resumeLines: [BreakResumeLine]) async {
         breakTrack = afterTrack
         guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
             // Handed out, but this break will not start. `.failed` clears `.ready`.
@@ -137,10 +172,15 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             return
         }
         queue = players
+        scriptPlayers = players
+        self.resumeLines = resumeLines.count == players.count
+            ? resumeLines : players.map { BreakResumeLine(seconds: $0.duration) }
         let total = players.reduce(0) { $0 + $1.duration } + 2
         await runBreak(line: line, timeout: total) { self.startNextClip() }
         queue = []
         clipPlayer = nil
+        scriptPlayers = []
+        self.resumeLines = []
     }
 
     /// The break was handed out and audio will not start. Reports `.failed` for `afterTrack`
@@ -176,6 +216,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         player.isMeteringEnabled = true
         clipPlayer = player
         stopState.adopt(player: ObjectIdentifier(player))
+        if let line = scriptPlayers.firstIndex(where: { $0 === player }) { interruption.lineStarted(line) }
         let ramp = ramps[ObjectIdentifier(player)]
         if let ramp { player.volume = ramp.startVolume }
         if queue.isEmpty, closingGap > 0 {
@@ -255,6 +296,15 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// One clip finished. Continue with the next clip, or end the break.
     private func clipFinished(successful: Bool) {
         guard finish != nil else { return }
+        // Paused or held by an interruption: no next line starts (a finish callback that was
+        // already in flight when the pause came in; the interrupted line replays on resume).
+        guard !interruption.isHolding else { return }
+        if let ack = ackPlayer, clipPlayer === ack {
+            // The acknowledgement ended (or failed): the script resumes at the interrupted line.
+            ackPlayer = nil
+            applyInterruption(interruption.acknowledgementEnded())
+            return
+        }
         guard successful else { finishBreak(.failed); return }
         if queue.isEmpty { finishBreak(.finished); return }
         if !startNextClip() { finishBreak(.failed) }
@@ -330,6 +380,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             case .cancelPending(let tag):
                 _ = self.pendingPlay.stop(reason: reason, afterTrack: tag, mayAutoResume: self.music.mayAutoResume)
             case .stopPlaying:
+                // A system interruption pauses the break instead (`BreakInterruptionState`).
+                if reason == .interruption, afterTrack == nil, self.systemInterruptionStop() { return }
                 if reason == .sourceRevoked {
                     self.stopActiveBreak(reason: reason)
                 } else {
@@ -390,6 +442,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
                 // session release in completeNarration doesn't throw "busy". -Atlas
                 self?.endBreakSilencingClip(.timeout, result: .cancelled)
             }
+            interruption.breakStarted(.boundary)
+            prefetchAcknowledgement()
             // The line is reported as started only once audio is really playing.
             if start() {
                 TalkoverAudioSession.noteImplicitActivation() // AVAudioPlayer.play activates the session
@@ -455,6 +509,9 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     private func finishBreak(_ result: BreakPlayerOutcome) {
+        interruption.breakEnded()
+        isHeldByInterruption = false
+        ackPlayer = nil
         stopLevelMeter()
         rampTask?.cancel()
         rampTask = nil
@@ -518,6 +575,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             ramps[ObjectIdentifier(player)] = TalkoverVoiceRamp.plan(duration: player.duration, gain: gain)
         }
         queue = players
+        scriptPlayers = players
+        resumeLines = []   // a talk-over stops at an interruption and is never resumed
         closingGap = players.count > 1 ? max(0, gap) : 0
         let total = players.reduce(0) { $0 + $1.duration } + closingGap + 2
         outcome = .cancelled
@@ -528,6 +587,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
                 do { try await Task.sleep(nanoseconds: UInt64(total * 1_000_000_000)) } catch { return }
                 self?.endBreakSilencingClip(.timeout, result: .cancelled)
             }
+            interruption.breakStarted(.talkover)
             if startNextClip() {
                 log.notice("\(PlaybackLog.breakStart(after: self.breakTrack), privacy: .public)")
                 music.djStarted(line)
@@ -556,6 +616,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
         queue = []
         clipPlayer = nil
+        scriptPlayers = []
         closingGap = 0
         ramps = [:]
         return outcome
@@ -579,6 +640,226 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
     }
 
+    // MARK: System interruptions (-Fry, see docs/dj-break-interruption.md)
+
+    /// `AVAudioSession.interruptionNotification`, parsed on the posting thread and applied on
+    /// the main actor before this returns (`MainActorImmediate`).
+    @objc nonisolated private func sessionInterrupted(_ note: Notification) {
+        guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+        let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume)
+        switch type {
+        case .began: MainActorImmediate.run { self.interruptionBegan() }
+        case .ended: MainActorImmediate.run { self.interruptionEnded(shouldResume: shouldResume) }
+        @unknown default: return
+        }
+    }
+
+    /// `.began`. A break on air pauses (gap break) or stops (talk-over). No break on air: nothing
+    /// here; `MusicKitService` still holds music and cancels a handed-out break as before.
+    private func interruptionBegan() {
+        beganSeen += 1
+        sessionInterrupted = true
+        guard finish != nil else { return }
+        let action = interruption.interruptionBegan(at: ProcessInfo.processInfo.systemUptime)
+        if action == .stopTalkover {
+            onStopRequested?(.interruption, nil)
+            guard stopState.stop(reason: .interruption) else { return }
+            log.notice("\(PlaybackLog.interludeStop(reason: .interruption), privacy: .public)")
+            haltAudio()
+            return
+        }
+        applyInterruption(action)
+    }
+
+    /// `.ended`. Only a paused break acts: acknowledgement then the interrupted line
+    /// (`shouldResume`), or the break closes silently and music stays held (no `shouldResume`).
+    /// No acknowledgement for a short interruption, and at most one per break (#379 N3). When
+    /// no line left is still true (a stale time check, #379 N1), the break ends without one.
+    private func interruptionEnded(shouldResume: Bool) {
+        sessionInterrupted = false
+        guard finish != nil, case .paused(let line) = interruption.phase else { return }
+        // The listener already pressed Play during the interruption: never talk over music.
+        let resume = shouldResume && !music.isPlaying
+        if resume {
+            let left = BreakResumePlan.plan(from: line, lines: resumeLines, now: Date())
+            if left.lines.isEmpty {
+                endStaleBreak(left.drop ?? BreakResumeDrop.remaining(resumeLines, from: line, reason: .allStale))
+                return
+            }
+        }
+        let ack = resume ? acknowledgementPlayer() : nil
+        let action = interruption.interruptionEnded(shouldResume: resume, acknowledgementReady: ack != nil,
+                                                    at: ProcessInfo.processInfo.systemUptime)
+        if case .playAcknowledgement = action { ackPlayer = ack }
+        if case .stayPaused(let line) = action {
+            traceDrop(BreakResumeDrop.remaining(resumeLines, from: line, reason: shouldResume ? .musicPlaying : .noResume))
+        }
+        applyInterruption(action)
+    }
+
+    /// Every line left is past its window: nothing true to say, so the break ends now (no
+    /// apology) and music follows as after any finished break.
+    private func endStaleBreak(_ drop: BreakResumeDrop) {
+        log.notice("dj break dropped on resume: no line still true line=\(drop.line, privacy: .public)")
+        traceDrop(drop)
+        queue = []
+        let player = clipPlayer
+        clipPlayer = nil
+        player?.delegate = nil
+        player?.stop()
+        finishBreak(.finished)
+    }
+
+    /// #379 N2: lines a paused break dropped, by kind (P0 diag builds only; counts and codes).
+    private func traceDrop(_ drop: BreakResumeDrop) {
+        guard drop.count > 0 else { return }
+        log.notice("dj break interruption drop reason=\(drop.reason.rawValue, privacy: .public) dropped=\(drop.count, privacy: .public) timeChecks=\(drop.timeChecks, privacy: .public)")
+        #if AERODJ_P0_DIAG
+        let k = breakTrack
+        P0EventTraceHost.shared.talkover { trace, t in _ = trace.breakInterruptionDrop(drop, afterTrack: k, at: t) }
+        #endif
+    }
+
+    /// `MusicKitService`'s untagged `.interruption` stop for a playing break: the same `.began`
+    /// this adapter's observer gets, through its stream, usually later. True: taken here (no
+    /// halt). One the observer already counted is a duplicate, including a late one after a
+    /// quick began/ended (it must not pause a resumed break): ignored, the observer owns it.
+    /// Otherwise (the observer's copy has not run yet) the break pauses now and the observer's
+    /// copy is a no-op. A talk-over falls through to the existing halt. DJBreakSession's queue
+    /// change stop is tagged (`afterTrack`) and never comes here.
+    private func systemInterruptionStop() -> Bool {
+        beganForwarded += 1
+        // Already counted: still ongoing (a break that started inside the interruption pauses
+        // now; a paused one is unchanged), or already ended (a stale copy: ignored).
+        if beganForwarded <= beganSeen, !sessionInterrupted { return true }
+        let action = interruption.interruptionBegan(at: ProcessInfo.processInfo.systemUptime)
+        switch action {
+        case .stopTalkover: return false
+        case .none: return interruption.isHolding
+        default:
+            applyInterruption(action)
+            return true
+        }
+    }
+
+    private func applyInterruption(_ action: BreakInterruptionState.Action) {
+        switch action {
+        case .none:
+            break
+        case .pause(let line):
+            pauseForInterruption(line: line)
+        case .stopTalkover:
+            if stopState.stop(reason: .interruption) { haltAudio() }
+        case .playAcknowledgement(let line):
+            playAcknowledgement(thenLine: line)
+        case .resume(let line):
+            resumeScript(fromLine: line)
+        case .stayPaused(let line):
+            // Nothing restarts on its own. The rest of the break is dropped (ends as cancelled)
+            // so no break stays open: music stays held (the session policy has no
+            // `mayAutoResume`), and the listener's Play resumes music as for any held break.
+            log.notice("dj break held after interruption line=\(line, privacy: .public)")
+            if stopState.stop(reason: .interruption) { haltAudio() }
+        }
+        isHeldByInterruption = interruption.isHolding
+    }
+
+    /// Freezes the break: the voice pauses, and no timeout, ramp, meter or next line runs.
+    private func pauseForInterruption(line: Int) {
+        log.notice("dj break paused by interruption line=\(line, privacy: .public)")
+        timeout?.cancel()
+        timeout = nil
+        rampTask?.cancel()
+        rampTask = nil
+        stopLevelMeter()
+        queue = []
+        closingGap = 0
+        clipPlayer?.pause()
+        prefetchAcknowledgement()
+        // Apple does not promise an `.ended`: a break never stays paused (and open) for good.
+        timeout = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(BreakInterruptionState.maxPausedSeconds * 1_000_000_000)) } catch { return }
+            guard let self, self.finish != nil else { return }
+            let action = self.interruption.pauseExpired()
+            if case .stayPaused(let line) = action {
+                self.traceDrop(BreakResumeDrop.remaining(self.resumeLines, from: line, reason: .pauseExpired))
+            }
+            self.applyInterruption(action)
+        }
+    }
+
+    /// The acknowledgement, then line `thenLine` onward. Does not start: the script resumes.
+    private func playAcknowledgement(thenLine line: Int) {
+        guard let ack = ackPlayer else { applyInterruption(interruption.acknowledgementEnded()); return }
+        queue = [ack]
+        armTimeout(ack.duration + remainingSeconds(fromLine: line) + 2)
+        if startNextClip() {
+            TalkoverAudioSession.noteImplicitActivation()
+            startLevelMeter()
+        } else {
+            ackPlayer = nil
+            applyInterruption(interruption.acknowledgementEnded())
+        }
+    }
+
+    /// Line `line` (from its beginning) to the end of the script, with a new timeout. Each line
+    /// is re-checked against the clock now (`BreakResumePlan`, #379 N1): a time check that would
+    /// no longer be true when it airs is dropped rather than spoken.
+    private func resumeScript(fromLine line: Int) {
+        guard line >= 0, line < scriptPlayers.count else { finishBreak(.finished); return }
+        let lines = resumeLines.count == scriptPlayers.count
+            ? resumeLines : scriptPlayers.map { BreakResumeLine(seconds: $0.duration) }
+        let plan = BreakResumePlan.plan(from: line, lines: lines, now: Date())
+        if let drop = plan.drop, plan.lines.isEmpty { endStaleBreak(drop); return }
+        if let drop = plan.drop { traceDrop(drop) }
+        let rest = plan.lines.map { scriptPlayers[$0] }
+        for player in rest { player.stop(); player.currentTime = 0 }
+        log.notice("dj break resumed after interruption line=\(line, privacy: .public)")
+        queue = rest
+        armTimeout(rest.reduce(0) { $0 + $1.duration } + 2)
+        if startNextClip() {
+            TalkoverAudioSession.noteImplicitActivation()
+            startLevelMeter()
+        } else {
+            finishBreak(.failed)
+        }
+    }
+
+    private func remainingSeconds(fromLine line: Int) -> Double {
+        guard line >= 0, line < scriptPlayers.count else { return 0 }
+        return scriptPlayers[line...].reduce(0) { $0 + $1.duration }
+    }
+
+    /// Same end as the break's own timeout: silence the clip, end as cancelled.
+    private func armTimeout(_ seconds: Double) {
+        timeout?.cancel()
+        timeout = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } catch { return }
+            self?.endBreakSilencingClip(.timeout, result: .cancelled)
+        }
+    }
+
+    /// A fresh player for the rendered acknowledgement. Nil when none is rendered yet, it will
+    /// not decode, or it is longer than `BreakInterruptionAcknowledgement.maxSeconds`.
+    private func acknowledgementPlayer() -> AVAudioPlayer? {
+        guard let data = ackData, let player = try? AVAudioPlayer(data: data), player.duration > 0,
+              player.duration <= Double(BreakInterruptionAcknowledgement.maxSeconds) else { return nil }
+        return player
+    }
+
+    /// Renders the acknowledgement once per launch (on-device, $0; the renderer caches it too).
+    private func prefetchAcknowledgement() {
+        guard ackData == nil, ackRender == nil, let render = acknowledgementClip else { return }
+        ackRender = Task { @MainActor [weak self] in
+            let data = await render()
+            guard let self else { return }
+            self.ackData = data
+            self.ackRender = nil
+        }
+    }
+
     // MARK: AVAudioPlayerDelegate
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
@@ -593,6 +874,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         let id = ObjectIdentifier(player)
         Task { @MainActor [weak self] in
             guard let self, self.stopState.acceptsDelegate(player: id) else { return }
+            // The acknowledgement is optional: a decode error there resumes the script.
+            if let ack = self.ackPlayer, ObjectIdentifier(ack) == id { self.clipFinished(successful: false); return }
             self.endBreakSilencingClip(.decodeError, result: .failed)
         }
     }

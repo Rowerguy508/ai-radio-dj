@@ -1,6 +1,7 @@
 import AVFoundation
 import AeroDJCore
 import Foundation
+import MusicKit
 import OSLog
 
 // DJ talk-over (owner request on #195, -Fry). Flagged: `DJTalkoverFlag`, a Settings toggle in
@@ -37,6 +38,7 @@ enum TalkoverAudioSession {
         let otherBefore = session.isOtherAudioPlaying
         let hintBefore = session.secondaryAudioShouldBeSilencedHint
         let activeBefore = appActivated
+        let musicBefore = musicIsPlaying()
         var preOffCode = 0
         var options: AVAudioSession.CategoryOptions?
         var activated = false
@@ -47,7 +49,8 @@ enum TalkoverAudioSession {
                                     activeBefore: activeBefore, preDeactivateCode: preOffCode,
                                     optionsRaw: options.map { Int($0.rawValue) },
                                     duckOthersSet: options.map { $0.contains(.duckOthers) },
-                                    outputVolumePercent: Int((session.outputVolume * 100).rounded())), afterTrack: k)
+                                    outputVolumePercent: Int((session.outputVolume * 100).rounded()),
+                                    musicBefore: musicBefore, musicAfter: musicIsPlaying()), afterTrack: k)
         }
         do {
             for step in TalkoverSessionSequence.duck {
@@ -114,7 +117,10 @@ enum TalkoverAudioSession {
     @MainActor static func voiceStarted(afterTrack k: Int, at uptime: Double) {
         #if AERODJ_P0_DIAG
         let ms = TalkoverSessionTiming.duckToVoiceMs(duckedAt: duckedAt, voiceAt: uptime)
-        P0EventTraceHost.shared.talkover { trace, t in _ = trace.talkoverDuckToVoice(ms: ms, afterTrack: k, at: t) }
+        let music = musicIsPlaying()
+        P0EventTraceHost.shared.talkover { trace, t in
+            _ = trace.talkoverDuckToVoice(ms: ms, musicPlaying: music, afterTrack: k, at: t)
+        }
         #endif
     }
 
@@ -141,9 +147,17 @@ enum TalkoverAudioSession {
         let session = AVAudioSession.sharedInstance()
         return P0EventTrace.TalkoverSessionSample(otherAudio: session.isOtherAudioPlaying,
                                                   secondaryHint: session.secondaryAudioShouldBeSilencedHint,
-                                                  outputVolumePercent: Int((session.outputVolume * 100).rounded()))
+                                                  outputVolumePercent: Int((session.outputVolume * 100).rounded()),
+                                                  musicPlaying: musicIsPlaying())
     }
     #endif
+
+    /// Echo's #374 follow-up (-Fry): whether Apple Music is playing right now, read from
+    /// `ApplicationMusicPlayer.playbackStatus`. Read-only; DIAG probe rows only. A Duo run shows
+    /// whether the duck (or the lead before the voice) ever pauses Apple Music.
+    @MainActor static func musicIsPlaying() -> Bool {
+        ApplicationMusicPlayer.shared.state.playbackStatus == .playing
+    }
 
     /// Back to the app's normal category (on an inactive session: activates nothing).
     static func restore() {
@@ -354,7 +368,8 @@ final class TalkoverCoordinator {
             music.skipInterlude()
             return
         }
-        await interlude.play(clips: clips, line: line, afterTrack: k)
+        await interlude.play(clips: clips, line: line, afterTrack: k,
+                            resumeLines: BreakResumeLine.lines(for: h.prepared))
     }
 
     // MARK: Private

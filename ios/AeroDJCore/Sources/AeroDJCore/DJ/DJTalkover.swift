@@ -607,6 +607,10 @@ public struct TalkoverBook: Equatable, Sendable {
 /// the error code of the quiet `setActive(false)` that makes the activation a fresh one (0 ok);
 /// `optionsRaw` / `duckOthersSet` are `categoryOptions` read back after `setCategory`;
 /// `outputVolumePercent` is `outputVolume` x 100. All optional: nil renders as "-".
+///
+/// Echo's #374 follow-up (-Fry): `musicBefore` / `musicAfter` are whether MusicKit's
+/// `ApplicationMusicPlayer.playbackStatus` read `.playing` before the duck sequence and right
+/// after the activation, so a Duo run shows whether the duck ever pauses Apple Music.
 public struct TalkoverDuckProbe: Equatable, Sendable {
     public var otherBefore: Bool
     public var hintBefore: Bool
@@ -618,10 +622,13 @@ public struct TalkoverDuckProbe: Equatable, Sendable {
     public var optionsRaw: Int?
     public var duckOthersSet: Bool?
     public var outputVolumePercent: Int?
+    public var musicBefore: Bool?
+    public var musicAfter: Bool?
 
     public init(otherBefore: Bool, hintBefore: Bool, activated: Bool, otherAfter: Bool, hintAfter: Bool,
                 activeBefore: Bool? = nil, preDeactivateCode: Int? = nil, optionsRaw: Int? = nil,
-                duckOthersSet: Bool? = nil, outputVolumePercent: Int? = nil) {
+                duckOthersSet: Bool? = nil, outputVolumePercent: Int? = nil,
+                musicBefore: Bool? = nil, musicAfter: Bool? = nil) {
         self.otherBefore = otherBefore
         self.hintBefore = hintBefore
         self.activated = activated
@@ -632,6 +639,8 @@ public struct TalkoverDuckProbe: Equatable, Sendable {
         self.optionsRaw = optionsRaw
         self.duckOthersSet = duckOthersSet
         self.outputVolumePercent = outputVolumePercent
+        self.musicBefore = musicBefore
+        self.musicAfter = musicAfter
     }
 }
 

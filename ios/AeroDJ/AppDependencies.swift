@@ -89,6 +89,7 @@ struct AppDependencies {
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj,
                                        personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()))
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
+        interlude.acknowledgementClip = interruptionAcknowledgement(voice: voice, userID: "listener", stationID: "default")
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
         wireSongSeek(session: djSession, playback: MusicKitService.shared, talkover: talkover)
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
@@ -149,6 +150,8 @@ struct AppDependencies {
                                        })
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
+        interlude.acknowledgementClip = interruptionAcknowledgement(voice: voice, userID: TestStation.userID,
+                                                                    stationID: TestStation.stationID)
         // Fixture mode: talk-over is OFF unless the Settings toggle was explicitly set ON. The
         // saved value is honoured in every build (DJTalkoverFlag).
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession,
@@ -202,6 +205,21 @@ struct AppDependencies {
         }
         session.onBreakMustStop = hook
         return interlude
+    }
+
+    /// The "sorry, little interruption" line after a system interruption (-Fry). The existing
+    /// voice path and its fallback, with NO attribution: `VoiceRenderer` then uses on-device,
+    /// free routes only (`mayLeaveDevice` is false), so no paid or cloud voice is asked for it.
+    /// Nil when nothing renders; the break then resumes without it.
+    private static func interruptionAcknowledgement(voice: VoiceRenderer, userID: String,
+                                                    stationID: String) -> @MainActor () async -> Data? {
+        {
+            switch await voice.render(BreakInterruptionAcknowledgement.cue(), userID: userID, stationID: stationID,
+                                      attribution: nil) {
+            case .success(let clip): return clip.audio.data
+            case .failure: return nil
+            }
+        }
     }
 
     /// Song scrubbing (-Atlas): the one production assignment of `onSongSeeked`. A committed
