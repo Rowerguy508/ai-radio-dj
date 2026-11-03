@@ -54,8 +54,14 @@ How to read this:
 - The negative reports change the category and call `setActive(true)` on a session that was most
   likely **already active**. Ducking starts on an activation, so that may be a no-op.
 - The positive report deactivates first, so its `setActive(true)` really activates.
-- Our path is the positive one: since Build 10 the app never activates its session while music
-  plays, so `TalkoverAudioSession.duck` makes a real activation.
+- **Correction (session-order fix, -Fry):** our path was NOT the positive one. `decodeTalkover`
+  called `AVAudioPlayer.prepareToPlay()`, which activates the session (Apple doc), with the
+  mix-only category, about 1.5 s before the duck. The duck then set `.duckOthers` on an already
+  active session. Now the talk-over prepares nothing, and the duck runs Core's
+  `TalkoverSessionSequence.duck` (quiet `setActive(false)`, `.duckOthers`, `setActive(true)`)
+  `duckLead` (0.6 s) before the voice, so the activation is real and the ramp is down before the
+  first word. A duck whose voice never speaks is released (`TalkoverSessionSequence.release`).
+  Our voice fades in and out over 0.2 s (`TalkoverVoiceRamp`). Code reading only.
 - That is a plausible explanation, not a proof. iOS versions differ, and there may be no Apple
   statement either way.
 
@@ -71,6 +77,13 @@ session's own report, as codes only:
   `secondaryAudioShouldBeSilencedHint`) **before** `setActive(true)`;
 - `activated`;
 - `otherAfter` and `hintAfter` right after.
+
+Added with the session-order fix: `activeBefore` (the app's own record; there is no getter),
+`preOff` (error code of the quiet pre-deactivation, 0 none), `opts` (`categoryOptions` read
+back, bitmask) and `duckSet`, `outVol` (`outputVolume` percent); a `duckSettled` row 0.5 s after
+the activation (`otherAudio`, `secondaryHint`, `outVol`); a `duckVoice` row with the
+duck-to-voice delay in `ms`; and an `unduckProbe` row (or `duckReleased` for a duck that never
+spoke) with the deactivation's `err` code and the same three values.
 
 If `otherAudio=true` while only our music is playing, the system counts `ApplicationMusicPlayer`
 as another session. That is the precondition for `.duckOthers` to reach it. It does not show the
@@ -210,7 +223,10 @@ the planner inserts the gap with `play(atTime:)` rather than expecting it in the
 | `miss` | `reason` (voiceStartLate, endedBeforeVoice, nextStartLate, nextStartEarly, endAfterPlayCue, voiceEndedFirst), `ms` |
 | `cancel` | `reason` (seekOutOfWindow, seekWhileSpeaking, skip, userStop, interruption, routeRemoved, revoked, voiceFailed) |
 | `latency` | `measured` (ms), `lat` (new L, ms) |
-| `duckProbe` | `otherAudio`, `secondaryHint` (before activation), `activated`, `otherAfter`, `hintAfter` (booleans) |
+| `duckProbe` | `otherAudio`, `secondaryHint` (before activation), `activated`, `otherAfter`, `hintAfter` (booleans); `activeBefore`, `preOff`, `opts`, `duckSet`, `outVol` |
+| `duckSettled` | `otherAudio`, `secondaryHint`, `outVol`, 0.5 s after the duck activation |
+| `duckVoice` | `ms` from the duck activation to the voice's real start |
+| `unduckProbe` / `duckReleased` | `err` (deactivation error code, 0 ok), `otherAudio`, `secondaryHint`, `outVol` |
 
 The same lines go to the unified log (subsystem AeroDJ, category talkover) as `.public`. They hold
 numbers and codes only.

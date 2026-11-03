@@ -328,6 +328,16 @@ final class P0EventTraceTests: XCTestCase {
         trace.talkoverLatency(measured: 0.912, next: 0.83, afterTrack: 0, at: 9)
         trace.talkoverDuckProbe(TalkoverDuckProbe(otherBefore: true, hintBefore: false, activated: true,
                                                   otherAfter: true, hintAfter: false), afterTrack: 0, at: 9)
+        trace.talkoverDuckProbe(TalkoverDuckProbe(otherBefore: true, hintBefore: false, activated: true,
+                                                  otherAfter: true, hintAfter: false, activeBefore: false,
+                                                  preDeactivateCode: 0, optionsRaw: 2, duckOthersSet: true,
+                                                  outputVolumePercent: 63), afterTrack: 0, at: 9)
+        let sample = P0EventTrace.TalkoverSessionSample(otherAudio: true, secondaryHint: false, outputVolumePercent: 63)
+        trace.talkoverDuckSettled(sample, afterTrack: 0, at: 9)
+        trace.talkoverDuckToVoice(ms: 612, afterTrack: 0, at: 9)
+        trace.talkoverDuckToVoice(ms: nil, afterTrack: 0, at: 9)
+        trace.talkoverUnduck(errorCode: 560030580, released: false, sample, afterTrack: 0, at: 9)
+        trace.talkoverUnduck(errorCode: 0, released: true, sample, afterTrack: 0, at: 9)
         XCTAssertFalse(trace.rows.contains { $0.detail.contains("=unknown") }, "every talk-over code has a trace code")
         shapes += trace.rows
         XCTAssertEqual(Set(shapes.map(\.event)), Set(P0TraceEvent.allCases), "every event kind is checked")
@@ -349,6 +359,36 @@ final class P0EventTraceTests: XCTestCase {
                 XCTAssertTrue(v == "-" || number || codes.contains(v), "value \(v) in \(row.rendered)")
             }
         }
+    }
+
+    /// Session-order fix (-Fry): the duck probe and the settle, duck-to-voice and unduck rows
+    /// carry booleans, error codes, the options bitmask and volume percent only.
+    func testDuckProbeRowsCarryTheSessionFacts() {
+        var trace = P0EventTrace()
+        let old = trace.talkoverDuckProbe(TalkoverDuckProbe(otherBefore: false, hintBefore: false, activated: true,
+                                                            otherAfter: false, hintAfter: false), afterTrack: 2, at: 1)
+        XCTAssertEqual(old.detail, "kind=duckProbe after=2 otherAudio=0 secondaryHint=0 activated=1 otherAfter=0 hintAfter=0 "
+                                 + "activeBefore=- preOff=- opts=- duckSet=- outVol=-")
+        let probe = trace.talkoverDuckProbe(TalkoverDuckProbe(otherBefore: true, hintBefore: true, activated: true,
+                                                              otherAfter: true, hintAfter: true, activeBefore: true,
+                                                              preDeactivateCode: 560030580, optionsRaw: 2,
+                                                              duckOthersSet: true, outputVolumePercent: 63),
+                                            afterTrack: 2, at: 1)
+        XCTAssertEqual(probe.detail, "kind=duckProbe after=2 otherAudio=1 secondaryHint=1 activated=1 otherAfter=1 hintAfter=1 "
+                                   + "activeBefore=1 preOff=560030580 opts=2 duckSet=1 outVol=63")
+        let s = P0EventTrace.TalkoverSessionSample(otherAudio: true, secondaryHint: false, outputVolumePercent: 50)
+        XCTAssertEqual(trace.talkoverDuckSettled(s, afterTrack: 2, at: 1.5).detail,
+                       "kind=duckSettled after=2 otherAudio=1 secondaryHint=0 outVol=50")
+        XCTAssertEqual(trace.talkoverDuckToVoice(ms: 604, afterTrack: 2, at: 2).detail, "kind=duckVoice after=2 ms=604")
+        XCTAssertEqual(trace.talkoverDuckToVoice(ms: nil, afterTrack: 2, at: 2).detail, "kind=duckVoice after=2 ms=-")
+        XCTAssertEqual(trace.talkoverUnduck(errorCode: 0, released: false, s, afterTrack: 2, at: 9).detail,
+                       "kind=unduckProbe after=2 err=0 otherAudio=1 secondaryHint=0 outVol=50")
+        XCTAssertEqual(trace.talkoverUnduck(errorCode: 1, released: true,
+                                            P0EventTrace.TalkoverSessionSample(otherAudio: false, secondaryHint: false,
+                                                                                outputVolumePercent: nil),
+                                            afterTrack: 2, at: 9).detail,
+                       "kind=duckReleased after=2 err=1 otherAudio=0 secondaryHint=0 outVol=-")
+        XCTAssertEqual(TalkoverSessionTiming.duckToVoiceMs(duckedAt: 10.0, voiceAt: 10.6044), 604)
     }
 
     func testEverySkipReasonHasItsOwnTraceCode() {
