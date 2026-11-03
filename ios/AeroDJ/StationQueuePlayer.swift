@@ -15,7 +15,9 @@ import OSLog
 /// - `MusicKitService.stationQueueForIdlePlay`: Play with nothing queued starts the station.
 /// - `MusicKitService.onQueueReplaced`: every new queue belongs to the station committed then.
 /// A hand-off starts like a song tap (`TapPlaySequence`: reserve, play, then break prep), so the
-/// DJ session plans breaks for the new songs. Station queues carry no briefing handoff.
+/// DJ session plans breaks for the new songs. A station START (idle Play, or a created-station
+/// row opened while idle, or a different station taking over at a song boundary) may carry one
+/// personal update (#332, `StationStartBriefing`); a same-station refill carries none.
 ///
 /// Fallbacks: no seeds, an empty pool, a failed fetch, no playable song, a queue not ready yet, or a
 /// held start all keep the current queue (or Play's existing message). Never an empty queue.
@@ -28,15 +30,25 @@ final class StationQueuePlayer {
     private let music: MusicKitService
     private let station: StationConfigurationModel
     private let djSession: DJBreakSession
+    /// DJ talk-over: a rating that drops a break also drops a talk-over held or running for it (PR B).
+    private let talkover: TalkoverCoordinator?
     /// Set only between this type's `music.play` call and its synchronous queue assignment, so the
     /// hand-off's own queue keeps the key the feed gave it (a change saved meanwhile still applies).
     private var ownQueueStarting = false
+    /// The song tap's briefing provider (`LiveQueueBriefing.provider`), read when a station starts.
+    /// Nil until `start(briefing:)`: no personal update (fails closed).
+    private var briefing: (@MainActor () -> ApprovedShowHandoff)?
 
+    /// `ratings`: the committed station's song ratings (`StationRatingsModel.bias`, PR B). Read on
+    /// every build and hand-off; never logged, never passed to the DJ or a voice.
     init(music: MusicKitService, station: StationConfigurationModel, djSession: DJBreakSession,
+         talkover: TalkoverCoordinator? = nil,
+         ratings: @escaping @MainActor () -> StationRatingBias = { .none },
          source: MusicCatalogSeedSource = MusicCatalogSeedSource()) {
         self.music = music
         self.station = station
         self.djSession = djSession
+        self.talkover = talkover
         let log = Logger(subsystem: "com.aerodj.app", category: "stationQueue")
         feed = StationQueueFeed<Track>(
             resolver: CatalogStationSeedResolver(catalog: source),
@@ -47,12 +59,15 @@ final class StationQueuePlayer {
                 let current = queue.firstIndex { $0.id == music.currentTrack?.id } ?? -1
                 return Set(queue.prefix(current + 1).map(\.id))
             },
+            ratings: ratings,
             log: { event in log.notice("\(event.diagnostics, privacy: .public)") })
         createdStart = CreatedStationStarter(feed: feed)
     }
 
     /// Installs the three hooks and starts following the station. Call once, at launch.
-    func start() {
+    /// `briefing` is the same provider a song tap uses; only station starts read it (#332).
+    func start(briefing: (@MainActor () -> ApprovedShowHandoff)? = nil) {
+        self.briefing = briefing
         music.onQueueReplaced = { [weak self] in
             guard let self else { return }
             if self.ownQueueStarting { self.ownQueueStarting = false; return }
@@ -64,11 +79,13 @@ final class StationQueuePlayer {
                                                           active: self.station.active,
                                                           playbackMayStart: self.music.mayAutoResume,
                                                           sameSong: { $0.id == $1.id }) else { return nil }
-            return { await self.play(tracks) }
+            // #332: a station switch at the boundary is a start; a same-station refill is not.
+            let kind = StationHandOffKind(boundaryHandOff: self.feed.pendingHandOffTrigger)
+            return { await self.play(tracks, kind) }
         }
         music.stationQueueForIdlePlay = { [weak self] in
             guard let self, let tracks = self.feed.takeForIdleStart(active: self.station.active) else { return nil }
-            return { await self.play(tracks) }
+            return { await self.play(tracks, .idlePlayStart) }
         }
         feed.follow(station)
     }
@@ -88,11 +105,34 @@ final class StationQueuePlayer {
             apply: { if case .success = await studio.applyRecipe(recipeID) { true } else { false } },
             active: { station.active },
             nothingQueued: { music.queue.isEmpty && !music.isPlaying },
-            start: { tracks in _ = await play(tracks) })
+            start: { tracks in _ = await play(tracks, .createdStationStart) })
         Logger(subsystem: "com.aerodj.app", category: "stationQueue")
             .notice("createdStationOpen \(String(describing: outcome), privacy: .public)")
         return outcome
     }
+
+    /// A song was rated, a rating undone, or ratings cleared (PR B, -Nova). Never logged.
+    /// 1. The staged queue is rebuilt in the background with the new ratings (`ratingsChanged`).
+    /// 2. Songs still queued after the playing one that the station now excludes (never, held tired)
+    ///    lose every prepared break that could name them: the boundary before each ("up next") and
+    ///    after it ("that was"). This is the skip path's cut (`DJBreakSession.songCut`), so a cut
+    ///    boundary is never prepared again in this queue; a talk-over held or running for it is
+    ///    dropped too. The songs themselves are not skipped ahead of time (that waits on #373):
+    ///    a queued never still plays once, with no break naming it. The playing song is the
+    ///    caller's (a never on it skips through `MusicKitService.skip()`).
+    func ratingChanged() async {
+        feed.ratingsChanged(station.committedDisplayed)
+        let queue = music.queue
+        let playing = queue.firstIndex { $0.id == music.currentTrack?.id } ?? -1
+        let upcoming = feed.excludedUpcoming(in: queue, after: playing, active: station.active)
+        for k in StationRatingBreakDrop.boundaries(forUpcoming: upcoming, playing: playing) {
+            talkover?.breakDropped(afterTrack: k)
+            await djSession.songCut(afterTrack: k)
+        }
+    }
+
+    /// The catalog artist ID the last build saw for `songID` (love's discovery steering only).
+    func artistID(forSong songID: String) -> String? { feed.artistID(forSong: songID) }
 
     /// A built-in station row was tapped (Fry #213 nit 2): a created-station tap still waiting for
     /// its queue does not start.
@@ -106,14 +146,16 @@ final class StationQueuePlayer {
     /// back (the playing queue keeps its station, the songs are staged again for a retry), and the
     /// caller gets the typed result: a failed boundary hand-off falls back to the old queue's next
     /// song. A held start (`.onHold`: the queue is loaded and waits for the hold) counts as started.
-    private func play(_ tracks: [Track]) async -> StationHandOffResult {
-        let result = await start(tracks)
+    private func play(_ tracks: [Track], _ kind: StationHandOffKind) async -> StationHandOffResult {
+        let result = await start(tracks, kind)
         feed.handOffFinished(result)
         return result
     }
 
-    private func start(_ tracks: [Track]) async -> StationHandOffResult {
+    private func start(_ tracks: [Track], _ kind: StationHandOffKind) async -> StationHandOffResult {
         let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName, origin: $0.origin) }
+        // #332: read at start time, like a song tap; consent runs inside (`forQueue()`).
+        let offer = StationStartBriefing.offer(for: kind, briefing: briefing)
         let stationRef = music.snapshot.station
         do {
             try await TapPlaySequence.run(
@@ -124,7 +166,8 @@ final class StationQueuePlayer {
                 try await music.play(tracks, station: stationRef)
             },
             scheduleBreakPrep: { reservation in
-                djSession.beginQueueInBackground(reservation, djTracks)
+                djSession.beginQueueInBackground(reservation, djTracks,
+                                                 briefing: offer.briefing, sources: offer.sources)
             },
             release: { djSession.releaseQueueSetup($0) })
             return .started

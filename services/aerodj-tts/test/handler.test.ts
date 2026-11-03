@@ -61,6 +61,8 @@ function harness(
     now: () => Date.UTC(2026, 9, 28, 12),
     timeoutMs: 50,
     requestId: () => 'req-1',
+    // Test-only: these harnesses drive the handler with an in-memory/spy limiter (Fry on #287 gate).
+    testOnlyAllowNonDurableLimiter: true,
   };
   return { deps, logs, calls };
 }
@@ -289,7 +291,7 @@ test('success: upstream request shape is correct', async () => {
   assert.deepEqual(JSON.parse(String(init.body)), {
     text: 'Hello from the DJ booth.',
     model_id: 'eleven_multilingual_v2',
-    voice_settings: { stability: 0.4, similarity_boost: 0.75, speed: 1 },
+    voice_settings: { stability: 0.32, similarity_boost: 0.75, speed: 1.03 },
   });
 });
 
@@ -306,7 +308,7 @@ test('voice_settings: exact body with the default flash model, no style, no spea
   const sent = JSON.parse(String(h.calls[0].init.body)) as Record<string, unknown>;
   assert.deepEqual(Object.keys(sent).sort(), ['model_id', 'text', 'voice_settings']);
   assert.equal(sent.model_id, 'eleven_flash_v2_5');
-  assert.deepEqual(sent.voice_settings, { stability: 0.4, similarity_boost: 0.75, speed: 1 });
+  assert.deepEqual(sent.voice_settings, { stability: 0.32, similarity_boost: 0.75, speed: 1.03 });
   const vs = sent.voice_settings as Record<string, unknown>;
   assert.ok(!('style' in vs), 'style must never be sent');
   assert.ok(!('use_speaker_boost' in vs), 'use_speaker_boost is not sent');
@@ -333,7 +335,7 @@ test('voice_settings: client-supplied settings, style, speed or model are ignore
   assert.deepEqual(sent, {
     text: 'Hello from the DJ booth.',
     model_id: 'eleven_flash_v2_5',
-    voice_settings: { stability: 0.4, similarity_boost: 0.75, speed: 1 },
+    voice_settings: { stability: 0.32, similarity_boost: 0.75, speed: 1.03 },
   });
   assert.ok(!String(h.calls[0].init.body).includes('style'));
 });
@@ -341,7 +343,7 @@ test('voice_settings: client-supplied settings, style, speed or model are ignore
 test('voice_settings: the same settings ride on SSML renders', async () => {
   const h = harness();
   await handleTts(request({ text: '<speak>Next up.</speak>', format: 'ssml' }), h.deps);
-  assert.deepEqual(JSON.parse(String(h.calls[0].init.body)).voice_settings, { stability: 0.4, similarity_boost: 0.75, speed: 1 });
+  assert.deepEqual(JSON.parse(String(h.calls[0].init.body)).voice_settings, { stability: 0.32, similarity_boost: 0.75, speed: 1.03 });
 });
 
 test('voice_settings do not change cap accounting: a 9,000-char daily cap still holds exactly', async () => {
@@ -414,7 +416,7 @@ test('logs contain only requestId, status and chars; never text, token, key or v
     mock.method(console, m, (...args: unknown[]) => lines.push(args.map(String).join(' '))),
   );
   try {
-    const deps = { ...defaultDeps(baseEnv()), limiter: new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 1e6, requestsPerMinute: 1e6 }) };
+    const deps = { ...defaultDeps(baseEnv()), limiter: new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 1e6, requestsPerMinute: 1e6 }), testOnlyAllowNonDurableLimiter: true as const };
     const ok = { ...deps, fetch: (async () => pcmResponse(22_050)) as typeof fetch };
     await handleTts(request({ text: SECRET_TEXT }), ok);
     await handleTts(request({ text: SECRET_TEXT }, 'Bearer wrong-secret-token'), ok);
@@ -645,6 +647,7 @@ async function captureUpstreamFailure(upstream: () => Response, text = SECRET_TE
     const deps = {
       ...defaultDeps(baseEnv()),
       limiter: new InMemoryUsageLimiter({ deployment: 'production' as const, dailyCharCap: 1e6, requestsPerMinute: 1e6 }),
+      testOnlyAllowNonDurableLimiter: true as const,
       fetch: (async () => upstream()) as typeof fetch,
     };
     res = await handleTts(request({ text }), deps);

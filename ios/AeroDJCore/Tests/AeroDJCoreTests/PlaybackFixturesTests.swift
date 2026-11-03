@@ -1,3 +1,5 @@
+// PlaybackFixtures is Debug-only (#if DEBUG); `swift test -c release` builds this file too.
+#if DEBUG
 import XCTest
 @testable import AeroDJCore
 
@@ -33,3 +35,4 @@ final class PlaybackFixturesTests: XCTestCase {
         if case .speaking = PlaybackFixtures.djSpeaking.dj {} else { XCTFail("expected speaking") }
     }
 }
+#endif

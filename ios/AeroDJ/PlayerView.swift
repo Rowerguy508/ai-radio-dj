@@ -35,7 +35,7 @@ struct PlayerView: View {
                       access: access,
                       snapshot: music.snapshot,
                       actions: .live(music),
-                      search: .live(music, station: stationRef, djSession: djSession, briefing: LiveQueueBriefing.provider(studio: studio)),
+                      search: .live(music, station: stationRef, djSession: djSession, briefing: djSession.briefingProvider(studio: studio)),
                       studio: studio,
                       isTestStation: isTestStation,
                       timeSource: .live)
@@ -45,7 +45,7 @@ struct PlayerView: View {
         .navigationTitle(station.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .talkoverToggleEntry(isTestStation: isTestStation) // DJ talk-over switch: AERODJ_OWNER_AB only; a no-op otherwise (-Fry)
+        .modifier(SongRatingToastHost()) // Station ratings' Undo toast; nothing without a controller (-Nova)
         // Fry #110: Tune Save/Discard waits on real transport. Callbacks + auth refresh stay
         // on PlaybackSessionBinder (once-only); do not authorize() here.
         .task { await reportPlaybackActivity(music.snapshot) }
@@ -148,7 +148,8 @@ enum PlaybackSessionBinder {
                             reportUnplayed(.emptyLine)
                             break
                         }
-                        await interlude.play(clips: clips, line: line, afterTrack: finishedIndex)
+                        await interlude.play(clips: clips, line: line, afterTrack: finishedIndex,
+                                            resumeLines: BreakResumeLine.lines(for: breakToPlay))
                     case .continueMusic:
                         // Close the early hand-out. A later stop must see idle, not a break
                         // that will never play.

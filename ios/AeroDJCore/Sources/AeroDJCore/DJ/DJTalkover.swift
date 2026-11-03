@@ -18,41 +18,29 @@ import Foundation
 
 // MARK: - Flag
 
-/// Default OFF. ON only in the owner A/B TestFlight build (`AERODJ_OWNER_AB`), which the owner
-/// asked for on 2026-10-29. In that build a `UserDefaults` bool under `defaultsKey` (the Player
-/// toolbar toggle) can turn it off and back on without a new build. In every other build the
-/// saved value is ignored (not deleted): a normal build installed over an owner A/B build has no
-/// toggle, so a saved ON must not keep it talking over (build 26 QA T-15). Debug, the fixture test
-/// station, plain Release and `swift test` are OFF.
+/// A user setting in every build (owner, 2026-11-02): Settings > "DJ talk-over & fades",
+/// labelled Recommended. The `UserDefaults` bool under `defaultsKey` is honoured in every build;
+/// unset means `unsetDefault`, which is ON on a live station and OFF on the fixture test station
+/// (and therefore in fixture mode, previews and tests that pass `unsetDefault: false`). This
+/// replaces #225's owner A/B-only gate. The key is unchanged, so a value saved by the old owner
+/// A/B toolbar toggle carries over. Flag OFF always means a hard break (`TalkoverPlanner`).
 public enum DJTalkoverFlag {
     public static let defaultsKey = "AeroDJTalkoverEnabled"
 
-    #if AERODJ_OWNER_AB
-    public static let isOwnerABBuild = true
-    #else
-    public static let isOwnerABBuild = false
-    #endif
-
-    /// What an unset toggle shows in the owner A/B build (ON). OFF in every other build.
-    public static let buildDefault = isOwnerABBuild
-
     /// What an unset toggle means: ON on the live station, OFF on the fixture test station. The
-    /// coordinator and the owner A/B toggle both use this, so the toggle never shows ON while
+    /// coordinator and the Settings toggle both use this, so the toggle never shows ON while
     /// talk-over is off.
     public static func unsetDefault(isTestStation: Bool) -> Bool { !isTestStation }
 
-    /// The decision, pure. ON only in an owner A/B build whose saved toggle is ON, or unset with
-    /// `unsetDefault` ON. Outside an owner A/B build it is OFF whatever was saved (fail-closed).
-    public static func isEnabled(ownerABBuild: Bool, saved: Bool?, unsetDefault: Bool = true) -> Bool {
-        guard ownerABBuild else { return false }
-        return saved ?? unsetDefault
+    /// The decision, pure: the saved toggle if there is one, else `unsetDefault`. The same in
+    /// every build (no owner A/B gate).
+    public static func isEnabled(saved: Bool?, unsetDefault: Bool = true) -> Bool {
+        saved ?? unsetDefault
     }
 
-    /// Reads the saved toggle (never writes or removes it). Pass `ownerABBuild` explicitly in tests.
-    public static func isEnabled(defaults: UserDefaults = .standard, ownerABBuild: Bool = DJTalkoverFlag.isOwnerABBuild,
-                                 unsetDefault: Bool = true) -> Bool {
-        isEnabled(ownerABBuild: ownerABBuild, saved: defaults.object(forKey: defaultsKey) as? Bool,
-                  unsetDefault: unsetDefault)
+    /// Reads the saved toggle (never writes or removes it).
+    public static func isEnabled(defaults: UserDefaults = .standard, unsetDefault: Bool = true) -> Bool {
+        isEnabled(saved: defaults.object(forKey: defaultsKey) as? Bool, unsetDefault: unsetDefault)
     }
 }
 
@@ -117,6 +105,10 @@ public struct TalkoverConfig: Equatable, Sendable {
     /// The planner must decide at least this long before the voice starts (take the break,
     /// decode, set the session). A seek that lands closer to the end is a hard break.
     public var armLead: Double = 1.5
+    /// The duck (session activation with `.duckOthers`) runs this long before the voice, so the
+    /// system's duck ramp is down before the first word (-Fry). It sits inside `armLead`: the
+    /// plan always leaves `armLead` between the decision and the voice start.
+    public var duckLead: Double = 0.6
     /// Longest break the talk-over handles. Echo's approved budget: MAIN about 15 s, the 0.3 s
     /// gap, a closing line about 3 s, so about 18.5 s; 20 leaves slack for rendering.
     public var maxVoiceSeconds: Double = 20
@@ -609,19 +601,46 @@ public struct TalkoverBook: Equatable, Sendable {
 /// The session's own report around the talk-over duck activation (DIAG only, codes only).
 /// `otherBefore`/`hintBefore`: `isOtherAudioPlaying` / `secondaryAudioShouldBeSilencedHint`
 /// before `setActive(true)`; `otherAfter`/`hintAfter` right after. See docs/dj-talkover.md.
+///
+/// Added with the session-order fix (-Fry): `activeBefore` is the app's own record of whether
+/// it had activated the session (AVAudioSession has no public getter); `preDeactivateCode` is
+/// the error code of the quiet `setActive(false)` that makes the activation a fresh one (0 ok);
+/// `optionsRaw` / `duckOthersSet` are `categoryOptions` read back after `setCategory`;
+/// `outputVolumePercent` is `outputVolume` x 100. All optional: nil renders as "-".
+///
+/// Echo's #374 follow-up (-Fry): `musicBefore` / `musicAfter` are whether MusicKit's
+/// `ApplicationMusicPlayer.playbackStatus` read `.playing` before the duck sequence and right
+/// after the activation, so a Duo run shows whether the duck ever pauses Apple Music.
 public struct TalkoverDuckProbe: Equatable, Sendable {
     public var otherBefore: Bool
     public var hintBefore: Bool
     public var activated: Bool
     public var otherAfter: Bool
     public var hintAfter: Bool
+    public var activeBefore: Bool?
+    public var preDeactivateCode: Int?
+    public var optionsRaw: Int?
+    public var duckOthersSet: Bool?
+    public var outputVolumePercent: Int?
+    public var musicBefore: Bool?
+    public var musicAfter: Bool?
 
-    public init(otherBefore: Bool, hintBefore: Bool, activated: Bool, otherAfter: Bool, hintAfter: Bool) {
+    public init(otherBefore: Bool, hintBefore: Bool, activated: Bool, otherAfter: Bool, hintAfter: Bool,
+                activeBefore: Bool? = nil, preDeactivateCode: Int? = nil, optionsRaw: Int? = nil,
+                duckOthersSet: Bool? = nil, outputVolumePercent: Int? = nil,
+                musicBefore: Bool? = nil, musicAfter: Bool? = nil) {
         self.otherBefore = otherBefore
         self.hintBefore = hintBefore
         self.activated = activated
         self.otherAfter = otherAfter
         self.hintAfter = hintAfter
+        self.activeBefore = activeBefore
+        self.preDeactivateCode = preDeactivateCode
+        self.optionsRaw = optionsRaw
+        self.duckOthersSet = duckOthersSet
+        self.outputVolumePercent = outputVolumePercent
+        self.musicBefore = musicBefore
+        self.musicAfter = musicAfter
     }
 }
 

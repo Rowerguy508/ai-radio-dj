@@ -432,6 +432,7 @@ final class MusicKitService: ObservableObject {
         }
         queueIndex = index
         currentTrack = queue[index]
+        updateRemoteNextEnabled()
         // Build 9 P0: every queue load is the app's own change. Without this, loading the
         // next song (`startNextTrack`) while MusicKit still reported `.playing` could read as
         // a natural end of the entry just replaced, and advance again: the auto-skip chain.
@@ -590,6 +591,14 @@ final class MusicKitService: ObservableObject {
 
     private func send(_ event: PlaybackEvent) {
         snapshot = engine.apply(event)
+        updateRemoteNextEnabled()
+    }
+
+    /// P0 lock-screen skip (-Echo): Next is enabled only while the app's queue has a next song.
+    private func updateRemoteNextEnabled() {
+        guard remoteCommandsInstalled else { return }
+        MPRemoteCommandCenter.shared().nextTrackCommand.isEnabled =
+            RemoteNextCommand.isEnabled(queueIndex: queueIndex, queueCount: queue.count)
     }
 
     /// Called when a boundary has no DJ line: transition -> music, so playback never sticks.
@@ -669,6 +678,14 @@ final class MusicKitService: ObservableObject {
         #endif
         guard let step = interpreted else {
             isPlaying = observation.isPlaying
+            if boundaries.takeRemoteSkip() {
+                // P0 lock-screen skip (-Echo): MusicKit ended the one-song queue mid-song with no
+                // cause the app knows of (its own lock-screen Next). Same path as the in-app Skip:
+                // no break about the cut song, its prepared break dropped, the next song loads.
+                logPlayback("remoteSkip index=\(queueIndex)")
+                Task { @MainActor [weak self] in _ = try? await self?.skip() }
+                return
+            }
             if boundaries.takeNoProgressEnd() {
                 surfaceNoProgressEnd(stillPlaying: observation.isPlaying)
             }
@@ -781,11 +798,13 @@ final class MusicKitService: ObservableObject {
 
     /// Build 18 P0 (-Fry): at a natural end (before the break and song 2) and again in
     /// `startNextTrack`, Core's `SongEndHold` decides whether an interruption that began at the
-    /// song's end may keep holding playback. A call or another app's audio keeps the hold.
+    /// song's end may keep holding playback. A call or another app's audio keeps the hold, and a
+    /// never-ended interruption is released only after MusicKit itself finished the queue (#149).
     private func releaseSongEndHoldIfAllowed(finished: Int) {
         let session = AVAudioSession.sharedInstance()
         guard sessionPolicy.naturalEndReached(
             interruptionBeganNearEnd: boundaries.interruptionBeganNearEnd,
+            queueFinishedSinceInterruption: boundaries.queueFinishedSinceInterruption,
             otherAudioPlaying: session.isOtherAudioPlaying,
             secondaryHint: session.secondaryAudioShouldBeSilencedHint,
             callActive: callActiveNow) else { return }
@@ -1061,6 +1080,34 @@ final class MusicKitService: ObservableObject {
             }
             return .success
         }
+        // P0 lock-screen skip (-Echo; MusicKitService handed off by Orion for this PR): Next runs
+        // the in-app `skip()`. The app's MusicKit queue holds one song, so a Next the system
+        // handles itself only ends playback; the poll's remote-skip check covers that case.
+        // Previous has no app path and stays disabled.
+        center.previousTrackCommand.isEnabled = false
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            guard Thread.isMainThread else {
+                // Off-main delivery (not expected): the queue cannot be read here, so the
+                // decision is made after the hop. The command reports success either way.
+                Task { @MainActor in
+                    guard RemoteNextCommand.decide(queueIndex: self.queueIndex,
+                                                   queueCount: self.queue.count) == .skip else { return }
+                    _ = try? await self.skip()
+                }
+                return .success
+            }
+            return MainActor.assumeIsolated {
+                switch RemoteNextCommand.decide(queueIndex: self.queueIndex, queueCount: self.queue.count) {
+                case .skip:
+                    Task { @MainActor in _ = try? await self.skip() }
+                    return .success
+                case .noNextSong:
+                    return .noActionableNowPlayingItem
+                }
+            }
+        }
+        updateRemoteNextEnabled()
         // Seek follow-up (-Atlas; flagged for Claude): a lock-screen / Control Center scrub goes
         // through the in-app `seek(to:trackID:)`, so it has the same gates (blocked during a DJ
         // break or a load, clamped, detector re-baselined, DJ session told). On the main thread
