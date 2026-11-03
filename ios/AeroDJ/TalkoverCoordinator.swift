@@ -308,12 +308,18 @@ final class TalkoverCoordinator {
         switch ratingCut.ratingChanged(excluded: excluded, speakingLine: interlude.talkoverSpeakingLine) {
         case let .fadeAndDropBreak(k, dropped):
             trace(.ratedNever(dropped, k))
+            // Sentinel's #396 N2: these two lines are Debug only (nothing in Release os_log); P0 diag
+            // builds keep the trace row above. Codes and counts only.
+            #if DEBUG
             log.notice("dj talkover faded, break dropped after=\(k, privacy: .public) line=\(dropped.line, privacy: .public) dropped=\(dropped.count, privacy: .public)")
+            #endif
             interlude.fadeOutTalkover(seconds: TalkoverVoiceRamp.fadeSeconds)
             if run?.afterTrack == k { cancelRun(.skip) }   // its voice is fading out right now
             if held?.afterTrack == k { drop(k) }
         case let .dropQueued(k, lines):
+            #if DEBUG
             log.notice("dj talkover lines dropped after=\(k, privacy: .public) dropped=\(lines.count, privacy: .public)")
+            #endif
             interlude.dropQueuedTalkoverLines(lines)
         case .none:
             break

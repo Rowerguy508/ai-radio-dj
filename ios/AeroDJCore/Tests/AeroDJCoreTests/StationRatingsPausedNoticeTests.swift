@@ -145,4 +145,26 @@ final class StationRatingsPausedNoticeTests: XCTestCase {
         let body = queue[start.upperBound...].prefix { $0 != "}" }
         XCTAssertTrue(body.contains("feed.ratingsChanged(station.committedDisplayed)"))
     }
+
+    /// Sentinel's #396 N2: the talk-over rating log lines never reach a Release os_log, and carry
+    /// codes and counts only.
+    func testTheTalkoverRatingLogLinesAreDebugOnly() async throws {
+        let source = try appSource("TalkoverCoordinator.swift")
+        let lines = source.components(separatedBy: "\n")
+        let markers = ["dj talkover faded, break dropped", "dj talkover lines dropped"]
+        for marker in markers {
+            let at = try XCTUnwrap(lines.firstIndex { $0.contains(marker) }, marker)
+            XCTAssertEqual(lines.filter { $0.contains(marker) }.count, 1, marker)
+            var depth = 0
+            for line in lines[..<at] {
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if t == "#if DEBUG" { depth += 1 } else if t == "#endif", depth > 0 { depth -= 1 }
+            }
+            XCTAssertEqual(depth, 1, "\(marker) is inside #if DEBUG")
+            let line = lines[at]
+            for forbidden in ["title", "artist", "song", "rating", "id:", "ID"] {
+                XCTAssertFalse(line.lowercased().contains(forbidden.lowercased()), "\(marker): \(forbidden)")
+            }
+        }
+    }
 }
