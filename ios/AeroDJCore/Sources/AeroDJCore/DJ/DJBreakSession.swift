@@ -101,6 +101,13 @@ public final class DJBreakSession {
     /// Purges prepared and cached narration for sources that stop being narratable at a
     /// boundary (expiry). The app sets the same `NarrationPurger` the connections use.
     public var purger: (any NarrationPurging)?
+    /// #199: Apple Music catalog facts for DJ commentary (the app sets the MusicKit adapter).
+    /// Nil: no fact lines, and `queueStarted` does not wait for anything new.
+    public var catalogFactsSource: (any CatalogTrackFactsSource)?
+    /// #199: the longest `queueStarted` waits for catalog facts. Past it, the queue is planned
+    /// without them (no fact is ever late-added to a planned break). Songs never wait: a song
+    /// start during setup is held and replayed as before.
+    public var catalogFactsTimeout: Duration = .milliseconds(1500)
     /// True once both the purger and the stop hook are set. Both app compositions check it
     /// before playback can start.
     public var isWiredForPurge: Bool { purger != nil && onBreakMustStop != nil }
@@ -252,6 +259,14 @@ public final class DJBreakSession {
         guard !Task.isCancelled else { return }
         if briefing != nil { await station.handle(.briefingWillPlan) }
         guard !Task.isCancelled else { return }
+        // #199: catalog facts for this queue's `.catalog` tracks only (library and unknown ids are
+        // never asked for). Bounded by `catalogFactsTimeout`; nothing, late or failed is `[:]`.
+        var facts: [String: CatalogTrackFacts] = [:]
+        if let source = catalogFactsSource {
+            facts = await CatalogFactsFetch.facts(for: tracks, from: source, timeout: catalogFactsTimeout)
+            guard !Task.isCancelled else { return }
+        }
+        writer.catalogFacts = facts
         self.tracks = tracks
         // A stop held for the old queue's break (no hook yet) has nothing left to stop; it must
         // not cancel a break of this queue later. Likewise the old queue's on-air break: a purge
@@ -709,6 +724,7 @@ public final class DJBreakSession {
             shifted.shape = b.shape
             shifted.optionalCueIDs = b.optionalCueIDs   // #320's measured-audio trim order
             shifted.timeCheck = b.timeCheck
+            shifted.catalogFactCues = b.catalogFactCues   // #199 provenance
             breaks[k] = shifted
         }
     }

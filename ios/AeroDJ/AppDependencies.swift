@@ -104,6 +104,8 @@ struct AppDependencies {
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
         djSession.purger = purger
+        // #199: artist and song facts from the Apple Music catalog (MusicKit) only.
+        djSession.catalogFactsSource = MusicKitCatalogFactsSource()
         precondition(djSession.isWiredForPurge, "purger and stop hook are set before playback")
         let connections = ConnectionsModel(
             station: station,

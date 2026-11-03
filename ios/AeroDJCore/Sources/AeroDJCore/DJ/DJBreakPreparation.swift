@@ -389,6 +389,7 @@ public actor DJBreakPreparer {
         rest.talkOverCueID = djBreak.talkOverCueID
         rest.shape = djBreak.shape
         rest.optionalCueIDs = djBreak.optionalCueIDs.filter { $0 != id }
+        rest.catalogFactCues = djBreak.catalogFactCues.filter { $0.key != id }
         return rest
     }
 

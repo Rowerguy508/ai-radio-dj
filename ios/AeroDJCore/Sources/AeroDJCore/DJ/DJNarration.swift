@@ -195,8 +195,10 @@ public struct TemplatePool: Sendable {
 
 /// Where a spoken line's words came from. Every spoken cue has one.
 public enum SpokenAttribution: Equatable, Sendable {
-    /// Built only from MusicKit title/artist of these track ids. `origin` is the most restrictive
-    /// origin of those tracks (`resolvingTrackOrigins(in:)`); only `.catalog` may leave the device.
+    /// Built only from MusicKit title/artist of these track ids, or (#199) from their Apple Music
+    /// catalog facts (`CatalogTrackFacts`, `DJBreak.catalogFactCues`). `origin` is the most
+    /// restrictive origin of those tracks (`resolvingTrackOrigins(in:)`); only `.catalog` may
+    /// leave the device.
     case trackMetadata(trackIDs: [String], origin: TrackOrigin = .unknown)
     /// An approved, sanitized briefing item (its text also names the source aloud).
     case personalContext(itemID: UUID, source: ContextSourceKind, provenance: String)
@@ -230,6 +232,9 @@ public struct DJBreak: Equatable, Sendable {
     /// The time check (lane 2 part 2), if this break has one. Presenter text only. Its words are
     /// written at render time (`DJBreakPreparer`), never from the plan-time reading.
     public var timeCheck: DJPlannedTimeCheck? = nil
+    /// #199: the catalog facts each fact-line cue speaks, with their Apple Music provenance. Only
+    /// these cues carry catalog facts; empty when the break has none.
+    public var catalogFactCues: [UUID: [CatalogFact]] = [:]
     /// The time-check cue's id (`timeCheck?.cueID`).
     public var timeCheckCueID: UUID? { timeCheck?.cueID }
     /// When the time check was planned (`DJPlanClock.now` at planning; spacing only).
@@ -302,6 +307,12 @@ public struct DJScriptWriter: Sendable {
     public let shapes: DJBreakShapeConfig?
     /// Optional extra main-segment line per natural break (the weather seam). Nil: none.
     public var extraLineSource: (any DJBreakExtraLineSource)?
+    /// #199: Apple Music catalog facts by `DJTrack.id`, read when a natural break is planned. Only
+    /// `.catalog` tracks are ever given a fact line. Empty (the default): no fact lines, and the
+    /// planner draws exactly as before.
+    public var catalogFacts: [String: CatalogTrackFacts] = [:]
+    /// #199: the fixed fact phrasing (`CatalogFactLine.templates`); the same in every tone.
+    private var catalogFactPool = TemplatePool(CatalogFactLine.templates)
     private var shapePicker: DJBreakShapePicker?
     private var recentTemplates: RecentSpokenTemplates
     /// Natural breaks planned so far (id: first cue), newest last, for `forgetPlannedBreaks`.
@@ -681,7 +692,11 @@ public struct DJScriptWriter: Sendable {
                                           timeCheckAvailable: timeCheckReading(boundary: boundary, config: config) != nil)
         guard let shape = picker.pick(context) else { return .notApplicable }
 
-        struct Line { var template: String; var text: String; var attribution: SpokenAttribution; var optional: Bool }
+        struct Line {
+            var template: String; var text: String; var attribution: SpokenAttribution; var optional: Bool
+            /// #199: the catalog facts this line speaks (fact lines only).
+            var facts: [CatalogFact] = []
+        }
         var lines: [Line] = []
         let recent = recentTemplates
         func draw(_ pool: inout TemplatePool, _ values: [String: String], _ attribution: SpokenAttribution,
@@ -718,6 +733,20 @@ public struct DJScriptWriter: Sendable {
         }
         let prevAttribution = SpokenAttribution.trackMetadata(trackIDs: [prev.id])
         let nextAttribution = SpokenAttribution.trackMetadata(trackIDs: [next.id])
+        // #199: one optional catalog-fact line about the song that just played, after its
+        // back-announce. `.catalog` tracks only, from `catalogFacts` only, through the fixed
+        // templates only; a line over `CatalogFactLine.maxLineSeconds` is not kept. No facts:
+        // nothing is drawn, so the break is planned exactly as without this feature.
+        func drawFact() {
+            guard prev.origin == .catalog, let facts = catalogFacts[prev.id], facts.catalogSongID == prev.id,
+                  !facts.isEmpty else { return }
+            let values = CatalogFactLine.values(facts, otherTitles: tracks.filter { $0.id != prev.id }.map(\.title))
+            guard !values.isEmpty else { return }
+            let at = lines.count
+            guard draw(&catalogFactPool, values, prevAttribution, optional: true), lines.count == at + 1 else { return }
+            guard estimate(lines[at].text) <= Double(CatalogFactLine.maxLineSeconds) else { lines.removeLast(); return }
+            lines[at].facts = CatalogFactLine.usedFacts(template: lines[at].template, facts: facts)
+        }
         var closingIndex: Int?
         var timeCheckLine: (template: String, relation: DJTimeCheckRelation, at: Date)?
         switch shape {
@@ -725,6 +754,7 @@ public struct DJScriptWriter: Sendable {
             if phrasing.next() % 100 >= 20 || !draw(&artistFocus, metadata, prevAttribution) {
                 _ = draw(&backAnnounce, metadata, prevAttribution)
             }
+            if !lines.isEmpty { drawFact() }
             if phrasing.next() % 100 < 40, var pool = atmosphere[dayPart] {
                 _ = draw(&pool, [:], .presenter, optional: true)
                 atmosphere[dayPart] = pool
@@ -732,7 +762,7 @@ public struct DJScriptWriter: Sendable {
             if phrasing.next() % 100 < 50 { _ = draw(&continuation, [:], .presenter, optional: true) }
             if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
         case .backAnnounceOnly:
-            _ = draw(&backAnnounce, metadata, prevAttribution)
+            if draw(&backAnnounce, metadata, prevAttribution) { drawFact() }
         case .comingUpOnly:
             if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
         case .combined:
@@ -804,14 +834,17 @@ public struct DJScriptWriter: Sendable {
 
         var attributions: [UUID: SpokenAttribution] = [:]
         var cues: [NarrationCue] = []
+        var factCues: [UUID: [CatalogFact]] = [:]
         for line in lines {
             let cue = transitionCue(line.text, order: &order)
             attributions[cue.id] = line.attribution.resolvingTrackOrigins(in: tracks)
+            if !line.facts.isEmpty { factCues[cue.id] = line.facts }
             cues.append(cue)
         }
         var planned = DJBreak(afterTrack: boundary, cues: cues, attributions: attributions)
         if closingTalksOver() { planned.talkOverCueID = cues.last?.id }
         planned.shape = shape
+        planned.catalogFactCues = factCues
         if let timeCheckLine, let index = lines.firstIndex(where: { $0.optional && $0.template == timeCheckLine.template }),
            let id = cues.first?.id {
             planned.timeCheck = DJPlannedTimeCheck(
