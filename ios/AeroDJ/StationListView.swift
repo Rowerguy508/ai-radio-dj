@@ -77,7 +77,8 @@ struct StationListView: View {
             // Always a NavigationStack with Done. An empty `if` body left an undismissable sheet.
             SharedInboxSheet(isPresented: $showSharedInbox) {
                 if dependencies.mode == .live, let review = SharedInboxReview.appGroupInbox() {
-                    SharedInboxReviewView(review: review)
+                    // #313: Connections re-reads after each change, so the briefing sees it.
+                    SharedInboxReviewView(review: review) { await dependencies.studio.connections.refresh() }
                 } else {
                     ContentUnavailableView(
                         "Nothing shared yet", systemImage: "tray",

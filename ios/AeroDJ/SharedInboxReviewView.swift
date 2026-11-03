@@ -7,6 +7,10 @@ import SwiftUI
 /// the app-shell PR (#27/#16), so the entry point is a follow-up.
 struct SharedInboxReviewView: View {
     let review: SharedInboxReview
+    /// #313 (-Nova): runs after every change and reload here, so Connections (and through it the
+    /// live briefing) re-reads the shared items now: an include reaches the next briefing, and an
+    /// exclude, edit or delete purges narration already prepared from the old state.
+    var onChange: @MainActor () async -> Void = {}
 
     @State private var entries: [SharedReviewEntry] = []
     @State private var errorMessage: String?
@@ -96,6 +100,7 @@ struct SharedInboxReviewView: View {
 
     private func perform(_ action: @escaping @Sendable () async throws -> Void) {
         let review = review
+        let onChange = onChange
         Task {
             do {
                 try await action()
@@ -103,6 +108,8 @@ struct SharedInboxReviewView: View {
                 errorMessage = Self.message(for: error)
             }
             entries = await review.entries
+            // Also after a failure: whatever was saved is what Connections must see.
+            await onChange()
         }
     }
 }
