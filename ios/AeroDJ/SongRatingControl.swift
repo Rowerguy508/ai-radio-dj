@@ -167,10 +167,11 @@ struct SongRatingToastHost: ViewModifier {
 }
 
 /// "Clear all ratings" in Settings (#372's Form, below the talk-over row), with a confirmation.
-/// Deletes the ratings file.
+/// Deletes the ratings file. When that fails the ratings are still there, and the footer says so.
 struct StationRatingsSettingsSection: View {
     let controller: SongRatingController
     @State private var confirming = false
+    @State private var clearFailed = false
 
     var body: some View {
         Section {
@@ -179,7 +180,7 @@ struct StationRatingsSettingsSection: View {
                 .confirmationDialog(SongRatingPresentation.clearAllTitle, isPresented: $confirming,
                                     titleVisibility: .visible) {
                     Button(SongRatingPresentation.clearAllTitle, role: .destructive) {
-                        Task { await controller.clearAll() }
+                        Task { clearFailed = !(await controller.clearAll()) }
                     }
                 } message: {
                     Text(SongRatingPresentation.clearAllFooter)
@@ -187,7 +188,14 @@ struct StationRatingsSettingsSection: View {
         } header: {
             Text("Ratings")
         } footer: {
-            Text(SongRatingPresentation.clearAllFooter)
+            VStack(alignment: .leading, spacing: 4) {
+                if clearFailed {
+                    Text(SongRatingPresentation.clearAllFailed)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("settings.clearAllRatings.failed")
+                }
+                Text(SongRatingPresentation.clearAllFooter)
+            }
         }
     }
 }

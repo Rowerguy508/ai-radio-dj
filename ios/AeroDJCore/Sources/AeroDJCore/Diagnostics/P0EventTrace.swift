@@ -107,6 +107,8 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     // break interruption drops (#379 N2): row kind, then `BreakResumeDrop.Reason` (same raw values)
     case resumeDrop, breakDropped
     case stale, allStale, noResume, musicPlaying, pauseExpired
+    /// #387 N1: a rating withdrew the paused break (`StationRatingResumeGate`).
+    case ratingWithdrawn
 }
 
 public enum P0TraceValue: Equatable, Sendable {
@@ -699,6 +701,16 @@ extension P0EventTrace {
                                            (.after, Self.number(afterTrack)), (.line, .int(drop.line)),
                                            (.dropped, .int(drop.count)), (.timeChecks, .int(drop.timeChecks)),
                                            (.otherCues, .int(drop.other))])
+    }
+    /// #387 N1 (-Nova): lines a break withdrawn by a rating (`StationRatingResumeGate`) did not
+    /// air, by kind, in the same row shape. Counts and codes only; nothing about the rating.
+    @discardableResult
+    public mutating func breakInterruptionWithdrawn(_ withdrawn: StationRatingWithdrawnLines, afterTrack: Int?,
+                                                    at t: TimeInterval) -> P0TraceRow {
+        record(.breakInterruption, at: t, [(.kind, .code(.breakDropped)), (.reason, .code(.ratingWithdrawn)),
+                                           (.after, Self.number(afterTrack)), (.line, .int(withdrawn.line)),
+                                           (.dropped, .int(withdrawn.count)), (.timeChecks, .int(withdrawn.timeChecks)),
+                                           (.otherCues, .int(withdrawn.other))])
     }
 
     private static func flag(_ b: Bool?) -> P0TraceValue { b.map { .bool($0) } ?? .missing }

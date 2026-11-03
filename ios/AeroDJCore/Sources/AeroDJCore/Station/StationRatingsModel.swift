@@ -129,17 +129,36 @@ public final class StationRatingsModel {
     /// Settings "Clear all ratings" and purge-all: empties the book and deletes the file, after any
     /// save already queued (so nothing written earlier lands after the delete). Allowed read-only
     /// too: the listener asked for everything to go.
-    public func clearAll() async {
+    /// False when the file could not be deleted (Sentinel, #387 N1): the book and load state go back
+    /// to what they were, so memory still matches the file (which still holds those ratings and
+    /// would load them at the next launch), and the caller shows an error instead of "cleared".
+    /// A rating made while the delete ran is left as it is: its save, queued after the delete,
+    /// writes the book the listener sees.
+    @discardableResult
+    public func clearAll() async -> Bool {
+        let before = book
+        let stateBefore = loadState
         book.clearAll()
         loadState = .loaded
         let previous = lastWrite
         let store = store
-        let delete = Task { @MainActor in
+        let delete = Task { @MainActor () -> Bool in
             await previous?.value
-            try? await store.deleteAll()
+            do {
+                try await store.deleteAll()
+                return true
+            } catch {
+                return false
+            }
         }
-        lastWrite = delete
-        await delete.value
+        let marker = Task { @MainActor in _ = await delete.value }
+        lastWrite = marker
+        let deleted = await delete.value
+        if !deleted, lastWrite == marker {
+            book = before
+            loadState = stateBefore
+        }
+        return deleted
     }
 
     /// Clears everything on every purge-all from now on. Call once.
@@ -149,6 +168,8 @@ public final class StationRatingsModel {
         listener = Task { @MainActor [weak self] in
             for await purge in updates where purge == .all {
                 guard let self else { return }
+                // A failed delete puts the book back (it still matches the file); a purge has no one
+                // to tell, and the ratings stay in effect as the file has them.
                 await self.clearAll()
             }
         }
@@ -236,6 +257,31 @@ public struct StationRatingResumeGate: Equatable, Sendable {
     public var mayResume: Bool { !withdrawn }
 }
 
+/// The lines a withdrawn break (`StationRatingResumeGate`) did not air, by kind, for the P0 trace
+/// (Echo, #387 N1). Like `BreakResumeDrop`: counts and kinds only, never text, titles or IDs, and
+/// nothing about the rating that withdrew it.
+public struct StationRatingWithdrawnLines: Equatable, Sendable {
+    /// The interrupted line (the first one not aired).
+    public let line: Int
+    public let timeChecks: Int
+    public let other: Int
+
+    public init(line: Int, timeChecks: Int, other: Int) {
+        self.line = line
+        self.timeChecks = timeChecks
+        self.other = other
+    }
+
+    public var count: Int { timeChecks + other }
+
+    /// Every line from `line` on (none when `line` is out of range).
+    public static func remaining(_ lines: [BreakResumeLine], from line: Int) -> StationRatingWithdrawnLines {
+        let rest = lines.indices.contains(line) ? Array(lines[line...]) : []
+        let checks = rest.filter { $0.dropKind == .timeCheck }.count
+        return StationRatingWithdrawnLines(line: line, timeChecks: checks, other: rest.count - checks)
+    }
+}
+
 /// Copy and symbols for the rating button (ratings scope §3). The app draws them; tests pin them.
 public enum SongRatingPresentation {
     /// Menu order: the positive levels first, never last (it skips).
@@ -250,6 +296,8 @@ public enum SongRatingPresentation {
     public static let clearStationTitle = "Clear ratings for this station"
     public static let clearAllTitle = "Clear all ratings"
     public static let clearAllFooter = "Ratings stay on this device and are not backed up. Clearing them can't be undone."
+    /// Settings, when the ratings file could not be deleted (the ratings are still there).
+    public static let clearAllFailed = "Couldn't clear ratings. Try again."
     public static let undoTitle = "Undo"
 
     public static func symbol(_ rating: SongRating?) -> String {
