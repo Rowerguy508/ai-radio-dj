@@ -73,6 +73,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// (Echo): the app itself is holding its DJ voice; MusicKit is never paused, cleared or
     /// rewound by this.
     @Published private(set) var isHeldByInterruption = false
+    /// PR B (-Nova): a rating that drops the open gap break's boundary stops its resume.
+    private var ratingGate = StationRatingResumeGate()
 
     init(music: MusicKitService) {
         self.music = music
@@ -130,6 +132,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             abandonUnplayedBreak(.notPlayable, afterTrack: afterTrack, skip: .notPlanned)
             return
         }
+        ratingGate.breakOpened(afterTrack: afterTrack)
         // The refusal is the stop held from the synchronous boundary hand-out.
         // An interruption that begins and ends during `naturalBoundary` clears the
         // live pause flag and still cancels here. Resume follows that held stop's policy.
@@ -510,6 +513,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     private func finishBreak(_ result: BreakPlayerOutcome) {
         interruption.breakEnded()
+        ratingGate.breakClosed()
         isHeldByInterruption = false
         ackPlayer = nil
         stopLevelMeter()
@@ -682,6 +686,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         guard finish != nil, case .paused(let line) = interruption.phase else { return }
         // The listener already pressed Play during the interruption: never talk over music.
         let resume = shouldResume && !music.isPlaying
+        // PR B: a rating dropped this break's boundary while it was paused. Never re-air it.
+        if resume, !ratingGate.mayResume { endWithdrawnBreak(line: line); return }
         if resume {
             let left = BreakResumePlan.plan(from: line, lines: resumeLines, now: Date())
             if left.lines.isEmpty {
@@ -710,6 +716,24 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         player?.delegate = nil
         player?.stop()
         finishBreak(.finished)
+    }
+
+    /// PR B (-Nova): a rating dropped the paused break's boundary. Ends as a finished break, no
+    /// apology and no line, so music follows as after any break. Nothing about the rating is logged.
+    private func endWithdrawnBreak(line: Int) {
+        log.notice("dj break withdrawn before resume line=\(line, privacy: .public)")
+        queue = []
+        let player = clipPlayer
+        clipPlayer = nil
+        player?.delegate = nil
+        player?.stop()
+        finishBreak(.finished)
+    }
+
+    /// A rating dropped the break at boundary `k` (PR B, via `TalkoverCoordinator.breakDropped`).
+    /// When that is the open gap break, a later interruption resume ends it instead of replaying.
+    func boundaryDropped(afterTrack k: Int) {
+        ratingGate.boundaryDropped(afterTrack: k)
     }
 
     /// #379 N2: lines a paused break dropped, by kind (P0 diag builds only; counts and codes).
@@ -809,6 +833,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// no longer be true when it airs is dropped rather than spoken.
     private func resumeScript(fromLine line: Int) {
         guard line >= 0, line < scriptPlayers.count else { finishBreak(.finished); return }
+        // PR B: dropped during the apology. The script does not come back.
+        guard ratingGate.mayResume else { endWithdrawnBreak(line: line); return }
         let lines = resumeLines.count == scriptPlayers.count
             ? resumeLines : scriptPlayers.map { BreakResumeLine(seconds: $0.duration) }
         let plan = BreakResumePlan.plan(from: line, lines: lines, now: Date())

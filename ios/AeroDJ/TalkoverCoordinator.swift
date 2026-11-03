@@ -296,6 +296,8 @@ final class TalkoverCoordinator {
         if taking != nil, song?.index == k { generation += 1 }
         if run?.afterTrack == k { cancelRun(.skip) }
         if held?.afterTrack == k { drop(k) }
+        // A gap break for k paused by an interruption (#379) must not resume and re-air it.
+        interlude.boundaryDropped(afterTrack: k)
     }
 
     /// `onSongSeeked` (AppDependencies.wireSongSeek).

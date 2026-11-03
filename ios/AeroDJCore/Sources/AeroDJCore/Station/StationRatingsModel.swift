@@ -196,6 +196,46 @@ public enum StationRatingBreakDrop {
     }
 }
 
+/// A gap break that a system interruption paused (#379) resumes its script from the interrupted
+/// line once the interruption ends. A rating that drops that break's boundary
+/// (`StationRatingBreakDrop`) while it is paused must not let the resume re-air it: the script may
+/// name the song just rated never. One per interlude player; it only says whether a resume may
+/// go ahead. A break that is speaking keeps its line (stopping a speaking break is separate work).
+/// Pure, so the order of open, drop, resume and close is tested on Linux.
+public struct StationRatingResumeGate: Equatable, Sendable {
+    /// The boundary of the gap break handed to the player, until that break ends.
+    public private(set) var openBreak: Int?
+    /// A rating dropped `openBreak`'s boundary while it was open.
+    public private(set) var withdrawn = false
+
+    public init() {}
+
+    /// A gap break for boundary `k` was handed to the player. A new break starts unwithdrawn.
+    public mutating func breakOpened(afterTrack k: Int) {
+        openBreak = k
+        withdrawn = false
+    }
+
+    /// The open break ended (finished, failed, cancelled or revoked).
+    public mutating func breakClosed() {
+        openBreak = nil
+        withdrawn = false
+    }
+
+    /// A rating dropped the break at boundary `k`. True when that is the open break, which then
+    /// never resumes after an interruption. Any other boundary changes nothing here.
+    @discardableResult
+    public mutating func boundaryDropped(afterTrack k: Int) -> Bool {
+        guard openBreak == k else { return false }
+        withdrawn = true
+        return true
+    }
+
+    /// Whether the open break may resume its script (or play the apology first) after an
+    /// interruption ends. False: the break ends instead, and music follows as after any break.
+    public var mayResume: Bool { !withdrawn }
+}
+
 /// Copy and symbols for the rating button (ratings scope §3). The app draws them; tests pin them.
 public enum SongRatingPresentation {
     /// Menu order: the positive levels first, never last (it skips).
