@@ -486,6 +486,78 @@ final class StationRatingsFeedTests: XCTestCase {
         XCTAssertGreaterThan(covered, 0, "at least one seed plans an intro for a later song")
     }
 
+    /// #388 (Echo's #387 N2, -Nova): the rating path narrows instead of cutting. With the queued
+    /// never song excluded (`DJBreakSession.songsExcluded`), the breaks on both sides of it still
+    /// air, minus exactly the cues attributed to it; no cue that airs names it, and no briefing or
+    /// other cue is lost. An Undo (an empty set) puts the cues back.
+    func testAnExcludedQueuedSongLosesOnlyTheCuesThatNameIt() async {
+        var covered = 0
+        var keptAround = 0
+        var undone = 0
+        for seed in UInt64(0)..<24 {
+            book = StationRatingBook()
+            let label = "seed \(seed)"
+            let p = await rig(seed: seed)
+            await p.tap(Self.mine(12))
+            let playing = (openers(p).first ?? 0) + 1
+            await p.session.songStarted(index: playing, remaining: .seconds(1))
+            guard let b = p.session.testPlannedBreaks.keys.sorted().first(where: { k in
+                k > playing && k + 1 < 12
+                    && p.session.testPlannedBreaks[k]!.cues.contains { Self.names($0.text, k + 1) }
+            }) else { continue }
+            let j = b + 1
+            covered += 1
+            let undo = seed % 2 == 1
+            p.session.songsExcluded(["mine-\(j)"])
+            if undo { p.session.songsExcluded([]) }
+            XCTAssertEqual(p.session.excludedSongIDs, undo ? [] : ["mine-\(j)"], label)
+            for k in (playing + 1)..<11 {
+                await p.session.songStarted(index: k, remaining: .seconds(240))
+                if p.session.testPlannedBreaks[k] != nil {
+                    for _ in 0..<200 {
+                        if await p.session.breakIsReady(afterTrack: k) { break }
+                        try? await Task.sleep(for: .milliseconds(5))
+                    }
+                }
+                let planned = p.session.testPlannedBreaks[k]
+                let handed = await p.session.naturalBoundary(afterTrack: k)
+                guard let handed else { continue }
+                let spoken = handed.clips.map { String(decoding: $0.audio.data, as: UTF8.self) }.joined(separator: " ")
+                if undo {
+                    if k == b { XCTAssertTrue(Self.names(spoken, j), "\(label): Undo puts the intro back"); undone += 1 }
+                    continue
+                }
+                XCTAssertFalse(Self.names(spoken, j), "\(label): the break at \(k) names the excluded song")
+                if let planned, k == j - 1 || k == j {
+                    // Exactly the cues attributed to the song went; every other planned cue that rendered airs.
+                    let naming = Set(planned.cues.filter { cue in
+                        guard case .trackMetadata(let ids, _)? = planned.attributions[cue.id] else { return false }
+                        return ids.contains("mine-\(j)")
+                    }.map(\.id))
+                    XCTAssertTrue(handed.cues.allSatisfy { !naming.contains($0.id) }, label)
+                    XCTAssertEqual(handed.cues.filter(\.isContent).count, planned.cues.filter(\.isContent).count,
+                                   "\(label): no briefing cue is omitted")
+                    keptAround += 1
+                }
+            }
+            await p.session.stop()
+        }
+        XCTAssertGreaterThan(covered, 1)
+        XCTAssertGreaterThan(keptAround, 0, "a break next to the excluded song still airs")
+        XCTAssertGreaterThan(undone, 0)
+    }
+
+    /// The exclusions belong to the queue they were set for: a new queue starts with none.
+    func testANewQueueStartsWithNoExcludedSongs() async {
+        book = StationRatingBook()
+        let p = await rig(seed: 0)
+        await p.tap(Self.mine(12))
+        p.session.songsExcluded(["mine-4"])
+        await p.tap(Self.mine(10))
+        XCTAssertEqual(p.session.excludedSongIDs, [])
+        await p.session.stop()
+    }
+
     // MARK: Privacy (Sentinel): personal context under mayLeaveDevice
 
     /// Ratings are personal context: a cue carrying their attribution never leaves the device, even
