@@ -90,7 +90,10 @@ struct AppDependencies {
         // reads (the Settings toggle, else ON on a live station). P0 build 26, -Fry.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
                                        talkOverEnabled: { DJTalkoverFlag.isEnabled() },
+                                       cloudVoiceConsent: TesterCloudVoiceConsentHooks.preparerConsent,
                                        bundledClips: bundledClips)
+        // Tester build only (Echo's N2 on #395): a decline drops prepared cloud breaks and cached cloud clips.
+        TesterCloudVoiceConsentHooks.attach(preparer: preparer, renderer: voice)
         // #332: one once-a-day ledger for song taps and station starts, kept across relaunches.
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj,
                                        personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()))

@@ -43,6 +43,10 @@ struct TuneForm: View {
                     commentaryControl
                     personalityControl
                     briefingControl
+                    #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
+                    // Tester build only (Sentinel's N1 on #395): lets testers turn the cloud voice off.
+                    TesterCloudVoiceToggleCard()
+                    #endif
                 }
                 .disabled(blockedMessage != nil)
                 RecipesSection(studio: studio, editable: blockedMessage == nil)
