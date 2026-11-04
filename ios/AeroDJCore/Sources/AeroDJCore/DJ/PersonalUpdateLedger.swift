@@ -19,10 +19,14 @@ public struct PersonalUpdatePlays: Codable, Equatable, Sendable {
     public var day: String
     /// Airings per source item id on `day`.
     public var counts: [UUID: Int]
+    /// #332 (-Nova): when a personal update last aired, for the minimum gap. Kept across a day
+    /// change (a gap may span midnight). Optional, so a store written before it decodes as nil.
+    public var lastAiredAt: Date?
 
-    public init(day: String, counts: [UUID: Int] = [:]) {
+    public init(day: String, counts: [UUID: Int] = [:], lastAiredAt: Date? = nil) {
         self.day = day
         self.counts = counts
+        self.lastAiredAt = lastAiredAt
     }
 }
 
@@ -70,16 +74,30 @@ public final class UserDefaultsPersonalUpdatePlayStore: PersonalUpdatePlayStore,
 public final class PersonalUpdateLedger: @unchecked Sendable {
     /// Airings allowed per item per local day. #332 default: 1.
     public let playsPerDay: Int
+    /// No new queue carries personal updates within this long after one aired (#332 -Nova).
+    /// 0: no gap.
+    public let minimumGap: TimeInterval
     private let store: any PersonalUpdatePlayStore
     private let calendar: Calendar
     private let lock = NSLock()
 
     public init(store: any PersonalUpdatePlayStore = InMemoryPersonalUpdatePlayStore(),
                 calendar: Calendar = .current,
-                playsPerDay: Int = DJCadence.defaultPersonalUpdatePlaysPerDay) {
+                playsPerDay: Int = DJCadence.defaultPersonalUpdatePlaysPerDay,
+                minimumGap: TimeInterval = DJCadence.defaultMinimumGapBetweenPersonalBriefings) {
         self.store = store
         self.calendar = calendar
         self.playsPerDay = max(1, playsPerDay)
+        self.minimumGap = max(0, minimumGap)
+    }
+
+    /// True while `now` is less than `minimumGap` from the last airing, either side (a clock set
+    /// back a few minutes still keeps the gap; one set back further does not block for good).
+    public func isWithinMinimumGap(at now: Date) -> Bool {
+        lock.withLock {
+            guard minimumGap > 0, let last = today(now).lastAiredAt else { return false }
+            return abs(now.timeIntervalSince(last)) < minimumGap
+        }
     }
 
     /// Local calendar day of `date`, as `yyyy-MM-dd`.
@@ -98,15 +116,16 @@ public final class PersonalUpdateLedger: @unchecked Sendable {
         lock.withLock { Set(today(now).counts.filter { $0.value >= playsPerDay }.keys) }
     }
 
-    /// Counts each personal content cue (`sourceItemID != nil`) once. Call when the break that
-    /// carries them is handed to the player (`DJBreakSession`, where `deliveredBriefing` is
-    /// updated). Presenter and track lines are ignored.
+    /// Counts each personal content cue (`sourceItemID != nil`) once. `DJBreakSession` calls it
+    /// only for a personal line whose audio played to its end (#332 -Nova), never for a line
+    /// that was handed out, cut or failed. Presenter and track lines are ignored.
     public func recordAired(_ cues: [NarrationCue], at now: Date) {
         let ids = Set(cues.compactMap(\.sourceItemID))
         guard !ids.isEmpty else { return }
         lock.withLock {
             var plays = today(now)
             for id in ids { plays.counts[id, default: 0] += 1 }
+            plays.lastAiredAt = max(plays.lastAiredAt ?? now, now)
             store.save(plays)
         }
     }
@@ -114,7 +133,8 @@ public final class PersonalUpdateLedger: @unchecked Sendable {
     /// Today's airings; a stored earlier day reads as empty.
     private func today(_ now: Date) -> PersonalUpdatePlays {
         let day = dayKey(for: now)
-        guard let stored = store.load(), stored.day == day else { return PersonalUpdatePlays(day: day) }
+        guard let stored = store.load() else { return PersonalUpdatePlays(day: day) }
+        guard stored.day == day else { return PersonalUpdatePlays(day: day, lastAiredAt: stored.lastAiredAt) }
         return stored
     }
 }

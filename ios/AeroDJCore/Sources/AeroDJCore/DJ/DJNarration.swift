@@ -85,6 +85,11 @@ public struct DJCadence: Equatable, Sendable {
     /// #332 default: each personal update airs at most once per local calendar day
     /// (`PersonalUpdateLedger`, keyed by source item id).
     public static let defaultPersonalUpdatePlaysPerDay = 1
+    /// #332 (-Nova): after a personal update airs, no NEW queue (song tap or station start) carries
+    /// personal updates for this long. A queue already under way keeps its briefing, which is
+    /// spread over its breaks (one update per break, `minSongsBetweenBreaks` apart). Judgment call:
+    /// the issue asks for "a minimum gap between personal breaks" without a number.
+    public static let defaultMinimumGapBetweenPersonalBriefings: TimeInterval = 30 * 60
 
     public init(talkFraction: Double = 0.3, minSongsBetweenBreaks: Int = 2,
                 maxTransitionSeconds: Int = 15, maxBriefingBreakSeconds: Int = 45,

@@ -120,6 +120,7 @@ final class PersonalUpdateLedgerWiringTests: XCTestCase {
         let handedR = try await startAndHandOut(r)
         XCTAssertEqual(handedR, [r.id])
         r.session.playbackStarted(afterTrack: 0)
+        r.session.playbackFinished(afterTrack: 0)   // #332 P1 (-Nova): counted once heard, not at start
 
         // "Relaunch": a new ledger over the same store, used by a song tap later that day.
         let relaunched = PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore(defaults: defaults),

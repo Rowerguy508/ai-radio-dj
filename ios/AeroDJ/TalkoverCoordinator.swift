@@ -421,7 +421,8 @@ final class TalkoverCoordinator {
         }
         await interlude.play(clips: clips, line: line, afterTrack: k,
                             resumeLines: BreakResumeLine.lines(for: h.prepared),
-                            ratingLines: StationRatingBreakLine.lines(for: h.prepared))
+                            ratingLines: StationRatingBreakLine.lines(for: h.prepared),
+                            cueIDs: h.prepared.clips.map(\.cueID))
     }
 
     // MARK: Private

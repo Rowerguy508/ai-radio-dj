@@ -168,7 +168,9 @@ final class PersonalUpdatesAllDayTests: XCTestCase {
         XCTAssertTrue(relaunched.hasReachedLimit(id, at: at(21)))
         relaunched.recordAired([cue(later)], at: at(day: 27, 7))
         let stored = try XCTUnwrap(UserDefaultsPersonalUpdatePlayStore(defaults: defaults).load())
-        XCTAssertEqual(stored, PersonalUpdatePlays(day: "2026-10-27", counts: [later: 1]), "yesterday is not kept")
+        // #332 (-Nova): `lastAiredAt` (the minimum gap) is the latest airing, not a count.
+        XCTAssertEqual(stored, PersonalUpdatePlays(day: "2026-10-27", counts: [later: 1], lastAiredAt: at(day: 27, 7)),
+                       "yesterday is not kept")
     }
 
     // MARK: Station start
