@@ -41,6 +41,9 @@ struct AppDependencies {
     /// #401 (-Fry): local weather and news, live only (consent-gated; `\.localFacts`). `nil` in
     /// the test station, so its breaks and screens are unchanged.
     let localFacts: LocalFactsHost?
+    /// Sentinel's #410 n4 (-Fry): the one purge-all, for Settings "Delete my DJ data"
+    /// (`PersonalDataReset`). The same purger Connections and the session use.
+    let purger: NarrationPurger
 
     /// Starts the Studio and the DJ session once per launch.
     func start() async {
@@ -178,7 +181,8 @@ struct AppDependencies {
             ratings: ratings,
             songRating: .live(ratings: ratings, station: station, studio: studio, music: MusicKitService.shared,
                               queue: stationQueue),
-            localFacts: localFacts)
+            localFacts: localFacts,
+            purger: purger)
     }
 
     /// #401: Echo's #200 plumbing (`FactRefresh`, `LocalAreaStore`) behind `LocalFactsWiring`.
@@ -264,7 +268,8 @@ struct AppDependencies {
             ratings: ratings,
             songRating: .live(ratings: ratings, station: station, studio: studio, music: MusicKitService.shared,
                               queue: nil),
-            localFacts: nil)   // #401: no weather or news in the test station
+            localFacts: nil,   // #401: no weather or news in the test station
+            purger: purger)
     }
     #endif
 

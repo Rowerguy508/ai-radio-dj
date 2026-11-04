@@ -353,6 +353,7 @@ public final class LocalFactsWiring: @unchecked Sendable {
         // and the task is registered under the same check: a switch-off, withdrawal or purge at
         // any point after this line supersedes (and cancels) this refresh.
         let ticket = lock.withLock { generation }
+        testBeforeTask?()
         let task = Task { [self] in await refreshBody(ticket) }
         lock.withLock {
             inflight.insert(task)
@@ -364,10 +365,13 @@ public final class LocalFactsWiring: @unchecked Sendable {
     }
 
     /// Test seam (#410 n6): runs after the generation is taken, before the switches are read.
-    var testAfterTicket: (@Sendable () -> Void)?
+    var testAfterTicket: (@Sendable () async -> Void)?
+    /// Test seam (Sentinel's #410 n6b, -Fry): runs after the generation is taken, before the
+    /// refresh task exists, so a test can invalidate in the gap the late-registration cancel covers.
+    var testBeforeTask: (@Sendable () -> Void)?
 
     private func refreshBody(_ ticket: Int) async -> RefreshOutcome {
-        testAfterTicket?()
+        await testAfterTicket?()
         let toggles = toggles
         let switchedOn = providers.filter { toggles.allows($0.kind) }
         guard !switchedOn.isEmpty else {
@@ -436,10 +440,12 @@ public enum FactAttributionMark: String, Equatable, Sendable {
 
     public static func mark(forProvenance provenance: String?) -> FactAttributionMark? {
         guard let kind = FactProvenance.kind(of: provenance) else { return nil }
+        // Sentinel's #410 n8 (-Fry): the kind first for weather, so no provider ID can displace
+        // the WeatherKit mark (a display requirement).
+        if kind == .weather { return .appleWeather }
         let provider = FactProvenance.provider(of: provenance)
         if provider == FactAttribution.gdeltProviderID { return .gdelt }
         switch kind {
-        case .weather: return .appleWeather
         case .news, .localNews: return provider == nil ? .gdelt : nil
         default: return nil
         }
@@ -449,6 +455,69 @@ public enum FactAttributionMark: String, Equatable, Sendable {
     public static func marks(for prepared: PreparedDJBreak) -> [FactAttributionMark?] {
         let byID = Dictionary(prepared.cues.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return prepared.clips.map { byID[$0.cueID].flatMap(mark(for:)) }
+    }
+}
+
+/// The player's provider-mark state (#401; Echo's #410 nit 2, -Fry), a value so its rules run on
+/// Linux. `InterludePlaybackAdapter` owns one and publishes `shown`.
+/// - `stage`: the caller stages one mark per clip just before `play` or `playTalkover`; a stage
+///   with no mark at all is not kept.
+/// - `lineStarted`: a clip starts; its staged mark is shown only when the stage is for this break
+///   and its count matches (a mismatch shows none, never the wrong one).
+/// - `handOutAbandoned`: the boundary dropped the hand-out for `afterTrack`. A stage for that
+///   track goes, unless that break is the one speaking. With nothing on air, no mark stays on
+///   screen. A stage for another track is left for its own break.
+/// - `breakNotPlayed`: a handed-out break that will not start drops its own stage.
+/// - `breakEnded`: everything goes.
+public struct FactAttributionStage: Equatable, Sendable {
+    private struct Staged: Equatable, Sendable {
+        let afterTrack: Int
+        let marks: [FactAttributionMark?]
+    }
+
+    public private(set) var shown: FactAttributionMark?
+    private var staged: Staged?
+
+    public init() {}
+
+    /// The track of the current stage, if any (tests and diagnostics).
+    public var stagedTrack: Int? { staged?.afterTrack }
+
+    public mutating func stage(_ marks: [FactAttributionMark?], afterTrack: Int) {
+        staged = marks.contains { $0 != nil } ? Staged(afterTrack: afterTrack, marks: marks) : nil
+    }
+
+    /// Clip `line` (nil: not one of the break's script lines) of a break of `lineCount` clips for
+    /// `afterTrack` starts.
+    public mutating func lineStarted(_ line: Int?, of lineCount: Int, afterTrack: Int) {
+        guard let staged, staged.afterTrack == afterTrack, staged.marks.count == lineCount,
+              let line, staged.marks.indices.contains(line) else {
+            shown = nil
+            return
+        }
+        shown = staged.marks[line]
+    }
+
+    /// `afterTrack`: the hand-out that was dropped (nil: none was pending). `speakingTrack`: the
+    /// break on air now, else nil.
+    public mutating func handOutAbandoned(afterTrack: Int?, speakingTrack: Int?) {
+        if let staged, let afterTrack, staged.afterTrack == afterTrack, staged.afterTrack != speakingTrack {
+            self.staged = nil
+        }
+        if speakingTrack == nil { shown = nil }
+    }
+
+    /// The break for `afterTrack` was handed out and will not play (refused, revoked before its
+    /// audio, or a clip would not decode): its stage goes. A mark on screen stays only while
+    /// another break is speaking.
+    public mutating func breakNotPlayed(afterTrack: Int, whileAnotherSpeaks: Bool) {
+        if staged?.afterTrack == afterTrack { staged = nil }
+        if !whileAnotherSpeaks { shown = nil }
+    }
+
+    public mutating func breakEnded() {
+        staged = nil
+        shown = nil
     }
 }
 

@@ -78,9 +78,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// #401 (-Fry): the provider mark for the line playing now (Apple Weather, GDELT), else nil.
     /// The player shows it while that line plays; cleared when the break ends.
     @Published private(set) var attributionMark: FactAttributionMark?
-    /// One per clip of the next break (`FactAttributionMark.marks(for:)`), staged by the caller
-    /// just before `play` or `playTalkover`. Used only when its track and count match.
-    private var stagedMarks: (afterTrack: Int, marks: [FactAttributionMark?])?
+    /// One mark per clip of the next break (`FactAttributionMark.marks(for:)`), staged by the
+    /// caller just before `play` or `playTalkover`, and the mark shown. Core's
+    /// `FactAttributionStage` holds the rules (Echo's #410 nit 2: an abandoned hand-out drops its
+    /// stage, so a stale mark never stays on screen).
+    private var attribution = FactAttributionStage() {
+        didSet { if attributionMark != attribution.shown { attributionMark = attribution.shown } }
+    }
     /// PR B (-Nova): a rating that drops the open gap break's boundary stops its resume.
     private var ratingGate = StationRatingResumeGate()
     /// #388: one per script line of the open gap break (`StationRatingBreakLine.lines(for:)`): the
@@ -133,12 +137,15 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// The boundary handed a break out and then found nothing to say.
     /// Drops that hand-out, including a stop that arrived during preparation.
     func abandonHandOut() {
+        let abandoned = pendingPlay.handedOutTrack
         pendingPlay.abandonHandOut()
+        // Echo's #410 nit 2 (-Fry): the stage staged for that hand-out goes with it.
+        attribution.handOutAbandoned(afterTrack: abandoned, speakingTrack: isSpeaking ? breakTrack : nil)
     }
 
     /// #401: stage the marks for the break about to play (one per clip handed to the player).
     func stageAttributionMarks(_ marks: [FactAttributionMark?], afterTrack: Int) {
-        stagedMarks = marks.contains { $0 != nil } ? (afterTrack, marks) : nil
+        attribution.stage(marks, afterTrack: afterTrack)
     }
 
     /// Plays one prepared clip. A clip that won't decode skips the break.
@@ -184,6 +191,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             afterTrack: afterTrack
         )
         guard admission.startAudio else {
+            attribution.breakNotPlayed(afterTrack: afterTrack, whileAnotherSpeaks: isSpeaking)
             _ = pendingPlay.stop(reason: .interruption, afterTrack: nil, mayAutoResume: false)
             _ = pendingPlay.admit(mayAutoResume: false)
             if let unplayed = admission.unplayed {
@@ -227,6 +235,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// and returns the boundary transition to music. Does not resume the player.
     private func abandonUnplayedBreak(_ reason: HandedOutBreakSkip, afterTrack: Int, skip: DJBreakSkipReason) {
         pendingPlay.abandonHandOut()
+        attribution.breakNotPlayed(afterTrack: afterTrack, whileAnotherSpeaks: isSpeaking)
         let report = HandedOutBreakReport.skipped(reason, afterTrack: afterTrack, mayAutoResume: music.mayAutoResume)
         applyUnplayed(report, afterTrack: afterTrack, skip: skip)
     }
@@ -443,6 +452,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// Resume once when the entry is still current and auto-resume is allowed. PlayerView
     /// loads the next track when this returns.
     private func cancelledPendingPlay(resumeMusic: Bool) async {
+        attribution.breakNotPlayed(afterTrack: breakTrack, whileAnotherSpeaks: isSpeaking)
         log.notice("\(PlaybackLog.interludeStop(reason: .sourceRevoked), privacy: .public)")
         log.notice("\(PlaybackLog.breakEnd(after: self.breakTrack, result: .revoked), privacy: .public)")
         onPlayback?(.revoked(afterTrack: breakTrack))
@@ -556,8 +566,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     private func finishBreak(_ result: BreakPlayerOutcome) {
         interruption.breakEnded()
-        stagedMarks = nil
-        if attributionMark != nil { attributionMark = nil }
+        attribution.breakEnded()
         ratingGate.breakClosed()
         isHeldByInterruption = false
         ackPlayer = nil
@@ -575,12 +584,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     /// #401: the staged mark of the script line `player` starts, when the staging matches this break.
     private func showAttributionMark(for player: AVAudioPlayer) {
-        guard let staged = stagedMarks, staged.afterTrack == breakTrack, staged.marks.count == scriptPlayers.count,
-              let line = scriptPlayers.firstIndex(where: { $0 === player }) else {
-            if attributionMark != nil { attributionMark = nil }
-            return
-        }
-        if attributionMark != staged.marks[line] { attributionMark = staged.marks[line] }
+        attribution.lineStarted(scriptPlayers.firstIndex(where: { $0 === player }), of: scriptPlayers.count,
+                                afterTrack: breakTrack)
     }
 
     // MARK: DJ talk-over (-Fry, flagged; see docs/dj-talkover.md)
