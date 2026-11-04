@@ -224,7 +224,7 @@ struct GDELTCitationLink: View {
     }
 }
 
-/// While a weather or local-news line plays: the provider's mark and link, in the same glass
+/// While a weather or GDELT news line (national or local) plays: the provider's mark and link, in the same glass
 /// capsule as the station-start toast. Nothing for any other line.
 struct FactAttributionBadge: View {
     let mark: FactAttributionMark

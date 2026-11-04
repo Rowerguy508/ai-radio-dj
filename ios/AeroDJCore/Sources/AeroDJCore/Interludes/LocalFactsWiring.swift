@@ -409,17 +409,27 @@ public final class LocalFactsWiring: @unchecked Sendable {
 }
 
 /// Which provider mark the player shows while a fact line plays (#401 UI handoffs 1 and 5).
-/// Weather: the Apple Weather mark and legal link (a WeatherKit display requirement). Local
-/// news: the GDELT citation and link (GDELT's terms). Other lines: none.
+/// Weather: the Apple Weather mark and legal link (a WeatherKit display requirement). Any line
+/// built from GDELT data, national `.news` or `.localNews`: the GDELT citation and link (GDELT's
+/// terms; #410, keyed on the provider in the provenance, not on whether the line is local). A news
+/// line with no provider recorded also cites GDELT, the only news source (fail toward citing).
+/// Other lines: none.
 public enum FactAttributionMark: String, Equatable, Sendable {
     case appleWeather
     case gdelt
 
     public static func mark(for cue: NarrationCue) -> FactAttributionMark? {
-        switch FactProvenance.kind(of: cue.provenance) {
-        case .weather?: .appleWeather
-        case .localNews?: .gdelt
-        default: nil
+        mark(forProvenance: cue.provenance)
+    }
+
+    public static func mark(forProvenance provenance: String?) -> FactAttributionMark? {
+        guard let kind = FactProvenance.kind(of: provenance) else { return nil }
+        let provider = FactProvenance.provider(of: provenance)
+        if provider == FactAttribution.gdeltProviderID { return .gdelt }
+        switch kind {
+        case .weather: return .appleWeather
+        case .news, .localNews: return provider == nil ? .gdelt : nil
+        default: return nil
         }
     }
 

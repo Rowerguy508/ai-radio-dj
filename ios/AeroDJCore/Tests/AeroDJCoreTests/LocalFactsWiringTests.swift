@@ -74,6 +74,21 @@ private final class CountingNationalNews: NewsProvider, @unchecked Sendable {
     }
 }
 
+/// National headlines with GDELT's attribution, like a GDELT national provider would return.
+private struct GDELTNationalFixture: NewsProvider {
+    let kind = BroadcastFactKind.news
+    func facts(for request: FactRequest) async -> FactProviderResult {
+        .facts([BroadcastFact(kind: .news, payload: .headline(HeadlineFact(
+                    headline: "Minneapolis City Council approves $2 million plan for Hennepin Avenue bike lanes", outlet: "NPR")),
+                              observedAt: request.now, expiresAt: request.now.addingTimeInterval(3600),
+                              attribution: .gdelt(outlet: "NPR"), sourceItemID: "https://x.test/a")])
+    }
+}
+
+private struct CannedParaphrase: HeadlineParaphraser {
+    func paraphrase(_ headline: String) async -> String? { "Minneapolis council backs a $2 million Hennepin bike plan" }
+}
+
 /// An extra-line source written the legacy way: no provenance (N1).
 private struct LegacyExtra: DJBreakExtraLineSource {
     let provenance: String?
@@ -582,8 +597,48 @@ final class LocalFactsWiringTests: XCTestCase {
         }
         XCTAssertEqual(FactAttributionMark.mark(for: cue(.weather)), .appleWeather)
         XCTAssertEqual(FactAttributionMark.mark(for: cue(.localNews)), .gdelt)
-        XCTAssertNil(FactAttributionMark.mark(for: cue(.news)), "no live national provider: no mark")
+        XCTAssertEqual(FactAttributionMark.mark(for: cue(.news)), .gdelt, "no provider recorded: cite the only news source")
         XCTAssertNil(FactAttributionMark.mark(for: cue(nil)), "presenter lines: none")
+    }
+
+    /// #410 (Echo's nit 1, required): every line built from GDELT data, national or local, shows
+    /// the GDELT citation, keyed on the provider in its provenance, not on whether it is local.
+    func testEveryGDELTLineNationalOrLocalShowsTheGDELTCitation() {
+        func fact(_ kind: BroadcastFactKind, _ attribution: FactAttribution) -> BroadcastFact {
+            BroadcastFact(kind: kind, payload: .headline(HeadlineFact(headline: "h", outlet: "NPR")), observedAt: w0,
+                          expiresAt: w0.addingTimeInterval(3600), attribution: attribution, sourceItemID: "https://x.test/a")
+        }
+        let national = fact(.news, .gdelt(outlet: "NPR")), local = fact(.localNews, .gdelt(outlet: "Star Tribune"))
+        XCTAssertEqual(FactProvenance.provider(of: national.provenance), "gdelt")
+        XCTAssertEqual(FactProvenance.kind(of: national.provenance), .news, "the kind still parses")
+        XCTAssertEqual(FactAttributionMark.mark(forProvenance: national.provenance), .gdelt, "national GDELT news is cited")
+        XCTAssertEqual(FactAttributionMark.mark(forProvenance: local.provenance), .gdelt)
+        // The line the composer writes from it (after a paraphrase) keeps the provenance.
+        let summary = BroadcastFact(id: national.id, kind: .news,
+                                    payload: .headlineSummary(HeadlineSummary(summary: "s", outlet: "NPR")),
+                                    observedAt: w0, expiresAt: national.expiresAt, attribution: national.attribution)
+        XCTAssertEqual(summary.provenance, national.provenance)
+        // Keyed on the provider, not the kind: other news providers show no GDELT mark.
+        let other = FactAttribution(providerID: "fixture-news", spokenName: "NPR", requiresSpokenCredit: true)
+        XCTAssertNil(FactAttributionMark.mark(forProvenance: fact(.news, other).provenance))
+        XCTAssertNil(FactAttributionMark.mark(forProvenance: fact(.localNews, other).provenance))
+        XCTAssertEqual(FactAttributionMark.mark(forProvenance: fact(.weather, .appleWeather(legalURL: nil)).provenance), .appleWeather)
+        XCTAssertNil(FactProvenance.provider(of: FactProvenance.make(kind: .news, id: UUID())))
+        XCTAssertNil(FactAttributionMark.mark(forProvenance: "extra:unattributed"))
+    }
+
+    /// End to end: a national GDELT headline, gathered and handed to the session, carries the GDELT
+    /// provider on the line the writer plans, so its clip gets the GDELT mark.
+    func testANationalGDELTHeadlineReachesTheLineWithTheGDELTMark() async {
+        let clock = WiringClock(w0)
+        let w = LocalFactsWiring(store: .inMemory(), toggles: .inMemory(news: true),
+                                 source: FactExtraLineSource(airLead: 60, now: { clock.now }), providers: [GDELTNationalFixture()],
+                                 summarizer: HeadlineSummarizer(paraphraser: CannedParaphrase()), device: nil, manual: nil,
+                                 now: { clock.now })
+        guard case .refreshed = await w.refreshIfDue() else { return XCTFail("national news refreshes") }
+        guard let line = w.source.extraLine(after: a, before: b, shape: .comingUpOnly) else { return XCTFail("a news line") }
+        XCTAssertEqual(FactProvenance.kind(of: line.plannedProvenance), .news)
+        XCTAssertEqual(FactAttributionMark.mark(forProvenance: line.plannedProvenance), .gdelt)
     }
 
     func testStatusAndCopy() {

@@ -286,10 +286,13 @@ public struct LocalNewsSelector: Sendable {
 }
 
 extension FactAttribution {
+    /// GDELT's provider code. Every line built from GDELT data, national or local, carries it in
+    /// its provenance, and the player shows the citation for it (`FactAttributionMark`, #410).
+    public static let gdeltProviderID = "gdelt"
     public static let gdeltCitation = "Local news data: The GDELT Project (gdeltproject.org)"
     public static let gdeltURL = URL(string: "https://www.gdeltproject.org/")!
     public static func gdelt(outlet: String) -> FactAttribution {
-        FactAttribution(providerID: "gdelt", spokenName: outlet, requiresSpokenCredit: true, legalURL: gdeltURL)
+        FactAttribution(providerID: gdeltProviderID, spokenName: outlet, requiresSpokenCredit: true, legalURL: gdeltURL)
     }
 }
 
