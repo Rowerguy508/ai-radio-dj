@@ -125,7 +125,10 @@ public final class PersonalUpdateLedger: @unchecked Sendable {
         lock.withLock {
             var plays = today(now)
             for id in ids { plays.counts[id, default: 0] += 1 }
-            plays.lastAiredAt = max(plays.lastAiredAt ?? now, now)
+            // The latest airing by the wall clock now (Fry's #403 nit 1): after a clock set back
+            // further than the gap, `max` kept a future time, so the gap stayed off until the
+            // clock caught up. `now` puts the gap back on from this airing. -Nova
+            plays.lastAiredAt = now
             store.save(plays)
         }
     }

@@ -295,13 +295,8 @@ struct AppDependencies {
     /// Nil when nothing renders; the break then resumes without it.
     private static func interruptionAcknowledgement(voice: VoiceRenderer, userID: String,
                                                     stationID: String) -> @MainActor () async -> Data? {
-        {
-            switch await voice.render(BreakInterruptionAcknowledgement.cue(), userID: userID, stationID: stationID,
-                                      attribution: nil) {
-            case .success(let clip): return clip.audio.data
-            case .failure: return nil
-            }
-        }
+        // On-device only, pinned in Core (Sentinel's #404 note): see `renderClip(with:)`.
+        { await BreakInterruptionAcknowledgement.renderClip(with: voice, userID: userID, stationID: stationID) }
     }
 
     /// Song scrubbing (-Atlas): the one production assignment of `onSongSeeked`. A committed
