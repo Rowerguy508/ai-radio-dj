@@ -121,7 +121,15 @@ public struct HeadlineParaphraseValidator: Sendable {
     }
 
     static func bigrams(_ t: [String]) -> [String] {
-        t.count < 2 ? [] : (0..<(t.count - 1)).map { t[$0] + " " + t[$0 + 1] }
+        // Explicit loop: the one-line map timed out the Swift 6.2 type checker in CI.
+        guard t.count >= 2 else { return [] }
+        var out: [String] = []
+        out.reserveCapacity(t.count - 1)
+        for i in 0..<(t.count - 1) {
+            let pair: String = t[i] + " " + t[i + 1]
+            out.append(pair)
+        }
+        return out
     }
 
     static func longestSharedRun(_ a: [String], _ b: [String]) -> Int {
