@@ -313,6 +313,15 @@ public struct DJScriptWriter: Sendable {
     public var catalogFacts: [String: CatalogTrackFacts] = [:]
     /// #199: the fixed fact phrasing (`CatalogFactLine.templates`); the same in every tone.
     private var catalogFactPool = TemplatePool(CatalogFactLine.templates)
+    /// #199 N2: natural breaks that could have spoken a fact line (id: the break's first cue;
+    /// spoke: it kept one), newest last, for `CatalogFactLine.eligibleBreaksBetweenFactLines`.
+    /// Forgotten with their break on a replan, like `timeCheckLog`.
+    private var catalogFactLog: [(id: UUID, spoke: Bool)] = []
+    /// #199 N2: the facts spoken this session (writer lifetime), by break (id: first cue), as
+    /// "song id + fact kind". A song's fact of one kind is never said twice in a session; a
+    /// break discarded on a replan gives its facts back.
+    private var spokenCatalogFacts: [(id: UUID, facts: Set<SpokenCatalogFact>)] = []
+    struct SpokenCatalogFact: Hashable { let songID: String; let field: CatalogFactField }
     private var shapePicker: DJBreakShapePicker?
     private var recentTemplates: RecentSpokenTemplates
     /// Natural breaks planned so far (id: first cue), newest last, for `forgetPlannedBreaks`.
@@ -640,6 +649,8 @@ public struct DJScriptWriter: Sendable {
         guard !ids.isEmpty else { return }
         recentTemplates.forget(ids: ids)
         timeCheckLog.removeAll { ids.contains($0.id) }
+        catalogFactLog.removeAll { ids.contains($0.id) }
+        spokenCatalogFacts.removeAll { ids.contains($0.id) }
         let before = shapeLog.count
         shapeLog.removeAll { ids.contains($0.id) }
         picker.restore(lastShape: shapeLog.last?.shape, forgetting: before - shapeLog.count)
@@ -659,6 +670,10 @@ public struct DJScriptWriter: Sendable {
     var testRememberedBreaks: Int { recentTemplates.count }
     /// Test hook: planned time checks still counted for spacing.
     var testTimeCheckCount: Int { timeCheckLog.count }
+    /// Test hook: eligible fact-line breaks still counted for the cadence gate.
+    var testCatalogFactLogCount: Int { catalogFactLog.count }
+    /// Test hook: song-and-kind facts spoken this session.
+    var testSpokenCatalogFactCount: Int { spokenCatalogFacts.reduce(0) { $0 + $1.facts.count } }
     /// Test hook: the shape the next pick avoids.
     var testLastShape: DJBreakShape? { shapePicker?.lastShape }
     /// Test hook: the show-opener pools' templates (station lines, mood lines by day part).
@@ -737,11 +752,19 @@ public struct DJScriptWriter: Sendable {
         // back-announce. `.catalog` tracks only, from `catalogFacts` only, through the fixed
         // templates only; a line over `CatalogFactLine.maxLineSeconds` is not kept. No facts:
         // nothing is drawn, so the break is planned exactly as without this feature.
+        // N2: an eligible break right after one that spoke a fact (within
+        // `eligibleBreaksBetweenFactLines` eligible breaks) draws none.
+        var factEligible = false
         func drawFact() {
             guard prev.origin == .catalog, let facts = catalogFacts[prev.id], facts.catalogSongID == prev.id,
                   !facts.isEmpty else { return }
+            // Kinds of fact already said about this song this session are not said again.
+            let spokenKinds = Set(spokenCatalogFacts.flatMap(\.facts).filter { $0.songID == prev.id }.map(\.field))
             let values = CatalogFactLine.values(facts, otherTitles: tracks.filter { $0.id != prev.id }.map(\.title))
+                .filter { key, _ in !spokenKinds.contains { CatalogFactLine.keys[$0] == key } }
             guard !values.isEmpty else { return }
+            factEligible = true
+            guard !catalogFactLog.suffix(CatalogFactLine.eligibleBreaksPerFactLine - 1).contains(where: \.spoke) else { return }
             let at = lines.count
             guard draw(&catalogFactPool, values, prevAttribution, optional: true), lines.count == at + 1 else { return }
             guard estimate(lines[at].text) <= Double(CatalogFactLine.maxLineSeconds) else { lines.removeLast(); return }
@@ -861,6 +884,12 @@ public struct DJScriptWriter: Sendable {
         picker.record(shape)
         shapePicker = picker
         recentTemplates.record(lines.map(\.template), texts: lines.map(\.text), id: cues.first?.id)
+        if factEligible, let id = cues.first?.id {
+            catalogFactLog.append((id, !factCues.isEmpty))
+            if catalogFactLog.count > RecentSpokenTemplates.historyLimit { catalogFactLog.removeFirst() }
+            let spoken = Set(factCues.values.joined().map { SpokenCatalogFact(songID: $0.provenance.catalogSongID, field: $0.field) })
+            if !spoken.isEmpty { spokenCatalogFacts.append((id, spoken)) }
+        }
         if let id = cues.first?.id {
             shapeLog.append((id, shape))
             if shapeLog.count > RecentSpokenTemplates.historyLimit { shapeLog.removeFirst(shapeLog.count - RecentSpokenTemplates.historyLimit) }

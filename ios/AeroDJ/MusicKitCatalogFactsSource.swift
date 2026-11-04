@@ -6,8 +6,10 @@ import AeroDJCore
 /// provider, service or model. Separate from `MusicKitService` (Claude's file) on purpose.
 ///
 /// What it reads, per catalog song: `albumTitle`, `releaseDate`, `genreNames`,
-/// `editorialNotes.short`, and the first artist's `editorialNotes.short` (the `.artists`
-/// relationship). `CatalogTrackFacts` validates every value; the DJ speaks only what survives,
+/// `editorialNotes.short`, the first artist's `editorialNotes.short` (the `.artists`
+/// relationship), and `Album.isCompilation` of the song's album (the `.albums` relationship).
+/// `releaseDate` is the date of the release the song sits on, so the year is spoken only when
+/// that album is known not to be a compilation (`CatalogTrackFacts.yearIsTheSongs`). `CatalogTrackFacts` validates every value; the DJ speaks only what survives,
 /// through `CatalogFactLine.templates`.
 ///
 /// Privacy: only `.catalog` song ids reach this actor (`CatalogFactsFetch` filters), so a library
@@ -31,12 +33,14 @@ actor MusicKitCatalogFactsSource: CatalogTrackFactsSource {
             let chunk = Array(missing[start..<min(start + Self.batch, missing.count)])
             start += Self.batch
             var request = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: chunk.map { MusicItemID($0) })
-            request.properties = [.artists]
+            request.properties = [.artists, .albums]
             guard let response = try? await request.response() else { break }
             let now = Date()
             for song in response.items {
                 let facts = CatalogTrackFacts(catalogSongID: song.id.rawValue, songTitle: song.title,
-                                              albumTitle: song.albumTitle, releaseDate: song.releaseDate,
+                                              albumTitle: song.albumTitle,
+                                              albumIsCompilation: Self.album(of: song)?.isCompilation,
+                                              releaseDate: song.releaseDate,
                                               genreNames: song.genreNames,
                                               songEditorialNote: song.editorialNotes?.short,
                                               artistEditorialNote: song.artists?.first?.editorialNotes?.short,
@@ -50,5 +54,13 @@ actor MusicKitCatalogFactsSource: CatalogTrackFactsSource {
         var out: [String: CatalogTrackFacts] = [:]
         for id in ids { if case .some(.some(let facts)) = cache[id] { out[id] = facts } }
         return out
+    }
+
+    /// The song's album: the one whose title is `Song.albumTitle`, else the only one. Several
+    /// albums with none matching is unknown (nil), so the year is left out.
+    private static func album(of song: Song) -> Album? {
+        guard let albums = song.albums, !albums.isEmpty else { return nil }
+        if let title = song.albumTitle, let match = albums.first(where: { $0.title == title }) { return match }
+        return albums.count == 1 ? albums.first : nil
     }
 }
