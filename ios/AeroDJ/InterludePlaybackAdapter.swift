@@ -52,6 +52,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     private var interruption = BreakInterruptionState()
     /// The break's script, one player per line, in order. `queue` is rebuilt from it on resume.
     private var scriptPlayers: [AVAudioPlayer] = []
+    /// #332 P1: the cue id of each `scriptPlayers` line, for `.lineFinished`. Empty: not reported.
+    private var lineCueIDs: [UUID] = []
     /// One per script line (`BreakResumeLine.lines(for:)`): what a resume re-checks (#379 N1).
     private var resumeLines: [BreakResumeLine] = []
     /// The acknowledgement player while it plays (never a script line).
@@ -93,8 +95,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// Real audio lifecycle for the DJ session. Emitted only from the player: started when
     /// AVAudioPlayer really starts, finished when the whole break ends, failed otherwise.
     /// `.revoked` is a consent stop, not a natural end and not a speech failure.
+    /// `.lineFinished` (#332 P1, -Nova): one line of a boundary break played to its end (`cueID`
+    /// from the `cueIDs` `play` got). Only that line counts as heard for the repeat limit.
     enum Playback {
         case started(afterTrack: Int), finished(afterTrack: Int), failed(afterTrack: Int), revoked(afterTrack: Int)
+        case lineFinished(afterTrack: Int, cueID: UUID)
     }
     var onPlayback: ((Playback) -> Void)?
     private var breakTrack = 0
@@ -130,8 +135,10 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// check that is no longer true (#379 N1). Any other count: no line is treated as timed.
     /// `ratingLines` (#388): one per clip (`StationRatingBreakLine.lines(for:)`), so a rating
     /// withdraws a paused break only when one of its lines names the song. Any other count: unknown.
+    /// `cueIDs` (#332 P1): one per clip, its prepared cue id, so each line that plays to its end
+    /// is reported (`.lineFinished`). Any other count: no line is reported.
     func play(clips: [Data], line: String, afterTrack: Int, resumeLines: [BreakResumeLine],
-              ratingLines: [StationRatingBreakLine] = []) async {
+              ratingLines: [StationRatingBreakLine] = [], cueIDs: [UUID] = []) async {
         breakTrack = afterTrack
         guard !isSpeaking, !line.isEmpty, !clips.isEmpty else {
             // Handed out, but this break will not start. `.failed` clears `.ready`.
@@ -184,6 +191,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
         queue = players
         scriptPlayers = players
+        lineCueIDs = cueIDs.count == players.count ? cueIDs : []
         self.resumeLines = resumeLines.count == players.count
             ? resumeLines : players.map { BreakResumeLine(seconds: $0.duration) }
         let total = players.reduce(0) { $0 + $1.duration } + 2
@@ -191,6 +199,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         queue = []
         clipPlayer = nil
         scriptPlayers = []
+        lineCueIDs = []
         self.resumeLines = []
         self.ratingLines = []
     }
@@ -318,6 +327,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
             return
         }
         guard successful else { finishBreak(.failed); return }
+        // #332 P1: this script line played to its end (not the acknowledgement, handled above).
+        if let player = clipPlayer, let index = scriptPlayers.firstIndex(where: { $0 === player }),
+           lineCueIDs.indices.contains(index) {
+            onPlayback?(.lineFinished(afterTrack: breakTrack, cueID: lineCueIDs[index]))
+        }
         if queue.isEmpty { finishBreak(.finished); return }
         if !startNextClip() { finishBreak(.failed) }
     }
@@ -589,6 +603,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
         queue = players
         scriptPlayers = players
+        lineCueIDs = []    // #332: no per-line reports; the session counts a talk-over on `.finished`
         resumeLines = []   // a talk-over stops at an interruption and is never resumed
         closingGap = players.count > 1 ? max(0, gap) : 0
         let total = players.reduce(0) { $0 + $1.duration } + closingGap + 2
