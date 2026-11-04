@@ -263,16 +263,27 @@ public enum StationPoolBuilder {
         /// Song ratings for this station (-Nova): exclusions, the re-rank and the artist drop.
         /// `.none` builds exactly as before.
         public var ratings: StationRatingBias
+        /// #418 (-Fry): where `StationQueueFeed` takes each build's `shuffleSeed` from. The builder
+        /// itself never reads it. Default `.systemRandom`: every build (a switch, a refill, a rating
+        /// rebuild) gets a fresh order.
+        public var seedSource: StationShuffleSeedSource
 
         public init(limit: Int = 50, artistGap: Int = 2, excludedSongIDs: Set<String> = [], shuffleSeed: UInt64? = nil,
-                    ratings: StationRatingBias = .none) {
+                    ratings: StationRatingBias = .none, seedSource: StationShuffleSeedSource = .systemRandom) {
             self.limit = limit
             self.artistGap = artistGap
             self.excludedSongIDs = excludedSongIDs
             self.shuffleSeed = shuffleSeed
             self.ratings = ratings
+            self.seedSource = seedSource
         }
     }
+
+    /// #418 (-Fry): each slot's deficit gets a nudge in `[0, weaveJitter)` slots when the build has a
+    /// shuffle seed, so the familiar/new and tier pattern is not a fixed cadence. Bounded: a list
+    /// is never more than `1 + weaveJitter` songs off its share while every list has songs left, and
+    /// never runs more than `ceil(share / (1 - share)) + 3` in a row (`StationWeaveJitterTests`).
+    static let weaveJitter: Double = 1.0
 
     /// `discovery` is `StationConfiguration.discovery`: 0 = familiar only (new songs are used
     /// only once familiar ones run out), 1 = mostly new.
@@ -281,6 +292,8 @@ public enum StationPoolBuilder {
         guard options.limit > 0 else { return [] }
         let newShare = StationConfiguration.clampUnit(discovery, fallback: StationConfiguration.default.discovery)
         var rng = options.shuffleSeed.map(SplitMix64.init(seed:))
+        // #418: the weave's jitter has its own stream, so a seed's in-bucket shuffle is unchanged.
+        var jitter = options.shuffleSeed.map { SplitMix64(seed: $0 ^ 0x5DEE_CE66_D1CE_4E5B) }
 
         let ratings = options.ratings
         // 1. Dedupe across tiers, closest tier first, by ID and by title plus artist. Never-rated
@@ -311,11 +324,11 @@ public enum StationPoolBuilder {
                 fresh = reranked(fresh, ratings)
             }
             // 2. Discovery: familiar vs new within the tier.
-            tierLists.append(weave([familiar, fresh], weights: [1 - newShare, newShare]))
+            tierLists.append(weave([familiar, fresh], weights: [1 - newShare, newShare], jitter: &jitter))
             weights.append(reach.tierWeights[tier] ?? 0)
         }
         // 3. Reach: tiers by their share.
-        let merged = weave(tierLists, weights: weights)
+        let merged = weave(tierLists, weights: weights, jitter: &jitter)
         // 4. Artist spacing, then the limit.
         return spaced(merged, gap: options.artistGap, limit: options.limit)
     }
@@ -340,6 +353,13 @@ public enum StationPoolBuilder {
     /// Deterministic weighted interleave. Each slot goes to the list furthest behind its
     /// share; ties go to the earlier list. Zero-weight lists play only after the others run out.
     static func weave(_ lists: [[StationCandidate]], weights: [Double]) -> [StationCandidate] {
+        var none: SplitMix64?
+        return weave(lists, weights: weights, jitter: &none)
+    }
+
+    /// The same interleave; with a generator (#418) each open list's deficit gets a nudge in
+    /// `[0, weaveJitter)` before the pick, so the cadence varies but stays near the shares.
+    static func weave(_ lists: [[StationCandidate]], weights: [Double], jitter: inout SplitMix64?) -> [StationCandidate] {
         var index = Array(repeating: 0, count: lists.count)
         var taken = Array(repeating: 0, count: lists.count)
         var result: [StationCandidate] = []
@@ -355,7 +375,8 @@ public enum StationPoolBuilder {
             var bestDeficit = -Double.infinity
             for i in candidates {
                 let share = sum > 0 ? weights[i] / sum : 1 / Double(candidates.count)
-                let deficit = share * slot - Double(taken[i])
+                var deficit = share * slot - Double(taken[i])
+                if jitter != nil { deficit += unitInterval(jitter!.next()) * weaveJitter }
                 if deficit > bestDeficit + 1e-9 { best = i; bestDeficit = deficit }
             }
             result.append(lists[best][index[best]])
@@ -378,6 +399,9 @@ public enum StationPoolBuilder {
         return result
     }
 
+    /// `[0, 1)` from the top 53 bits.
+    static func unitInterval(_ bits: UInt64) -> Double { Double(bits >> 11) / Double(UInt64(1) << 53) }
+
     static func shuffled(_ list: [StationCandidate], _ rng: inout SplitMix64) -> [StationCandidate] {
         var copy = list
         guard copy.count > 1 else { return copy }
@@ -386,6 +410,33 @@ public enum StationPoolBuilder {
             copy.swapAt(i, j)
         }
         return copy
+    }
+}
+
+/// #418 (-Fry): where a station build's shuffle seed comes from. Privacy (Sentinel): the default
+/// seed is drawn from `SystemRandomNumberGenerator` only, never from user, device, account or
+/// listening data, and it is never logged or stored (`StationQueueEvent` has no seed).
+public enum StationShuffleSeedSource: Equatable, Sendable {
+    /// A fresh seed per build from the system generator (the app's default).
+    case systemRandom
+    /// The pre-#418 seed: the station key and the day, so a rebuild that day repeats the order.
+    /// Tests that predict a feed's order use it.
+    case perDay
+    /// One fixed seed for every build (tests).
+    case fixed(UInt64)
+
+    /// The seed for one build. `perDay` is evaluated only for `.perDay`.
+    public func seed(perDay: @autoclosure () -> UInt64) -> UInt64 {
+        var system = SystemRandomNumberGenerator()
+        return seed(perDay: perDay(), using: &system)
+    }
+
+    func seed<G: RandomNumberGenerator>(perDay: @autoclosure () -> UInt64, using generator: inout G) -> UInt64 {
+        switch self {
+        case .systemRandom: generator.next()
+        case .perDay: perDay()
+        case let .fixed(value): value
+        }
     }
 }
 

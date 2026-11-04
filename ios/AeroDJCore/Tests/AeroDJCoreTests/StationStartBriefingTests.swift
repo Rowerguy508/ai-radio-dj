@@ -145,7 +145,7 @@ final class StationStartBriefingTests: XCTestCase {
 
     private func feed() -> StationQueueFeed<String> {
         StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: StartFakeCatalog()),
-                                 materialize: { $0.map(\.id) }, options: .init(limit: 10), day: { 42 },
+                                 materialize: { $0.map(\.id) }, options: .init(limit: 10, seedSource: .perDay), day: { 42 },
                                  recentlyPlayed: { [] }, refillLead: 3, log: { _ in })
     }
 

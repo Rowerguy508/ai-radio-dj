@@ -57,7 +57,7 @@ private func makeFeed(_ catalog: QueueFakeCatalog, recorder: QueueEventRecorder 
     StationQueueFeed<String>(
         resolver: CatalogStationSeedResolver(catalog: catalog),
         materialize: { picks in picks.filter(playable).map(\.id) },
-        options: .init(limit: limit),
+        options: .init(limit: limit, seedSource: .perDay),
         day: { 42 },
         recentlyPlayed: recentlyPlayed,
         refillLead: refillLead,
