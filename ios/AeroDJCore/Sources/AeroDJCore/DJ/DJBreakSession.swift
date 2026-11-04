@@ -117,8 +117,8 @@ public final class DJBreakSession {
     /// per-line events (`playbackFinished`). The first clip starting records nothing: an intro or
     /// lead can precede the update, and a call, skip, failure or revoke before or during the
     /// update's own line leaves it unrecorded, so it keeps its chance later that day.
-    /// `reportsLines`: the player sent at least one `lineFinished` for this break, so only those
-    /// lines count (a line it skipped on a resume, e.g. a stale time check, is never assumed heard).
+    /// `reportsLines`: the player said at `play` (`breakReportsLines`) that it reports each line, so
+    /// only `lineFinished` lines count, even if the break ends `.finished` before any (#332 B1).
     private var handedOutPersonal: (afterTrack: Int, cues: [NarrationCue], reportsLines: Bool)?
 
     public init(preparer: DJBreakPreparer, station: StationConfigurationModel, dj: DJPresentationStore,
@@ -529,6 +529,9 @@ public final class DJBreakSession {
         }
         handedOutPersonal = aired.cues.isEmpty ? nil : aired
     }
+
+    /// #332 B1 (-Nova): the break at `afterTrack` will report its lines; set before any can end.
+    public func breakReportsLines(afterTrack k: Int) { if handedOutPersonal?.afterTrack == k { handedOutPersonal?.reportsLines = true } }
 
     /// The whole break played through. From a player that reports no per-line events (the
     /// talk-over), every line was heard, so its personal lines are recorded now. From one that

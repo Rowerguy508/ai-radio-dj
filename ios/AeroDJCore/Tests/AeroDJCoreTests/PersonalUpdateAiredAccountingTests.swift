@@ -157,6 +157,48 @@ final class PersonalUpdateAiredAccountingTests: XCTestCase {
         XCTAssertTrue(r.ledger.hasReachedLimit(r.ids[0], at: r.clock.now))
     }
 
+    // MARK: B1: a line-reporting break that ends `.finished` before any line finished
+
+    /// Echo's B1: a call lands during line 0, and the resume then ends the break through
+    /// `endStaleBreak` (every line left past its window) or `endWithdrawnBreak` (a rating dropped
+    /// it). Both report `.finished` with no `lineFinished` before it. The adapter said at `play`
+    /// that this break reports lines (`breakReportsLines`), so nothing is counted as aired.
+    func testALineReportingBreakEndedStaleOrWithdrawnBeforeAnyLineCountsNothing() async throws {
+        for end in ["stale", "withdrawn"] {
+            let r = await rig()
+            _ = try await handOut(r)
+            r.session.breakReportsLines(afterTrack: 0)   // at `play`, before audio
+            r.session.playbackStarted(afterTrack: 0)
+            // Interrupted during line 0; no line finished. Both resume endings send `.finished`.
+            r.session.playbackFinished(afterTrack: 0)
+            XCTAssertFalse(r.ledger.hasReachedLimit(r.ids[0], at: r.clock.now), end)
+            XCTAssertFalse(r.ledger.isWithinMinimumGap(at: r.clock.now), "\(end): nothing aired, no gap")
+            XCTAssertEqual(tapIDs(r), [r.ids[0]], "\(end): it keeps its chance later that day")
+        }
+    }
+
+    func testALineReportingBreakThatPlaysThroughStillCountsItsUpdate() async throws {
+        let r = await rig()
+        let b = try await handOut(r)
+        let l = try lines(b)
+        r.session.breakReportsLines(afterTrack: 0)
+        r.session.playbackStarted(afterTrack: 0)
+        for id in l.before + [l.update] + l.after { r.session.lineFinished(afterTrack: 0, cueID: id) }
+        r.session.playbackFinished(afterTrack: 0)
+        XCTAssertEqual(r.ledger.limitedItemIDs(at: r.clock.now), [r.ids[0]])
+        XCTAssertTrue(r.ledger.isWithinMinimumGap(at: r.clock.now))
+    }
+
+    /// The talk-over never sends `breakReportsLines`; a flag for another break changes nothing.
+    func testTalkoverCountingIsUnchangedByALineReportForAnotherBreak() async throws {
+        let r = await rig()
+        _ = try await handOut(r)
+        r.session.breakReportsLines(afterTrack: 1)
+        r.session.playbackStarted(afterTrack: 0)
+        r.session.playbackFinished(afterTrack: 0)
+        XCTAssertTrue(r.ledger.hasReachedLimit(r.ids[0], at: r.clock.now), "a talk-over finish still counts")
+    }
+
     func testALineEventForAnotherBreakOrAnUnknownCueCountsNothing() async throws {
         let r = await rig()
         let b = try await handOut(r)

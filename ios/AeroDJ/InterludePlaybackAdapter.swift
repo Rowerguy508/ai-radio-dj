@@ -100,6 +100,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     enum Playback {
         case started(afterTrack: Int), finished(afterTrack: Int), failed(afterTrack: Int), revoked(afterTrack: Int)
         case lineFinished(afterTrack: Int, cueID: UUID)
+        /// #332 B1: sent once at `play`, before any line, when this break reports its lines.
+        case reportsLines(afterTrack: Int)
     }
     var onPlayback: ((Playback) -> Void)?
     private var breakTrack = 0
@@ -192,6 +194,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         queue = players
         scriptPlayers = players
         lineCueIDs = cueIDs.count == players.count ? cueIDs : []
+        // #332 B1: the session counts only reported lines, even if the break ends `.finished` early.
+        if !lineCueIDs.isEmpty { onPlayback?(.reportsLines(afterTrack: afterTrack)) }
         self.resumeLines = resumeLines.count == players.count
             ? resumeLines : players.map { BreakResumeLine(seconds: $0.duration) }
         let total = players.reduce(0) { $0 + $1.duration } + 2
