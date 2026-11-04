@@ -20,6 +20,7 @@ fi
 
 # Outside .build so the other release scripts' plain-.build scans never see it.
 both="${TMPDIR:-/tmp}/aerodj-owner-ab-tester-$$"
+trap 'rm -rf "$both"' EXIT
 swift build -c release --scratch-path "$both" -Xswiftc -DAERODJ_OWNER_AB -Xswiftc -DAERODJ_TESTER_VOICE
 if objects "$both" | xargs grep -la "$host"; then
   echo "FAIL: GDELT host in an owner A/B build that also sets the tester flag"; exit 1
@@ -29,5 +30,4 @@ tester=".build/tester-voice"
 swift build -c release --scratch-path "$tester" -Xswiftc -DAERODJ_TESTER_VOICE
 objects "$tester" | xargs grep -la "$host" >/dev/null \
   || { echo "FAIL: positive control: GDELT host missing from the tester-voice Release build"; exit 1; }
-rm -rf "$both"
 echo "OK: GDELT only in the tester-voice build"
