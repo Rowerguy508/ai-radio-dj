@@ -511,6 +511,8 @@ final class TalkoverCoordinator {
         // #388: one per clip handed to the voice, in order (`chosen` is a prefix of the clips).
         let ratingLines = Array(StationRatingBreakLine.lines(for: prepared).prefix(chosen.count))
         let resumeLines = Array(BreakResumeLine.lines(for: prepared).prefix(chosen.count))
+        // Fry's #403 nit 2: per-line aired reports, one cue id per clip handed to the voice.
+        let lineCueIDs = Array(prepared.clips.prefix(chosen.count).map(\.cueID))
         let voiceTask = Task { @MainActor [weak self] in
             guard let self else { return }
             // Fry #387 nit 2: a drop or stop between `stillArmed` and this task (one hop) cancelled
@@ -523,6 +525,7 @@ final class TalkoverCoordinator {
             let position = self.music.playbackTime
             let outcome = await self.interlude.playTalkover(
                 players: chosen, gains: gains, closingGap: resolved.closingGap, line: line, afterTrack: k,
+                cueIDs: lineCueIDs,
                 onStarted: { [weak self] at in
                     guard let self else { return }
                     self.run?.voiceStarted(at: at, songPosition: position, config: self.config)

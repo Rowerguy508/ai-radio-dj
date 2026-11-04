@@ -273,7 +273,9 @@ final class PersonalUpdateAiredAccountingTests: XCTestCase {
         XCTAssertEqual(startIDs(r), [], "nor at a station start")
         let report = provider(r)().omittedByLimit.entries
         XCTAssertEqual(Set(report.compactMap(\.cue.sourceItemID)), Set(r.ids), "held back and reported")
-        XCTAssertTrue(report.allSatisfy { $0.outcome == .dropped(.repeatLimit) })
+        // Echo's #403 N1: the aired one is at its daily limit; the other is held by the gap only.
+        XCTAssertEqual(report.first { $0.cue.sourceItemID == aired }?.outcome, .dropped(.repeatLimit))
+        XCTAssertEqual(report.first { $0.cue.sourceItemID == other }?.outcome, .dropped(.minimumGap))
         r.clock.now = at(10, 29)
         XCTAssertEqual(tapIDs(r), [])
         r.clock.now = at(10, 30)

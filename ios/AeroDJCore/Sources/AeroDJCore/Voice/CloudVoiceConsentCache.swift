@@ -44,3 +44,10 @@ public struct CloudVoiceConsentCache: AudioCache {
         await base.purgeClips(keepingProviders: providerIDs)
     }
 }
+
+/// Fry's #404 nit 1: the device-run cache log (`AudioCacheFileLog.record`) counts the base
+/// cache's files through this wrapper, cloud clips included whatever the consent: it reports
+/// what is on disk, not what may be read back. Counts only. -Nova
+extension CloudVoiceConsentCache: AudioCacheForwarding {
+    public var forwardedCache: any AudioCache { base }
+}

@@ -65,7 +65,8 @@ public enum LiveQueueBriefing {
     /// Then the #332 limits: an update that already aired today (`ledger`) is
     /// `.dropped(.repeatLimit)`, and one whose row expired is `.dropped(.windowPassed)`,
     /// both on `omittedByLimit`. Within the ledger's minimum gap after any update aired, every
-    /// update is `.dropped(.repeatLimit)` for this queue (#332 -Nova). Consent stays in `forQueue()`.
+    /// other update is `.dropped(.minimumGap)` for this queue (#332, Echo's #403 N1 -Nova).
+    /// Consent stays in `forQueue()`.
     public static func handoff(
         items: [ConnectionItem],
         preferences: BriefingPreferences,
@@ -96,8 +97,10 @@ public enum LiveQueueBriefing {
             for row in speakable {
                 if let end = row.expiresAt, end <= now {
                     limited.append(NarrationScheduleEntry(cue: reportOnlyCue(for: row), outcome: .dropped(.windowPassed)))
-                } else if inGap || today.contains(row.id) {
+                } else if today.contains(row.id) {
                     limited.append(NarrationScheduleEntry(cue: reportOnlyCue(for: row), outcome: .dropped(.repeatLimit)))
+                } else if inGap {
+                    limited.append(NarrationScheduleEntry(cue: reportOnlyCue(for: row), outcome: .dropped(.minimumGap)))
                 } else {
                     eligible.append(row)
                 }
@@ -116,8 +119,9 @@ public enum LiveQueueBriefing {
 
     /// #332 limits on content cues, in cue order. Framing cues pass through.
     /// - row `expiresAt` passed: `.dropped(.windowPassed)` (never carried forward),
-    /// - item already aired today, a second cue for the same item, or any update within the
-    ///   ledger's minimum gap after the last airing (#332 -Nova): `.dropped(.repeatLimit)`.
+    /// - item already aired today, or a second cue for the same item: `.dropped(.repeatLimit)`,
+    /// - any other update within the ledger's minimum gap after the last airing (#332, Echo's
+    ///   #403 N1 -Nova): `.dropped(.minimumGap)`.
     static func applyLimits(_ handoff: NarrationHandoff, items: [ConnectionItem], now: Date,
                             ledger: PersonalUpdateLedger?) -> (handoff: NarrationHandoff, omitted: [NarrationScheduleEntry]) {
         let limitedToday = ledger?.limitedItemIDs(at: now) ?? []
@@ -130,8 +134,10 @@ public enum LiveQueueBriefing {
             let row = items.first { $0.id == id }
             if let end = row?.expiresAt, end <= now {
                 omitted.append(NarrationScheduleEntry(cue: cue, outcome: .dropped(.windowPassed)))
-            } else if inGap || limitedToday.contains(id) || !seen.insert(id).inserted {
+            } else if limitedToday.contains(id) || !seen.insert(id).inserted {
                 omitted.append(NarrationScheduleEntry(cue: cue, outcome: .dropped(.repeatLimit)))
+            } else if inGap {
+                omitted.append(NarrationScheduleEntry(cue: cue, outcome: .dropped(.minimumGap)))
             } else {
                 kept.append(cue)
             }
