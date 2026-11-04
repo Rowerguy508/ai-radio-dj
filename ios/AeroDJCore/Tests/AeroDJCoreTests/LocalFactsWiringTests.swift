@@ -1,5 +1,8 @@
 import XCTest
 @testable import AeroDJCore
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 // #401 wiring (-Fry): DJBreakSession's extra-line injection, and `LocalFactsWiring` (the fact gate,
 // the purge listener and `FactRefresh.run`). Fixture providers and fake location only: no
@@ -590,4 +593,193 @@ final class LocalFactsWiringTests: XCTestCase {
         XCTAssertEqual(LocalFactsStatus(consent: .manual, manualPlace: "Duluth"), .manual("Duluth"))
         XCTAssertEqual(LocalFactsCopy.detail(.manual("Duluth")), "Location: Duluth.", "the location, not the switches")
     }
+
+    // MARK: Sentinel #410 n1: a purge during an in-flight fetch is not undone by that fetch
+
+    func testAPurgeDuringAFetchIsNotUndoneWhenTheFetchFinishes() async {
+        let cache = PurgeableQueryCache<[String]>()
+        let before = await cache.epoch
+        let stored = await cache.put("Saint Paul", ["a"], at: w0, epoch: before)
+        XCTAssertTrue(stored, "no purge in between: kept")
+        let got = await cache.get("Saint Paul", now: w0, ttl: 60)
+        XCTAssertEqual(got, ["a"])
+        let inFlight = await cache.epoch          // a fetch starts
+        await cache.removeAll()                    // purge lands mid-fetch
+        let late = await cache.put("Saint Paul", ["b"], at: w0, epoch: inFlight)   // the fetch finishes
+        XCTAssertFalse(late, "a stale fetch result is dropped")
+        let empty = await cache.isEmpty
+        XCTAssertTrue(empty, "the purge stays done")
+        let after = await cache.get("Saint Paul", now: w0, ttl: 60)
+        XCTAssertNil(after)
+        let fresh = await cache.epoch
+        let next = await cache.put("Saint Paul", ["c"], at: w0, epoch: fresh)
+        XCTAssertTrue(next, "a fetch started after the purge is kept")
+    }
+
+    // MARK: Sentinel #410 n2: a switch turned off (or withdrawal) cancels the refresh in flight
+
+    func testSwitchingNewsOffMidRefreshAsksNoFurtherProvider() async {
+        let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), weather = CountingWeather(clock: clock)
+        let news = CachingNews()
+        let w = wiring(consent: .approximate, clock: clock, device: device, weather: weather, extra: [news])
+        weather.duringGather = { [w] in _ = w.setNews(false) }
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(weather.calls, 1)
+        XCTAssertEqual(news.calls, 0, "news switched off mid-refresh: no news request goes out afterwards")
+        XCTAssertNil(w.source.extraLine(after: a, before: b, shape: .comingUpOnly))
+    }
+
+    func testWithdrawingMidRefreshAsksNoFurtherProvider() async {
+        let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), weather = CountingWeather(clock: clock)
+        let news = CachingNews()
+        let w = wiring(consent: .approximate, clock: clock, device: device, weather: weather, extra: [news])
+        weather.duringGather = { [w] in w.turnOff() }
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(news.calls, 0, "withdrawn mid-refresh: no news request")
+        XCTAssertTrue(news.cacheIsEmpty)
+    }
+
+    func testAnOffSwitchCancelsARefreshBeforeItsProvidersAreAsked() async {
+        // Switched off while the area is still resolving: no provider is called at all.
+        let clock = WiringClock(w0), weather = CountingWeather(clock: clock)
+        let news = CachingNews()
+        final class Hooked: CoarseLocationSource, @unchecked Sendable {
+            var hook: (@Sendable () -> Void)?
+            func currentArea() async -> LocalArea? { hook?(); return minneapolis }
+        }
+        let device = Hooked()
+        let store = LocalAreaStore.inMemory()
+        store.chooseApproximate()
+        let w = LocalFactsWiring(store: store, toggles: .inMemory(weather: true, news: true), providers: [weather, news],
+                                 summarizer: HeadlineSummarizer(paraphraser: NoHeadlineParaphraser()), device: device, manual: nil,
+                                 now: { clock.now })
+        device.hook = { [w] in w.setWeather(false); _ = w.setNews(false) }
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(weather.calls + news.calls, 0, "nothing is asked after the switches went off")
+    }
+
+    // MARK: Sentinel #410 n3 probes: the generation check
+
+    func testThePlaceChangingMidRefreshDiscardsTheOldAreasFacts() async {
+        let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), weather = CountingWeather(clock: clock)
+        let w = wiring(consent: .approximate, clock: clock, device: device, weather: weather)
+        weather.duringGather = { [w] in
+            w.turnOff()
+            w.store.chooseManual("Duluth, MN")   // consent holds again, for a different place
+        }
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .superseded, "Minneapolis weather is not handed over for Duluth")
+        XCTAssertNil(w.source.extraLine(after: a, before: b, shape: .comingUpOnly))
+        XCTAssertEqual(w.status, .manual("Duluth, MN"))
+        weather.duringGather = nil
+        guard case .refreshed = await w.refreshIfDue() else { return XCTFail("the next refresh runs for the new place") }
+    }
+
+    func testWeatherOffThenOnMidRefreshDiscardsThatRefresh() async {
+        let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), weather = CountingWeather(clock: clock)
+        let w = wiring(consent: .approximate, clock: clock, device: device, weather: weather)
+        weather.duringGather = { [w] in
+            w.setWeather(false)
+            w.setWeather(true)   // back on before the refresh finishes: still a different generation
+        }
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertNil(w.source.extraLine(after: a, before: b, shape: .comingUpOnly))
+        weather.duringGather = nil
+        guard case .refreshed = await w.refreshIfDue() else { return XCTFail("refreshes again at once") }
+        XCTAssertNotNil(w.source.extraLine(after: a, before: b, shape: .comingUpOnly))
+    }
+
+    // MARK: Sentinel #410 n5: location revoked in iOS Settings
+
+    func testLocationRevokedInSettingsShowsOffFetchesNothingAndPurges() async {
+        let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), weather = CountingWeather(clock: clock)
+        let news = CachingNews()
+        let w = wiring(consent: .approximate, clock: clock, device: device, weather: weather, extra: [news])
+        let preparer = DJBreakPreparer(renderer: djRenderer(), userID: "u", stationID: "s", now: { w0 })
+        await w.attach(to: preparer)
+        await preparer.prepare(weatherBreak(afterTrack: 0), deadline: .seconds(10), onDeviceOnly: true)
+        let prepared = await ready(preparer, 0)
+        XCTAssertTrue(prepared)
+        _ = await w.refreshIfDue()
+        XCTAssertFalse(news.cacheIsEmpty)
+        await w.systemLocationChanged(authorized: false).value
+        XCTAssertEqual(w.status, .offInSettings, "the card does not say location is on")
+        XCTAssertFalse(LocalFactsCopy.detail(w.status).contains("approximate location"))
+        XCTAssertEqual(LocalFactsCopy.detail(w.status),
+                       "Location is off for OnAirly in iOS Settings. The DJ won't mention where you are.")
+        XCTAssertTrue(news.cacheIsEmpty, "revoked: the news cache is purged")
+        XCTAssertNil(w.source.extraLine(after: a, before: b, shape: .comingUpOnly), "and queued facts")
+        guard case .ready(let taken) = await preparer.takeBreak(afterTrack: 0) else { return XCTFail("airs") }
+        XCTAssertEqual(taken.cues.count, 2, "a planned weather line is dropped at the take")
+        clock.now = w0.addingTimeInterval(LocalFactsWiring.defaultInterval)
+        let reads = device.reads, calls = weather.calls + news.calls
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .noConsent)
+        XCTAssertEqual(device.reads, reads, "no location read")
+        XCTAssertEqual(weather.calls + news.calls, calls, "no request")
+        w.setWeather(false); w.setWeather(true)
+        XCTAssertTrue(w.shouldAskForLocation(afterSwitchingOn: .weather), "switching on again asks again")
+        await w.systemLocationChanged(authorized: true).value
+        XCTAssertEqual(w.status, .approximate)
+        guard case .refreshed = await w.refreshIfDue() else { return XCTFail("allowed again: refreshes at once") }
+        // A typed place does not depend on iOS location.
+        let typed = wiring(consent: .manual, clock: clock, device: device, weather: weather)
+        typed.systemLocationChanged(authorized: false)
+        XCTAssertEqual(typed.status, .manual("Minneapolis, MN"))
+        let before = weather.calls
+        guard case .refreshed = await typed.refreshIfDue() else { return XCTFail("a typed place still refreshes") }
+        XCTAssertEqual(weather.calls, before + 1, "weather for the typed place is still asked")
+        XCTAssertEqual(LocalFactsStatus(consent: .approximate, manualPlace: nil, systemDenied: true), .offInSettings)
+    }
+
+    #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
+    // MARK: Tester build: the GDELT provider itself (n1, n2)
+
+    private final class HookTransport: HTTPTransport, @unchecked Sendable {
+        private let lock = NSLock(); private var n = 0
+        var onSend: (@Sendable () async -> Void)?
+        var sent: Int { lock.withLock { n } }
+        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            lock.withLock { n += 1 }
+            await onSend?()
+            return (Data("{}".utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+    }
+
+    func testGDELTPurgeMidFetchLeavesItsCacheEmpty() async {
+        let transport = HookTransport()
+        let provider = GDELTNewsProvider(transport: transport, now: { w0 }, sleep: { _ in })
+        transport.onSend = { await provider.purgeCache() }   // purge lands while the request is out
+        _ = await provider.facts(for: FactRequest(now: w0, area: minneapolis))
+        let empty = await provider.cache.isEmpty
+        XCTAssertTrue(empty, "the in-flight fetch does not refill the purged cache")
+        transport.onSend = nil
+        _ = await provider.facts(for: FactRequest(now: w0, area: minneapolis))
+        let filled = await provider.cache.isEmpty
+        XCTAssertFalse(filled, "an ordinary fetch is cached")
+    }
+
+    func testGDELTRateGatedRequestIsNotSentAfterNewsIsSwitchedOff() async {
+        let transport = HookTransport()
+        final class Box: @unchecked Sendable { var w: LocalFactsWiring? }
+        let box = Box()
+        // City rung goes out at once; the region rung waits for the 5 s slot, and news goes off then.
+        let provider = GDELTNewsProvider(transport: transport, now: { w0 }, sleep: { _ in _ = box.w?.setNews(false) })
+        let store = LocalAreaStore.inMemory()
+        store.chooseApproximate()
+        let w = LocalFactsWiring(store: store, toggles: .inMemory(news: true), providers: [provider],
+                                 summarizer: HeadlineSummarizer(paraphraser: NoHeadlineParaphraser()),
+                                 device: FakeDeviceLocation(minneapolis), manual: nil, now: { w0 })
+        box.w = w
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(transport.sent, 1, "the rate-gated region request is never sent once news is off")
+        let empty = await provider.cache.isEmpty
+        XCTAssertTrue(empty, "and news-off purged the cache")
+    }
+    #endif
 }

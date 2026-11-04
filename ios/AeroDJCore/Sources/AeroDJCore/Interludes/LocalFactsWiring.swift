@@ -19,17 +19,20 @@ import Foundation
 // location prompt comes only after weather or local news is switched on
 // (`shouldAskForLocation`). Without `.approximate` or `.manual` consent no area is resolved and no
 // weather or local-news provider is called. A consent or switch change while a refresh is in
-// flight discards that refresh's facts.
+// flight cancels it (#410 n2: no later provider call or GDELT request) and discards its facts.
+// Location revoked in iOS Settings counts as no location (#410 n5).
 
 /// Where the location prompt lives and what the Tune card shows (`LocalFactsCopy`).
 public enum LocalFactsStatus: Equatable, Sendable {
     case off
     case approximate
     case manual(String)
+    /// #410 n5: approximate was chosen, but location is now off for the app in iOS Settings.
+    case offInSettings
 
-    public init(consent: LocationConsentState, manualPlace: String?) {
+    public init(consent: LocationConsentState, manualPlace: String?, systemDenied: Bool = false) {
         switch consent {
-        case .approximate: self = .approximate
+        case .approximate: self = systemDenied ? .offInSettings : .approximate
         case .manual: self = manualPlace.map(Self.manual) ?? .off
         case .undecided, .declined: self = .off
         }
@@ -54,6 +57,38 @@ public enum LocalFactsSwitch: String, CaseIterable, Sendable {
         case .news: kind == .localNews || kind == .news
         }
     }
+}
+
+/// #410 n1 (Sentinel; -Fry): a per-key in-memory cache with a purge epoch. `removeAll()` bumps
+/// the epoch; a fetch reads `epoch` before it starts and `put` drops its result if a purge came
+/// in between, so a purge during an in-flight fetch is never undone. GDELT's headline cache.
+public actor PurgeableQueryCache<Value: Sendable> {
+    private var entries: [String: (Date, Value)] = [:]
+    public private(set) var epoch = 0
+    private let limit: Int
+
+    public init(limit: Int = 8) { self.limit = limit }
+
+    public func get(_ key: String, now: Date, ttl: TimeInterval) -> Value? {
+        guard let (at, value) = entries[key], now.timeIntervalSince(at) < ttl else { return nil }
+        return value
+    }
+
+    /// Stores `value` only if no purge happened since `epoch` was read. Returns whether it stored.
+    @discardableResult
+    public func put(_ key: String, _ value: Value, at: Date, epoch fetchedAt: Int) -> Bool {
+        guard fetchedAt == epoch else { return false }
+        if entries.count > limit { entries.removeAll() }
+        entries[key] = (at, value)
+        return true
+    }
+
+    public func removeAll() {
+        epoch += 1
+        entries.removeAll()
+    }
+
+    public var isEmpty: Bool { entries.isEmpty }
 }
 
 /// #401 N3 (Sentinel; -Fry): the listener's per-kind switches. Re-read at every take (the
@@ -137,6 +172,10 @@ public final class LocalFactsWiring: @unchecked Sendable {
     private var lastRefresh: Date?
     /// Bumped by every consent or toggle change and purge: an in-flight refresh from before is discarded.
     private var generation = 0
+    /// #410 n2: the refreshes in flight, cancelled by every consent or switch change and purge.
+    private var inflight: Set<Task<RefreshOutcome, Never>> = []
+    /// #410 n5: the app's live location authorization says no (revoked in iOS Settings).
+    private var systemDenied = false
 
     public init(store: LocalAreaStore, toggles: LocalFactsToggles = LocalFactsToggles(),
                 source: FactExtraLineSource = FactExtraLineSource(),
@@ -157,14 +196,39 @@ public final class LocalFactsWiring: @unchecked Sendable {
         self.interval = interval
     }
 
-    public var status: LocalFactsStatus { LocalFactsStatus(consent: store.consent, manualPlace: store.manualPlace) }
+    public var status: LocalFactsStatus {
+        LocalFactsStatus(consent: store.consent, manualPlace: store.manualPlace, systemDenied: lock.withLock { systemDenied })
+    }
+
+    /// Location consent holds AND, for approximate, iOS still allows it (#410 n5).
+    public var locationUsable: Bool {
+        let consent = store.consent
+        return consent.allowsLocation && !(consent == .approximate && lock.withLock { systemDenied })
+    }
+
+    /// #410 n5: the app's live location authorization, re-read on foreground and from the location
+    /// manager's authorization callback. Revoked: the card says so, nothing is read or fetched for
+    /// weather or local news, queued facts and provider caches are emptied (the returned task).
+    @discardableResult
+    public func systemLocationChanged(authorized: Bool) -> Task<Void, Never> {
+        let changed: Bool = lock.withLock {
+            defer { systemDenied = !authorized }
+            return systemDenied == authorized
+        }
+        guard changed else { return Task {} }
+        return authorized ? { invalidate(); return Task {} }() : consentChanged()
+    }
 
     /// The take-time gate (`DJBreakPreparer.setFactCueGate`, re-read at every take like the
     /// cloud-voice consent): a fact line airs only while location consent holds for its kind
-    /// (`LocalAreaStore.allowsFactCue`) AND its own switch is on (N3).
+    /// (`LocalAreaStore.allowsFactCue`, and iOS still allows it, #410 n5) AND its own switch is on (N3).
     public func attach(to preparer: DJBreakPreparer) async {
         let store = store, toggles = toggles
-        await preparer.setFactCueGate { store.allowsFactCue($0) && toggles.allowsFactCue($0) }
+        await preparer.setFactCueGate { [weak self] cue in
+            guard store.allowsFactCue(cue), toggles.allowsFactCue(cue) else { return false }
+            guard let kind = FactProvenance.kind(of: cue.provenance), kind.needsLocation else { return true }
+            return self?.locationUsable ?? false
+        }
     }
 
     /// Purge-all (`.all`: consent withdrawal, "delete my narration data"): `LocalAreaStore`'s own
@@ -199,14 +263,17 @@ public final class LocalFactsWiring: @unchecked Sendable {
     /// The location prompt rule (Sentinel, #410): ask ONLY right after the listener switched on a
     /// kind that needs their area (weather or local news), and only while location consent does
     /// not already hold. Never before a switch is on, and never for national news alone.
-    public static func shouldAskForLocation(switchedOn kinds: Set<BroadcastFactKind>, consent: LocationConsentState) -> Bool {
-        !consent.allowsLocation && kinds.contains(where: \.needsLocation)
+    public static func shouldAskForLocation(switchedOn kinds: Set<BroadcastFactKind>, consent: LocationConsentState,
+                                            systemDenied: Bool = false) -> Bool {
+        let usable = consent.allowsLocation && !(consent == .approximate && systemDenied)
+        return !usable && kinds.contains(where: \.needsLocation)
     }
 
     /// `shouldAskForLocation(switchedOn:consent:)` for one Tune switch: the kinds it turned on are
     /// the ones this build has providers for (the live build has local news but no national news).
     public func shouldAskForLocation(afterSwitchingOn which: LocalFactsSwitch) -> Bool {
-        toggles.isOn(which) && Self.shouldAskForLocation(switchedOn: kinds(of: which), consent: store.consent)
+        toggles.isOn(which) && Self.shouldAskForLocation(switchedOn: kinds(of: which), consent: store.consent,
+                                                         systemDenied: lock.withLock { systemDenied })
     }
 
     /// The prompt was answered or dismissed. Without location consent, a switch whose kinds all
@@ -214,7 +281,7 @@ public final class LocalFactsWiring: @unchecked Sendable {
     /// news off. Then as `consentChanged()`.
     @discardableResult
     public func locationPromptClosed() -> Task<Void, Never> {
-        if !store.consent.allowsLocation {
+        if !locationUsable {
             for which in LocalFactsSwitch.allCases where toggles.isOn(which) {
                 let kinds = kinds(of: which)
                 if !kinds.isEmpty, kinds.allSatisfy(\.needsLocation) { toggles.set(which, on: false) }
@@ -245,10 +312,13 @@ public final class LocalFactsWiring: @unchecked Sendable {
     }
 
     private func invalidate() {
-        lock.withLock {
+        let running: Set<Task<RefreshOutcome, Never>> = lock.withLock {
             generation += 1
             lastRefresh = nil
+            defer { inflight = [] }
+            return inflight
         }
+        running.forEach { $0.cancel() }   // #410 n2: no later provider call or GDELT request from it
         source.clear()
     }
 
@@ -273,15 +343,27 @@ public final class LocalFactsWiring: @unchecked Sendable {
     /// for the kinds that need the area; then resolve the area (only if a switched-on kind needs
     /// it) and `FactRefresh.run` into `source` with only those providers, re-checking consent,
     /// switches and this refresh's generation just before the facts are handed over (N2).
+    ///
+    /// #410 n2: the refresh runs as its own task, cancelled by any consent or switch change or
+    /// purge (`invalidate`): the gatherer asks no further provider, GDELT sends no further rung or
+    /// rate-gated request, and the generation check drops whatever came back.
     @discardableResult
     public func refreshIfDue() async -> RefreshOutcome {
+        let task = Task { [self] in await refreshBody() }
+        lock.withLock { _ = inflight.insert(task) }
+        let outcome = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        lock.withLock { _ = inflight.remove(task) }
+        return outcome
+    }
+
+    private func refreshBody() async -> RefreshOutcome {
         let toggles = toggles
         let switchedOn = providers.filter { toggles.allows($0.kind) }
         guard !switchedOn.isEmpty else {
             source.clear()
             return .allOff
         }
-        let located = store.consent.allowsLocation
+        let located = locationUsable
         var enabled = switchedOn.filter { located || !$0.kind.needsLocation }
         guard !enabled.isEmpty else {
             source.clear()
@@ -304,6 +386,10 @@ public final class LocalFactsWiring: @unchecked Sendable {
             source.clear()
             return .noArea
         }
+        guard !Task.isCancelled, isCurrent(ticket) else {
+            source.clear()
+            return .superseded
+        }
         let kinds = Set(enabled.map(\.kind))
         let refresh = FactRefresh(gatherer: BroadcastFactGatherer(providers: enabled), summarizer: summarizer)
         let (counts, paraphrase) = await refresh.run(FactRequest(now: start, area: area, unit: unit()), into: source,
@@ -318,7 +404,7 @@ public final class LocalFactsWiring: @unchecked Sendable {
     private func isCurrent(_ ticket: Int) -> Bool { lock.withLock { generation == ticket } }
 
     private func allowed(_ ticket: Int, _ kinds: Set<BroadcastFactKind>) -> Bool {
-        isCurrent(ticket) && kinds.allSatisfy { toggles.allows($0) && (!$0.needsLocation || store.consent.allowsLocation) }
+        isCurrent(ticket) && kinds.allSatisfy { toggles.allows($0) && (!$0.needsLocation || locationUsable) }
     }
 }
 
@@ -354,6 +440,7 @@ public enum LocalFactsCopy {
         case .off: "Location off. The DJ never mentions where you are."
         case .approximate: "Location: approximate, only while the app is open."
         case .manual(let place): "Location: \(place)."
+        case .offInSettings: "Location is off for \(AppName.display) in iOS Settings. The DJ won't mention where you are."
         }
     }
     public static let weatherLegal = "Weather legal"

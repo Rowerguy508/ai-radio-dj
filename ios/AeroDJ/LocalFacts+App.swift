@@ -18,12 +18,20 @@ import WeatherKit
 @MainActor
 final class LazyCoarseDeviceLocation {
     private var made: CoarseDeviceLocation?
+    /// #410 n5: told whenever iOS reports a new authorization (once the manager exists).
+    var onAuthorizationChange: (@MainActor () -> Void)? {
+        didSet { made?.onAuthorizationChange = onAuthorizationChange }
+    }
     var location: CoarseDeviceLocation {
         if let made { return made }
         let fresh = CoarseDeviceLocation()
+        fresh.onAuthorizationChange = onAuthorizationChange
         made = fresh
         return fresh
     }
+    /// #410 n5: the live answer, read only after the listener chose approximate location (so no
+    /// `CLLocationManager` exists before opt-in). Nil: not created yet.
+    var isDeniedInSettings: Bool? { made?.isDeniedInSettings }
     func currentArea() async -> LocalArea? { await location.currentArea() }
 }
 
@@ -47,6 +55,7 @@ final class LocalFactsHost: ObservableObject {
     @Published private(set) var weatherOn: Bool
     @Published private(set) var newsOn: Bool
     private var tasks: [Task<Void, Never>] = []
+    private var foreground: NSObjectProtocol?
 
     init(wiring: LocalFactsWiring, location: LazyCoarseDeviceLocation, preparer: DJBreakPreparer) {
         self.wiring = wiring
@@ -68,6 +77,14 @@ final class LocalFactsHost: ObservableObject {
         tasks.append(Task { [weak self] in
             for await purge in purges where purge == .all { self?.syncStatus() }
         })
+        // #410 n5: revoked in iOS Settings shows as off. Re-read on every foreground, and from the
+        // location manager's authorization callback.
+        location.onAuthorizationChange = { [weak self] in self?.recheckSystemLocation() }
+        recheckSystemLocation()
+        foreground = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
+                                                            object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.recheckSystemLocation() }
+        }
         tasks.append(Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -82,9 +99,20 @@ final class LocalFactsHost: ObservableObject {
     /// The prompt was answered or dismissed. Declined: the location switches go back off.
     /// Granted: refresh with the new answer.
     func promptClosed() {
+        recheckSystemLocation()      // a "Don't Allow" in the system prompt counts as declining
         wiring.locationPromptClosed()
         syncStatus()
         Task { await wiring.refreshIfDue() }   // both off: `.allOff`, nothing fetched
+    }
+
+    /// #410 n5: approximate chosen: read the live authorization (creating the manager is fine
+    /// now, the listener opted in). Otherwise nothing to check.
+    func recheckSystemLocation() {
+        if wiring.store.consent == .approximate {
+            let denied = location.isDeniedInSettings ?? location.location.isDeniedInSettings
+            wiring.systemLocationChanged(authorized: !denied)
+        }
+        syncStatus()
     }
 
     /// "Forget my location": withdraw (declined, typed place forgotten) and clear.

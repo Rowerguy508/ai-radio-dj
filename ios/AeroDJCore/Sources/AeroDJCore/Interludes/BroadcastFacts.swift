@@ -240,6 +240,9 @@ public struct BroadcastFactGatherer: Sendable {
         var counts = FactCueCounts()
         var facts: [BroadcastFact] = []
         for provider in providers {
+            // #410 n2 (-Fry): the refresh was cancelled (a switch turned off, location withdrawn):
+            // no further provider is asked, so no request goes out after the change.
+            guard !Task.isCancelled else { break }
             counts.offered += 1
             if provider.kind.needsLocation, request.area == nil {
                 // Not called at all: no location reaches a provider without consent.
