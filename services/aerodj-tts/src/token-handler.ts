@@ -223,7 +223,9 @@ export async function handleToken(request: Request, deps: TokenDeps): Promise<Re
     const verified = verifyAssertion({ assertion, clientData: tokenClientData(challenge, raw.bytes), publicKeySpki: record.pubKeySpki, appId: config.policy.appId });
     if (!verified.ok) return fail('assertion', verified.reason);
     // TestFlight only (owner decision 2026-11-02; external testers NOT approved, enforced
-    // operationally by not inviting them). The tier is set at register from category 2; an
+    // operationally by not inviting them). The tier is set at register from category 2, or
+    // from no category at all while tester voice is on (iOS 26 fallback, owner 2026-11-03;
+    // see register-handler `testerTier`, TODO tighten before public App Store launch). An
     // assertion that carries a different category (e.g. the App Store build) is refused too.
     if (record.tier !== 'tester') return fail('no_entitlement');
     if (verified.validationCategory !== undefined && verified.validationCategory !== TESTFLIGHT_VALIDATION_CATEGORY) {
