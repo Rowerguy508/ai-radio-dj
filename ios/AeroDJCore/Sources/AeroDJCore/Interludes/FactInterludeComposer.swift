@@ -7,8 +7,9 @@ import Foundation
 // Two outputs, both into existing paths (no new scheduler, renderer or presentation state):
 // - `extraLine(...)`: one optional line for an ordinary break, through `DJBreakExtraLineSource`
 //   (`FactExtraLineSource`). `DJScriptWriter` still fits the break to the 12 s cap and drops this line first.
-// - `briefingLines(...)`: the weather and headlines for a briefing interlude, within 45 s, as script
-//   inputs for the briefing cue path. Wiring them into `NarrationHandoff` is a follow-up (see PR).
+// - `briefingLines(...)`: weather for a briefing interlude, within 45 s. News stays in ordinary breaks
+//   this round (owner, Nov 3): briefings skip it. Wiring into `NarrationHandoff` is a follow-up.
+// Headlines are never read verbatim: only a validated paraphrase (`HeadlineSummary`) is spoken.
 
 /// One line written from one fact.
 public struct FactLine: Equatable, Sendable {
@@ -34,64 +35,72 @@ public struct FactInterludeComposer: Sendable {
     public var maxExtraLineSeconds: Int
     /// Whole briefing interlude (`DJCadence.maxBriefingBreakSeconds`).
     public var maxBriefingSeconds: Int
-    public var maxHeadlines: Int
-    /// A headline longer than this is dropped, never cut (cutting can change its meaning).
-    public var maxHeadlineWords: Int
+    /// A news summary line ("From <outlet>: <summary>.") in an ordinary break.
+    public var maxNewsLineSeconds: Int
     public static let rainChanceToMention = 40
 
-    public init(cadence: DJCadence = DJCadence(), maxExtraLineSeconds: Int = 5, maxHeadlines: Int = 3,
-                maxHeadlineWords: Int = 22) {
+    public init(cadence: DJCadence = DJCadence(), maxExtraLineSeconds: Int = 5, maxNewsLineSeconds: Int = 7) {
         self.maxExtraLineSeconds = maxExtraLineSeconds
         self.maxBriefingSeconds = cadence.maxBriefingBreakSeconds
-        self.maxHeadlines = maxHeadlines
-        self.maxHeadlineWords = maxHeadlineWords
+        self.maxNewsLineSeconds = maxNewsLineSeconds
     }
 
-    /// One weather line for an ordinary break, if a weather fact is still true at `airBy`.
-    /// `variant` picks the phrasing (the writer's anti-repeat window handles repeats).
+    /// One fact line for an ordinary break, if a fact is still true at `airBy`: weather or a local
+    /// (then national) news summary. `variant` picks the phrasing and alternates weather and news
+    /// first; the writer's anti-repeat window handles repeats.
     public func extraLine(from facts: [BroadcastFact], airBy: Date, variant: Int = 0,
                           counts: inout FactCueCounts) -> FactLine? {
-        for fact in facts where fact.kind == .weather {
-            guard fact.isLive(at: airBy) else { counts.expired += 1; continue }
-            guard case .weather(let w) = fact.payload,
-                  let (text, fields) = Self.shortWeather(w, credit: fact.attribution, variant: variant) else { continue }
-            let line = Self.line(text, fact, fields: fields)
-            guard line.estimatedSeconds <= maxExtraLineSeconds else { counts.overCap += 1; continue }
-            counts.kept += 1
-            return line
+        let order: [BroadcastFactKind] = abs(variant) % 2 == 0 ? [.weather, .localNews, .news] : [.localNews, .news, .weather]
+        for kind in order {
+            for fact in facts where fact.kind == kind {
+                guard fact.isLive(at: airBy) else { counts.expired += 1; continue }
+                let written: (String, [BroadcastFactField])?
+                let cap: Int
+                switch fact.payload {
+                case .weather(let w):
+                    written = Self.shortWeather(w, credit: fact.attribution, variant: variant / 2)
+                    cap = maxExtraLineSeconds
+                case .headlineSummary(let h):
+                    written = Self.newsSummary(h)
+                    cap = maxNewsLineSeconds
+                case .headline:
+                    counts.notParaphrased += 1   // never read verbatim
+                    continue
+                case .approvedSentence:
+                    continue
+                }
+                guard let (text, fields) = written else { continue }
+                let line = Self.line(text, fact, fields: fields)
+                guard line.estimatedSeconds <= cap else { counts.overCap += 1; continue }
+                counts.kept += 1
+                return line
+            }
         }
         return nil
     }
 
-    /// Weather, then headlines, fitted to `maxBriefingSeconds` (estimate). Facts not true at
+    /// Weather (then approved sentences) for a briefing interlude, fitted to `maxBriefingSeconds`
+    /// (estimate). News is ordinary-break only this round and is skipped here. Facts not true at
     /// `airBy` are dropped and counted, never moved to a later show.
     public func briefingLines(from facts: [BroadcastFact], airBy: Date, counts: inout FactCueCounts) -> [FactLine] {
         var lines: [FactLine] = []
         var budget = maxBriefingSeconds
-        var headlines = 0
-        let ordered = facts.filter { $0.kind == .weather } + facts.filter { $0.kind == .localNews }
-            + facts.filter { $0.kind == .news } + facts.filter { [.personal, .artistInfo].contains($0.kind) }
-        let sanitizer = PromptInjectionSanitizer()
+        let ordered = facts.filter { $0.kind == .weather } + facts.filter { [.personal, .artistInfo].contains($0.kind) }
         for fact in ordered {
             guard fact.isLive(at: airBy) else { counts.expired += 1; continue }
             let written: (String, [BroadcastFactField])?
             switch fact.payload {
             case .weather(let w): written = Self.longWeather(w, credit: fact.attribution)
-            case .headline(let h):
-                guard headlines < maxHeadlines else { counts.overCap += 1; continue }
-                guard let spoken = Self.headline(h, maxWords: maxHeadlineWords), !sanitizer.isSuspicious(spoken.0)
-                else { counts.overCap += 1; continue }
-                written = spoken
             case .approvedSentence(let s):
                 // Already written and approved by its owner (Nova's personal / Fry's catalog code).
                 let clean = s.trimmingCharacters(in: .whitespacesAndNewlines)
                 written = clean.isEmpty || clean.contains(where: { "{}\n\r".contains($0) }) ? nil : (clean, [.sentence])
+            case .headline, .headlineSummary: written = nil
             }
             guard let (text, fields) = written else { continue }
             let line = Self.line(text, fact, fields: fields)
             guard line.estimatedSeconds <= budget else { counts.overCap += 1; continue }
             budget -= line.estimatedSeconds
-            if case .headline = fact.payload { headlines += 1 }
             counts.kept += 1
             lines.append(line)
         }
@@ -139,19 +148,15 @@ public struct FactInterludeComposer: Sendable {
         return (main.0 + " " + rain.0, main.1 + rain.1)
     }
 
-    /// "From <outlet>: <headline>." The outlet is always named. A headline over `maxWords`, or with
-    /// markup or braces, is dropped, never cut. The one edit: a feed's trailing " - <same outlet>"
-    /// byline (Google News / GDELT title style) is removed, since the outlet is credited anyway.
-    static func headline(_ h: HeadlineFact, maxWords: Int) -> (String, [BroadcastFactField])? {
+    /// "From <outlet>: <summary>." The outlet is always named. The summary was validated against its
+    /// headline (`HeadlineParaphraseValidator`); here it is only re-checked for markup and length.
+    static func newsSummary(_ h: HeadlineSummary) -> (String, [BroadcastFactField])? {
         guard let outlet = source(h.outlet) else { return nil }
-        var text = h.headline.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        for suffix in [" - \(outlet)", " | \(outlet)", " — \(outlet)"] where text.hasSuffix(suffix) {
-            text = String(text.dropLast(suffix.count))
-        }
+        var text = h.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         if let last = text.last, ".!?".contains(last) { text.removeLast() }
-        guard !text.isEmpty, text.split(separator: " ").count <= maxWords,
-              !text.contains(where: { "{}<>|".contains($0) }) else { return nil }
-        return FactLineTemplates.fill(FactLineTemplates.headline, [.outlet: outlet, .headline: text])
+        guard !text.isEmpty, !text.contains(where: { "{}<>|:\n\r\"".contains($0) }),
+              !PromptInjectionSanitizer().isSuspicious(text) else { return nil }
+        return FactLineTemplates.fill(FactLineTemplates.news, [.outlet: outlet, .summary: text])
     }
 }
 
@@ -170,8 +175,9 @@ public enum FactLineTemplates {
         "From {source}: it's {temperature} degrees and {condition} here.",
     ]
     public static let rain = "{precipitationChance} percent chance of rain."
-    public static let headline = "From {outlet}: {headline}."
-    public static var all: [String] { weatherShort + weatherLong + [rain, headline] }
+    /// A paraphrase, never the headline (no template has a `{headline}` placeholder).
+    public static let news = "From {outlet}: {summary}."
+    public static var all: [String] { weatherShort + weatherLong + [rain, news] }
 
     /// Fills every placeholder from `values`, or nil when one is missing. `{Field}` capitalizes the
     /// value's first letter. Returns the fields used, in order (the line's provenance).

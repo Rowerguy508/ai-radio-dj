@@ -21,7 +21,10 @@ import Foundation
 /// only placeholders `FactLineTemplates` may use.
 public enum BroadcastFactField: String, Codable, Equatable, Hashable, Sendable, CaseIterable {
     case temperature, condition, high, low, precipitationChance
+    /// The publisher's headline: provenance only. No template speaks it (never read verbatim).
     case headline, outlet
+    /// A validated on-device paraphrase of the headline (`HeadlineSummarizer`).
+    case summary
     /// The spoken name of the fact's source ("Apple Weather").
     case source
     /// A whole `approvedSentence`.
@@ -87,7 +90,17 @@ public struct WeatherFact: Codable, Equatable, Sendable {
     }
 }
 
-/// One headline, as published, and its outlet.
+/// A headline's spoken paraphrase, validated against it (`HeadlineParaphraseValidator`), and its outlet.
+public struct HeadlineSummary: Codable, Equatable, Sendable {
+    public var summary: String
+    public var outlet: String
+    public init(summary: String, outlet: String) {
+        self.summary = summary
+        self.outlet = outlet
+    }
+}
+
+/// One headline, as published, and its outlet. Never spoken as is: only a `HeadlineSummary` is.
 public struct HeadlineFact: Codable, Equatable, Sendable {
     public var headline: String
     /// Outlet that published it (spoken: "From NPR: ..."). May differ from the feed provider.
@@ -101,6 +114,7 @@ public struct HeadlineFact: Codable, Equatable, Sendable {
 public enum FactPayload: Codable, Equatable, Sendable {
     case weather(WeatherFact)
     case headline(HeadlineFact)
+    case headlineSummary(HeadlineSummary)
     /// A complete sentence some other lane already approved (Nova's personal content, Fry's artist
     /// info). Spoken as is; the providing lane owns its consent and sanitizing.
     case approvedSentence(String)
@@ -197,6 +211,8 @@ public struct FactCueCounts: Equatable, Sendable {
     public var unavailable = 0
     /// Over the commentary or briefing cap, or a headline too long to say whole.
     public var overCap = 0
+    /// A headline with no validated paraphrase: never spoken.
+    public var notParaphrased = 0
     public var kept = 0
     public init() {}
 }

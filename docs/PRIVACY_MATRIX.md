@@ -21,6 +21,15 @@
 - Every denial is a first-class state, not a silent no-op.
 - No permission implies access to anything beyond its declared scope (e.g. Calendar ≠ Mail).
 
+### Third-party data flows: local news (#200)
+
+| Flow | Builds | What leaves the device | Never sent | Logs |
+|---|---|---|---|---|
+| GDELT DOC 2.0 ArtList (`api.gdeltproject.org`), local headlines for ordinary breaks | **Tester build only** (`AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB`); every other build compiles the null provider and has no GDELT host string (`ios/scripts/check-release-excludes-gdelt.sh`) | A city or region **name** in the query (`"Saint Paul"`, then `"Minnesota"`), plus `sourcelang:english` and a country filter. A typed ZIP is resolved to a city on the device first; an unresolved ZIP sends nothing | Coordinates, ZIP, street, user or station IDs, listening history, the voice service | Tier, code, HTTP status and counts only: no query text, place or titles |
+| Headline paraphrase | All builds | Nothing: Apple Foundation Models on the device (iOS 26+); otherwise the line is dropped | — | Reason codes and counts only |
+
+Citation required by GDELT's terms ("any use or redistribution of the data must include a citation to the GDELT Project and a link to this website (https://www.gdeltproject.org/)"): shown in the app with the link; the DJ also names the outlet aloud.
+
 ## 2. Explicit limitations (no fabrication)
 
 - **No unrestricted Apple Mail, Messages, or Notes inbox/history API.** Share Extension + user-imported content only.
