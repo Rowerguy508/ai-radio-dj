@@ -71,7 +71,9 @@ struct StationListView: View {
         }
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
         .sheet(isPresented: $showSettings) {
-            SettingsView(isPresented: $showSettings, isTestStation: dependencies.mode == .testStation)
+            SettingsView(isPresented: $showSettings, isTestStation: dependencies.mode == .testStation,
+                         // Sentinel's #410 n4: the app's one purge-all.
+                         personalDataReset: dependencies.purger)
         }
         .sheet(isPresented: $showSharedInbox) {
             // Always a NavigationStack with Done. An empty `if` body left an undismissable sheet.
