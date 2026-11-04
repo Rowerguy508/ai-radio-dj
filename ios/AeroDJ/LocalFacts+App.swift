@@ -213,7 +213,7 @@ private struct LocalFactsToggleCardBody: View {
     }
 }
 
-/// "Local news data: The GDELT Project (gdeltproject.org)", linking to gdeltproject.org.
+/// "News data: The GDELT Project (gdeltproject.org)", linking to gdeltproject.org.
 struct GDELTCitationLink: View {
     var body: some View {
         Link(destination: FactAttribution.gdeltURL) {
