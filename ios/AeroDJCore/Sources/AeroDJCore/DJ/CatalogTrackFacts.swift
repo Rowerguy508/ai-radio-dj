@@ -173,7 +173,7 @@ public struct CatalogTrackFacts: Equatable, Sendable {
     }
 
     static func genre(_ raw: String) -> String? {
-        guard let text = plain(raw), !genericGenres.contains(text.lowercased()) else { return nil }
+        guard let text = plain(raw) else { return nil }
         let spoken = speakableGenre(text)
         guard !spoken.isEmpty, words(spoken) <= maxNameWords else { return nil }
         return spoken
@@ -187,11 +187,15 @@ public struct CatalogTrackFacts: Equatable, Sendable {
     /// " and ", and the catalog's casing is kept: "Hip-Hop and Rap", "R&B and Soul", "Singer and
     /// Songwriter", "Christian and Gospel". Every part is kept rather than only the first, so the
     /// line never says less (or other) than the catalog did; the word limit applies after.
+    /// Echo's #408 nit (-Fry): generic parts (`genericGenres`, "Music") are dropped after the split,
+    /// so "Pop/Music" is "Pop", not "Pop and Music". A name with only generic parts ("Music",
+    /// "Music/Music") gives "" (no genre), as a plain "Music" always did.
     static func speakableGenre(_ text: String) -> String {
         text.replacingOccurrences(of: #"\s+&\s+"#, with: "/", options: .regularExpression)
             .split(separator: "/")
             .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
             .filter { $0.contains(where: { $0.isLetter || $0.isNumber }) }
+            .filter { !genericGenres.contains($0.lowercased()) }
             .joined(separator: " and ")
     }
 
