@@ -43,12 +43,15 @@ struct TuneForm: View {
                     commentaryControl
                     personalityControl
                     briefingControl
-                    #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
-                    // Tester build only (Sentinel's N1 on #395): lets testers turn the cloud voice off.
-                    TesterCloudVoiceToggleCard()
-                    #endif
                 }
                 .disabled(blockedMessage != nil)
+                #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
+                // Tester build only (Sentinel's N1 on #395): lets testers turn the cloud voice off.
+                // Outside the blocked group (Fry's nit 1 on #398): consent is not a station setting,
+                // so turning it off works while settings are loading or read-only. Same place on
+                // screen: a Group's children are laid out as the VStack's own. -Nova
+                TesterCloudVoiceToggleCard(settingsBlocked: blockedMessage != nil)
+                #endif
                 RecipesSection(studio: studio, editable: blockedMessage == nil)
             }
             .padding(.vertical, 4)

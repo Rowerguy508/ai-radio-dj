@@ -71,9 +71,18 @@ extension TesterCloudVoice {
 /// #258's `CloudVoiceToggleCard` this build needs: same copy, same identifier, same store. On is
 /// only reachable through the consent sheet; off takes effect for the next DJ line. Compiled only
 /// in the tester build, so no other build's Tune screen or snapshot changes. -Nova
+///
+/// `settingsBlocked` (Tune's `blockedMessage`, Fry's nit 1 on #398): turning the cloud voice OFF
+/// always works, because withdrawing consent must never wait on station settings. Turning it ON
+/// stays blocked while settings are loading or read-only, matching the rest of Tune: nothing new
+/// is switched on from a screen that is locked. -Nova
 struct TesterCloudVoiceToggleCard: View {
+    let settingsBlocked: Bool
     @State private var granted = TesterCloudVoice.consentStore.isGranted
     @State private var asking = false
+
+    /// Explicit: the private `@State` properties make the memberwise initializer private.
+    init(settingsBlocked: Bool) { self.settingsBlocked = settingsBlocked }
 
     var body: some View {
         if CloudVoiceConsentPrompt.isCloudVoiceOfferedInThisBuild(selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID) {
@@ -87,6 +96,7 @@ struct TesterCloudVoiceToggleCard: View {
                     }
                 }))
                 .accessibilityIdentifier("tune.cloudVoiceToggle")
+                .disabled(settingsBlocked && !granted)   // off is always possible; on waits for Tune
                 Text(CloudVoiceConsentCopy.footer)
                     .font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
