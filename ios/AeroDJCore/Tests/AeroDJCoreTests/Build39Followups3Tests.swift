@@ -59,7 +59,8 @@ final class Build39Followups3Tests: XCTestCase {
         try Data("unrelated".utf8).write(to: file.deletingLastPathComponent().appendingPathComponent("other.json"))
         try Data("newest".utf8).write(to: file)
         try store.save([:])
-        XCTAssertEqual(store.unreadableCopies().map(\.lastPathComponent), ["state.json.unreadable"])
+        let names = try FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path)
+        XCTAssertEqual(Set(names), ["state.json", "state.json.unreadable", "other.json"])
         XCTAssertEqual(try String(contentsOf: store.unreadableBackupPrefix, encoding: .utf8), "newest")
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.deletingLastPathComponent().appendingPathComponent("other.json").path))
     }
@@ -116,7 +117,7 @@ final class Build39Followups3Tests: XCTestCase {
             try store.save([id: SharedReviewRecord(decision: .approved)])
             XCTAssertEqual(store.load()[id]?.decision, .approved, "mode \(mode): decision kept")
             XCTAssertEqual(lines.all, [SharedReviewStore.backupExclusionFailureMessage], "mode \(mode)")
-            XCTAssertFalse(lines.all[0].contains(file.path))
+            XCTAssertFalse(lines.all.contains { $0.contains(file.path) })
         }
     }
 
