@@ -7,8 +7,11 @@ import WeatherKit
 
 // #401 wiring, app side (-Fry): the live owner of `LocalFactsWiring`, the Tune → DJ card that
 // presents Echo's `LocalAreaPrompt`, and the player's provider marks while a fact line plays.
-// Consent first: no `CLLocationManager` exists and no location is read before the listener
-// opts in; "Not now", swiping the prompt away, or "Turn off" keeps weather and local news off.
+// Off by default (Sentinel, #410): the Weather and Local news switches start off and turning one
+// on is the opt-in. The location prompt appears only right after one of them is switched on
+// (`LocalFactsWiring.shouldAskForLocation`), never before and never for national news alone. No
+// `CLLocationManager` exists and no location is read before that; "Not now" or swiping the
+// prompt away turns the switch back off.
 
 /// Owns the location manager lazily: `CoarseDeviceLocation()` creates a `CLLocationManager`, so
 /// it is built only when the prompt is shown or an approximate read is allowed.
@@ -76,29 +79,37 @@ final class LocalFactsHost: ObservableObject {
         })
     }
 
-    /// The prompt was answered or dismissed: forget queued facts and refresh with the new answer.
+    /// The prompt was answered or dismissed. Declined: the location switches go back off.
+    /// Granted: refresh with the new answer.
     func promptClosed() {
-        wiring.consentChanged()
+        wiring.locationPromptClosed()
         syncStatus()
-        guard wiring.store.consent.allowsLocation else { return }
-        Task { await wiring.refreshIfDue() }
+        Task { await wiring.refreshIfDue() }   // both off: `.allOff`, nothing fetched
     }
 
+    /// "Forget my location": withdraw (declined, typed place forgotten) and clear.
     func turnOff() {
         wiring.turnOff()
         syncStatus()
     }
 
-    func setWeather(_ on: Bool) {
+    /// Returns whether the card must now show the location prompt (#410 prompt rule).
+    func setWeather(_ on: Bool) -> Bool {
         wiring.setWeather(on)
-        syncStatus()
-        if on { Task { await wiring.refreshIfDue() } }
+        return switched(.weather, on: on)
     }
 
-    func setNews(_ on: Bool) {
+    func setNews(_ on: Bool) -> Bool {
         wiring.setNews(on)
+        return switched(.news, on: on)
+    }
+
+    private func switched(_ which: LocalFactsSwitch, on: Bool) -> Bool {
         syncStatus()
-        if on { Task { await wiring.refreshIfDue() } }
+        guard on else { return false }
+        if wiring.shouldAskForLocation(afterSwitchingOn: which) { return true }
+        Task { await wiring.refreshIfDue() }
+        return false
     }
 
     func syncStatus() {
@@ -120,7 +131,7 @@ extension EnvironmentValues {
 }
 
 /// Tune → DJ: "Local weather & news". Outside Tune's blocked group like the cloud-voice card:
-/// consent is not a station setting, so turning it off always works; turning it on waits while
+/// consent is not a station setting, so switching off always works; switching on waits while
 /// settings are loading or read-only.
 struct LocalFactsToggleCard: View {
     let settingsBlocked: Bool
@@ -136,29 +147,28 @@ private struct LocalFactsToggleCardBody: View {
     let settingsBlocked: Bool
     @State private var asking = false
 
-    private var isOn: Bool { host.status != .off }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Toggle(LocalFactsCopy.title, isOn: Binding(get: { isOn }, set: { on in
-                if on { asking = true } else { host.turnOff() }
-            }))
-            .accessibilityIdentifier("tune.localFactsToggle")
-            .disabled(settingsBlocked && !isOn)   // off is always possible; on waits for Tune
+            Text(LocalFactsCopy.title).font(.headline)
+            // #410: both start off; switching one on is the opt-in, and only then (for weather or
+            // local news, without location consent) the location prompt. N3: each is re-checked
+            // at every break's take.
+            Toggle(LocalFactsCopy.weatherToggle, isOn: Binding(get: { host.weatherOn }, set: { if host.setWeather($0) { asking = true } }))
+                .accessibilityIdentifier("tune.localFactsWeather")
+                .disabled(settingsBlocked && !host.weatherOn)   // off is always possible; on waits for Tune
+            if TesterLocalNews.isCompiledIn {
+                Toggle(LocalFactsCopy.newsToggle, isOn: Binding(get: { host.newsOn }, set: { if host.setNews($0) { asking = true } }))
+                    .accessibilityIdentifier("tune.localFactsNews")
+                    .disabled(settingsBlocked && !host.newsOn)
+            }
             Text(LocalFactsCopy.detail(host.status))
                 .font(.caption).foregroundStyle(AeroDJPalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("tune.localFactsDetail")
-            if isOn {
-                // N3: each kind can be switched off on its own; re-checked at every break's take.
-                Toggle(LocalFactsCopy.weatherToggle, isOn: Binding(get: { host.weatherOn }, set: { host.setWeather($0) }))
-                    .accessibilityIdentifier("tune.localFactsWeather")
-                    .disabled(settingsBlocked && !host.weatherOn)
-                if TesterLocalNews.isCompiledIn {
-                    Toggle(LocalFactsCopy.newsToggle, isOn: Binding(get: { host.newsOn }, set: { host.setNews($0) }))
-                        .accessibilityIdentifier("tune.localFactsNews")
-                        .disabled(settingsBlocked && !host.newsOn)
-                }
+            if host.status != .off {
+                Button(LocalFactsCopy.forgetLocation) { host.turnOff() }
+                    .font(.caption)
+                    .accessibilityIdentifier("tune.localFactsForget")
             }
             if TesterLocalNews.isCompiledIn {
                 // GDELT's terms: credited wherever local news is explained (tester build only).

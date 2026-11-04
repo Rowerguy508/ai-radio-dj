@@ -59,6 +59,18 @@ private final class CachingNews: NewsProvider, PurgeableFactProvider, @unchecked
     }
 }
 
+/// National-news fixture: counts calls and records whether an area reached it.
+private final class CountingNationalNews: NewsProvider, @unchecked Sendable {
+    let kind = BroadcastFactKind.news
+    private let lock = NSLock(); private var n = 0; private var areas = 0
+    var calls: Int { lock.withLock { n } }
+    var callsWithArea: Int { lock.withLock { areas } }
+    func facts(for request: FactRequest) async -> FactProviderResult {
+        lock.withLock { n += 1; if request.area != nil { areas += 1 } }
+        return .omitted(.unavailable)
+    }
+}
+
 /// An extra-line source written the legacy way: no provenance (N1).
 private struct LegacyExtra: DJBreakExtraLineSource {
     let provenance: String?
@@ -74,7 +86,7 @@ final class LocalFactsWiringTests: XCTestCase {
 
     private func wiring(consent: LocationConsentState?, clock: WiringClock, device: FakeDeviceLocation,
                         weather: CountingWeather, extra: [any BroadcastFactProvider] = [],
-                        toggles: LocalFactsToggles = .inMemory()) -> LocalFactsWiring {
+                        toggles: LocalFactsToggles = .inMemory(weather: true, news: true)) -> LocalFactsWiring {
         let store = LocalAreaStore.inMemory()
         switch consent {
         case .approximate?: store.chooseApproximate()
@@ -359,22 +371,150 @@ final class LocalFactsWiringTests: XCTestCase {
 
     // MARK: Sentinel N3: Weather and News switches, each re-checked at the take
 
-    func testSwitchesDefaultOnPersistAndMapKinds() {
+    func testSwitchesDefaultOffPersistAndMapKinds() {
         let suite = "LocalFactsWiringTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let toggles = LocalFactsToggles(defaults: defaults)
-        XCTAssertTrue(toggles.weather && toggles.news, "the location prompt is the opt-in; switches only turn a kind off")
+        XCTAssertFalse(toggles.weather || toggles.news, "#410: both start off; switching one on is the opt-in")
         let w = LocalFactsWiring(store: .inMemory(), toggles: toggles, providers: [], summarizer: HeadlineSummarizer(paraphraser: NoHeadlineParaphraser()),
                                  device: nil, manual: nil)
-        w.setWeather(false)
-        XCTAssertFalse(LocalFactsToggles(defaults: defaults).weather, "kept across launches")
-        XCTAssertTrue(LocalFactsToggles(defaults: defaults).news)
-        XCTAssertFalse(toggles.allows(.weather))
-        XCTAssertTrue(toggles.allows(.localNews))
-        _ = w.setNews(false)
+        w.setWeather(true)
+        XCTAssertTrue(LocalFactsToggles(defaults: defaults).weather, "kept across launches")
+        XCTAssertFalse(LocalFactsToggles(defaults: defaults).news)
+        XCTAssertTrue(toggles.allows(.weather))
         XCTAssertFalse(toggles.allows(.localNews))
-        XCTAssertFalse(toggles.allows(.news))
+        _ = w.setNews(true)
+        XCTAssertTrue(toggles.allows(.localNews))
+        XCTAssertTrue(toggles.allows(.news))
+        w.setWeather(false)
+        XCTAssertFalse(LocalFactsToggles(defaults: defaults).weather, "off is kept too")
+        XCTAssertFalse(toggles.allows(.weather))
+    }
+
+    // MARK: Sentinel #410: off by default; the prompt only after weather or local news is switched on
+
+    func testFreshAndExistingUsersWithNoStoredValueStartWithBothSwitchesOff() {
+        XCTAssertFalse(LocalFactsToggles.inMemory().weather || LocalFactsToggles.inMemory().news, "fresh, in memory")
+        let suite = "LocalFactsWiringTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fresh = LocalFactsToggles(defaults: defaults)
+        XCTAssertFalse(fresh.weather, "fresh install: weather off")
+        XCTAssertFalse(fresh.news, "fresh install: news off")
+        // An existing user: location already granted and other settings stored, but no switch value.
+        let store = LocalAreaStore(defaults: defaults)
+        store.chooseApproximate()
+        defaults.set(true, forKey: "AeroDJ.someOtherSetting")
+        let existing = LocalFactsToggles(defaults: defaults)
+        XCTAssertFalse(existing.weather || existing.news, "no stored value: off, even with location granted")
+        XCTAssertNil(defaults.object(forKey: LocalFactsToggles.weatherKey), "reading does not write a value")
+        for kind in [BroadcastFactKind.weather, .localNews, .news] {
+            XCTAssertFalse(existing.allows(kind), "\(kind)")
+        }
+    }
+
+    func testWithBothSwitchesOffNothingIsFetchedNoGDELTNoWeatherNoLocation() async {
+        for consent: LocationConsentState in [.undecided, .declined, .approximate, .manual] {
+            let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), weather = CountingWeather(clock: clock)
+            let local = CachingNews(), national = CountingNationalNews()
+            let w = wiring(consent: consent, clock: clock, device: device, weather: weather, extra: [local, national],
+                           toggles: .inMemory())
+            let outcome = await w.refreshIfDue()
+            XCTAssertEqual(outcome, .allOff, "\(consent)")
+            XCTAssertEqual(weather.calls, 0, "\(consent): no weather request")
+            XCTAssertEqual(local.calls, 0, "\(consent): no local-news (GDELT) request")
+            XCTAssertEqual(national.calls, 0, "\(consent): no national-news (GDELT) request either")
+            XCTAssertEqual(device.reads, 0, "\(consent): no location read")
+            XCTAssertNil(w.source.extraLine(after: a, before: b, shape: .comingUpOnly), "\(consent): nothing offered")
+            clock.now = w0.addingTimeInterval(LocalFactsWiring.defaultInterval * 3)
+            _ = await w.refreshIfDue()
+            XCTAssertEqual(weather.calls + local.calls + national.calls + device.reads, 0, "\(consent): still nothing later")
+        }
+    }
+
+    func testThePromptRule() {
+        typealias W = LocalFactsWiring
+        for consent: LocationConsentState in [.undecided, .declined] {
+            XCTAssertTrue(W.shouldAskForLocation(switchedOn: [.weather], consent: consent), "weather on: ask (\(consent))")
+            XCTAssertTrue(W.shouldAskForLocation(switchedOn: [.localNews], consent: consent), "local news on: ask")
+            XCTAssertTrue(W.shouldAskForLocation(switchedOn: [.localNews, .news], consent: consent))
+            XCTAssertFalse(W.shouldAskForLocation(switchedOn: [.news], consent: consent), "never for national news alone")
+            XCTAssertFalse(W.shouldAskForLocation(switchedOn: [], consent: consent), "never before a switch is on")
+        }
+        for consent: LocationConsentState in [.approximate, .manual] {
+            XCTAssertFalse(W.shouldAskForLocation(switchedOn: [.weather, .localNews], consent: consent), "already granted: no prompt")
+        }
+        // Per switch, with this build's providers.
+        let clock = WiringClock(w0)
+        let w = wiring(consent: nil, clock: clock, device: FakeDeviceLocation(minneapolis), weather: CountingWeather(clock: clock),
+                       extra: [CachingNews()], toggles: .inMemory())
+        XCTAssertFalse(w.shouldAskForLocation(afterSwitchingOn: .weather), "still off: no prompt")
+        XCTAssertFalse(w.shouldAskForLocation(afterSwitchingOn: .news))
+        w.setWeather(true)
+        XCTAssertTrue(w.shouldAskForLocation(afterSwitchingOn: .weather), "weather switched on: ask")
+        _ = w.setNews(true)
+        XCTAssertTrue(w.shouldAskForLocation(afterSwitchingOn: .news), "local news switched on: ask")
+        w.store.chooseApproximate()
+        XCTAssertFalse(w.shouldAskForLocation(afterSwitchingOn: .weather), "granted: no prompt")
+        // A build whose News switch has only national news never asks.
+        let nationalOnly = LocalFactsWiring(store: .inMemory(), toggles: .inMemory(news: true), providers: [CountingNationalNews()],
+                                            summarizer: HeadlineSummarizer(paraphraser: NoHeadlineParaphraser()), device: nil, manual: nil)
+        XCTAssertFalse(nationalOnly.shouldAskForLocation(afterSwitchingOn: .news), "national news alone: no prompt")
+    }
+
+    func testNationalNewsAloneNeedsNoLocationAndSendsNoArea() async {
+        let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), national = CountingNationalNews()
+        let w = LocalFactsWiring(store: .inMemory(), toggles: .inMemory(news: true), providers: [national],
+                                 summarizer: HeadlineSummarizer(paraphraser: NoHeadlineParaphraser()), device: device, manual: nil,
+                                 now: { clock.now })
+        guard case .refreshed = await w.refreshIfDue() else { return XCTFail("national news runs once switched on") }
+        XCTAssertEqual(national.calls, 1)
+        XCTAssertEqual(national.callsWithArea, 0, "no area reaches national news")
+        XCTAssertEqual(device.reads, 0, "and no location is read for it")
+        _ = w.setNews(false)
+        clock.now = w0.addingTimeInterval(LocalFactsWiring.defaultInterval)
+        let off = await w.refreshIfDue()
+        XCTAssertEqual(off, .allOff)
+        XCTAssertEqual(national.calls, 1, "switched off: no GDELT request")
+        // Even with location granted, national news alone reads no location.
+        let granted = LocalAreaStore.inMemory()
+        granted.chooseApproximate()
+        let device2 = FakeDeviceLocation(minneapolis), national2 = CountingNationalNews()
+        let w2 = LocalFactsWiring(store: granted, toggles: .inMemory(news: true), providers: [national2],
+                                  summarizer: HeadlineSummarizer(paraphraser: NoHeadlineParaphraser()), device: device2, manual: nil)
+        guard case .refreshed = await w2.refreshIfDue() else { return XCTFail("refreshed") }
+        XCTAssertEqual(device2.reads, 0, "granted, but no switched-on kind needs it: no location read")
+        XCTAssertEqual(national2.callsWithArea, 0)
+    }
+
+    func testDecliningThePromptTurnsTheLocationSwitchesBackOff() async {
+        let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), weather = CountingWeather(clock: clock)
+        let local = CachingNews()
+        let w = wiring(consent: nil, clock: clock, device: device, weather: weather, extra: [local], toggles: .inMemory())
+        w.setWeather(true)
+        _ = w.setNews(true)
+        w.store.decline()   // "Not now"
+        await w.locationPromptClosed().value
+        XCTAssertFalse(w.toggles.weather, "declining keeps weather off")
+        XCTAssertFalse(w.toggles.news, "and local news")
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .allOff)
+        XCTAssertEqual(weather.calls + local.calls + device.reads, 0)
+        // Accepting keeps the switch on and refreshes.
+        w.setWeather(true)
+        w.store.chooseApproximate()
+        await w.locationPromptClosed().value
+        XCTAssertTrue(w.toggles.weather, "granted: weather stays on")
+        guard case .refreshed = await w.refreshIfDue() else { return XCTFail("refreshes once granted") }
+        XCTAssertEqual(weather.calls, 1)
+        // A News switch with national news stays on when the prompt is declined: it needs no area.
+        let national = CountingNationalNews()
+        let mixed = LocalFactsWiring(store: .inMemory(), toggles: .inMemory(news: true), providers: [CachingNews(), national],
+                                     summarizer: HeadlineSummarizer(paraphraser: NoHeadlineParaphraser()), device: device, manual: nil)
+        mixed.store.decline()
+        await mixed.locationPromptClosed().value
+        XCTAssertTrue(mixed.toggles.news)
     }
 
     func testEachSwitchDropsItsOwnKindAtTheTakeAfterPlanning() async {
@@ -448,6 +588,6 @@ final class LocalFactsWiringTests: XCTestCase {
         XCTAssertEqual(LocalFactsStatus(consent: .declined, manualPlace: "X"), .off)
         XCTAssertEqual(LocalFactsStatus(consent: .manual, manualPlace: nil), .off, "fail closed")
         XCTAssertEqual(LocalFactsStatus(consent: .manual, manualPlace: "Duluth"), .manual("Duluth"))
-        XCTAssertEqual(LocalFactsCopy.detail(.manual("Duluth")), "On, using Duluth.")
+        XCTAssertEqual(LocalFactsCopy.detail(.manual("Duluth")), "Location: Duluth.", "the location, not the switches")
     }
 }
