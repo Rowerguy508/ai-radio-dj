@@ -3,13 +3,13 @@ import SwiftUI
 
 /// App settings sheet (-Fry), opened from the gear on the Stations list. Every build.
 /// DJ talk-over & fades (`TalkoverSettingsRow`), then station ratings' "Clear all ratings"
-/// (-Nova, PR B; only when the app root set `\.songRating`), then "Delete my DJ data"
-/// (Sentinel's #410 n4, -Fry; the app's one purge-all, `PersonalDataReset`).
+/// (-Nova, PR B; only when the app root set `\.songRating`), then "Delete DJ clips, ratings and
+/// location" (Sentinel's #410 n4, -Fry; the app's one purge-all, `PersonalDataReset`).
 struct SettingsView: View {
     @Binding var isPresented: Bool
     /// Fixture mode: the talk-over row's unset default is OFF, matching the coordinator.
     let isTestStation: Bool
-    /// Nil (previews): no "Delete my DJ data" row.
+    /// Nil (previews): no `PersonalDataReset` row.
     var personalDataReset: (any PersonalNarrationResetting)? = nil
     @Environment(\.songRating) private var songRating
 
@@ -32,8 +32,9 @@ struct SettingsView: View {
     }
 }
 
-/// "Delete my DJ data", with a confirmation. Runs `PersonalDataReset.run`, which publishes the
-/// purge-all every data-reset listener already handles.
+/// "Delete DJ clips, ratings and location", with a confirmation. Runs `PersonalDataReset.run`,
+/// which publishes the purge-all every data-reset listener already handles. It clears only what
+/// `PersonalDataReset.message` lists.
 struct PersonalDataResetSection: View {
     let purger: any PersonalNarrationResetting
     @State private var confirming = false

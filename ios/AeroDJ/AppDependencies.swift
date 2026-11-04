@@ -41,7 +41,7 @@ struct AppDependencies {
     /// #401 (-Fry): local weather and news, live only (consent-gated; `\.localFacts`). `nil` in
     /// the test station, so its breaks and screens are unchanged.
     let localFacts: LocalFactsHost?
-    /// Sentinel's #410 n4 (-Fry): the one purge-all, for Settings "Delete my DJ data"
+    /// Sentinel's #410 n4 (-Fry): the one purge-all, for the Settings row
     /// (`PersonalDataReset`). The same purger Connections and the session use.
     let purger: NarrationPurger
 
