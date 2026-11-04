@@ -1,7 +1,7 @@
 import XCTest
 @testable import AeroDJCore
 
-// MARK: Sentinel's #410 n4: "Delete my DJ data" is the purge-all's app caller
+// MARK: Sentinel's #410 n4: the Settings row is the purge-all's app caller
 
 final class PersonalDataResetTests: XCTestCase {
     private final class CountingReset: PersonalNarrationResetting, @unchecked Sendable {
@@ -40,9 +40,11 @@ final class PersonalDataResetTests: XCTestCase {
     }
 
     func testTheCopySaysWhatGoesAndWhatStays() {
-        XCTAssertEqual(PersonalDataReset.title, "Delete my DJ data")
+        XCTAssertEqual(PersonalDataReset.title, "Delete DJ clips, ratings and location")
+        XCTAssertEqual(PersonalDataReset.message, "Deletes the DJ's spoken clips and planned breaks that mention your calendar, notes or shared items, your song ratings, your saved location and saved news headlines. It doesn't delete the shared items themselves, your review choices, play history or search text. Your stations and settings stay.")
         XCTAssertTrue(PersonalDataReset.message.contains("song ratings"))
-        XCTAssertTrue(PersonalDataReset.message.contains("location"))
+        XCTAssertTrue(PersonalDataReset.message.contains("saved location"))
+        XCTAssertFalse(PersonalDataReset.title.contains("my DJ data"), "owner: the row names only what it clears")
         XCTAssertTrue(PersonalDataReset.message.contains("Your stations and settings stay."))
         XCTAssertTrue(PersonalDataReset.footer.contains("can't be undone"))
     }

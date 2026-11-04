@@ -431,9 +431,11 @@ public struct NarrationPurger: NarrationPurging {
         feed.publish(.items(sourceItemIDs))
     }
 
-    /// Removes all personal narration without knowing item ids: renders in flight, planned and
-    /// on-air breaks that mention any personal item, and every personal clip in the cache.
-    /// Works in live mode, where consent is not persisted across launches.
+    /// Removes the DJ's personal narration without knowing item ids: renders in flight, planned
+    /// and on-air breaks that mention any personal item, and every personal clip in the cache,
+    /// then publishes `.all` (ratings, saved location and saved news headlines listen for it).
+    /// It does not delete the personal items themselves (shared inbox, review decisions,
+    /// `PersonalUpdateLedger`). Works in live mode, where consent is not persisted across launches.
     public func purgeAllPersonalNarration() async {
         revocations.revokeAll()
         let known = await session?.purgeAllPersonal() ?? []
