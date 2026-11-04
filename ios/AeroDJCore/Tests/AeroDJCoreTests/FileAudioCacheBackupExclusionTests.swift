@@ -73,7 +73,7 @@ final class FileAudioCacheBackupExclusionTests: XCTestCase {
         XCTAssertEqual(personalRead?.data, Data([9]), "served from memory for this session")
         XCTAssertEqual(sharedRead?.data, Data([2]))
         let count = await cache.fileCount()
-        XCTAssertEqual(count.files, 0)
+        XCTAssertEqual(count, AudioCacheCount(files: 2, personal: 1), "memory-held clips are counted (#412 n5)")
 
         // Rendering through the closed cache still plays, and still writes nothing.
         let renderer = VoiceRenderer(

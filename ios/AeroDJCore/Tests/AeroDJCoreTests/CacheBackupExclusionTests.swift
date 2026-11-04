@@ -134,7 +134,7 @@ final class CacheBackupExclusionTests: XCTestCase {
         #else
         // Linux has no backup and no such resource value: the marker is a no-op and reports nil.
         XCTAssertNoThrow(try FoundationBackupExclusion().markExcluded(dir))
-        XCTAssertNil(FoundationBackupExclusion().isExcluded(dir))
+        XCTAssertNil(try FoundationBackupExclusion().isExcluded(dir))
         #endif
     }
 }
