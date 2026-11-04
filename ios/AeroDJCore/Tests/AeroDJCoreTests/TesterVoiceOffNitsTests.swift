@@ -304,4 +304,34 @@ final class TesterVoiceOffNitsTests: XCTestCase {
         }
     }
     #endif
+
+    // MARK: App wiring (source checks; the app target does not build on Linux)
+
+    private func appSource(_ name: String) throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("AeroDJ/\(name)")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Fry's nit 1: the tester Cloud voice card is outside Tune's blocked group, and only "on"
+    /// waits for a blocked Tune.
+    func testTheCloudVoiceOffSwitchIsOutsideTheBlockedGroup() throws {
+        let tune = try appSource("TuneForm.swift")
+        guard let blocked = tune.range(of: ".disabled(blockedMessage != nil)"),
+              let card = tune.range(of: "TesterCloudVoiceToggleCard(settingsBlocked: blockedMessage != nil)") else {
+            return XCTFail("both present")
+        }
+        XCTAssertLessThan(blocked.lowerBound, card.lowerBound, "the card is not inside the disabled group")
+        XCTAssertEqual(tune.components(separatedBy: "TesterCloudVoiceToggleCard(").count - 1, 1)
+        let toggle = try appSource("TesterVoiceConsent+App.swift")
+        XCTAssertTrue(toggle.contains(".disabled(settingsBlocked && !granted)"))
+    }
+
+    /// Echo's N2: the app writes the counts-only row for a cloud-voice drop.
+    func testTheAppTracesCloudVoiceDrops() throws {
+        let deps = try appSource("AppDependencies.swift")
+        XCTAssertTrue(deps.contains("await preparer.observeCloudVoiceDrops { k, counts in"))
+        XCTAssertTrue(deps.contains("trace.cloudVoiceDropped(counts, afterTrack: k, at: t)"))
+    }
 }

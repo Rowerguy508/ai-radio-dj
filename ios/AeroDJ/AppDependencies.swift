@@ -138,6 +138,15 @@ struct AppDependencies {
         djSession.onExcludedCuesDropped = { k, counts in
             P0EventTraceHost.shared.talkover { trace, t in _ = trace.breakNarrowed(counts, afterTrack: k, at: t) }
         }
+        // Echo's N2 on #398: a break dropped for cloud-voice consent (tester build only; the
+        // preparer reports nothing without a consent check) leaves a counts-only row.
+        Task {
+            await preparer.observeCloudVoiceDrops { k, counts in
+                Task { @MainActor in
+                    P0EventTraceHost.shared.talkover { trace, t in _ = trace.cloudVoiceDropped(counts, afterTrack: k, at: t) }
+                }
+            }
+        }
         #endif
         return AppDependencies(
             mode: .live,
