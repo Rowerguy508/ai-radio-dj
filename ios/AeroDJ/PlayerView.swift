@@ -46,6 +46,13 @@ struct PlayerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .modifier(SongRatingToastHost()) // Station ratings' Undo toast; nothing without a controller (-Nova)
+        // #401 (-Fry): while a weather or local-news line plays, its provider's mark and link.
+        .overlay(alignment: .topTrailing) {
+            if let mark = interlude.attributionMark {
+                FactAttributionBadge(mark: mark).padding(.top, 8).padding(.trailing, 12)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: interlude.attributionMark)
         // Fry #110: Tune Save/Discard waits on real transport. Callbacks + auth refresh stay
         // on PlaybackSessionBinder (once-only); do not authorize() here.
         .task { await reportPlaybackActivity(music.snapshot) }
@@ -148,6 +155,7 @@ enum PlaybackSessionBinder {
                             reportUnplayed(.emptyLine)
                             break
                         }
+                        interlude.stageAttributionMarks(FactAttributionMark.marks(for: breakToPlay), afterTrack: finishedIndex)
                         await interlude.play(clips: clips, line: line, afterTrack: finishedIndex,
                                             resumeLines: BreakResumeLine.lines(for: breakToPlay),
                                             ratingLines: StationRatingBreakLine.lines(for: breakToPlay),

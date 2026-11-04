@@ -32,6 +32,15 @@ final class CoarseDeviceLocation: NSObject, CLLocationManagerDelegate {
         manager.authorizationStatus == .authorizedWhenInUse || manager.authorizationStatus == .authorizedAlways
     }
 
+    /// #410 n5 (-Fry): the user said no, or turned location off for the app in iOS Settings (not
+    /// merely "not asked yet").
+    var isDeniedInSettings: Bool {
+        manager.authorizationStatus == .denied || manager.authorizationStatus == .restricted
+    }
+
+    /// #410 n5 (-Fry): called on the main actor whenever iOS reports a new authorization.
+    var onAuthorizationChange: (@MainActor () -> Void)?
+
     /// One approximate fix, reverse-geocoded on the device by Apple. Nil when not allowed or failed.
     func currentArea() async -> LocalArea? {
         guard isAuthorized else { return nil }
@@ -53,6 +62,7 @@ final class CoarseDeviceLocation: NSObject, CLLocationManagerDelegate {
         Task { @MainActor in
             let waiters = authorizationWaiters; authorizationWaiters = []
             waiters.forEach { $0.resume() }
+            onAuthorizationChange?()
         }
     }
 

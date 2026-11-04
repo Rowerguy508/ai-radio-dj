@@ -23,6 +23,8 @@ struct AeroDJApp: App {
             StationListView(dependencies: dependencies)
                 // Station ratings (-Nova, PR B): the rating button, its toast and the recipe delete.
                 .environment(\.songRating, dependencies.songRating)
+                // #401 (-Fry): Tune's "Local weather & news" card; nil in the test station.
+                .environment(\.localFacts, dependencies.localFacts)
                 // Starts the one studio and the one DJ session. Station selection and the
                 // MusicKit player stay on the split root below this window.
                 .task { await dependencies.start() }

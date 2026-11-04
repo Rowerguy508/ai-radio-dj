@@ -38,12 +38,17 @@ struct AppDependencies {
     let ratings: StationRatingsModel
     /// The rating button's controller, injected at the app root as `\.songRating`.
     let songRating: SongRatingController
+    /// #401 (-Fry): local weather and news, live only (consent-gated; `\.localFacts`). `nil` in
+    /// the test station, so its breaks and screens are unchanged.
+    let localFacts: LocalFactsHost?
 
     /// Starts the Studio and the DJ session once per launch.
     func start() async {
         await studio.start()
         // Before the station queue's first build, so it is screened from the start.
         await ratings.load()
+        // #401: the take-time fact gate and the purge listeners before any break plays.
+        await localFacts?.start(isPlaying: { MusicKitService.shared.isPlaying })
         await djSession.start()
         // #332: station starts read the same briefing provider as a song tap.
         stationQueue?.start(briefing: djSession.briefingProvider(studio: studio))
@@ -94,9 +99,14 @@ struct AppDependencies {
                                        bundledClips: bundledClips)
         // Tester build only (Echo's N2 on #395): a decline drops prepared cloud breaks and cached cloud clips.
         TesterCloudVoiceConsentHooks.attach(preparer: preparer, renderer: voice)
+        // #401 (-Fry): local weather (WeatherKit) and, in the tester build only, local news
+        // (GDELT), each fact one on-device line. Nothing is gathered and no location is read
+        // before the listener opts in (Tune → DJ → Local weather & news).
+        let localFacts = makeLocalFacts(preparer: preparer)
         // #332: one once-a-day ledger for song taps and station starts, kept across relaunches.
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj,
-                                       personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()))
+                                       personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()),
+                                       extraLineSource: localFacts.wiring.source)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         interlude.acknowledgementClip = interruptionAcknowledgement(voice: voice, userID: "listener", stationID: "default")
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
@@ -167,7 +177,21 @@ struct AppDependencies {
             talkover: talkover,
             ratings: ratings,
             songRating: .live(ratings: ratings, station: station, studio: studio, music: MusicKitService.shared,
-                              queue: stationQueue))
+                              queue: stationQueue),
+            localFacts: localFacts)
+    }
+
+    /// #401: Echo's #200 plumbing (`FactRefresh`, `LocalAreaStore`) behind `LocalFactsWiring`.
+    private static func makeLocalFacts(preparer: DJBreakPreparer) -> LocalFactsHost {
+        let location = LazyCoarseDeviceLocation()
+        // Each refresh runs `FactRefresh` over the switched-on providers (Sentinel's N3).
+        let wiring = LocalFactsWiring(
+            store: LocalAreaStore(), toggles: LocalFactsToggles(),
+            providers: [WeatherKitWeatherProvider(), TesterLocalNews.makeProvider()],
+            summarizer: HeadlineSummarizer(paraphraser: HeadlineParaphrasers.best()),
+            device: LazyDeviceCoarseLocationSource(location: location), manual: GeocodedManualPlace(),
+            unit: { Locale.current.measurementSystem == .us ? .fahrenheit : .celsius })
+        return LocalFactsHost(wiring: wiring, location: location, preparer: preparer)
     }
 
     #if DEBUG
@@ -239,7 +263,8 @@ struct AppDependencies {
             talkover: talkover,
             ratings: ratings,
             songRating: .live(ratings: ratings, station: station, studio: studio, music: MusicKitService.shared,
-                              queue: nil))
+                              queue: nil),
+            localFacts: nil)   // #401: no weather or news in the test station
     }
     #endif
 

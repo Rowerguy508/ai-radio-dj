@@ -270,11 +270,15 @@ public struct FactRefresh: Sendable {
         self.summarizer = summarizer
     }
 
+    /// `stillAllowed` (#401 N2, -Fry): re-read just before the facts reach `source`. False (consent
+    /// withdrawn or a toggle turned off while gathering): nothing is handed over and `source` is
+    /// emptied. The default keeps the old behaviour.
     @discardableResult
-    public func run(_ request: FactRequest, into source: FactExtraLineSource) async -> (FactCueCounts, ParaphraseCounts) {
+    public func run(_ request: FactRequest, into source: FactExtraLineSource,
+                    stillAllowed: @Sendable () -> Bool = { true }) async -> (FactCueCounts, ParaphraseCounts) {
         let (gathered, counts) = await gatherer.gather(request)
         let (facts, paraphrase) = await summarizer.summarize(gathered)
-        source.update(facts)
+        if stillAllowed() { source.update(facts) } else { source.clear() }
         return (counts, paraphrase)
     }
 }

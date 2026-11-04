@@ -67,17 +67,13 @@ actor GDELTRateGate {
     func backOff() { blockedUntil = now().addingTimeInterval(penalty) }
 }
 
-/// Small per-query cache so repeated breaks do not refetch.
-actor GDELTCache {
-    private var entries: [String: (Date, [GDELTArticle])] = [:]
-    func get(_ key: String, now: Date, ttl: TimeInterval) -> [GDELTArticle]? {
-        guard let (at, items) = entries[key], now.timeIntervalSince(at) < ttl else { return nil }
-        return items
-    }
-    func put(_ key: String, _ items: [GDELTArticle], at: Date) {
-        if entries.count > 8 { entries.removeAll() }
-        entries[key] = (at, items)
-    }
+/// Small per-query cache so repeated breaks do not refetch. #410 n1 (-Fry): an epoch cache, so a
+/// purge that lands while a fetch is in flight is not undone when that fetch finishes.
+typealias GDELTCache = PurgeableQueryCache<[GDELTArticle]>
+
+/// #401 N2 (-Fry): location or news withdrawn, or purge-all: the city-keyed headlines go too.
+extension GDELTNewsProvider: PurgeableFactProvider {
+    public func purgeCache() async { await cache.removeAll() }
 }
 
 public struct GDELTNewsProvider: NewsProvider {
@@ -112,6 +108,8 @@ public struct GDELTNewsProvider: NewsProvider {
         var queried = false
         // Ladder: city, then region/state, then quiet.
         for tier in LocalNewsTier.allCases {
+            // #410 n2 (-Fry): switched off or withdrawn (the refresh was cancelled): no next rung.
+            guard !Task.isCancelled else { return .omitted(.unavailable) }
             guard let query = GDELTQuery.text(for: area, tier: tier) else { continue }
             queried = true
             guard let articles = await fetch(query, tier: tier) else { return .omitted(.unavailable) }
@@ -128,7 +126,10 @@ public struct GDELTNewsProvider: NewsProvider {
     /// Articles, or nil on any failure (already reported as a code).
     func fetch(_ query: String, tier: LocalNewsTier) async -> [GDELTArticle]? {
         if let hit = await cache.get(query, now: now(), ttl: cacheTTL) { return hit }
+        let epoch = await cache.epoch   // #410 n1: a purge after this point drops this fetch's result
         guard await gate.acquire() else { diag?(LocalNewsDiag(tier: tier, code: .rateLimited)); return nil }
+        // #410 n2: cancelled while waiting for the rate-gate slot: nothing is sent.
+        guard !Task.isCancelled else { return nil }
         var components = URLComponents(string: Self.endpoint)!
         components.queryItems = GDELTQuery.parameters(query: query)
         guard let url = components.url else { diag?(LocalNewsDiag(tier: tier, code: .noPlace)); return nil }
@@ -154,7 +155,7 @@ public struct GDELTNewsProvider: NewsProvider {
                 diag?(LocalNewsDiag(tier: tier, code: limited ? .rateLimited : .parse, httpStatus: http.statusCode))
                 return nil
             }
-            await cache.put(query, articles, at: now())
+            guard await cache.put(query, articles, at: now(), epoch: epoch) else { return nil }   // purged mid-fetch
             return articles
         }
     }

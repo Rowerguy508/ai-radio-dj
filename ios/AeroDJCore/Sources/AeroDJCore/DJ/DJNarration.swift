@@ -832,7 +832,7 @@ public struct DJScriptWriter: Sendable {
             if !text.isEmpty, !text.contains(where: { "{}\n\r".contains($0) }),
                !recent.repeats(text, text: text, sameBreak: lines.map(\.template) + lines.map(\.text)) {
                 let line = Line(template: text, text: text, attribution: extra.attribution, optional: true,
-                                provenance: extra.provenance, expiresAt: extra.expiresAt)
+                                provenance: extra.plannedProvenance, expiresAt: extra.expiresAt)   // #401 N1: fail closed
                 if let index = closingIndex { lines.insert(line, at: index); closingIndex = index + 1 }
                 else { lines.append(line) }
             }

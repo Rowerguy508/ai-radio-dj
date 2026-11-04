@@ -146,19 +146,32 @@ public struct BroadcastFact: Identifiable, Codable, Equatable, Sendable {
 
     public func isLive(at now: Date) -> Bool { expiresAt > now }
 
-    /// `fact:<kind>:<id>`, set on the cue (`NarrationCue.provenance`). IDs only, no content.
-    public var provenance: String { FactProvenance.make(kind: kind, id: id) }
+    /// `fact:<kind>:<id>:<providerID>`, set on the cue (`NarrationCue.provenance`). IDs and the
+    /// provider code only, no content.
+    public var provenance: String { FactProvenance.make(kind: kind, id: id, provider: attribution.providerID) }
 }
 
 /// The provenance string a fact cue carries.
 public enum FactProvenance {
     public static let prefix = "fact:"
-    public static func make(kind: BroadcastFactKind, id: UUID) -> String { "\(prefix)\(kind.rawValue):\(id.uuidString)" }
+    /// `fact:<kind>:<id>`, or `fact:<kind>:<id>:<providerID>` when the provider is known (#410:
+    /// the player's citation is keyed on the provider, e.g. every GDELT line, national or local).
+    public static func make(kind: BroadcastFactKind, id: UUID, provider: String? = nil) -> String {
+        let base = "\(prefix)\(kind.rawValue):\(id.uuidString)"
+        guard let provider, !provider.isEmpty else { return base }
+        return base + ":" + provider.replacingOccurrences(of: ":", with: "-")
+    }
     public static func isFact(_ provenance: String?) -> Bool { provenance?.hasPrefix(prefix) == true }
     public static func kind(of provenance: String?) -> BroadcastFactKind? {
         guard let provenance, isFact(provenance) else { return nil }
         let parts = provenance.dropFirst(prefix.count).split(separator: ":", maxSplits: 1)
         return parts.first.flatMap { BroadcastFactKind(rawValue: String($0)) }
+    }
+    /// The provider code recorded by `make(kind:id:provider:)`, or nil (none recorded, not a fact).
+    public static func provider(of provenance: String?) -> String? {
+        guard let provenance, isFact(provenance) else { return nil }
+        let parts = provenance.dropFirst(prefix.count).split(separator: ":", maxSplits: 2)
+        return parts.count == 3 ? String(parts[2]) : nil
     }
 }
 
@@ -240,6 +253,9 @@ public struct BroadcastFactGatherer: Sendable {
         var counts = FactCueCounts()
         var facts: [BroadcastFact] = []
         for provider in providers {
+            // #410 n2 (-Fry): the refresh was cancelled (a switch turned off, location withdrawn):
+            // no further provider is asked, so no request goes out after the change.
+            guard !Task.isCancelled else { break }
             counts.offered += 1
             if provider.kind.needsLocation, request.area == nil {
                 // Not called at all: no location reaches a provider without consent.

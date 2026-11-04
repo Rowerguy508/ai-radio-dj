@@ -419,6 +419,7 @@ final class TalkoverCoordinator {
             music.skipInterlude()
             return
         }
+        interlude.stageAttributionMarks(FactAttributionMark.marks(for: h.prepared), afterTrack: k)   // #401
         await interlude.play(clips: clips, line: line, afterTrack: k,
                             resumeLines: BreakResumeLine.lines(for: h.prepared),
                             ratingLines: StationRatingBreakLine.lines(for: h.prepared),
@@ -523,6 +524,8 @@ final class TalkoverCoordinator {
                 return
             }
             let position = self.music.playbackTime
+            // #401: the provider mark per line handed to the voice (Apple Weather, GDELT).
+            self.interlude.stageAttributionMarks(Array(FactAttributionMark.marks(for: prepared).prefix(chosen.count)), afterTrack: k)
             let outcome = await self.interlude.playTalkover(
                 players: chosen, gains: gains, closingGap: resolved.closingGap, line: line, afterTrack: k,
                 cueIDs: lineCueIDs,
