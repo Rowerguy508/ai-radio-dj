@@ -748,6 +748,37 @@ final class LocalFactsWiringTests: XCTestCase {
         XCTAssertNotNil(w.source.extraLine(after: a, before: b, shape: .comingUpOnly))
     }
 
+    // MARK: Sentinel #410 n6: the generation is taken before the switches are read
+
+    func testASwitchOffAfterTheTicketSupersedesTheRefreshBeforeAnythingIsRead() async {
+        let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), weather = CountingWeather(clock: clock)
+        let w = wiring(consent: .approximate, clock: clock, device: device, weather: weather)
+        w.testAfterTicket = { [w] in
+            w.setWeather(false)
+            w.setWeather(true)   // the switches read back "on", but the refresh is from before
+        }
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(device.reads, 0, "no location read for a superseded refresh")
+        XCTAssertEqual(weather.calls, 0, "and no request")
+        w.testAfterTicket = nil
+        guard case .refreshed = await w.refreshIfDue() else { return XCTFail("the next refresh runs at once") }
+    }
+
+    func testAPurgeAfterTheTicketSupersedesTheRefreshBeforeAnythingIsRead() async {
+        let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), weather = CountingWeather(clock: clock)
+        let news = CachingNews()
+        let w = wiring(consent: .approximate, clock: clock, device: device, weather: weather, extra: [news])
+        w.testAfterTicket = { [w] in
+            w.turnOff()
+            w.store.chooseApproximate()   // consent holds again by the time the switches are read
+        }
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(device.reads, 0)
+        XCTAssertEqual(weather.calls + news.calls, 0, "no provider or GDELT request")
+    }
+
     // MARK: Sentinel #410 n5: location revoked in iOS Settings
 
     func testLocationRevokedInSettingsShowsOffFetchesNothingAndPurges() async {

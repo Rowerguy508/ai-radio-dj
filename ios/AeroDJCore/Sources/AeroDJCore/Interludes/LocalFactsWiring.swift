@@ -349,14 +349,25 @@ public final class LocalFactsWiring: @unchecked Sendable {
     /// rate-gated request, and the generation check drops whatever came back.
     @discardableResult
     public func refreshIfDue() async -> RefreshOutcome {
-        let task = Task { [self] in await refreshBody() }
-        lock.withLock { _ = inflight.insert(task) }
+        // #410 n6: the generation is taken before anything is read (switches, consent, location),
+        // and the task is registered under the same check: a switch-off, withdrawal or purge at
+        // any point after this line supersedes (and cancels) this refresh.
+        let ticket = lock.withLock { generation }
+        let task = Task { [self] in await refreshBody(ticket) }
+        lock.withLock {
+            inflight.insert(task)
+            if generation != ticket { task.cancel() }   // invalidated before it was registered
+        }
         let outcome = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
         lock.withLock { _ = inflight.remove(task) }
         return outcome
     }
 
-    private func refreshBody() async -> RefreshOutcome {
+    /// Test seam (#410 n6): runs after the generation is taken, before the switches are read.
+    var testAfterTicket: (@Sendable () -> Void)?
+
+    private func refreshBody(_ ticket: Int) async -> RefreshOutcome {
+        testAfterTicket?()
         let toggles = toggles
         let switchedOn = providers.filter { toggles.allows($0.kind) }
         guard !switchedOn.isEmpty else {
@@ -370,12 +381,13 @@ public final class LocalFactsWiring: @unchecked Sendable {
             return .noConsent
         }
         let start = now()
-        let ticket: Int? = lock.withLock {
-            if let last = lastRefresh, start.timeIntervalSince(last) < interval { return nil }
+        let due: RefreshOutcome? = lock.withLock {
+            guard generation == ticket else { return .superseded }   // n6: switched off or purged since
+            if let last = lastRefresh, start.timeIntervalSince(last) < interval { return .notDue }
             lastRefresh = start
-            return generation
+            return nil
         }
-        guard let ticket else { return .notDue }
+        if let due { return due }
         var area: LocalArea?
         if enabled.contains(where: \.kind.needsLocation) {
             area = await store.resolveArea(device: device, manual: manual)
