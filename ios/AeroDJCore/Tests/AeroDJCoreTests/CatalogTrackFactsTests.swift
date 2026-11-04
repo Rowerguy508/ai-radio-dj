@@ -519,7 +519,7 @@ final class CatalogTrackFactsTests: XCTestCase {
     }
 }
 
-// Echo's #399 n1: compound genre names are spoken with "and", never "/" or "&".
+// Echo's #399 n1: compound genre names are spoken with "and", never "/" or a spaced "&".
 final class CatalogSpeakableGenreTests: XCTestCase {
     private func genre(_ names: [String]) -> String? {
         CatalogTrackFacts(catalogSongID: "g1", genreNames: names, now: nov2026).genreName?.value
@@ -527,17 +527,19 @@ final class CatalogSpeakableGenreTests: XCTestCase {
 
     func testSlashAndAmpersandBecomeAnd() {
         XCTAssertEqual(genre(["Music", "Hip-Hop/Rap"]), "Hip-Hop and Rap")
-        XCTAssertEqual(genre(["Music", "R&B/Soul"]), "R and B and Soul")
+        XCTAssertEqual(genre(["Music", "R&B/Soul"]), "R&B and Soul", "an unspaced & inside a word stays")
+        XCTAssertEqual(genre(["R&B"]), "R&B")
         XCTAssertEqual(genre(["Singer/Songwriter"]), "Singer and Songwriter")
         XCTAssertEqual(genre(["Christian & Gospel"]), "Christian and Gospel")
         XCTAssertEqual(genre(["Alternative"]), "Alternative", "a plain genre is untouched")
     }
 
     func testNoSpokenGenreCarriesASlashOrAmpersand() {
-        for raw in ["Hip-Hop/Rap", "R&B/Soul", "Singer/Songwriter", "Christian & Gospel", "Rock / Pop", "A&&B"] {
+        for raw in ["Hip-Hop/Rap", "R&B/Soul", "Singer/Songwriter", "Christian & Gospel", "Rock / Pop", "Folk  &  R&B"] {
             let value = genre([raw])
             XCTAssertNotNil(value, raw)
-            XCTAssertFalse(value!.contains("/") || value!.contains("&") || value!.contains("  "), "\(raw) -> \(value!)")
+            let spacedAmpersand = value!.range(of: #"(^|\s)&|&(\s|$)"#, options: .regularExpression) != nil
+            XCTAssertFalse(value!.contains("/") || spacedAmpersand || value!.contains("  "), "\(raw) -> \(value!)")
         }
     }
 
@@ -550,6 +552,7 @@ final class CatalogSpeakableGenreTests: XCTestCase {
     func testOnlySlashOrAmpersandIsNotAGenre() {
         XCTAssertNil(genre(["/"]))
         XCTAssertNil(genre([" & "]))
+        XCTAssertNil(genre(["&"]))
         XCTAssertEqual(genre(["/", "Jazz"]), "Jazz", "falls through to the next usable genre")
     }
 }

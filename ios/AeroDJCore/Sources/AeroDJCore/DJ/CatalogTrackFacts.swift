@@ -181,14 +181,17 @@ public struct CatalogTrackFacts: Equatable, Sendable {
 
     /// Echo's #399 n1: Apple's compound genre names ("Hip-Hop/Rap", "R&B/Soul",
     /// "Singer/Songwriter", "Christian & Gospel") are read aloud, so a TTS voice may say "slash" or
-    /// "ampersand". Rule: split at every "/" and "&", drop empty parts, collapse whitespace, join
-    /// with " and ", and keep the catalog's own casing ("Hip-Hop and Rap", "R and B and Soul", "Singer and
-    /// Songwriter", "Christian and Gospel"). Both segments are kept rather than picking the first,
-    /// so the line never says less (or other) than the catalog did; the word limit applies after.
+    /// "ampersand". Rule: split at every "/" and at every "&" with whitespace on both sides; an
+    /// unspaced "&" inside a word ("R&B") is left intact, since TTS reads it fine. Parts are
+    /// whitespace-collapsed, parts with no letter or digit are dropped, the rest are joined with
+    /// " and ", and the catalog's casing is kept: "Hip-Hop and Rap", "R&B and Soul", "Singer and
+    /// Songwriter", "Christian and Gospel". Every part is kept rather than only the first, so the
+    /// line never says less (or other) than the catalog did; the word limit applies after.
     static func speakableGenre(_ text: String) -> String {
-        text.split(whereSeparator: { $0 == "/" || $0 == "&" })
+        text.replacingOccurrences(of: #"\s+&\s+"#, with: "/", options: .regularExpression)
+            .split(separator: "/")
             .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
-            .filter { !$0.isEmpty }
+            .filter { $0.contains(where: { $0.isLetter || $0.isNumber }) }
             .joined(separator: " and ")
     }
 
