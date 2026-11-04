@@ -33,6 +33,18 @@ public enum BreakInterruptionAcknowledgement {
         NarrationCue(id: id, order: 0, group: 0, kind: .transition, text: line,
                      estimatedSeconds: 2, maxSeconds: maxSeconds, sourceItemID: nil, source: nil, provenance: nil)
     }
+
+    /// The one render path for the acknowledgement clip (`AppDependencies` wires the adapter to
+    /// it). No attribution, so `VoiceRenderer` uses on-device, free routes only: a cloud or paid
+    /// route is never asked, its cache key never read, and no budget is reserved, whatever the
+    /// cloud-voice consent. That is why this render may skip `CloudVoiceConsentCache` (Sentinel's
+    /// #404 note, pinned by tests). Nil when no on-device route renders it. -Nova
+    public static func renderClip(with voice: VoiceRenderer, userID: String, stationID: String) async -> Data? {
+        switch await voice.render(cue(), userID: userID, stationID: stationID, attribution: nil) {
+        case .success(let clip): return clip.audio.data
+        case .failure: return nil
+        }
+    }
 }
 
 /// The state machine for one break across system interruptions (Siri, a call, an alarm).

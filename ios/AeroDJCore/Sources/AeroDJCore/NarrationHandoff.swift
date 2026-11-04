@@ -130,6 +130,11 @@ public enum NarrationDropReason: String, Codable, Sendable {
     /// Personal update that already aired today (`PersonalUpdateLedger`, #332), or a second
     /// cue for the same source item in one handoff. Not carried into a later show.
     case repeatLimit
+    /// Personal update held back because another one aired less than the ledger's minimum gap
+    /// ago (`PersonalUpdateLedger.isWithinMinimumGap`, #332). Not counted as aired, and not
+    /// carried into a later show; it may air in a new queue once the gap has passed. An update
+    /// that is also at its daily limit is `.repeatLimit` instead (Echo's #403 N1, -Nova).
+    case minimumGap
     /// Personal update whose row expired (`expiresAt` passed) before it could air (#332).
     /// Calendar events and due tasks are never carried into a later show.
     case windowPassed

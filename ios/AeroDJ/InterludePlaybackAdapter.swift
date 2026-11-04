@@ -94,9 +94,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
 
     /// Real audio lifecycle for the DJ session. Emitted only from the player: started when
     /// AVAudioPlayer really starts, finished when the whole break ends, failed otherwise.
+    /// `.finished` is also how a resumed break that went stale or was withdrawn ends
+    /// (`endStaleBreak`, `endWithdrawnBreak`, #379), with lines never played: so `.finished`
+    /// alone does not mean every line was heard, and a break that reports its lines says so
+    /// first (`.reportsLines`, #332 B1; Fry's #403 nit 3).
     /// `.revoked` is a consent stop, not a natural end and not a speech failure.
-    /// `.lineFinished` (#332 P1, -Nova): one line of a boundary break played to its end (`cueID`
-    /// from the `cueIDs` `play` got). Only that line counts as heard for the repeat limit.
+    /// `.lineFinished` (#332 P1, -Nova): one line of a break played to its end (`cueID`
+    /// from the `cueIDs` `play` or `playTalkover` got). Only that line counts as heard for the repeat limit.
     enum Playback {
         case started(afterTrack: Int), finished(afterTrack: Int), failed(afterTrack: Int), revoked(afterTrack: Int)
         case lineFinished(afterTrack: Int, cueID: UUID)
@@ -593,8 +597,14 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     ///
     /// Same stop paths as a normal break: `stop()`, `stopCurrentInterlude`, the timeout, and
     /// the delegate. `.speaking` is reported only when AVAudioPlayer really starts.
+    ///
+    /// `cueIDs` (Fry's #403 nit 2): one per player, in order. When they match, each line that
+    /// plays to its end is reported (`.lineFinished`, after `.reportsLines`), as for a boundary
+    /// break, so a line #388 drops from the queue, or one a fade or cancel cuts, never counts as
+    /// aired, and one that played before a cut does. Otherwise the session counts on `.finished`.
     func playTalkover(players: [AVAudioPlayer], gains: [Float], closingGap gap: Double, line: String,
-                      afterTrack: Int, onStarted: @escaping @MainActor (Double) -> Void) async -> BreakPlayerOutcome {
+                      afterTrack: Int, cueIDs: [UUID] = [],
+                      onStarted: @escaping @MainActor (Double) -> Void) async -> BreakPlayerOutcome {
         guard !isSpeaking else { return .failed }
         guard duckedFor == afterTrack else { releaseTalkoverDuck(); return .failed }
         guard !players.isEmpty, !line.isEmpty else { releaseTalkoverDuck(); return .failed }
@@ -607,7 +617,9 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
         queue = players
         scriptPlayers = players
-        lineCueIDs = []    // #332: no per-line reports; the session counts a talk-over on `.finished`
+        lineCueIDs = cueIDs.count == players.count ? cueIDs : []
+        // #332 B1 / Fry's #403 nit 2: the session counts only reported lines from here on.
+        if !lineCueIDs.isEmpty { onPlayback?(.reportsLines(afterTrack: afterTrack)) }
         resumeLines = []   // a talk-over stops at an interruption and is never resumed
         closingGap = players.count > 1 ? max(0, gap) : 0
         let total = players.reduce(0) { $0 + $1.duration } + closingGap + 2
@@ -649,6 +661,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         queue = []
         clipPlayer = nil
         scriptPlayers = []
+        lineCueIDs = []
         closingGap = 0
         ramps = [:]
         return outcome

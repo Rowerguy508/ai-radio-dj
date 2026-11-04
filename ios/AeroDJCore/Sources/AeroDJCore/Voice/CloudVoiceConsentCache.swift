@@ -12,7 +12,8 @@ import Foundation
 /// On-device, free providers (`localProviders`) pass straight through. Every other call is the
 /// base cache's. While consent is granted, nothing changes. -Nova
 public struct CloudVoiceConsentCache: AudioCache {
-    public let base: any AudioCache
+    /// Private (Sentinel's #409 N1): no caller may reach the base cache past the consent checks.
+    private let base: any AudioCache
     public let localProviders: Set<String>
     private let isGranted: @Sendable () -> Bool
 
@@ -43,4 +44,12 @@ public struct CloudVoiceConsentCache: AudioCache {
     public func purgeClips(keepingProviders providerIDs: Set<String>) async {
         await base.purgeClips(keepingProviders: providerIDs)
     }
+}
+
+/// Fry's #404 nit 1: the device-run cache log (`AudioCacheFileLog.record`) counts the base
+/// cache's files through this wrapper, cloud clips included whatever the consent: it reports
+/// what is on disk, not what may be read back. Counts only; the base cache is never handed out
+/// (Sentinel's #409 N1). -Nova
+extension CloudVoiceConsentCache: AudioCacheForwarding {
+    public func forwardedFileCount() async -> AudioCacheCount? { await AudioCacheFileLog.fileCount(of: base) }
 }
