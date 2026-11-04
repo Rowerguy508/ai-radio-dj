@@ -133,6 +133,14 @@ public actor DJBreakPreparer {
     /// break rendered in a cloud voice never plays after a decline. Nil: no cloud-consent check
     /// (every build without the tester voice, and tests whose renderer has no cloud route). -Nova
     private let cloudVoiceConsent: (@Sendable () -> Bool)?
+    /// The renderer's routes that are not on-device and free (cloud or paid), and those that
+    /// are, worked out once in `init` (Fry's nit 3 on #398: no set rebuilt per call). -Nova
+    private let cloudProviderIDs: Set<String>
+    private let localProviderIDs: Set<String>
+    /// The last re-purge of cached cloud clips started by a take-time consent drop (Sentinel's
+    /// N2 on #398). Kept so tests can wait for it; never awaited by the take. -Nova
+    private var cloudClipPurge: Task<Void, Never>?
+    private var cloudVoiceDropObservers: [@Sendable (Int, ExcludedCueCounts) -> Void] = []
     /// Whether DJ talk-over is on, read when a render starts (`prepare`, `rearm`). P0 build 26
     /// (-Fry): the 4 s closing cap is a talk-over cap, so it only applies while this is true.
     private let talkOverEnabled: @Sendable () -> Bool
@@ -201,7 +209,22 @@ public actor DJBreakPreparer {
                 bundledClips: BundledClipResolver? = nil,
                 now: @escaping @Sendable () -> Date = DJBreakPreparer.systemNow,
                 sleepUntil: (@Sendable (ContinuousClock.Instant) async throws -> Void)? = nil) {
-        self.renderer = renderer
+        let local = Set(renderer.routes.filter(\.isLocalAndFree).map(\.providerID))
+        let cloud = Set(renderer.routes.filter { !$0.isLocalAndFree }.map(\.providerID))
+        self.localProviderIDs = local
+        self.cloudProviderIDs = cloud
+        // With a consent check and a cloud route, every render this preparer starts writes
+        // through `CloudVoiceConsentCache`: a cloud clip is not cached after a decline, a write
+        // in flight at the decline is purged again, and a stale cloud clip is not read back
+        // (Sentinel's N2, Fry's nit 2 on #398). Same routes, budget and revocations. -Nova
+        if let consent = cloudVoiceConsent, !cloud.isEmpty {
+            self.renderer = VoiceRenderer(routes: renderer.routes, budget: renderer.budget,
+                                          cache: CloudVoiceConsentCache(base: renderer.cache, localProviders: local,
+                                                                        isGranted: consent),
+                                          revocations: renderer.revocations)
+        } else {
+            self.renderer = renderer
+        }
         self.bundledClips = bundledClips
         self.cloudVoiceConsent = cloudVoiceConsent
         self.now = now
@@ -243,6 +266,13 @@ public actor DJBreakPreparer {
     /// and reason code only). Line-level, so separate from the break events the Studio shows.
     public func observeTimeCheckDrops(_ observer: @escaping @Sendable (Int, DJTimeCheckDrop) -> Void) {
         timeCheckDropObservers.append(observer)
+    }
+
+    /// Echo's N2 on #398: told when a break is dropped because cloud-voice consent was withdrawn
+    /// (`dropCloudVoiceBreaks` or the take-time check), with its cues counted by kind (time
+    /// check, briefing, other; `kept` is 0). Counts only, for the P0 trace. -Nova
+    public func observeCloudVoiceDrops(_ observer: @escaping @Sendable (Int, ExcludedCueCounts) -> Void) {
+        cloudVoiceDropObservers.append(observer)
     }
 
     /// Render deadline for a song with `remaining` time left: `remaining - margin`, or nil if too late to prepare.
@@ -519,7 +549,13 @@ public actor DJBreakPreparer {
             tasks[k]?.cancel()   // a time-check line still rendering is dropped (#347)
             // Cloud-voice consent re-check at the take (Echo's N2 on #395): a break that finished
             // rendering in a cloud voice after a decline (or raced `dropCloudVoiceBreaks`) is not played.
+            // Its time-check state (`timeChecks`, `timeCheckDrops`, `timeCheckDeadlines`) was
+            // removed above and its late-line task cancelled, as on every take path (Echo's N1
+            // on #398). A clip that render cached after the decline's purge is purged again
+            // (Sentinel's N2 on #398). -Nova
             if case .ready(let prepared) = result, cloudVoiceWithdrawn, usesCloudVoice(prepared) {
+                cloudVoiceDropped(k, prepared, timeCheckCueID: timeCheck?.cueID)
+                repurgeCloudClips()
                 emit(.skipped(afterTrack: k, .paidVoiceRevoked))
                 return .skipped(.paidVoiceRevoked)
             }
@@ -672,6 +708,7 @@ public actor DJBreakPreparer {
             return k
         }.sorted()
         for k in dropped {
+            if case .ready(let prepared)? = results[k] { cloudVoiceDropped(k, prepared, timeCheckCueID: timeChecks[k]?.cueID) }
             tasks.removeValue(forKey: k)?.cancel()   // a time-check line still waiting for its window
             planned[k] = nil
             timeChecks[k] = nil
@@ -690,8 +727,33 @@ public actor DJBreakPreparer {
     /// free (a cloud or paid voice). A cache hit carries the provider that rendered it, so cached
     /// cloud audio counts too. Bundled clips are not a renderer route and are left to their own gate.
     private func usesCloudVoice(_ prepared: PreparedDJBreak) -> Bool {
-        let cloud = Set(renderer.routes.filter { !$0.isLocalAndFree }.map(\.providerID))
-        return !cloud.isEmpty && prepared.clips.contains { cloud.contains($0.audio.providerID) }
+        !cloudProviderIDs.isEmpty && prepared.clips.contains { cloudProviderIDs.contains($0.audio.providerID) }
+    }
+
+    /// Reports a break dropped for cloud-voice consent, its cues counted by kind (Echo's N2 on #398).
+    private func cloudVoiceDropped(_ k: Int, _ prepared: PreparedDJBreak, timeCheckCueID: UUID?) {
+        guard !cloudVoiceDropObservers.isEmpty else { return }
+        let counts = ExcludedCueCounts(dropped: prepared.cues, timeCheckCueID: prepared.timeCheck?.cueID ?? timeCheckCueID,
+                                       kept: 0)
+        for observer in cloudVoiceDropObservers { observer(k, counts) }
+    }
+
+    /// Sentinel's N2 on #398: the take found a cloud break after a decline, so a render may have
+    /// cached a cloud clip after the decline's own purge. Deletes cached cloud clips again
+    /// (on-device clips stay), in the background: the take never waits. -Nova
+    private func repurgeCloudClips() {
+        let cache = renderer.cache, keep = localProviderIDs, previous = cloudClipPurge
+        cloudClipPurge = Task {
+            await previous?.value
+            await cache.purgeClips(keepingProviders: keep)
+        }
+    }
+
+    /// Test hook: waits for the last take-time re-purge of cloud clips, if one started.
+    func testAwaitCloudClipPurge() async { await cloudClipPurge?.value }
+    /// Test hook: boundary `k`'s time-check bookkeeping (planned check, early drop, deadline).
+    func testHasTimeCheckState(afterTrack k: Int) -> Bool {
+        timeChecks[k] != nil || timeCheckDrops[k] != nil || timeCheckDeadlines[k] != nil
     }
 
     private func finish(_ k: Int, _ outcome: DJBreakOutcome) {

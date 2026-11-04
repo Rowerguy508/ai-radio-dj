@@ -743,6 +743,18 @@ extension P0EventTrace {
                                            (.briefingCues, .int(counts.briefing)), (.kept, .int(counts.kept))])
     }
 
+    /// Echo's N2 on #398 (-Nova): a break dropped because cloud-voice consent was withdrawn
+    /// (`DJBreakPreparer.observeCloudVoiceDrops`), its cues by kind. Same row shape as
+    /// `breakNarrowed`; `kept` is 0 (the whole break goes). Counts and codes only: never a line,
+    /// a voice, a provider or a song.
+    @discardableResult
+    public mutating func cloudVoiceDropped(_ counts: ExcludedCueCounts, afterTrack: Int?, at t: TimeInterval) -> P0TraceRow {
+        record(.breakInterruption, at: t, [(.kind, .code(.breakDropped)), (.reason, .code(.paidVoiceRevoked)),
+                                           (.after, Self.number(afterTrack)), (.dropped, .int(counts.dropped)),
+                                           (.timeChecks, .int(counts.timeChecks)), (.otherCues, .int(counts.other)),
+                                           (.briefingCues, .int(counts.briefing)), (.kept, .int(counts.kept))])
+    }
+
     private static func flag(_ b: Bool?) -> P0TraceValue { b.map { .bool($0) } ?? .missing }
     private static func number(_ i: Int?) -> P0TraceValue { i.map { .int($0) } ?? .missing }
 }
