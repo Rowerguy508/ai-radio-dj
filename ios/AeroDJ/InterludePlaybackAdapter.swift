@@ -625,7 +625,7 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
     /// `cueIDs` (Fry's #403 nit 2): one per player, in order. When they match, each line that
     /// plays to its end is reported (`.lineFinished`, after `.reportsLines`), as for a boundary
     /// break, so a line #388 drops from the queue, or one a fade or cancel cuts, never counts as
-    /// aired, and one that played before a cut does. Otherwise the session counts on `.finished`.
+    /// aired, and one that played before a cut does. On a mismatch no line counts (Fry's #409 nit 2).
     func playTalkover(players: [AVAudioPlayer], gains: [Float], closingGap gap: Double, line: String,
                       afterTrack: Int, cueIDs: [UUID] = [],
                       onStarted: @escaping @MainActor (Double) -> Void) async -> BreakPlayerOutcome {
@@ -641,9 +641,11 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
         queue = players
         scriptPlayers = players
-        lineCueIDs = cueIDs.count == players.count ? cueIDs : []
         // #332 B1 / Fry's #403 nit 2: the session counts only reported lines from here on.
-        if !lineCueIDs.isEmpty { onPlayback?(.reportsLines(afterTrack: afterTrack)) }
+        // Fry's #409 nit 2: a cue id mismatch reports lines with no ids, so none counts (fail closed).
+        let reporting = TalkoverLineReporting(cueIDs: cueIDs, clipCount: players.count)
+        lineCueIDs = reporting.cueIDs
+        if reporting.reportsLines { onPlayback?(.reportsLines(afterTrack: afterTrack)) }
         resumeLines = []   // a talk-over stops at an interruption and is never resumed
         closingGap = players.count > 1 ? max(0, gap) : 0
         let total = players.reduce(0) { $0 + $1.duration } + closingGap + 2

@@ -53,3 +53,9 @@ public struct CloudVoiceConsentCache: AudioCache {
 extension CloudVoiceConsentCache: AudioCacheForwarding {
     public func forwardedFileCount() async -> AudioCacheCount? { await AudioCacheFileLog.fileCount(of: base) }
 }
+
+/// Sentinel's #409 nit (-Nova): an empty mirror, so `dump`, `Mirror(reflecting:)`, or a debugger
+/// summary of the wrapper never shows (or hands out) the base cache behind the consent checks.
+extension CloudVoiceConsentCache: CustomReflectable {
+    public var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}

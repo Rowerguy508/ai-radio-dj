@@ -330,3 +330,77 @@ private struct AccountingVoice: VoiceProvider {
                              billableUnits: 0, provider: "device", cacheKey: nil)
     }
 }
+
+// MARK: Fry's #409 nits 1 and 2 (-Nova): talk-over per-line aired counting
+
+/// The adapter's talk-over (`InterludePlaybackAdapter.playTalkover`, app-only) feeds the session
+/// through `TalkoverLineReporting`: `.reportsLines` before audio when it says so, and one
+/// `.lineFinished` per clip that played to its end with `finishedCueID(atClip:)`. These drive
+/// the session exactly that way, with the cue ids `TalkoverCoordinator` hands over (one per clip).
+extension PersonalUpdateAiredAccountingTests {
+    private func playTalkover(_ r: Rig, reporting: TalkoverLineReporting, finishedClips: Range<Int>, cut: Bool) {
+        if reporting.reportsLines { r.session.breakReportsLines(afterTrack: 0) }
+        r.session.playbackStarted(afterTrack: 0)
+        for i in finishedClips {
+            if let id = reporting.finishedCueID(atClip: i) { r.session.lineFinished(afterTrack: 0, cueID: id) }
+        }
+        if cut { r.session.playbackFailed(afterTrack: 0) } else { r.session.playbackFinished(afterTrack: 0) }
+    }
+
+    func testATalkoverCutBeforeTheUpdateLineCountsNothingThoughItEndsFinished() async throws {
+        let r = await rig()
+        let b = try await handOut(r)
+        let l = try lines(b)
+        let reporting = TalkoverLineReporting(cueIDs: b.clips.map(\.cueID), clipCount: b.clips.count)
+        XCTAssertEqual(reporting.cueIDs, b.clips.map(\.cueID))
+        // A fade or a #388 drop: only the lead lines finished, then the talk-over ends `.finished`.
+        playTalkover(r, reporting: reporting, finishedClips: 0..<l.before.count, cut: false)
+        XCTAssertFalse(r.ledger.hasReachedLimit(r.ids[0], at: r.clock.now), "the update line never aired")
+        XCTAssertFalse(r.ledger.isWithinMinimumGap(at: r.clock.now))
+        XCTAssertEqual(tapIDs(r), [r.ids[0]])
+    }
+
+    func testATalkoverCountsTheUpdateOnceItsOwnLineFinishedEvenIfCutAfter() async throws {
+        let r = await rig()
+        let b = try await handOut(r)
+        let l = try lines(b)
+        let reporting = TalkoverLineReporting(cueIDs: b.clips.map(\.cueID), clipCount: b.clips.count)
+        playTalkover(r, reporting: reporting, finishedClips: 0..<(l.before.count + 1), cut: true)
+        XCTAssertEqual(r.ledger.limitedItemIDs(at: r.clock.now), [r.ids[0]])
+    }
+
+    func testATalkoverThatPlaysThroughCountsTheUpdate() async throws {
+        let r = await rig()
+        let b = try await handOut(r)
+        let reporting = TalkoverLineReporting(cueIDs: b.clips.map(\.cueID), clipCount: b.clips.count)
+        playTalkover(r, reporting: reporting, finishedClips: 0..<b.clips.count, cut: false)
+        XCTAssertEqual(r.ledger.limitedItemIDs(at: r.clock.now), [r.ids[0]])
+    }
+
+    /// Nit 2: a cue id / clip count mismatch fails closed. Before, the talk-over sent no
+    /// `.reportsLines` and the session's `.finished` fallback counted every line as aired.
+    func testATalkoverCueIDMismatchCountsNoLineAsAired() async throws {
+        for drop in [1, -1, Int.max] {   // one id short, one extra, none at all
+            let r = await rig()
+            let b = try await handOut(r)
+            var ids = b.clips.map(\.cueID)
+            if drop == 1 { ids.removeLast() } else if drop == -1 { ids.append(UUID()) } else { ids = [] }
+            let reporting = TalkoverLineReporting(cueIDs: ids, clipCount: b.clips.count)
+            XCTAssertTrue(reporting.reportsLines, "\(drop)")
+            XCTAssertEqual(reporting.cueIDs, [], "\(drop)")
+            playTalkover(r, reporting: reporting, finishedClips: 0..<b.clips.count, cut: false)
+            XCTAssertFalse(r.ledger.hasReachedLimit(r.ids[0], at: r.clock.now), "\(drop): nothing counted")
+            XCTAssertFalse(r.ledger.isWithinMinimumGap(at: r.clock.now), "\(drop)")
+        }
+    }
+
+    func testTalkoverLineReportingMapsClipsToCueIDsInOrder() {
+        let ids = [UUID(), UUID(), UUID()]
+        let reporting = TalkoverLineReporting(cueIDs: ids, clipCount: 3)
+        XCTAssertTrue(reporting.reportsLines)
+        XCTAssertEqual((0..<3).map { reporting.finishedCueID(atClip: $0) }, ids)
+        XCTAssertNil(reporting.finishedCueID(atClip: 3))
+        XCTAssertNil(reporting.finishedCueID(atClip: -1))
+        XCTAssertEqual(TalkoverLineReporting(cueIDs: [], clipCount: 0).cueIDs, [])
+    }
+}
