@@ -11,6 +11,9 @@ struct SharedInboxReviewView: View {
     /// live briefing) re-reads the shared items now: an include reaches the next briefing, and an
     /// exclude, edit or delete purges narration already prepared from the old state.
     var onChange: @MainActor () async -> Void = {}
+    /// #313 B1 (-Nova): runs before an edit is written, so narration prepared from the old text
+    /// is purged first. `onChange` (Connections' refresh) purges again on the new text.
+    var willRedact: @MainActor (UUID) async -> Void = { _ in }
 
     @State private var entries: [SharedReviewEntry] = []
     @State private var errorMessage: String?
@@ -50,7 +53,10 @@ struct SharedInboxReviewView: View {
                             Button("Save") {
                                 if let id = editingID {
                                     let text = draft
-                                    perform { [review] in try await review.redact(id, to: text) }
+                                    let willRedact = willRedact
+                                    perform(before: { await willRedact(id) }) { [review] in
+                                        try await review.redact(id, to: text)
+                                    }
                                 }
                                 editingID = nil
                             }
@@ -98,10 +104,12 @@ struct SharedInboxReviewView: View {
         }
     }
 
-    private func perform(_ action: @escaping @Sendable () async throws -> Void) {
+    private func perform(before: (@MainActor () async -> Void)? = nil,
+                         _ action: @escaping @Sendable () async throws -> Void) {
         let review = review
         let onChange = onChange
         Task {
+            if let before { await before() }
             do {
                 try await action()
             } catch {

@@ -208,7 +208,8 @@ final class SharedInboxLiveBriefingTests: XCTestCase {
     }
 
     /// An edit in the sheet replaces the text Connections (and the briefing) reads: the old,
-    /// unredacted first line is never offered again. Red before #313 (the launch-time text stayed).
+    /// unredacted first line is never offered again, and the break prepared next is built and
+    /// rendered from the edited text. Red before #313 (the launch-time text stayed).
     func testARedactionInTheSheetReplacesTheTextTheBriefingReads() async throws {
         let r = try await rig(["Fixture original 555-0100"])
         let id = r.ids[0]
@@ -217,6 +218,83 @@ final class SharedInboxLiveBriefingTests: XCTestCase {
         await sheetChanged(r)
         XCTAssertEqual(r.studio.connections.items.map(\.title), ["Fixture edited"])
         XCTAssertFalse(r.studio.connections.items.contains { $0.title.contains("555-0100") })
+
+        await tapAndRender(r)
+        XCTAssertTrue(r.session.testPlannedSourceItemIDs.contains(id), "the edited item is prepared")
+        let boundary = await r.session.naturalBoundary(afterTrack: 0)
+        let handed = try XCTUnwrap(boundary, "a break is handed out")
+        let line = try XCTUnwrap(handed.cues.first { $0.isContent && $0.sourceItemID == id }, "its line is in the break")
+        XCTAssertTrue(line.text.contains("Fixture edited"), "the prepared line reads the edited text")
+        XCTAssertFalse(handed.cues.contains { $0.text.contains("555-0100") }, "no cue reads the original")
+        XCTAssertNotNil(handed.clips.first { $0.cueID == line.id }, "and its rendered clip is for that line")
+    }
+
+    /// #313 B1 (Sentinel's probe): a redaction after the break was prepared and rendered. The
+    /// item keeps its id and its approval, so before the fix nothing was purged: the clip
+    /// rendered from the original text stayed cached and the next boundary aired it.
+    func testARedactionAfterRenderPurgesTheBreakAndClipsBuiltFromTheOriginalText() async throws {
+        let r = try await rig(["Fixture original 555-0100"])
+        let id = r.ids[0]
+        try await r.sheet.setDecision(.approved, for: id)
+        await sheetChanged(r)
+        await tapAndRender(r)
+        XCTAssertTrue(r.session.testPlannedSourceItemIDs.contains(id), "fixture: planned")
+        let before = await personalClips(r)
+        XCTAssertGreaterThan(before, 0, "fixture: rendered")
+
+        try await r.sheet.redact(id, to: "Fixture edited")
+        await sheetChanged(r)
+        XCTAssertFalse(r.session.testPlannedSourceItemIDs.contains(id), "dropped from the prepared plan")
+        let after = await personalClips(r)
+        XCTAssertEqual(after, 0, "clips rendered from the original text are purged")
+        let handed = await r.session.naturalBoundary(afterTrack: 0)
+        let leaked = (handed?.cues ?? []).filter { $0.text.contains("555-0100") }.count
+        XCTAssertEqual(leaked, 0, "\(leaked) cues read the original text")
+        XCTAssertEqual(r.studio.connections.items.map(\.state), [.approved], "the item stays included")
+        XCTAssertEqual(queuedContentIDs(r), [id], "and the next briefing offers it with the edited text")
+    }
+
+    /// The sheet's pre-edit purge (`willRedact` -> `purgeNarration(for:)`) drops prepared
+    /// narration before the redaction is even written, and leaves no stale purge state: after the
+    /// refresh the edited item is prepared and rendered again.
+    func testPurgingAheadOfAnEditDropsThePreparedBreakAndTheItemComesBack() async throws {
+        let r = try await rig(["Fixture original 555-0100"])
+        let id = r.ids[0]
+        try await r.sheet.setDecision(.approved, for: id)
+        await sheetChanged(r)
+        await tapAndRender(r)
+        let before = await personalClips(r)
+        XCTAssertGreaterThan(before, 0, "fixture: rendered")
+
+        await r.studio.connections.purgeNarration(for: [id])
+        XCTAssertFalse(r.session.testPlannedSourceItemIDs.contains(id), "purged before the write")
+        let purgedClips = await personalClips(r)
+        XCTAssertEqual(purgedClips, 0)
+        try await r.sheet.redact(id, to: "Fixture edited")
+        await sheetChanged(r)
+        XCTAssertEqual(queuedContentIDs(r), [id])
+        await tapAndRender(r)
+        let rerendered = await personalClips(r)
+        XCTAssertGreaterThan(rerendered, 0, "prepared again from the edited text")
+    }
+
+    /// Guards the B1 purge against over-reach: a refresh, or a sheet edit that does not change
+    /// the narrated text (a source label), keeps the prepared break and its clip.
+    func testARefreshWithoutATextChangeKeepsThePreparedBreak() async throws {
+        let r = try await rig(["Fixture: keep me"])
+        let id = r.ids[0]
+        try await r.sheet.setDecision(.approved, for: id)
+        await sheetChanged(r)
+        await tapAndRender(r)
+        let before = await personalClips(r)
+        XCTAssertGreaterThan(before, 0, "fixture: rendered")
+
+        await sheetChanged(r)
+        try await r.sheet.setLabel(.email, for: id)
+        await sheetChanged(r)
+        XCTAssertTrue(r.session.testPlannedSourceItemIDs.contains(id), "still planned")
+        let after = await personalClips(r)
+        XCTAssertEqual(after, before, "its clip is kept")
     }
 
     // MARK: SharedInboxReview: the store is the truth
