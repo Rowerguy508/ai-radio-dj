@@ -898,6 +898,28 @@ final class LocalFactsWiringTests: XCTestCase {
     /// Sentinel's #410 n7 (-Fry): cancelled between the city and region rungs, with no rate wait
     /// due (the clock is past the slot), the region rung is never started: nothing more is sent,
     /// nothing sleeps, and the cancelled refresh takes no rate-gate slot from the next one.
+    /// n7 control (-Fry): the same fixture with no cancel really sends both rungs, city then region,
+    /// so the cancel case below is checked against a path where the region request would go out.
+    func testGDELTThinCityAnswerGoesOnToTheRegionRung() async {
+        let transport = HookTransport()
+        final class Tiers: @unchecked Sendable {
+            private let lock = NSLock(); private var v: [LocalNewsTier?] = []
+            func record(_ t: LocalNewsTier?) { lock.withLock { v.append(t) } }
+            var all: [LocalNewsTier?] { lock.withLock { v } }
+        }
+        let tiers = Tiers(), clock = WiringClock(w0)
+        let provider = GDELTNewsProvider(transport: transport, now: { clock.now }, sleep: { _ in },
+                                         diag: { d in tiers.record(d.tier) })
+        let store = LocalAreaStore.inMemory()
+        store.chooseApproximate()
+        let w = LocalFactsWiring(store: store, toggles: .inMemory(news: true), providers: [provider],
+                                 summarizer: HeadlineSummarizer(paraphraser: NoHeadlineParaphraser()),
+                                 device: FakeDeviceLocation(minneapolis), manual: nil, now: { clock.now })
+        guard case .refreshed = await w.refreshIfDue() else { return XCTFail("news on: the refresh runs") }
+        XCTAssertEqual(transport.sent, 2, "a thin city answer goes on to send the region request")
+        XCTAssertEqual(tiers.all, [.city, .region], "city first, then region")
+    }
+
     func testGDELTCancelBetweenCityAndRegionStartsNoRegionRung() async {
         let transport = HookTransport()
         final class Box: @unchecked Sendable { var w: LocalFactsWiring? }
@@ -906,12 +928,18 @@ final class LocalFactsWiringTests: XCTestCase {
             func record() { lock.withLock { n += 1 } }
             var count: Int { lock.withLock { n } }
         }
-        let box = Box(), sleeps = Sleeps(), clock = WiringClock(w0)
+        final class Tiers: @unchecked Sendable {
+            private let lock = NSLock(); private var v: [LocalNewsTier?] = []
+            func record(_ t: LocalNewsTier?) { lock.withLock { v.append(t) } }
+            var all: [LocalNewsTier?] { lock.withLock { v } }
+        }
+        let box = Box(), sleeps = Sleeps(), tiers = Tiers(), clock = WiringClock(w0)
         // The city rung has come back thin ("{}"), so the ladder would go on to the region rung.
         // News goes off right there: after the city answer, before the region rung starts (a
         // cancel while the request is out ends the ladder at the request instead).
         let provider = GDELTNewsProvider(transport: transport, now: { clock.now }, sleep: { _ in sleeps.record() },
                                          diag: { d in
+                                             tiers.record(d.tier)
                                              guard d.tier == .city else { return }
                                              _ = box.w?.setNews(false)
                                              clock.now = w0.addingTimeInterval(6)   // past the 5.5 s slot: no wait due
@@ -925,6 +953,7 @@ final class LocalFactsWiringTests: XCTestCase {
         let outcome = await w.refreshIfDue()
         XCTAssertEqual(outcome, .superseded)
         XCTAssertEqual(transport.sent, 1, "the city request went out, and no region request after the cancel")
+        XCTAssertEqual(tiers.all, [.city], "no region rung ran after the cancel")
         XCTAssertEqual(sleeps.count, 0, "and no rate wait")
         let granted = await provider.gate.acquire()
         XCTAssertTrue(granted)
