@@ -173,8 +173,23 @@ public struct CatalogTrackFacts: Equatable, Sendable {
     }
 
     static func genre(_ raw: String) -> String? {
-        guard let text = plain(raw), !genericGenres.contains(text.lowercased()), words(text) <= maxNameWords else { return nil }
-        return text
+        guard let text = plain(raw), !genericGenres.contains(text.lowercased()) else { return nil }
+        let spoken = speakableGenre(text)
+        guard !spoken.isEmpty, words(spoken) <= maxNameWords else { return nil }
+        return spoken
+    }
+
+    /// Echo's #399 n1: Apple's compound genre names ("Hip-Hop/Rap", "R&B/Soul",
+    /// "Singer/Songwriter", "Christian & Gospel") are read aloud, so a TTS voice may say "slash" or
+    /// "ampersand". Rule: split at every "/" and "&", drop empty parts, collapse whitespace, join
+    /// with " and ", and keep the catalog's own casing ("Hip-Hop and Rap", "R and B and Soul", "Singer and
+    /// Songwriter", "Christian and Gospel"). Both segments are kept rather than picking the first,
+    /// so the line never says less (or other) than the catalog did; the word limit applies after.
+    static func speakableGenre(_ text: String) -> String {
+        text.split(whereSeparator: { $0 == "/" || $0 == "&" })
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+            .filter { !$0.isEmpty }
+            .joined(separator: " and ")
     }
 
     /// The note's first sentence, verbatim, if it is short enough; nil otherwise. A long first
