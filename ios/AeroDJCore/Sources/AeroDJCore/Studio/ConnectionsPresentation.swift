@@ -633,8 +633,9 @@ public final class ConnectionsModel {
     /// items that are gone (permission removed in Settings, calendar deselected, file missing,
     /// provider read failed: fail closed), expired, revoked or unavailable; items demoted to
     /// pending approval or flagged for review under the same ID; and items whose integration
-    /// consent is no longer granted. Narratable items leave `purged`, so a later demotion or
-    /// withdrawal purges again: re-authorization leaves no stale purge state.
+    /// consent is no longer granted. Narratable items whose title changed under the same ID (a
+    /// redaction) are purged too (`editedIDs`, #313 B1). Narratable items leave `purged`, so a
+    /// later demotion or withdrawal purges again: re-authorization leaves no stale purge state.
     public func refresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
@@ -650,11 +651,33 @@ public final class ConnectionsModel {
         }
         let narratable = Set(next.filter { isNarratable($0) }.map(\.id))
         let known = Set(previous.map(\.id)).union(next.map(\.id))
-        await purge(known.subtracting(narratable).subtracting(purged))
+        let edited = Self.editedIDs(previous: previous, next: next, narratable: narratable)
+        await purge(known.subtracting(narratable).subtracting(purged).union(edited))
         purged.subtract(narratable)
         calendar = nextCalendar
         obsidian = nextObsidian
         items = next
+    }
+
+    /// #313 B1 (-Nova): narratable ids whose text changed under the same id (a redaction in the
+    /// "Shared with" sheet keeps the item's id and its approval). The live briefing speaks the
+    /// row's `title` (`LiveQueueBriefing`), so a different title means breaks and clips prepared
+    /// before the change were rendered from text the listener replaced: they are purged through
+    /// the same path as withdrawal, and the item is prepared again from the new text. Exclude,
+    /// delete and demotion are already covered by `known - narratable`.
+    static func editedIDs(previous: [ConnectionItem], next: [ConnectionItem], narratable: Set<UUID>) -> Set<UUID> {
+        let before = Dictionary(previous.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
+        return Set(next.filter { item in
+            guard narratable.contains(item.id), let old = before[item.id] else { return false }
+            return old != item.title
+        }.map(\.id))
+    }
+
+    /// Purges narration prepared for these items now, ahead of an edit to their text (#313: the
+    /// sheet calls this before writing a redaction). `refresh()` purges again on the new text,
+    /// and an item that stays narratable is prepared again from it.
+    public func purgeNarration(for ids: Set<UUID>) async {
+        await purge(ids)
     }
 
     /// May feed narration: approved by the listener *and* its integration's consent granted.
