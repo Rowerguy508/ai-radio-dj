@@ -52,6 +52,9 @@ struct TuneForm: View {
                 // screen: a Group's children are laid out as the VStack's own. -Nova
                 TesterCloudVoiceToggleCard(settingsBlocked: blockedMessage != nil)
                 #endif
+                // #401 (-Fry): consent, not a station setting, so outside the blocked group too.
+                // Live only (`\.localFacts`); nothing in the test station or StudioCapture.
+                LocalFactsToggleCard(settingsBlocked: blockedMessage != nil)
                 RecipesSection(studio: studio, editable: blockedMessage == nil)
             }
             .padding(.vertical, 4)

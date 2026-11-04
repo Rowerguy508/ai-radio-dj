@@ -322,6 +322,16 @@ public struct DJExtraLine: Equatable, Sendable {
     public var provenance: String?
     /// #200: when that fact stops being true. Carried onto the cue (`NarrationCue.expiresAt`).
     public var expiresAt: Date?
+    /// #401 N1 (Sentinel; -Fry): the provenance a line with none (or an empty one) is planned with.
+    /// Extra lines come from outside the writer's own pools, so they fail closed: a non-nil
+    /// provenance keeps the cue on the device, whatever its attribution.
+    public static let unattributedProvenance = "extra:unattributed"
+    /// What the writer stamps on the cue: `provenance`, or `unattributedProvenance` when nil or empty.
+    public var plannedProvenance: String {
+        guard let provenance, !provenance.isEmpty else { return Self.unattributedProvenance }
+        return provenance
+    }
+    /// Legacy init: no provenance, so the planned cue is on-device only (`plannedProvenance`).
     public init(text: String, attribution: SpokenAttribution) {
         self.text = text
         self.attribution = attribution

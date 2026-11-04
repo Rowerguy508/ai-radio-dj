@@ -133,7 +133,8 @@ public final class DJBreakSession {
                 hour: @escaping () -> Int = { Calendar.current.component(.hour, from: Date()) },
                 now: @escaping () -> Date = { Date() },
                 personalUpdates: PersonalUpdateLedger = PersonalUpdateLedger(),
-                calendar: Calendar = .autoupdatingCurrent, clockStyle: DJClockStyle? = nil) {
+                calendar: Calendar = .autoupdatingCurrent, clockStyle: DJClockStyle? = nil,
+                extraLineSource: (any DJBreakExtraLineSource)? = nil) {
         self.preparer = preparer
         self.now = now
         self.calendar = calendar
@@ -147,6 +148,9 @@ public final class DJBreakSession {
         // words change: no new data, request or provider (-Fry, agreed with Echo).
         self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed,
                                      tone: .forPersonality(station.active.personality), shapes: .natural)
+        // #401 (-Fry): the writer's optional extra line per natural break (Echo's
+        // `FactExtraLineSource`: weather and local news). Nil, the default, plans exactly as before.
+        self.writer.extraLineSource = extraLineSource
     }
 
     /// Forwards preparer events to the DJ status and follows station changes. Call once.
@@ -548,9 +552,12 @@ public final class DJBreakSession {
     /// #332 B1 (-Nova): the break at `afterTrack` will report its lines; set before any can end.
     public func breakReportsLines(afterTrack k: Int) { if handedOutPersonal?.afterTrack == k { handedOutPersonal?.reportsLines = true } }
 
-    /// The whole break played through. From a player that reports no per-line events (the
-    /// talk-over), every line was heard, so its personal lines are recorded now. From one that
-    /// does, only `lineFinished` lines count.
+    /// The whole break ended `.finished`. Whether that means every line was heard depends on the
+    /// player: one that said at `play` it reports each line (`breakReportsLines`) is counted only
+    /// by `lineFinished`, so a `.finished` here (also how a stale or withdrawn resume ends, with
+    /// lines never played) records nothing more. A player that did not say so, such as a
+    /// talk-over handed no per-line cue ids matching its clips, gets the fallback: every
+    /// personal line of the break is recorded now.
     public func playbackFinished(afterTrack k: Int) {
         if let aired = handedOutPersonal, aired.afterTrack == k, !aired.reportsLines {
             handedOutPersonal = nil
@@ -767,6 +774,8 @@ public final class DJBreakSession {
     var testPlannedBreaks: [Int: DJBreak] { breaks }
     /// Test hook: the phrase bank the session's writer plans with.
     var testWriterTone: EditorialTone { writer.tone }
+    /// Test hook (#401): the extra-line source the session's writer plans with.
+    var testWriterExtraLineSource: (any DJBreakExtraLineSource)? { writer.extraLineSource }
     /// Test hook: called after the `start()` observer has handled a station change (any replan
     /// it causes is done), so a test can wait for it instead of racing the change stream.
     var testOnStationChangeHandled: ((StationConfigurationChange) -> Void)?

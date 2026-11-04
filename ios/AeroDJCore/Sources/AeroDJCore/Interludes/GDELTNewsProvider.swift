@@ -78,6 +78,12 @@ actor GDELTCache {
         if entries.count > 8 { entries.removeAll() }
         entries[key] = (at, items)
     }
+    func removeAll() { entries.removeAll() }
+}
+
+/// #401 N2 (-Fry): location or news withdrawn, or purge-all: the city-keyed headlines go too.
+extension GDELTNewsProvider: PurgeableFactProvider {
+    public func purgeCache() async { await cache.removeAll() }
 }
 
 public struct GDELTNewsProvider: NewsProvider {
