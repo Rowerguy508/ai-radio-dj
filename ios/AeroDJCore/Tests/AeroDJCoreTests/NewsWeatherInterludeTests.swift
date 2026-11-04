@@ -271,6 +271,48 @@ final class NewsWeatherInterludeTests: XCTestCase {
         }
     }
 
+    /// Sentinel's #401 B1: a news or weather clip carries no source id, so no purge could find it
+    /// in the narration cache. It is never written there (nor read), and an ordinary line still is.
+    func testAFactLineIsNeverCachedSoPurgesCannotMissIt() async throws {
+        let cache = InMemoryAudioCache()
+        let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
+                                     budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache)
+        let line = try XCTUnwrap(FactInterludeComposer().extraLine(
+            from: [summary("Brooklyn bridge open again after repairs", "the Brooklyn Paper")], airBy: t0, variant: 1,
+            counts: &FactCueCounts.scratch))
+        var fact = NarrationCue(id: UUID(), order: 0, group: -1, kind: .transition, text: line.text, estimatedSeconds: 3,
+                                maxSeconds: 20, sourceItemID: nil, source: nil, provenance: line.provenance)
+        fact.expiresAt = line.expiresAt
+        XCTAssertFalse(VoiceRenderer.mayUseCache(fact))
+        var factNoExpiry = fact; factNoExpiry.expiresAt = nil
+        XCTAssertFalse(VoiceRenderer.mayUseCache(factNoExpiry), "fact provenance alone keeps it out of the cache")
+        for _ in 0..<2 {
+            guard case .success(let clip) = await renderer.render(fact, userID: "u", stationID: "s", attribution: .presenter)
+            else { return XCTFail("renders on the device") }
+            XCTAssertEqual(clip.attempts.last?.result, .rendered, "rendered fresh, never a cache hit")
+        }
+        var count = await cache.fileCount()
+        XCTAssertEqual(count.files, 0, "nothing from a fact line is on disk for a purge to miss")
+
+        // An expiring line with no source id and no fact provenance is held back the same way.
+        var untagged = NarrationCue(id: UUID(), order: 0, group: -1, kind: .transition, text: "Rain moves in around six.",
+                                    estimatedSeconds: 2, maxSeconds: 20, sourceItemID: nil, source: nil, provenance: nil)
+        untagged.expiresAt = t0.addingTimeInterval(900)
+        XCTAssertFalse(VoiceRenderer.mayUseCache(untagged))
+
+        // An ordinary line, and an expiring personal update that a purge can find, still cache.
+        let plain = NarrationCue(id: UUID(), order: 0, group: -1, kind: .transition, text: "Here's the next one.",
+                                 estimatedSeconds: 2, maxSeconds: 20, sourceItemID: nil, source: nil, provenance: nil)
+        var personal = NarrationCue(id: UUID(), order: 0, group: -1, kind: .transition, text: "Your dentist is at four.",
+                                    estimatedSeconds: 2, maxSeconds: 20, sourceItemID: UUID(), source: nil, provenance: nil)
+        personal.expiresAt = t0.addingTimeInterval(900)
+        XCTAssertTrue(VoiceRenderer.mayUseCache(plain))
+        XCTAssertTrue(VoiceRenderer.mayUseCache(personal))
+        _ = await renderer.render(plain, userID: "u", stationID: "s", attribution: .presenter)
+        count = await cache.fileCount()
+        XCTAssertEqual(count.files, 1)
+    }
+
     func testAFactLineNeverReachesTheCloudVoiceAndVoiceRequestsHaveNoLocationField() async throws {
         let cloud = RecordingCloud()
         let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "cloud", provider: cloud, voice: djVoice, leavesDevice: true),
