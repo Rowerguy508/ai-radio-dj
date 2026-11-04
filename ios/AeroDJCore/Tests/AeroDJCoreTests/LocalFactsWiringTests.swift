@@ -779,6 +779,33 @@ final class LocalFactsWiringTests: XCTestCase {
         XCTAssertEqual(weather.calls + news.calls, 0, "no provider or GDELT request")
     }
 
+    /// Sentinel's #410 n6b (-Fry): invalidated after the ticket but before the refresh task
+    /// exists. The late-registration cancel cancels the task, and the task keeps the ticket taken
+    /// before the purge, so nothing is read or asked.
+    func testAPurgeBeforeTheRefreshTaskExistsCancelsAndSupersedesIt() async {
+        let clock = WiringClock(w0), device = FakeDeviceLocation(minneapolis), weather = CountingWeather(clock: clock)
+        let news = CachingNews()
+        let w = wiring(consent: .approximate, clock: clock, device: device, weather: weather, extra: [news])
+        final class Seen: @unchecked Sendable { var cancelled: Bool? }
+        let seen = Seen()
+        w.testBeforeTask = { [w] in
+            w.turnOff()
+            w.store.chooseApproximate()   // consent holds again before the task starts
+        }
+        w.testAfterTicket = {
+            // The cancel lands under the registration lock just after the task is created; wait
+            // for it (bounded), then record what the task saw.
+            let deadline = Date().addingTimeInterval(5)
+            while !Task.isCancelled, Date() < deadline { try? await Task.sleep(nanoseconds: 1_000_000) }
+            seen.cancelled = Task.isCancelled
+        }
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(seen.cancelled, true, "the refresh task is cancelled when registered late")
+        XCTAssertEqual(device.reads, 0)
+        XCTAssertEqual(weather.calls + news.calls, 0, "no provider or GDELT request")
+    }
+
     // MARK: Sentinel #410 n5: location revoked in iOS Settings
 
     func testLocationRevokedInSettingsShowsOffFetchesNothingAndPurges() async {
@@ -866,6 +893,42 @@ final class LocalFactsWiringTests: XCTestCase {
         XCTAssertEqual(transport.sent, 1, "the rate-gated region request is never sent once news is off")
         let empty = await provider.cache.isEmpty
         XCTAssertTrue(empty, "and news-off purged the cache")
+    }
+
+    /// Sentinel's #410 n7 (-Fry): cancelled between the city and region rungs, with no rate wait
+    /// due (the clock is past the slot), the region rung is never started: nothing more is sent,
+    /// nothing sleeps, and the cancelled refresh takes no rate-gate slot from the next one.
+    func testGDELTCancelBetweenCityAndRegionStartsNoRegionRung() async {
+        let transport = HookTransport()
+        final class Box: @unchecked Sendable { var w: LocalFactsWiring? }
+        final class Sleeps: @unchecked Sendable {
+            private let lock = NSLock(); private var n = 0
+            func record() { lock.withLock { n += 1 } }
+            var count: Int { lock.withLock { n } }
+        }
+        let box = Box(), sleeps = Sleeps(), clock = WiringClock(w0)
+        // The city rung has come back thin ("{}"), so the ladder would go on to the region rung.
+        // News goes off right there: after the city answer, before the region rung starts (a
+        // cancel while the request is out ends the ladder at the request instead).
+        let provider = GDELTNewsProvider(transport: transport, now: { clock.now }, sleep: { _ in sleeps.record() },
+                                         diag: { d in
+                                             guard d.tier == .city else { return }
+                                             _ = box.w?.setNews(false)
+                                             clock.now = w0.addingTimeInterval(6)   // past the 5.5 s slot: no wait due
+                                         })
+        let store = LocalAreaStore.inMemory()
+        store.chooseApproximate()
+        let w = LocalFactsWiring(store: store, toggles: .inMemory(news: true), providers: [provider],
+                                 summarizer: HeadlineSummarizer(paraphraser: NoHeadlineParaphraser()),
+                                 device: FakeDeviceLocation(minneapolis), manual: nil, now: { clock.now })
+        box.w = w
+        let outcome = await w.refreshIfDue()
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(transport.sent, 1, "the city request went out, and no region request after the cancel")
+        XCTAssertEqual(sleeps.count, 0, "and no rate wait")
+        let granted = await provider.gate.acquire()
+        XCTAssertTrue(granted)
+        XCTAssertEqual(sleeps.count, 0, "the cancelled refresh took no rate slot: the next request goes at once")
     }
     #endif
 }
