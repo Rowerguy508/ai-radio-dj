@@ -673,8 +673,9 @@ public struct ApprovedShowHandoff: Equatable, Sendable {
     public var omittedDisabledSection: [NarrationCue]
     /// Personal updates left out before scheduling (#332): `.dropped(.repeatLimit)` for an
     /// item that already aired today, `.dropped(.minimumGap)` for one held back by the gap after
-    /// another aired, `.dropped(.windowPassed)` for a row whose `expiresAt` passed. One entry per omitted update. `forQueue()` never speaks them, and they are not
-    /// copied into `carryForward.eligibleNextShow`.
+    /// another aired, `.dropped(.windowPassed)` for a row whose `expiresAt` passed. One entry
+    /// per omitted update. `forQueue()` never speaks them, and they are not copied into
+    /// `carryForward.eligibleNextShow`.
     public var omittedByLimit: NarrationScheduleReport
 
     public init(isMorningShow: Bool, approved: NarrationHandoff?, revokedOrUnapproved: Bool,

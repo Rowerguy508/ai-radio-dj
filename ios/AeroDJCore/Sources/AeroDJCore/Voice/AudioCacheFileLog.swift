@@ -24,9 +24,11 @@ public protocol AudioCacheCounting: Sendable {
 }
 
 /// A cache that wraps another and stores nothing of its own (`CloudVoiceConsentCache`). The
-/// device-run log counts the wrapped cache's files through it (Fry's #404 nit 1). -Nova
+/// device-run log counts the wrapped cache's files through it (Fry's #404 nit 1). It forwards
+/// the count only, never the wrapped cache itself, so nothing can use it to read or write past
+/// the wrapper's checks (Sentinel's #409 N1). Nil: the wrapped cache cannot count. -Nova
 public protocol AudioCacheForwarding: Sendable {
-    var forwardedCache: any AudioCache { get }
+    func forwardedFileCount() async -> AudioCacheCount?
 }
 
 /// Device-run evidence that purges delete files, not only stop audio (#76 step 9).
@@ -57,12 +59,8 @@ public enum AudioCacheFileLog {
     /// The cache's count, or the count of the cache it forwards to (`AudioCacheForwarding`, any
     /// depth). Nil when neither can report one: a wrapper never makes up a count.
     public static func fileCount(of cache: any AudioCache) async -> AudioCacheCount? {
-        var current = cache
-        for _ in 0..<8 {   // bounded: a wrapper chain is one or two deep
-            if let counting = current as? any AudioCacheCounting { return await counting.fileCount() }
-            guard let wrapper = current as? any AudioCacheForwarding else { return nil }
-            current = wrapper.forwardedCache
-        }
+        if let counting = cache as? any AudioCacheCounting { return await counting.fileCount() }
+        if let wrapper = cache as? any AudioCacheForwarding { return await wrapper.forwardedFileCount() }
         return nil
     }
 }

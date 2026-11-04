@@ -163,6 +163,51 @@ final class Build39ReviewFollowupsTests: XCTestCase {
         XCTAssertNil(line, "no made-up count")
     }
 
+    /// Wrapper in a wrapper: the count still comes through from the innermost cache.
+    func testNestedConsentCachesForwardTheCount() async {
+        let base = InMemoryAudioCache()
+        await base.store(CachedAudio(data: Data([1]), seconds: 1, providerID: "cloud", voiceID: "v"), for: "k1")
+        let inner = CloudVoiceConsentCache(base: base, localProviders: ["device"], isGranted: { false })
+        let outer = CloudVoiceConsentCache(base: inner, localProviders: ["device"], isGranted: { false })
+        let count = await outer.forwardedFileCount()
+        XCTAssertEqual(count, AudioCacheCount(files: 1, personal: 0))
+    }
+
+    // MARK: Sentinel's #409 N1: the wrapper forwards the count only, never the base cache
+
+    private func coreSource(_ path: String) throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/AeroDJCore/\(path)")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Source check: the base cache is a private stored property, and no public or open
+    /// declaration in the wrapper or the forwarding protocol hands out an `AudioCache`. The only
+    /// public mentions are the type's own conformance and the init that takes the base.
+    func testTheConsentCacheExposesNoBaseCache() throws {
+        let wrapper = try coreSource("Voice/CloudVoiceConsentCache.swift")
+        XCTAssertTrue(wrapper.contains("private let base: any AudioCache"), "base stays private")
+        let code = wrapper.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.hasPrefix("//") }
+        let exposing = code.filter { line in
+            (line.hasPrefix("public") || line.hasPrefix("open") || line.hasPrefix("package") || line.hasPrefix("internal")
+             || line.hasPrefix("let ") || line.hasPrefix("var ") || line.hasPrefix("func ") || line.hasPrefix("fileprivate"))
+            && line.contains("AudioCache")
+            && !line.hasPrefix("public struct CloudVoiceConsentCache: AudioCache")
+            && !line.hasPrefix("public init(base: any AudioCache")
+            && !line.contains("AudioCacheCount")
+        }
+        XCTAssertEqual(exposing, [], "no declaration other than the private base mentions the cache type")
+        XCTAssertFalse(wrapper.contains("forwardedCache"))
+
+        let log = try coreSource("Voice/AudioCacheFileLog.swift")
+        let proto = try XCTUnwrap(log.range(of: "public protocol AudioCacheForwarding"))
+        let body = log[proto.upperBound...].prefix { $0 != "}" }
+        XCTAssertFalse(body.contains("any AudioCache"), "the forwarding protocol carries a count, not a cache")
+        XCTAssertTrue(body.contains("func forwardedFileCount() async -> AudioCacheCount?"))
+    }
+
     // MARK: Sentinel's #404 note: the acknowledgement stays on-device
 
     /// Cloud and paid routes first, consent or not: the acknowledgement renders on the device
