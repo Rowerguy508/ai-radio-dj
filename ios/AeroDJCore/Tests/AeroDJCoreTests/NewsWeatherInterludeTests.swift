@@ -313,6 +313,38 @@ final class NewsWeatherInterludeTests: XCTestCase {
         XCTAssertEqual(count.files, 1)
     }
 
+    /// Sentinel's #401 n1 (-Echo): the read path. A clip already cached under the same key (same
+    /// text and voice, from an ordinary line) is never handed to a fact line: it is rendered fresh,
+    /// so a stale clip a purge might have missed can never air as news or weather.
+    func testAFactLineNeverReadsAClipCachedUnderTheSameKey() async throws {
+        let cache = InMemoryAudioCache()
+        let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
+                                     budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache)
+        let line = try XCTUnwrap(FactInterludeComposer().extraLine(
+            from: [summary("Brooklyn bridge open again after repairs", "the Brooklyn Paper")], airBy: t0, variant: 1,
+            counts: &FactCueCounts.scratch))
+        let plain = NarrationCue(id: UUID(), order: 0, group: -1, kind: .transition, text: line.text, estimatedSeconds: 3,
+                                 maxSeconds: 20, sourceItemID: nil, source: nil, provenance: nil)
+        guard case .success(let seeded) = await renderer.render(plain, userID: "u", stationID: "s", attribution: .presenter)
+        else { return XCTFail("the ordinary line renders") }
+        XCTAssertEqual(seeded.attempts.last?.result, .rendered)
+        guard case .success(let again) = await renderer.render(plain, userID: "u", stationID: "s", attribution: .presenter)
+        else { return XCTFail("the ordinary line renders") }
+        XCTAssertEqual(again.attempts.last?.result, .cacheHit, "control: the same text is in the cache under that key")
+
+        var fact = NarrationCue(id: UUID(), order: 0, group: -1, kind: .transition, text: line.text, estimatedSeconds: 3,
+                                maxSeconds: 20, sourceItemID: nil, source: nil, provenance: line.provenance)
+        fact.expiresAt = line.expiresAt
+        guard case .success(let clip) = await renderer.render(fact, userID: "u", stationID: "s", attribution: .presenter)
+        else { return XCTFail("the fact line renders on the device") }
+        XCTAssertEqual(clip.attempts.last?.result, .rendered, "a fact line never takes the cached clip")
+        XCTAssertFalse(clip.attempts.contains { $0.result == .cacheHit })
+        var factNoExpiry = fact; factNoExpiry.expiresAt = nil
+        guard case .success(let clip2) = await renderer.render(factNoExpiry, userID: "u", stationID: "s", attribution: .presenter)
+        else { return XCTFail("renders") }
+        XCTAssertEqual(clip2.attempts.last?.result, .rendered, "fact provenance alone keeps the read out")
+    }
+
     func testAFactLineNeverReachesTheCloudVoiceAndVoiceRequestsHaveNoLocationField() async throws {
         let cloud = RecordingCloud()
         let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "cloud", provider: cloud, voice: djVoice, leavesDevice: true),
