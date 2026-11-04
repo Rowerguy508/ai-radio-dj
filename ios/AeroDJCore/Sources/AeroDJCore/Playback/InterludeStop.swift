@@ -101,6 +101,10 @@ public struct PendingPlayStop: Equatable, Sendable {
         heldStop = nil
     }
 
+    /// The track handed out and not yet begun, else nil (Echo's #410 nit 2: the attribution stage
+    /// staged for that hand-out is dropped with it). Read-only.
+    public var handedOutTrack: Int? { phase == .handedOut ? track : nil }
+
     /// Nothing will be spoken for the hand-out (nothing prepared, or music continues).
     /// Drops the hand-out and any stop held for it, so that stop cannot cancel a later
     /// break. A pending play is left for `admit`. This does not start or resume audio.

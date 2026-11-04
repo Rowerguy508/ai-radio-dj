@@ -231,15 +231,20 @@ final class CacheRetentionSweepTests: XCTestCase {
         await earlier.store(CachedAudio(data: Data([4]), seconds: 1, providerID: "device", voiceID: "v"), for: "k2")
 
         let relaunched = FileAudioCache(directory: dir, now: { clock.now })
-        let launched = expectation(description: "launch sweep")
-        let line = LockedBox<String?>(nil)
+        // Build 39 flake (iOS run 41800021409, -Fry): the launch sweep runs in a detached
+        // `.utility` task, which a loaded simulator can hold past a 10 s expectation. Wait for the
+        // sweep's own signal instead of a wall clock, as the other sweeper tests here do. The
+        // assertions are unchanged; a sweep that never ran still fails them (or hangs the suite).
+        let (launches, launched) = AsyncStream<String?>.makeStream()
         let task = AudioCacheSweeper(cache: relaunched).start(every: .seconds(3600), purgingPersonalFirst: true,
-                                                              onLaunchSweep: { line.set($0); launched.fulfill() })
-        await fulfillment(of: [launched], timeout: 10)
+                                                              onLaunchSweep: { launched.yield($0) })
+        var signals = launches.makeAsyncIterator()
+        let line = await signals.next()
         task.cancel()
+        launched.finish()
         let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
         XCTAssertEqual(files, ["k2.json"], "only the fresh generic clip survives the relaunch")
-        XCTAssertEqual(line.value, "AeroDJ.cache narration cache count=1 personal=0 after=launch",
+        XCTAssertEqual(line ?? nil, "AeroDJ.cache narration cache count=1 personal=0 after=launch",
                        "the launch line counts what is left after the sweep")
     }
 

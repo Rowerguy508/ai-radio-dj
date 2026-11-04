@@ -810,8 +810,9 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(button.waitForExistence(timeout: 10), "rating button:\n\(app.debugDescription)")
         XCTAssertTrue(button.label.contains("not rated"), button.label)
         XCTAssertTrue(button.isHittable)
-        XCTAssertGreaterThanOrEqual(button.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(button.frame.height, 44)
+        // Simulators report sub-point float noise (43.99999999999994 on iPhone Air), so allow 0.01 pt.
+        XCTAssertGreaterThanOrEqual(button.frame.width, 44 - 0.01, "44 pt tap target")
+        XCTAssertGreaterThanOrEqual(button.frame.height, 44 - 0.01, "44 pt tap target")
         XCTAssertTrue(shows(app, "Rate"), "first-time label")
         XCTAssertTrue(shows(app, "Morning Light, The Calm Collective"), "the labels stay one element")
         save(app, "rating-first-time")

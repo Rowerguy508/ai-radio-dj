@@ -311,7 +311,9 @@ public actor InMemoryAudioCache: AudioCache {
         clips = clips.filter { t.timeIntervalSince($0.value.createdAt) <= maxAge }
     }
     public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
-    public func purgeClips(keepingProviders providerIDs: Set<String>) {
+    /// `async`, matching the protocol requirement exactly: a synchronous overload here let a
+    /// direct `await` call from outside resolve to the no-op `AudioCache` extension default.
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {
         clips = clips.filter { providerIDs.contains($0.value.providerID) }
     }
     public var count: Int { clips.count }
@@ -325,12 +327,14 @@ extension InMemoryAudioCache: AudioCacheCounting {
 
 extension FileAudioCache: AudioCacheCounting {
     /// Every file counts, metadata and audio alike. Files of personal or unattributable keys
-    /// (orphaned audio included) count as personal.
+    /// (orphaned audio included) count as personal. Clips held in memory while the disk is
+    /// closed count too (one each), so the launch log never reports an empty cache that isn't.
     public func fileCount() async -> AudioCacheCount {
         let groups = groups()
-        return AudioCacheCount(files: groups.reduce(0) { $0 + $1.files.count },
+        let held = await memoryFallback.fileCount()
+        return AudioCacheCount(files: groups.reduce(0) { $0 + $1.files.count } + held.files,
                                personal: groups.filter { $0.clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
-                                   .reduce(0) { $0 + $1.files.count })
+                                   .reduce(0) { $0 + $1.files.count } + held.personal)
     }
 }
 
@@ -356,6 +360,8 @@ public struct FileAudioCache: AudioCache {
     /// since a restore can drop it; `store` applies it whenever it (re)creates the folder.
     /// Fail closed: if the flag cannot be set (or reads back unset) on open, every personal clip
     /// in the folder is deleted, and on any failure nothing more is written to disk this session.
+    /// By design, generic clips (no `sourceItemIDs`: station idents, generic links) stay on disk
+    /// after an open failure: they carry no personal data and are swept by retention as usual.
     public init(directory: URL, maxAge: TimeInterval = AudioCacheRetention.maximum,
                 now: @escaping @Sendable () -> Date = { Date() },
                 backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
@@ -454,32 +460,36 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func purgeClips(keepingProviders providerIDs: Set<String>) async {
-        // Clips held in memory while the disk is closed obey the cloud-consent purge too. Called
-        // through the protocol: a direct call resolves to the no-op `AudioCache` extension default.
-        let held: any AudioCache = memoryFallback
-        await held.purgeClips(keepingProviders: providerIDs)
+        // Clips held in memory while the disk is closed obey the cloud-consent purge too.
+        await memoryFallback.purgeClips(keepingProviders: providerIDs)
         removeGroups { clip in clip.map { !providerIDs.contains($0.providerID) } ?? true }
     }
 
     /// Fail closed: if the folder could not be marked excluded from backup (on open, or now when
     /// creating it), the clip is held in memory for this session and nothing is written to disk.
     public func store(_ audio: CachedAudio, for key: String) async {
-        guard !diskGate.isClosed else { return await memoryFallback.store(audio, for: key) }
         var stamped = audio; stamped.createdAt = now()
         guard let data = try? JSONEncoder().encode(stamped) else { return }
-        if !FileManager.default.fileExists(atPath: directory.path) {
-            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            // Created or re-created (after a delete): the new folder has no flag yet.
-            guard applyBackupExclusion(.create) else {
-                diskGate.close()
-                // Leave no unmarked folder behind (only if empty: never delete foreign files).
-                if (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.isEmpty == true {
-                    try? FileManager.default.removeItem(at: directory)
+        // Create + mark + write under the gate's lock: a concurrent store can neither see a
+        // folder that was created but not yet marked, nor write after a failed mark closed it.
+        let written = diskGate.serialized { closed -> Bool in
+            guard !closed else { return false }
+            if !FileManager.default.fileExists(atPath: directory.path) {
+                try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                // Created or re-created (after a delete): the new folder has no flag yet.
+                guard applyBackupExclusion(.create) else {
+                    closed = true
+                    // Leave no unmarked folder behind (only if empty: never delete foreign files).
+                    if (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.isEmpty == true {
+                        try? FileManager.default.removeItem(at: directory)
+                    }
+                    return false
                 }
-                return await memoryFallback.store(audio, for: key)
             }
+            try? ProtectedFile.write(data, to: url(key))
+            return true
         }
-        try? ProtectedFile.write(data, to: url(key))
+        if !written { await memoryFallback.store(audio, for: key) }
     }
 }
 

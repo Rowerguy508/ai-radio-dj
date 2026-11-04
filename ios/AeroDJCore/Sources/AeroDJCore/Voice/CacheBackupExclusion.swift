@@ -15,8 +15,10 @@ import os
 public protocol BackupExclusionMarking: Sendable {
     /// Sets `isExcludedFromBackup = true` on `directory`.
     func markExcluded(_ directory: URL) throws
-    /// Reads the flag back from the URL; nil where the platform cannot report it (Linux).
-    func isExcluded(_ directory: URL) -> Bool?
+    /// Reads the flag back from the URL; nil only where the platform has no backup attribute
+    /// (Linux). A read that fails must throw (or return false), never nil: a throw counts as
+    /// not excluded, so the cache fails closed.
+    func isExcluded(_ directory: URL) throws -> Bool?
 }
 
 /// `URLResourceValues.isExcludedFromBackup` on Apple platforms; a no-op on Linux (no backup there).
@@ -32,11 +34,12 @@ public struct FoundationBackupExclusion: BackupExclusionMarking {
         #endif
     }
 
-    public func isExcluded(_ directory: URL) -> Bool? {
+    public func isExcluded(_ directory: URL) throws -> Bool? {
         #if canImport(Darwin)
         // A fresh URL, so a cached resource value on the caller's URL cannot answer for the disk.
+        // A failed read throws, and a missing value is reported as not excluded (fail closed).
         let fresh = URL(fileURLWithPath: directory.path, isDirectory: true)
-        return try? fresh.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
+        return try fresh.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup ?? false
         #else
         return nil
         #endif
@@ -67,12 +70,20 @@ final class CacheDiskGate: @unchecked Sendable {
     private var _closed = false
     var isClosed: Bool { lock.withLock { _closed } }
     func close() { lock.withLock { _closed = true } }
+
+    /// Runs `body` holding the gate's lock, with the closed flag passed in and out. `store` does
+    /// its folder create + mark + write inside one call, so no other store can write into a
+    /// folder that was created but not (yet, or successfully) marked excluded.
+    func serialized<T>(_ body: (inout Bool) -> T) -> T {
+        lock.withLock { body(&_closed) }
+    }
 }
 
 extension FileAudioCache {
     /// Marks the cache folder excluded from backup and reads the flag back. Returns false (after a
     /// content-free log line) when the mark throws or the read-back reports the folder is not
-    /// excluded. A nil read-back (Linux, no such resource value) counts as excluded.
+    /// excluded. A read-back that throws counts as not excluded; only a nil read-back (Linux, no
+    /// such resource value) counts as excluded.
     ///
     /// Fail closed: on false the caller closes the disk for this session, so no clip is written
     /// to a folder that may be backed up. Playback keeps working from memory, and the next open
@@ -85,7 +96,9 @@ extension FileAudioCache {
             backupExclusionLog(CacheBackupExclusionLog.message(moment))
             return false
         }
-        if backupExclusion.isExcluded(directory) == false {
+        let excluded: Bool?
+        do { excluded = try backupExclusion.isExcluded(directory) } catch { excluded = false }
+        if excluded == false {
             backupExclusionLog(CacheBackupExclusionLog.message(moment))
             return false
         }

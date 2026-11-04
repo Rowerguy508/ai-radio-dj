@@ -555,4 +555,16 @@ final class CatalogSpeakableGenreTests: XCTestCase {
         XCTAssertNil(genre(["&"]))
         XCTAssertEqual(genre(["/", "Jazz"]), "Jazz", "falls through to the next usable genre")
     }
+
+    /// Echo's #408 nit (-Fry): a generic part ("Music") is dropped when another part remains.
+    func testAGenericPartOfACompoundGenreIsDropped() {
+        XCTAssertEqual(genre(["Pop/Music"]), "Pop")
+        XCTAssertEqual(genre(["Music/Pop"]), "Pop")
+        XCTAssertEqual(genre(["Music & Jazz"]), "Jazz")
+        XCTAssertEqual(genre(["Hip-Hop/Rap/music"]), "Hip-Hop and Rap", "case-insensitive, like a plain \"Music\"")
+        XCTAssertEqual(genre(["World Music/Pop"]), "World Music and Pop", "only a whole generic part goes")
+        XCTAssertNil(genre(["Music"]), "a plain generic genre is still no genre")
+        XCTAssertNil(genre(["Music/Music"]), "nothing but generic parts: no genre")
+        XCTAssertEqual(genre(["Music/MUSIC", "Alternative"]), "Alternative", "falls through to the next usable genre")
+    }
 }
