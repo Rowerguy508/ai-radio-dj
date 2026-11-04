@@ -319,7 +319,7 @@ public struct DJScriptWriter: Sendable {
     /// #199: the fixed fact phrasing (`CatalogFactLine.templates`); the same in every tone.
     private var catalogFactPool = TemplatePool(CatalogFactLine.templates)
     /// #199 N2: natural breaks that could have spoken a fact line (id: the break's first cue;
-    /// spoke: it kept one), newest last, for `CatalogFactLine.eligibleBreaksBetweenFactLines`.
+    /// spoke: it kept one), newest last, for `CatalogFactLine.eligibleBreaksPerFactLine`.
     /// Forgotten with their break on a replan, like `timeCheckLog`.
     private var catalogFactLog: [(id: UUID, spoke: Bool)] = []
     /// #199 N2: the facts spoken this session (writer lifetime), by break (id: first cue), as
@@ -760,7 +760,7 @@ public struct DJScriptWriter: Sendable {
         // templates only; a line over `CatalogFactLine.maxLineSeconds` is not kept. No facts:
         // nothing is drawn, so the break is planned exactly as without this feature.
         // N2: an eligible break right after one that spoke a fact (within
-        // `eligibleBreaksBetweenFactLines` eligible breaks) draws none.
+        // `eligibleBreaksPerFactLine` eligible breaks) draws none.
         var factEligible = false
         func drawFact() {
             guard prev.origin == .catalog, let facts = catalogFacts[prev.id], facts.catalogSongID == prev.id,

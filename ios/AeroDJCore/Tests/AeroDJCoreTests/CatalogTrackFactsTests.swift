@@ -518,3 +518,41 @@ final class CatalogTrackFactsTests: XCTestCase {
         XCTAssertTrue(online.testPlannedBreaks.values.allSatisfy { $0.catalogFactCues.isEmpty })
     }
 }
+
+// Echo's #399 n1: compound genre names are spoken with "and", never "/" or a spaced "&".
+final class CatalogSpeakableGenreTests: XCTestCase {
+    private func genre(_ names: [String]) -> String? {
+        CatalogTrackFacts(catalogSongID: "g1", genreNames: names, now: nov2026).genreName?.value
+    }
+
+    func testSlashAndAmpersandBecomeAnd() {
+        XCTAssertEqual(genre(["Music", "Hip-Hop/Rap"]), "Hip-Hop and Rap")
+        XCTAssertEqual(genre(["Music", "R&B/Soul"]), "R&B and Soul", "an unspaced & inside a word stays")
+        XCTAssertEqual(genre(["R&B"]), "R&B")
+        XCTAssertEqual(genre(["Singer/Songwriter"]), "Singer and Songwriter")
+        XCTAssertEqual(genre(["Christian & Gospel"]), "Christian and Gospel")
+        XCTAssertEqual(genre(["Alternative"]), "Alternative", "a plain genre is untouched")
+    }
+
+    func testNoSpokenGenreCarriesASlashOrAmpersand() {
+        for raw in ["Hip-Hop/Rap", "R&B/Soul", "Singer/Songwriter", "Christian & Gospel", "Rock / Pop", "Folk  &  R&B"] {
+            let value = genre([raw])
+            XCTAssertNotNil(value, raw)
+            let spacedAmpersand = value!.range(of: #"(^|\s)&|&(\s|$)"#, options: .regularExpression) != nil
+            XCTAssertFalse(value!.contains("/") || spacedAmpersand || value!.contains("  "), "\(raw) -> \(value!)")
+        }
+    }
+
+    func testWordLimitAppliesToTheSpokenForm() {
+        // 4 slash-separated words become 7 spoken words: allowed at the 7-word limit; 5 become 9: dropped.
+        XCTAssertEqual(genre(["A/B/C/D"]), "A and B and C and D")
+        XCTAssertNil(genre(["A/B/C/D/E"]))
+    }
+
+    func testOnlySlashOrAmpersandIsNotAGenre() {
+        XCTAssertNil(genre(["/"]))
+        XCTAssertNil(genre([" & "]))
+        XCTAssertNil(genre(["&"]))
+        XCTAssertEqual(genre(["/", "Jazz"]), "Jazz", "falls through to the next usable genre")
+    }
+}
