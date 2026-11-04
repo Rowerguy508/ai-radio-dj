@@ -101,6 +101,13 @@ public final class DJBreakSession {
     /// Purges prepared and cached narration for sources that stop being narratable at a
     /// boundary (expiry). The app sets the same `NarrationPurger` the connections use.
     public var purger: (any NarrationPurging)?
+    /// #199: Apple Music catalog facts for DJ commentary (the app sets the MusicKit adapter).
+    /// Nil: no fact lines, and `queueStarted` does not wait for anything new.
+    public var catalogFactsSource: (any CatalogTrackFactsSource)?
+    /// #199: the longest `queueStarted` waits for catalog facts. Past it, the queue is planned
+    /// without them (no fact is ever late-added to a planned break). Songs never wait: a song
+    /// start during setup is held and replayed as before.
+    public var catalogFactsTimeout: Duration = .milliseconds(1500)
     /// True once both the purger and the stop hook are set. Both app compositions check it
     /// before playback can start.
     public var isWiredForPurge: Bool { purger != nil && onBreakMustStop != nil }
@@ -111,10 +118,15 @@ public final class DJBreakSession {
     /// #332 (-Fry): the once-a-day ledger. The app passes ONE instance and reads it back here for
     /// every `LiveQueueBriefing.provider` (song tap and station start), so all share the limit.
     public let personalUpdates: PersonalUpdateLedger
-    /// Personal cues of the break handed out at `afterTrack`, recorded on the ledger only when
-    /// its audio actually starts (`playbackStarted`). A break dropped, failed or replaced before
-    /// that is never recorded, so the update keeps its chance later that day.
-    private var handedOutPersonal: (afterTrack: Int, cues: [NarrationCue])?
+    /// Personal cues of the break handed out at `afterTrack` not yet recorded on the ledger.
+    /// #332 P1 (-Nova): a cue is recorded only when ITS line played to the end
+    /// (`lineFinished`), or when the whole break finished naturally on a player that reports no
+    /// per-line events (`playbackFinished`). The first clip starting records nothing: an intro or
+    /// lead can precede the update, and a call, skip, failure or revoke before or during the
+    /// update's own line leaves it unrecorded, so it keeps its chance later that day.
+    /// `reportsLines`: the player said at `play` (`breakReportsLines`) that it reports each line, so
+    /// only `lineFinished` lines count, even if the break ends `.finished` before any (#332 B1).
+    private var handedOutPersonal: (afterTrack: Int, cues: [NarrationCue], reportsLines: Bool)?
 
     public init(preparer: DJBreakPreparer, station: StationConfigurationModel, dj: DJPresentationStore,
                 base: DJCadence = .init(), seed: UInt64 = .random(in: .min ... .max),
@@ -252,6 +264,14 @@ public final class DJBreakSession {
         guard !Task.isCancelled else { return }
         if briefing != nil { await station.handle(.briefingWillPlan) }
         guard !Task.isCancelled else { return }
+        // #199: catalog facts for this queue's `.catalog` tracks only (library and unknown ids are
+        // never asked for). Bounded by `catalogFactsTimeout`; nothing, late or failed is `[:]`.
+        var facts: [String: CatalogTrackFacts] = [:]
+        if let source = catalogFactsSource {
+            facts = await CatalogFactsFetch.facts(for: tracks, from: source, timeout: catalogFactsTimeout)
+            guard !Task.isCancelled else { return }
+        }
+        writer.catalogFacts = facts
         self.tracks = tracks
         // A stop held for the old queue's break (no hook yet) has nothing left to stop; it must
         // not cancel a break of this queue later. Likewise the old queue's on-air break: a purge
@@ -470,9 +490,9 @@ public final class DJBreakSession {
             prepared.timeCheckAirTime = ready.timeCheckAirTime
         }
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
-        // #332: recorded on the ledger in `playbackStarted`, once this break is audible.
+        // #332: recorded on the ledger per line, once that line has played (`lineFinished`).
         let personal = prepared.cues.filter { $0.isContent && $0.sourceItemID != nil }
-        handedOutPersonal = personal.isEmpty ? nil : (k, personal)
+        handedOutPersonal = personal.isEmpty ? nil : (k, personal, false)
         onAir = (k, Set(prepared.cues.compactMap(\.sourceItemID)), ready.includesBriefing)
         return prepared
     }
@@ -508,20 +528,45 @@ public final class DJBreakSession {
     }
 
     /// Player audio callbacks. `playbackStarted` only once DJ audio is actually audible.
+    /// #332 P1: nothing is recorded here; audio starting says nothing about the update's own line.
     public func playbackStarted(afterTrack k: Int) {
-        // #332: only a break that actually aired counts toward the once-a-day limit.
-        if let aired = handedOutPersonal, aired.afterTrack == k {
+        dj.send(.playbackStarted(afterTrack: k))
+    }
+
+    /// #332 P1 (-Nova): the line for `cueID` of the break at `afterTrack` played to its end. A
+    /// personal update on it counts toward the daily limit and the gap now; any other line, or
+    /// a line of another break, records nothing.
+    public func lineFinished(afterTrack k: Int, cueID: UUID) {
+        guard var aired = handedOutPersonal, aired.afterTrack == k else { return }
+        aired.reportsLines = true
+        if let index = aired.cues.firstIndex(where: { $0.id == cueID }) {
+            personalUpdates.recordAired([aired.cues.remove(at: index)], at: now())
+        }
+        handedOutPersonal = aired.cues.isEmpty ? nil : aired
+    }
+
+    /// #332 B1 (-Nova): the break at `afterTrack` will report its lines; set before any can end.
+    public func breakReportsLines(afterTrack k: Int) { if handedOutPersonal?.afterTrack == k { handedOutPersonal?.reportsLines = true } }
+
+    /// The whole break played through. From a player that reports no per-line events (the
+    /// talk-over), every line was heard, so its personal lines are recorded now. From one that
+    /// does, only `lineFinished` lines count.
+    public func playbackFinished(afterTrack k: Int) {
+        if let aired = handedOutPersonal, aired.afterTrack == k, !aired.reportsLines {
             handedOutPersonal = nil
             personalUpdates.recordAired(aired.cues, at: now())
         }
-        dj.send(.playbackStarted(afterTrack: k))
+        endOnAir(k)
+        dj.send(.playbackFinished(afterTrack: k))
     }
-    public func playbackFinished(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFinished(afterTrack: k)) }
+    /// The break was stopped by a consent revoke. Not a voice failure (the Studio shows it as
+    /// finished), but lines it cut never played: only `lineFinished` lines count.
+    public func playbackRevoked(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFinished(afterTrack: k)) }
     public func playbackFailed(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFailed(afterTrack: k)) }
 
     private func endOnAir(_ k: Int) {
         if onAir?.afterTrack == k { onAir = nil }
-        if handedOutPersonal?.afterTrack == k { handedOutPersonal = nil }   // never audible
+        if handedOutPersonal?.afterTrack == k { handedOutPersonal = nil }   // lines not finished: not aired
         if pendingStop?.afterTrack == k { pendingStop = nil }   // nothing left to stop
     }
 
@@ -709,6 +754,7 @@ public final class DJBreakSession {
             shifted.shape = b.shape
             shifted.optionalCueIDs = b.optionalCueIDs   // #320's measured-audio trim order
             shifted.timeCheck = b.timeCheck
+            shifted.catalogFactCues = b.catalogFactCues   // #199 provenance
             breaks[k] = shifted
         }
     }

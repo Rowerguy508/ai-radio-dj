@@ -104,6 +104,8 @@ struct AppDependencies {
         let purger = NarrationPurger(cache: voice.cache, preparer: preparer, session: djSession)
         // The same purger handles sources that expire mid-show (checked at each song boundary).
         djSession.purger = purger
+        // #199: artist and song facts from the Apple Music catalog (MusicKit) only.
+        djSession.catalogFactsSource = MusicKitCatalogFactsSource()
         precondition(djSession.isWiredForPurge, "purger and stop hook are set before playback")
         let connections = ConnectionsModel(
             station: station,
@@ -137,6 +139,15 @@ struct AppDependencies {
         // Echo's #396 room N1: a break narrowed for an excluded song leaves a counts-only row.
         djSession.onExcludedCuesDropped = { k, counts in
             P0EventTraceHost.shared.talkover { trace, t in _ = trace.breakNarrowed(counts, afterTrack: k, at: t) }
+        }
+        // Echo's N2 on #398: a break dropped for cloud-voice consent (tester build only; the
+        // preparer reports nothing without a consent check) leaves a counts-only row.
+        Task {
+            await preparer.observeCloudVoiceDrops { k, counts in
+                Task { @MainActor in
+                    P0EventTraceHost.shared.talkover { trace, t in _ = trace.cloudVoiceDropped(counts, afterTrack: k, at: t) }
+                }
+            }
         }
         #endif
         return AppDependencies(

@@ -392,8 +392,13 @@ that uses the stored key is PR 4.
 
 Off unless **both** `AERODJ_TTS_ATTEST_ENABLED` and `AERODJ_TTS_TESTER_VOICE_ENABLED` are
 exactly `true` (503 `disabled`, Retry-After 3600, before any store call). TestFlight
-installs only: register sets `tier: "tester"` on the key record only for
-`apple_validation_category_01 == 2`; any other or no category is 403 `no_entitlement`.
+installs only: register sets `tier: "tester"` on the key record for
+`apple_validation_category_01 == 2` (iOS 27+, log `tester_reason: testflight_category`), or,
+while `AERODJ_TTS_TESTER_VOICE_ENABLED` is `true`, for an attestation with **no** category
+field (iOS 26 and older, log `tester_reason: no_category_fallback`; owner 2026-11-03). Any
+other present category (e.g. 4 App Store) is 403 `no_entitlement`. **TODO before public App
+Store launch:** remove or tighten the no-category fallback, since an iOS 26 App Store install
+also carries no category.
 
 1. `POST /api/attest/challenge {purpose:"tok"}` + `X-OnAirly-Key` → key-bound challenge.
 2. `POST /api/attest/token {challenge}` + `X-OnAirly-Key` + `X-OnAirly-Assertion` (base64

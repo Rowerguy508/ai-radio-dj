@@ -150,7 +150,8 @@ enum PlaybackSessionBinder {
                         }
                         await interlude.play(clips: clips, line: line, afterTrack: finishedIndex,
                                             resumeLines: BreakResumeLine.lines(for: breakToPlay),
-                                            ratingLines: StationRatingBreakLine.lines(for: breakToPlay))
+                                            ratingLines: StationRatingBreakLine.lines(for: breakToPlay),
+                                            cueIDs: breakToPlay.clips.map(\.cueID))
                     case .continueMusic:
                         // Close the early hand-out. A later stop must see idle, not a break
                         // that will never play.
@@ -196,8 +197,12 @@ enum PlaybackSessionBinder {
             switch event {
             case .started(let k): djSession.playbackStarted(afterTrack: k)
             case .finished(let k): djSession.playbackFinished(afterTrack: k)
-            // A revoke stops On Air without a voice failure. The session has no cancel event.
-            case .revoked(let k): djSession.playbackFinished(afterTrack: k)
+            // A revoke stops On Air without a voice failure; lines it cut are not counted as aired.
+            case .revoked(let k): djSession.playbackRevoked(afterTrack: k)
+            // #332 P1: only a line that played to its end counts toward the repeat limit.
+            case .lineFinished(let k, let cueID): djSession.lineFinished(afterTrack: k, cueID: cueID)
+            // #332 B1: before any line, so an early `.finished` (stale/withdrawn resume) counts nothing.
+            case .reportsLines(let k): djSession.breakReportsLines(afterTrack: k)
             case .failed(let k): djSession.playbackFailed(afterTrack: k)
             }
         }
