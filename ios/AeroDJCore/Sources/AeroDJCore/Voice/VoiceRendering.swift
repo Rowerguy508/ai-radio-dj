@@ -663,6 +663,16 @@ public struct VoiceRenderer: Sendable {
     /// Track metadata is eligible only when every named track is `.catalog` (Sentinel): a track
     /// from the listener's library, or one of `.unknown` origin, is personal and stays on-device,
     /// even on a catalog station (main segment and closing line alike).
+    /// #200 (-Echo, Sentinel's #401 B1): a clip may go in the narration cache only if a purge can
+    /// find it. A provider-fact line (local news, weather: `FactProvenance`) or any other expiring
+    /// line with no `sourceItemID` would sit there untagged, so `purgeAllPersonal` and a location
+    /// withdrawal could not remove it for up to the 7-day cache life. Such a cue is never looked
+    /// up in or written to the cache: it renders fresh, and lives only in the prepared break.
+    public static func mayUseCache(_ cue: NarrationCue) -> Bool {
+        if FactProvenance.isFact(cue.provenance) { return false }
+        return cue.expiresAt == nil || cue.sourceItemID != nil
+    }
+
     public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?) -> Bool {
         guard let attribution else { return false }
         switch attribution {
@@ -690,6 +700,7 @@ public struct VoiceRenderer: Sendable {
         // Decided once, before any cache key, reservation or provider call (#176). Ineligible
         // cues use `isLocalAndFree` routes only.
         let offDeviceAllowed = Self.mayLeaveDevice(cue, attribution: attribution)
+        let useCache = Self.mayUseCache(cue)
         for route in routes {
             if !route.isLocalAndFree && !offDeviceAllowed {
                 // Local-only cue: its text never reaches this off-device or paid route, its cache
@@ -700,7 +711,7 @@ public struct VoiceRenderer: Sendable {
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
             let text = route.acceptsSSML ? SpeechDelivery.ssml(cue.text) : SpeechDelivery.speakable(cue.text)
             let key = Self.cacheKey(text: text, route: route)
-            if let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
+            if useCache, let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
                 // Keys are text + voice, so the clip may carry other items' ids: check both.
                 let hitSources = Array(Set(sources).union(cached.sourceItemIDs))
                 if revocations.revoked(hitSources, since: token) || revocations.purgePending(hitSources) {
@@ -742,7 +753,7 @@ public struct VoiceRenderer: Sendable {
                     attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
                     return .failure(Failure(reason: .renderFailed, attempts: attempts))
                 }
-                await cache.store(audio, for: key)
+                if useCache { await cache.store(audio, for: key) }
                 if revocations.revoked(sources, since: token) {
                     // A purge landed while the write was in flight and may have run before it:
                     // remove what we just wrote. (A purge after the write removes it itself.)
