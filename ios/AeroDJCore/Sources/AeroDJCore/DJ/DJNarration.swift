@@ -714,6 +714,8 @@ public struct DJScriptWriter: Sendable {
 
         struct Line {
             var template: String; var text: String; var attribution: SpokenAttribution; var optional: Bool
+            /// #200: set only on a provider-fact extra line.
+            var provenance: String? = nil; var expiresAt: Date? = nil
             /// #199: the catalog facts this line speaks (fact lines only).
             var facts: [CatalogFact] = []
         }
@@ -829,7 +831,8 @@ public struct DJScriptWriter: Sendable {
             // Never inside the anti-repeat window either: the same extra every break is dropped.
             if !text.isEmpty, !text.contains(where: { "{}\n\r".contains($0) }),
                !recent.repeats(text, text: text, sameBreak: lines.map(\.template) + lines.map(\.text)) {
-                let line = Line(template: text, text: text, attribution: extra.attribution, optional: true)
+                let line = Line(template: text, text: text, attribution: extra.attribution, optional: true,
+                                provenance: extra.provenance, expiresAt: extra.expiresAt)
                 if let index = closingIndex { lines.insert(line, at: index); closingIndex = index + 1 }
                 else { lines.append(line) }
             }
@@ -864,7 +867,8 @@ public struct DJScriptWriter: Sendable {
         var cues: [NarrationCue] = []
         var factCues: [UUID: [CatalogFact]] = [:]
         for line in lines {
-            let cue = transitionCue(line.text, order: &order)
+            var cue = transitionCue(line.text, order: &order, provenance: line.provenance)
+            cue.expiresAt = line.expiresAt
             attributions[cue.id] = line.attribution.resolvingTrackOrigins(in: tracks)
             if !line.facts.isEmpty { factCues[cue.id] = line.facts }
             cues.append(cue)
@@ -1085,11 +1089,11 @@ public struct DJScriptWriter: Sendable {
         text.map { Double(DefaultBriefingPlanner.estimatedSpokenSeconds(for: $0)) } ?? 0
     }
 
-    private func transitionCue(_ text: String, order: inout Int) -> NarrationCue {
+    private func transitionCue(_ text: String, order: inout Int, provenance: String? = nil) -> NarrationCue {
         defer { order += 1 }
         let seconds = DefaultBriefingPlanner.estimatedSpokenSeconds(for: text)
         return NarrationCue(id: UUID(), order: order, group: -1, kind: .transition, text: text,
                             estimatedSeconds: seconds, maxSeconds: max(8, seconds * 2), sourceItemID: nil,
-                            source: nil, provenance: nil)
+                            source: nil, provenance: provenance)
     }
 }
