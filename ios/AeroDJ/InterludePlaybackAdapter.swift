@@ -220,6 +220,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         // Sentinel's #414 follow-up (-Nova): same rule as `playTalkover`. A cue id mismatch
         // (including a single clip handed no id) still reports lines, with no ids, so no line
         // counts as aired (fail closed). Before, it was silently dropped and `.finished` counted all.
+        // #424 n2 (-Nova): this play() call site is app-only code with no Linux coverage. The routing
+        // itself is pinned by the TalkoverLineReporting tests in AeroDJCore; this wiring is covered only by iOS CI.
         let reporting = TalkoverLineReporting(cueIDs: cueIDs, clipCount: players.count)
         lineCueIDs = reporting.cueIDs
         if reporting.reportsLines { onPlayback?(.reportsLines(afterTrack: afterTrack)) }
