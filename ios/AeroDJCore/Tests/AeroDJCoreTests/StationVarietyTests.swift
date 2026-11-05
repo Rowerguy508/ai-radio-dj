@@ -229,7 +229,7 @@ final class StationVarietyFeedTests: XCTestCase {
         let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Sources/AeroDJCore/Station/StationSeedEngine.swift")
         let source = try String(contentsOf: file, encoding: .utf8)
-        let start = try XCTUnwrap(source.range(of: "public enum StationShuffleSeedSource"))
+        let start = try XCTUnwrap(source.range(of: "public struct StationShuffleSeedSource"))
         let end = try XCTUnwrap(source.range(of: "struct SplitMix64", range: start.upperBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(body.contains("var system = SystemRandomNumberGenerator()"))
