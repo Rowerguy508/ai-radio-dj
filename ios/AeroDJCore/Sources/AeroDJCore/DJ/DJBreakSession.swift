@@ -552,12 +552,12 @@ public final class DJBreakSession {
     /// #332 B1 (-Nova): the break at `afterTrack` will report its lines; set before any can end.
     public func breakReportsLines(afterTrack k: Int) { if handedOutPersonal?.afterTrack == k { handedOutPersonal?.reportsLines = true } }
 
-    /// The whole break ended `.finished`. Whether that means every line was heard depends on the
-    /// player: one that said at `play` it reports each line (`breakReportsLines`) is counted only
-    /// by `lineFinished`, so a `.finished` here (also how a stale or withdrawn resume ends, with
-    /// lines never played) records nothing more. A player that did not say so, such as a
-    /// talk-over handed no per-line cue ids matching its clips, gets the fallback: every
-    /// personal line of the break is recorded now.
+    /// The whole break ended `.finished`. The app's boundary and talk-over players always report
+    /// lines at `play` (`.reportsLines` / `breakReportsLines`), including on a cue-id mismatch,
+    /// which reports lines with no ids so nothing counts as aired (fail closed; #414 / #424).
+    /// Only `lineFinished` lines count; a `.finished` here (also how a stale or withdrawn resume
+    /// ends, with lines never played) records nothing more. The `!reportsLines` fallback below is
+    /// not reachable from the app; it remains for tests and any future player that does not report.
     public func playbackFinished(afterTrack k: Int) {
         if let aired = handedOutPersonal, aired.afterTrack == k, !aired.reportsLines {
             handedOutPersonal = nil
