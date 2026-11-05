@@ -73,10 +73,12 @@ final class MusicKitService: ObservableObject {
     /// the break and before the next song loads: `StationQueuePlayer` returns its start when the
     /// station's music settings changed since this queue began and the station's queue is ready.
     /// Nil, or a nil result, loads the next song of this queue exactly as before.
-    var stationQueueAtBoundary: (@MainActor (_ finishedIndex: Int) -> (@MainActor () async -> Void)?)?
+    var stationQueueAtBoundary: (@MainActor (_ finishedIndex: Int) -> (@MainActor () async -> StationHandOffResult)?)?
     /// Station queue (-Atlas; flagged for Claude): Play with nothing queued starts the station's
     /// queue when it is ready. Nil, or a nil result, keeps the existing "nothing to resume" error.
-    var stationQueueForIdlePlay: (@MainActor () -> (@MainActor () async -> Void)?)?
+    /// #204: a failed start already raised its banner and the feed staged the songs again, so the
+    /// next Play retries; nothing else to do here.
+    var stationQueueForIdlePlay: (@MainActor () -> (@MainActor () async -> StationHandOffResult)?)?
     /// Station queue (-Atlas; flagged for Claude): a new queue replaced the old one (a tap or a station
     /// hand-off), so `StationQueuePlayer` knows which station the playing queue belongs to.
     var onQueueReplaced: (@MainActor () -> Void)?
@@ -201,7 +203,7 @@ final class MusicKitService: ObservableObject {
         var request = MusicCatalogSearchRequest(term: query, types: [Song.self])
         request.limit = 20
         let response = try await request.response()
-        return response.songs.map { Track(song: $0) }
+        return response.songs.map { Track(song: $0, origin: .catalog) }
     }
 
     /// Start playing a queue of tracks.
@@ -279,7 +281,7 @@ final class MusicKitService: ObservableObject {
     func resume() async throws {
         // Station queue (-Atlas; flagged for Claude): an idle Play starts the station when it is ready.
         if queue.isEmpty, let startStation = stationQueueForIdlePlay?() {
-            await startStation()
+            _ = await startStation()
             return
         }
         guard !queue.isEmpty else {
@@ -294,7 +296,7 @@ final class MusicKitService: ObservableObject {
         let attempt = beginAttempt(userChangedQueue: false)
         armPlaybackConfirmTimeout(for: attempt)
         do {
-            guard try await playIfStillAllowed() else {
+            guard try await playIfStillAllowed(attempt: attempt) else {
                 guard attempts.isCurrent(attempt) else { return }
                 cancelPlaybackConfirmTimeout()
                 // Never left a preparing state without a hold: we only send userResumed after
@@ -370,7 +372,7 @@ final class MusicKitService: ObservableObject {
         let attempt = beginAttempt(userChangedQueue: false)
         do {
             armPlaybackConfirmTimeout(for: attempt)
-            guard try await playIfStillAllowed() else {
+            guard try await playIfStillAllowed(attempt: attempt) else {
                 guard attempts.isCurrent(attempt) else { return }
                 cancelPlaybackConfirmTimeout()
                 send(.playbackStartRefused)
@@ -430,6 +432,7 @@ final class MusicKitService: ObservableObject {
         }
         queueIndex = index
         currentTrack = queue[index]
+        updateRemoteNextEnabled()
         // Build 9 P0: every queue load is the app's own change. Without this, loading the
         // next song (`startNextTrack`) while MusicKit still reported `.playing` could read as
         // a natural end of the entry just replaced, and advance again: the auto-skip chain.
@@ -463,7 +466,7 @@ final class MusicKitService: ObservableObject {
             }
         }
         do {
-            let started = try await playIfStillAllowed()
+            let started = try await playIfStillAllowed(attempt: attempt)
             guard attempts.isCurrent(attempt) else { throw MusicKitError.superseded }
             guard started else {
                 armDeferredStart(index)
@@ -504,11 +507,23 @@ final class MusicKitService: ObservableObject {
         releaseSongEndHoldIfAllowed(finished: index)
         // Station queue (-Atlas; flagged for Claude): a station change that applied at this boundary
         // replaces the queue here, through the same path as a tap. Otherwise nothing changes.
-        if let startStation = stationQueueAtBoundary?(index) {
-            await startStation()
-            return
-        }
         let next = index + 1
+        var fellBackToOldQueue = false
+        if let startStation = stationQueueAtBoundary?(index) {
+            // #204 (-Atlas): a failed station start used to return here with the new queue unplayed
+            // and the old one gone. Now, if nothing newer happened since (Core's generation check),
+            // the old queue comes back and its next song loads below, exactly as without a station.
+            let oldQueue = queue
+            let generationBefore = attempts.queueGeneration
+            let result = await startStation()
+            guard StationHandOffFallback.loadsOldQueueNext(
+                result: result, generationBefore: generationBefore, generationNow: attempts.queueGeneration,
+                next: next, oldQueueCount: oldQueue.count) else { return }
+            logPlayback(PlaybackLog.stationHandOffFallback(next: next))
+            queue = oldQueue
+            send(.queueStarted(tracks: oldQueue.map(\.info), startIndex: next, station: snapshot.station))
+            fellBackToOldQueue = true
+        }
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.startNextTrack(.indexOK(queue.indices.contains(next)), after: index, queueCount: queue.count, gates: p0Gates)
         #endif
@@ -516,6 +531,16 @@ final class MusicKitService: ObservableObject {
         let attempt = beginAttempt(userChangedQueue: false)
         do {
             try await startTrack(at: next, autoplay: true, attempt: attempt)
+            if fellBackToOldQueue, attempts.isCurrent(attempt) {
+                // The old queue plays on: the failed hand-off's banner no longer applies. A held
+                // (deferred) load leaves `.preparing` honestly, like a refused start.
+                if isPlaying {
+                    lastError = nil
+                    send(.errorCleared)
+                } else {
+                    send(.playbackStartRefused)
+                }
+            }
         } catch MusicKitError.superseded {
             #if AERODJ_P0_DIAG
             P0EventTraceHost.shared.startTrack(.superseded, index: next, queueCount: queue.count, userInitiated: false, gates: p0Gates)
@@ -566,6 +591,14 @@ final class MusicKitService: ObservableObject {
 
     private func send(_ event: PlaybackEvent) {
         snapshot = engine.apply(event)
+        updateRemoteNextEnabled()
+    }
+
+    /// P0 lock-screen skip (-Echo): Next is enabled only while the app's queue has a next song.
+    private func updateRemoteNextEnabled() {
+        guard remoteCommandsInstalled else { return }
+        MPRemoteCommandCenter.shared().nextTrackCommand.isEnabled =
+            RemoteNextCommand.isEnabled(queueIndex: queueIndex, queueCount: queue.count)
     }
 
     /// Called when a boundary has no DJ line: transition -> music, so playback never sticks.
@@ -645,6 +678,14 @@ final class MusicKitService: ObservableObject {
         #endif
         guard let step = interpreted else {
             isPlaying = observation.isPlaying
+            if boundaries.takeRemoteSkip() {
+                // P0 lock-screen skip (-Echo): MusicKit ended the one-song queue mid-song with no
+                // cause the app knows of (its own lock-screen Next). Same path as the in-app Skip:
+                // no break about the cut song, its prepared break dropped, the next song loads.
+                logPlayback("remoteSkip index=\(queueIndex)")
+                Task { @MainActor [weak self] in _ = try? await self?.skip() }
+                return
+            }
             if boundaries.takeNoProgressEnd() {
                 surfaceNoProgressEnd(stillPlaying: observation.isPlaying)
             }
@@ -757,11 +798,13 @@ final class MusicKitService: ObservableObject {
 
     /// Build 18 P0 (-Fry): at a natural end (before the break and song 2) and again in
     /// `startNextTrack`, Core's `SongEndHold` decides whether an interruption that began at the
-    /// song's end may keep holding playback. A call or another app's audio keeps the hold.
+    /// song's end may keep holding playback. A call or another app's audio keeps the hold, and a
+    /// never-ended interruption is released only after MusicKit itself finished the queue (#149).
     private func releaseSongEndHoldIfAllowed(finished: Int) {
         let session = AVAudioSession.sharedInstance()
         guard sessionPolicy.naturalEndReached(
             interruptionBeganNearEnd: boundaries.interruptionBeganNearEnd,
+            queueFinishedSinceInterruption: boundaries.queueFinishedSinceInterruption,
             otherAudioPlaying: session.isOtherAudioPlaying,
             secondaryHint: session.secondaryAudioShouldBeSilencedHint,
             callActive: callActiveNow) else { return }
@@ -891,34 +934,45 @@ final class MusicKitService: ObservableObject {
 
     /// `prepareToPlay()`, then `play()` (MusicKit activates the session). After `play()` returns, a hold that
     /// landed during the await pauses again and does not count as a resume.
-    private func playIfStillAllowed() async throws -> Bool {
+    /// #143 (-Atlas): `attempt` is the start that called this. Core's `AttemptPlaySequence` checks it
+    /// still owns the shared player after `prepareToPlay()` (before `play()`) and after `play()`
+    /// (before any pause or `isPlaying` change). A newer attempt's queue is never played, paused or
+    /// marked by an older one: the stale attempt throws `MusicKitError.superseded`.
+    private func playIfStillAllowed(attempt: PlaybackAttemptID) async throws -> Bool {
         try activateAudioSessionForPlayback()
-        do {
-            try await player.prepareToPlay()
-        } catch {
-            logPlaybackError("prepareToPlay", error)
-            throw error
-        }
-        let playAttempt = attempts.current
-        if let playAttempt { selfStartGate.playCalled(playAttempt, at: ProcessInfo.processInfo.systemUptime) }
-        do {
-            try await player.play()
-            if let playAttempt { selfStartGate.playReturned(playAttempt, at: ProcessInfo.processInfo.systemUptime) }
-        } catch {
-            logPlaybackError("player.play", error)
-            throw error
-        }
-        let decision = PlaybackStartGuard.afterPlay(
-            mayAutoResume: sessionPolicy.mayAutoResume,
-            userWantsPlayback: sessionPolicy.userWantsPlayback
-        )
-        guard decision == .keepPlaying else {
-            player.pause()
+        let outcome = try await AttemptPlaySequence.run(
+            attempt: attempt,
+            current: { attempts.current },
+            prepare: {
+                do {
+                    try await player.prepareToPlay()
+                } catch {
+                    logPlaybackError("prepareToPlay", error)
+                    throw error
+                }
+            },
+            willPlay: { selfStartGate.playCalled(attempt, at: ProcessInfo.processInfo.systemUptime) },
+            play: {
+                do {
+                    try await player.play()
+                } catch {
+                    logPlaybackError("player.play", error)
+                    throw error
+                }
+            },
+            didPlay: { selfStartGate.playReturned(attempt, at: ProcessInfo.processInfo.systemUptime) },
+            gates: { (sessionPolicy.mayAutoResume, sessionPolicy.userWantsPlayback) },
+            pause: { player.pause() })
+        switch outcome {
+        case .superseded:
+            throw MusicKitError.superseded
+        case .pausedBecauseHeld:
             isPlaying = false
             return false
+        case .playing:
+            isPlaying = true
+            return true
         }
-        isPlaying = true
-        return true
     }
 
     /// Activates the session right before playback starts, so launching the app does not stop
@@ -1026,6 +1080,34 @@ final class MusicKitService: ObservableObject {
             }
             return .success
         }
+        // P0 lock-screen skip (-Echo; MusicKitService handed off by Orion for this PR): Next runs
+        // the in-app `skip()`. The app's MusicKit queue holds one song, so a Next the system
+        // handles itself only ends playback; the poll's remote-skip check covers that case.
+        // Previous has no app path and stays disabled.
+        center.previousTrackCommand.isEnabled = false
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            guard Thread.isMainThread else {
+                // Off-main delivery (not expected): the queue cannot be read here, so the
+                // decision is made after the hop. The command reports success either way.
+                Task { @MainActor in
+                    guard RemoteNextCommand.decide(queueIndex: self.queueIndex,
+                                                   queueCount: self.queue.count) == .skip else { return }
+                    _ = try? await self.skip()
+                }
+                return .success
+            }
+            return MainActor.assumeIsolated {
+                switch RemoteNextCommand.decide(queueIndex: self.queueIndex, queueCount: self.queue.count) {
+                case .skip:
+                    Task { @MainActor in _ = try? await self.skip() }
+                    return .success
+                case .noNextSong:
+                    return .noActionableNowPlayingItem
+                }
+            }
+        }
+        updateRemoteNextEnabled()
         // Seek follow-up (-Atlas; flagged for Claude): a lock-screen / Control Center scrub goes
         // through the in-app `seek(to:trackID:)`, so it has the same gates (blocked during a DJ
         // break or a load, clamped, detector re-baselined, DJ session told). On the main thread
@@ -1247,14 +1329,18 @@ struct Track: Identifiable, Hashable {
     let artworkURL: URL?
     let duration: TimeInterval?
     let song: Song?
+    /// Catalog, library or unknown (Sentinel). Only `.catalog` may be named by an off-device
+    /// voice; `.unknown` is treated as personal. No default: every builder decides.
+    let origin: TrackOrigin
 
-    init(song: Song) {
+    init(song: Song, origin: TrackOrigin) {
         self.id = song.id.rawValue
         self.title = song.title
         self.artistName = song.artistName
         self.artworkURL = song.artwork?.url(width: 300, height: 300)
         self.duration = song.duration
         self.song = song
+        self.origin = origin
     }
 }
 

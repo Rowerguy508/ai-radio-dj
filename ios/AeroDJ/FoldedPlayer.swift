@@ -32,6 +32,12 @@ enum FoldedStyle {
     static let toolbarHeight: CGFloat = 52
     static let artMaxSide: CGFloat = 420
     static let artMinSide: CGFloat = 140
+    /// Phone width at accessibility text sizes only (#310): the art gives way first so the
+    /// title block fits above the pinned controls.
+    static let artMinSideAccessibility: CGFloat = 72
+    /// Height kept clear of the art on a phone at accessibility text sizes (#310): pinned
+    /// controls with the DJ status, plus the title block at AX5.
+    static let artReserveAccessibility: CGFloat = 700
 }
 
 /// Dark glass through the shared `aeroGlass`: Liquid Glass on iOS 26, the white 8 % fill plus a
@@ -59,6 +65,11 @@ private struct FoldedReduceMotion {
 /// Closed Duo / compact width. Art card, left-aligned title, the DJ status slot, then a pinned
 /// bottom: progress, one primary action (Play/Pause) plus Skip, and a toolbar with the station
 /// chip, Queue and Tune. The navigation bar carries back and ⋯ (`foldedToolbar`).
+///
+/// Wide container (`FoldedColumnLayout.isWide`, e.g. the unfolded Duo's split view): the same
+/// pieces in one centred column the width of the art, title and DJ status centred, the
+/// controls right under them (no gap down to a pinned bottom), and ⋯ in a header row aligned
+/// to the column instead of the far corner of the navigation bar. Phone widths are unchanged.
 struct FoldedPlayer: View {
     /// The station the now-playing track belongs to (art fallback colours).
     let station: StationRef
@@ -75,6 +86,9 @@ struct FoldedPlayer: View {
     var artworkNamespace: Namespace.ID? = nil
     /// Fry's DJ voice level for the on-air orb. Read only; nil (previews) is a quiet orb.
     var speechLevel: DJPresentationStore? = nil
+    /// ⋯ drawn in the column's header row when the container is wide. The caller hides the
+    /// navigation bar's ⋯ at the same width (`foldedToolbar(showsMore:)`), so there is one.
+    var moreMenu: FoldedMoreMenuItems? = nil
     let onQueue: () -> Void
     let onTune: () -> Void
     let onReview: () -> Void
@@ -83,19 +97,11 @@ struct FoldedPlayer: View {
 
     var body: some View {
         GeometryReader { geo in
-            VStack(spacing: 0) {
-                ScrollView(.vertical, showsIndicators: false) {
-                    upper(artSide: artSide(in: geo.size))
-                        .padding(.horizontal, FoldedStyle.contentInset)
-                        .padding(.top, 8)
-                        .padding(.bottom, 16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .scrollBounceBehavior(.basedOnSize)
-                .scrollContentBackground(.hidden)
-                controls
+            if FoldedColumnLayout.isWide(containerWidth: Double(geo.size.width)) {
+                wideBody(in: geo.size)
+            } else {
+                compactBody(in: geo.size)
             }
-            .frame(width: geo.size.width, height: geo.size.height)
         }
         .background {
             FoldedBackdrop(track: heroTrack, station: station)
@@ -104,6 +110,101 @@ struct FoldedPlayer: View {
         }
         .environment(\.colorScheme, .dark)
         .environment(\.onSlab, true)
+    }
+
+    /// Phone width: unchanged from wireframe 08 (scrolling upper, pinned controls).
+    private func compactBody(in size: CGSize) -> some View {
+        // #310: at accessibility sizes the art shrinks (72 pt floor) so the title block fits,
+        // and the DJ status / ON AIR line moves into the pinned controls above the scrubber,
+        // so it is always visible without scrolling. Anything still taller (a very long
+        // title) scrolls, with the indicator shown. Default sizes are unchanged.
+        let accessibilityText = typeSize.isAccessibilitySize
+        let art = artSide(in: size)
+        return VStack(spacing: 0) {
+            if accessibilityText {
+                // The pinned status makes the controls taller, so the space above them can
+                // shrink below the title block even with the art at its 72 pt floor; the scroll
+                // then cut the TEST STATION tag off behind the ON AIR pill (#345 review). The
+                // art gives way next: title, artist and tag unscrolled with the art, then
+                // without it, and only if neither fits, everything scrolls as before.
+                ViewThatFits(in: .vertical) {
+                    compactUpper(artSide: art, includesArt: true, includesStatus: false)
+                    compactUpper(artSide: art, includesArt: false, includesStatus: false)
+                    compactUpperScroll(artSide: art, showsIndicators: true, includesStatus: false)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            } else {
+                compactUpperScroll(artSide: art, showsIndicators: false, includesStatus: true)
+            }
+            controls(contentInset: FoldedStyle.contentInset, toolbarInset: FoldedStyle.toolbarInset,
+                     spacing: 16, balancesTransport: false, pinsStatus: accessibilityText)
+        }
+        .frame(width: size.width, height: size.height)
+    }
+
+    /// Phone-width upper part with the wireframe gutters. `includesArt` false is only used at
+    /// accessibility sizes, when the title block would not otherwise fit above the controls.
+    private func compactUpper(artSide: CGFloat, includesArt: Bool, includesStatus: Bool) -> some View {
+        upper(artSide: artSide, centered: false, includesStatus: includesStatus, includesArt: includesArt)
+            .padding(.horizontal, FoldedStyle.contentInset)
+            .padding(.top, 8)
+            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Phone width: the scrolling upper part (wireframe 08). Default sizes always use this.
+    private func compactUpperScroll(artSide: CGFloat, showsIndicators: Bool,
+                                    includesStatus: Bool) -> some View {
+        ScrollView(.vertical, showsIndicators: showsIndicators) {
+            compactUpper(artSide: artSide, includesArt: true, includesStatus: includesStatus)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollContentBackground(.hidden)
+    }
+
+    /// Wide container: header (⋯), art, title, status and controls as one centred column,
+    /// vertically centred while it fits and scrolling as one piece when it doesn't.
+    private func wideBody(in size: CGSize) -> some View {
+        let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
+        let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
+                                           containerHeight: Double(size.height),
+                                           reserveBelowArt: reserve,
+                                           artMin: Double(FoldedStyle.artMinSide),
+                                           artMax: Double(FoldedStyle.artMaxSide))
+        let column = CGFloat(m.column)
+        typealias Gap = FoldedColumnLayout.Spacing
+        return ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 0) {
+                wideHeader
+                    .frame(height: CGFloat(FoldedColumnLayout.headerHeight))
+                upper(artSide: CGFloat(m.artSide), centered: true)
+                    .padding(.top, CGFloat(Gap.headerToArt))
+                controls(contentInset: 0, toolbarInset: 0,
+                         spacing: CGFloat(Gap.betweenControls), balancesTransport: true)
+                    .padding(.top, CGFloat(Gap.statusToControls))
+            }
+            .frame(width: column)
+            // The column itself, not the full-width scroll view: UI tests read its width and
+            // centre (#207). `.contain` keeps every control its own element.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("folded.wideColumn")
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: size.height, alignment: .center)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollContentBackground(.hidden)
+        .frame(width: size.width, height: size.height)
+    }
+
+    /// ⋯ at the column's trailing edge. Empty (same height) when the caller keeps ⋯ in the bar.
+    @ViewBuilder
+    private var wideHeader: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            if let moreMenu {
+                FoldedMoreMenu(reviewCount: moreMenu.reviewCount, onConnections: moreMenu.onConnections)
+            }
+        }
     }
 
     private var heroTrack: TrackInfo? {
@@ -115,25 +216,38 @@ struct FoldedPlayer: View {
     /// controls stay on screen. Only the container decides; no device size is named.
     private func artSide(in size: CGSize) -> CGFloat {
         let byWidth = size.width - FoldedStyle.contentInset * 2
-        let reserve: CGFloat = typeSize.isAccessibilitySize ? 560 : 430
-        let byHeight = size.height - reserve
+        if typeSize.isAccessibilitySize {
+            // #310: phone width at accessibility sizes only.
+            let byHeight = size.height - FoldedStyle.artReserveAccessibility
+            return max(FoldedStyle.artMinSideAccessibility, min(byWidth, byHeight, FoldedStyle.artMaxSide))
+        }
+        let byHeight = size.height - 430
         return max(FoldedStyle.artMinSide, min(byWidth, byHeight, FoldedStyle.artMaxSide))
     }
 
     // MARK: Upper (scrolls at large text sizes)
 
+    /// `includesStatus` false: the caller pins the DJ status in the controls instead (#310).
+    /// `includesArt` false: phone width at accessibility sizes when the title block would not
+    /// fit under the art (#345 review); the title then starts at the top.
     @ViewBuilder
-    private func upper(artSide: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+    private func upper(artSide: CGFloat, centered: Bool, includesStatus: Bool = true,
+                       includesArt: Bool = true) -> some View {
+        VStack(alignment: centered ? .center : .leading, spacing: 0) {
             switch content {
             case .track(let track):
-                FoldedArtCard(track: track, station: station, isOnAir: dj.state.isOnAir,
-                              side: artSide, namespace: artworkNamespace, speechLevel: speechLevel)
-                    .frame(maxWidth: .infinity)
-                FoldedTitleBlock(track: track, isTestStation: isTestStation)
-                    .padding(.top, 24)
-                FoldedDJStatus(dj: dj)
-                    .padding(.top, 16)
+                if includesArt {
+                    FoldedArtCard(track: track, station: station, isOnAir: dj.state.isOnAir,
+                                  side: artSide, namespace: artworkNamespace, speechLevel: speechLevel)
+                        .frame(maxWidth: .infinity)
+                }
+                FoldedTitleBlock(track: track, isTestStation: isTestStation, centered: centered)
+                    .padding(.top, includesArt
+                             ? (centered ? CGFloat(FoldedColumnLayout.Spacing.artToTitle) : 24) : 0)
+                if includesStatus {
+                    FoldedDJStatus(dj: dj)
+                        .padding(.top, centered ? CGFloat(FoldedColumnLayout.Spacing.titleToStatus) : 16)
+                }
             case .nothingPlaying:
                 testTag
                 NowPlayingPlaceholder(content: content, actions: actions)
@@ -171,10 +285,20 @@ struct FoldedPlayer: View {
         }
     }
 
-    private var controls: some View {
-        VStack(spacing: 16) {
+    /// Phone: inset by the wireframe gutters and pinned under the scroll. Wide: no inset (the
+    /// column already sets the width) and Play/Pause centred on the column.
+    /// `pinsStatus`: phone width at accessibility sizes (#310), the DJ status sits here, above
+    /// the scrubber, instead of in the scrolling upper part. Idle draws nothing.
+    private func controls(contentInset: CGFloat, toolbarInset: CGFloat, spacing: CGFloat,
+                          balancesTransport: Bool, pinsStatus: Bool = false) -> some View {
+        VStack(spacing: spacing) {
+            if pinsStatus, case .track = content {
+                FoldedDJStatus(dj: dj)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, contentInset)
+            }
             PlaybackErrorBanner(error: snapshot.error, actions: actions)
-                .padding(.horizontal, FoldedStyle.contentInset)
+                .padding(.horizontal, contentInset)
             if showsProgress, let timeSource {
                 // One seek per release, for the track on screen (#171's stale-scrub guard).
                 // The scrubber dims itself and drops the gesture while canSeek is false (DJ break).
@@ -183,20 +307,22 @@ struct FoldedPlayer: View {
                                  canSeek: snapshot.canSeek,
                                  onSeek: { await actions.seek(to: $0, trackID: $1) },
                                  isDJSpeaking: dj.state.isOnAir)
-                    .padding(.horizontal, FoldedStyle.contentInset)
+                    .padding(.horizontal, contentInset)
             }
             if content.showsTransport {
                 // No Tune here (moved to the toolbar) and no Previous: PlaybackActions has none.
                 TransportRow(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
-                             actions: actions, onTune: nil)
-                    .padding(.horizontal, FoldedStyle.contentInset)
+                             actions: actions, onTune: nil, balancesSides: balancesTransport)
+                    .padding(.horizontal, contentInset)
             }
             FoldedToolbar(heading: heading, upNext: snapshot.upNext,
                           showsWorkspaceButtons: showsWorkspaceButtons,
                           onQueue: onQueue, onTune: onTune)
-                .padding(.horizontal, FoldedStyle.toolbarInset)
+                .padding(.horizontal, toolbarInset)
+                .padding(.top, balancesTransport
+                         ? CGFloat(FoldedColumnLayout.Spacing.transportToToolbar) - spacing : 0)
         }
-        .padding(.top, 8)
+        .padding(.top, balancesTransport ? 0 : 8)
         .padding(.bottom, 8)
     }
 }
@@ -291,31 +417,65 @@ private struct FoldedArtCard: View {
 private struct FoldedTitleBlock: View {
     let track: TrackInfo
     let isTestStation: Bool
+    /// Wide column: centred under the centred art.
+    var centered = false
+    /// Station ratings (-Nova, PR B). Nil or unavailable: the block is exactly the labels, as before.
+    @Environment(\.songRating) private var songRating
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(track.title)
-                    .font(.system(.title2, weight: .bold))
-                    .tracking(-0.4)
-                    .foregroundStyle(.white)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(track.artistName)
-                    .font(.body)
-                    .foregroundStyle(FoldedStyle.secondaryInk)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: centered ? .center : .leading, spacing: 4) {
+            if let songRating, songRating.isAvailable {
+                // Station ratings (-Nova, PR B): the button trails the artist line (under the
+                // centred labels in the wide column); the labels stay one accessibility element.
+                if centered {
+                    labels
+                    SongRatingButton(controller: songRating, track: track, ink: FoldedStyle.secondaryInk)
+                } else {
+                    HStack(alignment: .foldedRatingArtistLine, spacing: 8) {
+                        labels.frame(maxWidth: .infinity, alignment: .leading)
+                        SongRatingButton(controller: songRating, track: track, ink: FoldedStyle.secondaryInk)
+                            .alignmentGuide(.foldedRatingArtistLine) { $0[VerticalAlignment.center] }
+                    }
+                }
+            } else {
+                labels
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(track.title), \(track.artistName)")
-            .accessibilityAddTraits(.isHeader)
             if isTestStation {
                 FoldedTestStationTag().padding(.top, 4)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: centered ? .center : .leading)
     }
+
+    private var labels: some View {
+        VStack(alignment: centered ? .center : .leading, spacing: 4) {
+            Text(track.title)
+                .font(.system(.title2, weight: .bold))
+                .tracking(-0.4)
+                .foregroundStyle(.white)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(track.artistName)
+                .font(.body)
+                .foregroundStyle(FoldedStyle.secondaryInk)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                // Read only by the rated row above; no effect on the plain block.
+                .alignmentGuide(.foldedRatingArtistLine) { $0[VerticalAlignment.center] }
+        }
+        .multilineTextAlignment(centered ? .center : .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(track.title), \(track.artistName)")
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+private extension VerticalAlignment {
+    /// The artist line's centre: where the folded rating button sits (-Nova, PR B).
+    enum FoldedRatingArtistLine: AlignmentID {
+        static func defaultValue(in d: ViewDimensions) -> CGFloat { d[VerticalAlignment.center] }
+    }
+    static let foldedRatingArtistLine = VerticalAlignment(FoldedRatingArtistLine.self)
 }
 
 /// Debug fixture label so a screenshot can't pass for a listener's real station.
@@ -329,6 +489,7 @@ private struct FoldedTestStationTag: View {
             .padding(.vertical, 3)
             .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
             .accessibilityLabel("Test station")
+            .accessibilityIdentifier("folded.testStation")
     }
 }
 
@@ -433,7 +594,7 @@ private struct FoldedOnAirPill: View {
 
     var body: some View {
         TimelineView(.periodic(from: startedAt, by: 1)) { context in
-            let elapsed = max(0, context.date.timeIntervalSince(startedAt))
+            let elapsed = Self.elapsed(at: context.date, since: startedAt)
             HStack(spacing: 8) {
                 Circle()
                     .fill(FoldedStyle.onAirAmber)
@@ -455,6 +616,16 @@ private struct FoldedOnAirPill: View {
             .accessibilityLabel("On Air, \(PlaybackTimeFormat.label(elapsed))")
         }
         .accessibilityIdentifier("dj.onAir")
+    }
+
+    /// Seconds on air. Debug only: the `onAir` Studio capture freezes it
+    /// (`StudioCaptureOnAir.frozenElapsed`) so `closed-ax5-onair` is the same every run.
+    @MainActor
+    private static func elapsed(at now: Date, since startedAt: Date) -> TimeInterval {
+        #if DEBUG
+        if let frozen = StudioCaptureOnAir.frozenElapsed { return frozen }
+        #endif
+        return max(0, now.timeIntervalSince(startedAt))
     }
 }
 
@@ -563,7 +734,9 @@ extension View {
     /// Folded navigation bar: the system back button and a ⋯ menu for Connections and
     /// review. No title view (the station chip names the station); the title string stays
     /// for the back button and VoiceOver. The bar is transparent over the near-black backdrop.
-    func foldedToolbar(_ station: StationRef, reviewCount: Int?, onConnections: @escaping () -> Void) -> some View {
+    /// `showsMore: false` when the player draws ⋯ in its own column header (wide container).
+    func foldedToolbar(_ station: StationRef, reviewCount: Int?, showsMore: Bool = true,
+                       onConnections: @escaping () -> Void) -> some View {
         navigationTitle(station.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -572,11 +745,19 @@ extension View {
                 ToolbarItem(placement: .principal) {
                     Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    FoldedMoreMenu(reviewCount: reviewCount, onConnections: onConnections)
+                if showsMore {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        FoldedMoreMenu(reviewCount: reviewCount, onConnections: onConnections)
+                    }
                 }
             }
     }
+}
+
+/// What ⋯ needs when the wide player draws it in its column header.
+struct FoldedMoreMenuItems {
+    let reviewCount: Int?
+    let onConnections: () -> Void
 }
 
 private struct FoldedMoreMenu: View {
@@ -670,6 +851,21 @@ private struct LegacyToolbarGlass: ViewModifier {
                      studioSearch: StudioSearchModel(query: ""), timeSource: .fixture,
                      onQueue: {}, onTune: {}, onReview: {})
             .foldedToolbar(PlaybackFixtures.station, reviewCount: nil, onConnections: {})
+    }
+}
+
+#Preview("Folded wide (open Duo split view)", traits: .fixedLayout(width: 640, height: 820)) {
+    NavigationStack {
+        FoldedPlayer(station: PlaybackFixtures.station,
+                     heading: StationHeading(opened: PlaybackFixtures.station, playing: PlaybackFixtures.station),
+                     isTestStation: false,
+                     content: .track(PlaybackFixtures.songs[0]),
+                     snapshot: PlaybackFixtures.playing, actions: .preview,
+                     dj: .init(state: .ready(includesBriefing: false, seconds: 24)), search: nil,
+                     studioSearch: StudioSearchModel(query: ""), timeSource: .fixture,
+                     moreMenu: FoldedMoreMenuItems(reviewCount: nil, onConnections: {}),
+                     onQueue: {}, onTune: {}, onReview: {})
+            .foldedToolbar(PlaybackFixtures.station, reviewCount: nil, showsMore: false, onConnections: {})
     }
 }
 

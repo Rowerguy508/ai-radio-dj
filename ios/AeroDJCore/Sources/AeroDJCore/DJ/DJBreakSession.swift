@@ -12,7 +12,8 @@ import Foundation
 ///
 /// Rules this enforces (see `docs/studio-presentation-contract.md`):
 /// - speech renders during the song, before its boundary (`DJBreakPreparer.deadline`),
-/// - routine breaks are capped at `maxTransitionSeconds` (12 s), briefing breaks at 45 s,
+/// - routine breaks cap the main segment at `maxTransitionSeconds` (15 s) and the talk-over
+///   closing line at `maxClosingSeconds` (4 s); briefing breaks at 45 s in total,
 /// - late, failed, over-cap or revoked breaks are skipped: music never waits,
 /// - tuner changes apply at the next boundary to *future* breaks; the playing song and the
 ///   break already preparing for it are untouched unless the change requires dropping them.
@@ -23,11 +24,18 @@ public final class DJBreakSession {
     private let dj: DJPresentationStore
     private let base: DJCadence
     private let hour: () -> Int
+    /// Lane 2 time checks: the listener's calendar (time zone) and clock style. The plan only
+    /// reserves a time-check slot; `DJBreakPreparer` writes and renders the line about 75 s
+    /// before the boundary, from its own injected clock (Orion option (a), #347).
+    private let calendar: Calendar
+    private let clockStyle: DJClockStyle
     private var writer: DJScriptWriter
     private var tracks: [DJTrack] = []
     private var briefing: NarrationHandoff?
     private var breaks: [Int: DJBreak] = [:]
     private var plannedWith: DJCadence?
+    /// The DJ personality the current plan was written in (its tone picks the copy bank).
+    private var plannedPersonality: DJPersonality?
     /// Why the last `naturalBoundary` handed out no break, and whether the cadence had planned
     /// one there. Read-only; nothing decides on it (the P0 trace's boundary row reads it).
     public private(set) var lastNoBreak: (reason: DJBreakSkipReason, cadencePlanned: Bool)?
@@ -70,6 +78,16 @@ public final class DJBreakSession {
     /// The committed station when the pending queue was reserved, to catch a save that lands
     /// between the tap and `queueStarted` (the feed keys the queue inside `music.play`).
     private var reservedStation: StationQueueKey??
+    /// Show opener on a new station (-Fry, for Echo's #359): the `StationQueueKey` of the station
+    /// the last queue was started for (outer nil: no queue yet). This is the value the feed records
+    /// for every queue start (`StationQueueKey(committedDisplayed)`), and `queueStarted` reopens the
+    /// show (`DJScriptWriter.greetAgain()`) only when its SEED part differs (Echo, #362): reach and
+    /// discovery are tuning sliders on the same station, so their new queue keeps the show going.
+    /// A refill, a re-queue or restart on the same station, a skip, or a genre, mood, personality,
+    /// energy or briefing edit never re-greets (none is in the key; the feed starts no new queue for
+    /// them). A tags-only station has no key (nil); switching between two tags-only stations does
+    /// not re-greet (known gap until stations have a real id).
+    private var openedStation: StationQueueKey??
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -83,6 +101,13 @@ public final class DJBreakSession {
     /// Purges prepared and cached narration for sources that stop being narratable at a
     /// boundary (expiry). The app sets the same `NarrationPurger` the connections use.
     public var purger: (any NarrationPurging)?
+    /// #199: Apple Music catalog facts for DJ commentary (the app sets the MusicKit adapter).
+    /// Nil: no fact lines, and `queueStarted` does not wait for anything new.
+    public var catalogFactsSource: (any CatalogTrackFactsSource)?
+    /// #199: the longest `queueStarted` waits for catalog facts. Past it, the queue is planned
+    /// without them (no fact is ever late-added to a planned break). Songs never wait: a song
+    /// start during setup is held and replayed as before.
+    public var catalogFactsTimeout: Duration = .milliseconds(1500)
     /// True once both the purger and the stop hook are set. Both app compositions check it
     /// before playback can start.
     public var isWiredForPurge: Bool { purger != nil && onBreakMustStop != nil }
@@ -90,18 +115,42 @@ public final class DJBreakSession {
     /// Each boundary re-checks them against `now` (expiry), independent of `refresh()`.
     private var sources: [UUID: ConnectionItem] = [:]
     private let now: () -> Date
+    /// #332 (-Fry): the once-a-day ledger. The app passes ONE instance and reads it back here for
+    /// every `LiveQueueBriefing.provider` (song tap and station start), so all share the limit.
+    public let personalUpdates: PersonalUpdateLedger
+    /// Personal cues of the break handed out at `afterTrack` not yet recorded on the ledger.
+    /// #332 P1 (-Nova): a cue is recorded only when ITS line played to the end
+    /// (`lineFinished`), or when the whole break finished naturally on a player that reports no
+    /// per-line events (`playbackFinished`). The first clip starting records nothing: an intro or
+    /// lead can precede the update, and a call, skip, failure or revoke before or during the
+    /// update's own line leaves it unrecorded, so it keeps its chance later that day.
+    /// `reportsLines`: the player said at `play` (`breakReportsLines`) that it reports each line, so
+    /// only `lineFinished` lines count, even if the break ends `.finished` before any (#332 B1).
+    private var handedOutPersonal: (afterTrack: Int, cues: [NarrationCue], reportsLines: Bool)?
 
     public init(preparer: DJBreakPreparer, station: StationConfigurationModel, dj: DJPresentationStore,
                 base: DJCadence = .init(), seed: UInt64 = .random(in: .min ... .max),
                 hour: @escaping () -> Int = { Calendar.current.component(.hour, from: Date()) },
-                now: @escaping () -> Date = { Date() }) {
+                now: @escaping () -> Date = { Date() },
+                personalUpdates: PersonalUpdateLedger = PersonalUpdateLedger(),
+                calendar: Calendar = .autoupdatingCurrent, clockStyle: DJClockStyle? = nil,
+                extraLineSource: (any DJBreakExtraLineSource)? = nil) {
         self.preparer = preparer
         self.now = now
+        self.calendar = calendar
+        self.clockStyle = clockStyle ?? DJClockStyle(locale: calendar.locale ?? .autoupdatingCurrent)
+        self.personalUpdates = personalUpdates
         self.station = station
         self.dj = dj
         self.base = base
         self.hour = hour
-        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed)
+        // The station's DJ personality picks the copy bank (lane 4, docs/dj-persona.md). Only the
+        // words change: no new data, request or provider (-Fry, agreed with Echo).
+        self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed,
+                                     tone: .forPersonality(station.active.personality), shapes: .natural)
+        // #401 (-Fry): the writer's optional extra line per natural break (Echo's
+        // `FactExtraLineSource`: weather and local news). Nil, the default, plans exactly as before.
+        self.writer.extraLineSource = extraLineSource
     }
 
     /// Forwards preparer events to the DJ status and follows station changes. Call once.
@@ -117,6 +166,7 @@ public final class DJBreakSession {
             for await change in changes {
                 guard let self, !Task.isCancelled else { return }
                 await self.stationChanged(change)
+                self.testOnStationChangeHandled?(change)
             }
         }
     }
@@ -218,12 +268,23 @@ public final class DJBreakSession {
         guard !Task.isCancelled else { return }
         if briefing != nil { await station.handle(.briefingWillPlan) }
         guard !Task.isCancelled else { return }
+        // #199: catalog facts for this queue's `.catalog` tracks only (library and unknown ids are
+        // never asked for). Bounded by `catalogFactsTimeout`; nothing, late or failed is `[:]`.
+        var facts: [String: CatalogTrackFacts] = [:]
+        if let source = catalogFactsSource {
+            facts = await CatalogFactsFetch.facts(for: tracks, from: source, timeout: catalogFactsTimeout)
+            guard !Task.isCancelled else { return }
+        }
+        writer.catalogFacts = facts
         self.tracks = tracks
         // A stop held for the old queue's break (no hook yet) has nothing left to stop; it must
         // not cancel a break of this queue later. Likewise the old queue's on-air break: a purge
         // of its sources must not stop this queue's break.
         pendingStop = nil
         onAir = nil
+        handedOutPersonal = nil
+        // #388: the old queue's exclusions belong to its station; the next `ratingChanged` sets them.
+        excludedSongIDs = []
         self.sources = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         // Integrations withdrawn while this setup was in flight: drop their tap-time
         // ConnectionItem snapshots so mayBeNarrated fails closed (sources are snapshots,
@@ -247,6 +308,9 @@ public final class DJBreakSession {
             }
         }
         deliveredBriefing = []
+        // Lane 2: the old queue's breaks after the song playing now never air; the DJ's
+        // anti-repeat and shape memory forget them (the ones that aired stay remembered).
+        writer.forgetPlannedBreaks(breaks.filter { $0.key > (playing ?? -1) }.map(\.value))
         playing = nil
         breaks = [:]
         // Same key the feed gives a new queue (`queueStarted(for: committedDisplayed)`). A save
@@ -255,6 +319,11 @@ public final class DJBreakSession {
         if let reserved = reservedStation, reserved != committed { queueStation = .unknown }
         else { queueStation = .known(committed) }
         reservedStation = nil
+        // A different station opens the show again. Its old queue's opener, if it already aired,
+        // stays remembered by `forgetPlannedBreaks` above, so without this the new station would
+        // start with no opener. Anti-repeat memory is kept: the new opener won't echo the old one.
+        if let previous = openedStation, previous?.seeds != committed?.seeds { writer.greetAgain() }
+        openedStation = .some(committed)
         replan(from: 0, keepingThrough: -1)
     }
 
@@ -374,12 +443,24 @@ public final class DJBreakSession {
         // station may hand off a new queue here, drop exactly the cues attributed to that track.
         let staleNext: String? = nextMayChange && tracks.indices.contains(k + 1) ? tracks[k + 1].id : nil
         func namesStaleNext(_ cue: NarrationCue) -> Bool {
-            guard let staleNext, case .trackMetadata(let ids)? = ready.attributions[cue.id] else { return false }
+            guard let staleNext, case .trackMetadata(let ids, _)? = ready.attributions[cue.id] else { return false }
             return ids.contains(staleNext)
         }
-        let cues = ready.cues.filter { cue in
+        // #388 (Echo's #387 N2, -Nova): a song the station now leaves out drops exactly the cues
+        // attributed to it, not the whole break: briefing items and a time check never name a song.
+        func namesExcluded(_ cue: NarrationCue) -> Bool {
+            guard !excludedSongIDs.isEmpty, case .trackMetadata(let ids, _)? = ready.attributions[cue.id] else { return false }
+            return !excludedSongIDs.isDisjoint(with: ids)
+        }
+        let allowed = ready.cues.filter { cue in
             (cue.sourceItemID.map { !lapsed.contains($0) } ?? true) && mayBeNarrated(cue, at: handOut)
                 && !namesStaleNext(cue)
+        }
+        let cues = allowed.filter { !namesExcluded($0) }
+        if cues.count != allowed.count {
+            // Echo's #396 room N1: counts only, for the P0 trace (the app's hook).
+            onExcludedCuesDropped?(k, ExcludedCueCounts(dropped: allowed.filter(namesExcluded),
+                                                        timeCheckCueID: ready.timeCheck?.cueID, kept: cues.count))
         }
         // Commentary or the briefing turned off while this call was suspended (before the
         // on-air marker exists, so `stationChanged` had nothing to stop): not handed out.
@@ -402,12 +483,47 @@ public final class DJBreakSession {
             return nil
         }
         let kept = Set(cues.map(\.id))
-        let prepared = cues.count == ready.cues.count ? ready : PreparedDJBreak(
+        var prepared = cues.count == ready.cues.count ? ready : PreparedDJBreak(
             afterTrack: k, cues: cues, clips: ready.clips.filter { kept.contains($0.cueID) },
-            attributions: ready.attributions.filter { kept.contains($0.key) })
+            attributions: ready.attributions.filter { kept.contains($0.key) },
+            // Kept only if the closing cue survived; the hooks recompute from the kept clips.
+            talkOverCueID: ready.talkOverCueID.flatMap { kept.contains($0) ? $0 : nil })
+        if prepared != ready, let check = ready.timeCheck, kept.contains(check.cueID) {
+            // The time-check line survived: keep what a resume re-checks it with (#379 N1).
+            prepared.timeCheck = check
+            prepared.timeCheckAirTime = ready.timeCheckAirTime
+        }
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
+        // #332: recorded on the ledger per line, once that line has played (`lineFinished`).
+        let personal = prepared.cues.filter { $0.isContent && $0.sourceItemID != nil }
+        handedOutPersonal = personal.isEmpty ? nil : (k, personal, false)
         onAir = (k, Set(prepared.cues.compactMap(\.sourceItemID)), ready.includesBriefing)
         return prepared
+    }
+
+    /// DJ talk-over (-Fry): whether boundary `k`'s break is rendered, without taking it. The
+    /// talk-over takes the break early (through `naturalBoundary`, so every consent re-check
+    /// still runs) only when this is true; otherwise the boundary hands it out as today.
+    public func breakIsReady(afterTrack k: Int) async -> Bool {
+        await preparer.isReady(afterTrack: k)
+    }
+
+    /// DJ talk-over (-Fry): a break the talk-over took early and will not play (seek back out
+    /// of the outro, skip, pause, new queue). Not a voice failure: the Studio goes idle.
+    public func talkoverDropped(afterTrack k: Int) {
+        endOnAir(k)
+        dj.send(.breakSkipped(afterTrack: k, .cancelled))
+    }
+
+    /// Songs still queued that the station now leaves out, from the app's station queue (#388,
+    /// -Nova). Song IDs only: nothing says why. Replaces the last set, so an Undo puts the cues back. `naturalBoundary` drops exactly the cues attributed to these songs
+    /// (`SpokenAttribution.trackMetadata`) after its last await. IDs only; never logged.
+    public private(set) var excludedSongIDs: Set<String> = []
+    /// Echo's #396 room N1: `naturalBoundary` dropped cues for `excludedSongIDs` at boundary `k`.
+    /// Counts by kind only (the app writes a P0 diag row). Never given a cue, an ID or text.
+    public var onExcludedCuesDropped: (@MainActor (_ afterTrack: Int, ExcludedCueCounts) -> Void)?
+    public func songsExcluded(_ songIDs: Set<String>) {
+        excludedSongIDs = songIDs
     }
 
     /// Song `k` was cut (skip, queue change): its break is dropped, never played after a cut song.
@@ -416,12 +532,48 @@ public final class DJBreakSession {
     }
 
     /// Player audio callbacks. `playbackStarted` only once DJ audio is actually audible.
-    public func playbackStarted(afterTrack k: Int) { dj.send(.playbackStarted(afterTrack: k)) }
-    public func playbackFinished(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFinished(afterTrack: k)) }
+    /// #332 P1: nothing is recorded here; audio starting says nothing about the update's own line.
+    public func playbackStarted(afterTrack k: Int) {
+        dj.send(.playbackStarted(afterTrack: k))
+    }
+
+    /// #332 P1 (-Nova): the line for `cueID` of the break at `afterTrack` played to its end. A
+    /// personal update on it counts toward the daily limit and the gap now; any other line, or
+    /// a line of another break, records nothing.
+    public func lineFinished(afterTrack k: Int, cueID: UUID) {
+        guard var aired = handedOutPersonal, aired.afterTrack == k else { return }
+        aired.reportsLines = true
+        if let index = aired.cues.firstIndex(where: { $0.id == cueID }) {
+            personalUpdates.recordAired([aired.cues.remove(at: index)], at: now())
+        }
+        handedOutPersonal = aired.cues.isEmpty ? nil : aired
+    }
+
+    /// #332 B1 (-Nova): the break at `afterTrack` will report its lines; set before any can end.
+    public func breakReportsLines(afterTrack k: Int) { if handedOutPersonal?.afterTrack == k { handedOutPersonal?.reportsLines = true } }
+
+    /// The whole break ended `.finished`. Whether that means every line was heard depends on the
+    /// player: one that said at `play` it reports each line (`breakReportsLines`) is counted only
+    /// by `lineFinished`, so a `.finished` here (also how a stale or withdrawn resume ends, with
+    /// lines never played) records nothing more. A player that did not say so, such as a
+    /// talk-over handed no per-line cue ids matching its clips, gets the fallback: every
+    /// personal line of the break is recorded now.
+    public func playbackFinished(afterTrack k: Int) {
+        if let aired = handedOutPersonal, aired.afterTrack == k, !aired.reportsLines {
+            handedOutPersonal = nil
+            personalUpdates.recordAired(aired.cues, at: now())
+        }
+        endOnAir(k)
+        dj.send(.playbackFinished(afterTrack: k))
+    }
+    /// The break was stopped by a consent revoke. Not a voice failure (the Studio shows it as
+    /// finished), but lines it cut never played: only `lineFinished` lines count.
+    public func playbackRevoked(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFinished(afterTrack: k)) }
     public func playbackFailed(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFailed(afterTrack: k)) }
 
     private func endOnAir(_ k: Int) {
         if onAir?.afterTrack == k { onAir = nil }
+        if handedOutPersonal?.afterTrack == k { handedOutPersonal = nil }   // lines not finished: not aired
         if pendingStop?.afterTrack == k { pendingStop = nil }   // nothing left to stop
     }
 
@@ -432,6 +584,7 @@ public final class DJBreakSession {
         breaks = [:]
         playing = nil
         onAir = nil
+        handedOutPersonal = nil
         pendingStop = nil
         dj.send(.sessionStopped)
     }
@@ -545,7 +698,8 @@ public final class DJBreakSession {
             guard cue.sourceItemID == nil, cue.source == nil, !cue.isContent else { return false }
             switch djBreak.attributions[cue.id] {
             case .trackMetadata?, .presenter?: return true
-            case .personalContext?, nil: return false
+            // A created station's name may be the setting that changed: re-plan it (-Atlas).
+            case .personalContext?, .stationName?, nil: return false
             }
         }
         return plain ? djBreak.afterTrack : nil
@@ -566,7 +720,10 @@ public final class DJBreakSession {
     }
 
     private func replanIfCadenceChanged(after k: Int) {
-        guard station.active.cadence(base: base) != plannedWith else { return }
+        // A personality change re-plans too, even when its cadence is the same (warm, upbeat
+        // and laid-back share one), so the breaks still to come speak in the new tone.
+        guard station.active.cadence(base: base) != plannedWith
+                || station.active.personality != plannedPersonality else { return }
         replan(from: k + 1, keepingThrough: k)
     }
 
@@ -576,6 +733,10 @@ public final class DJBreakSession {
         let cadence = station.active.cadence(base: base)
         plannedWith = cadence
         writer.cadence = cadence
+        plannedPersonality = station.active.personality
+        writer.setTone(.forPersonality(station.active.personality))
+        // Lane 2: breaks past `kept` are planned away before airing; forget them first.
+        writer.forgetPlannedBreaks(breaks.filter { $0.key > kept }.map(\.value))
         breaks = breaks.filter { $0.key <= kept }
         guard first < tracks.count - 1 else { return }
         let lastBreak = breaks.keys.max()
@@ -586,11 +747,22 @@ public final class DJBreakSession {
         }
         // Plan the suffix starting at the song before `first`, then shift indices back.
         let offset = first
-        let plan = writer.plan(tracks: Array(tracks[offset...]), briefing: remainingBriefing, hour: hour())
+        // Lane 2 time checks: the planning clock (spacing, calendar, style) is read once, here.
+        // The spoken time is not: the preparer reads its clock when the line renders.
+        let clock = DJPlanClock(now: now(), calendar: calendar, style: clockStyle)
+        let plan = writer.plan(tracks: Array(tracks[offset...]), briefing: remainingBriefing, hour: hour(), clock: clock)
+        var tooClose: [DJBreak] = []
+        defer { writer.forgetPlannedBreaks(tooClose) }   // planned, never kept: never airs
         for b in plan.breaks {
             let k = b.afterTrack + offset
-            if let lastBreak, k - lastBreak <= cadence.minSongsBetweenBreaks { continue }
-            breaks[k] = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
+            if let lastBreak, k - lastBreak <= cadence.minSongsBetweenBreaks { tooClose.append(b); continue }
+            var shifted = DJBreak(afterTrack: k, cues: b.cues, attributions: b.attributions)
+            shifted.talkOverCueID = b.talkOverCueID
+            shifted.shape = b.shape
+            shifted.optionalCueIDs = b.optionalCueIDs   // #320's measured-audio trim order
+            shifted.timeCheck = b.timeCheck
+            shifted.catalogFactCues = b.catalogFactCues   // #199 provenance
+            breaks[k] = shifted
         }
     }
 
@@ -598,6 +770,17 @@ public final class DJBreakSession {
     var testLastSongStartRemaining: Duration?
     /// Test hook: the planned boundaries.
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
+    /// Test hook: the planned breaks by boundary (what `replan` wrote).
+    var testPlannedBreaks: [Int: DJBreak] { breaks }
+    /// Test hook: the phrase bank the session's writer plans with.
+    var testWriterTone: EditorialTone { writer.tone }
+    /// Test hook (#401): the extra-line source the session's writer plans with.
+    var testWriterExtraLineSource: (any DJBreakExtraLineSource)? { writer.extraLineSource }
+    /// Test hook: called after the `start()` observer has handled a station change (any replan
+    /// it causes is done), so a test can wait for it instead of racing the change stream.
+    var testOnStationChangeHandled: ((StationConfigurationChange) -> Void)?
+    /// Test hook: the preparer this session hands breaks to.
+    var testPreparer: DJBreakPreparer { preparer }
     /// Test hook: background tap setup has not finished planning.
     var testQueueSetupPending: Bool { queueSetupPending }
     /// Test hook (#116): the song start held until the new queue is planned.
@@ -606,11 +789,10 @@ public final class DJBreakSession {
     var testQueueTrackIDs: [String] { tracks.map(\.id) }
     /// Test hook: briefing is absent after withdrawal / briefing-off.
     var testBriefingIsNil: Bool { briefing == nil }
-    /// Test hook: personal source item ids still present in the briefing or planned breaks.
     /// Test hook (-Atlas): runs where `songSeeked` resumes after its suspension on the station,
     /// so a test can end the song or drop the queue at exactly that point.
     var testSeekResumed: (@MainActor () async -> Void)?
-
+    /// Test hook: personal source item ids still present in the briefing or planned breaks.
     var testPlannedSourceItemIDs: Set<UUID> {
         var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
         for b in breaks.values { ids.formUnion(b.cues.compactMap(\.sourceItemID)) }

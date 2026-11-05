@@ -23,6 +23,14 @@ public protocol AudioCacheCounting: Sendable {
     func fileCount() async -> AudioCacheCount
 }
 
+/// A cache that wraps another and stores nothing of its own (`CloudVoiceConsentCache`). The
+/// device-run log counts the wrapped cache's files through it (Fry's #404 nit 1). It forwards
+/// the count only, never the wrapped cache itself, so nothing can use it to read or write past
+/// the wrapper's checks (Sentinel's #409 N1). Nil: the wrapped cache cannot count. -Nova
+public protocol AudioCacheForwarding: Sendable {
+    func forwardedFileCount() async -> AudioCacheCount?
+}
+
 /// Device-run evidence that purges delete files, not only stop audio (#76 step 9).
 /// Stable, content-free line: `AeroDJ.cache narration cache count=<n> personal=<p> after=<purge|launch>`.
 /// `count` is every file in the cache directory (metadata and audio, any extension).
@@ -38,8 +46,7 @@ public enum AudioCacheFileLog {
     /// Logs the cache's current count, if it can report one. Returns the line (for tests).
     @discardableResult
     public static func record(_ cache: any AudioCache, after moment: Moment) async -> String? {
-        guard let counting = cache as? any AudioCacheCounting else { return nil }
-        let count = await counting.fileCount()
+        guard let count = await fileCount(of: cache) else { return nil }
         let line = message(count, after: moment)
         #if canImport(os)
         // Integers and a fixed moment word only, each marked public: no names, titles or ids.
@@ -47,5 +54,13 @@ public enum AudioCacheFileLog {
             "AeroDJ.cache narration cache count=\(count.files, privacy: .public) personal=\(count.personal, privacy: .public) after=\(moment.rawValue, privacy: .public)")
         #endif
         return line
+    }
+
+    /// The cache's count, or the count of the cache it forwards to (`AudioCacheForwarding`, any
+    /// depth). Nil when neither can report one: a wrapper never makes up a count.
+    public static func fileCount(of cache: any AudioCache) async -> AudioCacheCount? {
+        if let counting = cache as? any AudioCacheCounting { return await counting.fileCount() }
+        if let wrapper = cache as? any AudioCacheForwarding { return await wrapper.forwardedFileCount() }
+        return nil
     }
 }

@@ -10,7 +10,18 @@ legacy Next.js app at the repo root, whose `app/` routes (including the
 unauthenticated `app/api/voice`) must not be deployed.
 
 > **Status: not deployed. No key created.** Sentinel must review this function
-> and the app-side wiring before anything is deployed.
+> and the app-side wiring before anything is deployed. Any deploy needs the
+> owner's OK.
+
+> [!CAUTION]
+> **DEPLOY PRECONDITION: Production MUST have the shared store env set**
+> (`KV_REST_API_URL` + `KV_REST_API_TOKEN`, or `UPSTASH_REDIS_REST_URL` +
+> `UPSTASH_REDIS_REST_TOKEN`). If `ELEVENLABS_API_KEY` is set and the store is not,
+> **every paid voice request returns 500 `misconfig`** (log reason `no_store`) in every
+> `VERCEL_ENV`, Production included, and `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` does not
+> reopen it. A per-instance limiter would spend outside the shared 9,000-char day. Check
+> the store env names before deploying; never give Preview or Development the
+> ElevenLabs key without the store.
 
 ## Contract (matches `ProxyVoiceProvider`)
 
@@ -22,8 +33,33 @@ Authorization: Bearer <owner token>
 Content-Type: application/json
 
 { "upstream": "elevenlabs", "voiceId": "<allowlisted id>", "text": "...",
-  "format": "text" | "ssml", "stationId": "..." }
+  "format": "text" | "ssml", "stationId": "...",
+  "previousText": "...", "nextText": "...", "previousRequestIds": ["..."] }
 ```
+
+`previousText`, `nextText` and `previousRequestIds` are optional (older app
+builds send none, and their request to ElevenLabs is unchanged). They carry
+the neighbouring lines of the same DJ break so ElevenLabs intonates each line
+as part of one thought (request stitching):
+
+- `previousText` / `nextText`: strings, forwarded as `previous_text` /
+  `next_text`. Not spoken and not charged to our caps. Each is reduced to
+  plain text with brackets removed, then trimmed to 300 characters (previous
+  keeps its end, next keeps its start). A non-string, or one over 2,400
+  characters, is 400.
+- `previousRequestIds`: at most 3 ElevenLabs request ids
+  (`^[A-Za-z0-9_-]{1,64}$`), forwarded as `previous_request_ids`. Anything
+  else is 400. A 200 returns ElevenLabs' own id as `X-Upstream-Request-Id`
+  when it has that shape.
+- None of the three are sent to `eleven_v3` (request stitching is not
+  available on v3).
+
+Square brackets never reach a model as text: they are removed from the
+spoken text and the context (a title like "Song [Live]" is spoken as "Song
+Live"). Only on a model that reads audio tags (`eleven_v3`, `eleven_v4`,
+`eleven_v4_turbo`) does an exact allowlisted tag survive in the spoken text:
+`[warmly]`, `[relaxed]`, `[chuckles]`, `[softly]`, `[excited]`. On every other
+model those tags are dropped. Characters are counted after this step.
 
 Success: `200`, `Content-Type: audio/wav` (16-bit mono 22,050 Hz PCM in a RIFF
 header), body non-empty and at most 5 MB, plus
@@ -32,24 +68,73 @@ header), body non-empty and at most 5 MB, plus
 - `X-Billed-Characters`: ElevenLabs' `character-cost` response header when it
   is present and numeric, otherwise the number of characters sent
 - `X-Request-Id`
+- `X-Upstream-Request-Id`: ElevenLabs' `request-id`, only when present and
+  shaped `^[A-Za-z0-9_-]{1,64}$`
 
 Errors return a generic JSON body `{ "error": "...", "requestId": "..." }` and
 never echo user input or the upstream response:
 
 | Status | When |
 | --- | --- |
-| 400 | invalid JSON, `upstream` not `elevenlabs`, voice not allowlisted, empty/too-long text, bad `format` |
+| 400 | invalid JSON, `upstream` not `elevenlabs`, voice not allowlisted, empty/too-long text, bad `format`, a bad `previousText`/`nextText`/`previousRequestIds` |
 | 401 | missing, malformed or wrong bearer token |
 | 405 | any method other than POST |
-| 429 | per-minute rate limit or daily character cap reached (`Retry-After` set) |
-| 500 | server misconfigured (token hash or ElevenLabs key unset, or Production without a durable limiter store) |
-| 503 | limiter store unreachable or erroring (fails closed) |
+| 429 | per-minute rate limit or a daily character cap reached (`Retry-After` and `reason` set, see below) |
+| 500 | server misconfigured (token hash or ElevenLabs key unset, or Production without a durable limiter store; `Retry-After: 3600`, `reason: "misconfig"`) |
+| 503 | limiter store unreachable or erroring (fails closed; `Retry-After: 30`, `reason: "store"`), or the master stop `AERODJ_TTS_PAID_STOP` is set (`Retry-After: 3600`, `reason: "disabled"`) |
 | 502 | upstream non-2xx, network error, empty or oversized audio |
 | 504 | upstream took longer than 15 s (AbortController) |
+
+### 429 / 503 / 500 refusal contract
+
+A refusal from the limiter, the master stop or a misconfiguration carries `Retry-After` (integer seconds, at least 1) and
+a body of enums and numbers only:
+
+```
+{ "error": "Too many requests", "requestId": "...", "reason": "<enum>", "retryAfterSeconds": <n> }
+```
+
+| Status | `reason` | `Retry-After` |
+| --- | --- | --- |
+| 429 | `rate` | 60 (upper bound of the minute window) |
+| 429 | `owner_daily` | seconds until 00:00 UTC |
+| 429 | `install_daily` | seconds until 00:00 UTC (not reachable until per-install auth lands) |
+| 429 | `global_daily` | seconds until 00:00 UTC |
+| 429 | `daily_allowance` | seconds until 00:00 UTC (verified Pro only, not reachable until PR 6 wires Pro: 160 renders or the Pro char cap used up; the log says `daily_allowance` or `pro_chars`) |
+| 503 | `store` | 30 |
+| 503 | `disabled` (master stop, below) | 3600 |
+| 500 | `misconfig` | 3600 |
+
+Every other error keeps the `{ error, requestId }` body with no `reason`. Logs add
+only the same `reason` enum to that request's one line.
 
 SSML is stripped to plain text before it is sent, since ElevenLabs does not
 accept SSML. SSML input may be up to 4x the text cap before stripping; the
 spoken text is then held to the normal cap.
+
+## Voice settings (fixed server-side)
+
+Every render sends the owner-approved radio tuning (intonation plan,
+2026-11-02: stability 0.40 -> 0.32, speed 1.0 -> 1.03), with only the fields
+the model supports:
+
+| Model | `voice_settings` |
+| --- | --- |
+| `eleven_flash_v2_5` (default), Turbo v2.5, Multilingual v2 | `{ "stability": 0.32, "similarity_boost": 0.75, "speed": 1.03 }` |
+| `eleven_v4`, `eleven_v4_turbo` | `{ "stability": 0.32, "similarity_boost": 0.75 }` (v4 has no style or speed) |
+| `eleven_v3` | `{ "stability": 0.5, "similarity_boost": 0.75 }` (v3 stability is 0 / 0.5 / 1) |
+
+- Set in `VOICE_SETTINGS`, `V4_VOICE_SETTINGS` and `V3_VOICE_SETTINGS` in
+  `src/handler.ts`, not by env and not by the client: the request contract
+  carries no voice settings, and any `voice_settings`, `style`, `speed` or
+  `model_id` field a client adds is ignored.
+- No `style` (so the API default 0) and no `use_speaker_boost` are sent.
+- `speed` is fixed at 1.03, inside the approved 1.0-1.05 range. Changing it
+  (or any other value) is a code change with review, never an env edit.
+- The model is `eleven_flash_v2_5` unless `ELEVENLABS_MODEL_ID` overrides it.
+  Moving to a 2x-credit model (v4, v3, Multilingual v2) is an owner decision.
+- Voice settings and stitching context do not affect the character caps:
+  only the spoken text is counted.
 
 ## Auth: owner-only bearer token (interim)
 
@@ -79,36 +164,260 @@ printf %s "$TOKEN" | shasum -a 256 | cut -d' ' -f1   # paste this hex into Verce
 - Voice IDs: only those in `AERODJ_TTS_VOICE_IDS`.
 - Rate: `AERODJ_TTS_RATE_PER_MINUTE` requests per minute (default 12), one bucket
   for the single owner bearer (the contract carries no device ID, so per-bearer is
-  per-owner). 429 with `Retry-After: 60`.
-- Daily characters: `AERODJ_TTS_DAILY_CHAR_CAP` (default 20,000), UTC day. 429
-  with `Retry-After` = seconds until 00:00 UTC.
+  per-owner). 429 `rate` with `Retry-After: 60`.
+- Daily characters, UTC day, two buckets reserved together (all or nothing):
+  - **Global ceiling** across every caller **and every deployment** (one shared key,
+    #287 B1): `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP`, else the legacy
+    `AERODJ_TTS_DAILY_CHAR_CAP`, else **9,000**.
+  - **Preview / Development sub-cap** (#287 B1): a third counter on those
+    deployments only, `AERODJ_TTS_NONPROD_DAILY_CHAR_CAP`, default and maximum
+    **1,000** (can only be lowered).
+  - **The caller's own bucket.** Today the only caller is the owner bearer, charged
+    to a fixed `owner` bucket: `AERODJ_TTS_OWNER_DAILY_CHAR_CAP`, else the global
+    ceiling. Per-install buckets (`AERODJ_TTS_INSTALL_DAILY_CHAR_CAP`, default
+    **1,500**) exist in the limiter but no request can select one until App Attest
+    lands (design note `docs/design/proxy-per-install-auth.md`, PRs 3-4). Nothing in
+    the request body chooses the bucket.
+  - Caps accept only a plain integer from 1 to 10,000,000. Anything else (empty,
+    0, negative, fractional, `Infinity`, too large) uses the default, so a cap can
+    never become unlimited.
+- **Verified Pro** (`src/pro-allowance.ts`; inert until PR 6 sets `verifiedPro` from a
+  JWS that `verifySignedTransaction` verified, never from the body or a header). Charged
+  to the purchase's own buckets `pro:<VERCEL_ENV>:<sha256(originalTransactionId)>`, never
+  the owner's or an install's, so the per-install 1,500 cap does not apply. One atomic
+  step, in order: global ceiling (`global_daily`), then 160 renders a day (40 breaks x 4),
+  then the Pro char cap `AERODJ_TTS_PRO_DAILY_CHARS` (default 12,000, clamped to the
+  global ceiling, so 9,000 today); either Pro limit answers 429 `daily_allowance`. Own
+  rate bucket `AERODJ_TTS_PRO_RATE_PER_MINUTE` (default 12). Unlike the owner settings,
+  an invalid Pro value or a `VERCEL_ENV` other than production/preview/development makes
+  a Pro request 500 `misconfig`; the owner path is unaffected. Durable store only.
+  Family Sharing fails closed until the owner decides: only `PURCHASED` counts as Pro
+  unless `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED` is exactly `true` (the single setting).
+- Rate accepts only a plain integer from 1 to 600 by the same rule as the caps.
+  Anything else (`1e9`, `Infinity`, `601`, fractional, empty) uses the default 12,
+  so the rate limit can never be switched off by configuration.
 - Upstream timeout: 15 s.
 
 ### How the daily cap is enforced
 
-The characters are **reserved atomically before** the ElevenLabs call (one
-check-and-add), so concurrent requests cannot jointly exceed the cap. The
+The characters are **reserved atomically before** the ElevenLabs call: one Lua
+script checks the caller's bucket and the global ceiling and increments both, or
+neither. Concurrent requests therefore cannot jointly exceed either cap. The
 reservation is **released (refunded) only when ElevenLabs answers non-2xx**, since
 then nothing was billed. A network error, timeout, or bad audio after a 2xx keeps
 the reservation, because the render may have been billed.
+
+**Per deployment (#264 N5, #287 B1).** The owner, install and Pro day counters carry
+the deployment from `VERCEL_ENV`: `aerodj-tts:chars:owner:<VERCEL_ENV>:<day>`,
+`aerodj-tts:chars:install:<VERCEL_ENV>:<sha256>:<day>` and the Pro
+`pro:<VERCEL_ENV>:<sha256>` keys, so Preview never uses up Production's owner, install or
+Pro budgets. The **global** ceiling is deliberately NOT per deployment. It is one
+account-wide key, `aerodj-tts:chars:global:<day>`, which is exactly the pre-#287 name, and
+every deployment charges it, so Production, Preview and Development **together** never pass
+9,000 a day, even when they share the same `ELEVENLABS_API_KEY` (Sentinel's B1: a per-env
+global key would have allowed 18,000-27,000). Preview and Development are also charged to
+their own `aerodj-tts:chars:env:<preview|development>:<day>` sub-cap, which defaults to
+1,000 and can only be lowered with `AERODJ_TTS_NONPROD_DAILY_CHAR_CAP`, so a preview can
+spend at most 1,000 of the day's shared 9,000. Hitting it is the same 429 `global_daily` on
+the wire. Production has no sub-cap key. All of these keys use a 2-day TTL, unchanged. With
+a store configured, a `VERCEL_ENV` other than production/preview/development (unset
+included) selects no limiter, so every request is 500 `misconfig`. The account-wide total
+of 9,000 holds as long as Preview/Development don't set a higher
+`AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP` than Production. Even if they do, the sub-caps bound the
+excess to 1,000 each.
+
+**Deploy day.** The global key keeps its pre-#287 name, so a deploy keeps today's global
+count: no reset and no doubling of the 9,000 ceiling. The owner counter moves to
+`owner:production:<day>` and starts fresh, but the owner cap equals the global cap, which
+did not reset, so this adds no spend. Install counters (and their 1,500) start fresh
+within the same unchanged global ceiling. Deploying just after 00:00 UTC is still
+recommended, so the scoped owner and install counters start the day at zero anyway.
+
+**Per-charge refund marker (#233 PR 3, Fry D2).** Every reservation carries a
+server-generated id (`rid`, a random UUID; never from the client). A refund applies
+**at most once per `rid`**: `RELEASE2` first runs
+`SET refund:{aerodj-tts}:<rid> 1 NX EX 172800` and changes nothing if the marker
+already exists; the in-memory limiter keeps the same rule with a per-instance set.
+Releasing the same reservation twice therefore refunds it once, on both limiters
+(one test each in `test/quota.test.ts`). The handler still releases at most once and
+never retries a release. There is no `character-cost` top-up script yet; when one is
+added it must use its own `topup:{aerodj-tts}:<rid>` marker the same way (note §4.3).
+
+**Install reservations require Redis (#233 PR 3, Sentinel B3).** Every per-install
+reservation goes through `reserveForInstall` (`src/install-quota.ts`). Without a
+durable store (`limiter.durable === true`, i.e. Upstash) it refuses with
+**503 `store`, `Retry-After: 30`**, in every environment, and makes no limiter call;
+`AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` does not apply to installs. A store error from
+the durable limiter is also 503 `store`; any other throw from `reserve` is **500
+`misconfig`, `Retry-After: 3600`** (PR 4), never a bare platform 500. The owner
+`/api/tts` reserve uses the same mapping (503 `store` with `Retry-After: 30`, else 500
+`misconfig`). No request reaches an install reservation yet (the attested `/api/tts`
+path and PR 3b's `register` wire it).
 
 ### Which store backs the limits
 
 | Environment | Store | Hard across instances? |
 | --- | --- | --- |
 | `KV_REST_API_URL` + `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`) set | Upstash Redis over REST; each operation is one Lua script (atomic in Redis) | **Yes** |
-| Not set, outside Vercel Production | in-memory, per instance | No: each instance and cold start has its own counters |
-| Not set, Vercel Production | none: every request returns 500 (fails closed) | n/a |
-| Not set, Vercel Production, `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true` | in-memory, per instance (owner explicitly accepts best-effort) | No |
+| Not set, `ELEVENLABS_API_KEY` set, **any** `VERCEL_ENV` (Production included, best-effort opt-in ignored) | none: every request returns 500 `misconfig` (log reason `no_store`) before any counter write or ElevenLabs call | n/a |
+| Not set, no `ELEVENLABS_API_KEY`, outside Vercel Production | in-memory, per instance (nothing can be spent) | No: each instance and cold start has its own counters |
+| Not set, no `ELEVENLABS_API_KEY`, Vercel Production | none: every request returns 500 (fails closed) | n/a |
+| Not set, no `ELEVENLABS_API_KEY`, Vercel Production, `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS=true` | in-memory, per instance (owner explicitly accepts best-effort) | No |
 
 Rate counters are fixed one-minute windows in Redis (a burst at a minute boundary
 can reach 2x the per-minute rate) and a sliding window in memory. If the store is
 unreachable or errors, the request fails closed with 503 and never reaches
-ElevenLabs.
+ElevenLabs. Each Upstash call is bounded at 2 s (`UPSTASH_FETCH_TIMEOUT_MS`,
+request and body); a store that does not answer in time is the same 503 `store`.
 
 Independent of the limiter, the $0 backstop is the ElevenLabs plan itself (Free
 plan: no overage) plus the restricted key's own credit limit. The owner should
 confirm both on the ElevenLabs side; the proxy cannot verify them.
+
+## Master stop: `AERODJ_TTS_PAID_STOP` (#233 PR 3, note §4.7)
+
+One switch that stops **every paid path, the owner included**, and the attest
+endpoints (`/api/attest/*`). It is checked **first**, before the method, auth, any
+limiter or Redis call and any ElevenLabs call. Stopped → `503`, `reason: "disabled"`,
+`Retry-After: 3600`.
+
+It fails closed: **any value except exactly `false` stops, including empty** (`true`, `1`,
+`TRUE`, `False`, `false ` with a space, and typos all stop). Only unset or exactly
+`false` → normal behaviour (Sentinel confirmed). Like every env change on Vercel, it takes effect only on
+the next deployment: set it, then redeploy Production.
+
+## Attestation endpoints (off by default; #233 PRs 2-4)
+
+`POST /api/attest/challenge` issues a stateless, HMAC-signed challenge (no Redis call
+at issuance). It is **off unless `AERODJ_TTS_ATTEST_ENABLED` is exactly `true`**
+(`TRUE`, `1`, `true ` with a space are all off); off → 503 `disabled`,
+`Retry-After: 3600`. It reads the raw request body from the Web `Request` stream with
+a **1024-byte cap** (413 `too_large` above it) and never uses Vercel's `req.body`.
+
+The challenge MAC key is `AERODJ_TTS_CHALLENGE_HMAC_KEY`:
+
+- **Dedicated**: used for nothing else (not the token hash, not the ID-hash key).
+- **At least 32 bytes** of randomness, as 64+ hex characters or base64/base64url of
+  32+ bytes. Shorter or malformed → 500 `misconfig`.
+- **Created by the owner**, on his own machine, and pasted directly into the Vercel
+  project's environment (Production scope). Never in chat, the repo, CI, a build or a
+  log. We never create it. For example: `openssl rand -hex 32`.
+- Attestation must not be enabled before this key exists.
+
+An expired challenge (older than 120 s) whose MAC, purpose, key binding and the
+request's signature all verify, and that was never used, is refused with
+**400 `challenge_expired`** (no write); the app fetches a fresh challenge and signs
+again, at most once per cue. A forged, tampered, wrong-purpose, reused or
+badly signed challenge is **401 `assertion`**.
+
+### `POST /api/attest/register` (#233 PR 3b, note §4.1.2)
+
+Body `{ keyId, attestationObject, challenge }`: `keyId` is the 44-character
+standard-base64 key ID from `DCAppAttestService.generateKey`, `attestationObject`
+the standard-base64 CBOR from `attestKey`, `challenge` a purpose-`attest` challenge
+from `/api/attest/challenge`. The app must call `attestKey` with
+**`clientDataHash = SHA256(UTF-8 bytes of the challenge string)`**. Success is
+**204** with no body. Same gates as the challenge endpoint (PAID_STOP first, then
+405, then the attest flag), then config (500 `misconfig`), then a durable store
+(503 `store`, `Retry-After: 30`, no in-memory fallback in any environment), then a
+**16 KiB raw-body cap** (413).
+Each key-store call to Upstash is bounded at 2 s (`UPSTASH_FETCH_TIMEOUT_MS`,
+request and body); a store that does not answer in time is 503 `store` too.
+
+Verification is offline, against the pinned **Apple App Attestation Root CA**
+(`src/apple-app-attest-root-ca.ts`), never the system trust store: x5c chain and
+validity dates, nonce `SHA256(authData ‖ clientDataHash)` at OID
+`1.2.840.113635.100.8.2`, `keyId = SHA256(public key) = credentialId`,
+`rpIdHash = SHA256("<AppIDPrefix>.com.aerodj.app")`, `counter = 0`, production
+`aaguid`, the COSE key, and on iOS 27+ the validation category (Production: 2
+TestFlight or 4 App Store). CBOR is decoded by a small strict in-repo decoder
+(`src/cbor.ts`: definite lengths, depth 4, 16 items, no tags or floats, no
+duplicate keys, no trailing bytes). Any failure is **401 `assertion`** and writes
+nothing; the reason enum is logged, never returned.
+
+Then one Redis script: refuse a used challenge (401); refuse if today's verified
+enrollments from this device bucket reached `AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP`
+(default **3**), then if today's verified enrollments overall reached
+`AERODJ_TTS_ENROLL_DAILY_CAP` (default **20**) (both **429 `enroll`**, same body,
+`Retry-After` = seconds to the next UTC midnight; nothing written, so a
+device-capped request spends no global budget); mark the challenge used;
+`SET key:{aerodj-tts}:<keyId> NX` with `{ pubKeySpki, counter: 0, env, createdDay,
+revoked: false }` and a 90-day TTL (an existing keyId: 401, record and counters
+untouched); and count the enrollment in both counters (2-day TTL).
+
+**Enroll caps (owner decision, 2026-10-29):** 20 a day overall and 3 a day per
+device. Nothing in the request or the attestation identifies a device across
+re-enrollments (the keyId is new on every `generateKey()`), so the per-device
+bucket is the **client network** as Vercel's edge reports it
+(`x-vercel-forwarded-for` only; `x-real-ip` and `x-forwarded-for` are never read):
+the IPv4 address or the IPv6 /64,
+hashed as `HMAC-SHA256(challenge key, domain ‖ UTC day ‖ network)` into
+`enrolldev:{aerodj-tts}:<day>:<hex>`. The address itself is never stored, logged
+or returned, and the day inside the MAC makes buckets unlinkable across days. A
+request with a missing or unparseable `x-vercel-forwarded-for` is refused with
+**400 `network`** (no `Retry-After`; the log carries only the reason enum) before
+the challenge is consumed or any store call is made, so it fails closed with no
+shared bucket. The app treats it like any other unlisted 400 reason (`bad_request`
+handling: no retry, on-device voice; paid voice stays on).
+Limits: devices behind one NAT/CGNAT/office network share the 3; a device that
+changes networks gets 3 more per network.
+
+**Per-install cap (stacked on #256; Orion and Sentinel, 2026-10-29):** the app sends
+`installId` in the register body (Fry's contract: a Keychain UUID v4, lowercase, 36
+characters, register only). A register must pass the network 3/day, the install 3/day
+(`AERODJ_TTS_ENROLL_INSTALL_DAILY_CAP`, default 3, parsed like the device cap) and the
+global 20/day. The counter is `enrollinst:{aerodj-tts}:<day>:<HMAC-SHA256(challenge key,
+install domain ‖ day ‖ installId)>` with the same 2-day TTL; the raw ID is never stored
+or logged. A missing or invalid `installId` is **400 `install`** (no `Retry-After`)
+before any store call, so the challenge is not consumed. The install-cap 429 is the
+same `enroll` body and `Retry-After` as the other two (log detail `install_cap`).
+The install ID is client-chosen, so the network cap stays: rotating IDs on one network
+still hits it.
+
+**Key records slide (owner decision, 2026-10-29):** the 90-day TTL set on register
+is refreshed to 90 days on every successful use (`useAttestKey`, one `EXPIRE`),
+not only on register. A key unused for 90 days expires; its next assertion is 401
+`assertion` (unknown key) and the app re-attests. A refresh store error or timeout
+is 503 `store` (Retry-After 30). The assertion path (PR 4) calls it after the
+assertion verifies. An expired but otherwise valid challenge: 400
+`challenge_expired`, nothing written.
+
+**Preview never writes what Production trusts:** unless `VERCEL_ENV` is exactly
+`production`, every key (record, enroll counters, used mark) is prefixed `nonprod:`.
+Test root CAs can be injected by code only, never by env, and only on a Preview or
+Development deployment; anywhere else that is 500 `misconfig`. The assertion path
+that uses the stored key is PR 4.
+
+### `POST /api/attest/token` and install tokens (#378, off by default)
+
+Off unless **both** `AERODJ_TTS_ATTEST_ENABLED` and `AERODJ_TTS_TESTER_VOICE_ENABLED` are
+exactly `true` (503 `disabled`, Retry-After 3600, before any store call). TestFlight
+installs only: register sets `tier: "tester"` on the key record for
+`apple_validation_category_01 == 2` (iOS 27+, log `tester_reason: testflight_category`), or,
+while `AERODJ_TTS_TESTER_VOICE_ENABLED` is `true`, for an attestation with **no** category
+field (iOS 26 and older, log `tester_reason: no_category_fallback`; owner 2026-11-03). Any
+other present category (e.g. 4 App Store) is 403 `no_entitlement`. **TODO before public App
+Store launch:** remove or tighten the no-category fallback, since an iOS 26 App Store install
+also carries no category.
+
+1. `POST /api/attest/challenge {purpose:"tok"}` + `X-OnAirly-Key` → key-bound challenge.
+2. `POST /api/attest/token {challenge}` + `X-OnAirly-Key` + `X-OnAirly-Assertion` (base64
+   CBOR App Attest assertion over `"onairly-tok-v1\n" + challenge + "\n" + hex(sha256(rawBody))`,
+   body ≤ 1 KiB) → 200 `{token, expiresIn:1800}`. One Lua script: single-use challenge,
+   key record present, not on the revocation list, counter > stored (then committed),
+   ≤ 96 mints per key per UTC day (429 `rate`), 90-day TTL refresh.
+3. `POST /api/tts` + `X-OnAirly-Install-Token` → charged to the install (1,500/day), the
+   tester pool (6,000/day) and the global ceiling (9,000/day) in one atomic script that
+   also re-checks the key record and revocation list. Refusals: 429 `install_daily` or
+   `global_daily` (pool full; logged `tester_pool`), Retry-After to 00:00 UTC; 401
+   `token_expired` (bad or expired token); 401 `reattest` (record gone or revoked).
+   Upstream non-2xx refunds install, pool and global once.
+
+More than one of `Authorization`, `X-OnAirly-Install-Token`, `X-OnAirly-Assertion` on
+`/api/tts` (or `Authorization` / an install token on `/api/attest/token`) is 400
+`mixed_auth`. The owner bearer path is unchanged. Revoke keys with
+`npx tsx scripts/revoke-installs.ts production < keyids.txt` (owner's shell; entries live
+90 days, like the key record).
 
 ## Logging and privacy
 
@@ -118,6 +427,8 @@ integer HTTP status) and `upstreamCode`: the body's `detail.status` if it
 matches `^[a-z0-9_]{1,64}$`, otherwise `other`. At most 4 KB of the error body
 is read for this and then dropped. Text, headers, tokens, voice IDs, station
 IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
+Install tokens, App Attest keys and keyIds, challenges and assertions are never logged
+either (`test/install-token.test.ts`); refusals log enum reasons only.
 
 ## Environment variables
 
@@ -126,12 +437,30 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
 | `ELEVENLABS_API_KEY` | yes | Server-only. Restricted key, Text to Speech only. Production scope only. |
 | `AERODJ_TTS_TOKEN_SHA256` | yes | 64-char hex SHA-256 of the owner token. Never the token itself. |
 | `AERODJ_TTS_VOICE_IDS` | yes | Comma-separated ElevenLabs voice ID allowlist. |
-| `ELEVENLABS_MODEL_ID` | no | Default `eleven_flash_v2_5`. |
+| `ELEVENLABS_MODEL_ID` | no | Default `eleven_flash_v2_5`. Picks the `voice_settings` family above and whether audio tags and stitching are sent. |
 | `AERODJ_TTS_MAX_TEXT_CHARS` | no | Default 600. |
-| `AERODJ_TTS_DAILY_CHAR_CAP` | no | Default 20000. |
-| `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. |
-| `KV_REST_API_URL`, `KV_REST_API_TOKEN` | yes in Production | Injected by the Upstash Redis integration (Vercel Marketplace, free tier). `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work. HTTPS only. |
-| `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter. Owner decision only; leave unset. |
+| `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP` | no | Global daily ceiling. Default: `AERODJ_TTS_DAILY_CHAR_CAP`, else 9000. |
+| `AERODJ_TTS_DAILY_CHAR_CAP` | no | Legacy name, used for the global ceiling when the new name is unset. |
+| `AERODJ_TTS_OWNER_DAILY_CHAR_CAP` | no | Owner bucket cap. Default: the global ceiling; **3000 (the owner share) once tester voice is on** (#378). |
+| `AERODJ_TTS_INSTALL_DAILY_CHAR_CAP` | no | Per-install cap (spoken chars per UTC day). Default 1500. Applies to install-token requests (#378). |
+| `AERODJ_TTS_NONPROD_DAILY_CHAR_CAP` | no | Preview/Development daily sub-cap, also charged to the shared global key. Default and maximum 1000 (only lower values apply). Ignored on Production. |
+| `AERODJ_TTS_RATE_PER_MINUTE` | no | Default 12. Plain integer 1-600; anything else uses 12. |
+| `AERODJ_TTS_PRO_DAILY_CHARS` | no | Per Pro subscriber daily chars. Default 12000, clamped to the global ceiling. Plain integer 600-10,000,000; anything else makes Pro requests 500 `misconfig`. |
+| `AERODJ_TTS_PRO_RATE_PER_MINUTE` | no | Per Pro subscriber rate. Default 12. Plain integer 1-600; anything else makes Pro requests 500 `misconfig`. |
+| `AERODJ_TTS_PRO_ALLOW_FAMILY_SHARED` | no | Family Sharing, **open owner question** (Sentinel's N3 on #264). Unset or exactly `false` (default): only `PURCHASED` counts as Pro; a `FAMILY_SHARED` purchase is refused by the verifier (`ownership`), gets no Pro subject and takes the non-Pro path. Exactly `true`: `FAMILY_SHARED` also counts. Missing or unknown ownership never counts. Anything else (`TRUE`, `1`, empty, spaces) makes Pro requests 500 `misconfig`. Owner decision only; must match the App Store Connect Family Sharing toggle, which Apple does not let you turn off once on. |
+| `KV_REST_API_URL`, `KV_REST_API_TOKEN` | **yes wherever `ELEVENLABS_API_KEY` is set** (Production included; without them paid voice is 500 `misconfig`) | Injected by the Upstash Redis integration (Vercel Marketplace, free tier). `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work. HTTPS only. |
+| `AERODJ_TTS_ACCEPT_BEST_EFFORT_LIMITS` | no | `true` lets Production run with the per-instance limiter only when no `ELEVENLABS_API_KEY` is set (nothing can be spent); with the key set and no store it has no effect (500 `misconfig`). Owner decision only; leave unset. |
+| `AERODJ_TTS_PAID_STOP` | no | Master stop. Any value except exactly `false` (including empty) → every paid path and `/api/attest/*` return 503 `disabled`. Unset in normal operation. |
+| `AERODJ_TTS_ATTEST_ENABLED` | no | Attest kill switch. Only exactly `true` enables `/api/attest/*`; anything else is off. Leave unset until the owner enables attestation. |
+| `AERODJ_TTS_CHALLENGE_HMAC_KEY` | before attest is enabled | Server-only. Dedicated key, at least 32 bytes, **created by the owner** and pasted directly into Vercel (Production). Never in chat, repo, CI or builds. |
+| `AERODJ_TTS_APPLE_APP_ID_PREFIX` | before attest is enabled | The 10-character App ID prefix from the Apple Developer account (not assumed to equal the Team ID). Public identifier, not a secret. Missing or not `[A-Z0-9]{10}` → register is 500 `misconfig`. |
+| `AERODJ_TTS_BUNDLE_ID` | no | If set, must equal `com.aerodj.app` (from `config/storekit.json`); anything else → 500 `misconfig`. It cannot change the bundle. |
+| `AERODJ_TTS_APP_ATTEST_ENV` | no | Unset or `production`: only the production `aaguid`. `development` also accepts `appattestdevelop` (and validation category 3), **only** on a Preview/Development deployment with no `ELEVENLABS_API_KEY`; anywhere else, or any other value → 500 `misconfig`. |
+| `AERODJ_TTS_ENROLL_DAILY_CAP` | no | Verified enrollments per UTC day overall (default 20, owner decision 2026-10-29). Plain integer 1-100000; anything else uses the default. |
+| `AERODJ_TTS_TESTER_VOICE_ENABLED` | no | Tester voice kill switch (#378). Only exactly `true` (and `AERODJ_TTS_ATTEST_ENABLED=true`) enables `/api/attest/token` and install tokens on `/api/tts`; anything else (`TRUE`, `1`, empty) is off: 503 `disabled`. **Leave unset until the owner OKs it at deploy.** |
+| `AERODJ_TTS_INSTALL_TOKEN_HMAC_KEY` | before tester voice is enabled | Server-only. Dedicated key for install tokens, at least 32 bytes, **created by the owner**, pasted directly into Vercel (Production). Must differ from the challenge key; missing, short or equal → 500 `misconfig` on the install paths. Rotating it invalidates every live token (30 min max). |
+| `AERODJ_TTS_TESTER_POOL_DAILY_CHAR_CAP` | no | Spoken chars per UTC day that all TestFlight installs together may use. Default 6000. Always clamped to global − owner cap, so testers can never spend the owner share; nothing left → install requests 500 `misconfig`. |
+| `AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP` | no | Verified enrollments per UTC day per device bucket (keyed hash of the client network; see above) (default 3, owner decision 2026-10-29). Plain integer 1-1000; anything else uses the default. |
 
 ## Deploy (owner only, after Sentinel's review)
 
@@ -157,6 +486,16 @@ IDs, `detail.message` and upstream bodies are never logged. Tests assert this.
    must contain exactly that host).
 6. App side (Echo): `paidProvidersEnabled` stays **off in every build except
    the owner's A/B build**, and the on-device voice remains the fallback.
+7. **Before enabling attestation** (owner, not part of any PR): create
+   `AERODJ_TTS_CHALLENGE_HMAC_KEY` (above), and add a **per-IP Vercel Firewall
+   rate-limit rule on `/api/attest/*`** (design note §4.1.1, §12; the function keeps
+   only a day-scoped keyed hash of the network for the enroll sub-cap, never an IP, so
+   the request-rate limit lives at the edge). Only then set
+   `AERODJ_TTS_ATTEST_ENABLED=true` and redeploy. This README documents the rule; no
+   PR changes Vercel settings.
+8. **Emergency stop:** set `AERODJ_TTS_PAID_STOP=true` (any value but `false`) and
+   redeploy Production. Rotating the ElevenLabs key also stops spend without a
+   redeploy.
 
 ## Development
 

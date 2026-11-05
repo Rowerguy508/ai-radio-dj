@@ -13,12 +13,22 @@
 | Files / Obsidian | `UIDocumentPickerViewController` / `.fileImporter` + security-scoped bookmarks | **None** — access is granted by the user's selection | On import | Pair `startAccessingSecurityScopedResource()` / `stop…`; on `bookmarkDataIsStale` or a moved/deleted file, drop access and ask the user to re-select |
 | Share Extension | `NSExtension` (`com.apple.share-services`) | `NSExtensionActivationRule` limited to text + 1 web URL; `com.apple.security.application-groups` entitlement on app **and** extension | When the user shares | Nothing stored; extension cancels with an error |
 | Microphone | `AVAudioApplication.requestRecordPermission` | `NSMicrophoneUsageDescription` | **Optional, later** (live interruption) | Feature hidden |
+| Approximate location (#200) | Core Location (`requestWhenInUseAuthorization`, `kCLLocationAccuracyReduced`) | `NSLocationWhenInUseUsageDescription`; `NSLocationDefaultAccuracyReduced` = true; never temporary full accuracy | **Optional**: only after the in-app explainer, for local weather/news | Offer a typed city or ZIP; with neither, weather and local-news lines are omitted (count only). City/region only to a news provider; coarse coordinate to WeatherKit (Apple); never to the voice service |
 | Notifications | `UNUserNotificationCenter.requestAuthorization` | **None** (runtime prompt, no purpose string) | **Optional** | Feature hidden |
 
 **Rules:**
 - Request each permission **lazily**, at the moment the feature needs it — never all at once on launch.
 - Every denial is a first-class state, not a silent no-op.
 - No permission implies access to anything beyond its declared scope (e.g. Calendar ≠ Mail).
+
+### Third-party data flows: local news (#200)
+
+| Flow | Builds | What leaves the device | Never sent | Logs |
+|---|---|---|---|---|
+| GDELT DOC 2.0 ArtList (`api.gdeltproject.org`), local headlines for ordinary breaks | **Tester build only** (`AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB`); every other build compiles the null provider and has no GDELT host string (`ios/scripts/check-release-excludes-gdelt.sh`) | A city or region **name** in the query (`"Saint Paul"`, then `"Minnesota"`), plus `sourcelang:english` and a country filter. A typed ZIP is resolved to a city on the device first; an unresolved ZIP sends nothing | Coordinates, ZIP, street, user or station IDs, listening history, the voice service | Tier, code, HTTP status and counts only: no query text, place or titles |
+| Headline paraphrase | All builds | Nothing: Apple Foundation Models on the device (iOS 26+); otherwise the line is dropped | — | Reason codes and counts only |
+
+Citation required by GDELT's terms ("any use or redistribution of the data must include a citation to the GDELT Project and a link to this website (https://www.gdeltproject.org/)"): shown in the app with the link; the DJ also names the outlet aloud.
 
 ## 2. Explicit limitations (no fabrication)
 

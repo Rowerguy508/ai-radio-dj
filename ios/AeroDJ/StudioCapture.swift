@@ -18,6 +18,9 @@ enum StudioCapture {
     static let darkKey = "AeroDJStudioCaptureDark"
     /// Optional: `YES` forces Reduce Motion for the capture, whatever the simulator setting is.
     static let reduceMotionKey = "AeroDJReduceMotion"
+    /// `duoWideReady`: the stand-in for the unfolded Duo's split-view detail. The UI test
+    /// (`testDuoWideListenPlayerIsOneCentredColumn`) checks the same 640 × 820 pt.
+    static let duoWideContainerSize = CGSize(width: 640, height: 820)
 
     static func isRequested(mode: AppRuntimeMode, defaults: UserDefaults = .standard) -> Bool {
         mode == .testStation && defaults.bool(forKey: defaultsKey)
@@ -57,6 +60,22 @@ enum StudioCaptureScenario: String {
     case resizeTune
     /// The real station split. Selecting a row must not start playback.
     case shell
+    /// The listen player with a break ready (`breakReady`) in a 640 × 820 pt compact-class
+    /// container: below the Studio switch but wider than any phone in portrait, like the
+    /// unfolded Duo's split-view detail (owner, build 25). Needs a window at least that big.
+    case duoWideReady
+    /// The DJ is on air: a break became ready and the player reported it started
+    /// (`breakReady` then `playbackStarted`, the same events the audio player sends), so the
+    /// folded player draws the ON AIR pill. At AX5 on a phone it is pinned above the
+    /// scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
+    case onAir
+    /// Station ratings (-Nova, PR B): `playing` with the rating button, unrated, with its
+    /// first-time "Rate" label. The other scenarios get no rating controller, so they are unchanged.
+    case ratingFirstTime
+    /// The playing song rated Like it (plus.circle), label already seen.
+    case ratingLiked
+    /// A queued song just rated Never: the Undo toast over the player (no skip in a capture).
+    case ratingNever
 
     var access: PlaybackAccess {
         switch self {
@@ -97,6 +116,8 @@ struct StudioCaptureView: View {
     /// Set when the station never finished loading. The capture refuses to render a screenshot
     /// that depends on timing; UI tests fail on `capture.failed` (StudioScreenTests.launch).
     @State private var failure: String?
+    /// Only the rating scenarios set one; nil keeps every other capture as it was (-Nova, PR B).
+    @State private var captureRating: SongRatingController?
 
     private var showsProbe: Bool {
         loaded && (scenario == .resize || scenario == .resizeTune)
@@ -126,6 +147,8 @@ struct StudioCaptureView: View {
                 CaptureStationSplit(dependencies: dependencies)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("capture.shell")
+            } else if scenario == .duoWideReady {
+                DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else {
                 NavigationStack {
                     if showsProbe {
@@ -138,6 +161,7 @@ struct StudioCaptureView: View {
                                       timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
                     }
                 }
+                .modifier(SongRatingToastHost())
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -156,6 +180,8 @@ struct StudioCaptureView: View {
             }
         }
         .preferredColorScheme(UserDefaults.standard.bool(forKey: StudioCapture.darkKey) ? .dark : nil)
+        // Replaces the app root's controller: nil outside the rating scenarios.
+        .environment(\.songRating, captureRating)
         .task {
             // The app root's task starts Studio (b39d15f). Wait for that load to finish rather
             // than loading again: a second load would overwrite the scenario's edits below.
@@ -185,8 +211,13 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady:
+            case .breakReady, .duoWideReady:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
+            case .onAir:
+                // Freeze the pill's timer before it appears, so the PNG is deterministic.
+                StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
+                studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
+                studio.dj.send(.playbackStarted(afterTrack: 0))
             case .config, .resizeTune:
                 // Fry #110: Save while holding schedules pending until a safe boundary.
                 // Idle Save would apply immediately ("Saved…"), which breaks
@@ -195,6 +226,14 @@ struct StudioCaptureView: View {
                 await studio.station.setEnergy(0.85)
                 await studio.station.setGenres(["pop", "indie", "synthwave"])
                 await studio.station.saveChanges()
+            case .ratingFirstTime:
+                captureRating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id)
+            case .ratingLiked:
+                captureRating = await SongRatingController.fixture(rated: .like, songID: PlaybackFixtures.songs[0].id, labelSeen: true)
+            case .ratingNever:
+                let rating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id, labelSeen: true)
+                await rating.rate(.never, songID: PlaybackFixtures.songs[1].id, artistName: PlaybackFixtures.songs[1].artistName)
+                captureRating = rating
             default:
                 break
             }
@@ -209,6 +248,44 @@ struct StudioCaptureView: View {
             }
             loaded = true
         }
+    }
+}
+
+/// The unfolded Duo's split-view detail, stood in by a fixed 640 × 820 pt compact-class
+/// container (`StudioCapture.duoWideContainerSize`). Fry, #207: the first capture pinned that
+/// container top-leading inside the iPad window with nothing behind it, so the screenshot was
+/// three quarters player and one quarter blank, and read as a capture taken mid-resize (the
+/// "spinner" in the corner is iPadOS's window resize grip, on every iPad shot). Now the
+/// container owns its NavigationStack like a split-view detail column, sits centred on a
+/// neutral backdrop, is clipped to its own bounds (the art glow no longer bleeds past it) and
+/// is outlined, so the frame shows exactly what the Duo shows. `capture.duoContainer` lets
+/// the UI test wait for its final size and position before the screenshot.
+private struct DuoWideCaptureContainer: View {
+    let scenario: StudioCaptureScenario
+    let studio: StudioPresentationModel
+
+    var body: some View {
+        let size = StudioCapture.duoWideContainerSize
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack {
+            Color(white: 0.14)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+            NavigationStack {
+                PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                              snapshot: scenario.snapshot, actions: .preview,
+                              search: .captureOffline,
+                              studio: studio, isTestStation: true,
+                              timeSource: .fixture)
+            }
+            .environment(\.horizontalSizeClass, .compact)
+            .frame(width: size.width, height: size.height)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("capture.duoContainer")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 }
 
@@ -229,7 +306,7 @@ private struct StationListCapture: View {
                         .foregroundStyle(AeroDJPalette.secondaryText)
                 }
             }
-            .navigationTitle("AeroDJ")
+            .navigationTitle(AppName.display)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("split.sidebar")
         } detail: {
@@ -372,5 +449,15 @@ extension MusicSearch {
 @MainActor
 enum StudioCaptureSegment {
     static var initial: WorkspaceSegment?
+}
+
+/// The `onAir` capture's frozen ON AIR timer. `FoldedOnAirPill` shows `frozenElapsed` when it
+/// is set; only the `onAir` scenario sets it, so every other run (and Release, which does not
+/// compile this) counts from when the pill appeared.
+@MainActor
+enum StudioCaptureOnAir {
+    /// What `closed-ax5-onair` shows: "0:12". Same width as a live "0:0x".
+    static let capturedElapsed: TimeInterval = 12
+    static var frozenElapsed: TimeInterval?
 }
 #endif

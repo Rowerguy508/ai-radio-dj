@@ -17,12 +17,23 @@ public final class StudioPresentationModel {
     @ObservationIgnored public let seedSearch: (any StationSeedSearching)?
     /// Maps a seed-search error to fixed banner copy (the app passes its MusicKit-aware mapper).
     @ObservationIgnored let seedSearchFailureKind: @MainActor (Error) -> SearchFailureKind
+    /// Genre list for the add-station genre step. Nil uses `SeedSearchGenreProvider(seedSearch)`.
+    /// SEAM(Atlas): pass the MusicKit `GenreProviding` here from `AppDependencies` (see GenreProviding.swift).
+    @ObservationIgnored public let genreProvider: (any GenreProviding)?
+    /// Tune > Genres suggestion chips (Apple Music catalog genres), loaded by the Tune form.
+    public let tuneGenres: TuneGenreSuggestions
 
     @ObservationIgnored private var changeTask: Task<Void, Never>?
+    /// The recipe most recently applied to the live station through this model, from any caller
+    /// (a created-station tap, Tune's recipe list, or create-and-apply). Nil until one succeeds or
+    /// after one fails. `CreatedStationStarter` reads it so a re-tap never trusts a stale id
+    /// (Fry #218). -Atlas
+    @ObservationIgnored public private(set) var lastAppliedRecipeID: UUID?
 
     public init(station: StationConfigurationModel, recipes: StationRecipeLibrary,
                 connections: ConnectionsModel, dj: DJPresentationStore,
                 seedSearch: (any StationSeedSearching)? = nil,
+                genreProvider: (any GenreProviding)? = nil,
                 seedSearchFailureKind: @escaping @MainActor (Error) -> SearchFailureKind = { SearchFailureCopy.kind(for: $0) }) {
         self.station = station
         self.recipes = recipes
@@ -30,6 +41,9 @@ public final class StudioPresentationModel {
         self.dj = dj
         self.seedSearch = seedSearch
         self.seedSearchFailureKind = seedSearchFailureKind
+        self.genreProvider = genreProvider
+        self.tuneGenres = TuneGenreSuggestions(provider: genreProvider ?? seedSearch.map(SeedSearchGenreProvider.init),
+                                               classifyFailure: seedSearchFailureKind)
     }
 
     /// DJ status in the owner's five states. `isOnAir` is true only while `speaking`.
@@ -81,14 +95,16 @@ public final class StudioPresentationModel {
         }
         let saved = await recipes.save(name: name, configuration: configuration)
         if applying, case .success(let recipe) = saved {
-            _ = await recipes.apply(recipe.id, to: station)
+            _ = await applyRecipe(recipe.id)
         }
         return saved
     }
 
     @discardableResult
     public func applyRecipe(_ id: UUID) async -> Result<[StationSetting: StationChangeTiming], StationRecipeError> {
-        await recipes.apply(id, to: station)
+        let result = await recipes.apply(id, to: station)
+        if case .success = result { lastAppliedRecipeID = id } else { lastAppliedRecipeID = nil }
+        return result
     }
 }
 
@@ -118,7 +134,8 @@ public extension StudioPresentationModel {
                                            purger: NoopNarrationPurger())
         let store = DJPresentationStore()
         for event in DJPresentationEvent.previewEvents(for: dj) { store.send(event) }
-        let model = StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: store)
+        let model = StudioPresentationModel(station: station, recipes: recipes, connections: connections, dj: store,
+                                            genreProvider: StaticGenreProvider.fixture)
         await recipes.load()
         await connections.refresh()
         return model

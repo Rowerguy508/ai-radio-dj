@@ -69,13 +69,13 @@ public struct CalendarConnectionState: Equatable, Sendable {
 
     public var description: String {
         switch access {
-        case .notDetermined: return "AeroDJ hasn't asked to read your calendar yet."
+        case .notDetermined: return "\(AppName.display) hasn't asked to read your calendar yet."
         case .denied: return "Calendar access is off. You can turn it on in Settings."
         case .restricted: return "Calendar access is restricted on this device, for example by Screen Time or device management."
-        case .writeOnly: return "AeroDJ can only add events, not read them. Briefings need Full Access, which you can allow in Settings."
+        case .writeOnly: return "\(AppName.display) can only add events, not read them. Briefings need Full Access, which you can allow in Settings."
         case .fullAccess:
             let n = readableSelection.count
-            if n == 0 { return "No calendars chosen. AeroDJ reads only the calendars you pick." }
+            if n == 0 { return "No calendars chosen. \(AppName.display) reads only the calendars you pick." }
             return "Reading today's events from \(n) of \(calendars.count) \(calendars.count == 1 ? "calendar" : "calendars")."
         }
     }
@@ -113,10 +113,10 @@ public enum ObsidianSelectionState: Equatable, Sendable {
 
     public var description: String {
         switch self {
-        case .notSelected: "No notes chosen. AeroDJ reads only the Markdown files you pick."
+        case .notSelected: "No notes chosen. \(AppName.display) reads only the Markdown files you pick."
         case .valid(let n): "Using \(n) \(n == 1 ? "file" : "files") you picked. Nothing else in your vault is read."
         case .stale: "A file you picked was moved or renamed. Choose it again to keep using it."
-        case .missing: "The files you picked are gone, or AeroDJ lost access to them. Choose them again."
+        case .missing: "The files you picked are gone, or \(AppName.display) lost access to them. Choose them again."
         case .notDownloaded: "The files you picked are in iCloud and not downloaded. Download them in Files, then come back."
         }
     }
@@ -147,7 +147,7 @@ public struct SharedImportsState: Equatable, Sendable {
             return "\(waitingForReview) shared \(waitingForReview == 1 ? "item is" : "items are") waiting for your review."
         }
         if approved > 0 { return "\(approved) shared \(approved == 1 ? "item" : "items") approved for briefings." }
-        return "Nothing shared yet. Use the Share button in Mail or Messages to send something to AeroDJ."
+        return "Nothing shared yet. Use the Share button in Mail or Messages to send something to \(AppName.display)."
     }
 }
 
@@ -170,9 +170,9 @@ public struct ConnectionSourceRow: Equatable, Sendable, Identifiable {
     /// Fixed privacy scope copy. Always shown; it never changes with state.
     public var scope: String {
         switch integration {
-        case .calendar: "Reads today's events from calendars you choose. Read-only: AeroDJ never adds or changes events."
+        case .calendar: "Reads today's events from calendars you choose. Read-only: \(AppName.display) never adds or changes events."
         case .obsidian: "Reads only the Markdown files you pick. Stays on this device."
-        case .shareInbox: "Only what you share to AeroDJ from Mail, Messages or other apps. AeroDJ never opens your mailbox or messages."
+        case .shareInbox: "Only what you share to \(AppName.display) from Mail, Messages or other apps. \(AppName.display) never opens your mailbox or messages."
         }
     }
 
@@ -239,12 +239,12 @@ public enum ConnectionUnavailableReason: Equatable, Sendable {
 
     public var description: String {
         switch self {
-        case .markedPrivate: return "Not used: marked private in Obsidian (aerodj-sensitivity: blocked)."
+        case .markedPrivate: return "Not used: marked private in the note (aerodj-sensitivity: blocked)."
         case .calendarAccess(let a): return "Unavailable: \(CalendarConnectionState(access: a).description)"
         case .file(let r):
             switch r {
             case .bookmarkStale: return "Unavailable: the file was moved or renamed. Choose it again."
-            case .notFound, .accessDenied: return "Unavailable: the file is gone or AeroDJ lost access."
+            case .notFound, .accessDenied: return "Unavailable: the file is gone or \(AppName.display) lost access."
             case .notDownloaded: return "Unavailable: the file is in iCloud and not downloaded."
             case .optedOut: return "Not used: the note asks not to be read (aerodj: false or private: true)."
             case .tooLarge: return "Not used: the file is too large."
@@ -352,6 +352,13 @@ public struct ConnectionItem: Equatable, Sendable, Identifiable {
     public var description: String { state.description }
     public var actions: [ConnectionAction] { state.actions(for: integration) }
 
+    /// The one sensitivity map: each row's own source sensitivity keyed by row id. Rows without a
+    /// value are left out, never defaulted, so every reader treats them as `.blocked`.
+    /// `ConnectionsModel.sensitivityByItemID` and the live briefing both use it (Nigel's report).
+    public static func sensitivityMap(_ items: [ConnectionItem]) -> [UUID: Sensitivity] {
+        Dictionary(items.compactMap { row in row.sensitivity.map { (row.id, $0) } }, uniquingKeysWith: { a, _ in a })
+    }
+
     /// Whether the DJ may narrate it at `now`: its last known state is `.approved` and it has
     /// not expired since, by the same rule as `ConnectionItemState.resolve` (`expiresAt <= now`
     /// is expired). Used at song boundaries, where no `refresh()` has re-resolved the state.
@@ -424,9 +431,11 @@ public struct NarrationPurger: NarrationPurging {
         feed.publish(.items(sourceItemIDs))
     }
 
-    /// Removes all personal narration without knowing item ids: renders in flight, planned and
-    /// on-air breaks that mention any personal item, and every personal clip in the cache.
-    /// Works in live mode, where consent is not persisted across launches.
+    /// Removes the DJ's personal narration without knowing item ids: renders in flight, planned
+    /// and on-air breaks that mention any personal item, and every personal clip in the cache,
+    /// then publishes `.all` (ratings, saved location and saved news headlines listen for it).
+    /// It does not delete the personal items themselves (shared inbox, review decisions,
+    /// `PersonalUpdateLedger`). Works in live mode, where consent is not persisted across launches.
     public func purgeAllPersonalNarration() async {
         revocations.revokeAll()
         let known = await session?.purgeAllPersonal() ?? []
@@ -615,9 +624,8 @@ public final class ConnectionsModel {
 
     /// Each row's own source sensitivity, keyed by row id (the same id briefing adapters use).
     /// Rows without a value are left out, never defaulted (#75's adapter treats missing as blocked).
-    public var sensitivityByItemID: [UUID: Sensitivity] {
-        Dictionary(items.compactMap { row in row.sensitivity.map { (row.id, $0) } }, uniquingKeysWith: { a, _ in a })
-    }
+    /// Built by `ConnectionItem.sensitivityMap`, the one builder the live briefing also reads.
+    public var sensitivityByItemID: [UUID: Sensitivity] { ConnectionItem.sensitivityMap(items) }
 
     // MARK: Intents
 
@@ -627,8 +635,9 @@ public final class ConnectionsModel {
     /// items that are gone (permission removed in Settings, calendar deselected, file missing,
     /// provider read failed: fail closed), expired, revoked or unavailable; items demoted to
     /// pending approval or flagged for review under the same ID; and items whose integration
-    /// consent is no longer granted. Narratable items leave `purged`, so a later demotion or
-    /// withdrawal purges again: re-authorization leaves no stale purge state.
+    /// consent is no longer granted. Narratable items whose title changed under the same ID (a
+    /// redaction) are purged too (`editedIDs`, #313 B1). Narratable items leave `purged`, so a
+    /// later demotion or withdrawal purges again: re-authorization leaves no stale purge state.
     public func refresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
@@ -644,11 +653,33 @@ public final class ConnectionsModel {
         }
         let narratable = Set(next.filter { isNarratable($0) }.map(\.id))
         let known = Set(previous.map(\.id)).union(next.map(\.id))
-        await purge(known.subtracting(narratable).subtracting(purged))
+        let edited = Self.editedIDs(previous: previous, next: next, narratable: narratable)
+        await purge(known.subtracting(narratable).subtracting(purged).union(edited))
         purged.subtract(narratable)
         calendar = nextCalendar
         obsidian = nextObsidian
         items = next
+    }
+
+    /// #313 B1 (-Nova): narratable ids whose text changed under the same id (a redaction in the
+    /// "Shared with" sheet keeps the item's id and its approval). The live briefing speaks the
+    /// row's `title` (`LiveQueueBriefing`), so a different title means breaks and clips prepared
+    /// before the change were rendered from text the listener replaced: they are purged through
+    /// the same path as withdrawal, and the item is prepared again from the new text. Exclude,
+    /// delete and demotion are already covered by `known - narratable`.
+    static func editedIDs(previous: [ConnectionItem], next: [ConnectionItem], narratable: Set<UUID>) -> Set<UUID> {
+        let before = Dictionary(previous.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
+        return Set(next.filter { item in
+            guard narratable.contains(item.id), let old = before[item.id] else { return false }
+            return old != item.title
+        }.map(\.id))
+    }
+
+    /// Purges narration prepared for these items now, ahead of an edit to their text (#313: the
+    /// sheet calls this before writing a redaction). `refresh()` purges again on the new text,
+    /// and an item that stays narratable is prepared again from it.
+    public func purgeNarration(for ids: Set<UUID>) async {
+        await purge(ids)
     }
 
     /// May feed narration: approved by the listener *and* its integration's consent granted.
