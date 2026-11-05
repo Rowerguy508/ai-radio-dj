@@ -385,8 +385,9 @@ final class NewsWeatherInterludeTests: XCTestCase {
             let cache = InMemoryAudioCache()
             let renderer = VoiceRenderer(routes: [VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
                                          budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache)
+            // Fry's #415 nit 2: one case failing to render still checks the other.
             guard case .success = await renderer.render(cue, userID: "u", stationID: "s", attribution: .presenter)
-            else { return XCTFail("\(name): renders on the device") }
+            else { XCTFail("\(name): renders on the device"); continue }
             let count = await cache.fileCount()
             XCTAssertEqual(count.files, 0, "\(name): nothing stored")
         }
@@ -394,11 +395,9 @@ final class NewsWeatherInterludeTests: XCTestCase {
 
     /// Sentinel's #411 n2 (-Echo): the GDELT citation text and link are pinned (GDELT's terms).
     func testTheGDELTCitationNamesTheProjectAndLinksItsSite() {
-        XCTAssertTrue(FactAttribution.gdeltCitation.contains("The GDELT Project"))
-        XCTAssertTrue(FactAttribution.gdeltCitation.hasPrefix("News data:"))
-        XCTAssertFalse(FactAttribution.gdeltCitation.contains("Local news data"))
-        XCTAssertEqual(FactAttribution.gdeltURL.host, "www.gdeltproject.org")
-        XCTAssertEqual(FactAttribution.gdeltURL.scheme, "https")
+        // Fry's #415 nit 1: the whole string, so any wording change is a reviewed test change.
+        XCTAssertEqual(FactAttribution.gdeltCitation, "News data: The GDELT Project (gdeltproject.org)")
+        XCTAssertEqual(FactAttribution.gdeltURL.absoluteString, "https://www.gdeltproject.org/")
     }
 
     func testAFactLineNeverReachesTheCloudVoiceAndVoiceRequestsHaveNoLocationField() async throws {
