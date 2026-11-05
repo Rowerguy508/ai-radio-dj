@@ -180,7 +180,8 @@ final class StationQueuePlayer {
                 djSession.beginQueueInBackground(reservation, djTracks,
                                                  briefing: offer.briefing, sources: offer.sources)
             },
-            release: { djSession.releaseQueueSetup($0) })
+            release: { djSession.releaseQueueSetup($0) },
+            loadedButDeferred: MusicKitError.isLoadedButDeferred)
             return .started
         } catch MusicKitError.superseded {
             return .superseded
