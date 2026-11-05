@@ -419,11 +419,13 @@ public enum StationPoolBuilder {
 public enum StationShuffleSeedSource: Equatable, Sendable {
     /// A fresh seed per build from the system generator (the app's default).
     case systemRandom
+    #if DEBUG
     /// The pre-#418 seed: the station key and the day, so a rebuild that day repeats the order.
-    /// Tests that predict a feed's order use it.
+    /// Tests that predict a feed's order use it. Not available in release builds.
     case perDay
-    /// One fixed seed for every build (tests).
+    /// One fixed seed for every build (tests). Not available in release builds.
     case fixed(UInt64)
+    #endif
 
     /// The seed for one build. `perDay` is evaluated only for `.perDay`.
     public func seed(perDay: @autoclosure () -> UInt64) -> UInt64 {
@@ -434,8 +436,10 @@ public enum StationShuffleSeedSource: Equatable, Sendable {
     func seed<G: RandomNumberGenerator>(perDay: @autoclosure () -> UInt64, using generator: inout G) -> UInt64 {
         switch self {
         case .systemRandom: generator.next()
+        #if DEBUG
         case .perDay: perDay()
         case let .fixed(value): value
+        #endif
         }
     }
 }
