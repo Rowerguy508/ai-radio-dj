@@ -55,11 +55,27 @@ struct StudioLayout: View {
 /// Open Duo at an accessibility text size: the two zones stack in one scroll view and the
 /// transport stays reachable (ui-contract.md §6). The inset keeps the transport on screen
 /// and lets the title scroll clear of it. Nothing here uses a fixed height.
+///
+/// iPad (regular width only, -Nova): the same stack in a centred readable column
+/// (`LayoutMetrics.readableMaxWidth`) instead of edge to edge across up to 1366 pt.
+/// Every other device, including iPhone Plus/Max landscape and the open Duo (regular width,
+/// phone idiom), takes `phoneBody`, which is the pre-iPad body unchanged.
 struct StudioStackedLayout: View {
     let zoneA: NowPlayingPanel
     let workspace: WorkspaceView
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
+        if let readableWidth = LayoutMetrics(horizontalSizeClass).readableMaxWidth {
+            iPadBody(readableWidth: CGFloat(readableWidth))
+        } else {
+            phoneBody
+        }
+    }
+
+    /// iPhone path. Byte-for-byte the body before iPad support; do not edit for iPad.
+    /// Pinned by ios/scripts/check-iphone-compact-path.sh.
+    private var phoneBody: some View {
         ScrollView {
             VStack(spacing: 0) {
                 zoneA
@@ -72,6 +88,28 @@ struct StudioStackedLayout: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             zoneA.chromeBar
+        }
+    }
+
+    /// iPad only: the same views, capped to a readable column and centred. The scroll view
+    /// stays full width so the whole screen scrolls and the indicator sits at the edge.
+    private func iPadBody(readableWidth: CGFloat) -> some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                zoneA
+                workspace
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .systemMaterialBackground()
+            }
+            .frame(maxWidth: readableWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 12)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            zoneA.chromeBar
+                .frame(maxWidth: readableWidth)
+                .frame(maxWidth: .infinity)
         }
     }
 }
