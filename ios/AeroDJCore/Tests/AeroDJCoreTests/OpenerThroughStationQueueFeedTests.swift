@@ -41,7 +41,7 @@ final class OpenerThroughStationQueueFeedTests: XCTestCase {
             self.station = station
             self.session = session
             feed = StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: FeedCatalog()),
-                                            materialize: { $0.map(\.id) }, options: .init(limit: 12), day: { 42 })
+                                            materialize: { $0.map(\.id) }, options: .init(limit: 12, seedSource: .perDay), day: { 42 })
         }
 
         /// A song tap (`PlaybackActions`): reserve, play (MusicKit reports `onQueueReplaced`, so the

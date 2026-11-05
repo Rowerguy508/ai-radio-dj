@@ -321,7 +321,7 @@ public final class StationQueueFeed<Item: Sendable> {
         let pool = await resolver.resolve(seeds: config.seeds, reach: config.reach, affinity: bias.affinityArtists)
         guard mine == generation else { return superseded() }
         var opts = options
-        opts.shuffleSeed = key.shuffleSeed(day: day())
+        opts.shuffleSeed = options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
         opts.excludedSongIDs = options.excludedSongIDs.union(recentlyPlayed())
         opts.ratings = bias
         let picks = StationPoolBuilder.build(pool, configuration: config, options: opts)

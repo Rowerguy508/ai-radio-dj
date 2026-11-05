@@ -50,7 +50,7 @@ final class StationRatingsFeedTests: XCTestCase {
     private func feed(catalog: RatingFeedCatalog = RatingFeedCatalog(),
                       biasFor: StationConfiguration = station) -> StationQueueFeed<String> {
         StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: catalog), materialize: { $0.map(\.id) },
-                                 options: .init(limit: 12), day: { Self.today },
+                                 options: .init(limit: 12, seedSource: .perDay), day: { Self.today },
                                  ratings: { [unowned self] in self.book.bias(recipeID: nil, configuration: biasFor, today: Self.today) },
                                  log: { [unowned self] in self.events.append($0) })
     }
@@ -163,7 +163,7 @@ final class StationRatingsFeedTests: XCTestCase {
             self.station = station
             self.session = session
             feed = StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: RatingFeedCatalog()),
-                                            materialize: { $0.map(\.id) }, options: .init(limit: 12), day: { 42 },
+                                            materialize: { $0.map(\.id) }, options: .init(limit: 12, seedSource: .perDay), day: { 42 },
                                             ratings: ratings)
         }
 
@@ -339,7 +339,7 @@ final class StationRatingsFeedTests: XCTestCase {
 
     func testAScreenedHandOffThatLeavesNothingKeepsTheQueueAndRebuilds() async {
         let f = StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: RatingFeedCatalog()),
-                                         materialize: { $0.prefix(1).map(\.id) }, options: .init(limit: 12),
+                                         materialize: { $0.prefix(1).map(\.id) }, options: .init(limit: 12, seedSource: .perDay),
                                          day: { Self.today },
                                          ratings: { [unowned self] in self.book.bias(recipeID: nil, configuration: Self.station, today: Self.today) })
         _ = await f.prepare(Self.station)
@@ -370,7 +370,7 @@ final class StationRatingsFeedTests: XCTestCase {
 
     func testAnInjectedSongIDScreensAnyItem() async {
         let f = StationQueueFeed<Song>(resolver: CatalogStationSeedResolver(catalog: RatingFeedCatalog()),
-                                       materialize: { $0.map { Song(id: "x:" + $0.id) } }, options: .init(limit: 12),
+                                       materialize: { $0.map { Song(id: "x:" + $0.id) } }, options: .init(limit: 12, seedSource: .perDay),
                                        day: { Self.today },
                                        ratings: { [unowned self] in self.book.bias(recipeID: nil, configuration: Self.station, today: Self.today) },
                                        songID: { String($0.id.dropFirst(2)) })

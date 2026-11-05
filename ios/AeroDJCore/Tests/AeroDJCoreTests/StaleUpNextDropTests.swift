@@ -159,7 +159,7 @@ final class StaleUpNextDropTests: XCTestCase {
         XCTAssertEqual(r.session.plannedBoundaries.first, 0)
         let queue = ["t0", "t1"]
         let feed = StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: RefillCatalog()),
-                                            materialize: { $0.map(\.id) }, day: { 42 })
+                                            materialize: { $0.map(\.id) }, options: .init(seedSource: .perDay), day: { 42 })
         feed.queueStarted(for: r.station.committedDisplayed, songCount: queue.count)
         _ = await feed.prepare(r.station.active)
         let key = StationQueueKey(r.station.active)
