@@ -10,3 +10,5 @@ tsconfig.tsbuildinfo
 *.key
 *.crt
 ios/Config/Signing.local.xcconfig
+__pycache__/
+*.pyc
