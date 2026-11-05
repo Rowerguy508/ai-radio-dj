@@ -216,9 +216,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         }
         queue = players
         scriptPlayers = players
-        lineCueIDs = cueIDs.count == players.count ? cueIDs : []
         // #332 B1: the session counts only reported lines, even if the break ends `.finished` early.
-        if !lineCueIDs.isEmpty { onPlayback?(.reportsLines(afterTrack: afterTrack)) }
+        // Sentinel's #414 follow-up (-Nova): same rule as `playTalkover`. A cue id mismatch
+        // (including a single clip handed no id) still reports lines, with no ids, so no line
+        // counts as aired (fail closed). Before, it was silently dropped and `.finished` counted all.
+        let reporting = TalkoverLineReporting(cueIDs: cueIDs, clipCount: players.count)
+        lineCueIDs = reporting.cueIDs
+        if reporting.reportsLines { onPlayback?(.reportsLines(afterTrack: afterTrack)) }
         self.resumeLines = resumeLines.count == players.count
             ? resumeLines : players.map { BreakResumeLine(seconds: $0.duration) }
         let total = players.reduce(0) { $0 + $1.duration } + 2

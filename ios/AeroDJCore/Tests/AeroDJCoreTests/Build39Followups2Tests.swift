@@ -51,18 +51,17 @@ final class Build39Followups2Tests: XCTestCase {
         XCTAssertNil(store.load()[approved])
     }
 
-    func testASecondUnreadableStoreDoesNotReplaceTheFirstBackup() throws {
+    /// #414 n1 (-Nova): copies are capped at one, the newest. (Was: the first copy kept, more added.)
+    func testASecondUnreadableStoreReplacesTheFirstBackupSoOnlyOneIsKept() throws {
         let file = try tempFile()
         let store = SharedReviewStore(file: file)
         try Data("first".utf8).write(to: file)
         try store.save([:])
         try Data("second".utf8).write(to: file)
         try store.save([:])
-        let dir = file.deletingLastPathComponent()
-        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
-        XCTAssertEqual(try String(contentsOf: store.unreadableBackupPrefix, encoding: .utf8), "first")
-        let extra = try XCTUnwrap(names.first { $0.hasPrefix("review-state.json.unreadable-") })
-        XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent(extra), encoding: .utf8), "second")
+        let names = try FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path)
+        XCTAssertEqual(Set(names), ["review-state.json", "review-state.json.unreadable"])
+        XCTAssertEqual(try String(contentsOf: store.unreadableBackupPrefix, encoding: .utf8), "second")
     }
 
     func testAReadableOrMissingStoreIsSavedInPlaceWithNoBackup() throws {
