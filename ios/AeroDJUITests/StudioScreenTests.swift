@@ -957,18 +957,16 @@ final class StudioScreenTests: XCTestCase {
         return badge.label
     }
 
-    /// A layout change can schedule search or play after the next frame. Wait long enough
-    /// for that call to show up, and fail if the counter moves off `0/0`.
-    /// The badge can briefly stop resolving while the layout swaps; a missing badge
-    /// must not count as a call, so the predicate requires `exists` and a hit is re-read.
+    /// A layout change can schedule search or play after the next frame. Wait the
+    /// full second so a flicker cannot return early and a late call still shows,
+    /// then require the counter at `0/0`. `callLabel` waits for the badge, so a
+    /// missing badge at the check fails instead of counting as "no call."
     @MainActor
     private func assertCallsStayZero(_ app: XCUIApplication, _ message: String) {
-        let badge = app.descendants(matching: .any)["playback.calls"]
         XCTAssertEqual(callLabel(app), "0/0", "\(message): counter not at 0/0 before the wait")
-        let changed = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == true AND label != %@", "0/0"), object: badge)
-        guard XCTWaiter().wait(for: [changed], timeout: 1) == .completed else { return }
-        XCTAssertEqual(callLabel(app), "0/0", "\(message): \(badge.label)")
+        let hold = XCTestExpectation(description: "assertCallsStayZero window")
+        _ = XCTWaiter().wait(for: [hold], timeout: 1)
+        XCTAssertEqual(callLabel(app), "0/0", message)
     }
 
     /// The selectable list row, not the title text inside it.
