@@ -207,13 +207,14 @@ public enum LocalAreaConsentCopy {
     public static let body = """
         OnAirly can mention your local weather and headlines between songs. It uses your approximate \
         location only, while the app is open. Your city or region is sent to the news source, and \
-        Apple Weather gets an approximate point. Your location is never sent to the voice service, \
-        and lines that use it are spoken by the on-device voice only.
+        Apple Weather gets an approximate point. Your coordinates and your location itself are never \
+        sent to the voice service. If you turn on the cloud voice, the words of weather and news \
+        lines are sent to it, and a local headline can name your city or area.
         """
     public static let useApproximate = "Use approximate location"
     public static let enterPlace = "Enter a city or ZIP instead"
     public static let notNow = "Not now"
     public static let placeFieldPrompt = "City or ZIP"
     /// NSLocationWhenInUseUsageDescription (app Info.plist).
-    public static let usageDescription = "OnAirly uses your approximate location, only while the app is open, to mention local weather and news between songs. It is never sent to the voice service."
+    public static let usageDescription = "OnAirly uses your approximate location, only while the app is open, to mention local weather and news between songs. Your location itself is never sent to the voice service."
 }

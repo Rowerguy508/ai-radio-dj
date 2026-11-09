@@ -41,6 +41,7 @@ public struct CloudVoiceConsentCache: AudioCache {
     public func purge(sourceItemIDs: Set<UUID>) async { await base.purge(sourceItemIDs: sourceItemIDs) }
     public func purgeExpired() async { await base.purgeExpired() }
     public func purgeAllPersonal() async { await base.purgeAllPersonal() }
+    public func purgePersonalItems() async { await base.purgePersonalItems() }
     public func purgeClips(keepingProviders providerIDs: Set<String>) async {
         await base.purgeClips(keepingProviders: providerIDs)
     }

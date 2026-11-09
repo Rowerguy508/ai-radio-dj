@@ -112,6 +112,16 @@ public struct CloudVoiceConsentStore: @unchecked Sendable {
     public func decline() { write(.declined) }
 }
 
+extension VoiceRenderer {
+    /// This renderer with its cloud scope read from `store` on every cue (`CloudVoiceConsentStore.scope`):
+    /// `.allLines` after copy v2 is accepted, `.noLines` for v1 only, undecided, declined or off.
+    /// The tester and owner A/B builds both build their live renderer this way (#433). -Fry
+    public func gated(by store: CloudVoiceConsentStore) -> VoiceRenderer {
+        VoiceRenderer(routes: routes, budget: budget, cache: cache, revocations: revocations,
+                      cloudScope: { store.scope })
+    }
+}
+
 /// When the sheet must be shown. A cloud voice is offered only when the build allows paid
 /// voices and one is selected; the sheet then appears until the listener answers. A decline is
 /// not asked again automatically; the Cloud voice toggle asks again when turned on.
@@ -163,7 +173,7 @@ public enum CloudVoiceConsentCopy {
     public static let sentHeading = "What's sent:"
     public static let sent = "the text of everything the DJ says. That includes your personal items: calendar events, your shared email digest and other shared items, notes, songs from your music library and the station names you type. It also includes the news and weather lines."
     public static let neverSentHeading = "What's never sent:"
-    public static let neverSent = "your Apple ID, your contacts, your location or coordinates, or anything you haven't approved for your briefing. Only the words the DJ speaks are sent."
+    public static let neverSent = "your Apple ID, your contacts, your coordinates or your location itself, or anything you haven't approved for your briefing. Only the words the DJ speaks are sent, and a local news line can name your city or area."
     public static let storedHeading = "How it's stored:"
     public static let stored = "our server keeps a short technical log without the text. ElevenLabs may keep the text and audio under its own privacy policy."
     public static let switchBack = "You can switch back to the on-device voice at any time in Settings."

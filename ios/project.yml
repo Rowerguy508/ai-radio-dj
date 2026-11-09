@@ -51,7 +51,7 @@ targets:
         # UIBackgroundModes (audio) lives in AeroDJ/Info.plist: Xcode doesn't generate it from INFOPLIST_KEY_UIBackgroundModes.
         INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: OnAirly reads today's events, read-only, to mention them in your briefing.
         # #200: must match LocalAreaConsentCopy.usageDescription (NewsWeatherInterludeTests). Reduced accuracy is in AeroDJ/Info.plist.
-        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: OnAirly uses your approximate location, only while the app is open, to mention local weather and news between songs. It is never sent to the voice service.
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: OnAirly uses your approximate location, only while the app is open, to mention local weather and news between songs. Your location itself is never sent to the voice service.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         # Explicit UIApplicationSceneManifest (app-resizability skill, scene lifecycle) with
         # UIApplicationSupportsMultipleScenes = false: one window, because the app has one

@@ -3,16 +3,73 @@ import SwiftUI
 
 extension View {
     /// The cloud-voice consent sheet for an internal TestFlight tester build (#378 §4,
-    /// `AERODJ_TESTER_VOICE`); a no-op in every other build, owner A/B builds included, so no
-    /// existing screen or snapshot changes. -Atlas
+    /// `AERODJ_TESTER_VOICE`) and, since the owner's call on #433 (Nov 9 2026), the owner A/B
+    /// build (`AERODJ_OWNER_AB`, the same v2 sheet). A no-op in every other build, so no other
+    /// screen or snapshot changes. -Atlas, -Fry
     @ViewBuilder func testerCloudVoiceConsent() -> some View {
-        #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
+        #if AERODJ_OWNER_AB
+        modifier(OwnerCloudVoiceConsentGate())
+        #elseif AERODJ_TESTER_VOICE
         modifier(TesterCloudVoiceConsentGate())
         #else
         self
         #endif
     }
 }
+
+#if AERODJ_TESTER_VOICE || AERODJ_OWNER_AB
+/// The one stored answer and the one place it is recorded, for whichever cloud-voice build this
+/// is: the owner A/B build (`OwnerCloudVoice`) or the tester build (`TesterCloudVoice`). The sheet
+/// and the Tune toggle below go through it. -Fry
+enum CloudVoiceConsentApp {
+    static var store: CloudVoiceConsentStore {
+        #if AERODJ_OWNER_AB
+        OwnerCloudVoice.consentStore
+        #else
+        TesterCloudVoice.consentStore
+        #endif
+    }
+
+    @MainActor static func record(accepted: Bool) {
+        #if AERODJ_OWNER_AB
+        OwnerCloudVoice.record(accepted: accepted)
+        #else
+        TesterCloudVoice.record(accepted: accepted)
+        #endif
+    }
+}
+#endif
+
+#if AERODJ_OWNER_AB
+/// Owner A/B build (owner, Nov 9 2026, #433): asks once per launch, while the stored answer is
+/// undecided (never answered, or only copy v1 accepted) and a cloud voice is selected. Until
+/// "Use cloud voice" on the v2 copy, the renderer's scope is `.noLines`: the owner route hears
+/// nothing. After it, `.allLines`. -Fry
+private struct OwnerCloudVoiceConsentGate: ViewModifier {
+    @MainActor private static var askedThisLaunch = false
+    @State private var isPresented = false
+
+    func body(content: Content) -> some View {
+        content
+            .task {
+                let offered = CloudVoiceConsentPrompt.isCloudVoiceOfferedInThisBuild(
+                    selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID)
+                guard !Self.askedThisLaunch,
+                      CloudVoiceConsentPrompt.shouldPresent(cloudVoiceOffered: offered,
+                                                            state: OwnerCloudVoice.consentStore.state) else { return }
+                Self.askedThisLaunch = true
+                isPresented = true
+            }
+            .sheet(isPresented: $isPresented) {
+                CloudVoiceConsentSheet { accepted in
+                    OwnerCloudVoice.record(accepted: accepted)
+                    isPresented = false
+                }
+                .presentationDetents([.large])
+            }
+    }
+}
+#endif
 
 #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
 /// Asks once per launch while the stored answer is undecided, and only where the tester voice
@@ -33,7 +90,7 @@ private struct TesterCloudVoiceConsentGate: ViewModifier {
                 isPresented = true
             }
             .sheet(isPresented: $isPresented) {
-                TesterCloudVoiceConsentSheet { accepted in
+                CloudVoiceConsentSheet { accepted in
                     TesterCloudVoice.record(accepted: accepted)
                     isPresented = false
                 }
@@ -67,6 +124,9 @@ extension TesterCloudVoice {
     }
 }
 
+#endif
+
+#if AERODJ_TESTER_VOICE || AERODJ_OWNER_AB
 /// Tune → DJ: the "Cloud voice" switch for testers (Sentinel's N1 on #395), the minimal piece of
 /// #258's `CloudVoiceToggleCard` this build needs: same copy, same identifier, same store. On is
 /// only reachable through the consent sheet; off takes effect for the next DJ line. Compiled only
@@ -76,9 +136,10 @@ extension TesterCloudVoice {
 /// always works, because withdrawing consent must never wait on station settings. Turning it ON
 /// stays blocked while settings are loading or read-only, matching the rest of Tune: nothing new
 /// is switched on from a screen that is locked. -Nova
+/// Owner A/B build too (#433): same card, same store as its sheet (`CloudVoiceConsentApp`). -Fry
 struct TesterCloudVoiceToggleCard: View {
     let settingsBlocked: Bool
-    @State private var granted = TesterCloudVoice.consentStore.isGranted
+    @State private var granted = CloudVoiceConsentApp.store.isGranted
     @State private var asking = false
 
     /// Explicit: the private `@State` properties make the memberwise initializer private.
@@ -91,7 +152,7 @@ struct TesterCloudVoiceToggleCard: View {
                     if on {
                         asking = true
                     } else {
-                        TesterCloudVoice.record(accepted: false)
+                        CloudVoiceConsentApp.record(accepted: false)
                         granted = false
                     }
                 }))
@@ -103,10 +164,10 @@ struct TesterCloudVoiceToggleCard: View {
             }
             .padding(14)
             .workspaceCardBackground(Color(.tertiarySystemFill).opacity(0.6))
-            .onAppear { granted = TesterCloudVoice.consentStore.isGranted }
-            .sheet(isPresented: $asking, onDismiss: { granted = TesterCloudVoice.consentStore.isGranted }) {
-                TesterCloudVoiceConsentSheet { accepted in
-                    TesterCloudVoice.record(accepted: accepted)
+            .onAppear { granted = CloudVoiceConsentApp.store.isGranted }
+            .sheet(isPresented: $asking, onDismiss: { granted = CloudVoiceConsentApp.store.isGranted }) {
+                CloudVoiceConsentSheet { accepted in
+                    CloudVoiceConsentApp.record(accepted: accepted)
                     granted = accepted
                     asking = false
                 }
@@ -119,7 +180,7 @@ struct TesterCloudVoiceToggleCard: View {
 /// #258's copy, minus `switchBack` ("…in Settings"): the tester build's Cloud voice toggle is in
 /// Tune → DJ (`TesterCloudVoiceToggleCard`), not Settings, so the line would point testers to the
 /// wrong screen. The copy itself is left to Atlas's consent-text fix on #395 (N2).
-private struct TesterCloudVoiceConsentSheet: View {
+private struct CloudVoiceConsentSheet: View {
     let answer: (Bool) -> Void
 
     var body: some View {
@@ -161,13 +222,13 @@ private struct TesterCloudVoiceConsentSheet: View {
 }
 #endif
 
-/// Launch wiring for the tester build's cloud-voice consent (Echo's N2 on #395); nil and a no-op
-/// in every other build, owner A/B builds included. -Nova
+/// Launch wiring for the cloud-voice consent (Echo's N2 on #395) in the tester build and, since
+/// #433, the owner A/B build; nil and a no-op in every other build. -Nova, -Fry
 enum TesterCloudVoiceConsentHooks {
-    /// The preparer's per-take consent check: the tester build only.
+    /// The preparer's per-take consent check: tester and owner A/B builds only.
     static var preparerConsent: (@Sendable () -> Bool)? {
-        #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
-        let store = TesterCloudVoice.consentStore
+        #if AERODJ_TESTER_VOICE || AERODJ_OWNER_AB
+        let store = CloudVoiceConsentApp.store
         return { store.isGranted }
         #else
         return nil
@@ -176,7 +237,10 @@ enum TesterCloudVoiceConsentHooks {
 
     /// Lets a decline reach this launch's preparer and renderer.
     @MainActor static func attach(preparer: DJBreakPreparer, renderer: VoiceRenderer) {
-        #if AERODJ_TESTER_VOICE && !AERODJ_OWNER_AB
+        #if AERODJ_OWNER_AB
+        OwnerCloudVoice.preparer = preparer
+        OwnerCloudVoice.renderer = renderer
+        #elseif AERODJ_TESTER_VOICE
         TesterCloudVoice.preparer = preparer
         TesterCloudVoice.renderer = renderer
         #endif

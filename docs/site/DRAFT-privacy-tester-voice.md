@@ -37,7 +37,7 @@ This is the replacement or new copy. Insert it when the feature ships.
 >
 > **Also sent, from cloud-voice notice version 2 (owner, Nov 9 2026: "I want it all elevenlabs."):** every other line the DJ speaks, after you accept the new notice: the personal items you approved for your briefing (calendar events, your shared email digest, other shared items, Markdown notes), songs from your own library, the station names you type, and the news and weather lines. Testers who accepted the first notice are asked again, and nothing is sent until they accept the new one.
 >
-> **What is never sent:** your music or any audio; your ratings, playlists or your library as a whole; anything you haven't approved for your briefing; your name, Apple ID or any account information; contacts; your location or coordinates (weather and news lines say "here", not a place name).
+> **What is never sent:** your music or any audio; your ratings, playlists or your library as a whole; anything you haven't approved for your briefing; your name, Apple ID or any account information; contacts; your coordinates or your location itself. Weather lines say "here", but a local news line can name your city or area.
 >
 > **What our server keeps:** no script text, song titles or artists. Each request leaves a request ID, the result, a character count and, if something went wrong, an error code. To prove requests come from a genuine copy of OnAirly, our server also stores a device key for your app install (see "Device identifier"). It keeps a count of how many characters your install used today, so each device stays within its daily limit. These counters are deleted after 2 days. If we ever have to block a misbehaving install, we keep a note of its key ID for 90 days. Our server is hosted by Vercel, and these records are stored in Upstash, a database service we use through Vercel.
 >
@@ -110,6 +110,6 @@ Checked on 2026-11-02 against ElevenLabs' public pages:
 3. **Vercel log retention** for the plan in use.
 4. **Consent sheet.** The text promises "OnAirly asks you before any text leaves your device". Per #378 §4 that sheet doesn't exist yet, and it must ship first.
 5. **App Store privacy label.** The live App Store build sends nothing, so the label doesn't change for it. For TestFlight, decide whether to update the label now or at public release (#378 §4.2).
-6. **Weather and news lines on cloud voice** (copy v2, owner Nov 9 2026). Their words are now sent; no location field is. A local headline can still name a place in its own text: Sentinel to decide whether "location is never sent" needs more words.
+6. **Weather and news lines on cloud voice** (copy v2, owner Nov 9 2026). Their words are now sent; no location field is. Resolved (owner, Nov 9 2026): the copy says coordinates and the location itself are never sent, but a local news line can name the listener's city or area.
 
 -Sentinel
