@@ -6,7 +6,7 @@ _Last updated: November 9, 2026_
 
 OnAirly: Personal AI Radio DJ is a radio DJ that runs on your iPhone or iPad, with iOS 17 or iPadOS 17 or later and an Apple Music subscription. Your calendar, Markdown notes, the things you share to OnAirly, your music library and your station settings are read and kept on your device only. There are no ads, no analytics, no tracking and no data brokers in OnAirly, and we don't sell or share your data.
 
-Apart from Apple Music itself, nothing leaves your device, unless you turn on the optional cloud voice that internal test builds offer (see below).
+Apart from Apple Music itself, nothing leaves your device, unless you turn on the optional cloud voice that TestFlight testers can use (see below).
 
 ## What stays on your device
 
@@ -16,7 +16,7 @@ Apart from Apple Music itself, nothing leaves your device, unless you turn on th
 - **On-device voices.** The built-in voices speak entirely on your device.
 - **Spoken clips.** So the DJ doesn't have to make the same clip twice, OnAirly saves the audio of what it says on your device, protected by iOS Data Protection. Only the audio is saved, not the written text. A clip is never played once it's 7 days old, and it's deleted the next time OnAirly runs (the app checks when it starts and every hour while it's open). Clips made from your calendar, Markdown notes or shared items are also deleted each time OnAirly starts, and right away when you stop using that source or delete the item. Like other app data, saved clips can be included in your iCloud or computer backups.
 
-Personal items, such as calendar events, Markdown notes, shared items, library tracks and the station names you type, are never sent off your device by this version of OnAirly, which speaks only with on-device voices. Internal test builds can offer a cloud voice: only if you turn it on and accept its notice, the text of everything the DJ says, including those personal items and the news and weather lines, is sent to our voice server and on to ElevenLabs to make the audio. Your coordinates and your location itself are never sent, but a local news line can name your city or area. Turning the cloud voice off stops this from the next line and deletes the saved cloud clips. Cloud clips of library songs and station names are kept between launches, for up to 7 days, so the same words aren't sent again; "Delete DJ clips, ratings and location" deletes them, along with the cloud clips made from your calendar, notes and shared items.
+Personal items, such as calendar events, Markdown notes, shared items, library tracks and the station names you type, are never sent off your device by this version of OnAirly, which speaks only with on-device voices. TestFlight testers can be offered a cloud voice: only if you turn it on and accept its notice, the text of everything the DJ says, including those personal items and the news and weather lines, is sent to our voice server and on to ElevenLabs to make the audio. Your coordinates and your location itself are never sent, but a local news line can name your city or area. Turning the cloud voice off stops this from the next line and deletes the saved cloud clips. Cloud clips of library songs and station names are kept between launches, for up to 7 days, so the same words aren't sent again; "Delete DJ clips, ratings and location" deletes them, along with the cloud clips made from your calendar, notes and shared items.
 
 ## Apple Music
 
