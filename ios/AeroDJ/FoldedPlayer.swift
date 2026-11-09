@@ -360,9 +360,10 @@ private struct FoldedBackdrop: View {
 
 // MARK: - Art card
 
-/// Album art (or station art) in a 24 pt card with one soft glow. While ON AIR the card
-/// shows the lava-lamp orb (`DJLavaOrb`), coloured by the same art and driven by the DJ
-/// voice level.
+/// Album art (or station art) in a 24 pt card with one soft glow. While ON AIR the art and its
+/// glow are gone and only the lava-lamp orb (`DJLavaOrb`) shows in the card's frame, coloured
+/// by the same art and driven by the DJ voice level (owner, Nov 9 2026). They cross-fade
+/// (`FoldedArtCardLayers`); the frame keeps its size, so the layout never jumps.
 private struct FoldedArtCard: View {
     let track: TrackInfo
     let station: StationRef?
@@ -375,37 +376,38 @@ private struct FoldedArtCard: View {
         RoundedRectangle(cornerRadius: FoldedStyle.artRadius, style: .continuous)
     }
 
+    private var layers: FoldedArtCardLayers { .layers(isOnAir: isOnAir) }
+
     var body: some View {
         ZStack {
-            // One soft glow from the same art.
+            // One soft glow from the same art (none on air).
             BleedArtwork(track: track, station: station)
                 .frame(width: side * 0.88, height: side * 0.9)
                 .clipShape(RoundedRectangle(cornerRadius: 40, style: .continuous))
                 .blur(radius: 34)
-                .opacity(isOnAir ? 0.25 : 0.5)
+                .opacity(layers.glowOpacity)
                 .offset(y: 20)
             card
                 .frame(width: side, height: side)
                 .modifier(BleedArtFrame(namespace: namespace))
         }
         .frame(width: side, height: side)
+        .animation(.easeInOut(duration: FoldedArtCardLayers.crossfadeSeconds), value: isOnAir)
         .accessibilityHidden(true)
     }
 
-    @ViewBuilder
+    /// The art and the orb in one fixed frame, so the swap never changes the card's size.
     private var card: some View {
-        if isOnAir {
-            ZStack {
-                BleedArtwork(track: track, station: station).opacity(0.18)
-                DJLavaOrb(track: track, station: station, levels: speechLevel)
-                    .frame(width: side * 0.72, height: side * 0.72)
-            }
-            .clipShape(shape)
-            .foldedGlass(shape)
-        } else {
+        ZStack {
             BleedArtwork(track: track, station: station)
                 .clipShape(shape)
                 .overlay(shape.strokeBorder(FoldedStyle.hairline, lineWidth: 1))
+                .opacity(layers.artworkOpacity)
+            if layers.showsOrb {
+                DJLavaOrb(track: track, station: station, levels: speechLevel)
+                    .frame(width: side * FoldedArtCardLayers.orbFraction, height: side * FoldedArtCardLayers.orbFraction)
+                    .transition(.opacity)
+            }
         }
     }
 }
