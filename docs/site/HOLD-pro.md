@@ -44,7 +44,7 @@ stripped at the same time and are held at the end.
 ### What stays on your device (line 38)
 
 ```
-Personal items, such as calendar events, Markdown notes, shared items, library tracks and the station names you type, are never sent off your device. [PENDING: paid voice, add when it ships:] This holds even when the cloud voice is on.
+Personal items, such as calendar events, Markdown notes, shared items, library tracks and the station names you type, are never sent off your device. [PENDING: paid voice, add when it ships (owner, Nov 9 2026: "I want it all elevenlabs."; cloud-voice copy v2):] With the cloud voice on, the words the DJ speaks about them are sent to make the audio; see Cloud voice below.
 ```
 
 ### Cloud voice and Purchases sections (lines 48-64)
@@ -54,7 +54,7 @@ Personal items, such as calendar events, Markdown notes, shared items, library t
 
 Before any text leaves your device, OnAirly asks you. Until you tap "Use cloud voice", every voice stays on your device.
 
-If you turn it on, the words of each DJ break are sent over an encrypted connection to our voice server, which runs on Vercel. The server passes them on to ElevenLabs, which turns them into audio. Those words are made up of fixed DJ phrasing, the app's name, and the Apple Music catalog song titles and artist names of what you're listening to. Stations built from your own music library always use the on-device voice. Audio that comes back from the cloud voice is saved on your device like any other spoken clip, with the same 7-day limit.
+If you turn it on, the words of each DJ break are sent over an encrypted connection to our voice server, which runs on Vercel. The server passes them on to ElevenLabs, which turns them into audio. Those words are everything the DJ says: fixed DJ phrasing, song titles and artist names (including songs from your own library), the station names you type, the news and weather lines, and the personal items you approved for your briefing, such as calendar events, your shared email digest, other shared items and notes. Your location, contacts and Apple ID are not sent. Cloud clips made from personal lines are deleted by "Delete DJ clips, ratings and location". Audio that comes back from the cloud voice is saved on your device like any other spoken clip, with the same 7-day limit.
 
 - **What we don't send:** your name, Apple ID, contacts, location, calendar, notes, shared items, library tracks or the station names you type.
 - **Our server's log:** it records a random request ID, the result and the number of characters. It doesn't log the text.
@@ -74,7 +74,7 @@ Payments are handled by Apple through the App Store; we never see your payment d
 ```
 [PENDING: paid voice. When the cloud voice ships, replace the sentence above with these two lines:]
 - **With the cloud voice off:** none. OnAirly doesn't collect any data.
-- **With the cloud voice on:** song and artist names of what you're playing (usage data, not linked to you), used only to generate the voice. [PENDING: paid voice, label per #245 §3. Add a device identifier if the device check stores one.]
+- **With the cloud voice on:** the text the DJ speaks, including song and artist names, news and weather lines and the personal items you approved for your briefing, used only to generate the voice. [PENDING: paid voice, owner/Sentinel: App Privacy labels for user content now that personal text is sent.] [PENDING: paid voice, label per #245 §3. Add a device identifier if the device check stores one.]
 ```
 
 ### Children (line 78)
@@ -125,7 +125,7 @@ Check that DJ talk isn't set to Off for the station and that your device isn't m
 So the DJ can mention what's coming up in your day. It's optional, the events stay on your device, and you can turn access off in iOS Settings at any time.
 
 **What leaves my device?**
-Nothing personal. Your calendar, Markdown notes and shared items stay on your device. See our [Privacy Policy](/privacy) for the full details. [PENDING: paid voice] With the cloud voice on, only song and artist names and fixed DJ phrasing are sent to make the voice.
+Nothing personal. Your calendar, Markdown notes and shared items stay on your device. See our [Privacy Policy](/privacy) for the full details. [PENDING: paid voice] With the cloud voice on, the text of everything the DJ says, including your briefing items and the news and weather lines, is sent to make the voice.
 
 **How do I turn the cloud voice off?** [PENDING: paid voice. The switch isn't built yet.]
 Go to Settings, then Voice, and switch the cloud voice off. Nothing more is sent after that.

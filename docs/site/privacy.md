@@ -1,6 +1,6 @@
 # OnAirly Privacy Policy
 
-_Last updated: October 30, 2026_
+_Last updated: November 9, 2026_
 
 ## The short version
 
@@ -16,7 +16,7 @@ Apart from Apple Music itself, nothing leaves your device.
 - **On-device voices.** The built-in voices speak entirely on your device.
 - **Spoken clips.** So the DJ doesn't have to make the same clip twice, OnAirly saves the audio of what it says on your device, protected by iOS Data Protection. Only the audio is saved, not the written text. A clip is never played once it's 7 days old, and it's deleted the next time OnAirly runs (the app checks when it starts and every hour while it's open). Clips made from your calendar, Markdown notes or shared items are also deleted each time OnAirly starts, and right away when you stop using that source or delete the item. Like other app data, saved clips can be included in your iCloud or computer backups.
 
-Personal items, such as calendar events, Markdown notes, shared items, library tracks and the station names you type, are never sent off your device.
+Personal items, such as calendar events, Markdown notes, shared items, library tracks and the station names you type, are never sent off your device by this version of OnAirly, which speaks only with on-device voices. Internal test builds can offer a cloud voice: only if you turn it on and accept its notice, the text of everything the DJ says, including those personal items and the news and weather lines, is sent to our voice server and on to ElevenLabs to make the audio. Your location is not sent. Turning the cloud voice off stops this from the next line, and "Delete DJ clips, ratings and location" deletes the saved cloud clips made from personal lines.
 
 ## Apple Music
 

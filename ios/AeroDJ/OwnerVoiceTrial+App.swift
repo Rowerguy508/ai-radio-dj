@@ -32,8 +32,12 @@ extension VoiceRenderer {
         #elseif AERODJ_TESTER_VOICE
         // Internal TestFlight tester build (#378): ElevenLabs through an App Attest install token,
         // only after the consent sheet; on-device on any attest failure. AppAttestService+App.swift.
+        // Owner, Nov 9 2026 ("I want it all elevenlabs."): every attributed DJ line once copy v2
+        // is accepted, nothing before (`CloudVoiceConsentStore.scope`), read per cue. -Fry
+        let store = TesterCloudVoice.consentStore
         return VoiceRenderer(routes: TesterCloudVoice.compose(onDevice: base.routes), budget: base.budget,
-                             cache: base.cache, revocations: base.revocations)
+                             cache: base.cache, revocations: base.revocations,
+                             cloudScope: { store.scope })
         #else
         return base
         #endif

@@ -13,7 +13,7 @@
 | Files / Obsidian | `UIDocumentPickerViewController` / `.fileImporter` + security-scoped bookmarks | **None** — access is granted by the user's selection | On import | Pair `startAccessingSecurityScopedResource()` / `stop…`; on `bookmarkDataIsStale` or a moved/deleted file, drop access and ask the user to re-select |
 | Share Extension | `NSExtension` (`com.apple.share-services`) | `NSExtensionActivationRule` limited to text + 1 web URL; `com.apple.security.application-groups` entitlement on app **and** extension | When the user shares | Nothing stored; extension cancels with an error |
 | Microphone | `AVAudioApplication.requestRecordPermission` | `NSMicrophoneUsageDescription` | **Optional, later** (live interruption) | Feature hidden |
-| Approximate location (#200) | Core Location (`requestWhenInUseAuthorization`, `kCLLocationAccuracyReduced`) | `NSLocationWhenInUseUsageDescription`; `NSLocationDefaultAccuracyReduced` = true; never temporary full accuracy | **Optional**: only after the in-app explainer, for local weather/news | Offer a typed city or ZIP; with neither, weather and local-news lines are omitted (count only). City/region only to a news provider; coarse coordinate to WeatherKit (Apple); never to the voice service |
+| Approximate location (#200) | Core Location (`requestWhenInUseAuthorization`, `kCLLocationAccuracyReduced`) | `NSLocationWhenInUseUsageDescription`; `NSLocationDefaultAccuracyReduced` = true; never temporary full accuracy | **Optional**: only after the in-app explainer, for local weather/news | Offer a typed city or ZIP; with neither, weather and local-news lines are omitted (count only). City/region only to a news provider; coarse coordinate to WeatherKit (Apple); never to the voice service (no voice request has a location field; with cloud-voice copy v2 accepted, the words of a weather or news line are sent, see "Cloud voice" below) |
 | Notifications | `UNUserNotificationCenter.requestAuthorization` | **None** (runtime prompt, no purpose string) | **Optional** | Feature hidden |
 
 **Rules:**
@@ -29,6 +29,16 @@
 | Headline paraphrase | All builds | Nothing: Apple Foundation Models on the device (iOS 26+); otherwise the line is dropped | — | Reason codes and counts only |
 
 Citation required by GDELT's terms ("any use or redistribution of the data must include a citation to the GDELT Project and a link to this website (https://www.gdeltproject.org/)"): shown in the app with the link; the DJ also names the outlet aloud.
+
+### Third-party data flows: cloud voice (tester build; owner, Nov 9 2026: "I want it all elevenlabs.")
+
+| Consent (`CloudVoiceConsentStore.scope`) | What leaves the device | Never sent | Cache and delete |
+|---|---|---|---|
+| None, declined, Cloud voice off, or only copy **v1** accepted (`.noLines`) | Nothing: every line uses the on-device voice. A v1 acceptance reads as undecided and the sheet asks again | Everything | Cloud clips are deleted on a decline (`purgeCloudClips`) |
+| Copy **v2** accepted (`.allLines`, `CloudVoiceConsentCopy.version` 2) | The text of every attributed DJ line, to the voice proxy and ElevenLabs: presenter and catalog lines, personal briefing items (calendar, shared email digest, other shared items, notes), library tracks, typed station names, news and weather lines. Library-seed stations use the cloud voice too | Cues with no attribution; location or coordinates (no request field); contacts; Apple ID | Every clip of a line only v2 allows is tagged (`VoiceRenderer.allLinesClipTag`), so "Delete DJ clips, ratings and location" (`purgeAllPersonal`) and the launch purge remove it. News and weather clips are never cached (#200) |
+| Renderer with no consent check (owner A/B build, on-device default) (`.transitionsOnly`) | Unchanged #176 rule: attributed, non-personal transitions only | Personal, library, station-name, news and weather lines | Unchanged |
+
+Per-install, tester-tier and global character caps are server-side and unchanged.
 
 ## 2. Explicit limitations (no fabrication)
 

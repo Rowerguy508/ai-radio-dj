@@ -7,8 +7,10 @@ import Foundation
 // - WeatherKit (on the device, Apple's service): the coarse coordinate, rounded to 0.1 degree.
 // - A news provider: city and region only (`newsQuery`), never a coordinate or a ZIP.
 // - Never a voice route or the TTS proxy: no voice request has a location field
-//   (`ProxyVoiceProvider`), and every fact line carries a provenance, which keeps it on the device
-//   (`VoiceRenderer.mayLeaveDevice`). Lines say "here", not the place name.
+//   (`ProxyVoiceProvider`). Lines say "here", not the place name. A fact line carries a
+//   provenance, which keeps it on the device (`VoiceRenderer.mayLeaveDevice`) unless the
+//   listener accepted cloud-voice copy v2 (`CloudVoiceScope.allLines`): then the line's words
+//   (weather, a headline) go to the voice service, still with no location field.
 // - Never a log: diagnostics are kind, code and counts.
 // Kept: the consent answer and a typed place in UserDefaults until the listener withdraws or a
 // purge-all runs (`LocalAreaStore.listen(to:)`); a resolved device area in memory only.
