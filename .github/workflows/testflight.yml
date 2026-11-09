@@ -36,11 +36,11 @@ on:
         default: false
         type: boolean
       tester_voice:
-        # #378: ElevenLabs voice for internal testers via App Attest (AERODJ_TESTER_VOICE),
-        # after a one-time consent sheet. Internal TestFlight only. Only these builds sign with
-        # the tester entitlements file (App Attest), so only they need App Attest enabled on
-        # the App ID and a regenerated PROFILE_APP (owner, Apple portal). Other builds keep the
-        # shared AeroDJ.entitlements and the current profile.
+        # #378 / #436: ElevenLabs voice for TestFlight testers (not only the internal group) via
+        # App Attest (AERODJ_TESTER_VOICE), after a one-time consent sheet. Not for App Store.
+        # Only these builds sign with the tester entitlements file (App Attest), so only they
+        # need App Attest enabled on the App ID and a regenerated PROFILE_APP (owner, Apple
+        # portal). Other builds keep the shared AeroDJ.entitlements and the current profile.
         description: Tester cloud voice build (AERODJ_TESTER_VOICE, App Attest). Not for App Store.
         required: false
         default: false
@@ -392,7 +392,7 @@ jobs:
           case " $CONDS " in *" AERODJ_OWNER_AB "*) EXPECT=present
             echo "::warning::Owner A/B build (AERODJ_OWNER_AB). Internal TestFlight only, not for App Store." ;; esac
           case " $CONDS " in *" AERODJ_TESTER_VOICE "*)
-            echo "::warning::Tester voice build (AERODJ_TESTER_VOICE, App Attest). Internal TestFlight only, not for App Store." ;; esac
+            echo "::warning::Tester voice build (AERODJ_TESTER_VOICE, App Attest). For TestFlight testers, not for App Store." ;; esac
           if [ -n "$CONDS" ]; then EXTRA+=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited)$CONDS"); fi
           "$RUNNER_TEMP/owner-ab/check-owner-ab-build-settings.sh" "$EXPECT" "${EXTRA[@]}"
           xcodebuild archive \
@@ -437,10 +437,10 @@ jobs:
               "manageAppVersionAndBuildNumber": False,
               "provisioningProfiles": {app: app_uuid, share: share_uuid},
           }
-          if (os.environ.get("P0_DIAG") == "true" or os.environ.get("OWNER_AB") == "true"
-                  or os.environ.get("TESTER_VOICE") == "true"):
+          if (os.environ.get("P0_DIAG") == "true" or os.environ.get("OWNER_AB") == "true"):
               # App Store Connect then refuses this build for App Store review and for
-              # external testers. TEMPORARY P0 (#121 / #133). -Atlas
+              # external testers. Kept for OWNER_AB and P0_DIAG (#436). TESTER_VOICE
+              # builds must reach every TestFlight tester; still not an App Store build.
               data["testFlightInternalTestingOnly"] = True
           with open(path, "wb") as f:
               plistlib.dump(data, f)
