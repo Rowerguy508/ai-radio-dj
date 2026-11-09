@@ -762,7 +762,6 @@ public struct VoiceRenderer: Sendable {
         return cue.expiresAt == nil || cue.sourceItemID != nil
     }
 
-    ///
     /// `scope` (owner, Nov 9 2026): `.transitionsOnly` is the rule above; `.noLines` keeps every
     /// cue local; `.allLines` (consent to copy v2) lets every attributed cue go. A cue with no
     /// attribution is local-only whatever the scope.
