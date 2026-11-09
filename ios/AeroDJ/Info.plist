@@ -2,6 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Export compliance: HTTPS (URLSession), Keychain, App Attest and SHA-256 hashing only, all exempt. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<!-- #200: approximate location by default; the app never asks for temporary full accuracy. -->
 	<key>NSLocationDefaultAccuracyReduced</key>
 	<true/>

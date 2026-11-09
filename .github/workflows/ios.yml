@@ -154,6 +154,9 @@ jobs:
           # INFOPLIST_FILE merge must keep the generated keys.
           /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$PLIST" \
             | grep -qw 'audio' || { echo "UIBackgroundModes lost audio"; exit 1; }
+          # Export compliance (TestFlight): exempt encryption only (HTTPS, Keychain, App Attest, hashing).
+          /usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' "$PLIST" \
+            | grep -qx 'false' || { echo "ITSAppUsesNonExemptEncryption is not false"; exit 1; }
           /usr/libexec/PlistBuddy -c 'Print :NSCalendarsFullAccessUsageDescription' "$PLIST" \
             | grep -q '.' || { echo "NSCalendarsFullAccessUsageDescription missing"; exit 1; }
           # Display name: OnAirly on the home screen; the bundle ID stays com.aerodj.app.
