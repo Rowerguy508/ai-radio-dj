@@ -7,8 +7,10 @@ import Foundation
 // - WeatherKit (on the device, Apple's service): the coarse coordinate, rounded to 0.1 degree.
 // - A news provider: city and region only (`newsQuery`), never a coordinate or a ZIP.
 // - Never a voice route or the TTS proxy: no voice request has a location field
-//   (`ProxyVoiceProvider`), and every fact line carries a provenance, which keeps it on the device
-//   (`VoiceRenderer.mayLeaveDevice`). Lines say "here", not the place name.
+//   (`ProxyVoiceProvider`). Lines say "here", not the place name. A fact line carries a
+//   provenance, which keeps it on the device (`VoiceRenderer.mayLeaveDevice`) unless the
+//   listener accepted cloud-voice copy v2 (`CloudVoiceScope.allLines`): then the line's words
+//   (weather, a headline) go to the voice service, still with no location field.
 // - Never a log: diagnostics are kind, code and counts.
 // Kept: the consent answer and a typed place in UserDefaults until the listener withdraws or a
 // purge-all runs (`LocalAreaStore.listen(to:)`); a resolved device area in memory only.
@@ -205,13 +207,14 @@ public enum LocalAreaConsentCopy {
     public static let body = """
         OnAirly can mention your local weather and headlines between songs. It uses your approximate \
         location only, while the app is open. Your city or region is sent to the news source, and \
-        Apple Weather gets an approximate point. Your location is never sent to the voice service, \
-        and lines that use it are spoken by the on-device voice only.
+        Apple Weather gets an approximate point. Your coordinates and your location itself are never \
+        sent to the voice service. If you turn on the cloud voice, the words of weather and news \
+        lines are sent to it, and a local headline can name your city or area.
         """
     public static let useApproximate = "Use approximate location"
     public static let enterPlace = "Enter a city or ZIP instead"
     public static let notNow = "Not now"
     public static let placeFieldPrompt = "City or ZIP"
     /// NSLocationWhenInUseUsageDescription (app Info.plist).
-    public static let usageDescription = "OnAirly uses your approximate location, only while the app is open, to mention local weather and news between songs. It is never sent to the voice service."
+    public static let usageDescription = "OnAirly uses your approximate location, only while the app is open, to mention local weather and news between songs. Your location itself is never sent to the voice service."
 }

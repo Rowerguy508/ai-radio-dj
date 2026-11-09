@@ -100,7 +100,7 @@ struct AppDependencies {
                                        talkOverEnabled: { DJTalkoverFlag.isEnabled() },
                                        cloudVoiceConsent: TesterCloudVoiceConsentHooks.preparerConsent,
                                        bundledClips: bundledClips)
-        // Tester build only (Echo's N2 on #395): a decline drops prepared cloud breaks and cached cloud clips.
+        // Tester and owner A/B builds (Echo's N2 on #395, #433): a decline drops prepared cloud breaks and cached cloud clips.
         TesterCloudVoiceConsentHooks.attach(preparer: preparer, renderer: voice)
         // #401 (-Fry): local weather (WeatherKit) and, in the tester build only, local news
         // (GDELT), each fact one on-device line. Nothing is gathered and no location is read

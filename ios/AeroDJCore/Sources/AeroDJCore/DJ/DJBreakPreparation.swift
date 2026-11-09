@@ -224,7 +224,7 @@ public actor DJBreakPreparer {
             self.renderer = VoiceRenderer(routes: renderer.routes, budget: renderer.budget,
                                           cache: CloudVoiceConsentCache(base: renderer.cache, localProviders: local,
                                                                         isGranted: consent),
-                                          revocations: renderer.revocations)
+                                          revocations: renderer.revocations, cloudScope: renderer.cloudScope)
         } else {
             self.renderer = renderer
         }
@@ -310,7 +310,9 @@ public actor DJBreakPreparer {
         guard tasks[k] == nil, results[k] == nil, !taken.contains(k) else { return }
         planned[k] = djBreak
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
-        let renderer = onDeviceOnly ? self.renderer.onDeviceOnly : self.renderer
+        // Owner, Nov 9 2026: with consent to copy v2 (`.allLines`) a library station's lines may use
+        // the cloud voice too; each cue is still checked by `mayLeaveDevice` as it renders. -Fry
+        let renderer = onDeviceOnly && self.renderer.cloudScope() != .allLines ? self.renderer.onDeviceOnly : self.renderer
         let userID = userID, stationID = stationID, cap = breakCap(djBreak).talkOver(talkOverEnabled())
         // The time check is held back from the first step (its plan-time words never render).
         // Looked up here, outside the async task: no non-escaping closure is formed inside it
@@ -442,7 +444,7 @@ public actor DJBreakPreparer {
         guard let last = main.clips.last,
               let route = renderer.routes.first(where: { $0.providerID == last.audio.providerID && $0.voice.id == last.audio.voiceID })
         else { return nil }
-        return VoiceRenderer(routes: [route], budget: renderer.budget, cache: renderer.cache, revocations: renderer.revocations)
+        return renderer.narrowed(to: [route])
     }
 
     /// The planned time-check cue with its render-time words.
