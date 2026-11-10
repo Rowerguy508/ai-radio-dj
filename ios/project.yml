@@ -35,6 +35,7 @@ targets:
     dependencies:
       - package: AeroDJCore
       - target: AeroDJShare # embedded into AeroDJ.app/PlugIns
+      - sdk: CarPlay.framework # templates only; the audio entitlement is not added here
       # AeroDJPhonon is not embedded: build 12 failed App Store processing with ITMS-90755
       # (prohibited instructions) in AeroDJPhonon.framework. With no framework, dlopen returns nil
       # and speech falls back to AVSpeech, the same as AeroDJPhononEnabled off. Re-embed after the fix.
@@ -54,10 +55,13 @@ targets:
         INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: OnAirly uses your approximate location, only while the app is open, to mention local weather and news between songs. Your location itself is never sent to the voice service.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         # Explicit UIApplicationSceneManifest (app-resizability skill, scene lifecycle) with
-        # UIApplicationSupportsMultipleScenes = false: one window, because the app has one
-        # app-scoped DJ session. It lives in AeroDJ/Info.plist, merged with the generated
-        # keys above: INFOPLIST_KEY_UIApplicationSceneManifest_Generation alone generates
+        # UIApplicationSupportsMultipleScenes = false: one phone window, because the app has
+        # one app-scoped DJ session. The CarPlay audio scene is a template scene in
+        # AeroDJ/Info.plist (CPTemplateApplicationScene), not a second window. It lives in
+        # that plist, merged with the generated keys above:
+        # INFOPLIST_KEY_UIApplicationSceneManifest_Generation alone generates
         # UIApplicationSupportsMultipleScenes = true. CI asserts the built value.
+        # The CarPlay audio entitlement is intentionally absent until Apple grants it.
         INFOPLIST_FILE: AeroDJ/Info.plist
         # App Store requires an icon and declared orientations (ITMS 90022/90023/90713/90474).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
