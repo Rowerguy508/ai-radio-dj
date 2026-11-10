@@ -75,6 +75,8 @@ public struct PlaybackBoundaryDetector: Sendable {
     private var skipLoadOpen = false
     /// Set for that cut. Read with `takeSkipLoadCut()`. Never a natural end and never `noProgressEnd`.
     private var skipLoadCutPending = false
+    /// Set when the load played past the failed-start window. Read with `takeSkipLoadProgress()`.
+    private var skipLoadProgressPending = false
 
     // Build 18 P0 (-Fry): sticky per-entry facts that a system interruption cannot clear.
     /// Share of the catalog duration that counts as "this entry played through".
@@ -244,6 +246,12 @@ public struct PlaybackBoundaryDetector: Sendable {
     public mutating func takeSkipLoadCut() -> Bool {
         defer { skipLoadCutPending = false }
         return skipLoadCutPending
+    }
+
+    /// True once when the skip's song played past the failed-start window. The recovery budget resets.
+    public mutating func takeSkipLoadProgress() -> Bool {
+        defer { skipLoadProgressPending = false }
+        return skipLoadProgressPending
     }
 
     /// A clear or rewind of the song being loaded, before it has played. Not a user pause.
@@ -473,7 +481,10 @@ public struct PlaybackBoundaryDetector: Sendable {
             // #444: once this load has played past the failed-start window, a later stop is a
             // normal remote skip or a natural end, not a cut of the load.
             let minimum = Self.minimumProgress(duration: observation.duration ?? lastDuration)
-            if skipLoadOpen, (observation.position ?? 0) >= minimum { skipLoadOpen = false }
+            if skipLoadOpen, (observation.position ?? 0) >= minimum {
+                skipLoadOpen = false
+                skipLoadProgressPending = true
+            }
         }
         if !settling, let position = observation.position {
             if observation.isPlaying, let furthest = lastPosition, position < furthest,

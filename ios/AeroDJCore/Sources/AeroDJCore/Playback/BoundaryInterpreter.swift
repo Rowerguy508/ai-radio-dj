@@ -79,6 +79,11 @@ public struct BoundaryInterpreter: Sendable {
         detector.takeSkipLoadCut()
     }
 
+    /// #444: true once when that load played past the failed-start window.
+    public mutating func takeSkipLoadProgress() -> Bool {
+        detector.takeSkipLoadProgress()
+    }
+
     public mutating func interpret(
         _ observation: PlaybackObservation,
         queueIndex: Int,

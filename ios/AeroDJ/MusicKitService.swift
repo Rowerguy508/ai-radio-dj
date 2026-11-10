@@ -214,7 +214,8 @@ final class MusicKitService: ObservableObject {
         #if DEBUG
         PlaybackCallLog.shared.recordPlay()
         #endif
-        // A new queue is not the song a skip was loading. A later clear is not that load's cut.
+        // A new queue is not the song a skip was loading. A scheduled recovery must not replace it.
+        skipCoordinator.invalidate(.queueReplaced)
         boundaries.setSkipLoadInFlight(false)
         sessionPolicy.userPlay()
         // Build 9 P0 (-Atlas): every older start, watchdog and boundary is stale from here.
@@ -264,7 +265,8 @@ final class MusicKitService: ObservableObject {
 
     /// The user pressed pause. A DJ line that is speaking stops too.
     func pause() {
-        // The user stopped playback. Do not reload a skip's song over that pause.
+        // A queued Next or a reload must not call userPlay() over this pause.
+        skipCoordinator.invalidate(.userPause)
         boundaries.setSkipLoadInFlight(false)
         cancelPlaybackConfirmTimeout()
         _ = sessionPolicy.userPause()
@@ -403,11 +405,12 @@ final class MusicKitService: ObservableObject {
 
     /// A user skip is not a natural boundary: no DJ break is triggered by it.
     ///
-    /// #444 (-Echo): a second call while this one is awaiting `play()` does not start another
-    /// load. It stores one more advance (a third call stores nothing). The chain plays that
-    /// follow-up after the first load settles. A MusicKit clear of the song being loaded does
-    /// not pause: the stored follow-up plays, or that song is loaded again when nothing is stored.
+    /// #444 (-Echo): a second explicit Next while this one is awaiting `play()` stores one more
+    /// advance (a third stores nothing). A MusicKit clear of the song being loaded recovers that
+    /// song; it does not mint another Next. Pause, route loss, and an interruption invalidate the
+    /// chain so a stored advance or a reload cannot clear that hold.
     func skip() async throws {
+        installSkipGate()
         switch skipCoordinator.requestAdvance() {
         case .queueOneMore, .ignore:
             return
@@ -415,20 +418,40 @@ final class MusicKitService: ObservableObject {
             break
         }
         boundaries.setSkipLoadInFlight(true)
-        await skipCoordinator.runChain { job in
-            await self.oneSkip(job)
-        }
-        // The song never became audible. Drop the load-cut window so a later empty queue
-        // is not reloaded on every poll. A song that is playing keeps the window until it
-        // passes the failed-start mark; a clear before then reloads it once.
+        await runSkipChain(first: .advance)
         if !isPlaying { boundaries.setSkipLoadInFlight(false) }
     }
 
-    /// One step of `skip()`. `.advance` is the existing skip body (stop the break, drop its
-    /// prepared break, load the next song). `.reload` loads the song already selected, after
-    /// MusicKit cleared that load, and does not walk the queue again.
-    private func oneSkip(_ job: SkipJob) async -> SkipAdvanceOutcome {
-        if job == .reload, !sessionPolicy.userWantsPlayback { return .stopChain }
+    private func installSkipGate() {
+        guard skipCoordinator.stepGate == nil else { return }
+        skipCoordinator.stepGate = { [weak self] in
+            guard let self else { return (false, true) }
+            return (self.sessionPolicy.userWantsPlayback, self.sessionPolicy.pausedBySystem)
+        }
+    }
+
+    private func runSkipChain(first: SkipJob = .advance) async {
+        let surface: @MainActor (SkipTerminalFailure) -> Void = { [weak self] failure in
+            self?.surfaceSkipFailure(failure)
+        }
+        let resume: @MainActor () async -> Void = { [weak self] in
+            await self?.resumeIfAllowed()
+        }
+        let body: @MainActor (SkipJob) async -> SkipLoadResult = { [weak self] job in
+            guard let self else { return .cancelled }
+            return await self.oneSkip(job)
+        }
+        if first == .reload {
+            await skipCoordinator.runRecovery(surface: surface, resume: resume, body)
+        } else {
+            await skipCoordinator.runChain(surface: surface, resume: resume, body)
+        }
+    }
+
+    /// One step of `skip()`. `.advance` is an explicit Next: it may call `userPlay()`.
+    /// `.reload` loads the song already selected and must not clear a system hold.
+    private func oneSkip(_ job: SkipJob) async -> SkipLoadResult {
+        guard skipCoordinator.allowsStep() else { return .cancelled }
         switch job {
         case .advance:
             boundaries.userRequestedChange()
@@ -447,38 +470,66 @@ final class MusicKitService: ObservableObject {
                 stateMachine.apply(.stop)
                 return .queueStopped
             }
+            // Commit the target before the load can throw, so a failure stays on this song
+            // instead of reloading the one the snapshot already left.
+            queueIndex = next
+            currentTrack = queue[next]
             send(.userSkipped(nextIndex: next))
+            if queue[next].song == nil {
+                return .failed(.songUnavailable, target: next)
+            }
             return await loadSkippedSong(at: next, attempt: attempt)
         case .reload:
+            guard skipCoordinator.allowsStep() else { return .cancelled }
             boundaries.userRequestedChange()
-            sessionPolicy.userPlay()
             let attempt = beginAttempt(userChangedQueue: false)
-            // The break was already stopped by the advance. Stop it again in case a line
-            // started while the load was failing. Do not cut the song we are reloading:
-            // `onSongSkipped` would drop the break `songStarted` just planned for it.
+            // Stop a line that started while the load was failing. Do not cut the song we are
+            // reloading: `onSongSkipped` would drop the break `songStarted` just planned for it.
+            // Do not call `userPlay()`: that would clear a route or interruption hold.
             onBreakMustStop?(nil)
             guard queue.indices.contains(queueIndex) else {
                 boundaries.setSkipLoadInFlight(false)
                 return .queueStopped
             }
             boundaries.setSkipLoadInFlight(true)
+            if queue[queueIndex].song == nil {
+                return .failed(.songUnavailable, target: queueIndex)
+            }
             return await loadSkippedSong(at: queueIndex, attempt: attempt)
         }
     }
 
-    /// `startTrack` for a skip step. A superseded attempt belongs to a newer start: this chain
-    /// stops. Any other failure leaves the player not audible so the chain can reload or follow
-    /// the one queued advance. It does not apply `.noProgressEnd` (that pause is the stuck player).
-    private func loadSkippedSong(at index: Int, attempt: PlaybackAttemptID) async -> SkipAdvanceOutcome {
+    /// `startTrack` for a skip step. A superseded attempt or a hold that landed during the await
+    /// stops the chain. A throw is a terminal failure of this target, not a silent pause and not
+    /// a jump to another song.
+    private func loadSkippedSong(at index: Int, attempt: PlaybackAttemptID) async -> SkipLoadResult {
         do {
             try await startTrack(at: index, autoplay: true, userInitiated: true, attempt: attempt)
         } catch MusicKitError.superseded {
-            return .stopChain
+            return .cancelled
         } catch {
-            return .notPlaying
+            let message = Self.playbackFailureMessage(error, attempt: attempt)
+            if message == PlaybackFailureCopy.message(for: .songUnavailable) {
+                return .failed(.songUnavailable, target: index)
+            }
+            return .failed(.couldNotStart, target: index)
         }
-        if !attempts.isCurrent(attempt) { return .stopChain }
-        return isPlaying ? .playing : .notPlaying
+        if !attempts.isCurrent(attempt) { return .cancelled }
+        if !sessionPolicy.userWantsPlayback || sessionPolicy.pausedBySystem { return .cancelled }
+        return isPlaying ? .playing : .loadCut(target: index)
+    }
+
+    /// Recoverable banner and honest paused transport for a skip that cannot start. The queue
+    /// index is left on the song that failed.
+    private func surfaceSkipFailure(_ failure: SkipTerminalFailure) {
+        guard let attempt = attempts.current else { return }
+        let effect = SkipFailureSurface.effect(failure, attempt: attempt, current: attempts.current)
+        guard effect != .none else { return }
+        if effect.cancelsConfirm { cancelPlaybackConfirmTimeout() }
+        if let message = effect.message { lastError = message }
+        isPlaying = false
+        boundaries.setSkipLoadInFlight(false)
+        for event in effect.events { send(event) }
     }
 
     /// Loads one song into the player. Only the current song is ever queued, so it ends on
@@ -743,6 +794,10 @@ final class MusicKitService: ObservableObject {
             }
         }
         let interpreted = boundaries.interpret(observation, queueIndex: queueIndex, queueCount: queue.count)
+        if boundaries.takeSkipLoadProgress() {
+            // Real playback progress. This target may be recovered again after a later skip.
+            skipCoordinator.noteProgress()
+        }
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.endPoll(interpreted, after: P0DetectorState(boundaries))
         #endif
@@ -757,9 +812,8 @@ final class MusicKitService: ObservableObject {
                 return
             }
             if boundaries.takeSkipLoadCut() {
-                // #444 (-Echo): Next cut the song this skip is loading, before it played.
-                // Not a failed start. `noteSkipLoadCut` reloads it, or leaves the one queued
-                // follow-up to play. It never sends `.userPaused`.
+                // #444 (-Echo): an ambiguous clear of the song being loaded. Recover that song.
+                // It is not a second Next, and it does not pause.
                 logPlayback("skipLoadCut index=\(queueIndex)")
                 noteSkipLoadCut()
                 return
@@ -806,23 +860,23 @@ final class MusicKitService: ObservableObject {
         }
     }
 
-    /// #444: MusicKit cleared or rewound the song a skip is loading. While the chain is running,
-    /// the cut folds into it (one reload, or the one queued advance). Once the chain has
-    /// finished, the same cut reloads that song instead of pausing on an empty queue.
+    /// #444: MusicKit cleared or rewound the song a skip is loading. Recover that song once.
+    /// An explicit Next already stored is not duplicated. Past the budget, surface the error.
     private func noteSkipLoadCut() {
-        if skipCoordinator.isInFlight {
-            skipCoordinator.noteLoadCut()
-            _ = skipCoordinator.requestAdvance()
+        installSkipGate()
+        guard sessionPolicy.userWantsPlayback, !sessionPolicy.pausedBySystem else { return }
+        switch skipCoordinator.noteLoadCut(target: queueIndex) {
+        case .folded:
             return
-        }
-        guard skipCoordinator.beginRecovery() else { return }
-        boundaries.setSkipLoadInFlight(true)
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            await self.skipCoordinator.runChain(first: .reload) { job in
-                await self.oneSkip(job)
+        case .recover:
+            boundaries.setSkipLoadInFlight(true)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.runSkipChain(first: .reload)
+                if !self.isPlaying { self.boundaries.setSkipLoadInFlight(false) }
             }
-            if !self.isPlaying { self.boundaries.setSkipLoadInFlight(false) }
+        case .exhausted:
+            surfaceSkipFailure(.couldNotStart)
         }
     }
 
@@ -942,8 +996,25 @@ final class MusicKitService: ObservableObject {
 
     private func applySessionUngated(_ notice: AudioSessionNotice) async {
         let directive = sessionPolicy.handle(notice, breakIsActive: isBreakActive)
+        switch notice {
+        case .interruptionBegan:
+            // The in-flight load may finish; its follow-up and any reload must not clear this hold.
+            skipCoordinator.invalidate(.interruptionBegan)
+            boundaries.setSkipLoadInFlight(false)
+        case let .interruptionEnded(shouldResume):
+            // If a chain is still in flight, it resumes once when it exits. The permission is not dropped.
+            skipCoordinator.noteInterruptionEnded(shouldResume: shouldResume,
+                                                 mayAutoResume: sessionPolicy.mayAutoResume)
+        case .routeChanged(.oldDeviceUnavailable):
+            skipCoordinator.invalidate(.routeRemoved)
+            boundaries.setSkipLoadInFlight(false)
+        case .routeChanged(.other):
+            break
+        }
         performSessionStep(notice, directive)
-        if directive == .resumeIfPermitted { await resumeIfAllowed() }
+        if directive == .resumeIfPermitted, !skipCoordinator.isInFlight {
+            await resumeIfAllowed()
+        }
     }
 
     /// The synchronous part of one notice: logging, boundary bookkeeping and any suspend.

@@ -31,9 +31,9 @@ final class LockScreenDoubleSkipTests: XCTestCase {
         show.assertPlaying(index: 2)
     }
 
-    /// MusicKit's own Next, twice: the first clear is a remote skip, the second clears the song
-    /// that skip is loading. The second one must not pause.
-    func testTwoMusicKitClearsWhileLoadingAdvanceTwiceAndDoNotPause() async {
+    /// The first clear is a real remote skip. The second clears the song that skip is loading:
+    /// an ambiguous cut recovers that song and does not pause or take another one.
+    func testMusicKitClearWhileLoadingRecoversTheSelectedSong() async {
         let show = Show()
         show.primePlaying()
         show.feed(show.cleared())
@@ -42,14 +42,14 @@ final class LockScreenDoubleSkipTests: XCTestCase {
         XCTAssertFalse(show.pausedByNoProgress)
         show.finishLoad()
         await show.untilIdle()
-        show.assertPlaying(index: 2)
+        show.assertPlaying(index: 1)
         XCTAssertFalse(show.pausedByNoProgress)
         XCTAssertNil(show.unexpectedBoundary)
     }
 
     /// The other MusicKit shape: rewind to 0:00, then the loaded song rewound again before it
-    /// has played past the failed-start window.
-    func testTwoMusicKitRewindsWhileLoadingAdvanceTwiceAndDoNotPause() async {
+    /// has played past the failed-start window. Recover it. Do not take the next song.
+    func testMusicKitRewindWhileLoadingRecoversTheSelectedSong() async {
         let show = Show()
         show.primePlaying()
         show.feed(show.rewound())
@@ -60,7 +60,7 @@ final class LockScreenDoubleSkipTests: XCTestCase {
         XCTAssertFalse(show.pausedByNoProgress)
         show.finishLoad()
         await show.untilIdle()
-        show.assertPlaying(index: 2)
+        show.assertPlaying(index: 1)
         XCTAssertFalse(show.pausedByNoProgress)
     }
 
@@ -160,7 +160,12 @@ final class LockScreenDoubleSkipTests: XCTestCase {
         XCTAssertTrue(source.contains("skipCoordinator.requestAdvance()"))
         XCTAssertTrue(source.contains("skipCoordinator.runChain"))
         XCTAssertTrue(source.contains("takeSkipLoadCut()"))
-        XCTAssertTrue(source.contains("noteLoadCut()"))
+        XCTAssertTrue(source.contains("noteLoadCut(target:"))
+        XCTAssertTrue(source.contains("invalidate(.userPause)"))
+        XCTAssertTrue(source.contains("invalidate(.routeRemoved)"))
+        XCTAssertTrue(source.contains("invalidate(.interruptionBegan)"))
+        XCTAssertTrue(source.contains("noteInterruptionEnded"))
+        XCTAssertFalse(source.contains("noteLoadCut()\n"), "a load cut must not use the old no-target call")
         XCTAssertTrue(source.contains("await self?.skip()") || source.contains("await self.skip()"),
                       "nextTrackCommand still targets skip()")
         XCTAssertTrue(source.contains("if skipCoordinator.isInFlight { return }"),
@@ -311,16 +316,20 @@ private final class Show {
             return
         }
         if boundaries.takeSkipLoadCut() {
-            if coordinator.isInFlight {
-                coordinator.noteLoadCut()
-                _ = coordinator.requestAdvance()
-            } else if coordinator.beginRecovery() {
+            switch coordinator.noteLoadCut(target: index) {
+            case .folded:
+                return
+            case .recover:
                 boundaries.setSkipLoadInFlight(true)
                 Task {
-                    await self.coordinator.runChain(first: .reload) { job in
+                    await self.coordinator.runRecovery { job in
                         await self.perform(job)
                     }
                 }
+            case .exhausted:
+                pausedByNoProgress = true
+                audible = false
+                engine.apply(.userPaused)
             }
             return
         }
@@ -363,7 +372,7 @@ private final class Show {
         audible = true
     }
 
-    private func perform(_ job: SkipJob) async -> SkipAdvanceOutcome {
+    private func perform(_ job: SkipJob) async -> SkipLoadResult {
         switch job {
         case .advance:
             let cut = index

@@ -1,61 +1,147 @@
 import Foundation
 
 /// What one step of a skip did to the player.
-public enum SkipAdvanceOutcome: Equatable, Sendable {
-    /// The song this step loaded is audible.
+public enum SkipLoadResult: Equatable, Sendable {
+    /// The selected target is audible, and no load cut was observed for it.
     case playing
-    /// The skip walked off the end of the queue on purpose. Playback is stopped.
+    /// The skip walked off the end of the queue on purpose.
     case queueStopped
-    /// The load returned and the player is not audible (MusicKit cleared it, or `play()` failed).
-    case notPlaying
-    /// The user paused, or a newer start owns the player. Do not reload and do not advance.
-    case stopChain
+    /// MusicKit cleared or rewound `target` before it played. Not a new Next.
+    case loadCut(target: Int)
+    /// The user paused, a hold landed, or a newer start owns the player.
+    case cancelled
+    /// The song cannot be started. Stay on `target` and surface the error.
+    case failed(SkipTerminalFailure, target: Int)
 }
 
-/// One load inside a skip chain. `.advance` cuts the current song and loads the next.
-/// `.reload` loads the song already selected again, after MusicKit cleared that load.
+/// Why a skip load will not succeed by trying again on a different song.
+public enum SkipTerminalFailure: Equatable, Sendable {
+    /// The queue entry has no playable song. Do not reload a different index.
+    case songUnavailable
+    /// `prepareToPlay` / `play` failed, and the one same-target recovery is spent.
+    case couldNotStart
+}
+
+/// One load inside a skip chain. `.advance` is an explicit Next. `.reload` plays the
+/// already selected target again and must not clear a system hold.
 public enum SkipJob: Equatable, Sendable {
     case advance
     case reload
 }
 
-/// #444 (-Echo): lock-screen Next can arrive again while `MusicKitService.skip()` is still
-/// awaiting `play()`, and MusicKit's own Next can clear the song that load just queued.
-///
-/// Two `skip()` bodies at once both call `play()` on the shared player, and the second clear
-/// (the new song has not played 2 s) is a failed start: `StartFailurePolicy` sends `.userPaused`
-/// and the MusicKit queue is already empty, so nothing resumes.
-///
-/// One chain runs at a time. A second request while it is in flight stores exactly one more
-/// advance. A third is ignored. A clear of the song being loaded reloads that song when no
-/// further advance is waiting, and never pauses.
+/// Why a queued follow-up or a recovery must not run.
+public enum SkipInvalidation: Equatable, Sendable {
+    case userPause
+    case routeRemoved
+    case interruptionBegan
+    case queueReplaced
+}
+
+/// What an ambiguous pre-progress clear asks the caller to do. It never mints a Next.
+public enum LoadCutDisposition: Equatable, Sendable {
+    /// A chain is already running. It recovers the selected track, or plays the one
+    /// explicit follow-up already stored. This observation is not a second command.
+    case folded
+    /// No chain is running and this target still has a recovery. Start `runRecovery`.
+    case recover
+    /// This target has already been recovered since the last real progress or user Next.
+    /// Surface a recoverable error. Do not load again.
+    case exhausted
+}
+
+/// The banner and transport for a skip that cannot start, using the same shape as a thrown start.
+public enum SkipFailureSurface {
+    public static func effect(_ failure: SkipTerminalFailure, attempt: PlaybackAttemptID,
+                              current: PlaybackAttemptID?) -> StartFailureEffect {
+        guard current == attempt else { return .none }
+        let message = PlaybackFailureCopy.message(for: failure.kind)
+        return StartFailureEffect(
+            pausesPlayer: false,
+            cancelsConfirm: true,
+            events: [
+                .errorRaised(PlaybackError(kind: .playbackFailed, message: message, isRecoverable: true)),
+                .userPaused
+            ],
+            message: message
+        )
+    }
+}
+
+extension SkipTerminalFailure {
+    var kind: PlaybackFailureKind {
+        switch self {
+        case .songUnavailable: .songUnavailable
+        case .couldNotStart: .couldNotStart
+        }
+    }
+}
+
+/// #444 (-Echo): one skip chain. A second explicit Next while it is loading stores one
+/// follow-up. An ambiguous MusicKit clear of the song being loaded recovers that song;
+/// it is not another Next. A later Pause, route loss, interruption, or queue replacement
+/// invalidates the chain so the follow-up and any reload cannot call `userPlay()` over the hold.
 @MainActor
 public final class SkipCoordinator {
-    /// What `requestAdvance()` tells the caller to do.
+    /// One automatic recovery of a target until real playback progress or a new explicit Next.
+    public static let recoveryLimit = 1
+
     public enum Intake: Equatable, Sendable {
-        /// This caller starts `runChain`. Nobody else is skipping.
         case begin
-        /// A chain is running and no follow-up was stored yet. Do not load and do not pause.
         case queueOneMore
-        /// A follow-up is already stored, or this chain has already begun its one follow-up.
         case ignore
     }
 
+    public private(set) var generation = 0
     public private(set) var isInFlight = false
+    /// An interruption ended with permission to resume while this chain was still in flight.
+    public private(set) var resumeOwed = false
+
+    /// Read at the start of each step. Nil in tests that never pause or hold: only the generation applies.
+    public var stepGate: (@MainActor () -> (userWantsPlayback: Bool, pausedBySystem: Bool))?
+
     private var chainRunning = false
+    /// Generation when this chain was authorized. A later pause or hold does not become the step's generation.
+    private var authorizedGeneration = 0
     private var queued = false
-    /// The one follow-up has started. Further advances wait until this chain finishes.
     private var sealed = false
-    /// MusicKit cleared the song the current job is loading.
     private var loadCut = false
+    private var pendingCutTarget: Int?
+    private var recoveryTarget: Int?
+    private var recoveries = 0
+    private var terminalSurfaced = false
+    private var stepGeneration = 0
 
     public init() {}
 
-    /// A lock-screen Next, the in-app Skip button, or a real mid-song remote skip
-    /// (the song had already played). The second one while a chain is running queues one
-    /// advance. The third is ignored.
+    /// Pause, route loss, interruption began, or a new queue. Drops a stored follow-up.
+    /// The in-flight load is left to finish; the next step sees the new generation and does not run.
+    public func invalidate(_ reason: SkipInvalidation) {
+        generation += 1
+        queued = false
+        resumeOwed = false
+        if reason == .queueReplaced { resetBudget() }
+    }
+
+    /// Call after the session policy has applied the end. Owed only while a chain is in flight,
+    /// so the chain can resume once when it exits. A chain that is not running resumes immediately
+    /// through the existing `resumeIfAllowed` path.
+    public func noteInterruptionEnded(shouldResume: Bool, mayAutoResume: Bool) {
+        guard isInFlight else { return }
+        resumeOwed = shouldResume && mayAutoResume
+    }
+
+    /// The loaded song played past the failed-start window. This target may be recovered again
+    /// after a later skip.
+    public func noteProgress() {
+        resetBudget()
+    }
+
+    /// An explicit Next: the in-app button, `nextTrackCommand`, or a remote skip of a song that
+    /// had already played. The second one while a chain is running queues one advance. The third
+    /// is ignored. A load cut must not call this.
     public func requestAdvance() -> Intake {
         if !isInFlight {
+            authorizedGeneration = generation
             isInFlight = true
             queued = false
             sealed = false
@@ -66,71 +152,140 @@ public final class SkipCoordinator {
         return .queueOneMore
     }
 
-    /// The song being loaded was cleared or rewound before it played (`takeSkipLoadCut`).
-    /// The chain reloads it, unless a follow-up advance is already the thing that will play.
-    public func noteLoadCut() {
-        guard isInFlight else { return }
-        loadCut = true
+    /// A pre-progress clear or rewind. Recovers `target` or folds into the chain. Never queues a Next.
+    public func noteLoadCut(target: Int) -> LoadCutDisposition {
+        pendingCutTarget = target
+        if isInFlight {
+            loadCut = true
+            return .folded
+        }
+        guard budgetAllows(target) else {
+            if terminalSurfaced { return .folded }
+            terminalSurfaced = true
+            return .exhausted
+        }
+        guard beginRecovery() else { return .folded }
+        return .recover
     }
 
-    /// No chain is running, but the song a skip just loaded was cut before it played.
-    /// The caller starts `runChain(first: .reload)` so the player is not left paused.
-    public func beginRecovery() -> Bool {
+    private func beginRecovery() -> Bool {
         guard !isInFlight, !chainRunning else { return false }
+        authorizedGeneration = generation
         isInFlight = true
-        queued = false
-        sealed = false
-        loadCut = false
         return true
     }
 
-    /// Runs the skip chain. Only the caller that received `.begin` or `beginRecovery()`
-    /// may enter, and a second entry while it is running does nothing.
-    /// `body` is the existing skip load (`MusicKitService.skip`'s one advance, or a reload
-    /// of the song already selected). A `requestAdvance()` or `noteLoadCut()` during `body`
-    /// is picked up when that load returns.
+    /// True for the step that was just started, and only while the user still wants playback
+    /// and the system is not holding it.
+    public func allowsStep() -> Bool {
+        guard stepGeneration == generation else { return false }
+        guard let stepGate else { return true }
+        let gate = stepGate()
+        return gate.userWantsPlayback && !gate.pausedBySystem
+    }
+
     public func runChain(first: SkipJob = .advance,
-                         _ body: @MainActor (SkipJob) async -> SkipAdvanceOutcome) async {
+                         surface: (@MainActor (SkipTerminalFailure) -> Void)? = nil,
+                         resume: (@MainActor () async -> Void)? = nil,
+                         _ body: @MainActor (SkipJob) async -> SkipLoadResult) async {
         guard !chainRunning else { return }
         chainRunning = true
         isInFlight = true
-        defer {
-            chainRunning = false
-            isInFlight = false
-            queued = false
-            sealed = false
-            loadCut = false
-        }
+        let ticket = authorizedGeneration
         var job = first
-        var didReload = false
         while true {
-            // A cut noted before this load started belongs to the previous song.
-            loadCut = false
-            let outcome = await body(job)
-            let cut = loadCut
-            switch outcome {
-            case .stopChain, .queueStopped:
-                return
-            case .playing, .notPlaying:
-                let audible = outcome == .playing && !cut
-                if queued && !sealed {
-                    queued = false
-                    sealed = true
-                    didReload = false
-                    job = .advance
-                    continue
+            stepGeneration = ticket
+            guard allowsStep() else { break }
+            if job == .advance {
+                resetBudget()
+            } else if let target = pendingCutTarget {
+                // The reload is the one recovery of this target. A later clear does not get another.
+                guard budgetAllows(target) else {
+                    if !terminalSurfaced {
+                        terminalSurfaced = true
+                        surface?(.couldNotStart)
+                    }
+                    break
                 }
-                if audible { return }
-                // The song we meant to play is not audible. Load it again once.
-                // A follow-up that was already sealed stays on that song: reloading it
-                // does not walk to a third track.
-                if !didReload {
-                    didReload = true
+                consume(target)
+            }
+            loadCut = false
+            let captured = generation
+            let result = await body(job)
+            guard captured == generation, allowsStep() else { break }
+            switch result {
+            case .cancelled, .queueStopped:
+                break
+            case let .failed(failure, target):
+                // A throw is not a load cut. One same-target retry, then the recoverable error.
+                // An unavailable song is never retried onto a different index.
+                if failure != .songUnavailable, job == .advance, budgetAllows(target) {
+                    pendingCutTarget = target
                     job = .reload
                     continue
                 }
-                return
+                surface?(failure)
+                terminalSurfaced = true
+                break
+            case .playing, .loadCut:
+                if queued, !sealed, job == .advance {
+                    // The explicit follow-up is the second Next. Its MusicKit observation is not another one.
+                    queued = false
+                    sealed = true
+                    job = .advance
+                    continue
+                }
+                let cut: Int? = {
+                    if case let .loadCut(target) = result { return target }
+                    if loadCut { return pendingCutTarget }
+                    return nil
+                }()
+                guard let target = cut else { break }
+                guard budgetAllows(target) else {
+                    if !terminalSurfaced {
+                        terminalSurfaced = true
+                        surface?(.couldNotStart)
+                    }
+                    break
+                }
+                pendingCutTarget = target
+                job = .reload
+                continue
             }
+            break
         }
+        chainRunning = false
+        isInFlight = false
+        queued = false
+        sealed = false
+        loadCut = false
+        let owed = resumeOwed
+        resumeOwed = false
+        if owed, let resume { await resume() }
+    }
+
+    public func runRecovery(surface: (@MainActor (SkipTerminalFailure) -> Void)? = nil,
+                            resume: (@MainActor () async -> Void)? = nil,
+                            _ body: @MainActor (SkipJob) async -> SkipLoadResult) async {
+        await runChain(first: .reload, surface: surface, resume: resume, body)
+    }
+
+    private func budgetAllows(_ target: Int) -> Bool {
+        if recoveryTarget != target { return true }
+        return recoveries < Self.recoveryLimit
+    }
+
+    private func consume(_ target: Int) {
+        if recoveryTarget != target {
+            recoveryTarget = target
+            recoveries = 0
+        }
+        recoveries += 1
+    }
+
+    private func resetBudget() {
+        recoveryTarget = nil
+        recoveries = 0
+        terminalSurfaced = false
     }
 }
