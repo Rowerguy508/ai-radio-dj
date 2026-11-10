@@ -145,6 +145,33 @@ public struct CarPlayScreenModel: Equatable, Sendable {
     }
 }
 
+/// What `updateList` compares so a now-playing change still refreshes the nav button
+/// when the rows themselves are unchanged.
+public struct CarPlayListIdentity: Equatable, Sendable {
+    public let titles: [String]
+    public let ids: [String]
+    public let names: [String]
+    public let details: [String?]
+    public let symbols: [String]
+    public let playing: [Bool]
+    public let hints: [String?]
+    public let notice: String?
+    /// True when the Now Playing navigation button should be on the list.
+    public let hasNowPlaying: Bool
+
+    public init(_ model: CarPlayScreenModel) {
+        titles = model.sections.map(\.title)
+        ids = model.rows.map(\.id)
+        names = model.rows.map(\.name)
+        details = model.rows.map(\.detail)
+        symbols = model.rows.map(\.symbol.rawValue)
+        playing = model.rows.map(\.showsPlayingIndicator)
+        hints = model.sections.map(\.hint)
+        notice = model.accessNotice
+        hasNowPlaying = model.nowPlaying != nil
+    }
+}
+
 public enum CarPlayScreen {
     public static let yourStationsTitle = "Your stations"
     public static let builtInTitle = "Built-in"

@@ -197,6 +197,22 @@ final class CarPlayDisplayTests: XCTestCase {
         XCTAssertEqual(listed.rows.map(\.symbol), [.createdStation, .morningCalm, .lateNight])
     }
 
+    func testNowPlayingButtonAppearsAndDisappearsWhenTheSongDoes() {
+        let idle = screen(track: nil)
+        let track = TrackInfo(id: "song", title: "Slow Burn", artistName: "Neon Harbor", artworkURL: artwork)
+        let on = screen(track: track)
+        XCTAssertEqual(idle.rows.map(\.id), on.rows.map(\.id))
+        XCTAssertEqual(idle.rows.map(\.name), on.rows.map(\.name))
+        XCTAssertEqual(idle.rows.map(\.showsPlayingIndicator), on.rows.map(\.showsPlayingIndicator))
+        let hidden = CarPlayListIdentity(idle)
+        let shown = CarPlayListIdentity(on)
+        XCTAssertFalse(hidden.hasNowPlaying)
+        XCTAssertTrue(shown.hasNowPlaying)
+        XCTAssertNotEqual(hidden, shown, "nil to a song shows the Now Playing button")
+        XCTAssertNotEqual(shown, hidden, "the song ending hides the Now Playing button")
+        assertNoSecrets(idle.visibleText + on.visibleText)
+    }
+
     func testPlayingIndicatorFollowsTheStationOnAir() {
         let track = TrackInfo(id: "song", title: "Slow Burn", artistName: "Neon Harbor", artworkURL: artwork)
         let playing = screen(track: track, station: StationRef(id: "late", name: "Late Night"), transport: .playing)

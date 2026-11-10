@@ -45,7 +45,7 @@ final class CarPlaySession {
     private var opened: StationRef?
     private var watchers = Set<AnyCancellable>()
     private var watchGeneration = 0
-    private var listIdentity: ListIdentity?
+    private var listIdentity: CarPlayListIdentity?
     private var lastPublication: CarPlayNowPlayingPublication?
     private let bridge = CarPlayNowPlayingBridge()
 
@@ -157,7 +157,7 @@ final class CarPlaySession {
 
     private func updateList(_ model: CarPlayScreenModel) {
         guard let interfaceController else { return }
-        let identity = ListIdentity(model)
+        let identity = CarPlayListIdentity(model)
         guard identity != listIdentity || listTemplate == nil else { return }
         listIdentity = identity
 
@@ -232,24 +232,3 @@ final class CarPlaySession {
     }
 }
 
-private struct ListIdentity: Equatable {
-    let titles: [String]
-    let ids: [String]
-    let names: [String]
-    let details: [String?]
-    let symbols: [String]
-    let playing: [Bool]
-    let hints: [String?]
-    let notice: String?
-
-    init(_ model: CarPlayScreenModel) {
-        titles = model.sections.map(\.title)
-        ids = model.rows.map(\.id)
-        names = model.rows.map(\.name)
-        details = model.rows.map(\.detail)
-        symbols = model.rows.map(\.symbol.rawValue)
-        playing = model.rows.map(\.showsPlayingIndicator)
-        hints = model.sections.map(\.hint)
-        notice = model.accessNotice
-    }
-}
