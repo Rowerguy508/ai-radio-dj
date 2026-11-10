@@ -1,6 +1,7 @@
 import AeroDJCore
 import Foundation
 import OSLog
+import UIKit
 
 /// Station queue (-Atlas): makes the station the listener created or saved what plays.
 ///
@@ -38,6 +39,8 @@ final class StationQueuePlayer {
     /// The song tap's briefing provider (`LiveQueueBriefing.provider`), read when a station starts.
     /// Nil until `start(briefing:)`: no personal update (fails closed).
     private var briefing: (@MainActor () -> ApprovedShowHandoff)?
+    /// #445: the foreground observer token (kept for the app's lifetime, like the type itself).
+    private var foregroundObserver: NSObjectProtocol?
 
     /// `ratings`: the committed station's song ratings (`StationRatingsModel.bias`, PR B). Read on
     /// every build and hand-off; never logged, never passed to the DJ or a voice.
@@ -88,6 +91,14 @@ final class StationQueuePlayer {
             return { await self.play(tracks, .idlePlayStart) }
         }
         feed.follow(station)
+        // #445 (-Atlas): the time of day is re-read from the clock when the listener presses Play
+        // and when the app comes back to the foreground. A new day part re-plans the DJ's breaks
+        // (same day part: nothing changes). Never captured at launch or station start.
+        music.onUserResumed = { [weak self] in self?.djSession.timeOfDayMayHaveChanged() }
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.djSession.timeOfDayMayHaveChanged() }
+        }
     }
 
     /// A created-station row was opened (Orion, #213). User tap: authorize, apply the recipe, and when
