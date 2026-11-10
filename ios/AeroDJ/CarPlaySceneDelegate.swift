@@ -27,10 +27,10 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 }
 
-/// The car UI. Station rows and now playing come from `CarPlayScreen`. Starting a
-/// station calls `openCreatedStation` or `resume`. Next and previous are not handled
-/// here: next is the remote command `MusicKitService` already installed, and previous
-/// stays disabled.
+/// The car UI. Station rows and now playing come from `CarPlayScreen`. A row starts
+/// through `openCreatedStation(.userTap)`, the phone's created-station tap. Next and
+/// previous are not handled here: next is the remote command already installed, and
+/// previous stays disabled.
 @MainActor
 final class CarPlaySession {
     static let shared = CarPlaySession()
@@ -118,9 +118,8 @@ final class CarPlaySession {
     private func projected() -> CarPlayScreenModel {
         let dependencies = AppRuntime.dependencies
         let music = dependencies.playback
-        let builtIn = Station.defaultStations.map { CarPlayBuiltInStation(id: $0.id.uuidString, name: $0.name) }
         let created = CreatedStations.entries(from: dependencies.studio.recipes.recipes)
-        return CarPlayScreen.project(builtIn: builtIn, created: created, snapshot: music.snapshot,
+        return CarPlayScreen.project(created: created, snapshot: music.snapshot,
                                      opened: opened, access: access(music.authState))
     }
 
@@ -128,19 +127,13 @@ final class CarPlaySession {
         opened = StationRef(id: row.id, name: row.name)
         let dependencies = AppRuntime.dependencies
         let music = dependencies.playback
-        switch CarPlayScreen.effect(for: row.pick, transport: music.snapshot.transport) {
+        switch CarPlayScreen.effect(for: row.pick) {
         case .openCreatedStation(let id):
             if let queue = dependencies.stationQueue {
                 _ = await queue.openCreatedStation(.userTap, recipeID: id, studio: dependencies.studio)
             } else {
                 await music.authorize()
                 _ = await dependencies.studio.applyRecipe(id)
-            }
-        case .openBuiltIn(let resumePlayback):
-            dependencies.stationQueue?.cancelCreatedStationStart()
-            await music.authorize()
-            if resumePlayback {
-                _ = try? await music.resume()
             }
         }
         render()
@@ -176,7 +169,11 @@ final class CarPlaySession {
             budget -= 1
         }
         let rows = budget > 0 ? Array(model.rows.prefix(budget)) : []
-        if !rows.isEmpty {
+        if rows.isEmpty, let message = model.emptyMessage, budget > 0 {
+            let item = CPListItem(text: message, detailText: nil)
+            item.handler = { _, done in done() }
+            sections.append(CPListSection(items: [item]))
+        } else if !rows.isEmpty {
             let items = rows.map { row in
                 let item = CPListItem(text: row.name, detailText: nil)
                 item.handler = { _, done in

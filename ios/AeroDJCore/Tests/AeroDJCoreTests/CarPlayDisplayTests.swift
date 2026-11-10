@@ -33,8 +33,6 @@ final class CarPlayDisplayTests: XCTestCase {
                                           name: createdName,
                                           summary: "\(script) \(calendar) \(email)")
         return CarPlayScreen.project(
-            builtIn: [CarPlayBuiltInStation(id: "morning", name: "Morning Calm"),
-                      CarPlayBuiltInStation(id: "late", name: "Late Night")],
             created: [created],
             snapshot: stuffedSnapshot(track: track, station: station, transport: transport),
             opened: opened,
@@ -52,11 +50,12 @@ final class CarPlayDisplayTests: XCTestCase {
         let track = TrackInfo(id: "song", title: "Slow Burn", artistName: "Neon Harbor", artworkURL: artwork)
         let model = screen(track: track)
         XCTAssertEqual(model.visibleText, [
-            "Morning Calm", "Late Night", "Rainy Day",
+            "Rainy Day",
             "Slow Burn", "Neon Harbor", "Kitchen Radio",
         ])
+        XCTAssertNil(model.emptyMessage)
         XCTAssertEqual(model.nowPlaying?.artworkURL, artwork)
-        XCTAssertEqual(model.rows.map(\.pick), [.builtIn, .builtIn, .created(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!)])
+        XCTAssertEqual(model.rows.map(\.pick), [.created(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!)])
         assertNoSecrets(model.visibleText)
         let publicationText = model.publication?.fields.visibleText ?? []
         assertNoSecrets(publicationText)
@@ -66,7 +65,7 @@ final class CarPlayDisplayTests: XCTestCase {
         let model = screen(track: nil)
         XCTAssertNil(model.nowPlaying)
         XCTAssertNil(model.publication)
-        XCTAssertEqual(model.visibleText, ["Morning Calm", "Late Night", "Rainy Day"])
+        XCTAssertEqual(model.visibleText, ["Rainy Day"])
         assertNoSecrets(model.visibleText)
     }
 
@@ -111,7 +110,8 @@ final class CarPlayDisplayTests: XCTestCase {
 
     func testBlankStationNamesAreOmittedSoASummaryCannotFillThem() {
         let model = screen(track: nil, createdName: " \n\t ")
-        XCTAssertEqual(model.rows.map(\.name), ["Morning Calm", "Late Night"])
+        XCTAssertEqual(model.rows.map(\.name), [])
+        XCTAssertEqual(model.visibleText, [CarPlayScreen.emptyListMessage])
         assertNoSecrets(model.visibleText)
     }
 
@@ -121,8 +121,8 @@ final class CarPlayDisplayTests: XCTestCase {
         var quiet = speaking
         quiet.dj = .idle
         let opened: StationRef? = nil
-        XCTAssertEqual(CarPlayScreen.project(builtIn: [], created: [], snapshot: speaking, opened: opened, access: .authorized).publication,
-                       CarPlayScreen.project(builtIn: [], created: [], snapshot: quiet, opened: opened, access: .authorized).publication)
+        XCTAssertEqual(CarPlayScreen.project(created: [], snapshot: speaking, opened: opened, access: .authorized).publication,
+                       CarPlayScreen.project(created: [], snapshot: quiet, opened: opened, access: .authorized).publication)
     }
 
     func testPlaybackConfirmRepublishesTheSameWords() {
@@ -136,13 +136,8 @@ final class CarPlayDisplayTests: XCTestCase {
 
     func testPickingAStationUsesTheExistingStartPaths() {
         let id = UUID()
-        for transport in [TransportState.playing, .preparing, .paused, .stopped] {
-            XCTAssertEqual(CarPlayScreen.effect(for: .created(id), transport: transport), .openCreatedStation(id))
-        }
-        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .playing), .openBuiltIn(resumePlayback: false))
-        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .preparing), .openBuiltIn(resumePlayback: false))
-        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .paused), .openBuiltIn(resumePlayback: true))
-        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .stopped), .openBuiltIn(resumePlayback: true))
+        XCTAssertEqual(CarPlayStationStart.trigger, .userTap)
+        XCTAssertEqual(CarPlayScreen.effect(for: .created(id)), .openCreatedStation(id))
     }
 
     func testNextMatchesTheRemoteCommandAndPreviousStaysOff() {
@@ -228,10 +223,9 @@ final class CarPlayDisplayTests: XCTestCase {
             "CPListTemplate",
             "CPNowPlayingTemplate",
             "CPTemplateApplicationSceneDelegate",
-            "openCreatedStation",
-            "cancelCreatedStationStart",
-            "resume()",
+            "openCreatedStation(.userTap",
             "CarPlayNowPlayingMerge.apply",
+            "MPNowPlayingInfoCenter.default()",
             "CarPlayTransport.previousTrackEnabled",
             "detailText: nil",
             "CarPlayScreen.project",
@@ -247,6 +241,70 @@ final class CarPlayDisplayTests: XCTestCase {
         for banned in ["calendar", "email"] {
             XCTAssertFalse(lowered.contains(banned), banned)
         }
+    }
+
+    func testLateFetchForTheSameArtworkDoesNotRestoreTheEarlierSong() {
+        var gate = CarPlayArtworkGate()
+        let url = URL(string: "https://example.com/shared.jpg")!
+        let songA = nowPlaying("Song A", "Artist A", "Station A", url)
+        let songB = nowPlaying("Song B", "Artist B", "Station B", url)
+        let started = gate.publish(songA)
+        let token = fetchToken(started)
+        XCTAssertEqual(gate.publish(songB), [.writeText(songB)])
+        XCTAssertEqual(gate.fetchArrived(token), .setArtwork(url))
+    }
+
+    func testChangingTheArtworkURLClearsTheOldImageImmediately() {
+        var gate = CarPlayArtworkGate()
+        let first = URL(string: "https://example.com/a.jpg")!
+        let second = URL(string: "https://example.com/b.jpg")!
+        let songA = nowPlaying("Song A", "Artist A", "Station A", first)
+        let songB = nowPlaying("Song B", "Artist B", "Station B", second)
+        let tokenA = fetchToken(gate.publish(songA))
+        let next = gate.publish(songB)
+        XCTAssertEqual(next.first, .writeText(songB))
+        XCTAssertTrue(next.contains(.clearArtwork))
+        let tokenB = fetchToken(next)
+        XCTAssertNotEqual(tokenA, tokenB)
+        XCTAssertEqual(gate.fetchArrived(tokenA), .ignore)
+        XCTAssertEqual(gate.fetchArrived(tokenB), .setArtwork(second))
+    }
+
+    func testClearingTheArtworkURLDropsTheImageImmediately() {
+        var gate = CarPlayArtworkGate()
+        let url = URL(string: "https://example.com/a.jpg")!
+        let songA = nowPlaying("Song A", "Artist A", "Station A", url)
+        let token = fetchToken(gate.publish(songA))
+        let cleared = nowPlaying("Song B", "Artist B", "Station B", nil)
+        let next = gate.publish(cleared)
+        XCTAssertEqual(next, [.writeText(cleared), .clearArtwork])
+        XCTAssertEqual(gate.fetchArrived(token), .ignore)
+    }
+
+    func testAnOlderFetchThatFinishesLastDoesNotWin() {
+        var gate = CarPlayArtworkGate()
+        let first = URL(string: "https://example.com/a.jpg")!
+        let second = URL(string: "https://example.com/b.jpg")!
+        let songA = nowPlaying("Song A", "Artist A", "Station A", first)
+        let songB = nowPlaying("Song B", "Artist B", "Station B", second)
+        let tokenA = fetchToken(gate.publish(songA))
+        let tokenB = fetchToken(gate.publish(songB))
+        XCTAssertEqual(gate.fetchArrived(tokenB), .setArtwork(second))
+        XCTAssertEqual(gate.fetchArrived(tokenA), .ignore)
+        XCTAssertEqual(gate.publish(songB), [.writeText(songB)], "the image already showing is left in place")
+    }
+
+    private func nowPlaying(_ title: String, _ artist: String, _ station: String, _ artwork: URL?) -> CarPlayNowPlaying {
+        CarPlayNowPlaying(title: title, artist: artist, stationName: station, artworkURL: artwork)
+    }
+
+    private func fetchToken(_ commands: [CarPlayArtworkGate.Command],
+                            file: StaticString = #filePath, line: UInt = #line) -> CarPlayArtworkGate.Token {
+        for command in commands {
+            if case .startFetch(let token) = command { return token }
+        }
+        XCTFail("no fetch", file: file, line: line)
+        return CarPlayArtworkGate.Token(id: 0, url: URL(string: "https://example.com/missing.jpg")!)
     }
 
     // MARK: - Repo fixtures
@@ -277,5 +335,163 @@ final class CarPlayDisplayTests: XCTestCase {
             if extensions.contains(url.pathExtension) { found.append(url) }
         }
         return found
+    }
+}
+
+/// Picking station B on the car runs the phone's created-station tap (`open(.userTap)`).
+/// The assertions are the queue's song ids and the active station, not a call count.
+@MainActor
+final class CarPlayStationSwitchTests: XCTestCase {
+    private let stationA = UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000001")!
+    private let stationB = UUID(uuidString: "BBBBBBBB-0000-0000-0000-000000000002")!
+
+    private actor Catalog: StationSeedCatalog {
+        func coreSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] {
+            (0..<min(limit, 4)).map { n in
+                StationCandidate(track: TrackInfo(id: "\(seed.catalogID)-song-\(n)", title: "Title \(n)",
+                                                   artistName: "\(seed.catalogID)-artist"))
+            }
+        }
+        func relatedSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] { [] }
+        func broadSongs(for seed: StationSeed, limit: Int) async throws -> [StationCandidate] { [] }
+    }
+
+    private final class Player {
+        var queue: [String] = []
+        var playing = false
+        var nothingQueued: Bool { queue.isEmpty && !playing }
+    }
+
+    private func configuration(_ token: String) -> StationConfiguration {
+        var configuration = StationConfiguration.default
+        configuration.seeds = [StationSeed(kind: .artist, catalogID: token, name: token)]
+        configuration.reach = .only
+        return configuration.validated()
+    }
+
+    private func makeFeed() -> StationQueueFeed<String> {
+        StationQueueFeed(
+            resolver: CatalogStationSeedResolver(catalog: Catalog()),
+            materialize: { $0.map(\.id) },
+            options: .init(limit: 4),
+            day: { 42 })
+    }
+
+    private func makeModel() async -> StationConfigurationModel {
+        let model = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: .default))),
+            consent: StaticIntegrationConsent([:]))
+        await model.load()
+        return model
+    }
+
+    /// The car's pick: `CreatedStationStarter.open` with `CarPlayStationStart.trigger`.
+    private func pick(_ id: UUID, _ token: String, _ starter: CreatedStationStarter<String>,
+                      _ model: StationConfigurationModel, _ player: Player) async -> CreatedStationOpenOutcome {
+        let config = configuration(token)
+        return await starter.open(
+            CarPlayStationStart.trigger,
+            recipeID: id,
+            authorize: {},
+            apply: {
+                await model.applyRecipe(StationRecipe(name: token, configuration: config))
+                return true
+            },
+            active: { model.active },
+            nothingQueued: { player.nothingQueued },
+            start: { items in
+                player.queue = items
+                player.playing = true
+            })
+    }
+
+    private func startA(_ starter: CreatedStationStarter<String>, _ model: StationConfigurationModel,
+                        _ player: Player) async -> [String] {
+        let outcome = await pick(stationA, "station-a", starter, model, player)
+        guard case .started = outcome else {
+            XCTFail("station A did not start: \(outcome)")
+            return []
+        }
+        XCTAssertTrue(player.queue.allSatisfy { $0.hasPrefix("station-a-") }, "\(player.queue)")
+        return player.queue
+    }
+
+    private func staged(_ feed: StationQueueFeed<String>, _ key: StationQueueKey) async {
+        for _ in 0..<200 where feed.stagedKey != key {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+
+    func testPickingStationBWhileAIsPlayingKeepsAsQueueUntilTheBoundaryThenPlaysB() async {
+        let model = await makeModel()
+        let feed = makeFeed()
+        feed.follow(model)
+        let player = Player()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(2), pollInterval: .milliseconds(1))
+        let queueA = await startA(starter, model, player)
+        await model.setPlaybackActivity(.holdingSong)
+        XCTAssertTrue(player.playing)
+
+        let outcome = await pick(stationB, "station-b", starter, model, player)
+        XCTAssertEqual(outcome, .switchesAtBoundary)
+        XCTAssertEqual(player.queue, queueA, "the playing queue is still station A")
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-a"])
+        XCTAssertEqual(starter.currentRecipeID, stationB)
+        XCTAssertEqual(CarPlayStationStart.trigger, .userTap)
+
+        await staged(feed, StationQueueKey(configuration("station-b"))!)
+        await model.handle(.songBoundary(afterTrack: 0))
+        let next = feed.takeForBoundary(active: model.active, playbackMayStart: true)
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-b"])
+        XCTAssertEqual(next?.allSatisfy { $0.hasPrefix("station-b-") }, true, "\(next ?? [])")
+        XCTAssertNotEqual(next, queueA)
+    }
+
+    func testPickingStationBWhileAIsPausedKeepsAsQueueUntilTheBoundaryThenPlaysB() async {
+        let model = await makeModel()
+        let feed = makeFeed()
+        feed.follow(model)
+        let player = Player()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(2), pollInterval: .milliseconds(1))
+        let queueA = await startA(starter, model, player)
+        player.playing = false
+        await model.setPlaybackActivity(.holdingSong)
+        XCTAssertFalse(player.nothingQueued, "paused mid-song still has station A's queue")
+
+        let outcome = await pick(stationB, "station-b", starter, model, player)
+        XCTAssertEqual(outcome, .switchesAtBoundary)
+        XCTAssertEqual(player.queue, queueA)
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-a"])
+        XCTAssertEqual(starter.currentRecipeID, stationB)
+
+        await staged(feed, StationQueueKey(configuration("station-b"))!)
+        await model.handle(.songBoundary(afterTrack: 0))
+        let next = feed.takeForBoundary(active: model.active, playbackMayStart: true)
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-b"])
+        XCTAssertEqual(next?.allSatisfy { $0.hasPrefix("station-b-") }, true, "\(next ?? [])")
+    }
+
+    func testPickingStationBWhileIdleReplacesTheQueueWithB() async {
+        let model = await makeModel()
+        let feed = makeFeed()
+        feed.follow(model)
+        let player = Player()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(2), pollInterval: .milliseconds(1))
+        _ = await startA(starter, model, player)
+        player.queue = []
+        player.playing = false
+        await model.setPlaybackActivity(.idle)
+        XCTAssertTrue(player.nothingQueued)
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-a"])
+
+        let outcome = await pick(stationB, "station-b", starter, model, player)
+        guard case .started(let songs, _) = outcome else { return XCTFail("expected B to start, got \(outcome)") }
+        XCTAssertEqual(songs, player.queue.count)
+        XCTAssertFalse(player.queue.isEmpty)
+        XCTAssertTrue(player.queue.allSatisfy { $0.hasPrefix("station-b-") }, "\(player.queue)")
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-b"])
+        XCTAssertEqual(starter.currentRecipeID, stationB)
+        XCTAssertEqual(CarPlayStationStart.trigger, .userTap)
     }
 }
