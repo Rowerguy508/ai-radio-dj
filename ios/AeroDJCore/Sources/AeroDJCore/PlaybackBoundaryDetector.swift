@@ -69,6 +69,12 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// cleared, or kept and rewound to the start) with no cause the app knows of. Read with
     /// `takeRemoteSkip()`. The app's queue holds one song, so a lock-screen Next has this shape.
     private var remoteSkipPending = false
+    /// #444 (-Echo): a skip is loading the next song and that song has not played past the
+    /// failed-start window yet. A clear or rewind in this window is MusicKit's Next cutting the
+    /// load, not a failed start (`noProgressEnd` pauses and leaves the queue empty).
+    private var skipLoadOpen = false
+    /// Set for that cut. Read with `takeSkipLoadCut()`. Never a natural end and never `noProgressEnd`.
+    private var skipLoadCutPending = false
 
     // Build 18 P0 (-Fry): sticky per-entry facts that a system interruption cannot clear.
     /// Share of the catalog duration that counts as "this entry played through".
@@ -168,6 +174,17 @@ public struct PlaybackBoundaryDetector: Sendable {
         endReportedSinceLoad = false
     }
 
+    /// #444 (-Echo): the app's skip is loading a song that has not yet played past the failed-start
+    /// window. While this is set, a mid-song clear or rewind of that load is `takeSkipLoadCut()`,
+    /// not a failed start and not a second natural end. Cleared by the caller, or here once a
+    /// playing sample passes the window (the load stuck: a later Next is an ordinary remote skip).
+    public mutating func setSkipLoadInFlight(_ inFlight: Bool) {
+        skipLoadOpen = inFlight
+    }
+
+    /// True while `setSkipLoadInFlight(true)` has not been cleared by progress or the caller.
+    public var isSkipLoadInFlight: Bool { skipLoadOpen }
+
     /// Why playback stopped. A natural end has no cause.
     public enum HoldCause: Equatable, Sendable {
         case userPause
@@ -218,6 +235,20 @@ public struct PlaybackBoundaryDetector: Sendable {
     public mutating func takeRemoteSkip() -> Bool {
         defer { remoteSkipPending = false }
         return remoteSkipPending
+    }
+
+    /// #444 (-Echo): true once after the song a skip is loading was cleared or rewound before it
+    /// played past the failed-start window, with no user pause, route loss, or interruption.
+    /// The caller reloads that song, or folds the cut into the one queued follow-up skip.
+    /// It does not pause and it does not report a natural end.
+    public mutating func takeSkipLoadCut() -> Bool {
+        defer { skipLoadCutPending = false }
+        return skipLoadCutPending
+    }
+
+    /// A clear or rewind of the song being loaded, before it has played. Not a user pause.
+    private var skipLoadWasCut: Bool {
+        skipLoadOpen && !userChangePending && !heldByUserOrRoute && !interruptionSinceLastPlayingSample
     }
 
     /// The entry stopped mid-song and nothing the app knows of explains it. `now` is the uptime
@@ -350,6 +381,7 @@ public struct PlaybackBoundaryDetector: Sendable {
             let mayHaveEnded = departingEntryMayHaveEnded && endedEntryID != finished
             let remoteSkip = finished != nil && !neverProgressed
                 && endedMidSongWithoutCause(now: observation.uptime)
+            let loadCut = finished != nil && skipLoadWasCut
             entryID = nil
             lastPosition = nil
             lastSampleWasPlaying = false
@@ -358,7 +390,9 @@ public struct PlaybackBoundaryDetector: Sendable {
             defer { userChangePending = false }
             if let finished, mayHaveEnded, !userChangePending {
                 guard !neverProgressed else {
-                    noProgressEndPending = true
+                    // #444: the song this skip just queued never got going because Next cut it.
+                    // Pausing here is the stuck player (the MusicKit queue is already empty).
+                    if loadCut { skipLoadCutPending = true } else { noProgressEndPending = true }
                     return nil
                 }
                 guard !remoteSkip else {
@@ -366,8 +400,10 @@ public struct PlaybackBoundaryDetector: Sendable {
                     return nil
                 }
                 noteEndReported()
+                skipLoadOpen = false
                 return .queueFinished(lastEntryID: finished)
             }
+            if loadCut { skipLoadCutPending = true }
             return nil
         }
         guard let previous = entryID else {
@@ -420,6 +456,10 @@ public struct PlaybackBoundaryDetector: Sendable {
             && (observation.position ?? .infinity) < Self.minimumProgress(duration: lastDuration)
             && (previousSamplePosition ?? 0) >= Self.minimumProgress(duration: lastDuration)
             && endedMidSongWithoutCause(now: observation.uptime)
+        // #444: the load's song was seen playing and then stopped before the failed-start window.
+        // A rewind from past that window is the ordinary remote skip above (`rewoundMidSong`).
+        let skipLoadCut = skipLoadWasCut && !observation.isPlaying && lastSampleWasPlaying
+            && (observation.position ?? .infinity) < Self.minimumProgress(duration: lastDuration)
         accumulate(observation)
         if settling, seekBaseline?.settleUntil == nil { seekBaseline?.settled = true }
         let firstStopAfterPlaying = lastSampleWasPlaying && !observation.isPlaying
@@ -430,6 +470,10 @@ public struct PlaybackBoundaryDetector: Sendable {
             // A playing sample while settling may be stale: it cannot release a user hold.
             if !settling { heldByUserOrRoute = false }
             interruptionSinceLastPlayingSample = false
+            // #444: once this load has played past the failed-start window, a later stop is a
+            // normal remote skip or a natural end, not a cut of the load.
+            let minimum = Self.minimumProgress(duration: observation.duration ?? lastDuration)
+            if skipLoadOpen, (observation.position ?? 0) >= minimum { skipLoadOpen = false }
         }
         if !settling, let position = observation.position {
             if observation.isPlaying, let furthest = lastPosition, position < furthest,
@@ -466,6 +510,7 @@ public struct PlaybackBoundaryDetector: Sendable {
             && (observation.position ?? 0) < Self.minimumProgress(duration: lastDuration)
         guard stoppedAtEnd || rewoundAfterPlayingThrough else {
             if rewoundMidSong { remoteSkipPending = true }
+            else if skipLoadCut { skipLoadCutPending = true }
             return nil
         }
         endedEntryID = current
