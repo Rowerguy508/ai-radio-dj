@@ -31,7 +31,7 @@ final class CarPlayNowPlayingBridge {
                   image.size.width > 0, image.size.height > 0 else { return }
             var info = CarPlayNowPlayingMerge.apply(fields: fields, to: currentInfo())
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-            MPNowPlayingInfoCenter.default.nowPlayingInfo = info
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         }
     }
 
@@ -42,11 +42,11 @@ final class CarPlayNowPlayingBridge {
     }
 
     private func write(_ fields: CarPlayNowPlaying) {
-        MPNowPlayingInfoCenter.default.nowPlayingInfo = CarPlayNowPlayingMerge.apply(fields: fields, to: currentInfo())
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = CarPlayNowPlayingMerge.apply(fields: fields, to: currentInfo())
     }
 
     private func currentInfo() -> [String: Any] {
-        MPNowPlayingInfoCenter.default.nowPlayingInfo ?? [:]
+        MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
     }
 
     private func checkKeys() {
