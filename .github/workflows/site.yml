@@ -1,0 +1,39 @@
+name: Site
+
+# Static checks for the onairly.app site (site/check.sh): links, routes, vercel.json,
+# privacy/support word for word with docs/site/*.md, no visible [owner]/[PENDING] marker,
+# no secret-looking strings. Stdlib python3 + bash only; no network, no build.
+#
+# NON-BLOCKING until launch: the check is meant to stay red while #261's [owner]/[PENDING]
+# markers remain. continue-on-error keeps the run green while the job log shows every hit.
+# At launch, once the markers are resolved and check.sh passes, delete continue-on-error
+# (and make "Site / site-check" a required check). Not a required check today. -Atlas
+on:
+  pull_request:
+    paths:
+      - 'site/**'
+      - 'docs/site/**'
+      - '.github/workflows/site.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/site/**'
+      - '.github/workflows/site.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  site-check:
+    name: site-check
+    runs-on: ubuntu-latest
+    continue-on-error: true # remove at launch to make this blocking
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run site/check.sh
+        run: |
+          python3 --version
+          bash site/check.sh
