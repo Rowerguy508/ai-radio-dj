@@ -52,13 +52,14 @@ final class CarPlayDisplayTests: XCTestCase {
         let track = TrackInfo(id: "song", title: "Slow Burn", artistName: "Neon Harbor", artworkURL: artwork)
         let model = screen(track: track)
         XCTAssertEqual(model.visibleText, [
-            "Morning Calm", "Late Night", "Rainy Day",
+            "Your stations", "Rainy Day",
+            "Built-in", "Morning Calm", "Late Night",
             "Slow Burn", "Neon Harbor", "Kitchen Radio",
         ])
-        XCTAssertNil(model.emptyMessage)
         XCTAssertEqual(model.nowPlaying?.artworkURL, artwork)
+        XCTAssertEqual(model.nowPlaying?.albumCredit, "Kitchen Radio")
         XCTAssertEqual(model.rows.map(\.pick), [
-            .builtIn, .builtIn, .created(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!),
+            .created(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!), .builtIn, .builtIn,
         ])
         assertNoSecrets(model.visibleText)
         let publicationText = model.publication?.fields.visibleText ?? []
@@ -69,7 +70,9 @@ final class CarPlayDisplayTests: XCTestCase {
         let model = screen(track: nil)
         XCTAssertNil(model.nowPlaying)
         XCTAssertNil(model.publication)
-        XCTAssertEqual(model.visibleText, ["Morning Calm", "Late Night", "Rainy Day"])
+        XCTAssertEqual(model.visibleText, [
+            "Your stations", "Rainy Day", "Built-in", "Morning Calm", "Late Night",
+        ])
         assertNoSecrets(model.visibleText)
     }
 
@@ -115,7 +118,7 @@ final class CarPlayDisplayTests: XCTestCase {
     func testBlankStationNamesAreOmittedSoASummaryCannotFillThem() {
         let model = screen(track: nil, createdName: " \n\t ")
         XCTAssertEqual(model.rows.map(\.name), ["Morning Calm", "Late Night"])
-        XCTAssertNil(model.emptyMessage)
+        XCTAssertEqual(model.sections.first?.hint, CarPlayScreen.emptyCreatedHint)
         assertNoSecrets(model.visibleText)
     }
 
@@ -141,8 +144,68 @@ final class CarPlayDisplayTests: XCTestCase {
     func testPickingAStationUsesTheExistingStartPaths() {
         let id = UUID()
         XCTAssertEqual(CarPlayStationStart.trigger, .userTap)
-        XCTAssertEqual(CarPlayScreen.effect(for: .created(id)), .openCreatedStation(id))
-        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn), .openBuiltInShell)
+        for transport in [TransportState.playing, .preparing, .paused, .stopped] {
+            XCTAssertEqual(CarPlayScreen.effect(for: .created(id), transport: transport), .openCreatedStation(id))
+        }
+        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .playing), .openBuiltIn(resumePlayback: false))
+        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .preparing), .openBuiltIn(resumePlayback: false))
+        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .paused), .openBuiltIn(resumePlayback: true))
+        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .stopped), .openBuiltIn(resumePlayback: true))
+    }
+
+    func testSectionsAreYourStationsThenBuiltIn() {
+        let model = screen(track: nil)
+        XCTAssertEqual(model.sections.map(\.title), [CarPlayScreen.yourStationsTitle, CarPlayScreen.builtInTitle])
+        XCTAssertEqual(model.sections[0].rows.map(\.name), ["Rainy Day"])
+        XCTAssertNil(model.sections[0].hint)
+        XCTAssertEqual(model.sections[1].rows.map(\.name), ["Morning Calm", "Late Night"])
+        XCTAssertNil(model.sections[1].hint)
+        assertNoSecrets(model.visibleText)
+    }
+
+    func testNoCreatedStationsShowsAPlainHintAndKeepsBuiltIns() {
+        let model = CarPlayScreen.project(
+            builtIn: [CarPlayBuiltInStation(id: "morning", name: "Morning Calm", detail: CarPlayScreen.morningCalmDetail),
+                      CarPlayBuiltInStation(id: "late", name: "Late Night", detail: CarPlayScreen.lateNightDetail)],
+            created: [],
+            snapshot: stuffedSnapshot(track: nil, station: nil),
+            opened: nil,
+            access: .authorized)
+        XCTAssertEqual(model.sections.map(\.title), ["Your stations", "Built-in"])
+        XCTAssertEqual(model.sections[0].rows, [])
+        XCTAssertEqual(model.sections[0].hint, CarPlayScreen.emptyCreatedHint)
+        XCTAssertEqual(model.sections[1].rows.map(\.visibleText), [
+            ["Morning Calm", CarPlayScreen.morningCalmDetail],
+            ["Late Night", CarPlayScreen.lateNightDetail],
+        ])
+        assertNoSecrets(model.visibleText)
+    }
+
+    func testRowSymbolsAreFixedAndUnlistedDetailsStayOff() {
+        let poisoned = CarPlayScreen.project(
+            builtIn: [CarPlayBuiltInStation(id: "morning", name: "Morning Calm", detail: calendar),
+                      CarPlayBuiltInStation(id: "other", name: "Drive", detail: email)],
+            created: [CreatedStationEntry(id: UUID(), name: "Rainy Day", summary: script)],
+            snapshot: stuffedSnapshot(track: nil, station: nil),
+            opened: nil,
+            access: .authorized)
+        XCTAssertEqual(poisoned.rows.map(\.symbol), [.createdStation, .morningCalm, .builtInStation])
+        XCTAssertEqual(poisoned.rows.map(\.detail), [nil, nil, nil])
+        assertNoSecrets(poisoned.visibleText)
+
+        let listed = screen(track: nil)
+        XCTAssertEqual(listed.rows.map(\.symbol), [.createdStation, .morningCalm, .lateNight])
+    }
+
+    func testPlayingIndicatorFollowsTheStationOnAir() {
+        let track = TrackInfo(id: "song", title: "Slow Burn", artistName: "Neon Harbor", artworkURL: artwork)
+        let playing = screen(track: track, station: StationRef(id: "late", name: "Late Night"), transport: .playing)
+        XCTAssertEqual(playing.rows.map(\.showsPlayingIndicator), [false, false, true])
+        let paused = screen(track: track, station: StationRef(id: "late", name: "Late Night"), transport: .paused)
+        XCTAssertEqual(paused.rows.map(\.showsPlayingIndicator), [false, false, true])
+        let stopped = screen(track: track, station: StationRef(id: "late", name: "Late Night"), transport: .stopped)
+        XCTAssertEqual(stopped.rows.map(\.showsPlayingIndicator), [false, false, false])
+        assertNoSecrets(playing.visibleText)
     }
 
     func testNextMatchesTheRemoteCommandAndPreviousStaysOff() {
@@ -230,6 +293,7 @@ final class CarPlayDisplayTests: XCTestCase {
             "CPTemplateApplicationSceneDelegate",
             "openCreatedStation(.userTap",
             "cancelCreatedStationStart",
+            "resume()",
             "CarPlayNowPlayingMerge.apply",
             "MPNowPlayingInfoCenter.default()",
             "CarPlayTransport.previousTrackEnabled",

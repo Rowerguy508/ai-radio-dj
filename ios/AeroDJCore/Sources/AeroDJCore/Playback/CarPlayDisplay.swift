@@ -5,16 +5,49 @@ import Foundation
 // rest of the queue, and a created station's kind summary are not fields on this
 // screen: a caller cannot put them on the car by passing the snapshot through.
 
-/// One station row on the car. The text is the name only.
+/// One station row on the car. Detail is a fixed built-in line, or nil.
 public struct CarPlayStationRow: Equatable, Sendable, Identifiable {
     public let id: String
     public let name: String
+    public let detail: String?
+    public let symbol: CarPlayRowSymbol
+    public let showsPlayingIndicator: Bool
     public let pick: CarPlayStationPick
 
-    public init(id: String, name: String, pick: CarPlayStationPick) {
+    public init(id: String, name: String, detail: String?, symbol: CarPlayRowSymbol,
+                showsPlayingIndicator: Bool, pick: CarPlayStationPick) {
         self.id = id
         self.name = name
+        self.detail = detail
+        self.symbol = symbol
+        self.showsPlayingIndicator = showsPlayingIndicator
         self.pick = pick
+    }
+
+    public var visibleText: [String] {
+        [name, detail].compactMap { $0 }
+    }
+}
+
+/// SF Symbol for a row. Chosen from the row kind, never from a summary or a fetched image.
+public enum CarPlayRowSymbol: String, Equatable, Sendable {
+    case morningCalm = "sun.horizon"
+    case lateNight = "moon.stars"
+    case builtInStation = "music.note.list"
+    case createdStation = "radio"
+}
+
+/// One labeled group on the car list.
+public struct CarPlayStationSection: Equatable, Sendable {
+    public let title: String
+    public let rows: [CarPlayStationRow]
+    /// Plain hint when the section has no stations. Not a station row.
+    public let hint: String?
+
+    public init(title: String, rows: [CarPlayStationRow], hint: String?) {
+        self.title = title
+        self.rows = rows
+        self.hint = hint
     }
 }
 
@@ -29,9 +62,10 @@ public enum CarPlayStationPick: Equatable, Sendable {
 public enum CarPlayPickEffect: Equatable, Sendable {
     /// `StationQueuePlayer.openCreatedStation(.userTap)` for this recipe.
     case openCreatedStation(UUID)
-    /// The phone's built-in row: `cancelCreatedStationStart()` then `authorize()`.
-    /// That path does not replace the queue with another station.
-    case openBuiltInShell
+    /// Phone built-in row: `cancelCreatedStationStart()`, then `authorize()`.
+    /// `resumePlayback` also calls `MusicKitService.resume()` when transport is paused or stopped.
+    /// This does not load a different station's queue.
+    case openBuiltIn(resumePlayback: Bool)
 }
 
 /// The phone's created-station row tap.
@@ -43,10 +77,13 @@ public enum CarPlayStationStart {
 public struct CarPlayBuiltInStation: Equatable, Sendable {
     public let id: String
     public let name: String
+    /// Phone copy such as "Warm, unhurried host". Shown only when it is one of the two fixed lines.
+    public let detail: String?
 
-    public init(id: String, name: String) {
+    public init(id: String, name: String, detail: String? = nil) {
         self.id = id
         self.name = name
+        self.detail = detail
     }
 }
 
@@ -65,6 +102,12 @@ public struct CarPlayNowPlaying: Equatable, Sendable {
     }
 
     public var visibleText: [String] { [title, artist, stationName] }
+
+    /// The album line on the car: the station name, one line, nothing else.
+    public var albumCredit: String {
+        let line = stationName.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return line.isEmpty ? AppName.display : line
+    }
 }
 
 /// Now-playing text plus the transport at the time it was taken. Transport is not
@@ -82,16 +125,20 @@ public struct CarPlayNowPlayingPublication: Equatable, Sendable {
 
 /// The whole car screen.
 public struct CarPlayScreenModel: Equatable, Sendable {
-    public let rows: [CarPlayStationRow]
+    public let sections: [CarPlayStationSection]
     public let nowPlaying: CarPlayNowPlaying?
     public let publication: CarPlayNowPlayingPublication?
     public let accessNotice: String?
-    /// Shown when the list has no rows. Not a station.
-    public let emptyMessage: String?
+
+    public var rows: [CarPlayStationRow] { sections.flatMap(\.rows) }
 
     public var visibleText: [String] {
-        var lines = rows.map(\.name)
-        if let emptyMessage { lines.append(emptyMessage) }
+        var lines: [String] = []
+        for section in sections {
+            lines.append(section.title)
+            lines.append(contentsOf: section.rows.flatMap(\.visibleText))
+            if let hint = section.hint { lines.append(hint) }
+        }
         if let nowPlaying { lines.append(contentsOf: nowPlaying.visibleText) }
         if let accessNotice { lines.append(accessNotice) }
         return lines
@@ -99,32 +146,42 @@ public struct CarPlayScreenModel: Equatable, Sendable {
 }
 
 public enum CarPlayScreen {
-    public static let emptyListMessage = "Save a station in \(AppName.display) to play it here."
+    public static let yourStationsTitle = "Your stations"
+    public static let builtInTitle = "Built-in"
+    public static let emptyCreatedHint = "Save a station in \(AppName.display) to play it here."
+    public static let morningCalmDetail = "Warm, unhurried host"
+    public static let lateNightDetail = "Smooth vinyl-bar vibes"
 
-    /// Built-ins first, then created stations, matching the phone list.
-    /// A blank name is left off. Created summaries are not read.
+    /// Your stations, then Built-in. A blank name is left off. Created summaries are not read.
     public static func project(builtIn: [CarPlayBuiltInStation],
                                created: [CreatedStationEntry],
                                snapshot: PlaybackSnapshot,
                                opened: StationRef?,
                                access: PlaybackAccess) -> CarPlayScreenModel {
-        let rows = stationRows(builtIn: builtIn, created: created)
         let nowPlaying = nowPlayingItem(snapshot: snapshot, opened: opened)
         let publication = nowPlaying.map { CarPlayNowPlayingPublication(fields: $0, transport: snapshot.transport) }
-        return CarPlayScreenModel(rows: rows, nowPlaying: nowPlaying, publication: publication,
-                                  accessNotice: accessNotice(for: access),
-                                  emptyMessage: rows.isEmpty ? emptyListMessage : nil)
+        let onAir = onAirStationID(snapshot: snapshot, opened: opened)
+        let sections = [
+            createdSection(created, onAir: onAir),
+            builtInSection(builtIn, onAir: onAir),
+        ].compactMap { $0 }
+        return CarPlayScreenModel(sections: sections, nowPlaying: nowPlaying, publication: publication,
+                                  accessNotice: accessNotice(for: access))
     }
 
-    /// The recipe id the phone's `openCreatedStation(.userTap)` starts. Transport does not
-    /// change the call: the starter itself starts now when nothing is queued, and switches
-    /// at the song boundary while a song is playing or paused.
-    public static func effect(for pick: CarPlayStationPick) -> CarPlayPickEffect {
+    /// Created rows always use `openCreatedStation(.userTap)`. Built-in rows use the phone's
+    /// cancel-and-authorize tap, and `resume()` only when playback is paused or stopped.
+    public static func effect(for pick: CarPlayStationPick, transport: TransportState) -> CarPlayPickEffect {
         switch pick {
         case .created(let id):
             return .openCreatedStation(id)
         case .builtIn:
-            return .openBuiltInShell
+            switch transport {
+            case .playing, .preparing:
+                return .openBuiltIn(resumePlayback: false)
+            case .paused, .stopped:
+                return .openBuiltIn(resumePlayback: true)
+            }
         }
     }
 
@@ -142,17 +199,57 @@ public enum CarPlayScreen {
         }
     }
 
-    private static func stationRows(builtIn: [CarPlayBuiltInStation],
-                                    created: [CreatedStationEntry]) -> [CarPlayStationRow] {
-        let shells = builtIn.compactMap { station -> CarPlayStationRow? in
+    private static func createdSection(_ created: [CreatedStationEntry], onAir: String?) -> CarPlayStationSection? {
+        let rows = created.compactMap { station -> CarPlayStationRow? in
             guard let name = displayName(station.name) else { return nil }
-            return CarPlayStationRow(id: station.id, name: name, pick: .builtIn)
+            let id = station.id.uuidString
+            return CarPlayStationRow(id: id, name: name, detail: nil, symbol: .createdStation,
+                                    showsPlayingIndicator: id == onAir, pick: .created(station.id))
         }
-        let made = created.compactMap { station -> CarPlayStationRow? in
+        if rows.isEmpty {
+            return CarPlayStationSection(title: yourStationsTitle, rows: [], hint: emptyCreatedHint)
+        }
+        return CarPlayStationSection(title: yourStationsTitle, rows: rows, hint: nil)
+    }
+
+    private static func builtInSection(_ builtIn: [CarPlayBuiltInStation], onAir: String?) -> CarPlayStationSection? {
+        let rows = builtIn.compactMap { station -> CarPlayStationRow? in
             guard let name = displayName(station.name) else { return nil }
-            return CarPlayStationRow(id: station.id.uuidString, name: name, pick: .created(station.id))
+            return CarPlayStationRow(id: station.id, name: name, detail: allowedDetail(station.detail),
+                                    symbol: symbol(forBuiltInNamed: name),
+                                    showsPlayingIndicator: station.id == onAir, pick: .builtIn)
         }
-        return shells + made
+        guard !rows.isEmpty else { return nil }
+        return CarPlayStationSection(title: builtInTitle, rows: rows, hint: nil)
+    }
+
+    private static func symbol(forBuiltInNamed name: String) -> CarPlayRowSymbol {
+        switch name {
+        case "Morning Calm": .morningCalm
+        case "Late Night": .lateNight
+        default: .builtInStation
+        }
+    }
+
+    private static func allowedDetail(_ detail: String?) -> String? {
+        guard let detail, detail == morningCalmDetail || detail == lateNightDetail else { return nil }
+        return detail
+    }
+
+    /// Nil unless a song is on the session. The id is the station that owns that song.
+    private static func onAirStationID(snapshot: PlaybackSnapshot, opened: StationRef?) -> String? {
+        switch snapshot.transport {
+        case .stopped:
+            return nil
+        case .playing, .paused, .preparing:
+            guard snapshot.nowPlaying != nil || snapshot.transport == .preparing else { return nil }
+            return nowPlayingStation(snapshot: snapshot, opened: opened).id
+        }
+    }
+
+    private static func nowPlayingStation(snapshot: PlaybackSnapshot, opened: StationRef?) -> StationRef {
+        let fallback = opened ?? StationRef(id: "app", name: AppName.display)
+        return StationHeading(opened: fallback, playing: snapshot.station).nowPlaying
     }
 
     private static func displayName(_ name: String) -> String? {
@@ -165,8 +262,7 @@ public enum CarPlayScreen {
     /// one the listener just opened, or the app name when neither is known).
     private static func nowPlayingItem(snapshot: PlaybackSnapshot, opened: StationRef?) -> CarPlayNowPlaying? {
         guard let track = snapshot.nowPlaying else { return nil }
-        let fallback = opened ?? StationRef(id: "app", name: AppName.display)
-        let station = StationHeading(opened: fallback, playing: snapshot.station).nowPlaying
+        let station = nowPlayingStation(snapshot: snapshot, opened: opened)
         return CarPlayNowPlaying(title: track.title, artist: track.artistName,
                                  stationName: station.name, artworkURL: track.artworkURL)
     }
@@ -200,7 +296,7 @@ public enum CarPlayNowPlayingMerge {
         var next = info
         next[titleKey] = fields.title
         next[artistKey] = fields.artist
-        next[stationNameKey] = fields.stationName
+        next[stationNameKey] = fields.albumCredit
         for key in removedKeys { next.removeValue(forKey: key) }
         return next
     }
