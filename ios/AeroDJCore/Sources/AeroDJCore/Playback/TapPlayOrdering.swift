@@ -27,19 +27,29 @@ public enum TapPlaySequence {
     /// start reported during `play` belongs to the new queue. Then `play`; then break prep is
     /// scheduled without being awaited. If `play` throws, the reservation is released and the
     /// error rethrown. Music still never waits on narration.
+    ///
+    /// #145 (-Atlas): a throw that `loadedButDeferred` recognises (a held start: MusicKit has the
+    /// new queue loaded and waits for the hold to end) is not a failed play. The new queue's break
+    /// prep is scheduled, so the later resume narrates against it, never the old queue, and the
+    /// error is still rethrown so the hold banner shows. Every other throw releases as before.
     @MainActor
     @discardableResult
     public static func run<Reservation>(
         reserve: @MainActor () -> Reservation,
         play: @MainActor () async throws -> Void,
         scheduleBreakPrep: @MainActor (Reservation) -> Task<Void, Never>,
-        release: @MainActor (Reservation) -> Void
+        release: @MainActor (Reservation) -> Void,
+        loadedButDeferred: @MainActor (any Error) -> Bool = { _ in false }
     ) async throws -> Task<Void, Never> {
         let reservation = reserve()
         do {
             try await play()
         } catch {
-            release(reservation)
+            if loadedButDeferred(error) {
+                _ = scheduleBreakPrep(reservation)
+            } else {
+                release(reservation)
+            }
             throw error
         }
         return scheduleBreakPrep(reservation)
