@@ -19,21 +19,35 @@ public struct CarPlayStationRow: Equatable, Sendable, Identifiable {
 }
 
 public enum CarPlayStationPick: Equatable, Sendable {
-    /// A station the listener created. The car opens it with `openCreatedStation(.userTap)`,
-    /// the same call as a row tap on the phone.
+    /// Morning Calm or Late Night. The phone tap does not load a queue for that row.
+    case builtIn
+    /// A station the listener created. The car opens it with `openCreatedStation(.userTap)`.
     case created(UUID)
 }
 
-/// What picking a row does. The id is the station the tap starts.
+/// What picking a row does.
 public enum CarPlayPickEffect: Equatable, Sendable {
+    /// `StationQueuePlayer.openCreatedStation(.userTap)` for this recipe.
     case openCreatedStation(UUID)
+    /// The phone's built-in row: `cancelCreatedStationStart()` then `authorize()`.
+    /// That path does not replace the queue with another station.
+    case openBuiltInShell
 }
 
-/// The phone's created-station row tap. Built-in rows (Morning Calm, Late Night) are not
-/// stations: a tap there only cancels a pending start and asks for Apple Music. The car
-/// does not list them, because that tap never switches the queue.
+/// The phone's created-station row tap.
 public enum CarPlayStationStart {
     public static let trigger = StationOpenTrigger.userTap
+}
+
+/// A built-in station name, as the phone list already shows it.
+public struct CarPlayBuiltInStation: Equatable, Sendable {
+    public let id: String
+    public let name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
 }
 
 /// Song title, artist, station name, and the track's artwork URL. Nothing else.
@@ -72,7 +86,7 @@ public struct CarPlayScreenModel: Equatable, Sendable {
     public let nowPlaying: CarPlayNowPlaying?
     public let publication: CarPlayNowPlayingPublication?
     public let accessNotice: String?
-    /// Shown when the listener has no created station. Not a station, and not tappable as one.
+    /// Shown when the list has no rows. Not a station.
     public let emptyMessage: String?
 
     public var visibleText: [String] {
@@ -87,13 +101,14 @@ public struct CarPlayScreenModel: Equatable, Sendable {
 public enum CarPlayScreen {
     public static let emptyListMessage = "Save a station in \(AppName.display) to play it here."
 
-    /// Created stations only. A blank name is left off. Summaries are not read.
-    /// Built-in shells are not accepted: the phone has no per-station start for them.
-    public static func project(created: [CreatedStationEntry],
+    /// Built-ins first, then created stations, matching the phone list.
+    /// A blank name is left off. Created summaries are not read.
+    public static func project(builtIn: [CarPlayBuiltInStation],
+                               created: [CreatedStationEntry],
                                snapshot: PlaybackSnapshot,
                                opened: StationRef?,
                                access: PlaybackAccess) -> CarPlayScreenModel {
-        let rows = stationRows(created)
+        let rows = stationRows(builtIn: builtIn, created: created)
         let nowPlaying = nowPlayingItem(snapshot: snapshot, opened: opened)
         let publication = nowPlaying.map { CarPlayNowPlayingPublication(fields: $0, transport: snapshot.transport) }
         return CarPlayScreenModel(rows: rows, nowPlaying: nowPlaying, publication: publication,
@@ -108,6 +123,8 @@ public enum CarPlayScreen {
         switch pick {
         case .created(let id):
             return .openCreatedStation(id)
+        case .builtIn:
+            return .openBuiltInShell
         }
     }
 
@@ -125,11 +142,17 @@ public enum CarPlayScreen {
         }
     }
 
-    private static func stationRows(_ created: [CreatedStationEntry]) -> [CarPlayStationRow] {
-        created.compactMap { station in
+    private static func stationRows(builtIn: [CarPlayBuiltInStation],
+                                    created: [CreatedStationEntry]) -> [CarPlayStationRow] {
+        let shells = builtIn.compactMap { station -> CarPlayStationRow? in
+            guard let name = displayName(station.name) else { return nil }
+            return CarPlayStationRow(id: station.id, name: name, pick: .builtIn)
+        }
+        let made = created.compactMap { station -> CarPlayStationRow? in
             guard let name = displayName(station.name) else { return nil }
             return CarPlayStationRow(id: station.id.uuidString, name: name, pick: .created(station.id))
         }
+        return shells + made
     }
 
     private static func displayName(_ name: String) -> String? {

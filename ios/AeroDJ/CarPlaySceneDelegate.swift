@@ -27,10 +27,9 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 }
 
-/// The car UI. Station rows and now playing come from `CarPlayScreen`. A row starts
-/// through `openCreatedStation(.userTap)`, the phone's created-station tap. Next and
-/// previous are not handled here: next is the remote command already installed, and
-/// previous stays disabled.
+/// The car UI. Station rows and now playing come from `CarPlayScreen`. A created
+/// station starts through `openCreatedStation(.userTap)`. A built-in row uses the
+/// phone's built-in tap. Next and previous are not handled here.
 @MainActor
 final class CarPlaySession {
     static let shared = CarPlaySession()
@@ -118,8 +117,9 @@ final class CarPlaySession {
     private func projected() -> CarPlayScreenModel {
         let dependencies = AppRuntime.dependencies
         let music = dependencies.playback
+        let builtIn = Station.defaultStations.map { CarPlayBuiltInStation(id: $0.id.uuidString, name: $0.name) }
         let created = CreatedStations.entries(from: dependencies.studio.recipes.recipes)
-        return CarPlayScreen.project(created: created, snapshot: music.snapshot,
+        return CarPlayScreen.project(builtIn: builtIn, created: created, snapshot: music.snapshot,
                                      opened: opened, access: access(music.authState))
     }
 
@@ -135,6 +135,9 @@ final class CarPlaySession {
                 await music.authorize()
                 _ = await dependencies.studio.applyRecipe(id)
             }
+        case .openBuiltInShell:
+            dependencies.stationQueue?.cancelCreatedStationStart()
+            await music.authorize()
         }
         render()
         showNowPlaying()
