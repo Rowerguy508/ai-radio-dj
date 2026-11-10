@@ -170,6 +170,44 @@ final class LockScreenDoubleSkipTests: XCTestCase {
                       "nextTrackCommand still targets skip()")
         XCTAssertTrue(source.contains("if skipCoordinator.isInFlight { return }"),
                       "a break resume does not start a second play while a skip owns the player")
+        let oneSkip = source.split(separator: "private func oneSkip").dropFirst().first.map(String.init) ?? ""
+        let advance = oneSkip.split(separator: "case .advance:").dropFirst().first
+            .map(String.init)?
+            .split(separator: "case .reload:").first
+            .map(String.init) ?? ""
+        let flagSet = try XCTUnwrap(advance.range(of: "boundaries.setSkipLoadInFlight(true)"),
+                                    "a .beginWhenIdle Next sets the skip-load flag inside oneSkip's advance")
+        let load = try XCTUnwrap(advance.range(of: "loadSkippedSong"))
+        XCTAssertLessThan(flagSet.lowerBound, load.lowerBound)
+        XCTAssertTrue(advance.contains("boundaries.setSkipLoadInFlight(false)"),
+                      "the advance clears the flag on the exits that stop the load")
+    }
+
+    /// Pause during a load, then Next before it returns. That Next is `.beginWhenIdle`.
+    /// A queue clear during its load is a load cut, not `noProgressEnd`, and the song reloads.
+    func testBeginWhenIdleNextTreatsAQueueClearAsALoadCut() async {
+        let show = Show()
+        show.primePlaying()
+        let running = Task { await show.skip() }
+        await show.untilLoadSuspended()
+        show.pause()
+        await show.skip()
+        show.releaseOne()
+        await show.untilLoadSuspended()
+        show.feed(show.sample(playing: true, position: 0.5))
+        show.feed(show.cleared())
+        XCTAssertEqual(show.noProgressEnds, 0, "the clear is not a failed start")
+        XCTAssertGreaterThan(show.loadCuts, 0, "the fresh Next's load was cut")
+        XCTAssertFalse(show.pausedByNoProgress)
+        show.finishLoad()
+        await running.value
+        await show.untilIdle()
+        XCTAssertEqual(show.noProgressEnds, 0)
+        XCTAssertGreaterThanOrEqual(show.reloads, 1, "the cut song is recovered")
+        XCTAssertFalse(show.queueEmpty, "playback is not left playing on an empty queue")
+        show.assertPlaying(index: 2)
+        XCTAssertNotNil(show.engine.snapshot.nowPlaying)
+        XCTAssertFalse(show.pausedByNoProgress)
     }
 }
 
@@ -187,6 +225,10 @@ private final class Show {
     private(set) var index = 0
     private(set) var audible = false
     private(set) var pausedByNoProgress = false
+    private(set) var loadCuts = 0
+    private(set) var noProgressEnds = 0
+    private(set) var reloads = 0
+    private(set) var queueEmpty = false
     private(set) var unexpectedBoundary: BoundaryStep?
     private(set) var speechOverlapped = false
     private var clock: TimeInterval = 100
@@ -294,6 +336,17 @@ private final class Show {
 
     func finishLoad() { gate.release() }
 
+    func releaseOne() { gate.releaseOne() }
+
+    /// Same bookkeeping as `MusicKitService.pause`: the in-flight load is invalidated and the
+    /// skip-load flag is cleared, so the next Next has to set the flag itself.
+    func pause() {
+        coordinator.invalidate(.userPause)
+        boundaries.setSkipLoadInFlight(false)
+        boundaries.pausedByApp(.userPause)
+        audible = false
+    }
+
     func untilLoadSuspended() async {
         for _ in 0..<1000 where !gate.isWaiting { await Task.yield() }
         XCTAssertTrue(gate.isWaiting, "the skip load is in flight")
@@ -306,6 +359,7 @@ private final class Show {
 
     /// One poll, in `MusicKitService.pollPlaybackPosition`'s order.
     func feed(_ observation: PlaybackObservation) {
+        if observation.entryID == nil { queueEmpty = true }
         let step = boundaries.interpret(observation, queueIndex: index, queueCount: songs)
         if let step {
             unexpectedBoundary = step
@@ -316,6 +370,7 @@ private final class Show {
             return
         }
         if boundaries.takeSkipLoadCut() {
+            loadCuts += 1
             switch coordinator.noteLoadCut(target: index) {
             case .folded:
                 return
@@ -334,6 +389,7 @@ private final class Show {
             return
         }
         if boundaries.takeNoProgressEnd() {
+            noProgressEnds += 1
             if coordinator.isInFlight { return }
             pausedByNoProgress = true
             audible = false
@@ -375,6 +431,7 @@ private final class Show {
     private func perform(_ job: SkipJob) async -> SkipLoadResult {
         switch job {
         case .advance:
+            boundaries.setSkipLoadInFlight(true)
             let cut = index
             stopSpeechIfAiring()
             async let dropped: Void = dropPreparedBreak(after: cut)
@@ -394,10 +451,12 @@ private final class Show {
             await gate.wait()
             _ = await dropped
         case .reload:
+            reloads += 1
             boundaries.userRequestedChange()
             boundaries.setSkipLoadInFlight(true)
             adoptLoadedEntry()
             await gate.wait()
+            queueEmpty = false
         }
         audible = true
         if engine.snapshot.transport == .preparing {
@@ -467,5 +526,11 @@ private final class LoadGate {
         let pending = waiters
         waiters.removeAll()
         pending.forEach { $0.resume() }
+    }
+
+    func releaseOne() {
+        guard !waiters.isEmpty else { return }
+        if waiters.count == 1 { isWaiting = false }
+        waiters.removeFirst().resume()
     }
 }

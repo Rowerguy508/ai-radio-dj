@@ -456,6 +456,10 @@ final class MusicKitService: ObservableObject {
         guard skipCoordinator.admits(job) else { return .cancelled }
         switch job {
         case .advance:
+            // `.beginWhenIdle` enters here, after pause, route loss, or interruption cleared the
+            // flag. Without it, a lock-screen clear of this load is `noProgressEnd` and the chain
+            // reports `.playing` on an empty queue.
+            boundaries.setSkipLoadInFlight(true)
             boundaries.userRequestedChange()
             sessionPolicy.userPlay()
             // A skip replaces what plays: an older start or a pending boundary's next song is stale.
@@ -478,9 +482,17 @@ final class MusicKitService: ObservableObject {
             currentTrack = queue[next]
             send(.userSkipped(nextIndex: next))
             if queue[next].song == nil {
+                boundaries.setSkipLoadInFlight(false)
                 return .failed(.songUnavailable, target: next)
             }
-            return await loadSkippedSong(at: next, attempt: attempt)
+            let result = await loadSkippedSong(at: next, attempt: attempt)
+            switch result {
+            case .cancelled, .failed, .queueStopped:
+                boundaries.setSkipLoadInFlight(false)
+            case .playing, .loadCut:
+                break
+            }
+            return result
         case .reload:
             guard skipCoordinator.admits(job) else { return .cancelled }
             boundaries.userRequestedChange()

@@ -119,8 +119,11 @@ public final class SkipCoordinator {
     private var stepIsFresh = false
     /// `invalidate` bumped the generation while this chain was still running.
     private var invalidated = false
-    /// A fresh Next arrived for a chain that is invalidated or ending. Run it after this chain exits.
+    /// A fresh Next arrived for a chain that is invalidated or ending. Run it after this chain exits,
+    /// and only if no hold has landed since the press.
     private var pendingFresh = false
+    /// `generation` when that Next was pressed. A later hold bumps generation and cancels it.
+    private var pendingFreshGeneration = 0
     /// The chain will not take another stored follow-up. A Next here is a new chain, not `.queueOneMore`.
     private var ending = false
 
@@ -132,6 +135,9 @@ public final class SkipCoordinator {
         generation += 1
         queued = false
         resumeOwed = false
+        // A Next pressed after an earlier hold is still pending until the old load returns.
+        // This later Pause, call, or route loss cancels it.
+        pendingFresh = false
         if chainRunning || isInFlight { invalidated = true }
         if reason == .queueReplaced { resetBudget() }
     }
@@ -158,6 +164,7 @@ public final class SkipCoordinator {
         // into the chain those just cancelled, and do not report a follow-up that will not run.
         if invalidated || ending {
             pendingFresh = true
+            pendingFreshGeneration = generation
             return .beginWhenIdle
         }
         if !isInFlight {
@@ -302,7 +309,7 @@ public final class SkipCoordinator {
         let owed = resumeOwed
         resumeOwed = false
         if owed, let resume { await resume() }
-        let startFresh = pendingFresh
+        let startFresh = pendingFresh && pendingFreshGeneration == generation
         pendingFresh = false
         invalidated = false
         ending = false

@@ -266,6 +266,55 @@ final class SkipChainOrchestrationTests: XCTestCase {
         }
     }
 
+    /// Pause, then Next, then another hold, all while the old load is open. The Next is cancelled.
+    func testLaterHoldCancelsThePendingFreshNext() async {
+        let laterHolds: [(String, (Driver) -> Void)] = [
+            ("pause", { $0.pause() }),
+            ("interruption", { $0.interruptionBegan() }),
+            ("route", { $0.routeRemoved() })
+        ]
+        for (name, hold) in laterHolds {
+            let player = Driver()
+            player.holdNextLoad()
+            let running = Task { await player.skip() }
+            await player.untilWaiting()
+            let indexAtPress = player.index
+            player.pause()
+            await player.skip()
+            let userPlaysAtPress = player.userPlayCount
+            hold(player)
+            player.finishLoad()
+            await running.value
+            await player.untilIdle()
+            XCTAssertEqual(player.plays, [.advance], name)
+            XCTAssertEqual(player.userPlayCount, userPlaysAtPress, "\(name): the pending Next must not call userPlay()")
+            XCTAssertEqual(player.index, indexAtPress, name)
+            XCTAssertFalse(player.isAudible, "\(name): nothing plays when the old load returns")
+            XCTAssertNil(player.audibleID, name)
+            if name == "pause" {
+                XCTAssertFalse(player.policy.userWantsPlayback, name)
+            } else {
+                XCTAssertTrue(player.policy.pausedBySystem, "\(name): the hold stays, so nothing plays over it")
+            }
+        }
+
+        let player = Driver()
+        player.holdNextLoad()
+        let running = Task { await player.skip() }
+        await player.untilWaiting()
+        player.pause()
+        await player.skip()
+        player.finishLoad()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.plays, [.advance, .advance], "with no later hold, the Next plays")
+        XCTAssertEqual(player.index, 2)
+        XCTAssertTrue(player.isAudible)
+        XCTAssertEqual(player.audibleID, "t2")
+        XCTAssertTrue(player.policy.userWantsPlayback)
+        XCTAssertEqual(player.userPlayCount, 2)
+    }
+
     func testNextDuringRecoveryReloadRunsAfterTheReload() async {
         let player = Driver()
         await player.skip()
