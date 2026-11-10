@@ -412,7 +412,9 @@ final class MusicKitService: ObservableObject {
     func skip() async throws {
         installSkipGate()
         switch skipCoordinator.requestAdvance() {
-        case .queueOneMore, .ignore:
+        case .queueOneMore, .ignore, .beginWhenIdle:
+            // `.beginWhenIdle`: this Next is a new command after a cancelled chain. That chain
+            // starts it when it exits. Starting another chain here would no-op on `chainRunning`.
             return
         case .begin:
             break
@@ -451,7 +453,7 @@ final class MusicKitService: ObservableObject {
     /// One step of `skip()`. `.advance` is an explicit Next: it may call `userPlay()`.
     /// `.reload` loads the song already selected and must not clear a system hold.
     private func oneSkip(_ job: SkipJob) async -> SkipLoadResult {
-        guard skipCoordinator.allowsStep() else { return .cancelled }
+        guard skipCoordinator.admits(job) else { return .cancelled }
         switch job {
         case .advance:
             boundaries.userRequestedChange()
@@ -480,7 +482,7 @@ final class MusicKitService: ObservableObject {
             }
             return await loadSkippedSong(at: next, attempt: attempt)
         case .reload:
-            guard skipCoordinator.allowsStep() else { return .cancelled }
+            guard skipCoordinator.admits(job) else { return .cancelled }
             boundaries.userRequestedChange()
             let attempt = beginAttempt(userChangedQueue: false)
             // Stop a line that started while the load was failing. Do not cut the song we are
@@ -528,6 +530,14 @@ final class MusicKitService: ObservableObject {
     /// would miss the in-chain failure, which is reported while the chain is still active.
     private func surfaceSkipFailure(_ failure: SkipTerminalFailure) {
         defer { boundaries.setSkipLoadInFlight(false) }
+        // The MusicKit queue may still be the song we left. Stop it so that song is not audible
+        // under the new index, and so the next poll cannot treat it as the song that failed.
+        player.pause()
+        isPlaying = false
+        boundaries.pausedByApp(.userPause)
+        if sessionPolicy.userWantsPlayback {
+            _ = sessionPolicy.userPause()
+        }
         guard let attempt = attempts.current else { return }
         let effect = SkipFailureSurface.effect(failure, attempt: attempt, current: attempts.current)
         guard effect != .none else { return }

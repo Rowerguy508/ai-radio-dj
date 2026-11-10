@@ -86,8 +86,13 @@ public final class SkipCoordinator {
     public static let recoveryLimit = 1
 
     public enum Intake: Equatable, Sendable {
+        /// Caller starts the chain now.
         case begin
+        /// Stored behind the step that is running. Not returned once the chain is invalidated or ending.
         case queueOneMore
+        /// A fresh Next arrived after the chain was invalidated or was about to end.
+        /// The chain that is running starts it when it exits. The caller does not start a second one.
+        case beginWhenIdle
         case ignore
     }
 
@@ -110,6 +115,14 @@ public final class SkipCoordinator {
     private var recoveries = 0
     private var terminalSurfaced = false
     private var stepGeneration = 0
+    /// The step in `body` is the explicit Next that started this chain, not a stored follow-up.
+    private var stepIsFresh = false
+    /// `invalidate` bumped the generation while this chain was still running.
+    private var invalidated = false
+    /// A fresh Next arrived for a chain that is invalidated or ending. Run it after this chain exits.
+    private var pendingFresh = false
+    /// The chain will not take another stored follow-up. A Next here is a new chain, not `.queueOneMore`.
+    private var ending = false
 
     public init() {}
 
@@ -119,6 +132,7 @@ public final class SkipCoordinator {
         generation += 1
         queued = false
         resumeOwed = false
+        if chainRunning || isInFlight { invalidated = true }
         if reason == .queueReplaced { resetBudget() }
     }
 
@@ -140,6 +154,12 @@ public final class SkipCoordinator {
     /// had already played. The second one while a chain is running queues one advance. The third
     /// is ignored. A load cut must not call this.
     public func requestAdvance() -> Intake {
+        // A Next after pause, route loss, or interruption is a new command. Do not fold it
+        // into the chain those just cancelled, and do not report a follow-up that will not run.
+        if invalidated || ending {
+            pendingFresh = true
+            return .beginWhenIdle
+        }
         if !isInFlight {
             authorizedGeneration = generation
             isInFlight = true
@@ -176,12 +196,19 @@ public final class SkipCoordinator {
     }
 
     /// True for the step that was just started, and only while the user still wants playback
-    /// and the system is not holding it.
+    /// and the system is not holding it. A stored follow-up uses this. A fresh explicit Next does not.
     public func allowsStep() -> Bool {
-        guard stepGeneration == generation else { return false }
+        guard stepGeneration == generation, !invalidated else { return false }
         guard let stepGate else { return true }
         let gate = stepGate()
         return gate.userWantsPlayback && !gate.pausedBySystem
+    }
+
+    /// `.advance` that opened this chain is the user's Next: it may call `userPlay()` while paused
+    /// or held. `.reload` and a stored follow-up must pass `allowsStep()`.
+    public func admits(_ job: SkipJob) -> Bool {
+        if job == .advance && stepIsFresh { return stepGeneration == generation && !invalidated }
+        return allowsStep()
     }
 
     public func runChain(first: SkipJob = .advance,
@@ -193,45 +220,56 @@ public final class SkipCoordinator {
         isInFlight = true
         let ticket = authorizedGeneration
         var job = first
+        var opening = true
         while true {
             stepGeneration = ticket
-            guard allowsStep() else { break }
-            if job == .advance {
+            let fresh = opening && job == .advance
+            opening = false
+            stepIsFresh = fresh
+            if fresh {
+                guard stepGeneration == generation, !invalidated else { break }
+                // A new explicit Next, not a stored follow-up. The recovery budget starts over.
                 resetBudget()
-            } else if let target = pendingCutTarget {
-                // The reload is the one recovery of this target. A later clear does not get another.
-                guard budgetAllows(target) else {
-                    if !terminalSurfaced {
-                        terminalSurfaced = true
-                        surface?(.couldNotStart)
+            } else {
+                guard allowsStep() else { break }
+                if job == .reload, let target = pendingCutTarget {
+                    guard budgetAllows(target) else {
+                        if !terminalSurfaced {
+                            terminalSurfaced = true
+                            surface?(.couldNotStart)
+                        }
+                        break
                     }
-                    break
+                    consume(target)
                 }
-                consume(target)
             }
             loadCut = false
             let captured = generation
             let result = await body(job)
-            guard captured == generation, allowsStep() else { break }
+            stepIsFresh = false
+            guard captured == generation, !invalidated else { break }
             switch result {
             case .cancelled, .queueStopped:
                 break
             case let .failed(failure, target):
-                // A throw is not a load cut. One same-target retry, then the recoverable error.
-                // An unavailable song is never retried onto a different index.
+                // One same-target retry for a throw. An unavailable song is never retried elsewhere.
+                // The stored Next waits until that retry finishes, then runs only if the hold allows.
                 if failure != .songUnavailable, job == .advance, budgetAllows(target) {
                     pendingCutTarget = target
                     job = .reload
+                    continue
+                }
+                if takeFollowUp() {
+                    job = .advance
                     continue
                 }
                 surface?(failure)
                 terminalSurfaced = true
                 break
             case .playing, .loadCut:
-                if queued, !sealed, job == .advance {
-                    // The explicit follow-up is the second Next. Its MusicKit observation is not another one.
-                    queued = false
-                    sealed = true
+                if takeFollowUp() {
+                    // Honor the Next pressed during this advance or reload. Do not reset the
+                    // recovery budget: this is queued work, not a new command.
                     job = .advance
                     continue
                 }
@@ -254,14 +292,38 @@ public final class SkipCoordinator {
             }
             break
         }
+        stepIsFresh = false
         chainRunning = false
         isInFlight = false
         queued = false
         sealed = false
         loadCut = false
+        ending = true
         let owed = resumeOwed
         resumeOwed = false
         if owed, let resume { await resume() }
+        let startFresh = pendingFresh
+        pendingFresh = false
+        invalidated = false
+        ending = false
+        if startFresh {
+            authorizedGeneration = generation
+            isInFlight = true
+            await runChain(first: .advance, surface: surface, resume: resume, body)
+        }
+    }
+
+    /// A Next stored during this chain. It runs only while the hold still allows it, and it does
+    /// not reset the recovery budget. A pause or hold clears `queued` in `invalidate` as well.
+    private func takeFollowUp() -> Bool {
+        guard queued, !sealed, !invalidated, !ending else { return false }
+        guard allowsStep() else {
+            queued = false
+            return false
+        }
+        queued = false
+        sealed = true
+        return true
     }
 
     public func runRecovery(surface: (@MainActor (SkipTerminalFailure) -> Void)? = nil,

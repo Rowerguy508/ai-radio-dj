@@ -282,7 +282,7 @@ private final class Show {
     /// Same intake as `MusicKitService.skip()`.
     func skip() async {
         switch coordinator.requestAdvance() {
-        case .queueOneMore, .ignore:
+        case .queueOneMore, .ignore, .beginWhenIdle:
             return
         case .begin:
             boundaries.setSkipLoadInFlight(true)

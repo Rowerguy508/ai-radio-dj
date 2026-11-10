@@ -170,6 +170,7 @@ final class SkipChainOrchestrationTests: XCTestCase {
 
         player.coordinator.noteProgress()
         player.skipLoadOpen = true
+        player.policy.userPlay()
         player.surfaces.removeAll()
         player.noteCut()
         await player.untilIdle()
@@ -186,7 +187,8 @@ final class SkipChainOrchestrationTests: XCTestCase {
         XCTAssertNil(player.attempts.current)
         XCTAssertFalse(player.skipLoadOpen)
         await player.resumeIfAllowed()
-        XCTAssertEqual(player.resumes, 1)
+        XCTAssertEqual(player.resumes, 0, "the failure paused on purpose; it does not auto-resume")
+        player.play()
         XCTAssertEqual(player.engine.snapshot.transport, .playing)
     }
 
@@ -203,6 +205,187 @@ final class SkipChainOrchestrationTests: XCTestCase {
         player.play()
         XCTAssertEqual(player.engine.snapshot.transport, .playing)
         XCTAssertEqual(player.index, 0)
+    }
+
+    func testPauseThenFreshNextPlaysTheNextSong() async {
+        let player = Driver()
+        await player.skip()
+        player.pause()
+        await player.skip()
+        XCTAssertEqual(player.index, 2)
+        XCTAssertTrue(player.isAudible)
+        XCTAssertEqual(player.audibleID, "t2")
+        XCTAssertTrue(player.policy.userWantsPlayback)
+        XCTAssertEqual(player.plays, [.advance, .advance])
+    }
+
+    func testPauseThenRemoteNextPlaysTheNextSong() async {
+        let player = Driver()
+        await player.skip()
+        player.pause()
+        await player.remoteNext()
+        XCTAssertEqual(player.index, 2)
+        XCTAssertTrue(player.isAudible)
+        XCTAssertEqual(player.audibleID, "t2")
+        XCTAssertTrue(player.policy.userWantsPlayback)
+    }
+
+    func testFreshNextAfterPauseDuringTheLoadPlaysAndTheOldQueueStaysCancelled() async {
+        let player = Driver()
+        player.holdNextLoad()
+        let running = Task { await player.skip() }
+        await player.untilWaiting()
+        await player.skip()
+        player.pause()
+        await player.skip()
+        player.finishLoad()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.plays, [.advance, .advance], "the Next from before the pause is dropped; the fresh one runs")
+        XCTAssertTrue(player.isAudible)
+        XCTAssertTrue(player.policy.userWantsPlayback)
+        XCTAssertFalse(player.policy.pausedBySystem)
+    }
+
+    func testFreshNextAfterRouteLossAndInterruptionPlays() async {
+        for hold: (Driver) -> Void in [{ $0.routeRemoved() }, { $0.interruptionBegan() }] {
+            let player = Driver()
+            player.holdNextLoad()
+            let running = Task { await player.skip() }
+            await player.untilWaiting()
+            await player.skip()
+            hold(player)
+            XCTAssertTrue(player.policy.pausedBySystem)
+            await player.skip()
+            player.finishLoad()
+            await running.value
+            await player.untilIdle()
+            XCTAssertEqual(player.plays, [.advance, .advance])
+            XCTAssertTrue(player.isAudible)
+            XCTAssertFalse(player.policy.pausedBySystem, "the fresh Next calls userPlay() and clears the hold")
+        }
+    }
+
+    func testNextDuringRecoveryReloadRunsAfterTheReload() async {
+        let player = Driver()
+        await player.skip()
+        player.plays.removeAll()
+        player.holdNextLoad()
+        player.noteCut()
+        await player.untilWaiting()
+        let intake = player.coordinator.requestAdvance()
+        XCTAssertEqual(intake, .queueOneMore)
+        player.finishLoad()
+        await player.untilIdle()
+        XCTAssertEqual(player.plays, [.reload, .advance])
+        XCTAssertEqual(player.index, 2)
+        XCTAssertTrue(player.isAudible)
+    }
+
+    func testNextQueuedBeforeAThrowRunsAfterTheReload() async {
+        let player = Driver()
+        player.script = [.failed(.couldNotStart, target: -1), .playing]
+        player.holdNextLoad()
+        let running = Task { await player.skip() }
+        await player.untilWaiting()
+        await player.skip()
+        player.finishLoad()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.plays, [.advance, .reload, .advance],
+                       "the throw is retried once, then the stored Next advances")
+        XCTAssertEqual(player.index, 2)
+        XCTAssertTrue(player.surfaces.isEmpty)
+    }
+
+    func testStoredNextAfterFailureOrReloadStaysCancelledWhenAHoldLands() async {
+        let holds: [(String, (Driver) -> Void)] = [
+            ("pause", { $0.pause() }),
+            ("route", { $0.routeRemoved() }),
+            ("interruption", { $0.interruptionBegan() })
+        ]
+        for (name, hold) in holds {
+            let failed = Driver()
+            failed.script = [.failed(.songUnavailable, target: -1)]
+            failed.holdNextLoad()
+            let failing = Task { await failed.skip() }
+            await failed.untilWaiting()
+            await failed.skip()
+            hold(failed)
+            failed.finishLoad()
+            await failing.value
+            await failed.untilIdle()
+            XCTAssertEqual(failed.plays, [.advance], name)
+            XCTAssertEqual(failed.index, 1, "\(name): the stored Next after .failed stays cancelled")
+
+            let reloading = Driver()
+            await reloading.skip()
+            reloading.plays.removeAll()
+            reloading.holdNextLoad()
+            reloading.noteCut()
+            await reloading.untilWaiting()
+            XCTAssertEqual(reloading.coordinator.requestAdvance(), .queueOneMore, name)
+            hold(reloading)
+            reloading.finishLoad()
+            await reloading.untilIdle()
+            XCTAssertEqual(reloading.plays, [.reload], name)
+            XCTAssertEqual(reloading.index, 1, "\(name): the stored Next after .reload stays cancelled")
+        }
+    }
+
+    func testRepeatedFailuresAndStoredNextsStayWithinOneRecovery() async {
+        let player = Driver()
+        player.script = [
+            .failed(.couldNotStart, target: 1),
+            .failed(.couldNotStart, target: 1),
+            .failed(.couldNotStart, target: 1),
+            .failed(.couldNotStart, target: 1)
+        ]
+        player.holdNextLoad()
+        let running = Task { await player.skip() }
+        await player.untilWaiting()
+        await player.skip()
+        player.finishLoad()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.reloads(of: 1), 1, "the stored Next must not reset this song's recovery")
+        XCTAssertEqual(player.surfaces, [.couldNotStart])
+
+        player.index = 1
+        player.skipLoadOpen = true
+        player.policy.userPlay()
+        player.noteCut()
+        await player.untilIdle()
+        XCTAssertEqual(player.reloads(of: 1), 1, "the same target stays spent until real progress")
+
+        player.coordinator.noteProgress()
+        player.skipLoadOpen = true
+        player.policy.userPlay()
+        player.noteCut()
+        await player.untilIdle()
+        XCTAssertEqual(player.reloads(of: 1), 2, "real progress allows one more recovery of this target")
+    }
+
+    func testUnavailableSongDoesNotLeaveTheOldSongAudibleOrReportItAsTheNewOne() async {
+        let player = Driver()
+        player.primeAudibleA()
+        player.script = [.failed(.songUnavailable, target: -1)]
+        await player.skip()
+        XCTAssertEqual(player.index, 1)
+        XCTAssertEqual(player.engine.snapshot.nowPlaying?.id, "t1")
+        XCTAssertFalse(player.isAudible)
+        XCTAssertNil(player.audibleID)
+        XCTAssertEqual(player.playerEntryID, "t0", "the player queue was still A")
+        player.poll()
+        XCTAssertFalse(player.isAudible, "the poll must not keep A sounding under B")
+        XCTAssertEqual(player.index, 1)
+        XCTAssertEqual(player.engine.snapshot.nowPlaying?.id, "t1")
+        XCTAssertEqual(player.engine.snapshot.transport, .paused)
+        await player.resumeIfAllowed()
+        XCTAssertEqual(player.resumes, 0)
+        XCTAssertFalse(player.isAudible)
+        player.userResume()
+        XCTAssertFalse(player.isAudible, "resume must not play A as if it were B")
     }
 }
 
@@ -223,6 +406,12 @@ private final class Driver {
     var surfaces: [SkipTerminalFailure] = []
     var script: [SkipLoadResult] = []
     var skipLoadOpen = true
+    var isAudible = true
+    var audibleID: String? = "t0"
+    var playerEntryID: String? = "t0"
+    var boundaries = BoundaryInterpreter()
+    private var clock: TimeInterval = 100
+    private var reloadCounts: [Int: Int] = [:]
     private let gate = OrchestrationGate()
     private let songs = 6
 
@@ -237,11 +426,43 @@ private final class Driver {
 
     func skip() async {
         switch coordinator.requestAdvance() {
-        case .queueOneMore, .ignore:
-            return
         case .begin:
             await run(first: .advance)
+        case .queueOneMore, .ignore, .beginWhenIdle:
+            return
         }
+    }
+
+    /// Lock-screen Next: the same `skip()` `nextTrackCommand` targets.
+    func remoteNext() async { await skip() }
+
+    func reloads(of index: Int) -> Int { reloadCounts[index] ?? 0 }
+
+    func primeAudibleA() {
+        for position in [0.0, 10.0, 20.0] {
+            _ = boundaries.interpret(PlaybackObservation(entryID: "t0", isPlaying: true, position: position,
+                                                         duration: 200, uptime: clock),
+                                     queueIndex: 0, queueCount: songs)
+            clock += 1
+        }
+    }
+
+    func poll() {
+        if isAudible, !policy.mayAutoResume {
+            isAudible = false
+            audibleID = nil
+        }
+        _ = boundaries.interpret(PlaybackObservation(entryID: playerEntryID, isPlaying: isAudible,
+                                                     position: isAudible ? 30 : 0, duration: 200, uptime: clock),
+                                 queueIndex: index, queueCount: songs)
+        clock += 1
+    }
+
+    func userResume() {
+        policy.userPlay()
+        guard playerEntryID == "t\(index)" else { return }
+        isAudible = true
+        audibleID = playerEntryID
     }
 
     /// Same gate as `MusicKitService.noteSkipLoadCut`: no recovery over a pause or a system hold.
@@ -261,6 +482,8 @@ private final class Driver {
     func pause() {
         coordinator.invalidate(.userPause)
         skipLoadOpen = false
+        isAudible = false
+        audibleID = nil
         _ = policy.userPause()
         engine.apply(.userPaused)
     }
@@ -307,6 +530,7 @@ private final class Driver {
 
     func finishLoad() { gate.release() }
     func holdNextLoad() { gate.close() }
+    func releaseOne() { gate.releaseOne() }
 
     func untilWaiting() async {
         for _ in 0..<1000 where !gate.isWaiting { await Task.yield() }
@@ -341,7 +565,7 @@ private final class Driver {
     }
 
     private func execute(_ job: SkipJob) async -> SkipLoadResult {
-        guard coordinator.allowsStep() else { return .cancelled }
+        guard coordinator.admits(job) else { return .cancelled }
         if job == .advance {
             policy.userPlay()
             userPlayCount += 1
@@ -350,15 +574,27 @@ private final class Driver {
             guard next < songs else { return .queueStopped }
             index = next
             engine.apply(.userSkipped(nextIndex: index))
+        } else {
+            reloadCounts[index, default: 0] += 1
         }
         plays.append(job)
         await gate.wait()
         guard coordinator.allowsStep() else { return .cancelled }
         guard policy.userWantsPlayback, !policy.pausedBySystem else { return .cancelled }
-        guard !script.isEmpty else { return .playing }
+        guard !script.isEmpty else {
+            isAudible = true
+            audibleID = "t\(index)"
+            playerEntryID = audibleID
+            return .playing
+        }
         let scripted = script.removeFirst()
-        if case let .failed(failure, _) = scripted {
-            return .failed(failure, target: index)
+        if case let .failed(failure, target) = scripted {
+            return .failed(failure, target: target >= 0 ? target : index)
+        }
+        if case .playing = scripted {
+            isAudible = true
+            audibleID = "t\(index)"
+            playerEntryID = audibleID
         }
         return scripted
     }
@@ -367,6 +603,11 @@ private final class Driver {
     /// effect return before the banner, and the skip-load flag is cleared on every path.
     func surface(_ failure: SkipTerminalFailure) {
         defer { skipLoadOpen = false }
+        isAudible = false
+        audibleID = nil
+        boundaries.pausedByApp(.userPause)
+        if policy.userWantsPlayback { _ = policy.userPause() }
+        engine.apply(.userPaused)
         guard let attempt = attempts.current else { return }
         let effect = SkipFailureSurface.effect(failure, attempt: attempt, current: attempts.current)
         guard effect != .none else { return }
@@ -403,6 +644,12 @@ private final class OrchestrationGate {
         let pending = waiters
         waiters.removeAll()
         pending.forEach { $0.resume() }
+    }
+
+    func releaseOne() {
+        guard !waiters.isEmpty else { return }
+        if waiters.count == 1 { isWaiting = false }
+        waiters.removeFirst().resume()
     }
 
     func close() { open = false }
