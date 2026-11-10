@@ -54,6 +54,9 @@ final class MusicKitService: ObservableObject {
     /// Called with the index of the song the user skipped, so its prepared break is discarded.
     var onSongSkipped: (@MainActor (Int) -> Void)?
     private var queueIndex = 0
+    /// Index and queue generation of the song `startTrack` actually put in the player.
+    /// Nil after a skip load fails or is cut, even if the player still holds the previous song.
+    private var loadedTarget: LoadedPlayerTarget?
     /// Queue entry that already reached a natural end. `resumeIfAllowed` must not play it again.
     private var finishedEntryID: String?
     /// True when the current queue entry is the one a natural end already finished.
@@ -305,19 +308,22 @@ final class MusicKitService: ObservableObject {
         let attempt = beginAttempt(userChangedQueue: false)
         armPlaybackConfirmTimeout(for: attempt)
         do {
-            guard try await playIfStillAllowed(attempt: attempt) else {
+            switch try await playResume(attempt: attempt, userInitiated: true) {
+            case .played:
+                guard attempts.isCurrent(attempt) else { return }
+                send(.userResumed)
+                stateMachine.apply(.resume)
+                reportDeferredSongStart()
+                await confirmPlaybackAfterStart(attempt)
+            case .refused:
                 guard attempts.isCurrent(attempt) else { return }
                 cancelPlaybackConfirmTimeout()
                 // Never left a preparing state without a hold: we only send userResumed after
                 // the gate passes. If a prior prepare left us preparing, restore the hold.
                 send(.playbackStartRefused)
+            case .failedClosed:
                 return
             }
-            guard attempts.isCurrent(attempt) else { return }
-            send(.userResumed)
-            stateMachine.apply(.resume)
-            reportDeferredSongStart()
-            await confirmPlaybackAfterStart(attempt)
         } catch {
             guard attempts.isCurrent(attempt) else { return }
             cancelPlaybackConfirmTimeout()
@@ -384,17 +390,20 @@ final class MusicKitService: ObservableObject {
         let attempt = beginAttempt(userChangedQueue: false)
         do {
             armPlaybackConfirmTimeout(for: attempt)
-            guard try await playIfStillAllowed(attempt: attempt) else {
+            switch try await playResume(attempt: attempt, userInitiated: false) {
+            case .played:
+                guard attempts.isCurrent(attempt) else { return }
+                send(.userResumed)
+                // A song loaded during the break (paused) starts now; its break is planned here.
+                reportDeferredSongStart()
+                await confirmPlaybackAfterStart(attempt)
+            case .refused:
                 guard attempts.isCurrent(attempt) else { return }
                 cancelPlaybackConfirmTimeout()
                 send(.playbackStartRefused)
+            case .failedClosed:
                 return
             }
-            guard attempts.isCurrent(attempt) else { return }
-            send(.userResumed)
-            // A song loaded during the break (paused) starts now; its break is planned here.
-            reportDeferredSongStart()
-            await confirmPlaybackAfterStart(attempt)
         } catch {
             guard attempts.isCurrent(attempt) else { return }
             cancelPlaybackConfirmTimeout()
@@ -470,6 +479,7 @@ final class MusicKitService: ObservableObject {
             let next = queueIndex + 1
             guard queue.indices.contains(next) else {
                 boundaries.setSkipLoadInFlight(false)
+                noteLoadedTargetStale()
                 player.stop()
                 isPlaying = false
                 send(.queueFinished)
@@ -483,13 +493,17 @@ final class MusicKitService: ObservableObject {
             send(.userSkipped(nextIndex: next))
             if queue[next].song == nil {
                 boundaries.setSkipLoadInFlight(false)
+                noteLoadedTargetStale()
                 return .failed(.songUnavailable, target: next)
             }
             let result = await loadSkippedSong(at: next, attempt: attempt)
             switch result {
             case .cancelled, .failed, .queueStopped:
                 boundaries.setSkipLoadInFlight(false)
-            case .playing, .loadCut:
+                noteLoadedTargetStale()
+            case .loadCut:
+                noteLoadedTargetStale()
+            case .playing:
                 break
             }
             return result
@@ -503,13 +517,17 @@ final class MusicKitService: ObservableObject {
             onBreakMustStop?(nil)
             guard queue.indices.contains(queueIndex) else {
                 boundaries.setSkipLoadInFlight(false)
+                noteLoadedTargetStale()
                 return .queueStopped
             }
             boundaries.setSkipLoadInFlight(true)
             if queue[queueIndex].song == nil {
+                noteLoadedTargetStale()
                 return .failed(.songUnavailable, target: queueIndex)
             }
-            return await loadSkippedSong(at: queueIndex, attempt: attempt)
+            let result = await loadSkippedSong(at: queueIndex, attempt: attempt)
+            if case .playing = result {} else { noteLoadedTargetStale() }
+            return result
         }
     }
 
@@ -542,6 +560,7 @@ final class MusicKitService: ObservableObject {
     /// would miss the in-chain failure, which is reported while the chain is still active.
     private func surfaceSkipFailure(_ failure: SkipTerminalFailure) {
         defer { boundaries.setSkipLoadInFlight(false) }
+        noteLoadedTargetStale()
         // The MusicKit queue may still be the song we left. Stop it so that song is not audible
         // under the new index, and so the next poll cannot treat it as the song that failed.
         player.pause()
@@ -587,6 +606,7 @@ final class MusicKitService: ObservableObject {
         boundaries.userRequestedChange()
         player.queue = ApplicationMusicPlayer.Queue(for: [song])
         finishedEntryID = nil
+        noteLoadedTarget(index)
         guard autoplay else {
             isPlaying = false
             armDeferredStart(index)
@@ -628,6 +648,7 @@ final class MusicKitService: ObservableObject {
         } catch MusicKitError.superseded {
             throw MusicKitError.superseded
         } catch {
+            if attempts.isCurrent(attempt) { noteLoadedTargetStale() }
             throw error
         }
         deferredStart.clear()
@@ -891,6 +912,7 @@ final class MusicKitService: ObservableObject {
     /// An explicit Next already stored is not duplicated. Past the budget, surface the error.
     private func noteSkipLoadCut() {
         installSkipGate()
+        noteLoadedTargetStale()
         guard sessionPolicy.userWantsPlayback, !sessionPolicy.pausedBySystem else { return }
         switch skipCoordinator.noteLoadCut(target: queueIndex) {
         case .folded:
@@ -1129,6 +1151,55 @@ final class MusicKitService: ObservableObject {
         installRemoteCommands()
         callRelay.onChange = { [weak self] in self?.callsChanged() }
         callObserver.setDelegate(callRelay, queue: nil)
+    }
+
+    /// Plays the song already in the player, or loads the selected index when that is not what is loaded.
+    /// A selected song with nothing playable fails closed and never calls `play()` on the previous one.
+    private enum ResumePlayback {
+        case played
+        case refused
+        case failedClosed
+    }
+
+    private func playResume(attempt: PlaybackAttemptID, userInitiated: Bool) async throws -> ResumePlayback {
+        let playable = queue.indices.contains(queueIndex) && queue[queueIndex].song != nil
+        switch LoadedTargetPolicy.decide(
+            loaded: loadedTarget,
+            selectedIndex: queueIndex,
+            generation: attempts.queueGeneration,
+            selectedIsPlayable: playable
+        ) {
+        case .failClosed:
+            reportResumeTargetFailure(attempt)
+            return .failedClosed
+        case .reloadSelected:
+            try await startTrack(at: queueIndex, autoplay: true, userInitiated: userInitiated, attempt: attempt)
+            return isPlaying ? .played : .refused
+        case .playLoaded:
+            return try await playIfStillAllowed(attempt: attempt) ? .played : .refused
+        }
+    }
+
+    /// The selected song cannot be played, and the player may still hold the previous one.
+    private func reportResumeTargetFailure(_ attempt: PlaybackAttemptID) {
+        cancelPlaybackConfirmTimeout()
+        player.pause()
+        isPlaying = false
+        let failure: SkipTerminalFailure = (queue.indices.contains(queueIndex) && queue[queueIndex].song == nil)
+            ? .songUnavailable : .couldNotStart
+        let effect = SkipFailureSurface.effect(failure, attempt: attempt, current: attempts.current)
+        let message = effect.message ?? PlaybackFailureCopy.message(for: failure.kind)
+        lastError = message
+        send(.errorRaised(PlaybackError(kind: .resumeFailed, message: message, isRecoverable: true)))
+        send(.userPaused)
+    }
+
+    private func noteLoadedTarget(_ index: Int) {
+        loadedTarget = LoadedPlayerTarget(index: index, generation: attempts.queueGeneration)
+    }
+
+    private func noteLoadedTargetStale() {
+        loadedTarget = nil
     }
 
     /// `prepareToPlay()`, then `play()` (MusicKit activates the session). After `play()` returns, a hold that

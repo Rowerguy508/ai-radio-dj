@@ -436,6 +436,75 @@ final class SkipChainOrchestrationTests: XCTestCase {
         player.userResume()
         XCTAssertFalse(player.isAudible, "resume must not play A as if it were B")
     }
+
+    /// Without `LoadedTargetPolicy`, explicit Play calls `play()` on the entry still in the player (A)
+    /// while `queueIndex` is B. The shared decision fails closed instead.
+    func testExplicitPlayAfterUnavailableSkipDoesNotPlayTheLoadedSong() async {
+        let player = Driver()
+        player.primeAudibleA()
+        player.script = [.failed(.songUnavailable, target: -1)]
+        await player.skip()
+        XCTAssertEqual(player.playerEntryID, "t0")
+        XCTAssertEqual(player.index, 1)
+        player.userResume()
+        XCTAssertEqual(player.lastResumeDecision, .failClosed)
+        XCTAssertFalse(player.isAudible)
+        XCTAssertNil(player.audibleID)
+        XCTAssertEqual(player.playerEntryID, "t0", "Play did not start the song still loaded")
+        XCTAssertEqual(player.engine.snapshot.nowPlaying?.id, "t1")
+        XCTAssertEqual(player.engine.snapshot.error?.isRecoverable, true)
+        XCTAssertEqual(player.surfaces.last, .songUnavailable)
+    }
+
+    /// Remote Play and `resumeIfAllowed` use the same decision. A hold that has been cleared must
+    /// still not start A.
+    func testRemoteAndAutomaticResumeAfterUnavailableSkipDoNotPlayTheLoadedSong() async {
+        let remote = Driver()
+        remote.primeAudibleA()
+        remote.script = [.failed(.songUnavailable, target: -1)]
+        await remote.skip()
+        await remote.remoteResume()
+        XCTAssertEqual(remote.lastResumeDecision, .failClosed)
+        XCTAssertFalse(remote.isAudible)
+        XCTAssertNil(remote.audibleID)
+        XCTAssertEqual(remote.playerEntryID, "t0")
+        XCTAssertEqual(remote.engine.snapshot.error?.isRecoverable, true)
+
+        let automatic = Driver()
+        automatic.primeAudibleA()
+        automatic.script = [.failed(.songUnavailable, target: -1)]
+        await automatic.skip()
+        automatic.policy.userPlay()
+        await automatic.resumeIfAllowed()
+        XCTAssertEqual(automatic.lastResumeDecision, .failClosed)
+        XCTAssertFalse(automatic.isAudible)
+        XCTAssertNil(automatic.audibleID)
+        XCTAssertEqual(automatic.playerEntryID, "t0")
+        XCTAssertEqual(automatic.resumes, 0)
+        XCTAssertEqual(automatic.engine.snapshot.error?.isRecoverable, true)
+    }
+
+    /// The skip could not start B, so A is still loaded. A later Play reloads B and reports B.
+    func testRetryAfterAFailedSkipLoadsAndPlaysTheSelectedSong() async {
+        let player = Driver()
+        player.primeAudibleA()
+        player.script = [
+            .failed(.couldNotStart, target: -1),
+            .failed(.couldNotStart, target: -1)
+        ]
+        await player.skip()
+        XCTAssertEqual(player.index, 1)
+        XCTAssertEqual(player.playerEntryID, "t0")
+        XCTAssertFalse(player.isAudible)
+        player.userResume()
+        XCTAssertEqual(player.lastResumeDecision, .reloadSelected)
+        XCTAssertTrue(player.isAudible)
+        XCTAssertEqual(player.audibleID, "t1")
+        XCTAssertEqual(player.playerEntryID, "t1")
+        XCTAssertEqual(player.index, 1)
+        XCTAssertEqual(player.engine.snapshot.nowPlaying?.id, "t1")
+        XCTAssertEqual(player.engine.snapshot.transport, .playing)
+    }
 }
 
 // MARK: - Driver
@@ -458,6 +527,9 @@ private final class Driver {
     var isAudible = true
     var audibleID: String? = "t0"
     var playerEntryID: String? = "t0"
+    var loadedTarget: LoadedPlayerTarget? = LoadedPlayerTarget(index: 0, generation: 0)
+    var lastResumeDecision: ResumeTargetDecision?
+    private var unavailable: Set<Int> = []
     var boundaries = BoundaryInterpreter()
     private var clock: TimeInterval = 100
     private var reloadCounts: [Int: Int] = [:]
@@ -485,6 +557,9 @@ private final class Driver {
     /// Lock-screen Next: the same `skip()` `nextTrackCommand` targets.
     func remoteNext() async { await skip() }
 
+    /// Lock-screen Play: the same `resume()` the remote play command targets.
+    func remoteResume() async { userResume() }
+
     func reloads(of index: Int) -> Int { reloadCounts[index] ?? 0 }
 
     func primeAudibleA() {
@@ -507,15 +582,15 @@ private final class Driver {
         clock += 1
     }
 
+    /// Explicit Play. The same `LoadedTargetPolicy` decision as `MusicKitService.resume`.
     func userResume() {
         policy.userPlay()
-        guard playerEntryID == "t\(index)" else { return }
-        isAudible = true
-        audibleID = playerEntryID
+        performResume()
     }
 
     /// Same gate as `MusicKitService.noteSkipLoadCut`: no recovery over a pause or a system hold.
     func noteCut() {
+        noteLoadedTargetStale()
         guard policy.userWantsPlayback, !policy.pausedBySystem, skipLoadOpen else { return }
         switch coordinator.noteLoadCut(target: index) {
         case .folded:
@@ -561,20 +636,26 @@ private final class Driver {
     func play() {
         coordinator.invalidate(.queueReplaced)
         skipLoadOpen = false
+        _ = attempts.userChangedQueue()
         index = 0
         policy.userPlay()
         userPlayCount += 1
         startEngine(station: station)
+        playerEntryID = "t0"
+        noteLoadedTarget()
     }
 
     func replaceStation() {
         coordinator.invalidate(.queueReplaced)
         skipLoadOpen = false
+        _ = attempts.userChangedQueue()
         index = 0
         station = "new"
         policy.userPlay()
         userPlayCount += 1
         startEngine(station: "new")
+        playerEntryID = "t0"
+        noteLoadedTarget()
     }
 
     func finishLoad() { gate.release() }
@@ -618,6 +699,7 @@ private final class Driver {
         if job == .advance {
             policy.userPlay()
             userPlayCount += 1
+            _ = attempts.userChangedQueue()
             _ = attempts.beginStart()
             let next = index + 1
             guard next < songs else { return .queueStopped }
@@ -634,17 +716,24 @@ private final class Driver {
             isAudible = true
             audibleID = "t\(index)"
             playerEntryID = audibleID
+            noteLoadedTarget()
             return .playing
         }
         let scripted = script.removeFirst()
         if case let .failed(failure, target) = scripted {
-            return .failed(failure, target: target >= 0 ? target : index)
+            let failedAt = target >= 0 ? target : index
+            if failure == .songUnavailable { unavailable.insert(failedAt) }
+            noteLoadedTargetStale()
+            return .failed(failure, target: failedAt)
         }
         if case .playing = scripted {
             isAudible = true
             audibleID = "t\(index)"
             playerEntryID = audibleID
+            noteLoadedTarget()
         }
+        if case .loadCut = scripted { noteLoadedTargetStale() }
+        if case .cancelled = scripted { noteLoadedTargetStale() }
         return scripted
     }
 
@@ -652,6 +741,7 @@ private final class Driver {
     /// effect return before the banner, and the skip-load flag is cleared on every path.
     func surface(_ failure: SkipTerminalFailure) {
         defer { skipLoadOpen = false }
+        noteLoadedTargetStale()
         isAudible = false
         audibleID = nil
         boundaries.pausedByApp(.userPause)
@@ -666,11 +756,55 @@ private final class Driver {
 
     func resumeIfAllowed() async {
         guard policy.mayAutoResume, !skipLoadOpen else { return }
-        resumes += 1
-        if engine.snapshot.transport != .playing {
+        if coordinator.isInFlight { return }
+        performResume()
+    }
+
+    /// `MusicKitService.playResume`: one `LoadedTargetPolicy` decision, then play, reload, or fail closed.
+    private func performResume() {
+        let decision = LoadedTargetPolicy.decide(
+            loaded: loadedTarget,
+            selectedIndex: index,
+            generation: attempts.queueGeneration,
+            selectedIsPlayable: !unavailable.contains(index)
+        )
+        lastResumeDecision = decision
+        switch decision {
+        case .playLoaded:
+            isAudible = true
+            audibleID = playerEntryID
+            resumes += 1
+            if engine.snapshot.transport != .playing {
+                engine.apply(.userResumed)
+                engine.apply(.playbackConfirmed)
+            }
+        case .reloadSelected:
+            playerEntryID = "t\(index)"
+            audibleID = playerEntryID
+            isAudible = true
+            noteLoadedTarget()
+            resumes += 1
+            engine.apply(.userSkipped(nextIndex: index))
             engine.apply(.userResumed)
             engine.apply(.playbackConfirmed)
+        case .failClosed:
+            isAudible = false
+            audibleID = nil
+            let failure: SkipTerminalFailure = unavailable.contains(index) ? .songUnavailable : .couldNotStart
+            let attempt = attempts.beginStart()
+            let effect = SkipFailureSurface.effect(failure, attempt: attempt, current: attempts.current)
+            surfaces.append(failure)
+            engine.apply(.userPaused)
+            for event in effect.events { engine.apply(event) }
         }
+    }
+
+    private func noteLoadedTarget() {
+        loadedTarget = LoadedPlayerTarget(index: index, generation: attempts.queueGeneration)
+    }
+
+    private func noteLoadedTargetStale() {
+        loadedTarget = nil
     }
 }
 
