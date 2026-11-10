@@ -358,19 +358,21 @@ final class RadioStyleBreakTests: XCTestCase {
         let (s, _, _, preparer) = await session(StationConfiguration(commentary: .frequent))
         let source = ConnectionItem(id: approved, integration: .obsidian, title: "[TEST] note", state: .approved, sensitivity: .medium)
         await s.queueStarted(djTracks(8), sources: [source])
-        XCTAssertFalse(s.plannedBoundaries.contains(1))
-        await s.songStarted(index: 1, remaining: .seconds(180))
+        // #445: ready audio is handed out only for a break the session gave the preparer (it
+        // carries that plan's time of day), so the recorded result below replaces a planned one.
+        let k = try XCTUnwrap(s.plannedBoundaries.first, "a break is planned")
+        await s.songStarted(index: k, remaining: .seconds(180))
         let opener = cue("That was Song 1."), kept = cue("From your notes: one.", item: approved)
         let lapsed = cue("From your notes: two.", item: unknown), closing = cue("Here's Song 2.")
         let all = [opener, kept, lapsed, closing]
         await preparer.testRecord(.ready(PreparedDJBreak(
-            afterTrack: 1, cues: all, clips: [clip(opener, 2), clip(kept, 3), clip(lapsed, 4), clip(closing, 1.5)],
+            afterTrack: k, cues: all, clips: [clip(opener, 2), clip(kept, 3), clip(lapsed, 4), clip(closing, 1.5)],
             attributions: [opener.id: .trackMetadata(trackIDs: ["t1"]),
                            kept.id: .personalContext(itemID: approved, source: .obsidian, provenance: "n:1"),
                            lapsed.id: .personalContext(itemID: unknown, source: .obsidian, provenance: "n:1"),
                            closing.id: .trackMetadata(trackIDs: ["t2"])],
-            talkOverCueID: closing.id)), afterTrack: 1)
-        let handedBreak = await s.naturalBoundary(afterTrack: 1)
+            talkOverCueID: closing.id)), afterTrack: k)
+        let handedBreak = await s.naturalBoundary(afterTrack: k)
         let handed = try XCTUnwrap(handedBreak)
         XCTAssertEqual(handed.cues.map(\.id), [opener.id, kept.id, closing.id], "the unapproved item is dropped")
         XCTAssertEqual(handed.talkOverCueID, closing.id)

@@ -387,8 +387,12 @@ public final class DJBreakSession {
         guard let djBreak = breaks[index] else { return }
         // Library-seed gate (#154): a station built from the listener's own library is spoken
         // on-device only, so no seed, song or artist from it reaches a cloud or paid voice.
-        preparedDayParts[index] = breakDayParts[index]   // #445
-        await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))
+        // #445: the tag goes with the render the preparer accepts. A duplicate start it ignores
+        // (a render ready or in flight) keeps the tag of the audio it already holds.
+        let part = breakDayParts[index]
+        if await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active)) {
+            preparedDayParts[index] = part
+        }
     }
 
     /// Song scrubbing (-Atlas): the user seeked within song `index`, which now has `remaining`
@@ -417,10 +421,13 @@ public final class DJBreakSession {
         // the boundary went by while this seek was suspended. `rearm` re-checks inside the
         // preparer: a boundary that `takeBreak` or `cancelAll` closed is never re-armed.
         guard playing == index, let djBreak = breaks[index] else { return }
+        // #445: the day part of the break handed to `rearm`, read before the await (a re-plan
+        // while it is suspended must not relabel this render).
+        let part = breakDayParts[index]
         // Library-seed gate (#154), read at re-arm time like `songStarted`.
-        if await preparer.rearm(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active)) {
-            preparedDayParts[index] = breakDayParts[index]   // #445: the re-armed render is this plan's
-        }
+        let rearmed = await preparer.rearm(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))
+        await testRearmReturned?()
+        if rearmed { preparedDayParts[index] = part }
     }
 
     /// Song `k` ended on its own. Applies pending station edits at this safe boundary, then
@@ -443,7 +450,8 @@ public final class DJBreakSession {
         // #445 (-Atlas): prepared for another time of day (paused in the morning, resumed in the
         // afternoon): not handed out, music plays at once. The break is forgotten (it never aired,
         // so an unaired opener greets again) and the rest of the queue is re-planned for now.
-        if let part = preparedDayParts.removeValue(forKey: k), part != currentDayPart() {
+        // Ready audio with no tag is of unknown day part: dropped too (fails closed).
+        if preparedDayParts.removeValue(forKey: k) != currentDayPart() {
             if let stale = breaks.removeValue(forKey: k) { writer.forgetPlannedBreaks([stale]) }
             breakDayParts[k] = nil
             replanForNewDayPart(keepingThrough: k)
@@ -853,6 +861,12 @@ public final class DJBreakSession {
     /// Test hook (-Atlas): runs where `songSeeked` resumes after its suspension on the station,
     /// so a test can end the song or drop the queue at exactly that point.
     var testSeekResumed: (@MainActor () async -> Void)?
+    /// Test hook (#445, -Atlas): runs where `songSeeked` resumes from `rearm`, standing in for
+    /// work (a duplicate song start, a re-plan) that runs on the main actor during that await.
+    var testRearmReturned: (@MainActor () async -> Void)?
+    /// Test hooks (#445): the day part boundary `k`'s plan, and the render the preparer accepted, were written in.
+    func testPlannedDayPart(afterTrack k: Int) -> DayPart? { breakDayParts[k] }
+    func testPreparedDayPart(afterTrack k: Int) -> DayPart? { preparedDayParts[k] }
     /// Test hook: personal source item ids still present in the briefing or planned breaks.
     var testPlannedSourceItemIDs: Set<UUID> {
         var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))
