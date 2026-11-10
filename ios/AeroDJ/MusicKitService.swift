@@ -521,14 +521,19 @@ final class MusicKitService: ObservableObject {
 
     /// Recoverable banner and honest paused transport for a skip that cannot start. The queue
     /// index is left on the song that failed.
+    ///
+    /// The flag is cleared on every exit, including the early returns. This runs synchronously
+    /// on the main actor, before `runChain` drops `isInFlight` and before any newer `skip()` can
+    /// set the flag, so the clear cannot belong to a newer chain. Gating it on `!isInFlight`
+    /// would miss the in-chain failure, which is reported while the chain is still active.
     private func surfaceSkipFailure(_ failure: SkipTerminalFailure) {
+        defer { boundaries.setSkipLoadInFlight(false) }
         guard let attempt = attempts.current else { return }
         let effect = SkipFailureSurface.effect(failure, attempt: attempt, current: attempts.current)
         guard effect != .none else { return }
         if effect.cancelsConfirm { cancelPlaybackConfirmTimeout() }
         if let message = effect.message { lastError = message }
         isPlaying = false
-        boundaries.setSkipLoadInFlight(false)
         for event in effect.events { send(event) }
     }
 

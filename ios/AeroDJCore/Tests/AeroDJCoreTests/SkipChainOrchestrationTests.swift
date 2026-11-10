@@ -176,6 +176,34 @@ final class SkipChainOrchestrationTests: XCTestCase {
         XCTAssertEqual(player.plays, [.advance, .reload, .reload], "real progress gives this target one more recovery")
         XCTAssertEqual(player.index, 1)
     }
+
+    /// `surfaceSkipFailure` with no current attempt still drops the skip-load flag, so a later
+    /// resume is not stuck behind it.
+    func testTerminalFailureWithNoAttemptClearsTheSkipLoadFlag() async {
+        let player = Driver()
+        player.skipLoadOpen = true
+        player.surface(.couldNotStart)
+        XCTAssertNil(player.attempts.current)
+        XCTAssertFalse(player.skipLoadOpen)
+        await player.resumeIfAllowed()
+        XCTAssertEqual(player.resumes, 1)
+        XCTAssertEqual(player.engine.snapshot.transport, .playing)
+    }
+
+    /// The exhausted load-cut path calls `surfaceSkipFailure` outside a chain. The flag ends false.
+    func testExhaustedLoadCutClearsTheSkipLoadFlag() async {
+        let player = Driver()
+        await player.skip()
+        player.skipLoadOpen = true
+        player.noteCut()
+        await player.untilIdle()
+        player.noteCut()
+        XCTAssertFalse(player.skipLoadOpen)
+        XCTAssertEqual(player.plays, [.advance, .reload])
+        player.play()
+        XCTAssertEqual(player.engine.snapshot.transport, .playing)
+        XCTAssertEqual(player.index, 0)
+    }
 }
 
 // MARK: - Driver
@@ -225,8 +253,8 @@ private final class Driver {
         case .recover:
             Task { await self.run(first: .reload) }
         case .exhausted:
+            // The flag clear has to happen inside `surface`, as in `surfaceSkipFailure`.
             surface(.couldNotStart)
-            skipLoadOpen = false
         }
     }
 
@@ -255,6 +283,16 @@ private final class Driver {
         if directive == .resumeIfPermitted, !coordinator.isInFlight {
             await resumeIfAllowed()
         }
+    }
+
+    /// Same shape as `MusicKitService.play`: a new queue clears the skip-load flag and starts.
+    func play() {
+        coordinator.invalidate(.queueReplaced)
+        skipLoadOpen = false
+        index = 0
+        policy.userPlay()
+        userPlayCount += 1
+        startEngine(station: station)
     }
 
     func replaceStation() {
@@ -325,16 +363,24 @@ private final class Driver {
         return scripted
     }
 
-    private func surface(_ failure: SkipTerminalFailure) {
+    /// Same exits as `MusicKitService.surfaceSkipFailure`: no current attempt and a stale
+    /// effect return before the banner, and the skip-load flag is cleared on every path.
+    func surface(_ failure: SkipTerminalFailure) {
+        defer { skipLoadOpen = false }
+        guard let attempt = attempts.current else { return }
+        let effect = SkipFailureSurface.effect(failure, attempt: attempt, current: attempts.current)
+        guard effect != .none else { return }
         surfaces.append(failure)
-        let attempt = attempts.current ?? attempts.beginStart()
-        let effect = SkipFailureSurface.effect(failure, attempt: attempt, current: attempts.current ?? attempt)
         for event in effect.events { engine.apply(event) }
     }
 
-    private func resumeIfAllowed() async {
-        guard policy.mayAutoResume else { return }
+    func resumeIfAllowed() async {
+        guard policy.mayAutoResume, !skipLoadOpen else { return }
         resumes += 1
+        if engine.snapshot.transport != .playing {
+            engine.apply(.userResumed)
+            engine.apply(.playbackConfirmed)
+        }
     }
 }
 
