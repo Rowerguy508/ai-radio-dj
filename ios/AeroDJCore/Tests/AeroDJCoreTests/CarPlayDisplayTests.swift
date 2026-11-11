@@ -3,8 +3,8 @@ import XCTest
 
 /// CarPlay (#438). The car may show station names, the song title, the artist, the
 /// station name, and the track artwork URL. Spoken lines, queue rows, errors, and a
-/// created station's summary cannot appear there. The audio entitlement stays out of
-/// the project until Apple grants it.
+/// created station's summary cannot appear there. The audio entitlement is granted
+/// and pinned in both app entitlements files.
 final class CarPlayDisplayTests: XCTestCase {
     private let script = "ZZ_DJ_SCRIPT_ZZ"
     private let calendar = "ZZ_CALENDAR_EVENT_ZZ"
@@ -274,24 +274,26 @@ final class CarPlayDisplayTests: XCTestCase {
         XCTAssertEqual(scenes[0]["UISceneClassName"] as? String, "CPTemplateApplicationScene")
         XCTAssertEqual(scenes[0]["UISceneConfigurationName"] as? String, "CarPlay")
         XCTAssertEqual(scenes[0]["UISceneDelegateClassName"] as? String, "$(PRODUCT_MODULE_NAME).CarPlaySceneDelegate")
+        let modes = try XCTUnwrap(plist["UIBackgroundModes"] as? [String])
+        XCTAssertTrue(modes.contains("audio"))
     }
 
-    func testCarPlayAudioEntitlementIsNotInTheProject() throws {
-        let forbidden = ["com.apple.developer.carplay", "audio"].joined(separator: "-")
-        let roots = ["AeroDJ", "AeroDJShare", "AeroDJCore", "Config"].map { iosDir.appendingPathComponent($0) }
-        var hits: [String] = []
-        for root in roots {
-            let found = try files(at: root, extensions: ["swift", "plist", "entitlements", "xcconfig", "yml"])
-            for url in found {
-                let text = try String(contentsOf: url, encoding: .utf8)
-                if text.contains(forbidden) {
-                    hits.append(url.path.replacingOccurrences(of: iosDir.path + "/", with: ""))
-                }
-            }
+    func testCarPlayAudioEntitlementIsInBothAppEntitlements() throws {
+        let key = ["com.apple.developer.carplay", "audio"].joined(separator: "-")
+        for relative in ["AeroDJ/AeroDJ.entitlements", "AeroDJ/AeroDJ-TesterVoice.entitlements"] {
+            let plist = try sourcePlist(relative)
+            XCTAssertEqual(plist[key] as? Bool, true, relative)
+            XCTAssertEqual(plist["com.apple.developer.weatherkit"] as? Bool, true, relative)
+            let groups = try XCTUnwrap(plist["com.apple.security.application-groups"] as? [String], relative)
+            XCTAssertEqual(groups, ["group.com.aerodj"], relative)
         }
-        let project = try String(contentsOf: iosDir.appendingPathComponent("project.yml"), encoding: .utf8)
-        if project.contains(forbidden) { hits.append("project.yml") }
-        XCTAssertEqual(hits, [])
+        let shared = try sourcePlist("AeroDJ/AeroDJ.entitlements")
+        var tester = try sourcePlist("AeroDJ/AeroDJ-TesterVoice.entitlements")
+        let attest = "com.apple.developer.devicecheck.appattest-environment"
+        XCTAssertEqual(tester[attest] as? String, "production")
+        tester.removeValue(forKey: attest)
+        XCTAssertEqual(Set(tester.keys), Set(shared.keys))
+        XCTAssertNil(try sourcePlist("AeroDJShare/AeroDJShare.entitlements")[key])
     }
 
     func testCarPlaySceneUsesTemplatesAndTheExistingStartPaths() throws {

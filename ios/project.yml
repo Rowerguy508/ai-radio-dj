@@ -35,7 +35,7 @@ targets:
     dependencies:
       - package: AeroDJCore
       - target: AeroDJShare # embedded into AeroDJ.app/PlugIns
-      - sdk: CarPlay.framework # templates only; the audio entitlement is not added here
+      - sdk: CarPlay.framework # templates; the audio entitlement is in the app entitlements files
       # AeroDJPhonon is not embedded: build 12 failed App Store processing with ITMS-90755
       # (prohibited instructions) in AeroDJPhonon.framework. With no framework, dlopen returns nil
       # and speech falls back to AVSpeech, the same as AeroDJPhononEnabled off. Re-embed after the fix.
@@ -61,7 +61,8 @@ targets:
         # that plist, merged with the generated keys above:
         # INFOPLIST_KEY_UIApplicationSceneManifest_Generation alone generates
         # UIApplicationSupportsMultipleScenes = true. CI asserts the built value.
-        # The CarPlay audio entitlement is intentionally absent until Apple grants it.
+        # Apple granted the CarPlay audio entitlement. It is set in both app
+        # entitlements files, not in this generated plist.
         INFOPLIST_FILE: AeroDJ/Info.plist
         # App Store requires an icon and declared orientations (ITMS 90022/90023/90713/90474).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

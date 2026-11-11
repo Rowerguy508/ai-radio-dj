@@ -9,8 +9,8 @@
 	<key>NSLocationDefaultAccuracyReduced</key>
 	<true/>
 	<!-- One phone window (UIApplicationSupportsMultipleScenes false): one DJ session.
-	     CarPlay is a template scene, not a second window. The audio entitlement is
-	     intentionally absent until Apple grants it. -->
+	     CarPlay is a template scene, not a second window. The audio entitlement
+	     is granted and lives in the app entitlements files. -->
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
