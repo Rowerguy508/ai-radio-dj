@@ -710,6 +710,25 @@ public actor DJBreakPreparer {
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
+    /// Cancels one boundary and waits until its render task has stopped, so a paid-voice
+    /// reservation made for it is released before the caller starts another render.
+    /// Same skip report as `cancelAll` when a render was in flight or audio was ready.
+    public func cancelAndWait(afterTrack k: Int) async {
+        let task = tasks.removeValue(forKey: k)
+        let result = results.removeValue(forKey: k)
+        planned[k] = nil
+        timeChecks[k] = nil
+        timeCheckDrops[k] = nil
+        timeCheckDeadlines[k] = nil
+        openForRearm.remove(k)
+        rearmed.remove(k)
+        taken.remove(k)
+        let wasReady = if case .ready? = result { true } else { false }
+        task?.cancel()
+        await task?.value
+        if task != nil || wasReady { emit(.skipped(afterTrack: k, .cancelled)) }
+    }
+
     /// `cancelAll`, except the boundaries in `kept`: those keep rendering, or stay prepared.
     /// Only `DJBreakSession.stationChanged` passes a non-empty set, for a plain music break
     /// with no personal content (it can carry nothing a withdrawal or briefing-off removes).
