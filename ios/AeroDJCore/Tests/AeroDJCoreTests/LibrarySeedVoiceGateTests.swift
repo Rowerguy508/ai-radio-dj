@@ -153,7 +153,7 @@ final class LibrarySeedVoiceGateTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/AeroDJCore/DJ/DJBreakSession.swift")
         let text = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(text.contains("preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))"))
+        XCTAssertTrue(text.contains("preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: onDeviceOnly || Self.speaksOnDeviceOnly(station.active))"))
         XCTAssertEqual(text.components(separatedBy: "preparer.prepare(").count - 1, 1, "one prepare call site")
     }
 }
