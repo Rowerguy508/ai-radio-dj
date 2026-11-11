@@ -102,6 +102,8 @@ struct PlayingScreen: View {
         }
         .background(Color(.systemBackground))
         .environment(\.artStation, currentStation)
+        // #454: Try again on a failed station start (the placeholder reads it).
+        .environment(\.stationStart, studio.stationStart)
         .sheet(isPresented: $showWorkspace) {
             NavigationStack {
                 workspace
@@ -185,7 +187,13 @@ struct PlayingScreen: View {
         return Array((active.genres + active.moods).prefix(4))
     }
 
-    private var content: NowPlayingContent { NowPlayingContent.resolve(access: access, snapshot: snapshot) }
+    /// #454: a station row tap shows that station's start state (Starting / Couldn't start /
+    /// can't start yet) here, never the empty search screen.
+    private var content: NowPlayingContent {
+        let start = StationStartStatus.shown(studio.stationStart.state, openedStationID: station.id,
+                                             nowPlaying: snapshot.nowPlaying)
+        return NowPlayingContent.resolve(access: access, snapshot: snapshot, start: start)
+    }
 
     /// DJ activity comes only from the Studio model (`studio.djState`), which the player
     /// feeds from real audio callbacks. `PlaybackSnapshot.dj` is not used, and no caption

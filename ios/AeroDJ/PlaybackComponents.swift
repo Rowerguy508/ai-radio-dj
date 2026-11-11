@@ -640,6 +640,7 @@ struct NowPlayingPlaceholder: View {
     /// Required for `.needsAuthorization` so Allow calls `authorize()`, never a no-op.
     var actions: PlaybackActions? = nil
     @Environment(\.openURL) private var openURL
+    @Environment(\.stationStart) private var stationStart
 
     @Environment(\.onSlab) private var onSlab
 
@@ -648,7 +649,7 @@ struct NowPlayingPlaceholder: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            if content == .connecting {
+            if content.showsProgress {
                 ProgressView()
                     .tint(ink)
                     .accessibilityHidden(true)
@@ -676,10 +677,47 @@ struct NowPlayingPlaceholder: View {
                 Button("Open Settings") { openURL(url) }
                     .buttonStyle(.borderedProminent)
             }
+            // #454: a failed station start retries the same tap, on this same screen.
+            if content.offersStartRetry, let stationStart {
+                Button("Try again") { stationStart.retry() }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("playback.retryStationStart")
+            }
         }
         .frame(maxWidth: .infinity)
-        // Keep Allow / Settings as their own elements so UI tests can find them.
-        .accessibilityElement(children: (content == .needsAuthorization || content == .accessDenied) ? .contain : .combine)
+        // Keep Allow / Settings / Try again as their own elements so UI tests can find them.
+        .accessibilityElement(children: keepsButtons ? .contain : .combine)
+        // #454: the UI test finds the start state by this id; other states keep no id, as before.
+        .accessibilityIdentifier(content.isStationStart ? "nowPlaying.stationStart" : "")
+    }
+
+    private var keepsButtons: Bool {
+        content == .needsAuthorization || content == .accessDenied || content.offersStartRetry
+    }
+}
+
+/// #454: the app's `StudioPresentationModel.stationStart`, for the placeholder's Try again.
+private struct StationStartStatusKey: EnvironmentKey { static let defaultValue: StationStartStatus? = nil }
+
+extension EnvironmentValues {
+    /// Set by `PlayingScreen`. Nil (previews) hides Try again.
+    var stationStart: StationStartStatus? {
+        get { self[StationStartStatusKey.self] }
+        set { self[StationStartStatusKey.self] = newValue }
+    }
+}
+
+/// #454: the explicit way to search from an empty station screen. Search is never what a station
+/// tap shows by itself; this opens the Queue workspace, where `StartListeningView` lives.
+struct SearchAppleMusicButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label("Search Apple Music", systemImage: "magnifyingglass")
+        }
+        .buttonStyle(.bordered)
+        .accessibilityIdentifier("playback.searchAppleMusic")
     }
 }
 

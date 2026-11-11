@@ -29,6 +29,8 @@ public final class StudioPresentationModel {
     /// after one fails. `CreatedStationStarter` reads it so a re-tap never trusts a stale id
     /// (Fry #218). -Atlas
     @ObservationIgnored public private(set) var lastAppliedRecipeID: UUID?
+    /// #454: the station row tap's Starting / Couldn't start state, shown on Now Playing.
+    public let stationStart = StationStartStatus()
 
     public init(station: StationConfigurationModel, recipes: StationRecipeLibrary,
                 connections: ConnectionsModel, dj: DJPresentationStore,

@@ -52,7 +52,7 @@ public struct CarPlayStationSection: Equatable, Sendable {
 }
 
 public enum CarPlayStationPick: Equatable, Sendable {
-    /// Morning Calm or Late Night. The phone tap does not load a queue for that row.
+    /// Morning Calm or Late Night. #454: starts through the same path as the phone's built-in tap.
     case builtIn
     /// A station the listener created. The car opens it with `openCreatedStation(.userTap)`.
     case created(UUID)
@@ -62,10 +62,10 @@ public enum CarPlayStationPick: Equatable, Sendable {
 public enum CarPlayPickEffect: Equatable, Sendable {
     /// `StationQueuePlayer.openCreatedStation(.userTap)` for this recipe.
     case openCreatedStation(UUID)
-    /// Phone built-in row: `cancelCreatedStationStart()`, then `authorize()`.
-    /// `resumePlayback` also calls `MusicKitService.resume()` when transport is paused or stopped.
-    /// This does not load a different station's queue.
-    case openBuiltIn(resumePlayback: Bool)
+    /// #454: the phone's built-in row tap, `StationQueuePlayer.openBuiltInStation(.userTap)`: the same
+    /// start path as a created station (the station's recipe from #442; until then the honest
+    /// "can't start yet" state). Never resumes the old queue instead, and never a search.
+    case openBuiltInStation
 }
 
 /// The phone's created-station row tap.
@@ -196,19 +196,15 @@ public enum CarPlayScreen {
                                   accessNotice: accessNotice(for: access))
     }
 
-    /// Created rows always use `openCreatedStation(.userTap)`. Built-in rows use the phone's
-    /// cancel-and-authorize tap, and `resume()` only when playback is paused or stopped.
+    /// Created rows use `openCreatedStation(.userTap)`; built-in rows `openBuiltInStation(.userTap)`
+    /// (#454: both start the station on the phone's start path, whatever the transport).
     public static func effect(for pick: CarPlayStationPick, transport: TransportState) -> CarPlayPickEffect {
+        _ = transport
         switch pick {
         case .created(let id):
             return .openCreatedStation(id)
         case .builtIn:
-            switch transport {
-            case .playing, .preparing:
-                return .openBuiltIn(resumePlayback: false)
-            case .paused, .stopped:
-                return .openBuiltIn(resumePlayback: true)
-            }
+            return .openBuiltInStation
         }
     }
 

@@ -21,17 +21,20 @@ private func station(_ seeds: [StationSeed], reach: StationReach = .related, dis
 private actor QueueFakeCatalog: StationSeedCatalog {
     var failing = false
     private(set) var asked: [String] = []
-    private var gate: CheckedContinuation<Void, Never>?
+    private var gates: [CheckedContinuation<Void, Never>] = []
     private var holdNext = false
+    /// #454: hold every call until `release()` (nothing resolves, not even a first song).
+    private var holdAll = false
 
     func setFailing(_ value: Bool) { failing = value }
     func holdNextCall() { holdNext = true }
-    func release() { gate?.resume(); gate = nil }
-    var isHolding: Bool { gate != nil }
+    func holdAllCalls() { holdAll = true }
+    func release() { holdAll = false; let held = gates; gates = []; held.forEach { $0.resume() } }
+    var isHolding: Bool { !gates.isEmpty }
 
     private func songs(_ seed: StationSeed, _ tier: String, _ limit: Int) async throws -> [StationCandidate] {
         asked.append("\(tier):\(seed.source.rawValue)")
-        if holdNext { holdNext = false; await withCheckedContinuation { gate = $0 } }
+        if holdNext || holdAll { holdNext = false; await withCheckedContinuation { gates.append($0) } }
         if failing { throw Offline() }
         return (0..<min(limit, 8)).map { n in
             StationCandidate(track: TrackInfo(id: "\(seed.catalogID)-\(tier)-\(n)", title: "Title \(n)",
@@ -566,23 +569,28 @@ private func djRig() async -> DJRig {
     return DJRig(session: session, dj: dj)
 }
 
-// Created-station start (-Atlas, Orion's decision on #213): an idle tap with nothing queued starts
-// the created station; a tap while playing switches at the boundary; restore never starts.
+// Created-station start (-Atlas, Orion's decision on #213, reworked for #454): a user tap starts
+// the station at once on its first song (the rest is appended), switches now while something else
+// plays, is a no-op on the station already playing, and restore never starts.
 @MainActor
 final class CreatedStationStartTests: XCTestCase {
     /// Stands in for the player: what is queued, what started, and whether authorization was asked.
     @MainActor private final class FakePlayer {
-        var queue: [String] = []
+        var queue: [String] = [] { didSet { epoch += 1 } }
         var playing = false
         var authorizations = 0
         var applies = 0
         /// Stands in for `StudioPresentationModel.lastAppliedRecipeID`.
         var liveRecipe: UUID?
         var starts: [[String]] = []
+        var appended: [[String]] = []
+        /// #454: bumps whenever the queue is replaced (a start, or a song tapped meanwhile).
+        private(set) var epoch = 0
+        /// #454: the station whose queue the starter played.
+        var station: StationQueueKey?
         var nothingQueued: Bool { queue.isEmpty && !playing }
-        /// How many times `open()` has read `nothingQueued`. The first read is the pre-loop check
-        /// (CreatedStationStart's `guard nothingQueued() else { return .switchesAtBoundary }`), so a
-        /// count of 1 or more means `open()` is past that check and in the wait loop.
+        /// How many times `open()` has read `nothingQueued`. The first read is the pre-loop idle
+        /// check, so a count of 1 or more means `open()` is past it and in the wait loop.
         var nothingQueuedReads = 0
     }
 
@@ -615,11 +623,28 @@ final class CreatedStationStartTests: XCTestCase {
                                       player.nothingQueuedReads += 1
                                       return player.nothingQueued
                                   },
+                                  playingStation: { player.station },
+                                  switchNow: { await model.applyPendingForStationSwitch() },
+                                  queueEpoch: { player.epoch },
                                   start: { items in
                                       player.starts.append(items)
                                       player.queue = items
+                                      player.station = StationQueueKey(model.active)
                                       player.playing = true
+                                  },
+                                  append: { first, songs in
+                                      guard player.queue.first == first else { return false }
+                                      player.appended.append(songs)
+                                      player.queue += songs
+                                      return true
                                   })
+    }
+
+    private func waitFor(_ condition: () -> Bool) async {
+        for _ in 0..<1000 where !condition() {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
     }
 
     func testAnIdleTapWithNothingQueuedStartsTheCreatedStation() async throws {
@@ -631,15 +656,20 @@ final class CreatedStationStartTests: XCTestCase {
 
         let outcome = await open(.userTap, starter, model, player)
 
-        guard case .started(let songs, _) = outcome else { return XCTFail("expected a start, got \(outcome)") }
-        XCTAssertEqual(songs, 10)
-        XCTAssertEqual(player.starts.count, 1)
+        guard case .started = outcome else { return XCTFail("expected a start, got \(outcome)") }
+        // #454: the start may be the whole staged queue or the first song with the rest appended;
+        // either way the station's queue is there and was started exactly once.
+        await waitFor { player.queue.count >= 10 }
+        XCTAssertGreaterThanOrEqual(player.queue.count, 10)
+        XCTAssertEqual(Set(player.queue).count, player.queue.count, "no song twice")
+        XCTAssertEqual(player.starts.count, 1, "one start; the rest is appended, never a second queue")
         XCTAssertEqual(player.authorizations, 1)
         XCTAssertEqual(model.active.seeds.map(\.catalogID), ["a"])
         XCTAssertEqual(feed.playingKey, StationQueueKey(created))
     }
 
-    func testATapWhilePlayingStartsNothingNowAndSwitchesAtTheBoundary() async throws {
+    // #454 reverses #213 for a row tap: a tap while playing switches now, not at the boundary.
+    func testATapWhilePlayingSwitchesToTheStationNow() async throws {
         let model = await makeStation(active: .default)
         await model.setPlaybackActivity(.holdingSong)
         let feed = makeFeed(QueueFakeCatalog())
@@ -651,17 +681,11 @@ final class CreatedStationStartTests: XCTestCase {
         let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(2), pollInterval: .milliseconds(1))
 
         let outcome = await open(.userTap, starter, model, player)
-        XCTAssertEqual(outcome, .switchesAtBoundary)
-        XCTAssertEqual(player.starts, [], "nothing starts mid-song")
-        XCTAssertEqual(model.active.seeds, [], "mid-song: applied at the boundary, not now")
-
-        for _ in 0..<200 where feed.stagedKey != StationQueueKey(created) {
-            await Task.yield(); try await Task.sleep(nanoseconds: 1_000_000)
-        }
-        await model.handle(.songBoundary(afterTrack: 0))
-        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["a"])
-        XCTAssertEqual(feed.takeForBoundary(active: model.active, playbackMayStart: true)?.count, 10,
-                       "the created station replaces the queue at the boundary")
+        guard case .started = outcome else { return XCTFail("switches now, got \(outcome)") }
+        XCTAssertEqual(player.starts.count, 1, "the station starts now, mid-song")
+        XCTAssertFalse(player.queue.contains("tapped"), "the old queue is replaced")
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["a"], "a row tap applies now, not at the boundary")
+        XCTAssertEqual(feed.playingKey, StationQueueKey(created))
     }
 
     func testRestoreNeverAuthorizesAppliesOrStarts() async throws {
@@ -678,9 +702,12 @@ final class CreatedStationStartTests: XCTestCase {
         XCTAssertEqual(model.active.seeds, [], "restore applies nothing")
     }
 
-    func testATapBeforeTheQueueIsBuiltStartsOnceItIsReadyIfStillIdle() async throws {
+    // #454: the first song no longer waits for the whole queue (this test used to assert that
+    // nothing starts before the queue exists). While every catalog call is held nothing can start;
+    // once the calls run, the tap starts, at most one start.
+    func testATapBeforeAnythingResolvesStartsOnceASongIsReadyIfStillIdle() async throws {
         let catalog = QueueFakeCatalog()
-        await catalog.holdNextCall()
+        await catalog.holdAllCalls()
         let model = await makeStation(active: .default)
         let feed = makeFeed(catalog)
         feed.follow(model)
@@ -690,18 +717,19 @@ final class CreatedStationStartTests: XCTestCase {
         let tap = Task { await open(.userTap, starter, model, player) }
         for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
         let holding = await catalog.isHolding
-        XCTAssertTrue(holding, "the build is waiting on the catalog")
-        XCTAssertEqual(player.starts, [], "nothing starts before the queue exists")
+        XCTAssertTrue(holding, "the catalog is held")
+        XCTAssertEqual(player.starts, [], "nothing starts before any song exists")
         await catalog.release()
 
         let outcome = await tap.value
-        XCTAssertEqual(outcome, .started(songs: 10, waited: true))
+        guard case .started(_, let waited) = outcome else { return XCTFail("expected a start, got \(outcome)") }
+        XCTAssertTrue(waited)
         XCTAssertEqual(player.starts.count, 1)
     }
 
     func testATapBeforeTheQueueIsBuiltDoesNotStartIfTheListenerBeganSomethingElse() async throws {
         let catalog = QueueFakeCatalog()
-        await catalog.holdNextCall()
+        await catalog.holdAllCalls()
         let model = await makeStation(active: .default)
         let feed = makeFeed(catalog)
         feed.follow(model)
@@ -709,10 +737,8 @@ final class CreatedStationStartTests: XCTestCase {
         let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1))
 
         let tap = Task { await open(.userTap, starter, model, player) }
-        // The follow's build can reach the held catalog call before open() reaches its pre-loop
-        // idle check; flipping the player then makes open() return .switchesAtBoundary (~1 in 40
-        // runs). Wait for both the hold and open()'s first nothingQueued read, so the listener's
-        // song tap lands while open() is waiting in its loop, which is what this test covers.
+        // Wait for the hold and open()'s first nothingQueued read, so the listener's song tap lands
+        // while open() is waiting in its loop, which is what this test covers.
         for _ in 0..<500 {
             if await catalog.isHolding, player.nothingQueuedReads >= 1 { break }
             try await Task.sleep(nanoseconds: 1_000_000)
@@ -732,7 +758,7 @@ final class CreatedStationStartTests: XCTestCase {
 
     func testANewerTapSupersedesAWaitingOne() async throws {
         let catalog = QueueFakeCatalog()
-        await catalog.holdNextCall()
+        await catalog.holdAllCalls()
         let model = await makeStation(active: .default)
         let feed = makeFeed(catalog)
         feed.follow(model)
@@ -743,6 +769,7 @@ final class CreatedStationStartTests: XCTestCase {
         for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
         let other = station([seed(.artist, "b")])
         let second = Task { await open(.userTap, starter, model, player, recipe: other) }
+        for _ in 0..<5 { await Task.yield() }
         await catalog.release()
 
         let firstOutcome = await first.value
@@ -753,11 +780,11 @@ final class CreatedStationStartTests: XCTestCase {
         XCTAssertEqual(model.active.seeds.map(\.catalogID), ["b"])
     }
 
-    // Fry #213 nit 4: the same station tapped twice while its queue builds. The keys match, so only
+    // Fry #213 nit 4: the same station tapped twice while it starts. The keys match, so only
     // the tap generation tells the older tap it was replaced; only the latest tap may start.
     func testTheSameCreatedStationTappedTwiceWhileWaitingStartsOnlyTheLatestTap() async throws {
         let catalog = QueueFakeCatalog()
-        await catalog.holdNextCall()
+        await catalog.holdAllCalls()
         let model = await makeStation(active: .default)
         let feed = makeFeed(catalog)
         feed.follow(model)
@@ -768,7 +795,7 @@ final class CreatedStationStartTests: XCTestCase {
         let first = Task { await open(.userTap, starter, model, player, id: id) }
         for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
         let holding = await catalog.isHolding
-        XCTAssertTrue(holding, "the first tap is waiting on the build")
+        XCTAssertTrue(holding, "the first tap is waiting")
         let second = Task { await open(.userTap, starter, model, player, id: id) }
         for _ in 0..<5 { await Task.yield() }
         await catalog.release()
@@ -776,15 +803,16 @@ final class CreatedStationStartTests: XCTestCase {
         let firstOutcome = await first.value
         let secondOutcome = await second.value
         XCTAssertEqual(firstOutcome, .notStarted(.superseded), "the older tap is dropped")
-        guard case .started(let songs, _) = secondOutcome else { return XCTFail("the latest tap starts, got \(secondOutcome)") }
-        XCTAssertEqual(songs, 10)
+        guard case .started = secondOutcome else { return XCTFail("the latest tap starts, got \(secondOutcome)") }
         XCTAssertEqual(player.starts.count, 1, "only one tap ever starts playback")
+        await waitFor { player.queue.count >= 10 }
+        XCTAssertGreaterThanOrEqual(player.queue.count, 10, "the station's queue fills in")
     }
 
-    // Fry #213 nit 2: tapping a built-in station while a created-station tap waits cancels that start.
+    // Fry #213 nit 2: another tap path cancels a waiting start.
     func testABuiltInTapCancelsAWaitingCreatedStationStart() async throws {
         let catalog = QueueFakeCatalog()
-        await catalog.holdNextCall()
+        await catalog.holdAllCalls()
         let model = await makeStation(active: .default)
         let feed = makeFeed(catalog)
         feed.follow(model)
@@ -795,8 +823,8 @@ final class CreatedStationStartTests: XCTestCase {
         let tap = Task { await open(.userTap, starter, model, player, id: id) }
         for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
         let holding = await catalog.isHolding
-        XCTAssertTrue(holding, "the tap is waiting on the build")
-        starter.cancelPending()                                  // the listener tapped a built-in station
+        XCTAssertTrue(holding, "the tap is waiting")
+        starter.cancelPending()
         XCTAssertNil(starter.currentRecipeID, "the created station is no longer current")
         await catalog.release()
 
@@ -806,7 +834,7 @@ final class CreatedStationStartTests: XCTestCase {
     }
 
     // Fry #213 nit 3: tapping the created station that is already current does not apply its recipe
-    // again, so unsaved Tune edits stay.
+    // again, so unsaved Tune edits stay. #454: and it changes nothing while it plays.
     func testTappingTheCurrentCreatedStationAgainKeepsUnsavedTuneEdits() async throws {
         let model = await makeStation(active: .default)
         let feed = makeFeed(QueueFakeCatalog())
@@ -822,14 +850,15 @@ final class CreatedStationStartTests: XCTestCase {
         XCTAssertTrue(model.hasUnsavedChanges)
 
         let again = await open(.userTap, starter, model, player, id: id)
-        XCTAssertEqual(again, .switchesAtBoundary, "playing: nothing new starts")
+        XCTAssertEqual(again, .alreadyPlaying, "playing: nothing new starts")
         XCTAssertEqual(player.applies, 1, "the current station's recipe is not applied again")
         XCTAssertTrue(model.hasUnsavedChanges, "unsaved Tune edits stay")
         XCTAssertEqual(player.starts.count, 1)
 
         let other = await open(.userTap, starter, model, player, id: UUID())
-        XCTAssertEqual(other, .switchesAtBoundary)
+        XCTAssertEqual(other, .alreadyPlaying, "a different recipe with the same music is the station already playing")
         XCTAssertEqual(player.applies, 2, "a different created station still applies")
+        XCTAssertEqual(player.starts.count, 1)
     }
 
     // Fry #218: Tune applied another recipe after the tap, so the cached id is stale. Tapping the
@@ -851,7 +880,7 @@ final class CreatedStationStartTests: XCTestCase {
         XCTAssertEqual(starter.currentRecipeID, a, "the starter's cached id is now stale")
 
         let again = await open(.userTap, starter, model, player, id: a)
-        XCTAssertEqual(again, .switchesAtBoundary)
+        XCTAssertEqual(again, .alreadyPlaying, "A's queue is still the one playing")
         XCTAssertEqual(player.applies, 2, "A is applied again over B")
         XCTAssertEqual(player.liveRecipe, a)
         XCTAssertEqual(model.displayed.seeds, created.seeds, "the station is A again, not B")

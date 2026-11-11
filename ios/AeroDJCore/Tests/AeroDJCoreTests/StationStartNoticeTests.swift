@@ -17,8 +17,10 @@ private let failures: [CreatedStationOpenOutcome] = [
     .notApplied, .notStarted(.noStation), .notStarted(.notReadyInTime), .notStarted(.buildFailed),
 ]
 private let quiet: [CreatedStationOpenOutcome] = [
-    .restoredOnly, .switchesAtBoundary, .started(songs: 10, waited: false), .started(songs: 3, waited: true),
-    .notStarted(.playbackBegan), .notStarted(.superseded),
+    .restoredOnly, .alreadyPlaying, .started(songs: 10, waited: false), .started(songs: 3, waited: true),
+    .started(songs: 1, waited: true), .notStarted(.playbackBegan), .notStarted(.superseded),
+    // #454: a station with no recipe yet says so on the Starting screen, not in a toast.
+    .notStarted(.notAvailableYet),
 ]
 
 // No class-level @MainActor: Linux XCTest discovery (Swift 6.2) aborts casting a @MainActor sync test.
@@ -27,7 +29,7 @@ final class StationStartNoticeTests: XCTestCase {
     func testEveryNoStartReasonIsDecided() {
         // A new reason must be classified here on purpose, not fall into the toast by accident.
         XCTAssertEqual(Set(CreatedStationNoStartReason.allCases),
-                       [.noStation, .notReadyInTime, .buildFailed, .playbackBegan, .superseded])
+                       [.noStation, .notReadyInTime, .buildFailed, .playbackBegan, .superseded, .notAvailableYet])
     }
 
     func testAFailedOrTimedOutIdleStartShowsTheToast() {

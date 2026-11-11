@@ -199,7 +199,9 @@ struct QueueList: View {
                         .foregroundStyle(AeroDJPalette.secondaryText)
                         .padding(.top, 8)
                 }
-                if let search {
+                // #454: a station that is starting (or failed to) keeps its own screen; the search
+                // comes back once it plays or the listener leaves the start state.
+                if let search, !content.isStationStart {
                     sectionTitle(content.showsTransport ? "Play something else" : "Start listening")
                     StartListeningView(search: search, model: studioSearch)
                 }
