@@ -116,6 +116,10 @@ public final class DJBreakSession {
     /// The generation of the intro that last began, for tests.
     var testStationIntroGeneration: Int { stationIntroGeneration }
 
+    /// Runs after the intro's generation is recorded and before the render starts. Tests use it
+    /// to change the queue in that gap.
+    var testAfterIntroOwnerNoted: (@MainActor () async -> Void)?
+
     /// Applies a station-intro cancel for `generation`, the way a late `reserveQueueSetup` would.
     func testCancelIntroRender(generation: Int) async {
         await preparer.cancelIfOwner(generation, afterTrack: StationIntro.afterTrack)
@@ -315,6 +319,10 @@ public final class DJBreakSession {
                 return
             }
             await self.preparer.noteBreakOwner(generation, afterTrack: StationIntro.afterTrack)
+            if let hook = self.testAfterIntroOwnerNoted { await hook() }
+            // noteBreakOwner hops to the preparer. A queue change in that gap has already
+            // bumped the generation; do not start a render nothing will cancel or air.
+            guard self.stationIntroGeneration == generation, !self.stationIntroClosed, !Task.isCancelled else { return }
             _ = await self.prepareBreak(planned.djBreak, deadline: .seconds(30), onDeviceOnly: planned.onDeviceOnly)
         }
         stationIntroChain = chain

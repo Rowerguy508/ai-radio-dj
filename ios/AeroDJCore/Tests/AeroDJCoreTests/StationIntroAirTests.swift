@@ -100,6 +100,16 @@ final class StationIntroAirTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(voice.started, 2)
     }
 
+    func testAQueueChangeAfterTheOwnerIsNotedDoesNotStartTheRender() async throws {
+        let voice = HangingIntroVoice()
+        let (session, _) = await session(commentary: .frequent, voice: voice)
+        session.testAfterIntroOwnerNoted = { _ = session.reserveQueueSetup() }
+        session.beginStationIntro(StationIntroFacts(id: "a", name: "Morning Calm"))
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(voice.started, 0, "the obsolete intro never starts a paid render")
+        XCTAssertEqual(voice.active, 0)
+    }
+
     func testStationIntroAiringKeepsTheSingleLibraryGatedPrepareCall() async throws {
         let text = try String(contentsOf: source("AeroDJCore/Sources/AeroDJCore/DJ/DJBreakSession.swift"), encoding: .utf8)
         XCTAssertTrue(text.contains("preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: onDeviceOnly || Self.speaksOnDeviceOnly(station.active))"))
