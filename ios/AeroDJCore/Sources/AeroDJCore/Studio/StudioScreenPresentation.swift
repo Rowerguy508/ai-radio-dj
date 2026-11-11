@@ -152,7 +152,7 @@ public enum NowPlayingContent: Equatable, Sendable {
     case starting(stationName: String)
     /// #454: the tapped station could not start. "Couldn't start <name>" with Try again.
     case startFailed(stationName: String)
-    /// #454: the tapped station has no music yet (a built-in waiting on #442). Honest, no retry.
+    /// #454: the tapped station has no music yet (a row with nothing to apply). Honest, no retry.
     case startUnavailable(stationName: String)
 
     public static func resolve(access: PlaybackAccess, snapshot: PlaybackSnapshot) -> NowPlayingContent {
@@ -192,7 +192,7 @@ public enum NowPlayingContent: Equatable, Sendable {
     }
 
     /// #454: the start state with a progress indicator.
-    public var showsProgress: Bool {
+    public var showsStartSpinner: Bool {
         switch self {
         case .connecting, .starting: true
         default: false

@@ -29,12 +29,29 @@ private actor QueueFakeCatalog: StationSeedCatalog {
     func setFailing(_ value: Bool) { failing = value }
     func holdNextCall() { holdNext = true }
     func holdAllCalls() { holdAll = true }
-    func release() { holdAll = false; let held = gates; gates = []; held.forEach { $0.resume() } }
+    /// #454: hold every call for one tier ("core", "related", "broad"), e.g. the full build behind
+    /// a station's first song, which needs only "core".
+    func holdTier(_ tier: String) { heldTiers.insert(tier) }
+    /// #454: hold every call for one seed (by catalog id).
+    func holdSeed(_ id: String) { heldSeeds.insert(id) }
+    func release() {
+        holdAll = false
+        heldTiers = []
+        heldSeeds = []
+        let held = gates
+        gates = []
+        held.forEach { $0.resume() }
+    }
     var isHolding: Bool { !gates.isEmpty }
+    private var heldTiers: Set<String> = []
+    private var heldSeeds: Set<String> = []
 
     private func songs(_ seed: StationSeed, _ tier: String, _ limit: Int) async throws -> [StationCandidate] {
         asked.append("\(tier):\(seed.source.rawValue)")
-        if holdNext || holdAll { holdNext = false; await withCheckedContinuation { gates.append($0) } }
+        if holdNext || holdAll || heldTiers.contains(tier) || heldSeeds.contains(seed.catalogID) {
+            holdNext = false
+            await withCheckedContinuation { gates.append($0) }
+        }
         if failing { throw Offline() }
         return (0..<min(limit, 8)).map { n in
             StationCandidate(track: TrackInfo(id: "\(seed.catalogID)-\(tier)-\(n)", title: "Title \(n)",
@@ -999,5 +1016,435 @@ final class StationHandOffFallbackTests: XCTestCase {
         XCTAssertFalse(StationHandOffFallback.loadsOldQueueNext(
             result: .failed, generationBefore: 4, generationNow: 5, next: 3, oldQueueCount: 3),
             "no next song in the old queue: today's stop path")
+    }
+}
+
+// #454 (-Atlas): instant start for every station type (built-in, library, created, a switch),
+// the background fill (append, never replace), the same-station no-op, timeout and retry, and the
+// station intro spend gate (Sentinel) and air rule (Echo).
+@MainActor
+final class StationStartInstantTests: XCTestCase {
+    @MainActor private final class Player {
+        var queue: [String] = [] { didSet { if !appending { epoch += 1 } } }
+        var playing = false
+        var applies = 0
+        var starts: [[String]] = []
+        var appended: [[String]] = []
+        private(set) var epoch = 0
+        private var appending = false
+        var station: StationQueueKey?
+        var nothingQueued: Bool { queue.isEmpty && !playing }
+        func append(_ songs: [String]) { appending = true; queue += songs; appending = false }
+    }
+
+    /// Stands in for Fry's `DJBreakSession` intro: a different id cancels the render in flight.
+    @MainActor private final class FakeIntro: StationIntroHook {
+        var begins: [String] = []
+        var takes: [String] = []
+        var cancelled = 0
+        var live: String?
+        var maxLive = 0
+        /// Player starts at each begin, to prove the first song never waited on an intro.
+        var startsAtBegin: [Int] = []
+        var ready: PreparedDJBreak?
+        weak var player: Player?
+        func beginStationIntro(_ facts: StationIntroFacts) {
+            if let live, live != facts.id { cancelled += 1 }
+            live = facts.id
+            maxLive = max(maxLive, live == nil ? 0 : 1)
+            begins.append(facts.id)
+            startsAtBegin.append(player?.starts.count ?? -1)
+        }
+        func takeStationIntroAtSongStart(id: String) async -> PreparedDJBreak? {
+            takes.append(id)
+            guard live == id else { return nil }
+            live = nil
+            return ready
+        }
+    }
+
+    private func makeStation(active: StationConfiguration = .default) async -> StationConfigurationModel {
+        let model = StationConfigurationModel(
+            store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: active))),
+            consent: StaticIntegrationConsent([:]))
+        await model.load()
+        return model
+    }
+
+    private func starter(_ feed: StationQueueFeed<String>, timeout: Duration = .seconds(5),
+                         introDelay: Duration = .milliseconds(5)) -> CreatedStationStarter<String> {
+        CreatedStationStarter(feed: feed, readyTimeout: timeout, pollInterval: .milliseconds(1),
+                              fillTimeout: .seconds(5), introDelay: introDelay)
+    }
+
+    private func open(_ starter: CreatedStationStarter<String>, _ model: StationConfigurationModel,
+                      _ player: Player, _ config: StationConfiguration?, id: UUID = UUID(),
+                      facts: StationIntroFacts? = nil) async -> CreatedStationOpenOutcome {
+        await starter.open(.userTap,
+                           recipeID: id,
+                           available: config != nil,
+                           introFacts: facts,
+                           authorize: {},
+                           apply: {
+                               player.applies += 1
+                               guard let config else { return false }
+                               await model.applyRecipe(StationRecipe(id: id, name: "S", configuration: config))
+                               return true
+                           },
+                           active: { model.active },
+                           nothingQueued: { player.nothingQueued },
+                           playingStation: { player.station },
+                           switchNow: { await model.applyPendingForStationSwitch() },
+                           queueEpoch: { player.epoch },
+                           start: { items in
+                               player.starts.append(items)
+                               player.queue = items
+                               player.station = StationQueueKey(model.active)
+                               player.playing = true
+                           },
+                           append: { first, songs in
+                               guard player.queue.first == first else { return false }
+                               player.appended.append(songs)
+                               player.append(songs)
+                               return true
+                           })
+    }
+
+    private func waitFor(_ condition: () -> Bool) async {
+        for _ in 0..<2000 where !condition() {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+
+    private func rig(_ catalog: QueueFakeCatalog = QueueFakeCatalog()) async
+        -> (StationConfigurationModel, StationQueueFeed<String>, Player) {
+        let model = await makeStation()
+        let feed = makeFeed(catalog)
+        feed.follow(model)
+        return (model, feed, Player())
+    }
+
+    // MARK: every station type starts on its first song, without the full queue
+
+    func testABuiltInStationStartsOnItsFirstSongBeforeTheQueueIsBuilt() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdTier("related")                      // the full build cannot finish
+        let (model, feed, player) = await rig(catalog)
+        let builtIn = BuiltInStations.morningCalm
+        let recipe = try XCTUnwrap(StationStartFacts.builtInRecipe(for: builtIn.id))
+        XCTAssertEqual(recipe.configuration.seeds, builtIn.configuration.seeds, "the real built-in seeds")
+
+        let outcome = await open(starter(feed), model, player, recipe.configuration, id: builtIn.id)
+
+        XCTAssertEqual(outcome, .started(songs: 1, waited: true))
+        XCTAssertEqual(player.starts.count, 1)
+        XCTAssertEqual(player.queue.count, 1, "one song now; the rest is not waited for")
+        XCTAssertEqual(model.active.seeds, builtIn.configuration.seeds)
+        await catalog.release()
+    }
+
+    func testABuiltInWithATestFixtureRecipeStartsTheSameWay() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdTier("related")
+        let (model, feed, player) = await rig(catalog)
+        let fixture = station([seed(.song, "fixture-song")])  // test-local recipe, not shipped content
+
+        let outcome = await open(starter(feed), model, player, fixture)
+        XCTAssertEqual(outcome, .started(songs: 1, waited: true))
+        XCTAssertEqual(player.queue.count, 1)
+        XCTAssertTrue(player.queue[0].hasPrefix("fixture-song-core-"), "the fixture seed's own song")
+        await catalog.release()
+    }
+
+    func testAnUnknownBuiltInIdIsAnHonestCannotStartNotASearch() async throws {
+        let (model, feed, player) = await rig()
+        XCTAssertNil(StationStartFacts.builtInRecipe(for: UUID()))
+        let outcome = await open(starter(feed), model, player, nil)
+        XCTAssertEqual(outcome, .notStarted(.notAvailableYet))
+        XCTAssertEqual(player.applies, 0)
+        XCTAssertEqual(player.starts, [])
+        XCTAssertEqual(StationStartStatus.phase(after: outcome), .unavailable)
+    }
+
+    func testALibraryStationStartsOnItsFirstSongWhileTheRestIsStillReading() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdSeed("lib-2")                        // the second library seed is slow
+        let (model, feed, player) = await rig(catalog)
+        let library = station([seed(.playlist, "lib-1", .library), seed(.playlist, "lib-2", .library)], reach: .only)
+
+        let outcome = await open(starter(feed), model, player, library)
+        XCTAssertEqual(outcome, .started(songs: 1, waited: true))
+        XCTAssertEqual(player.queue.count, 1)
+        XCTAssertTrue(player.queue[0].hasPrefix("lib-1-core-"), "the first library seed's song")
+        await catalog.release()
+    }
+
+    func testACreatedStationStartsOnOneSongThenTheRestIsAppendedNotReplaced() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdTier("related")
+        let (model, feed, player) = await rig(catalog)
+        let created = station([seed(.artist, "a")])
+        let s = starter(feed)                                   // the app keeps one for the session
+
+        let outcome = await open(s, model, player, created)
+        XCTAssertEqual(outcome, .started(songs: 1, waited: true))
+        let first = try XCTUnwrap(player.queue.first)
+        let epochAfterStart = player.epoch
+        XCTAssertEqual(player.appended, [], "nothing appended before the build")
+
+        await catalog.release()
+        await waitFor { !player.appended.isEmpty }
+        XCTAssertEqual(player.appended.count, 1, "one background fill")
+        XCTAssertEqual(player.starts.count, 1, "the fill never starts or replaces the queue")
+        XCTAssertEqual(player.epoch, epochAfterStart, "the queue was never replaced")
+        XCTAssertEqual(player.queue.first, first, "the playing song stays first")
+        XCTAssertGreaterThanOrEqual(player.queue.count, 10)
+        XCTAssertEqual(Set(player.queue).count, player.queue.count, "the first song is not appended again")
+    }
+
+    func testATapOnAnotherStationWhileOneIsPlayingSwitchesNowOnItsFirstSong() async throws {
+        let catalog = QueueFakeCatalog()
+        let (model, feed, player) = await rig(catalog)
+        let s = starter(feed)
+        let a = station([seed(.artist, "a")])
+        guard case .started = await open(s, model, player, a) else { return XCTFail("A starts") }
+        await waitFor { player.queue.count >= 10 }
+        await model.setPlaybackActivity(.holdingSong)          // A's song is playing
+
+        await catalog.holdTier("related")
+        let b = station([seed(.artist, "b")])
+        let outcome = await open(s, model, player, b)
+
+        XCTAssertEqual(outcome, .started(songs: 1, waited: true), "B starts now, on one song")
+        XCTAssertEqual(player.starts.count, 2)
+        XCTAssertEqual(player.queue.count, 1)
+        XCTAssertTrue(player.queue[0].hasPrefix("b-core-"), "A's queue is gone, not appended to")
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["b"], "the row tap is not held for the boundary")
+        XCTAssertEqual(feed.playingKey, StationQueueKey(b))
+        await catalog.release()
+        await waitFor { player.queue.count >= 10 }
+        XCTAssertTrue(player.queue.allSatisfy { $0.hasPrefix("b-") }, "only B's songs are appended")
+    }
+
+    func testTappingTheStationAlreadyPlayingIsANoOp() async throws {
+        let (model, feed, player) = await rig()
+        let s = starter(feed)
+        let intro = FakeIntro()
+        s.intro = intro
+        s.airIntro = { _ in }
+        let a = station([seed(.artist, "a")])
+        let id = UUID()
+        let facts = StationIntroFacts(id: id.uuidString, name: "A")
+        guard case .started = await open(s, model, player, a, id: id, facts: facts) else { return XCTFail("A starts") }
+        await waitFor { intro.begins.count == 1 }
+        let queue = player.queue
+
+        let again = await open(s, model, player, a, id: id, facts: facts)
+        XCTAssertEqual(again, .alreadyPlaying)
+        XCTAssertEqual(player.starts.count, 1)
+        XCTAssertEqual(player.queue, queue)
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(intro.begins.count, 1, "no second intro for the station already playing")
+    }
+
+    func testATimedOutStartSaysSoAndTryAgainStarts() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdAllCalls()
+        let (model, feed, player) = await rig(catalog)
+        let s = starter(feed, timeout: .milliseconds(30))
+        let a = station([seed(.artist, "a")])
+        let status = StationStartStatus()
+        var retried = 0
+        let tap = status.begin(stationID: "a", stationName: "A", songAtTap: nil, retry: { retried += 1 })
+
+        let outcome = await open(s, model, player, a)
+        XCTAssertEqual(outcome, .notStarted(.notReadyInTime))
+        status.finish(tap: tap, outcome: outcome)
+        XCTAssertEqual(status.state?.phase, .failed)
+        XCTAssertEqual(NowPlayingContent.resolve(access: .authorized, snapshot: PlaybackSnapshot(),
+                                                 start: StationStartStatus.shown(status.state, openedStationID: "a", nowPlaying: nil)),
+                       .startFailed(stationName: "A"))
+        status.retry()
+        XCTAssertEqual(retried, 1)
+
+        await catalog.release()
+        let retry = await open(s, model, player, a)
+        guard case .started = retry else { return XCTFail("Try again starts, got \(retry)") }
+        XCTAssertEqual(player.starts.count, 1)
+    }
+
+    // MARK: station intro: Sentinel's spend gate, Echo's air rule
+
+    func testRapidTapsBeginOnlyTheFinalStationsIntroAfterItsFirstSongStarted() async throws {
+        let catalog = QueueFakeCatalog()
+        await catalog.holdAllCalls()
+        let (model, feed, player) = await rig(catalog)
+        let s = starter(feed)
+        let intro = FakeIntro()
+        intro.player = player
+        s.intro = intro
+        s.airIntro = { _ in }
+
+        var taps: [Task<CreatedStationOpenOutcome, Never>] = []
+        for n in 0..<5 {
+            let config = station([seed(.artist, "s\(n)")])
+            taps.append(Task { await open(s, model, player, config, facts: StationIntroFacts(id: "s\(n)", name: "S\(n)")) })
+            for _ in 0..<5 { await Task.yield() }
+        }
+        XCTAssertEqual(intro.begins, [], "no intro before any start is confirmed")
+        await catalog.release()
+        var outcomes: [CreatedStationOpenOutcome] = []
+        for t in taps { outcomes.append(await t.value) }
+        await waitFor { !intro.begins.isEmpty }
+        try await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(outcomes.dropLast(), Array(repeating: .notStarted(.superseded), count: 4))
+        XCTAssertEqual(player.starts.count, 1)
+        XCTAssertEqual(intro.begins, ["s4"], "only the final station's intro begins")
+        XCTAssertLessThanOrEqual(intro.maxLive, 1)
+        XCTAssertEqual(intro.startsAtBegin, [1], "begun only after its first song started")
+    }
+
+    func testStartsThatEachConfirmStillBeginOneIntroAndAQuickSwitchBeginsNone() async throws {
+        let (model, feed, player) = await rig()
+        let s = starter(feed, introDelay: .milliseconds(200))   // the debounce
+        let intro = FakeIntro()
+        s.intro = intro
+        s.airIntro = { _ in }
+        guard case .started = await open(s, model, player, station([seed(.artist, "a")]),
+                                         facts: StationIntroFacts(id: "a", name: "A")) else { return XCTFail() }
+        guard case .started = await open(s, model, player, station([seed(.artist, "b")]),
+                                         facts: StationIntroFacts(id: "b", name: "B")) else { return XCTFail() }
+        await waitFor { !intro.begins.isEmpty }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(intro.begins, ["b"], "A was replaced inside the debounce: its intro never began")
+        XCTAssertEqual(intro.cancelled, 0)
+    }
+
+    func testAStartWithNoIntroPlayerBeginsNoIntro() async throws {
+        let (model, feed, player) = await rig()
+        let s = starter(feed)
+        let intro = FakeIntro()
+        s.intro = intro                                         // no `airIntro`: nothing could air it
+        guard case .started = await open(s, model, player, station([seed(.artist, "a")]),
+                                         facts: StationIntroFacts(id: "a", name: "A")) else { return XCTFail() }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(intro.begins, [], "no render nobody can hear")
+        let boundary = await s.songBoundary(queueEpoch: player.epoch)
+        XCTAssertNil(boundary)
+    }
+
+    func testAReadyIntroAirsAtTheFirstBoundaryNeverAtTheFirstSongsStart() async throws {
+        let (model, feed, player) = await rig()
+        let s = starter(feed)
+        let intro = FakeIntro()
+        intro.player = player
+        intro.ready = PreparedDJBreak(afterTrack: StationIntro.afterTrack, cues: [], clips: [], attributions: [:])
+        s.intro = intro
+        var aired: [PreparedDJBreak] = []
+        s.airIntro = { aired.append($0) }
+
+        guard case .started = await open(s, model, player, station([seed(.artist, "a")]),
+                                         facts: StationIntroFacts(id: "a", name: "A")) else { return XCTFail() }
+        XCTAssertEqual(intro.takes, [], "nothing is taken while the first song starts")
+        await waitFor { !intro.begins.isEmpty }
+        XCTAssertEqual(intro.startsAtBegin, [1], "the first song was already playing")
+        XCTAssertEqual(aired, [], "never aired over the first song")
+
+        let disposition = await s.songBoundary(queueEpoch: player.epoch)
+        XCTAssertEqual(disposition, .aired)
+        XCTAssertEqual(aired.count, 1, "aired once, at the boundary, through the break path")
+        let again = await s.songBoundary(queueEpoch: player.epoch)
+        XCTAssertNil(again, "only the first boundary")
+    }
+
+    func testAnIntroNotReadyAtTheBoundaryIsSkippedAndAQueueChangeDropsIt() async throws {
+        let (model, feed, player) = await rig()
+        let s = starter(feed)
+        let intro = FakeIntro()
+        s.intro = intro
+        var aired = 0
+        s.airIntro = { _ in aired += 1 }
+
+        guard case .started = await open(s, model, player, station([seed(.artist, "a")]),
+                                         facts: StationIntroFacts(id: "a", name: "A")) else { return XCTFail() }
+        await waitFor { !intro.begins.isEmpty }
+        let notReady = await s.songBoundary(queueEpoch: player.epoch)
+        XCTAssertEqual(notReady, .notReady, "not ready: skipped, the song is never held")
+
+        intro.ready = PreparedDJBreak(afterTrack: StationIntro.afterTrack, cues: [], clips: [], attributions: [:])
+        guard case .started = await open(s, model, player, station([seed(.artist, "b")]),
+                                         facts: StationIntroFacts(id: "b", name: "B")) else { return XCTFail() }
+        await waitFor { intro.begins.count == 2 }
+        player.queue = ["searched"]                              // the listener tapped a song
+        let dropped = await s.songBoundary(queueEpoch: player.epoch)
+        XCTAssertEqual(dropped, .droppedQueueChanged)
+        XCTAssertEqual(aired, 0)
+        XCTAssertEqual(intro.takes, ["a", "b"], "each intro is closed, so it stops rendering")
+    }
+
+    // MARK: feed, engine and screen pieces
+
+    func testTheFirstSongComesFromTheStationsLastBuildWithoutACatalogCall() async throws {
+        let catalog = QueueFakeCatalog()
+        let (model, feed, _) = await rig(catalog)
+        let a = station([seed(.artist, "a")])
+        _ = await feed.prepare(a)
+        _ = feed.takeForIdleStart(active: a)                     // the staged queue is used up
+        _ = model
+        let asked = await catalog.asked.count
+        let song = await feed.firstSong(for: a)
+        XCTAssertNotNil(song)
+        let after = await catalog.asked.count
+        XCTAssertEqual(after, asked, "a cached opener needs no catalog call")
+    }
+
+    func testQueueExtendedAppendsBehindThePlayingSong() {
+        var engine = PlaybackEngine()
+        let one = TrackInfo(id: "1", title: "One", artistName: "A")
+        engine.apply(.queueStarted(tracks: [one], startIndex: 0, station: nil))
+        let playing = engine.snapshot.nowPlaying
+        engine.apply(.queueExtended(tracks: [TrackInfo(id: "2", title: "Two", artistName: "A"),
+                                             TrackInfo(id: "3", title: "Three", artistName: "A")]))
+        XCTAssertEqual(engine.snapshot.nowPlaying, playing)
+        XCTAssertEqual(engine.snapshot.upNext.map(\.id), ["2", "3"])
+
+        var empty = PlaybackEngine()
+        empty.apply(.queueExtended(tracks: [one]))
+        XCTAssertNil(empty.snapshot.nowPlaying, "nothing queued: nothing to extend")
+        XCTAssertEqual(empty.snapshot.upNext, [])
+    }
+
+    func testTheStartScreenShowsStartingUntilTheNewStationsSongIsOnScreen() {
+        let old = TrackInfo(id: "old", title: "Old", artistName: "A")
+        let new = TrackInfo(id: "new", title: "New", artistName: "B")
+        let starting = StationStartState(stationID: "b", stationName: "B", phase: .starting, songAtTap: "old")
+        XCTAssertEqual(StationStartStatus.shown(starting, openedStationID: "b", nowPlaying: old), starting)
+        XCTAssertNil(StationStartStatus.shown(starting, openedStationID: "b", nowPlaying: new))
+        XCTAssertNil(StationStartStatus.shown(starting, openedStationID: "a", nowPlaying: nil))
+        let failed = StationStartState(stationID: "b", stationName: "B", phase: .failed, songAtTap: "old")
+        XCTAssertNil(StationStartStatus.shown(failed, openedStationID: "b", nowPlaying: old), "a failed switch keeps the old song")
+
+        let content = NowPlayingContent.resolve(access: .authorized, snapshot: PlaybackSnapshot(), start: starting)
+        XCTAssertEqual(content, .starting(stationName: "B"))
+        XCTAssertEqual(content.title, "Starting B…")
+        XCTAssertTrue(content.showsStartSpinner)
+        XCTAssertFalse(content.offersStartRetry)
+        XCTAssertEqual(NowPlayingContent.startFailed(stationName: "B").title, "Couldn't start B")
+        XCTAssertEqual(NowPlayingContent.startFailed(stationName: "B").detail, "Try again.")
+        XCTAssertTrue(NowPlayingContent.startFailed(stationName: "B").offersStartRetry)
+        XCTAssertEqual(NowPlayingContent.resolve(access: .authorized, snapshot: PlaybackSnapshot(), start: nil), .nothingPlaying)
+    }
+
+    func testStatusPhasesFollowTheOutcome() {
+        XCTAssertNil(StationStartStatus.phase(after: .started(songs: 1, waited: true)))
+        XCTAssertNil(StationStartStatus.phase(after: .alreadyPlaying))
+        XCTAssertNil(StationStartStatus.phase(after: .notStarted(.superseded)))
+        XCTAssertEqual(StationStartStatus.phase(after: .notStarted(.notReadyInTime)), .failed)
+        XCTAssertEqual(StationStartStatus.phase(after: .notApplied), .failed)
+        XCTAssertEqual(StationStartStatus.phase(after: .notStarted(.notAvailableYet)), .unavailable)
+        XCTAssertEqual(StationStartFacts.builtIn(BuiltInStations.lateNight.id)?.name, "Late Night")
+        XCTAssertEqual(StationStartFacts.builtIn(BuiltInStations.lateNight.id)?.seeds,
+                       BuiltInStations.lateNight.configuration.seeds)
     }
 }

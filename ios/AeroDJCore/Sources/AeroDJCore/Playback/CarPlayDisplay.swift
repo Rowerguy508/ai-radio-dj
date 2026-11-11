@@ -63,8 +63,7 @@ public enum CarPlayPickEffect: Equatable, Sendable {
     /// `StationQueuePlayer.openCreatedStation(.userTap)` for this recipe.
     case openCreatedStation(UUID)
     /// #454: the phone's built-in row tap, `StationQueuePlayer.openBuiltInStation(.userTap)`: the same
-    /// start path as a created station (the station's recipe from #442; until then the honest
-    /// "can't start yet" state). Never resumes the old queue instead, and never a search.
+    /// start path as a created station (the station's own configuration from `BuiltInStations`, #442). Never resumes the old queue instead, and never a search.
     case openBuiltInStation
 }
 

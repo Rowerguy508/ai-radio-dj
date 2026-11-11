@@ -138,8 +138,8 @@ final class CarPlaySession {
                 _ = await dependencies.studio.applyRecipe(id)
             }
         case .openBuiltInStation:
-            // #454: the phone's built-in tap, the same start path as a created station. Until #442
-            // gives the station a recipe it starts nothing (never resumes another queue instead).
+            // #454: the phone's built-in tap, the same start path as a created station. It plays
+            // the station's own seeds (`BuiltInStations`, #442), never resumes another queue instead.
             if let queue = dependencies.stationQueue, let id = UUID(uuidString: row.id) {
                 _ = await queue.openBuiltInStation(.userTap, stationID: id, studio: dependencies.studio)
             } else {

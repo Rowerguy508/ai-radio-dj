@@ -51,14 +51,14 @@ final class StationQueuePlayer {
     /// song. Nil until wired: the DJ then plans breaks only for the songs its queue started with
     /// (it never names a song it was not given), and the next refill re-plans as today.
     var onStationSongsAppended: (@MainActor ([DJTrack]) -> Void)?
-    /// #454 seam for Fry (#442): the station-start DJ intro. Never awaited; cancelled by every tap.
-    /// Must render through the existing TTS quota and reserve gate.
-    var introHook: (any StationIntroHook)? {
-        get { createdStart.intro }
-        set { createdStart.intro = newValue }
+    /// #454/#442 seam: airs a ready station intro at the first song boundary through the break path
+    /// (never over a song). Nil until the DJ session can air a prepared intro (Fry): the starter then
+    /// begins no intro at all, so no voice is rendered (or paid for) that nobody hears. When set, the
+    /// boundary must also call `createdStart.songBoundary(queueEpoch:)` (not wired yet).
+    var airStationIntro: (@MainActor (PreparedDJBreak) -> Void)? {
+        get { createdStart.airIntro }
+        set { createdStart.airIntro = newValue }
     }
-    /// #454 seam for #442: a built-in station's recipe by its list id. Nil until #442 ships content.
-    var builtInRecipe: @MainActor (UUID) -> StationRecipe? = { BuiltInStationRecipes.recipe(for: $0) }
 
     /// `ratings`: the committed station's song ratings (`StationRatingsModel.bias`, PR B). Read on
     /// every build and hand-off; never logged, never passed to the DJ or a voice.
@@ -83,6 +83,9 @@ final class StationQueuePlayer {
             ratings: ratings,
             log: { event in log.notice("\(event.diagnostics, privacy: .public)") })
         createdStart = CreatedStationStarter(feed: feed)
+        // #442: the station intro renders only in the DJ session (its preparer, voice quota and
+        // reserve gate). Begun only once `airStationIntro` is set.
+        createdStart.intro = djSession
     }
 
     /// Installs the three hooks and starts following the station. Call once, at launch.
@@ -128,8 +131,8 @@ final class StationQueuePlayer {
         await openStation(trigger, .created(recipeID), studio: studio)
     }
 
-    /// A built-in row was opened (#454). Same start path; until #442 gives the station a recipe
-    /// the tap ends `.notStarted(.notAvailableYet)` (the honest Starting-screen state).
+    /// A built-in row was opened (#454). Same start path, with the station's own configuration
+    /// from `BuiltInStations` (#442). An id that is not a built-in ends `.notAvailableYet`.
     @discardableResult
     func openBuiltInStation(_ trigger: StationOpenTrigger, stationID: UUID,
                             studio: StudioPresentationModel) async -> CreatedStationOpenOutcome {
@@ -154,18 +157,22 @@ final class StationQueuePlayer {
         let music = self.music
         let recipeID: UUID
         let available: Bool
+        let introFacts: StationIntroFacts?
         let apply: @MainActor () async -> Bool
         let liveRecipeID: @MainActor () -> UUID?
         switch source {
         case .created(let id):
             recipeID = id
             available = true
+            introFacts = studio.recipes.recipe(id).map(StationStartFacts.created)
             apply = { if case .success = await studio.applyRecipe(id) { true } else { false } }
             liveRecipeID = { studio.lastAppliedRecipeID }
         case .builtIn(let id):
-            let recipe = trigger == .userTap ? builtInRecipe(id) : nil
+            // #442: built-ins carry their own seeds (`BuiltInStations`); same path as created.
+            let recipe = trigger == .userTap ? StationStartFacts.builtInRecipe(for: id) : nil
             recipeID = id
             available = recipe != nil
+            introFacts = StationStartFacts.builtIn(id)
             apply = {
                 guard let recipe else { return false }
                 await station.applyRecipe(recipe)
@@ -177,6 +184,7 @@ final class StationQueuePlayer {
             trigger,
             recipeID: recipeID,
             available: available,
+            introFacts: introFacts,
             liveRecipeID: liveRecipeID,
             authorize: { await music.authorize() },
             apply: apply,
@@ -238,7 +246,7 @@ final class StationQueuePlayer {
     func artistID(forSong songID: String) -> String? { feed.artistID(forSong: songID) }
 
     /// Another tap path took over (Fry #213 nit 2): a station tap still waiting does not start, its
-    /// background fill stops, and any station intro is cancelled.
+    /// background fill stops.
     func cancelCreatedStationStart() {
         createdStart.cancelPending()
     }

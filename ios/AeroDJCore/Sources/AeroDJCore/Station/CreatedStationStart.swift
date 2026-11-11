@@ -10,10 +10,15 @@ import Foundation
 // - Switch now (#454): a tap on a different station while something plays switches right away; a
 //   tap on the station already playing is a no-op. Tune edits keep the song-boundary rules
 //   (`StationConfigurationModel`); only a row tap promotes its own station now (`switchNow`).
-// - Spend gate (Sentinel, #454): every tap first cancels any station intro still pending or
-//   rendering (`StationIntroHook.cancelStationIntro`), and an intro is asked for only by the tap
-//   that actually starts, without awaiting it, so the first song never waits on it and rapid taps
-//   cannot fan out renders.
+// - Station intro (#442, Fry's `DJBreakSession`). Spend gate (Sentinel): `beginStationIntro` is
+//   called only after the station's first song really started for that tap (the player holds the
+//   station's queue), and only after `introDelay` with no newer tap or queue change, so a burst of
+//   taps begins at most the final station's intro. It renders only through the DJ session's
+//   preparer, voice quota and reserve gate, and a different station id cancels a render in flight.
+//   Echo: the first song never waits on the intro and is never talked over. The intro airs at the
+//   first song boundary (`songBoundary`, through the caller's break path), or is dropped and the
+//   skip reported (`StationIntroDisposition`). A tap on the station already playing, a failed tap,
+//   or a restore asks for no intro. With no `airIntro` sink nothing is ever begun (no unheard spend).
 // Restoring the selection at launch never authorizes, applies or plays. The app supplies the
 // closures; the decisions live here so they are tested on Linux. Diagnostics are enums and counts.
 
@@ -51,21 +56,32 @@ public enum CreatedStationNoStartReason: String, Equatable, Sendable, CaseIterab
     case playbackBegan
     /// A newer tap (or another station) replaced this one while it waited.
     case superseded
-    /// #454: the station has no recipe yet (a built-in before #442 ships its content). The
-    /// Starting screen says so honestly; nothing is applied or played, and search never opens.
+    /// #454: the tapped row has nothing to apply (a built-in id `BuiltInStations` does not
+    /// know, or no station queue on this build). The Starting screen says so honestly; nothing is applied or played, and search never opens.
     case notAvailableYet
 }
 
-/// #454 seam for Fry's station-start DJ intro (#442). Both calls are synchronous and must return
-/// at once: the first song never waits on an intro. An intro must render only through the existing
-/// TTS quota and reserve gate (no new speech path), and `cancelStationIntro` must drop any intro
-/// still pending or rendering, so a burst of taps leaves at most one intro alive.
+/// The station-start intro as the starter sees it (#442). `DJBreakSession` is the real one; tests
+/// use a fake. `beginStationIntro` returns at once and cancels an intro render already in flight
+/// for a different station id; `takeStationIntroAtSongStart` never waits on rendering.
 @MainActor
 public protocol StationIntroHook: AnyObject {
-    /// The tap with token `tap` is starting the station `key` now. Never awaited by the starter.
-    func stationWillStart(_ key: StationQueueKey, tap: Int)
-    /// A newer tap (or a cancel) replaced whatever intro was requested before.
-    func cancelStationIntro()
+    func beginStationIntro(_ facts: StationIntroFacts)
+    func takeStationIntroAtSongStart(id: String) async -> PreparedDJBreak?
+}
+
+extension DJBreakSession: StationIntroHook {}
+
+/// What happened to a begun station intro at the first song boundary. Diagnostics only.
+public enum StationIntroDisposition: String, Equatable, Sendable, CaseIterable {
+    /// Ready audio was handed to the break path at the boundary (never over a song).
+    case aired
+    /// Not ready at the boundary: skipped (the DJ session reports `.notReadyAtBoundary`).
+    case notReady
+    /// The queue changed before the boundary (a song tap, another station): dropped.
+    case droppedQueueChanged
+    /// Ready, but there was nowhere to air it: dropped.
+    case droppedNoPlayer
 }
 
 /// MainActor box for a value a child task fills in.
@@ -85,8 +101,16 @@ public final class CreatedStationStarter<Item: Sendable> {
     private let sleep: @MainActor (Duration) async -> Void
     private var tapGeneration = 0
     private var fillTask: Task<Void, Never>?
-    /// Fry's intro seam (#442). Nil: no intro is asked for.
+    /// Fry's intro (#442). Nil: no intro is asked for.
     public weak var intro: (any StationIntroHook)?
+    /// Airs a ready intro at the first song boundary through the break path (never over a song).
+    /// Nil: no intro is ever begun, so nothing renders that nobody hears.
+    public var airIntro: (@MainActor (PreparedDJBreak) -> Void)?
+    private let introDelay: Duration
+    /// The confirmed start's intro, waiting out `introDelay` before it begins.
+    private var introTask: Task<Void, Never>?
+    /// A begun intro waiting for the first song boundary: its id and the queue it belongs to.
+    private var begunIntro: (id: String, epoch: Int)?
     /// The station the last tap applied (Fry #213 nit 3). Cleared by `cancelPending()`
     /// and by a failed apply, so only a station that is still the listener's choice is skipped.
     public private(set) var currentRecipeID: UUID?
@@ -95,33 +119,39 @@ public final class CreatedStationStarter<Item: Sendable> {
     ///   - readyTimeout: how long a tap waits for its first song before giving up (retry starts again).
     ///   - pollInterval: how often the wait re-checks the feed.
     ///   - fillTimeout: how long the background fill waits for the full queue after a fast start.
+    ///   - introDelay: how long a confirmed start must stay current before its intro begins.
     public init(feed: StationQueueFeed<Item>,
                 readyTimeout: Duration = .seconds(10),
                 pollInterval: Duration = .milliseconds(100),
                 fillTimeout: Duration = .seconds(30),
+                introDelay: Duration = .seconds(2),
                 sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
         self.feed = feed
         self.pollInterval = pollInterval
         self.maxPolls = max(1, Int((readyTimeout / pollInterval).rounded(.up)))
         self.maxFillPolls = max(1, Int((fillTimeout / pollInterval).rounded(.up)))
+        self.introDelay = introDelay
         self.sleep = sleep
     }
 
     /// Another tap path took over (Fry #213 nit 2): a tap still waiting must not start, its fill
-    /// stops, any intro is cancelled, and the station is no longer current.
+    /// stops, an intro not yet begun never begins, and the station is no longer current. (An intro
+    /// already begun is dropped at the boundary, since the queue changed.)
     public func cancelPending() {
         tapGeneration += 1
         currentRecipeID = nil
         fillTask?.cancel()
         fillTask = nil
-        intro?.cancelStationIntro()
+        introTask?.cancel()
+        introTask = nil
     }
 
     /// Opens a station (built-in, library or created: the caller's `apply` decides which).
     /// - Parameters:
     ///   - recipeID: the station's identity. When it is already current the recipe is not
     ///     applied again, so unsaved Tune edits stay (Fry #213 nit 3).
-    ///   - available: false when the station has nothing to apply yet (a built-in before #442).
+    ///   - available: false when the station has nothing to apply (an unknown built-in id).
+    ///   - introFacts: what the station intro may say. Nil: no intro for this tap.
     ///   - liveRecipeID: the recipe the live station last had applied from any caller
     ///     (`StudioPresentationModel.lastAppliedRecipeID`). The apply is skipped only when this tap's
     ///     cached id AND the live one both match (Fry #218). The default (nil) always applies.
@@ -130,7 +160,7 @@ public final class CreatedStationStarter<Item: Sendable> {
     ///   - active: the station's active configuration, read after `apply` (and `switchNow`).
     ///   - nothingQueued: true while the player is idle with an empty queue.
     ///   - playingStation: the station whose queue is playing (`StationQueueFeed.playingKey` when the
-    ///     playing queue is a station queue), nil when unknown. Only read while something is queued.
+    ///     playing queue is a station queue), nil when unknown. Also confirms a start before its intro.
     ///   - switchNow: promotes the just-applied station now (a row tap is not a Tune edit). Only
     ///     called while something is queued.
     ///   - queueEpoch: bumps every time the player's queue is replaced. A change while this tap
@@ -142,12 +172,13 @@ public final class CreatedStationStarter<Item: Sendable> {
     public func open(_ trigger: StationOpenTrigger,
                      recipeID: UUID? = nil,
                      available: Bool = true,
+                     introFacts: StationIntroFacts? = nil,
                      liveRecipeID: @MainActor () -> UUID? = { nil },
                      authorize: @MainActor () async -> Void,
                      apply: @MainActor () async -> Bool,
                      active: @escaping @MainActor () -> StationConfiguration,
                      nothingQueued: @MainActor () -> Bool,
-                     playingStation: @MainActor () -> StationQueueKey? = { nil },
+                     playingStation: @escaping @MainActor () -> StationQueueKey? = { nil },
                      switchNow: @MainActor () async -> Void = {},
                      queueEpoch: @escaping @MainActor () -> Int = { 0 },
                      start: @MainActor ([Item]) async -> Void,
@@ -155,10 +186,11 @@ public final class CreatedStationStarter<Item: Sendable> {
         guard trigger == .userTap else { return .restoredOnly }
         tapGeneration += 1
         let mine = tapGeneration
-        // Sentinel's spend gate: nothing from an older tap may keep rendering or filling.
+        // Nothing from an older tap may keep filling, or begin an intro.
         fillTask?.cancel()
         fillTask = nil
-        intro?.cancelStationIntro()
+        introTask?.cancel()
+        introTask = nil
         await authorize()
         guard mine == tapGeneration else { return .notStarted(.superseded) }
         guard available else {
@@ -184,6 +216,12 @@ public final class CreatedStationStarter<Item: Sendable> {
         guard let key = StationQueueKey(config) else { return .notStarted(.noStation) }
         if !wasIdle, !nothingQueued(), playingStation() == key { return .alreadyPlaying }
         let epoch = queueEpoch()
+        /// After `start`: the intro may begin once this start is confirmed and stays current.
+        func startConfirmed() {
+            guard mine == tapGeneration, !nothingQueued(), playingStation() == key else { return }
+            scheduleIntro(introFacts, tap: mine, key: key, epoch: queueEpoch(),
+                          queueEpoch: queueEpoch, playingStation: playingStation)
+        }
 
         // The full queue builds in the background; the first song resolves on its own, faster.
         var build: Pending<StationQueuePrepareOutcome>?
@@ -211,13 +249,13 @@ public final class CreatedStationStarter<Item: Sendable> {
             guard mine == tapGeneration, StationQueueKey(active()) == key else { return .notStarted(.superseded) }
             guard queueEpoch() == epoch, !wasIdle || nothingQueued() else { return .notStarted(.playbackBegan) }
             if feed.stagedKey == key, let items = feed.takeForIdleStart(active: config) {
-                intro?.stationWillStart(key, tap: mine)
                 await start(items)
+                startConfirmed()
                 return .started(songs: items.count, waited: waited)
             }
             if first.done, let song = first.value, feed.fastStartBegan(with: song, active: config) {
-                intro?.stationWillStart(key, tap: mine)
                 await start([song])
+                startConfirmed()
                 if mine == tapGeneration {
                     scheduleFill(tap: mine, key: key, first: song, active: active,
                                  queueEpoch: queueEpoch, epoch: queueEpoch(), append: append)
@@ -236,6 +274,43 @@ public final class CreatedStationStarter<Item: Sendable> {
             waited = true
             await sleep(pollInterval)
         }
+    }
+
+    /// Begins the confirmed station's intro after `introDelay`, if nothing replaced the start
+    /// meanwhile (a newer tap cancels this task first). Never awaited by the start.
+    private func scheduleIntro(_ facts: StationIntroFacts?, tap: Int, key: StationQueueKey, epoch: Int,
+                               queueEpoch: @escaping @MainActor () -> Int,
+                               playingStation: @escaping @MainActor () -> StationQueueKey?) {
+        introTask?.cancel()
+        introTask = nil
+        guard let facts, intro != nil, airIntro != nil else { return }
+        let delay = introDelay
+        let sleep = self.sleep
+        introTask = Task { @MainActor [weak self] in
+            await sleep(delay)
+            guard !Task.isCancelled, let self, self.tapGeneration == tap, queueEpoch() == epoch,
+                  playingStation() == key, let intro = self.intro, self.airIntro != nil else { return }
+            intro.beginStationIntro(facts)
+            self.begunIntro = (facts.id, epoch)
+            self.introTask = nil
+        }
+    }
+
+    /// The first song after a station start ended (a natural boundary). Takes the begun intro
+    /// without waiting: ready audio goes to `airIntro` for the break path (never over a song);
+    /// otherwise it is skipped or dropped. Nil when no intro was begun. Only the first call counts.
+    @discardableResult
+    public func songBoundary(queueEpoch: Int) async -> StationIntroDisposition? {
+        introTask?.cancel()
+        introTask = nil
+        guard let begun = begunIntro, let intro else { return nil }
+        begunIntro = nil
+        let prepared = await intro.takeStationIntroAtSongStart(id: begun.id)
+        guard queueEpoch == begun.epoch else { return .droppedQueueChanged }
+        guard let prepared else { return .notReady }
+        guard let airIntro else { return .droppedNoPlayer }
+        airIntro(prepared)
+        return .aired
     }
 
     /// After a fast start: waits (bounded) for the full build, then appends its songs behind the

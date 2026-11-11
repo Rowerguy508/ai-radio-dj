@@ -4,7 +4,7 @@ import Observation
 // Station start screen state (-Atlas, #454). A station row tap shows Now Playing for that station
 // at once: "Starting <name>…" until its first song is on screen, then the song. If the start fails
 // (`notReadyInTime`, `buildFailed`, a recipe that could not be applied), the same screen says
-// "Couldn't start <name>" with Try again; a station with no recipe yet (a built-in before #442)
+// "Couldn't start <name>" with Try again; a station with nothing to apply (an id no station has)
 // says so honestly. Never the search field. Decisions live here so they are tested on Linux.
 // Holds only the station's id and display name: no seeds, songs or personal content.
 
@@ -15,7 +15,7 @@ public struct StationStartState: Equatable, Sendable {
         case starting
         /// The start ended with nothing playing. Try again re-runs the same tap.
         case failed
-        /// The station has nothing to play yet (a built-in waiting on #442). No retry.
+        /// The station has nothing to play yet (an id that is no station). No retry.
         case unavailable
     }
 
@@ -107,13 +107,27 @@ public final class StationStartStatus {
     }
 }
 
-/// #454 seam for #442 (-Atlas): the built-in stations' recipes. Fry's #442 supplies the seeds and
-/// content; until then every built-in returns nil, and its tap lands on the honest
-/// "can't start yet" screen through the same start path as every other station. Nothing invented.
-public enum BuiltInStationRecipes {
-    /// The recipe a built-in station (by its stable list id) starts with, or nil when it has none yet.
-    public static func recipe(for stationID: UUID) -> StationRecipe? {
-        _ = stationID
-        return nil
+/// #454 (-Atlas): how a station row tap names the station it starts. Built-ins come from Fry's
+/// `BuiltInStations` (#442); created and library stations from their saved recipe. Nothing invented.
+public enum StationStartFacts {
+    /// The recipe a built-in row applies (its fixed configuration, keyed by the row id), or nil
+    /// for an id that is not a built-in station.
+    public static func builtInRecipe(for stationID: UUID) -> StationRecipe? {
+        BuiltInStations.station(id: stationID).map {
+            StationRecipe(id: $0.id, name: $0.name, configuration: $0.configuration)
+        }
+    }
+
+    /// Intro facts for a built-in row: its name, row copy and seeds.
+    public static func builtIn(_ stationID: UUID) -> StationIntroFacts? {
+        BuiltInStations.station(id: stationID).map {
+            StationIntroFacts(id: $0.id.uuidString, name: $0.name, description: $0.summary,
+                              seeds: $0.configuration.seeds)
+        }
+    }
+
+    /// Intro facts for a created (or library) station: its saved name and seeds, no description.
+    public static func created(_ recipe: StationRecipe) -> StationIntroFacts {
+        StationIntroFacts(id: recipe.id.uuidString, name: recipe.name, seeds: recipe.configuration.seeds)
     }
 }

@@ -649,7 +649,7 @@ struct NowPlayingPlaceholder: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            if content.showsProgress {
+            if content.showsStartSpinner {
                 ProgressView()
                     .tint(ink)
                     .accessibilityHidden(true)
