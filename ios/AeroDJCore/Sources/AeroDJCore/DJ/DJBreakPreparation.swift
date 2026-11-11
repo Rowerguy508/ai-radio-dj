@@ -716,9 +716,18 @@ public actor DJBreakPreparer {
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
+    /// Test only. Suspends inside `noteBreakOwner` after the owner is recorded, so a cancel can land during that await.
+    var testSuspendAfterNotingOwner: (@MainActor () async -> Void)?
+
+    /// Test only. Installs the suspend above.
+    public func noteOwnerSuspend(_ hook: @escaping @MainActor () async -> Void) {
+        testSuspendAfterNotingOwner = hook
+    }
+
     /// Records which intro generation owns the render at `k`. Set when that render begins.
-    public func noteBreakOwner(_ owner: Int, afterTrack k: Int) {
+    public func noteBreakOwner(_ owner: Int, afterTrack k: Int) async {
         breakOwner[k] = owner
+        if let hook = testSuspendAfterNotingOwner { await hook() }
     }
 
     /// Cancels the render at `k` only when `owner` is still the generation that began it.

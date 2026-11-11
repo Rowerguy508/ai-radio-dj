@@ -100,12 +100,19 @@ final class StationIntroAirTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(voice.started, 2)
     }
 
-    func testAQueueChangeAfterTheOwnerIsNotedDoesNotStartTheRender() async throws {
+    func testCancelDuringOwnerNoteDoesNotRender() async throws {
         let voice = HangingIntroVoice()
         let (session, _) = await session(commentary: .frequent, voice: voice)
-        session.testAfterIntroOwnerNoted = { _ = session.reserveQueueSetup() }
+        let landed = IntroFlag()
+        await session.testPreparer.noteOwnerSuspend {
+            landed.set()
+            _ = session.reserveQueueSetup()
+        }
         session.beginStationIntro(StationIntroFacts(id: "a", name: "Morning Calm"))
-        try await Task.sleep(for: .milliseconds(80))
+        let generation = session.testStationIntroGeneration
+        try await waitUntil { landed.isSet }
+        XCTAssertNotEqual(session.testStationIntroGeneration, generation, "the cancel landed during the await")
+        try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(voice.started, 0, "the obsolete intro never starts a paid render")
         XCTAssertEqual(voice.active, 0)
     }
@@ -156,6 +163,13 @@ private final class InstantIntroVoice: VoiceProvider, @unchecked Sendable {
     func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
         VoiceArtifact(data: Data(text.utf8), durationSeconds: 0.4, billableUnits: 0, provider: "device", cacheKey: nil)
     }
+}
+
+private final class IntroFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
 }
 
 private final class HangingIntroVoice: VoiceProvider, @unchecked Sendable {
