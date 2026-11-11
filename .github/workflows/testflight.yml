@@ -479,7 +479,6 @@ jobs:
             [ "$carplay_ext" = absent ] || carplay_fail "AeroDJShare.appex"
             echo "PASS com.apple.developer.carplay-audio"
           fi
-          set -x
 
       - name: Export signed IPA (manual, local)
         run: |
