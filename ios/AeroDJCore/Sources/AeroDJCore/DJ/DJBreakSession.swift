@@ -99,6 +99,12 @@ public final class DJBreakSession {
     /// them). A tags-only station has no key (nil); switching between two tags-only stations does
     /// not re-greet (known gap until stations have a real id).
     private var openedStation: StationQueueKey??
+    /// Station intro (#442). One chain at a time: a new station cancels the render already
+    /// in flight and does not start another until that render's voice reservation is released.
+    private var stationIntroID: String?
+    private var stationIntroGeneration = 0
+    private var stationIntroClosed = false
+    private var stationIntroChain: Task<Void, Never>?
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -261,6 +267,64 @@ public final class DJBreakSession {
         pendingWithdrawnIntegrations = []
     }
 
+    /// Station-start intro (#442). Returns immediately. The first song must not wait on this,
+    /// and the break never carries a talk-over, so it is not mixed into that song.
+    ///
+    /// Speech is rendered only by this session's `DJBreakPreparer` and `VoiceRenderer`, which
+    /// reserve paid voice spend before the call and release it if the render is cancelled.
+    /// A different `facts.id` cancels an intro render already in flight. The next render does
+    /// not start until that cancellation has released its reservation, so rapid switches cannot
+    /// fan out paid voice calls.
+    ///
+    /// Call `takeStationIntroAtSongStart(id:)` when the first song starts. That call does not
+    /// wait. If the intro is not ready, it is skipped and reported through the preparer.
+    public func beginStationIntro(_ facts: StationIntroFacts) {
+        stationIntroClosed = false
+        stationIntroID = facts.id
+        stationIntroGeneration &+= 1
+        let generation = stationIntroGeneration
+        let previous = stationIntroChain
+        let chain = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self, self.stationIntroGeneration == generation, !self.stationIntroClosed else { return }
+            await self.preparer.cancelAndWait(afterTrack: StationIntro.afterTrack)
+            guard self.stationIntroGeneration == generation, !self.stationIntroClosed, !Task.isCancelled else { return }
+            let cap = self.station.active.cadence(base: self.base).maxOpenerBreakSeconds
+            guard let planned = StationIntro.planned(from: facts, capSeconds: cap) else {
+                self.dj.send(.breakSkipped(afterTrack: StationIntro.afterTrack, .notPlanned))
+                return
+            }
+            _ = await self.prepareBreak(planned.djBreak, deadline: .seconds(30), onDeviceOnly: planned.onDeviceOnly)
+        }
+        stationIntroChain = chain
+    }
+
+    /// The first song has started. Never waits on rendering and never talks over that song.
+    /// Ready audio is returned with no talk-over marker; the caller must not play it over the
+    /// song or hold the song for this call. Not ready: nil, and the preparer reports
+    /// `.notReadyAtBoundary` (or `.notPlanned` when nothing was started).
+    @discardableResult
+    public func takeStationIntroAtSongStart(id: String) async -> PreparedDJBreak? {
+        guard stationIntroID == id else { return nil }
+        stationIntroClosed = true
+        let outcome = await preparer.takeBreak(afterTrack: StationIntro.afterTrack)
+        switch outcome {
+        case .ready(let prepared):
+            guard prepared.talkOverCueID == nil, prepared.talkOverStartSeconds == nil else {
+                dj.send(.breakSkipped(afterTrack: StationIntro.afterTrack, .cancelled))
+                lastNoBreak = (.cancelled, true)
+                return nil
+            }
+            return prepared
+        case .skipped(let reason):
+            lastNoBreak = (reason, true)
+            if reason == .notPlanned {
+                dj.send(.breakSkipped(afterTrack: StationIntro.afterTrack, .notPlanned))
+            }
+            return nil
+        }
+    }
+
     /// A new queue: everything prepared for the old one is dropped, then the queue is planned
     /// with the active station's cadence. `briefing` is approved narration (may be nil);
     /// `sources` are the items its personal cues come from. A personal cue whose source is
@@ -367,6 +431,14 @@ public final class DJBreakSession {
         configuration.seeds.contains { $0.source == .library }
     }
 
+    /// The only `preparer.prepare` call (#154). `onDeviceOnly` is for the station intro's own
+    /// facts (a library seed, or a station name). The active station's library-seed gate is
+    /// always OR'd in, so neither a song break nor an intro can skip it.
+    @discardableResult
+    private func prepareBreak(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool) async -> Bool {
+        await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: onDeviceOnly || Self.speaksOnDeviceOnly(station.active))
+    }
+
     /// Song `index` started with `remaining` time left. Starts rendering its break, if one is
     /// planned and there is time to render before the boundary.
     /// When background queue setup has not finished planning yet, the start is held and
@@ -390,7 +462,7 @@ public final class DJBreakSession {
         // #445: the tag goes with the render the preparer accepts. A duplicate start it ignores
         // (a render ready or in flight) keeps the tag of the audio it already holds.
         let part = breakDayParts[index]
-        if await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active)) {
+        if await prepareBreak(djBreak, deadline: deadline, onDeviceOnly: false) {
             preparedDayParts[index] = part
         }
     }
