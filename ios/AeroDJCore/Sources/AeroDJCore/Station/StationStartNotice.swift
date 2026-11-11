@@ -12,7 +12,7 @@ extension CreatedStationOpenOutcome {
     /// True when the listener's own tap will not play anything and nothing else replaced it.
     public var warrantsStartFailureNotice: Bool {
         switch self {
-        case .restoredOnly, .alreadyPlaying, .started:
+        case .restoredOnly, .alreadyPlaying, .resumed, .started:
             false
         case .notApplied:
             true

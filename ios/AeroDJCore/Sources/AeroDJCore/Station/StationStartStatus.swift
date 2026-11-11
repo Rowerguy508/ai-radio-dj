@@ -77,7 +77,7 @@ public final class StationStartStatus {
     /// The phase an outcome leaves on screen, nil when the start screen should go away.
     public nonisolated static func phase(after outcome: CreatedStationOpenOutcome) -> StationStartState.Phase? {
         switch outcome {
-        case .restoredOnly, .alreadyPlaying, .started:
+        case .restoredOnly, .alreadyPlaying, .resumed, .started:
             return nil
         case .notApplied:
             return .failed

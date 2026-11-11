@@ -149,7 +149,7 @@ final class StationQueuePlayer {
     /// #454 (-Atlas): every station row tap. User tap: authorize, apply the station, and start it at
     /// once: the first playable song plays as soon as it is known, the rest of the queue is
     /// appended in the background. While something else plays, it switches now; the station
-    /// already playing is a no-op. Restore: nothing. Logs the outcome as an enum only.
+    /// already playing is a no-op, and the paused active station resumes (Fry N4). Restore: nothing. Logs the outcome as an enum only.
     @discardableResult
     func openStation(_ trigger: StationOpenTrigger, _ source: StationStartSource,
                      studio: StudioPresentationModel) async -> CreatedStationOpenOutcome {
@@ -173,12 +173,14 @@ final class StationQueuePlayer {
             recipeID = id
             available = recipe != nil
             introFacts = StationStartFacts.builtIn(id)
+            // Fry N3 (#456): recorded as the last applied recipe, so a re-tap on the active
+            // built-in is not applied again and unsaved Tune edits stay (as for created stations).
             apply = {
                 guard let recipe else { return false }
-                await station.applyRecipe(recipe)
+                await studio.applyBuiltInRecipe(recipe)
                 return true
             }
-            liveRecipeID = { nil }
+            liveRecipeID = { studio.lastAppliedRecipeID }
         }
         let outcome = await createdStart.open(
             trigger,
@@ -196,6 +198,9 @@ final class StationQueuePlayer {
             },
             switchNow: { await station.applyPendingForStationSwitch() },
             queueEpoch: { [weak self] in self?.queueEpoch ?? 0 },
+            // Fry N2: the intro waits for a confirmed `.playing`; Fry N4: a paused active station resumes.
+            transport: { music.snapshot.transport },
+            resume: { _ = try? await music.resume() },
             start: { [weak self] tracks in _ = await self?.play(tracks, .createdStationStart) },
             append: { [weak self] first, tracks in self?.appendStationSongs(tracks, after: first) ?? false })
         Logger(subsystem: "com.aerodj.app", category: "stationQueue")

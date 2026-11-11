@@ -139,7 +139,7 @@ final class CarPlaySession {
             }
         case .openBuiltInStation:
             // #454: the phone's built-in tap, the same start path as a created station. It plays
-            // the station's own seeds (`BuiltInStations`, #442), never resumes another queue instead.
+            // the station's own seeds (`BuiltInStations`, #442), a re-tap on the paused active station resumes it (Fry N4).
             if let queue = dependencies.stationQueue, let id = UUID(uuidString: row.id) {
                 _ = await queue.openBuiltInStation(.userTap, stationID: id, studio: dependencies.studio)
             } else {

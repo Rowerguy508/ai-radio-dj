@@ -15,6 +15,8 @@ import Foundation
 //   station's queue), and only after `introDelay` with no newer tap or queue change, so a burst of
 //   taps begins at most the final station's intro. It renders only through the DJ session's
 //   preparer, voice quota and reserve gate, and a different station id cancels a render in flight.
+//   Fry N2 (#456): "started" means the transport reports `.playing`, not just a queue that was set,
+//   so a start refused by a hold or a call never begins an intro.
 //   Echo: the first song never waits on the intro and is never talked over. The intro airs at the
 //   first song boundary (`songBoundary`, through the caller's break path), or is dropped and the
 //   skip reported (`StationIntroDisposition`). A tap on the station already playing, a failed tap,
@@ -38,6 +40,8 @@ public enum CreatedStationOpenOutcome: Equatable, Sendable {
     case notApplied
     /// #454: the tapped station's queue is already the one playing. Nothing changed.
     case alreadyPlaying
+    /// #456 (Fry N4): the tapped station is the active one and was paused: it resumed, as before.
+    case resumed
     /// The station started. `songs` is how many were handed to the player at once (1 on the fast
     /// path: the rest are appended in the background). `waited` is true when it was not staged.
     case started(songs: Int, waited: Bool)
@@ -165,6 +169,9 @@ public final class CreatedStationStarter<Item: Sendable> {
     ///     called while something is queued.
     ///   - queueEpoch: bumps every time the player's queue is replaced. A change while this tap
     ///     waits means the listener started something else.
+    ///   - transport: the transport as shown (`MusicKitService.snapshot.transport`). `.playing` confirms
+    ///     a start before its intro begins (Fry N2); `.paused` on the active station resumes (Fry N4).
+    ///   - resume: resumes the paused active station (the Play button's path).
     ///   - start: plays the items (`StationQueuePlayer.play`), replacing any queue.
     ///   - append: adds `songs` behind `first`, the song the fast start played. False when the queue
     ///     is no longer the one this tap started (nothing is added then).
@@ -181,6 +188,8 @@ public final class CreatedStationStarter<Item: Sendable> {
                      playingStation: @escaping @MainActor () -> StationQueueKey? = { nil },
                      switchNow: @MainActor () async -> Void = {},
                      queueEpoch: @escaping @MainActor () -> Int = { 0 },
+                     transport: @escaping @MainActor () -> TransportState = { .playing },
+                     resume: @MainActor () async -> Void = {},
                      start: @MainActor ([Item]) async -> Void,
                      append: @escaping @MainActor (_ first: Item, _ songs: [Item]) -> Bool = { _, _ in false }) async -> CreatedStationOpenOutcome {
         guard trigger == .userTap else { return .restoredOnly }
@@ -207,6 +216,17 @@ public final class CreatedStationStarter<Item: Sendable> {
             currentRecipeID = recipeID
         }
         let wasIdle = nothingQueued()
+        /// The active station tapped again: playing is a no-op, paused resumes (Fry N4).
+        func sameStation() async -> CreatedStationOpenOutcome {
+            guard transport() == .paused else { return .alreadyPlaying }
+            await resume()
+            return .resumed
+        }
+        // Fry N3: a re-tap on the current station applied nothing, so nothing is promoted either
+        // (pending Tune edits keep their boundary) when its queue is the one playing.
+        if !wasIdle, alreadyCurrent, let current = StationQueueKey(active()), playingStation() == current {
+            return await sameStation()
+        }
         if !wasIdle {
             // A row tap switches now; the applied change would otherwise wait for the boundary.
             await switchNow()
@@ -214,13 +234,13 @@ public final class CreatedStationStarter<Item: Sendable> {
         }
         let config = active()
         guard let key = StationQueueKey(config) else { return .notStarted(.noStation) }
-        if !wasIdle, !nothingQueued(), playingStation() == key { return .alreadyPlaying }
+        if !wasIdle, !nothingQueued(), playingStation() == key { return await sameStation() }
         let epoch = queueEpoch()
         /// After `start`: the intro may begin once this start is confirmed and stays current.
         func startConfirmed() {
             guard mine == tapGeneration, !nothingQueued(), playingStation() == key else { return }
             scheduleIntro(introFacts, tap: mine, key: key, epoch: queueEpoch(),
-                          queueEpoch: queueEpoch, playingStation: playingStation)
+                          queueEpoch: queueEpoch, playingStation: playingStation, transport: transport)
         }
 
         // The full queue builds in the background; the first song resolves on its own, faster.
@@ -280,14 +300,25 @@ public final class CreatedStationStarter<Item: Sendable> {
     /// meanwhile (a newer tap cancels this task first). Never awaited by the start.
     private func scheduleIntro(_ facts: StationIntroFacts?, tap: Int, key: StationQueueKey, epoch: Int,
                                queueEpoch: @escaping @MainActor () -> Int,
-                               playingStation: @escaping @MainActor () -> StationQueueKey?) {
+                               playingStation: @escaping @MainActor () -> StationQueueKey?,
+                               transport: @escaping @MainActor () -> TransportState) {
         introTask?.cancel()
         introTask = nil
         guard let facts, intro != nil, airIntro != nil else { return }
         let delay = introDelay
         let sleep = self.sleep
+        let pollInterval = self.pollInterval
+        let maxPolls = self.maxPolls
         introTask = Task { @MainActor [weak self] in
             await sleep(delay)
+            // Fry N2: begin only once the first song is really playing (not preparing, held, or
+            // refused), waiting at most the start's own bound.
+            var polls = 0
+            while transport() != .playing {
+                guard !Task.isCancelled, polls < maxPolls else { return }
+                polls += 1
+                await sleep(pollInterval)
+            }
             guard !Task.isCancelled, let self, self.tapGeneration == tap, queueEpoch() == epoch,
                   playingStation() == key, let intro = self.intro, self.airIntro != nil else { return }
             intro.beginStationIntro(facts)

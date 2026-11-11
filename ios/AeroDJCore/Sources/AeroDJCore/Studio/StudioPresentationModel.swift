@@ -108,6 +108,13 @@ public final class StudioPresentationModel {
         if case .success = result { lastAppliedRecipeID = id } else { lastAppliedRecipeID = nil }
         return result
     }
+
+    /// #456 (Fry N3): a built-in station's recipe (`StationStartFacts.builtInRecipe`), applied like a
+    /// saved one and recorded the same way, so a re-tap on the active built-in keeps unsaved Tune edits.
+    public func applyBuiltInRecipe(_ recipe: StationRecipe) async {
+        await station.applyRecipe(recipe)
+        lastAppliedRecipeID = recipe.id
+    }
 }
 
 // MARK: - Previews (synthetic, in memory; no real providers)

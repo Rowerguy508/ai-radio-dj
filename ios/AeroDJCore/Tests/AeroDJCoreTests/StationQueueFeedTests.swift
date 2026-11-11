@@ -1033,6 +1033,10 @@ final class StationStartInstantTests: XCTestCase {
         private(set) var epoch = 0
         private var appending = false
         var station: StationQueueKey?
+        /// #456: what `start` leaves the transport at (a held or refused start stays `.preparing`).
+        var transportAfterStart: TransportState = .playing
+        var transport: TransportState = .stopped
+        var resumes = 0
         var nothingQueued: Bool { queue.isEmpty && !playing }
         func append(_ songs: [String]) { appending = true; queue += songs; appending = false }
     }
@@ -1096,11 +1100,18 @@ final class StationStartInstantTests: XCTestCase {
                            playingStation: { player.station },
                            switchNow: { await model.applyPendingForStationSwitch() },
                            queueEpoch: { player.epoch },
+                           transport: { player.transport },
+                           resume: {
+                               player.resumes += 1
+                               player.transport = .playing
+                               player.playing = true
+                           },
                            start: { items in
                                player.starts.append(items)
                                player.queue = items
                                player.station = StationQueueKey(model.active)
-                               player.playing = true
+                               player.transport = player.transportAfterStart
+                               player.playing = player.transportAfterStart == .playing
                            },
                            append: { first, songs in
                                guard player.queue.first == first else { return false }
@@ -1381,6 +1392,115 @@ final class StationStartInstantTests: XCTestCase {
         XCTAssertEqual(dropped, .droppedQueueChanged)
         XCTAssertEqual(aired, 0)
         XCTAssertEqual(intro.takes, ["a", "b"], "each intro is closed, so it stops rendering")
+    }
+
+    // MARK: Fry's #456 nits
+
+    // N2: a start the player has not confirmed as playing (a hold, a call refusing play) begins no
+    // intro; it begins once the transport really reports `.playing`.
+    func testTheIntroBeginsOnlyOnceTheFirstSongIsReallyPlaying() async throws {
+        let (model, feed, player) = await rig()
+        let s = starter(feed)
+        let intro = FakeIntro()
+        s.intro = intro
+        s.airIntro = { _ in }
+        player.transportAfterStart = .preparing                 // queue set, MusicKit not playing yet
+
+        guard case .started = await open(s, model, player, station([seed(.artist, "a")]),
+                                         facts: StationIntroFacts(id: "a", name: "A")) else { return XCTFail() }
+        try await Task.sleep(nanoseconds: 60_000_000)          // well past the 5 ms debounce
+        XCTAssertEqual(intro.begins, [], "a queue that is set but not playing begins no intro")
+
+        player.transport = .playing
+        player.playing = true
+        await waitFor { !intro.begins.isEmpty }
+        XCTAssertEqual(intro.begins, ["a"], "begins once the first song is playing")
+    }
+
+    func testARefusedStartNeverBeginsTheIntro() async throws {
+        let (model, feed, player) = await rig()
+        let s = CreatedStationStarter(feed: feed, readyTimeout: .milliseconds(40), pollInterval: .milliseconds(1),
+                                      fillTimeout: .seconds(5), introDelay: .milliseconds(5))
+        let intro = FakeIntro()
+        s.intro = intro
+        s.airIntro = { _ in }
+        player.transportAfterStart = .preparing                 // held by a call: never confirmed
+        guard case .started = await open(s, model, player, station([seed(.artist, "a")]),
+                                         facts: StationIntroFacts(id: "a", name: "A")) else { return XCTFail() }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        player.transport = .playing                              // too late: the wait was bounded
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(intro.begins, [], "no render for a start that never played")
+    }
+
+    // N3: re-tapping the active built-in does not re-apply its recipe, so unsaved Tune edits stay
+    // (the app's wiring: `applyBuiltInRecipe` records `lastAppliedRecipeID`).
+    func testReTappingTheActiveBuiltInKeepsUnsavedTuneEdits() async throws {
+        let studio = await makeCreationStudio()
+        let feed = makeFeed(QueueFakeCatalog())
+        feed.follow(studio.station)
+        let player = Player()
+        let s = starter(feed)
+        let builtIn = BuiltInStations.lateNight
+        let recipe = try XCTUnwrap(StationStartFacts.builtInRecipe(for: builtIn.id))
+        func tap() async -> CreatedStationOpenOutcome {
+            await s.open(.userTap, recipeID: builtIn.id, liveRecipeID: { studio.lastAppliedRecipeID },
+                         authorize: {},
+                         apply: { player.applies += 1; await studio.applyBuiltInRecipe(recipe); return true },
+                         active: { studio.station.active },
+                         nothingQueued: { player.nothingQueued },
+                         playingStation: { player.station },
+                         switchNow: { await studio.station.applyPendingForStationSwitch() },
+                         queueEpoch: { player.epoch },
+                         transport: { player.transport },
+                         resume: { player.resumes += 1; player.transport = .playing },
+                         start: { items in
+                             player.starts.append(items)
+                             player.queue = items
+                             player.station = StationQueueKey(studio.station.active)
+                             player.playing = true
+                             player.transport = .playing
+                         })
+        }
+        guard case .started = await tap() else { return XCTFail("the built-in starts") }
+        XCTAssertEqual(studio.lastAppliedRecipeID, builtIn.id)
+        XCTAssertEqual(player.applies, 1)
+        await studio.station.setEnergy(0.9)                     // an unsaved Tune edit
+        XCTAssertTrue(studio.station.hasUnsavedChanges)
+
+        let again = await tap()
+        XCTAssertEqual(again, .alreadyPlaying)
+        XCTAssertEqual(player.applies, 1, "the active built-in's recipe is not applied again")
+        XCTAssertTrue(studio.station.hasUnsavedChanges, "unsaved Tune edits stay")
+        XCTAssertEqual(studio.station.displayed.energy, 0.9, accuracy: 0.001)
+        XCTAssertEqual(player.starts.count, 1)
+    }
+
+    // N4: the active station, paused: a tap resumes it (as before #454); playing stays a no-op.
+    func testTappingThePausedActiveStationResumesIt() async throws {
+        let (model, feed, player) = await rig()
+        let s = starter(feed)
+        let a = station([seed(.artist, "a")])
+        let id = UUID()
+        guard case .started = await open(s, model, player, a, id: id) else { return XCTFail("A starts") }
+        let queue = player.queue
+        let epoch = player.epoch
+        player.transport = .paused                               // the listener paused A
+        player.playing = false
+
+        let paused = await open(s, model, player, a, id: id)
+        XCTAssertEqual(paused, .resumed)
+        XCTAssertEqual(player.resumes, 1)
+        XCTAssertEqual(player.transport, .playing)
+        XCTAssertEqual(player.starts.count, 1, "resumed, not restarted")
+        XCTAssertEqual(player.epoch, epoch)
+        XCTAssertEqual(player.queue, queue)
+
+        let playing = await open(s, model, player, a, id: id)
+        XCTAssertEqual(playing, .alreadyPlaying, "playing: still a no-op")
+        XCTAssertEqual(player.resumes, 1)
+        XCTAssertNil(StationStartStatus.phase(after: .resumed), "no start screen after a resume")
+        XCTAssertFalse(CreatedStationOpenOutcome.resumed.warrantsStartFailureNotice, "no toast")
     }
 
     // MARK: feed, engine and screen pieces

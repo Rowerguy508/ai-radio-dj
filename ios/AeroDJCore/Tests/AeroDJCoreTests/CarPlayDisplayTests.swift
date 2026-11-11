@@ -451,6 +451,7 @@ final class CarPlayStationSwitchTests: XCTestCase {
         /// #454: bumps on every queue replace; the station whose queue the starter played.
         var epoch = 0
         var station: StationQueueKey?
+        var resumes = 0
         var nothingQueued: Bool { queue.isEmpty && !playing }
     }
 
@@ -494,6 +495,8 @@ final class CarPlayStationSwitchTests: XCTestCase {
             playingStation: { player.station },
             switchNow: { await model.applyPendingForStationSwitch() },
             queueEpoch: { player.epoch },
+            transport: { player.playing ? .playing : .paused },
+            resume: { player.resumes += 1; player.playing = true },
             start: { items in
                 player.epoch += 1
                 player.queue = items
@@ -577,6 +580,26 @@ final class CarPlayStationSwitchTests: XCTestCase {
         let outcome = await pick(stationA, "station-a", starter, model, player)
         XCTAssertEqual(outcome, .alreadyPlaying)
         XCTAssertEqual(player.epoch, epoch, "no new queue")
+        XCTAssertEqual(Array(player.queue.prefix(queueA.count)), queueA)
+    }
+
+    // Fry N4 (#456): the car resumes the paused active station, as before #454.
+    func testPickingThePausedStationAlreadyActiveResumesIt() async {
+        let model = await makeModel()
+        let feed = makeFeed()
+        feed.follow(model)
+        let player = Player()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(2), pollInterval: .milliseconds(1))
+        let queueA = await startA(starter, model, player)
+        player.playing = false                                   // paused on the car
+        await model.setPlaybackActivity(.holdingSong)
+        let epoch = player.epoch
+
+        let outcome = await pick(stationA, "station-a", starter, model, player)
+        XCTAssertEqual(outcome, .resumed)
+        XCTAssertEqual(player.resumes, 1)
+        XCTAssertTrue(player.playing)
+        XCTAssertEqual(player.epoch, epoch, "resumed, not restarted")
         XCTAssertEqual(Array(player.queue.prefix(queueA.count)), queueA)
     }
 
