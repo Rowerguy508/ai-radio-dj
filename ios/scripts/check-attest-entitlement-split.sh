@@ -55,6 +55,24 @@ for needle in ('APP_ENTITLEMENTS=AeroDJ/AeroDJ.entitlements\n',
                'app_ents = os.environ["APP_ENTITLEMENTS"]\n'):
     if wf.count(needle) != 1:
         fail(f"testflight.yml must select the app entitlements through testflight-app-entitlements.sh (missing: {needle.strip()})")
+# CarPlay audio check sits after the App Attest signed-app check and is a no-op
+# when the archived entitlements file does not request the key.
+carplay = "com.apple.developer.carplay-audio"
+if wf.find(f"PASS {carplay} skipped") < wf.find("App Attest entitlement is"):
+    fail("testflight.yml CarPlay check must follow the App Attest signed-app check")
+for needle in (
+    f"PASS {carplay} skipped",
+    f'echo "::error::FAIL {carplay} $1"',
+    'carplay_fail "PROFILE_APP"',
+    'carplay_fail "AeroDJ.app"',
+    'carplay_fail "AeroDJShare.appex"',
+    f'echo "PASS {carplay}"\n',
+    "set +x",
+    "security cms -D -i",
+    "codesign -d --entitlements - --xml",
+):
+    if needle not in wf:
+        fail(f"testflight.yml missing CarPlay profile check ({needle})")
 PY
 
 checked=0
