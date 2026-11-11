@@ -105,6 +105,10 @@ public final class DJBreakSession {
     private var stationIntroGeneration = 0
     private var stationIntroClosed = false
     private var stationIntroChain: Task<Void, Never>?
+    /// Appends are accepted only for this queue generation and epoch.
+    private var stationAppendGeneration: Int?
+    private var stationAppendEpoch: Int?
+    private var stationAppendPending: [DJTrack] = []
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -214,6 +218,11 @@ public final class DJBreakSession {
         reservedStation = .some(StationQueueKey(station.committedDisplayed))
         queueSetupGeneration += 1
         queueSetupPending = true
+        stationAppendPending = []
+        stationAppendGeneration = nil
+        // A new queue (station start, song tap, or search) must not let a station-intro
+        // render finish only to be dropped. Cancel it before play; the song does not wait.
+        cancelInFlightStationIntro()
         return QueueSetupReservation(generation: queueSetupGeneration)
     }
 
@@ -401,6 +410,52 @@ public final class DJBreakSession {
         if let previous = openedStation, previous?.seeds != committed?.seeds { writer.greetAgain() }
         openedStation = .some(committed)
         replan(from: 0, keepingThrough: -1)
+        let queuedAppend = stationAppendPending
+        stationAppendPending = []
+        if stationAppendGeneration == queueSetupGeneration {
+            adoptAppendedSongs(queuedAppend)
+        }
+    }
+
+    /// The queue generation and epoch an append must name. Set when that queue is handed to
+    /// the session (`beginQueueInBackground`'s reservation). A later station, tap, or search
+    /// replaces them, so an append for the old queue is dropped.
+    public func acceptStationAppends(generation: Int, queueEpoch: Int) {
+        stationAppendGeneration = generation
+        stationAppendEpoch = queueEpoch
+    }
+
+    /// Songs filled in behind a fast start. Plans breaks for them with the same `replan`
+    /// a full queue uses. A generation or epoch that is not the current queue is ignored,
+    /// and songs already in the plan are not planned again.
+    public func appendStationSongs(_ songs: [DJTrack], generation: Int, queueEpoch: Int) {
+        guard stationAppendGeneration == generation, stationAppendEpoch == queueEpoch else { return }
+        guard queueSetupGeneration == generation, !songs.isEmpty else { return }
+        if queueSetupPending {
+            stationAppendPending.append(contentsOf: songs)
+            return
+        }
+        adoptAppendedSongs(songs)
+    }
+
+    /// Adds songs the plan does not already have and plans only the new tail.
+    private func adoptAppendedSongs(_ songs: [DJTrack]) {
+        var seen = Set(tracks.map(\.id))
+        let fresh = songs.filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
+        guard !fresh.isEmpty else { return }
+        let start = tracks.count
+        tracks.append(contentsOf: fresh)
+        replan(from: max(0, start - 1), keepingThrough: start - 2)
+    }
+
+    /// Stops a station-intro render that has not aired. Does not wait: the new song must not.
+    private func cancelInFlightStationIntro() {
+        stationIntroClosed = true
+        stationIntroID = nil
+        stationIntroGeneration &+= 1
+        Task { @MainActor [weak self] in
+            await self?.preparer.cancelAndWait(afterTrack: StationIntro.afterTrack)
+        }
     }
 
     /// The station the planned queue belongs to. `unknown` fails closed.
