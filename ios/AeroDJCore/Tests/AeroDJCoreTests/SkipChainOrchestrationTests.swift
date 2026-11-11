@@ -506,6 +506,115 @@ final class SkipChainOrchestrationTests: XCTestCase {
         XCTAssertEqual(player.engine.snapshot.transport, .playing)
     }
 
+    /// Play at 18s, then the old skip's prepare throws. Same queue generation, new attempt.
+    /// Removing `isCurrent` from `ownsLoad` lets the throw recover and reset the playhead.
+    func testPrepareThrowAfterSameGenerationPlayDoesNotRecover() async {
+        await throwAfterSameGenerationPlay(queuedNext: false)
+    }
+
+    /// The old skip's play() throws after that Play. Same rule as a prepare throw.
+    func testPlayThrowAfterSameGenerationPlayDoesNotRecover() async {
+        await throwAfterSameGenerationPlay(queuedNext: false)
+    }
+
+    /// A Next stored on the old skip does not run after the newer Play.
+    func testQueuedNextAfterSameGenerationPlayDoesNotRunWhenTheSkipThrows() async {
+        await throwAfterSameGenerationPlay(queuedNext: true)
+    }
+
+    private func throwAfterSameGenerationPlay(queuedNext: Bool) async {
+        let player = Driver()
+        player.holdNextLoad()
+        player.script = [.failed(.couldNotStart, target: -1)]
+        let running = Task { await player.skip() }
+        await player.untilWaiting()
+        if queuedNext { await player.skip() }
+        player.playAt(18)
+        let starts = player.songStarts
+        let queues = player.queueAssignments
+        player.finishLoad()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.plays, [.advance])
+        XCTAssertEqual(player.reloads(of: 1), 0)
+        XCTAssertEqual(player.index, 1)
+        XCTAssertEqual(player.position, 18)
+        XCTAssertEqual(player.songStarts, starts)
+        XCTAssertEqual(player.queueAssignments, queues)
+        XCTAssertTrue(player.surfaces.isEmpty)
+        XCTAssertTrue(player.policy.userWantsPlayback)
+        XCTAssertFalse(player.policy.pausedBySystem)
+        XCTAssertEqual(player.engine.snapshot.transport, .playing)
+    }
+
+    /// Explicit Play clears the skip-load flag while the old load is still held open.
+    func testResumeClearsTheSkipLoadFlagWhileTheSkipIsStillLoading() async {
+        let player = Driver()
+        player.holdNextLoad()
+        player.skipLoadOpen = true
+        let running = Task { await player.skip() }
+        await player.untilWaiting()
+        player.landPlaying(at: 18)
+        player.userResume()
+        XCTAssertFalse(player.skipLoadOpen)
+        XCTAssertEqual(player.position, 18)
+        let queues = player.queueAssignments
+        let starts = player.songStarts
+        player.finishLoad()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.plays, [.advance])
+        XCTAssertEqual(player.queueAssignments, queues)
+        XCTAssertEqual(player.songStarts, starts)
+        XCTAssertEqual(player.position, 18)
+        XCTAssertTrue(player.surfaces.isEmpty)
+    }
+
+    func testAdmitCancelsAThrowWhenOnlyTheAttemptChanged() {
+        var attempts = PlaybackAttempts()
+        let skip = attempts.beginStart()
+        let generation = attempts.queueGeneration
+        _ = attempts.beginStart()
+        XCTAssertEqual(attempts.queueGeneration, generation)
+        let admitted = SkipStepOutcome.admit(
+            .failed(.couldNotStart, target: 1), attempt: skip, generation: generation, attempts: attempts)
+        XCTAssertEqual(admitted, .cancelled)
+    }
+
+    func testAdmitCancelsAThrowWhenOnlyTheQueueGenerationChanged() {
+        var attempts = PlaybackAttempts()
+        let skip = attempts.beginStart()
+        let generation = attempts.queueGeneration
+        _ = attempts.userChangedQueue()
+        XCTAssertTrue(attempts.isCurrent(skip))
+        let admitted = SkipStepOutcome.admit(
+            .failed(.couldNotStart, target: 1), attempt: skip, generation: generation, attempts: attempts)
+        XCTAssertEqual(admitted, .cancelled)
+    }
+
+    func testMusicKitServiceAdmitsAThrowBeforeTheCoordinatorSeesIt() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("AeroDJ/MusicKitService.swift"), encoding: .utf8)
+        let oneSkip = source.split(separator: "private func oneSkip").dropFirst().first
+            .map(String.init)?
+            .split(separator: "private func loadSkippedSong").first
+            .map(String.init) ?? ""
+        XCTAssertEqual(
+            oneSkip.components(separatedBy: "ownsLoad(attempt: attempt, generation: generation) else { return .cancelled }").count,
+            3,
+            "advance and reload both cancel a step they no longer own")
+        XCTAssertTrue(source.contains("return SkipStepOutcome.admit("),
+                      "a thrown prepare or play is admitted before the coordinator")
+        let stop = source.split(separator: "private func stopSkipForPlay").dropFirst().first.map(String.init) ?? ""
+        XCTAssertTrue(stop.contains("invalidate(.userPlay)"))
+        XCTAssertTrue(stop.contains("setSkipLoadInFlight(false)"),
+                      "Play clears the skip-load flag while the old load is still in flight")
+    }
+
     /// The old advance is still awaited when the queue is replaced with C. Its `.cancelled`
     /// continuation must not clear C. Without that ownership check, resume reloads and assigns
     /// the queue again.
@@ -640,9 +749,45 @@ private final class Driver {
     }
 
     /// Explicit Play. The same `LoadedTargetPolicy` decision as `MusicKitService.resume`.
+    /// A skip that is still loading is invalidated and its flag drops before this Play starts.
     func userResume() {
         policy.userPlay()
+        if coordinator.isInFlight {
+            coordinator.invalidate(.userPlay)
+            skipLoadOpen = false
+        }
+        _ = attempts.beginStart()
         performResume()
+    }
+
+    /// The song already in the player is the selected one, at `seconds`. Not a new attempt.
+    func landPlaying(at seconds: TimeInterval) {
+        position = seconds
+        playerEntryID = "t\(index)"
+        audibleID = playerEntryID
+        isAudible = true
+        noteLoadedTarget()
+        if engine.snapshot.transport != .playing {
+            engine.apply(.userResumed)
+            engine.apply(.playbackConfirmed)
+        }
+    }
+
+    /// A newer Play in the same queue generation: new attempt, playhead at `seconds`, no invalidation.
+    /// The old skip's throw still has to come back as `.cancelled` on its own.
+    func playAt(_ seconds: TimeInterval) {
+        policy.userPlay()
+        _ = attempts.beginStart()
+        position = seconds
+        isAudible = true
+        audibleID = playerEntryID ?? "t\(index)"
+        playerEntryID = audibleID
+        noteLoadedTarget()
+        songStarts += 1
+        if engine.snapshot.transport != .playing {
+            engine.apply(.userResumed)
+            engine.apply(.playbackConfirmed)
+        }
     }
 
     /// Same gate as `MusicKitService.noteSkipLoadCut`: no recovery over a pause or a system hold.
@@ -821,16 +966,16 @@ private final class Driver {
                 result = scripted
             }
         }
-        // Same rule as `oneSkip` after `loadSkippedSong`: a superseded continuation must not
-        // clear the queue that replaced it.
-        guard attempts.ownsLoad(attempt: attempt, generation: generation) else { return result }
-        switch result {
+        // Same rule as `loadSkippedSong`: a throw the load no longer owns is `.cancelled`.
+        let admitted = SkipStepOutcome.admit(result, attempt: attempt, generation: generation, attempts: attempts)
+        guard attempts.ownsLoad(attempt: attempt, generation: generation) else { return admitted }
+        switch admitted {
         case .playing:
             noteLoadedTarget()
         case .cancelled, .failed, .queueStopped, .loadCut:
             noteLoadedTargetStale()
         }
-        return result
+        return admitted
     }
 
     /// Same exits as `MusicKitService.surfaceSkipFailure`: no current attempt and a stale

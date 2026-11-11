@@ -32,6 +32,8 @@ public enum SkipJob: Equatable, Sendable {
 /// Why a queued follow-up or a recovery must not run.
 public enum SkipInvalidation: Equatable, Sendable {
     case userPause
+    /// Explicit or remote Play replaced a skip that was still loading.
+    case userPlay
     case routeRemoved
     case interruptionBegan
     case queueReplaced
