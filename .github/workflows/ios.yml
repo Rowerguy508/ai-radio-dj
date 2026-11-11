@@ -148,6 +148,14 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest' "$PLIST"
           /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes' "$PLIST" \
             | grep -qx 'false' || { echo "UIApplicationSupportsMultipleScenes is not false"; exit 1; }
+          # CarPlay is a template scene on the same manifest, not a second phone window (#438).
+          /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest:UISceneConfigurations:CPTemplateApplicationSceneSessionRoleApplication:0:UISceneClassName' "$PLIST" \
+            | grep -qx 'CPTemplateApplicationScene' || { echo "CarPlay scene class missing from built Info.plist"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest:UISceneConfigurations:CPTemplateApplicationSceneSessionRoleApplication:0:UISceneDelegateClassName' "$PLIST" \
+            | grep -q 'CarPlaySceneDelegate' || { echo "CarPlay scene delegate missing from built Info.plist"; exit 1; }
+          if /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication' "$PLIST" 2>/dev/null; then
+            echo "Phone window scene must stay on the SwiftUI default"; exit 1
+          fi
           if /usr/libexec/PlistBuddy -c 'Print :UIRequiresFullScreen' "$PLIST" 2>/dev/null; then
             echo "UIRequiresFullScreen must not be set"; exit 1
           fi

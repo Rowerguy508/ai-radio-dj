@@ -305,9 +305,12 @@ public actor DJBreakPreparer {
     /// renderer as for every cue), and added only if it finishes before the deadline, before the
     /// break is taken, and within the break's cap. Otherwise the line is dropped and the rest of
     /// the prepared break airs unchanged.
-    public func prepare(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool) {
+    /// Returns whether this break was accepted: false (nothing changes) when a render for `k` is
+    /// in flight or ready, or `k` was taken, so the caller can tell which break's audio it holds (#445).
+    @discardableResult
+    public func prepare(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool) -> Bool {
         let k = djBreak.afterTrack
-        guard tasks[k] == nil, results[k] == nil, !taken.contains(k) else { return }
+        guard tasks[k] == nil, results[k] == nil, !taken.contains(k) else { return false }
         planned[k] = djBreak
         emit(.preparing(afterTrack: k, includesBriefing: djBreak.hasBriefing))
         // Owner, Nov 9 2026: with consent to copy v2 (`.allLines`) a library station's lines may use
@@ -352,6 +355,7 @@ public actor DJBreakPreparer {
                 await self?.addTimeCheck(k, line, clip, airTime: airTime, to: main, in: djBreak, cap: cap)
             }
         }
+        return true
     }
 
     deinit {
