@@ -23,7 +23,9 @@ public final class DJBreakSession {
     private let station: StationConfigurationModel
     private let dj: DJPresentationStore
     private let base: DJCadence
-    private let hour: () -> Int
+    /// Local hour for time-of-day phrasing. Nil (the app): read from `now()` in `calendar` each
+    /// time a plan is written, so the single `now` seam drives it (#445, -Atlas).
+    private let hour: (() -> Int)?
     /// Lane 2 time checks: the listener's calendar (time zone) and clock style. The plan only
     /// reserves a time-check slot; `DJBreakPreparer` writes and renders the line about 75 s
     /// before the boundary, from its own injected clock (Orion option (a), #347).
@@ -36,6 +38,15 @@ public final class DJBreakSession {
     private var plannedWith: DJCadence?
     /// The DJ personality the current plan was written in (its tone picks the copy bank).
     private var plannedPersonality: DJPersonality?
+    /// #445 (-Atlas): the time of day (`DayPart`) the last plan was written in, and the one each
+    /// planned break was written in. A break written in another day part than the clock's now
+    /// (greeting, atmosphere, opener setup) is re-planned before it prepares and dropped at its
+    /// boundary if it was already prepared: after a pause the DJ never says "good morning" at 2 PM.
+    private var plannedDayPart: DayPart?
+    private var breakDayParts: [Int: DayPart] = [:]
+    /// The day part of the plan each boundary's break was handed to the preparer with (a later
+    /// re-plan can change `breakDayParts[k]` while the preparer still holds the older audio).
+    private var preparedDayParts: [Int: DayPart] = [:]
     /// Why the last `naturalBoundary` handed out no break, and whether the cadence had planned
     /// one there. Read-only; nothing decides on it (the P0 trace's boundary row reads it).
     public private(set) var lastNoBreak: (reason: DJBreakSkipReason, cadencePlanned: Bool)?
@@ -130,7 +141,7 @@ public final class DJBreakSession {
 
     public init(preparer: DJBreakPreparer, station: StationConfigurationModel, dj: DJPresentationStore,
                 base: DJCadence = .init(), seed: UInt64 = .random(in: .min ... .max),
-                hour: @escaping () -> Int = { Calendar.current.component(.hour, from: Date()) },
+                hour: (() -> Int)? = nil,
                 now: @escaping () -> Date = { Date() },
                 personalUpdates: PersonalUpdateLedger = PersonalUpdateLedger(),
                 calendar: Calendar = .autoupdatingCurrent, clockStyle: DJClockStyle? = nil,
@@ -313,6 +324,7 @@ public final class DJBreakSession {
         writer.forgetPlannedBreaks(breaks.filter { $0.key > (playing ?? -1) }.map(\.value))
         playing = nil
         breaks = [:]
+        preparedDayParts = [:]
         // Same key the feed gives a new queue (`queueStarted(for: committedDisplayed)`). A save
         // since the reservation makes it uncertain, which fails closed (intros dropped).
         let committed = StationQueueKey(station.committedDisplayed)
@@ -375,7 +387,12 @@ public final class DJBreakSession {
         guard let djBreak = breaks[index] else { return }
         // Library-seed gate (#154): a station built from the listener's own library is spoken
         // on-device only, so no seed, song or artist from it reaches a cloud or paid voice.
-        await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))
+        // #445: the tag goes with the render the preparer accepts. A duplicate start it ignores
+        // (a render ready or in flight) keeps the tag of the audio it already holds.
+        let part = breakDayParts[index]
+        if await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active)) {
+            preparedDayParts[index] = part
+        }
     }
 
     /// Song scrubbing (-Atlas): the user seeked within song `index`, which now has `remaining`
@@ -404,8 +421,13 @@ public final class DJBreakSession {
         // the boundary went by while this seek was suspended. `rearm` re-checks inside the
         // preparer: a boundary that `takeBreak` or `cancelAll` closed is never re-armed.
         guard playing == index, let djBreak = breaks[index] else { return }
+        // #445: the day part of the break handed to `rearm`, read before the await (a re-plan
+        // while it is suspended must not relabel this render).
+        let part = breakDayParts[index]
         // Library-seed gate (#154), read at re-arm time like `songStarted`.
-        await preparer.rearm(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))
+        let rearmed = await preparer.rearm(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active))
+        await testRearmReturned?()
+        if rearmed { preparedDayParts[index] = part }
     }
 
     /// Song `k` ended on its own. Applies pending station edits at this safe boundary, then
@@ -425,6 +447,18 @@ public final class DJBreakSession {
         let taken = await preparer.takeBreak(afterTrack: k)
         if case .skipped(let reason) = taken { lastNoBreak = (reason, cadencePlanned) }
         guard case .ready(let ready) = taken else { return nil }
+        // #445 (-Atlas): prepared for another time of day (paused in the morning, resumed in the
+        // afternoon): not handed out, music plays at once. The break is forgotten (it never aired,
+        // so an unaired opener greets again) and the rest of the queue is re-planned for now.
+        // Ready audio with no tag is of unknown day part: dropped too (fails closed).
+        if preparedDayParts.removeValue(forKey: k) != currentDayPart() {
+            if let stale = breaks.removeValue(forKey: k) { writer.forgetPlannedBreaks([stale]) }
+            breakDayParts[k] = nil
+            replanForNewDayPart(keepingThrough: k)
+            dj.send(.breakSkipped(afterTrack: k, .cancelled))
+            lastNoBreak = (.cancelled, cadencePlanned)
+            return nil
+        }
         // Consent or expiry may have changed since the break was rendered, with no refresh():
         // re-check every source at `now`, purge what may no longer be narrated, drop its cues.
         let at = now()
@@ -582,6 +616,8 @@ public final class DJBreakSession {
         cancelBackgroundQueueSetup()
         await preparer.cancelAll()
         breaks = [:]
+        breakDayParts = [:]
+        preparedDayParts = [:]
         playing = nil
         onAir = nil
         handedOutPersonal = nil
@@ -722,9 +758,36 @@ public final class DJBreakSession {
     private func replanIfCadenceChanged(after k: Int) {
         // A personality change re-plans too, even when its cadence is the same (warm, upbeat
         // and laid-back share one), so the breaks still to come speak in the new tone.
+        // #445: so does a new time of day (morning to afternoon), read from the clock now.
         guard station.active.cadence(base: base) != plannedWith
-                || station.active.personality != plannedPersonality else { return }
+                || station.active.personality != plannedPersonality
+                || plannedDayPart.map({ $0 != currentDayPart() }) == true else { return }
         replan(from: k + 1, keepingThrough: k)
+    }
+
+    /// #445 (-Atlas): the time of day now, from the injected clock. Never cached.
+    private func currentDayPart() -> DayPart {
+        DayPart(hour: hour?() ?? calendar.component(.hour, from: now()))
+    }
+
+    /// #445 (-Atlas): the app came to the foreground or the listener pressed Play after a pause.
+    /// If the time of day moved since the plan was written, the breaks after the playing song are
+    /// re-planned in the new day part and the show greets again ("Good afternoon"). The playing
+    /// song's own break is left alone (it may be rendering); `naturalBoundary` drops it if it was
+    /// written for another day part. Same day part, or queue setup still pending: nothing changes.
+    public func timeOfDayMayHaveChanged() {
+        guard !queueSetupPending, plannedDayPart != nil, currentDayPart() != plannedDayPart else { return }
+        writer.greetAgain()
+        replanForNewDayPart(keepingThrough: playing ?? -1)
+    }
+
+    /// #445: re-plans after `kept`, starting at the first boundary the spacing rule allows after
+    /// the last kept break. The suffix's first break may be the show opener; started any earlier
+    /// it would be planned too close to the kept break and dropped, and the show would not greet.
+    private func replanForNewDayPart(keepingThrough kept: Int) {
+        let spacing = station.active.cadence(base: base).minSongsBetweenBreaks
+        let first = breaks.keys.filter { $0 <= kept }.max().map { max(kept + 1, $0 + spacing + 1) } ?? kept + 1
+        replan(from: first, keepingThrough: kept)
     }
 
     /// Re-plans breaks after boundary `from - 1`. Breaks at or before `keepingThrough` stay
@@ -738,6 +801,7 @@ public final class DJBreakSession {
         // Lane 2: breaks past `kept` are planned away before airing; forget them first.
         writer.forgetPlannedBreaks(breaks.filter { $0.key > kept }.map(\.value))
         breaks = breaks.filter { $0.key <= kept }
+        breakDayParts = breakDayParts.filter { $0.key <= kept }
         guard first < tracks.count - 1 else { return }
         let lastBreak = breaks.keys.max()
         let spokenBriefing = deliveredBriefing.union(breaks.values.flatMap(\.briefingCueIDs))
@@ -750,7 +814,11 @@ public final class DJBreakSession {
         // Lane 2 time checks: the planning clock (spacing, calendar, style) is read once, here.
         // The spoken time is not: the preparer reads its clock when the line renders.
         let clock = DJPlanClock(now: now(), calendar: calendar, style: clockStyle)
-        let plan = writer.plan(tracks: Array(tracks[offset...]), briefing: remainingBriefing, hour: hour(), clock: clock)
+        // #445: the time of day is read from the clock for every plan, never kept from queue start.
+        let hourNow = hour?() ?? calendar.component(.hour, from: clock.now)
+        let dayPart = DayPart(hour: hourNow)
+        plannedDayPart = dayPart
+        let plan = writer.plan(tracks: Array(tracks[offset...]), briefing: remainingBriefing, hour: hourNow, clock: clock)
         var tooClose: [DJBreak] = []
         defer { writer.forgetPlannedBreaks(tooClose) }   // planned, never kept: never airs
         for b in plan.breaks {
@@ -763,6 +831,7 @@ public final class DJBreakSession {
             shifted.timeCheck = b.timeCheck
             shifted.catalogFactCues = b.catalogFactCues   // #199 provenance
             breaks[k] = shifted
+            breakDayParts[k] = dayPart
         }
     }
 
@@ -792,6 +861,12 @@ public final class DJBreakSession {
     /// Test hook (-Atlas): runs where `songSeeked` resumes after its suspension on the station,
     /// so a test can end the song or drop the queue at exactly that point.
     var testSeekResumed: (@MainActor () async -> Void)?
+    /// Test hook (#445, -Atlas): runs where `songSeeked` resumes from `rearm`, standing in for
+    /// work (a duplicate song start, a re-plan) that runs on the main actor during that await.
+    var testRearmReturned: (@MainActor () async -> Void)?
+    /// Test hooks (#445): the day part boundary `k`'s plan, and the render the preparer accepted, were written in.
+    func testPlannedDayPart(afterTrack k: Int) -> DayPart? { breakDayParts[k] }
+    func testPreparedDayPart(afterTrack k: Int) -> DayPart? { preparedDayParts[k] }
     /// Test hook: personal source item ids still present in the briefing or planned breaks.
     var testPlannedSourceItemIDs: Set<UUID> {
         var ids = Set((briefing?.cues ?? []).compactMap(\.sourceItemID))

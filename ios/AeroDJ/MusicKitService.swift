@@ -82,6 +82,10 @@ final class MusicKitService: ObservableObject {
     /// Station queue (-Atlas; flagged for Claude): a new queue replaced the old one (a tap or a station
     /// hand-off), so `StationQueuePlayer` knows which station the playing queue belongs to.
     var onQueueReplaced: (@MainActor () -> Void)?
+    /// #445 (-Atlas): the listener's Play resumed the queue (in-app, lock screen or Control Center).
+    /// `StationQueuePlayer` routes it to `DJBreakSession.timeOfDayMayHaveChanged`, so a pause in the
+    /// morning and a Play in the afternoon re-plan the DJ's breaks for the afternoon.
+    var onUserResumed: (@MainActor () -> Void)?
     private var pollTimer: Timer?
     /// Playback timing for device validation. Indices and durations only: no titles or identifiers.
     private let log = Logger(subsystem: "com.aerodj.app", category: "playback")
@@ -307,6 +311,7 @@ final class MusicKitService: ObservableObject {
             guard attempts.isCurrent(attempt) else { return }
             send(.userResumed)
             stateMachine.apply(.resume)
+            onUserResumed?()
             reportDeferredSongStart()
             await confirmPlaybackAfterStart(attempt)
         } catch {
