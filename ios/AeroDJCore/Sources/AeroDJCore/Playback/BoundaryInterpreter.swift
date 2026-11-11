@@ -69,6 +69,21 @@ public struct BoundaryInterpreter: Sendable {
         detector.takeRemoteSkip()
     }
 
+    /// #444 (-Echo): the app's skip is loading a song. See `PlaybackBoundaryDetector.setSkipLoadInFlight`.
+    public mutating func setSkipLoadInFlight(_ inFlight: Bool) {
+        detector.setSkipLoadInFlight(inFlight)
+    }
+
+    /// #444: true once when that load was cleared or rewound before it played. Not a failed start.
+    public mutating func takeSkipLoadCut() -> Bool {
+        detector.takeSkipLoadCut()
+    }
+
+    /// #444: true once when that load played past the failed-start window.
+    public mutating func takeSkipLoadProgress() -> Bool {
+        detector.takeSkipLoadProgress()
+    }
+
     public mutating func interpret(
         _ observation: PlaybackObservation,
         queueIndex: Int,

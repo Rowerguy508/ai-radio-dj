@@ -507,8 +507,11 @@ final class TimeOfDayResumeTests: XCTestCase {
         let music = try appSource("MusicKitService.swift")
         let start = try XCTUnwrap(music.range(of: "func resume() async throws {"))
         let resume = music[start.upperBound...].prefix(4000)
-        XCTAssertTrue(resume.contains("send(.userResumed)\n            stateMachine.apply(.resume)\n            onUserResumed?()"),
+        XCTAssertTrue(resume.contains("case .played:"), "Play reports the resume only when the song plays")
+        XCTAssertTrue(resume.contains("send(.userResumed)\n                stateMachine.apply(.resume)\n                onUserResumed?()"),
                       "Play reports the resume after the gate passed")
+        let refused = resume[resume.range(of: "case .refused:")!.lowerBound...]
+        XCTAssertFalse(refused.contains("onUserResumed?()"), "a refused or closed resume does not re-plan the day part")
         let deps = try appSource("AppDependencies.swift")
         XCTAssertFalse(deps.contains("hour:"), "the live session reads the hour from its clock, not a launch value")
     }
