@@ -505,6 +505,60 @@ final class SkipChainOrchestrationTests: XCTestCase {
         XCTAssertEqual(player.engine.snapshot.nowPlaying?.id, "t1")
         XCTAssertEqual(player.engine.snapshot.transport, .playing)
     }
+
+    /// The old advance is still awaited when the queue is replaced with C. Its `.cancelled`
+    /// continuation must not clear C. Without that ownership check, resume reloads and assigns
+    /// the queue again.
+    func testSupersededAdvanceKeepsTheReplacementLoadedTarget() async {
+        let player = Driver()
+        player.holdNextLoad()
+        let running = Task { await player.skip() }
+        await player.untilWaiting()
+        player.loadSongC(at: 18)
+        let queues = player.queueAssignments
+        let starts = player.songStarts
+        player.finishLoad()
+        await running.value
+        await player.untilIdle()
+        player.pauseAt(18)
+        player.userResume()
+        XCTAssertEqual(player.lastResumeDecision, .playLoaded)
+        XCTAssertEqual(player.queueAssignments, queues)
+        XCTAssertEqual(player.songStarts, starts)
+        XCTAssertEqual(player.position, 18)
+        XCTAssertEqual(player.playerEntryID, "t2")
+        XCTAssertEqual(player.audibleID, "t2")
+        XCTAssertTrue(player.isAudible)
+        XCTAssertEqual(player.index, 2)
+    }
+
+    /// Same ownership rule when the in-flight step is a recovery reload rather than an advance.
+    func testSupersededRecoveryKeepsTheReplacementLoadedTarget() async {
+        let player = Driver()
+        await player.skip()
+        player.holdNextLoad()
+        player.noteCut()
+        await player.untilWaiting()
+        player.loadSongC(at: 22)
+        let queues = player.queueAssignments
+        let starts = player.songStarts
+        player.finishLoad()
+        await runningWait(player)
+        player.pauseAt(22)
+        player.userResume()
+        XCTAssertEqual(player.lastResumeDecision, .playLoaded)
+        XCTAssertEqual(player.queueAssignments, queues)
+        XCTAssertEqual(player.songStarts, starts)
+        XCTAssertEqual(player.position, 22)
+        XCTAssertEqual(player.playerEntryID, "t2")
+        XCTAssertEqual(player.audibleID, "t2")
+        XCTAssertTrue(player.isAudible)
+        XCTAssertEqual(player.index, 2)
+    }
+
+    private func runningWait(_ player: Driver) async {
+        await player.untilIdle()
+    }
 }
 
 // MARK: - Driver
@@ -529,6 +583,9 @@ private final class Driver {
     var playerEntryID: String? = "t0"
     var loadedTarget: LoadedPlayerTarget? = LoadedPlayerTarget(index: 0, generation: 0)
     var lastResumeDecision: ResumeTargetDecision?
+    var queueAssignments = 0
+    var songStarts = 0
+    var position: TimeInterval = 0
     private var unavailable: Set<Int> = []
     var boundaries = BoundaryInterpreter()
     private var clock: TimeInterval = 100
@@ -610,6 +667,30 @@ private final class Driver {
         audibleID = nil
         _ = policy.userPause()
         engine.apply(.userPaused)
+    }
+
+    /// Pause leaves the playhead where it is. A resume of this song must not look like a new load.
+    func pauseAt(_ seconds: TimeInterval) {
+        position = seconds
+        pause()
+    }
+
+    /// The replacement queue's song C, loaded and playing at `seconds`.
+    func loadSongC(at seconds: TimeInterval) {
+        coordinator.invalidate(.queueReplaced)
+        skipLoadOpen = false
+        _ = attempts.userChangedQueue()
+        _ = attempts.beginStart()
+        index = 2
+        playerEntryID = "t2"
+        audibleID = "t2"
+        isAudible = true
+        position = seconds
+        noteLoadedTarget()
+        queueAssignments += 1
+        songStarts += 1
+        engine.apply(.userSkipped(nextIndex: index))
+        engine.apply(.playbackConfirmed)
     }
 
     func routeRemoved() {
@@ -696,45 +777,60 @@ private final class Driver {
 
     private func execute(_ job: SkipJob) async -> SkipLoadResult {
         guard coordinator.admits(job) else { return .cancelled }
+        let attempt: PlaybackAttemptID
+        let generation: Int
         if job == .advance {
             policy.userPlay()
             userPlayCount += 1
             _ = attempts.userChangedQueue()
-            _ = attempts.beginStart()
+            attempt = attempts.beginStart()
+            generation = attempts.queueGeneration
             let next = index + 1
             guard next < songs else { return .queueStopped }
             index = next
             engine.apply(.userSkipped(nextIndex: index))
         } else {
+            attempt = attempts.beginStart()
+            generation = attempts.queueGeneration
             reloadCounts[index, default: 0] += 1
         }
         plays.append(job)
         await gate.wait()
-        guard coordinator.allowsStep() else { return .cancelled }
-        guard policy.userWantsPlayback, !policy.pausedBySystem else { return .cancelled }
-        guard !script.isEmpty else {
+        let result: SkipLoadResult
+        if !coordinator.allowsStep() || !policy.userWantsPlayback || policy.pausedBySystem {
+            result = .cancelled
+        } else if script.isEmpty {
             isAudible = true
             audibleID = "t\(index)"
             playerEntryID = audibleID
-            noteLoadedTarget()
-            return .playing
+            result = .playing
+        } else {
+            let scripted = script.removeFirst()
+            if case let .failed(failure, target) = scripted {
+                let failedAt = target >= 0 ? target : index
+                if failure == .songUnavailable, attempts.ownsLoad(attempt: attempt, generation: generation) {
+                    unavailable.insert(failedAt)
+                }
+                result = .failed(failure, target: failedAt)
+            } else if case .playing = scripted {
+                isAudible = true
+                audibleID = "t\(index)"
+                playerEntryID = audibleID
+                result = .playing
+            } else {
+                result = scripted
+            }
         }
-        let scripted = script.removeFirst()
-        if case let .failed(failure, target) = scripted {
-            let failedAt = target >= 0 ? target : index
-            if failure == .songUnavailable { unavailable.insert(failedAt) }
+        // Same rule as `oneSkip` after `loadSkippedSong`: a superseded continuation must not
+        // clear the queue that replaced it.
+        guard attempts.ownsLoad(attempt: attempt, generation: generation) else { return result }
+        switch result {
+        case .playing:
+            noteLoadedTarget()
+        case .cancelled, .failed, .queueStopped, .loadCut:
             noteLoadedTargetStale()
-            return .failed(failure, target: failedAt)
         }
-        if case .playing = scripted {
-            isAudible = true
-            audibleID = "t\(index)"
-            playerEntryID = audibleID
-            noteLoadedTarget()
-        }
-        if case .loadCut = scripted { noteLoadedTargetStale() }
-        if case .cancelled = scripted { noteLoadedTargetStale() }
-        return scripted
+        return result
     }
 
     /// Same exits as `MusicKitService.surfaceSkipFailure`: no current attempt and a stale
@@ -779,6 +875,9 @@ private final class Driver {
                 engine.apply(.playbackConfirmed)
             }
         case .reloadSelected:
+            queueAssignments += 1
+            songStarts += 1
+            position = 0
             playerEntryID = "t\(index)"
             audibleID = playerEntryID
             isAudible = true

@@ -478,6 +478,7 @@ final class MusicKitService: ObservableObject {
             sessionPolicy.userPlay()
             // A skip replaces what plays: an older start or a pending boundary's next song is stale.
             let attempt = beginAttempt(userChangedQueue: true)
+            let generation = attempts.queueGeneration
             // The skipped song's break, speaking or prepared, belongs to that song and must not play.
             onBreakMustStop?(nil)
             onSongSkipped?(queueIndex)
@@ -502,6 +503,8 @@ final class MusicKitService: ObservableObject {
                 return .failed(.songUnavailable, target: next)
             }
             let result = await loadSkippedSong(at: next, attempt: attempt)
+            // A queue replacement that started while this load was awaited owns the player.
+            guard attempts.ownsLoad(attempt: attempt, generation: generation) else { return result }
             switch result {
             case .cancelled, .failed, .queueStopped:
                 boundaries.setSkipLoadInFlight(false)
@@ -516,6 +519,7 @@ final class MusicKitService: ObservableObject {
             guard skipCoordinator.admits(job) else { return .cancelled }
             boundaries.userRequestedChange()
             let attempt = beginAttempt(userChangedQueue: false)
+            let generation = attempts.queueGeneration
             // Stop a line that started while the load was failing. Do not cut the song we are
             // reloading: `onSongSkipped` would drop the break `songStarted` just planned for it.
             // Do not call `userPlay()`: that would clear a route or interruption hold.
@@ -531,7 +535,12 @@ final class MusicKitService: ObservableObject {
                 return .failed(.songUnavailable, target: queueIndex)
             }
             let result = await loadSkippedSong(at: queueIndex, attempt: attempt)
-            if case .playing = result {} else { noteLoadedTargetStale() }
+            guard attempts.ownsLoad(attempt: attempt, generation: generation) else { return result }
+            if case .playing = result {
+            } else {
+                boundaries.setSkipLoadInFlight(false)
+                noteLoadedTargetStale()
+            }
             return result
         }
     }
@@ -638,9 +647,10 @@ final class MusicKitService: ObservableObject {
                 throw MusicKitError.playbackFailed(message: PlaybackFailureCopy.message(for: .onHold))
             }
         }
+        let generation = attempts.queueGeneration
         do {
             let started = try await playIfStillAllowed(attempt: attempt)
-            guard attempts.isCurrent(attempt) else { throw MusicKitError.superseded }
+            guard attempts.ownsLoad(attempt: attempt, generation: generation) else { throw MusicKitError.superseded }
             guard started else {
                 armDeferredStart(index)
                 #if AERODJ_P0_DIAG
@@ -653,7 +663,7 @@ final class MusicKitService: ObservableObject {
         } catch MusicKitError.superseded {
             throw MusicKitError.superseded
         } catch {
-            if attempts.isCurrent(attempt) { noteLoadedTargetStale() }
+            if attempts.ownsLoad(attempt: attempt, generation: generation) { noteLoadedTargetStale() }
             throw error
         }
         deferredStart.clear()
@@ -924,9 +934,13 @@ final class MusicKitService: ObservableObject {
             return
         case .recover:
             boundaries.setSkipLoadInFlight(true)
+            let generation = attempts.queueGeneration
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.runSkipChain(first: .reload)
+                // The recovery's attempt is created inside the chain. A replaced queue bumps
+                // generation, and that newer load owns the flag.
+                guard self.attempts.queueGeneration == generation else { return }
                 if !self.isPlaying { self.boundaries.setSkipLoadInFlight(false) }
             }
         case .exhausted:
@@ -1193,7 +1207,7 @@ final class MusicKitService: ObservableObject {
         let failure: SkipTerminalFailure = (queue.indices.contains(queueIndex) && queue[queueIndex].song == nil)
             ? .songUnavailable : .couldNotStart
         let effect = SkipFailureSurface.effect(failure, attempt: attempt, current: attempts.current)
-        let message = effect.message ?? PlaybackFailureCopy.message(for: failure.kind)
+        let message = effect.message ?? PlaybackFailureCopy.fallback
         lastError = message
         send(.errorRaised(PlaybackError(kind: .resumeFailed, message: message, isRecoverable: true)))
         send(.userPaused)

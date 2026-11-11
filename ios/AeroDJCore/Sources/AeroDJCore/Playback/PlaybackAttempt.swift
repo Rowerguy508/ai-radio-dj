@@ -31,6 +31,13 @@ public struct PlaybackAttempts: Equatable, Sendable {
 
     public func isCurrent(_ id: PlaybackAttemptID) -> Bool { current == id }
 
+    /// The load that captured `attempt` and `generation` is the only one that may still change the
+    /// player after an await. A newer start or a replaced queue owns `loadedTarget` now.
+    public func ownsLoad(attempt: PlaybackAttemptID?, generation: Int) -> Bool {
+        guard let attempt else { return false }
+        return isCurrent(attempt) && queueGeneration == generation
+    }
+
     /// The user cancelled the current start (Stop after its deadline, Sentinel). No attempt is
     /// current until the next start, so a late `.playing`, throw or refusal for it changes nothing.
     public mutating func userCancelledCurrent() {
