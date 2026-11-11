@@ -418,6 +418,68 @@ jobs:
           if [ "$ATTEST" != "$WANT_ATTEST" ]; then
             echo "::error::App Attest entitlement is $ATTEST in the signed app, expected $WANT_ATTEST (APP_ENTITLEMENTS=$APP_ENTITLEMENTS)"; exit 1
           fi
+          # CarPlay audio (#438). Skip when this archive's entitlements file does not
+          # request the key, so an older ref still passes. When it does, the installed
+          # PROFILE_APP and the signed app must carry it, and the share extension must not.
+          # set +x: do not trace decoded profiles, entitlement plists, or profile identifiers.
+          set +x
+          carplay_key=com.apple.developer.carplay-audio
+          carplay_src="ios/${APP_ENTITLEMENTS}"
+          carplay_prof="$RUNNER_TEMP/carplay-profile.plist"
+          carplay_app="$RUNNER_TEMP/carplay-app-ents.plist"
+          carplay_share="$RUNNER_TEMP/carplay-share-ents.plist"
+          rm -f "$carplay_prof" "$carplay_app" "$carplay_share"
+          if [ ! -f "$carplay_src" ] || ! grep -q -F "$carplay_key" "$carplay_src"; then
+            echo "PASS com.apple.developer.carplay-audio skipped"
+          else
+            carplay_fail() {
+              echo "::error::FAIL com.apple.developer.carplay-audio $1"
+              rm -f "$carplay_prof" "$carplay_app" "$carplay_share"
+              exit 1
+            }
+            [ -n "${PROFILE_APP_UUID:-}" ] || carplay_fail "PROFILE_APP"
+            security cms -D -i "${HOME}/Library/MobileDevice/Provisioning Profiles/${PROFILE_APP_UUID}.mobileprovision" > "$carplay_prof" \
+              || carplay_fail "PROFILE_APP"
+            codesign -d --entitlements - --xml "$APP_BUNDLE" > "$carplay_app" 2>/dev/null \
+              || carplay_fail "AeroDJ.app"
+            carplay_appex="$(find "$APP_BUNDLE/PlugIns" -maxdepth 1 -name 'AeroDJShare.appex' -print -quit)"
+            [ -n "$carplay_appex" ] || carplay_fail "AeroDJShare.appex"
+            codesign -d --entitlements - --xml "$carplay_appex" > "$carplay_share" 2>/dev/null \
+              || carplay_fail "AeroDJShare.appex"
+            carplay_states="$(python3 - "$carplay_prof" "$carplay_app" "$carplay_share" "$carplay_key" <<'PY'
+          import plistlib, sys
+          prof_path, app_path, share_path, key = sys.argv[1:]
+
+          def state(path, profile):
+              try:
+                  with open(path, "rb") as handle:
+                      data = plistlib.load(handle)
+              except Exception:
+                  return "error"
+              if profile:
+                  data = data.get("Entitlements") if isinstance(data, dict) else None
+              if not isinstance(data, dict):
+                  return "error"
+              val = data.get(key)
+              if val is True:
+                  return "true"
+              if val is None:
+                  return "absent"
+              return "other"
+
+          sys.stdout.write(state(prof_path, True) + "\n" + state(app_path, False) + "\n" + state(share_path, False))
+          PY
+          )"
+            carplay_profile="$(printf '%s\n' "$carplay_states" | sed -n '1p')"
+            carplay_signed="$(printf '%s\n' "$carplay_states" | sed -n '2p')"
+            carplay_ext="$(printf '%s\n' "$carplay_states" | sed -n '3p')"
+            rm -f "$carplay_prof" "$carplay_app" "$carplay_share"
+            [ "$carplay_profile" = true ] || carplay_fail "PROFILE_APP"
+            [ "$carplay_signed" = true ] || carplay_fail "AeroDJ.app"
+            [ "$carplay_ext" = absent ] || carplay_fail "AeroDJShare.appex"
+            echo "PASS com.apple.developer.carplay-audio"
+          fi
+          set -x
 
       - name: Export signed IPA (manual, local)
         run: |
