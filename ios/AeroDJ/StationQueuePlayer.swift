@@ -304,8 +304,8 @@ final class StationQueuePlayer {
                 self.armedAppendGeneration = reservation.generation
                 self.armedAppendEpoch = self.queueEpoch
                 djSession.acceptStationAppends(generation: reservation.generation, queueEpoch: self.queueEpoch)
-                djSession.beginQueueInBackground(reservation, djTracks,
-                                                 briefing: offer.briefing, sources: offer.sources)
+                return djSession.beginQueueInBackground(reservation, djTracks,
+                                                       briefing: offer.briefing, sources: offer.sources)
             },
             release: { djSession.releaseQueueSetup($0) })
             return .started
