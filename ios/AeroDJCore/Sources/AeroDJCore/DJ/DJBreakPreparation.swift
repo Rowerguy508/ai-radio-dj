@@ -148,6 +148,8 @@ public actor DJBreakPreparer {
     /// (-Fry): the 4 s closing cap is a talk-over cap, so it only applies while this is true.
     private let talkOverEnabled: @Sendable () -> Bool
     private var tasks: [Int: Task<Void, Never>] = [:]
+    /// Generation that owns the render at a boundary. A late cancel for an older generation does nothing.
+    private var breakOwner: [Int: Int] = [:]
     private var results: [Int: DJBreakOutcome] = [:]
     private var planned: [Int: DJBreak] = [:]
     /// Song scrubbing (-Atlas): boundaries a seek may still re-arm. Opened when song `k`
@@ -710,7 +712,34 @@ public actor DJBreakPreparer {
         openForRearm.removeAll()
         rearmed.removeAll()
         taken.removeAll()
+        breakOwner.removeAll()
         for k in dropped.sorted() { emit(.skipped(afterTrack: k, .cancelled)) }
+    }
+
+    /// Records which intro generation owns the render at `k`. Set when that render begins.
+    public func noteBreakOwner(_ owner: Int, afterTrack k: Int) {
+        breakOwner[k] = owner
+    }
+
+    /// Cancels the render at `k` only when `owner` is still the generation that began it.
+    /// A late cancel for an older intro does not touch a newer one on the same slot.
+    public func cancelIfOwner(_ owner: Int, afterTrack k: Int) async {
+        guard breakOwner[k] == owner else { return }
+        let task = tasks.removeValue(forKey: k)
+        let result = results.removeValue(forKey: k)
+        planned[k] = nil
+        timeChecks[k] = nil
+        timeCheckDrops[k] = nil
+        timeCheckDeadlines[k] = nil
+        openForRearm.remove(k)
+        rearmed.remove(k)
+        taken.remove(k)
+        if breakOwner[k] == owner { breakOwner[k] = nil }
+        let wasReady = if case .ready? = result { true } else { false }
+        task?.cancel()
+        await task?.value
+        guard breakOwner[k] == nil || breakOwner[k] == owner else { return }
+        if task != nil || wasReady { emit(.skipped(afterTrack: k, .cancelled)) }
     }
 
     /// Cancels one boundary and waits until its render task has stopped, so a paid-voice

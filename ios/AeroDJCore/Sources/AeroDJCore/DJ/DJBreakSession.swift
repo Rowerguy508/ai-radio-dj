@@ -113,6 +113,13 @@ public final class DJBreakSession {
     private var stationIntroToAir: PreparedDJBreak?
     /// Skips reported for a station intro, for tests.
     var testReportedSkips: [(Int, DJBreakSkipReason)] = []
+    /// The generation of the intro that last began, for tests.
+    var testStationIntroGeneration: Int { stationIntroGeneration }
+
+    /// Applies a station-intro cancel for `generation`, the way a late `reserveQueueSetup` would.
+    func testCancelIntroRender(generation: Int) async {
+        await preparer.cancelIfOwner(generation, afterTrack: StationIntro.afterTrack)
+    }
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -307,6 +314,7 @@ public final class DJBreakSession {
                 self.dj.send(.breakSkipped(afterTrack: StationIntro.afterTrack, .notPlanned))
                 return
             }
+            await self.preparer.noteBreakOwner(generation, afterTrack: StationIntro.afterTrack)
             _ = await self.prepareBreak(planned.djBreak, deadline: .seconds(30), onDeviceOnly: planned.onDeviceOnly)
         }
         stationIntroChain = chain
@@ -455,12 +463,14 @@ public final class DJBreakSession {
 
     /// Stops a station-intro render that has not aired. Does not wait: the new song must not.
     private func cancelInFlightStationIntro() {
+        let obsolete = stationIntroGeneration
         stationIntroClosed = true
         stationIntroID = nil
         stationIntroGeneration &+= 1
         if stationIntroToAir != nil { stationIntroWasNotAired() }
         Task { @MainActor [weak self] in
-            await self?.preparer.cancelAndWait(afterTrack: StationIntro.afterTrack)
+            // Only the generation that was rendering. A newer intro has already replaced the token.
+            await self?.preparer.cancelIfOwner(obsolete, afterTrack: StationIntro.afterTrack)
         }
     }
 

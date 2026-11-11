@@ -86,6 +86,20 @@ final class StationIntroAirTests: XCTestCase {
         XCTAssertTrue(session.testReportedSkips.contains { $0 == (StationIntro.afterTrack, .cancelled) })
     }
 
+    func testLateCancelForAnOldIntroLeavesTheNewerOneRendering() async throws {
+        let voice = HangingIntroVoice()
+        let (session, _) = await session(commentary: .frequent, voice: voice)
+        session.beginStationIntro(StationIntroFacts(id: "a", name: "Morning Calm"))
+        try await waitUntil { voice.started >= 1 }
+        let old = session.testStationIntroGeneration
+        session.beginStationIntro(StationIntroFacts(id: "b", name: "Late Night"))
+        try await waitUntil { voice.started >= 2 }
+        await session.testCancelIntroRender(generation: old)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(voice.active, 1, "the newer intro is still rendering")
+        XCTAssertGreaterThanOrEqual(voice.started, 2)
+    }
+
     func testStationIntroAiringKeepsTheSingleLibraryGatedPrepareCall() async throws {
         let text = try String(contentsOf: source("AeroDJCore/Sources/AeroDJCore/DJ/DJBreakSession.swift"), encoding: .utf8)
         XCTAssertTrue(text.contains("preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: onDeviceOnly || Self.speaksOnDeviceOnly(station.active))"))
@@ -103,14 +117,22 @@ final class StationIntroAirTests: XCTestCase {
         (0..<n).map { DJTrack(id: "t\($0)", title: "Song \($0)", artist: "Artist \($0)") }
     }
 
-    private func session(commentary: CommentaryFrequency) async -> (DJBreakSession, DJPresentationStore) {
+    private func waitUntil(_ ready: @MainActor () async -> Bool) async throws {
+        for _ in 0..<200 {
+            if await ready() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("timed out")
+    }
+
+    private func session(commentary: CommentaryFrequency, voice: (any VoiceProvider)? = nil) async -> (DJBreakSession, DJPresentationStore) {
         let config = StationConfiguration(commentary: commentary)
         let station = StationConfigurationModel(
             store: InMemoryStationConfigurationStore(snapshot: .init(state: .init(active: config))),
             consent: StaticIntegrationConsent([:]))
         await station.load()
         let renderer = VoiceRenderer(
-            routes: [VoiceRoute(providerID: "device", provider: InstantIntroVoice(), voice: djVoice)],
+            routes: [VoiceRoute(providerID: "device", provider: voice ?? InstantIntroVoice(), voice: djVoice)],
             budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache())
         let preparer = DJBreakPreparer(renderer: renderer, userID: "u", stationID: "s", cadence: config.cadence())
         let dj = DJPresentationStore()
@@ -124,4 +146,22 @@ private final class InstantIntroVoice: VoiceProvider, @unchecked Sendable {
     func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
         VoiceArtifact(data: Data(text.utf8), durationSeconds: 0.4, billableUnits: 0, provider: "device", cacheKey: nil)
     }
+}
+
+private final class HangingIntroVoice: VoiceProvider, @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries = 0
+    private var inFlight = 0
+    var started: Int { lock.lock(); defer { lock.unlock() }; return entries }
+    var active: Int { lock.lock(); defer { lock.unlock() }; return inFlight }
+
+    func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+        enter()
+        defer { leave() }
+        try await Task.sleep(for: .seconds(30))
+        return VoiceArtifact(data: Data(text.utf8), durationSeconds: 0.4, billableUnits: 0, provider: "device", cacheKey: nil)
+    }
+
+    private func enter() { lock.lock(); entries += 1; inFlight += 1; lock.unlock() }
+    private func leave() { lock.lock(); inFlight -= 1; lock.unlock() }
 }
