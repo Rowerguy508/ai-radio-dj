@@ -23,6 +23,23 @@ public struct StationIntroFacts: Equatable, Sendable {
 public enum StationIntro {
     /// Not a song boundary. Song breaks are numbered from 0.
     public static let afterTrack = -1
+}
+
+/// Whether the app's song boundary must take and air a station intro (#442).
+/// Once `airStationIntro` is set, every natural boundary takes the intro, so a begun
+/// render cannot keep a voice reservation. It airs only when this boundary has not
+/// already spoken another break.
+public enum StationIntroAirGate {
+    public static func mustTakeIntro(airStationIntroIsSet: Bool) -> Bool {
+        airStationIntroIsSet
+    }
+
+    public static func airsIntro(airStationIntroIsSet: Bool, boundaryAlreadySpoken: Bool) -> Bool {
+        airStationIntroIsSet && !boundaryAlreadySpoken
+    }
+}
+
+extension StationIntro {
 
     struct Planned {
         var djBreak: DJBreak

@@ -53,10 +53,8 @@ final class StationQueuePlayer {
     /// The queue the DJ is planning, so a late fill can be matched or dropped.
     private var armedAppendGeneration = 0
     private var armedAppendEpoch = 0
-    /// #454/#442 seam: airs a ready station intro at the first song boundary through the break path
-    /// (never over a song). Nil until the DJ session can air a prepared intro (Fry): the starter then
-    /// begins no intro at all, so no voice is rendered (or paid for) that nobody hears. When set, the
-    /// boundary must also call `createdStart.songBoundary(queueEpoch:)` (not wired yet).
+    /// #454/#442: airs a ready station intro at the first song boundary through the break path
+    /// (never over a song). Set in `init`, so a begun intro is taken at every natural boundary.
     var airStationIntro: (@MainActor (PreparedDJBreak) -> Void)? {
         get { createdStart.airIntro }
         set { createdStart.airIntro = newValue }
@@ -88,11 +86,21 @@ final class StationQueuePlayer {
         // #442: the station intro renders only in the DJ session (its preparer, voice quota and
         // reserve gate). Begun only once `airStationIntro` is set.
         createdStart.intro = djSession
+        airStationIntro = { [weak djSession] prepared in
+            djSession?.stageStationIntro(prepared)
+        }
         onStationSongsAppended = { [weak self] tracks in
             guard let self else { return }
             self.djSession.appendStationSongs(tracks, generation: self.armedAppendGeneration,
                                               queueEpoch: self.armedAppendEpoch)
         }
+    }
+
+    /// Every natural boundary calls this once `airStationIntro` is set, so a begun intro is
+    /// taken (aired, skipped, or dropped) and cannot keep a voice reservation.
+    func stationIntroAtBoundary() async -> StationIntroDisposition? {
+        guard StationIntroAirGate.mustTakeIntro(airStationIntroIsSet: airStationIntro != nil) else { return nil }
+        return await createdStart.songBoundary(queueEpoch: queueEpoch)
     }
 
     /// Installs the three hooks and starts following the station. Call once, at launch.

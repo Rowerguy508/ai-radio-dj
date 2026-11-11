@@ -109,6 +109,10 @@ public final class DJBreakSession {
     private var stationAppendGeneration: Int?
     private var stationAppendEpoch: Int?
     private var stationAppendPending: [DJTrack] = []
+    /// A ready intro waiting for the natural boundary that airs it. Not played over a song.
+    private var stationIntroToAir: PreparedDJBreak?
+    /// Skips reported for a station intro, for tests.
+    var testReportedSkips: [(Int, DJBreakSkipReason)] = []
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -348,6 +352,7 @@ public final class DJBreakSession {
         // line stops now, personal or not. Untagged, as in `purge`. Not `.sourceRevoked` (it
         // isn't one); there is no queue-change case, so the nearest non-revoke reason is used.
         if let live = onAir { requestStop(afterTrack: live.afterTrack, .interruption) }
+        if stationIntroToAir != nil { stationIntroWasNotAired() }
         await preparer.cancelAll()
         guard !Task.isCancelled else { return }
         if briefing != nil { await station.handle(.briefingWillPlan) }
@@ -453,9 +458,31 @@ public final class DJBreakSession {
         stationIntroClosed = true
         stationIntroID = nil
         stationIntroGeneration &+= 1
+        if stationIntroToAir != nil { stationIntroWasNotAired() }
         Task { @MainActor [weak self] in
             await self?.preparer.cancelAndWait(afterTrack: StationIntro.afterTrack)
         }
+    }
+
+    /// Holds a ready intro for the next natural boundary. Does not play it and does not render.
+    public func stageStationIntro(_ prepared: PreparedDJBreak) {
+        if stationIntroToAir != nil { stationIntroWasNotAired() }
+        guard prepared.talkOverCueID == nil, prepared.talkOverStartSeconds == nil else {
+            reportBreakSkipped(afterTrack: StationIntro.afterTrack, .cancelled, planned: true)
+            return
+        }
+        stationIntroToAir = prepared
+    }
+
+    /// The boundary already has another break, or the intro must not air. Reports the skip.
+    public func dropStagedStationIntro() {
+        guard stationIntroToAir != nil else { return }
+        stationIntroWasNotAired()
+    }
+
+    public func stationIntroWasNotAired() {
+        stationIntroToAir = nil
+        reportBreakSkipped(afterTrack: StationIntro.afterTrack, .cancelled, planned: true)
     }
 
     /// The station the planned queue belongs to. `unknown` fails closed.
@@ -484,6 +511,22 @@ public final class DJBreakSession {
     /// True when any seed of the station is from the listener's library.
     nonisolated static func speaksOnDeviceOnly(_ configuration: StationConfiguration) -> Bool {
         configuration.seeds.contains { $0.source == .library }
+    }
+
+    /// The station intro took boundary `k`. The planned break is taken and not played.
+    private func skipPlannedBreakForStationIntro(at k: Int, wasPlanned: Bool) async {
+        if let planned = breaks.removeValue(forKey: k) { writer.forgetPlannedBreaks([planned]) }
+        breakDayParts[k] = nil
+        preparedDayParts[k] = nil
+        _ = await preparer.takeBreak(afterTrack: k)
+        guard wasPlanned else { return }
+        reportBreakSkipped(afterTrack: k, .stationIntro, planned: true)
+    }
+
+    private func reportBreakSkipped(afterTrack k: Int, _ reason: DJBreakSkipReason, planned: Bool) {
+        dj.send(.breakSkipped(afterTrack: k, reason))
+        lastNoBreak = (reason, planned)
+        testReportedSkips.append((k, reason))
     }
 
     /// The only `preparer.prepare` call (#154). `onDeviceOnly` is for the station intro's own
@@ -559,7 +602,9 @@ public final class DJBreakSession {
 
     /// Song `k` ended on its own. Applies pending station edits at this safe boundary, then
     /// returns the prepared break, or nil when there is none (the player plays music at once).
-    public func naturalBoundary(afterTrack k: Int) async -> PreparedDJBreak? {
+    /// `airStationIntro` is true only at that boundary, never from an early talk-over take:
+    /// a staged intro then replaces this song's planned break (one break, no talk-over).
+    public func naturalBoundary(afterTrack k: Int, airStationIntro: Bool = false) async -> PreparedDJBreak? {
         let stationBefore = StationQueueKey(station.active)
         await station.handle(.songBoundary(afterTrack: k))
         let stationAfter = StationQueueKey(station.active)
@@ -571,6 +616,19 @@ public final class DJBreakSession {
         replanIfCadenceChanged(after: k)
         let cadencePlanned = breaks[k] != nil
         lastNoBreak = nil
+        if airStationIntro, let staged = stationIntroToAir {
+            stationIntroToAir = nil
+            if staged.talkOverCueID != nil || staged.talkOverStartSeconds != nil || nextMayChange {
+                reportBreakSkipped(afterTrack: StationIntro.afterTrack, .cancelled, planned: cadencePlanned)
+            } else {
+                await skipPlannedBreakForStationIntro(at: k, wasPlanned: cadencePlanned)
+                var aired = PreparedDJBreak(afterTrack: k, cues: staged.cues, clips: staged.clips,
+                                            attributions: staged.attributions)
+                aired.talkOverCueID = nil
+                onAir = (k, [], false)
+                return aired
+            }
+        }
         let taken = await preparer.takeBreak(afterTrack: k)
         if case .skipped(let reason) = taken { lastNoBreak = (reason, cadencePlanned) }
         guard case .ready(let ready) = taken else { return nil }
@@ -689,6 +747,7 @@ public final class DJBreakSession {
 
     /// Song `k` was cut (skip, queue change): its break is dropped, never played after a cut song.
     public func songCut(afterTrack k: Int) async {
+        if stationIntroToAir != nil { stationIntroWasNotAired() }
         _ = await preparer.takeBreak(afterTrack: k, natural: false)
     }
 

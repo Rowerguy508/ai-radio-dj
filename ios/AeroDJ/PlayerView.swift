@@ -98,16 +98,22 @@ enum PlaybackSessionBinder {
         let interlude = dependencies.interlude
         let djSession = dependencies.djSession
         let talkover = dependencies.talkover
-        music.onBoundary = { @MainActor [interlude, music, djSession, talkover] boundary, finishedIndex in
+        let stationQueue = dependencies.stationQueue
+        music.onBoundary = { @MainActor [interlude, music, djSession, talkover, stationQueue] boundary, finishedIndex in
             #if AERODJ_P0_DIAG
             P0EventTraceHost.shared.onBoundary(boundary, finishedIndex: finishedIndex)
             #endif
             guard case .naturalEnd = boundary else { return }
+            let airing = StationIntroAirGate.mustTakeIntro(airStationIntroIsSet: stationQueue?.airStationIntro != nil)
+            let alreadySpoken = talkover.claimsBoundary(finishedIndex) || interlude.isSpeaking
+            let airIntro = StationIntroAirGate.airsIntro(airStationIntroIsSet: airing, boundaryAlreadySpoken: alreadySpoken)
             // DJ talk-over (-Fry, flagged; docs/dj-talkover.md): the talk-over already took this
             // boundary's break (and handed out a gap fallback synchronously). It returns at the
             // plan's play cue; the next song starts exactly as below.
             if talkover.claimsBoundary(finishedIndex) {
                 Task { @MainActor in
+                    if airing { _ = await stationQueue?.stationIntroAtBoundary() }
+                    if !airIntro { djSession.dropStagedStationIntro() }
                     await talkover.boundary(finishedIndex)
                     await music.startNextTrack(after: finishedIndex)
                 }
@@ -135,13 +141,15 @@ enum PlaybackSessionBinder {
                     }
                 }
                 // The break (or its skip) comes first; the next song is loaded only after it.
+                if airing { _ = await stationQueue?.stationIntroAtBoundary() }
+                if !airIntro { djSession.dropStagedStationIntro() }
                 if interlude.isSpeaking {
                     #if AERODJ_P0_DIAG
                     P0EventTraceHost.shared.naturalBoundary(.interludeSpeaking, afterTrack: finishedIndex)
                     #endif
                     interlude.abandonHandOut()
                     music.skipInterlude()
-                } else if let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex) {
+                } else if let prepared = await djSession.naturalBoundary(afterTrack: finishedIndex, airStationIntro: airIntro) {
                     #if AERODJ_P0_DIAG
                     P0EventTraceHost.shared.naturalBoundary(.breakPrepared, afterTrack: finishedIndex)
                     #endif

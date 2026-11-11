@@ -33,6 +33,9 @@ public enum DJBreakSkipReason: String, Codable, Equatable, Sendable, CaseIterabl
     /// this break was rendered with a cloud voice: it is not played (Echo's N2 on #395). Same
     /// case and raw value as #258's paid-voice revocation, so the two converge when it lands.
     case paidVoiceRevoked
+    /// This boundary's planned break did not air because the station intro took the boundary.
+    /// One break per boundary: the intro is the speech, and this break is not played after it.
+    case stationIntro
 }
 
 /// Why a planned time-check line did not air (#347). Only that line is dropped; the rest of
