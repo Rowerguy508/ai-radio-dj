@@ -216,16 +216,10 @@ public final class CreatedStationStarter<Item: Sendable> {
             currentRecipeID = recipeID
         }
         let wasIdle = nothingQueued()
-        /// The active station tapped again: playing is a no-op, paused resumes (Fry N4).
-        func sameStation() async -> CreatedStationOpenOutcome {
-            guard transport() == .paused else { return .alreadyPlaying }
-            await resume()
-            return .resumed
-        }
         // Fry N3: a re-tap on the current station applied nothing, so nothing is promoted either
         // (pending Tune edits keep their boundary) when its queue is the one playing.
         if !wasIdle, alreadyCurrent, let current = StationQueueKey(active()), playingStation() == current {
-            return await sameStation()
+            return await sameStation(transport: transport, resume: resume)
         }
         if !wasIdle {
             // A row tap switches now; the applied change would otherwise wait for the boundary.
@@ -234,34 +228,17 @@ public final class CreatedStationStarter<Item: Sendable> {
         }
         let config = active()
         guard let key = StationQueueKey(config) else { return .notStarted(.noStation) }
-        if !wasIdle, !nothingQueued(), playingStation() == key { return await sameStation() }
-        let epoch = queueEpoch()
-        /// After `start`: the intro may begin once this start is confirmed and stays current.
-        func startConfirmed() {
-            guard mine == tapGeneration, !nothingQueued(), playingStation() == key else { return }
-            scheduleIntro(introFacts, tap: mine, key: key, epoch: queueEpoch(),
-                          queueEpoch: queueEpoch, playingStation: playingStation, transport: transport)
+        if !wasIdle, !nothingQueued(), playingStation() == key {
+            return await sameStation(transport: transport, resume: resume)
         }
+        let epoch = queueEpoch()
 
         // The full queue builds in the background; the first song resolves on its own, faster.
-        var build: Pending<StationQueuePrepareOutcome>?
-        func buildIfIdle() {
-            guard feed.buildingKey != key, feed.stagedKey != key else { return }
-            let box = Pending<StationQueuePrepareOutcome>()
-            build = box
-            Task { @MainActor [feed] in
-                box.value = await feed.prepare(config)
-                box.done = true
-            }
-        }
-        buildIfIdle()
-        let first = Pending<Item>()
-        if feed.stagedKey != key {
-            Task { @MainActor [feed] in
-                first.value = await feed.firstSong(for: config)
-                first.done = true
-            }
-        }
+        // macOS #456 crash ("freed pointer was not the last allocation"): this async frame holds no
+        // value of the generic `Item` type, creates no Task and calls no local function. Those
+        // live in the synchronous helpers below, so no task-allocator slot spans an `await` here.
+        var build = buildIfIdle(config, key: key)
+        let first = lookUpFirstSong(config, key: key)
 
         var waited = false
         var polls = 0
@@ -270,17 +247,19 @@ public final class CreatedStationStarter<Item: Sendable> {
             guard queueEpoch() == epoch, !wasIdle || nothingQueued() else { return .notStarted(.playbackBegan) }
             if feed.stagedKey == key, let items = feed.takeForIdleStart(active: config) {
                 await start(items)
-                startConfirmed()
+                startConfirmed(introFacts, tap: mine, key: key, nothingQueued: nothingQueued,
+                               queueEpoch: queueEpoch, playingStation: playingStation, transport: transport)
                 return .started(songs: items.count, waited: waited)
             }
-            if first.done, let song = first.value, feed.fastStartBegan(with: song, active: config) {
-                await start([song])
-                startConfirmed()
+            if let items = takeFastStart(first, active: config) {
+                await start(items)
+                startConfirmed(introFacts, tap: mine, key: key, nothingQueued: nothingQueued,
+                               queueEpoch: queueEpoch, playingStation: playingStation, transport: transport)
                 if mine == tapGeneration {
-                    scheduleFill(tap: mine, key: key, first: song, active: active,
+                    scheduleFill(tap: mine, key: key, startedWith: items, active: active,
                                  queueEpoch: queueEpoch, epoch: queueEpoch(), append: append)
                 }
-                return .started(songs: 1, waited: waited)
+                return .started(songs: items.count, waited: waited)
             }
             if let box = build, box.done {
                 if case .skipped(let skip) = box.value, skip != .superseded, first.done {
@@ -288,12 +267,61 @@ public final class CreatedStationStarter<Item: Sendable> {
                 }
                 if feed.stagedKey != key { build = nil }
             }
-            if build == nil { buildIfIdle() }
+            if build == nil { build = buildIfIdle(config, key: key) }
             guard polls < maxPolls else { return .notStarted(.notReadyInTime) }
             polls += 1
             waited = true
             await sleep(pollInterval)
         }
+    }
+
+    /// The active station tapped again: playing is a no-op, paused resumes (Fry N4).
+    private func sameStation(transport: @MainActor () -> TransportState,
+                             resume: @MainActor () async -> Void) async -> CreatedStationOpenOutcome {
+        guard transport() == .paused else { return .alreadyPlaying }
+        await resume()
+        return .resumed
+    }
+
+    /// After `start`: the intro may begin once this start is confirmed and stays current.
+    private func startConfirmed(_ facts: StationIntroFacts?, tap: Int, key: StationQueueKey,
+                                nothingQueued: @MainActor () -> Bool,
+                                queueEpoch: @escaping @MainActor () -> Int,
+                                playingStation: @escaping @MainActor () -> StationQueueKey?,
+                                transport: @escaping @MainActor () -> TransportState) {
+        guard tap == tapGeneration, !nothingQueued(), playingStation() == key else { return }
+        scheduleIntro(facts, tap: tap, key: key, epoch: queueEpoch(),
+                      queueEpoch: queueEpoch, playingStation: playingStation, transport: transport)
+    }
+
+    /// Starts the station's full build in the background unless it is already building or staged.
+    /// Nil when nothing was started.
+    private func buildIfIdle(_ config: StationConfiguration, key: StationQueueKey) -> Pending<StationQueuePrepareOutcome>? {
+        guard feed.buildingKey != key, feed.stagedKey != key else { return nil }
+        let box = Pending<StationQueuePrepareOutcome>()
+        Task { @MainActor [feed] in
+            box.value = await feed.prepare(config)
+            box.done = true
+        }
+        return box
+    }
+
+    /// Resolves the station's first song in the background (not needed when the queue is staged).
+    private func lookUpFirstSong(_ config: StationConfiguration, key: StationQueueKey) -> Pending<Item> {
+        let first = Pending<Item>()
+        guard feed.stagedKey != key else { return first }
+        Task { @MainActor [feed] in
+            first.value = await feed.firstSong(for: config)
+            first.done = true
+        }
+        return first
+    }
+
+    /// The fast start (#454): the resolved first song alone, once the feed has handed the playing
+    /// queue to the station. Nil while it is unresolved or when there is none.
+    private func takeFastStart(_ first: Pending<Item>, active config: StationConfiguration) -> [Item]? {
+        guard first.done, let song = first.value, feed.fastStartBegan(with: song, active: config) else { return nil }
+        return [song]
     }
 
     /// Begins the confirmed station's intro after `introDelay`, if nothing replaced the start
@@ -346,11 +374,12 @@ public final class CreatedStationStarter<Item: Sendable> {
 
     /// After a fast start: waits (bounded) for the full build, then appends its songs behind the
     /// playing one. Stops when a newer tap, a queue change, or a station change happens.
-    private func scheduleFill(tap: Int, key: StationQueueKey, first: Item,
+    private func scheduleFill(tap: Int, key: StationQueueKey, startedWith: [Item],
                               active: @escaping @MainActor () -> StationConfiguration,
                               queueEpoch: @escaping @MainActor () -> Int, epoch: Int,
                               append: @escaping @MainActor (_ first: Item, _ songs: [Item]) -> Bool) {
         fillTask?.cancel()
+        guard let first = startedWith.first else { return }
         let feed = self.feed
         let maxFillPolls = self.maxFillPolls
         let pollInterval = self.pollInterval

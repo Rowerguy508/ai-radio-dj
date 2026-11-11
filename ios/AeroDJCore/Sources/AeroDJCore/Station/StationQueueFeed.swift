@@ -384,8 +384,9 @@ public final class StationQueueFeed<Item: Sendable> {
     /// playback, `staged` or `playingKey`; the full build runs separately (`prepare`).
     public func firstSong(for configuration: StationConfiguration) async -> Item? {
         guard let key = StationQueueKey(configuration) else { return nil }
-        if let ready = staged, ready.key == key, let song = screened(ready.items, for: key).first { return song }
-        if let song = cachedOpeners[key]?.first(where: { mayOpen(with: $0, key: key) }) { return song }
+        // No `Item` local in this async frame (the #456 macOS task-allocator abort): the ready
+        // song is looked up synchronously and returned straight through.
+        if hasReadyFirstSong(for: key) { return readyFirstSong(for: key) }
         let config = configuration.validated()
         guard let seed = config.seeds.first else { return nil }
         let bias = currentRatings(for: key)
@@ -403,6 +404,14 @@ public final class StationQueueFeed<Item: Sendable> {
         let items = await materialize(picks)
         return screened(items, for: key).first
     }
+
+    /// The first song available without a catalog call: the staged queue's, else a cached opener.
+    private func readyFirstSong(for key: StationQueueKey) -> Item? {
+        if let ready = staged, ready.key == key, let song = screened(ready.items, for: key).first { return song }
+        return cachedOpeners[key]?.first(where: { mayOpen(with: $0, key: key) })
+    }
+
+    private func hasReadyFirstSong(for key: StationQueueKey) -> Bool { readyFirstSong(for: key) != nil }
 
     /// #454: the station `active` is starting on `song` alone (a fast start). The playing queue
     /// belongs to the station from now on, and a failed start (`handOffFinished(.failed)`) puts the
