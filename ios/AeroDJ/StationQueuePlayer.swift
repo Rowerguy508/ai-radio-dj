@@ -89,6 +89,10 @@ final class StationQueuePlayer {
         airStationIntro = { [weak djSession] prepared in
             djSession?.stageStationIntro(prepared)
         }
+        // Pass the armed generation and epoch, not the live queueEpoch. The real stale
+        // checks are stationOwnsQueue, the first-song head check, and queueSetupGeneration.
+        // The live epoch would drop every append: scheduleBreakPrep arms before
+        // onQueueReplaced bumps queueEpoch.
         onStationSongsAppended = { [weak self] tracks in
             guard let self else { return }
             self.djSession.appendStationSongs(tracks, generation: self.armedAppendGeneration,
