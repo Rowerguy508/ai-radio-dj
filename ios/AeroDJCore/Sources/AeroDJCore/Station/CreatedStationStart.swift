@@ -88,6 +88,13 @@ public enum StationIntroDisposition: String, Equatable, Sendable, CaseIterable {
     case droppedNoPlayer
 }
 
+/// The do-nothing async default for `CreatedStationStarter.open` (`switchNow`, `resume`). A stored
+/// constant, so its closure exists once, in this module, instead of a weak copy in every caller
+/// that omits the argument (swiftlang/swift#92017; see `CreatedStationStarter.init`).
+public enum StationStartNoWork {
+    public static let none: @MainActor () async -> Void = {}
+}
+
 /// MainActor box for a value a child task fills in.
 @MainActor
 private final class Pending<Value> {
@@ -124,12 +131,21 @@ public final class CreatedStationStarter<Item: Sendable> {
     ///   - pollInterval: how often the wait re-checks the feed.
     ///   - fillTimeout: how long the background fill waits for the full queue after a fast start.
     ///   - introDelay: how long a confirmed start must stay current before its intro begins.
+    ///   - sleep: the wait between polls. Nil: `Task.sleep`.
+    ///
+    /// The real sleep is supplied in the body, not as a closure-literal default argument
+    /// (swiftlang/swift#92017, the #456 macOS abort): a default-argument async closure is emitted
+    /// in this module AND in every caller that omits it, as weak copies whose async-context sizes
+    /// disagree at -Onone (here 160 bytes in the library, 144 in each test file). The linker can pair
+    /// one copy's body with another's size record, so every poll overran its task allocation and the
+    /// next `swift_task_dealloc` aborted with "freed pointer was not the last allocation".
     public init(feed: StationQueueFeed<Item>,
                 readyTimeout: Duration = .seconds(10),
                 pollInterval: Duration = .milliseconds(100),
                 fillTimeout: Duration = .seconds(30),
                 introDelay: Duration = .seconds(2),
-                sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
+                sleep: (@MainActor (Duration) async -> Void)? = nil) {
+        let sleep = sleep ?? { try? await Task.sleep(for: $0) }
         self.feed = feed
         self.pollInterval = pollInterval
         self.maxPolls = max(1, Int((readyTimeout / pollInterval).rounded(.up)))
@@ -186,10 +202,10 @@ public final class CreatedStationStarter<Item: Sendable> {
                      active: @escaping @MainActor () -> StationConfiguration,
                      nothingQueued: @MainActor () -> Bool,
                      playingStation: @escaping @MainActor () -> StationQueueKey? = { nil },
-                     switchNow: @MainActor () async -> Void = {},
+                     switchNow: @MainActor () async -> Void = StationStartNoWork.none,
                      queueEpoch: @escaping @MainActor () -> Int = { 0 },
                      transport: @escaping @MainActor () -> TransportState = { .playing },
-                     resume: @MainActor () async -> Void = {},
+                     resume: @MainActor () async -> Void = StationStartNoWork.none,
                      start: @MainActor ([Item]) async -> Void,
                      append: @escaping @MainActor (_ first: Item, _ songs: [Item]) -> Bool = { _, _ in false }) async -> CreatedStationOpenOutcome {
         guard trigger == .userTap else { return .restoredOnly }
