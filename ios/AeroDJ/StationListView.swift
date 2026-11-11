@@ -351,13 +351,13 @@ struct Station: Identifiable, Hashable {
     }
 
     /// Stable IDs so a restored selection can find the same row after a relaunch.
-    static let morningCalmID = UUID(uuidString: "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D")!
-    static let lateNightID = UUID(uuidString: "8D3B2C21-5F60-4B7C-9D0E-1F2A3B4C5D6E")!
+    /// The same ids as `BuiltInStations`, which holds the seeds those rows play.
+    static let morningCalmID = BuiltInStations.morningCalm.id
+    static let lateNightID = BuiltInStations.lateNight.id
 
-    static let defaultStations: [Station] = [
-        Station(id: morningCalmID, name: "Morning Calm", description: "Warm, unhurried host"),
-        Station(id: lateNightID, name: "Late Night", description: "Smooth vinyl-bar vibes"),
-    ]
+    static let defaultStations: [Station] = BuiltInStations.all.map {
+        Station(id: $0.id, name: $0.name, description: $0.summary)
+    }
 }
 
 extension Station {
