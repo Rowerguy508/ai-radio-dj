@@ -294,7 +294,7 @@ public final class DJBreakSession {
                 self.dj.send(.breakSkipped(afterTrack: StationIntro.afterTrack, .notPlanned))
                 return
             }
-            _ = await self.preparer.prepare(planned.djBreak, deadline: .seconds(30), onDeviceOnly: planned.onDeviceOnly)
+            _ = await self.prepareBreak(planned.djBreak, deadline: .seconds(30), onDeviceOnly: planned.onDeviceOnly)
         }
         stationIntroChain = chain
     }
@@ -431,6 +431,14 @@ public final class DJBreakSession {
         configuration.seeds.contains { $0.source == .library }
     }
 
+    /// The only `preparer.prepare` call (#154). `onDeviceOnly` is for the station intro's own
+    /// facts (a library seed, or a station name). The active station's library-seed gate is
+    /// always OR'd in, so neither a song break nor an intro can skip it.
+    @discardableResult
+    private func prepareBreak(_ djBreak: DJBreak, deadline: Duration, onDeviceOnly: Bool) async -> Bool {
+        await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: onDeviceOnly || Self.speaksOnDeviceOnly(station.active))
+    }
+
     /// Song `index` started with `remaining` time left. Starts rendering its break, if one is
     /// planned and there is time to render before the boundary.
     /// When background queue setup has not finished planning yet, the start is held and
@@ -454,7 +462,7 @@ public final class DJBreakSession {
         // #445: the tag goes with the render the preparer accepts. A duplicate start it ignores
         // (a render ready or in flight) keeps the tag of the audio it already holds.
         let part = breakDayParts[index]
-        if await preparer.prepare(djBreak, deadline: deadline, onDeviceOnly: Self.speaksOnDeviceOnly(station.active)) {
+        if await prepareBreak(djBreak, deadline: deadline, onDeviceOnly: false) {
             preparedDayParts[index] = part
         }
     }
