@@ -452,6 +452,98 @@ final class LockScreenDoubleSkipTests: XCTestCase {
         }
     }
 
+
+    // MARK: - #459 B1 (Sentinel): a hold between the route decision and the step wins
+
+    /// The route said `.advance` (no hold yet), then a call or route loss reaches the session policy
+    /// before the step runs (a deferred interruption replay updates the policy without invalidating
+    /// the chain). The cut-derived step passes `allowsStep()`: no play(), no userPlay(), hold stays.
+    func testHoldBetweenTheRouteAndACutAsNextStepDoesNotPlay() async {
+        for hold in ["interruption", "route"] {
+            let show = Show()
+            await show.landOnBPlaying()
+            let plays = show.playCalls
+            let userPlays = show.userPlays
+            show.feed(show.cleared())
+            XCTAssertEqual(show.lastCutAwaitingPlay, false, "\(hold): routed as a Next")
+            show.holdPolicyOnly(hold)
+            await show.untilIdle()
+            show.assertHeldWithoutPlay(hold, plays: plays, userPlays: userPlays)
+        }
+    }
+
+    /// The same for `exhaustedAdvance`: B's recovery is spent, a cut lands while some other
+    /// attempt's `play()` is awaiting (no chain in flight), so `noteLoadCut` is `.exhausted`, and
+    /// B was seen playing, so the cut is taken as a Next. A hold lands before that step runs.
+    func testHoldBetweenTheRouteAndAnExhaustedAdvanceStepDoesNotPlay() async {
+        for hold in ["interruption", "route"] {
+            let show = Show()
+            await show.spendBsRecovery()
+            show.feed(show.sample(playing: true, position: 0.5))
+            show.beginOwnPlayOutsideASkip()
+            let plays = show.playCalls
+            let userPlays = show.userPlays
+            show.feed(show.cleared())
+            XCTAssertEqual(show.lastCutAwaitingPlay, true, hold)
+            XCTAssertEqual(show.lastExhaustedAdvance, true, "\(hold): the exhausted cut is taken as a Next")
+            show.holdPolicyOnly(hold)
+            await show.untilIdle()
+            show.assertHeldWithoutPlay(hold, plays: plays, userPlays: userPlays)
+        }
+    }
+
+    /// Control for both: with no hold, the same cut-derived steps do advance to C.
+    func testCutDerivedStepsAdvanceWhenNoHoldLands() async {
+        let viaNext = Show()
+        await viaNext.landOnBPlaying()
+        viaNext.feed(viaNext.cleared())
+        await viaNext.untilIdle()
+        viaNext.assertPlaying(index: 2)
+
+        let viaExhausted = Show()
+        await viaExhausted.spendBsRecovery()
+        viaExhausted.feed(viaExhausted.sample(playing: true, position: 0.5))
+        viaExhausted.beginOwnPlayOutsideASkip()
+        viaExhausted.feed(viaExhausted.cleared())
+        XCTAssertEqual(viaExhausted.lastExhaustedAdvance, true)
+        await viaExhausted.untilIdle()
+        XCTAssertEqual(viaExhausted.index, 2)
+        XCTAssertTrue(viaExhausted.audible)
+    }
+
+    /// A real user Next keeps its privilege: pressed while held, it still plays (unchanged rule).
+    func testUserNextStillOpensWithFreshNextPrivilegeUnderAHold() async {
+        let show = Show()
+        await show.landOnBPlaying()
+        show.holdPolicyOnly("route")
+        await show.skip()
+        await show.untilIdle()
+        XCTAssertEqual(show.index, 2)
+        XCTAssertTrue(show.audible)
+        XCTAssertFalse(show.policy.pausedBySystem, "the user's Next calls userPlay() and clears the hold")
+    }
+
+    /// Coordinator level: a cut-opened chain's first step is gated; a user-opened one is not.
+    func testCoordinatorGatesOnlyTheCutOpenedFirstStep() async {
+        var held = false
+        let coordinator = SkipCoordinator()
+        coordinator.stepGate = { (true, held) }
+        XCTAssertEqual(coordinator.noteCutAsNext(from: 1), .begin)
+        held = true
+        var ran = 0
+        await coordinator.runChain { _ in ran += 1; return .playing }
+        XCTAssertEqual(ran, 0, "the cut-opened step does not run over the hold")
+        XCTAssertFalse(coordinator.isInFlight)
+
+        XCTAssertEqual(coordinator.requestAdvance(), .begin)
+        await coordinator.runChain { job in
+            XCTAssertTrue(coordinator.admits(job), "the user's own Next keeps its privilege")
+            ran += 1
+            return .playing
+        }
+        XCTAssertEqual(ran, 1)
+    }
+
     // MARK: - #444 build 43 diagnostics
 
     func testDiagnosticLinesCarryOnlyIndexesTokensAndCounts() {
@@ -537,6 +629,7 @@ private final class Show {
     private(set) var lastCutAwaitingPlay: Bool?
     private(set) var lastCutShape: SkipLoadCutShape?
     private(set) var lastResumeDecision: SkippedPastResume?
+    private(set) var lastExhaustedAdvance: Bool?
     private(set) var cutBreaks: [Int] = []
     /// `nowPlaying` ids and paused transports seen after `markHistory()`.
     private(set) var nowPlayingHistory: [String] = []
@@ -778,6 +871,48 @@ private final class Show {
         apply(.playbackConfirmed)
     }
 
+    /// A from A by a lock-screen Next, B loaded and playing at 0.5 s.
+    func landOnBPlaying() async {
+        primePlaying()
+        feed(cleared())
+        await untilLoadSuspended()
+        finishLoad()
+        await untilIdle()
+        feed(sample(playing: true, position: 0.5))
+    }
+
+    /// Echo's case: one Next, a cut while B's `play()` is awaiting, B reloaded. B's one recovery
+    /// is spent and B has not played past the failed-start window.
+    func spendBsRecovery() async {
+        suspendAt = .play
+        primePlaying()
+        feed(cleared())
+        await untilLoadSuspended()
+        feed(sample(playing: true, position: 0.5))
+        feed(cleared())
+        finishLoad()
+        await untilIdle()
+        XCTAssertEqual(index, 1)
+        XCTAssertEqual(reloads, 1)
+    }
+
+    /// Another attempt (not a skip) has called `play()` and it has not returned.
+    func beginOwnPlayOutsideASkip() {
+        let attempt = attempts.beginStart()
+        startGate.startBegan(attempt)
+        startGate.playCalled(attempt, at: clock)
+    }
+
+    func assertHeldWithoutPlay(_ name: String, plays: Int, userPlays: Int,
+                               file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(playCalls, plays, "\(name): no play()", file: file, line: line)
+        XCTAssertEqual(self.userPlays, userPlays, "\(name): no userPlay()", file: file, line: line)
+        XCTAssertEqual(index, 1, "\(name): still on B", file: file, line: line)
+        XCTAssertFalse(audible, name, file: file, line: line)
+        XCTAssertTrue(policy.pausedBySystem, "\(name): the hold stays", file: file, line: line)
+        XCTAssertFalse(coordinator.isInFlight, name, file: file, line: line)
+    }
+
     func untilLoadSuspended() async {
         for _ in 0..<1000 where !gate.isWaiting { await Task.yield() }
         XCTAssertTrue(gate.isWaiting, "the skip load is in flight")
@@ -853,6 +988,7 @@ private final class Show {
             }
         case .exhausted:
             if SkipLoadCutRoute.exhaustedIsAdvance(cut) {
+                lastExhaustedAdvance = true
                 let intake = coordinator.noteCutAsNext(from: at)
                 Task { await self.startSkip(intake) }
                 return

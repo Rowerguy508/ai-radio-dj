@@ -11,10 +11,12 @@ import Foundation
 /// - A hold (user Pause, an interruption or call, or route loss) is active: the cut is ignored.
 ///   It never calls `userPlay()` and never starts playback over the hold.
 /// - Our own attempt has called `play()` and it has not returned: the ambiguous cut #446 targeted.
-///   Reload the same song through `SkipCoordinator.noteLoadCut`. One Next never skips two songs.
+///   Reload the same song through `SkipCoordinator.noteLoadCut`. One Next never skips two songs,
+///   except a throw after a folded cut (the cut is then taken as the user's Next).
 /// - Otherwise (our `play()` returned, or has not been called): MusicKit's own Next. It goes through
 ///   `SkipCoordinator.noteCutAsNext` and the skip path (`oneSkip(.advance)`), folding into the
-///   chain's one stored follow-up when a chain is running.
+///   chain's one stored follow-up when a chain is running. The step it opens is gated by
+///   `allowsStep()` at step time (#459 B1), so a hold that lands before it runs still wins.
 public enum SkipLoadCutRoute: String, Equatable, Sendable {
     case ignoreHeld
     case reloadSameSong
