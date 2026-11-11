@@ -25,6 +25,30 @@ final class StationIntroAirTests: XCTestCase {
         XCTAssertNil(again, "the intro does not air twice, and the planned break stays skipped")
     }
 
+    func testIntroAirsInsteadOfTheBoundaryZeroBreakFromTheFirstAppend() async throws {
+        let (session, _) = await session(commentary: .chatty)
+        let first = session.reserveQueueSetup()
+        session.acceptStationAppends(generation: first.generation, queueEpoch: 1)
+        await session.beginQueueInBackground(first, [DJTrack(id: "a", title: "First", artist: "A")]).value
+        XCTAssertTrue(session.plannedBoundaries.isEmpty, "one song has no boundary yet")
+        session.appendStationSongs([DJTrack(id: "b", title: "Next", artist: "B")],
+                                   generation: first.generation, queueEpoch: 1)
+        XCTAssertTrue(session.plannedBoundaries.contains(0), "the first append plans boundary 0")
+        let plannedIDs = try XCTUnwrap(session.testPlannedBreaks[0]).cues.map(\.id)
+        let cue = NarrationCue(id: UUID(), order: 0, group: -1, kind: .transition, text: "Morning Calm",
+                               estimatedSeconds: 1, maxSeconds: 8, sourceItemID: nil, source: nil, provenance: nil)
+        session.stageStationIntro(PreparedDJBreak(afterTrack: StationIntro.afterTrack, cues: [cue], clips: [],
+                                                  attributions: [cue.id: .stationName]))
+        let boundary = await session.naturalBoundary(afterTrack: 0, airStationIntro: true)
+        let aired = try XCTUnwrap(boundary)
+        XCTAssertEqual(aired.cues.map(\.id), [cue.id], "only the intro airs at boundary 0")
+        XCTAssertFalse(aired.cues.map(\.id).contains(where: { plannedIDs.contains($0) }))
+        XCTAssertTrue(session.testReportedSkips.contains { $0 == (0, .stationIntro) },
+                      "the planned boundary-0 break is skipped and reported")
+        let again = await session.naturalBoundary(afterTrack: 0)
+        XCTAssertNil(again, "the planned break does not air as well")
+    }
+
     func testAiringSeamTakesTheIntroAtEveryBoundary() async throws {
         XCTAssertFalse(StationIntroAirGate.mustTakeIntro(airStationIntroIsSet: false))
         XCTAssertTrue(StationIntroAirGate.mustTakeIntro(airStationIntroIsSet: true))
