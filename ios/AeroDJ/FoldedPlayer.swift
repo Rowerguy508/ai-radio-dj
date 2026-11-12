@@ -790,8 +790,8 @@ private struct FoldedToolbar: View {
 }
 
 /// Horizontal snap between stations. Scrolling only moves the highlight. A station
-/// opens on a tap, or on Tune for the highlighted stop, through `onOpen`. One open
-/// at a time: a newer tap cancels the previous task.
+/// opens on a tap, or on Tune for the highlighted stop, through `onOpen`. A newer
+/// tap cancels a pending open. A started open is not cancelled.
 private struct DuoStationDial: View {
     let stops: [DuoStationSwitch.Stop]
     let openedID: String
@@ -883,7 +883,7 @@ private struct DuoStationDial: View {
         .transaction { if reduceMotion { $0.disablesAnimations = true } }
     }
 
-    /// Tap or Tune. A swipe never reaches this. A newer tap cancels the previous open.
+    /// Tap or Tune. A swipe never reaches this. A newer tap cancels a pending open.
     private func open(_ id: String) {
         snapped = id
         guard let token = flight.receive(.tap(id), playingID: openedID) else { return }

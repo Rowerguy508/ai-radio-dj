@@ -3,7 +3,7 @@ import Foundation
 /// The Duo station dial (#463). A swipe only moves the highlight. A station opens
 /// only from an explicit tap, or from Tune on the highlighted stop, and only through
 /// the caller's existing open action. The station already playing is not opened again.
-/// A newer tap supersedes an earlier one, so only the latest open runs.
+/// A newer tap cancels a pending open. A started open is not cancelled.
 public enum DuoStationSwitch {
     public struct Stop: Equatable, Sendable, Identifiable {
         public let id: String
