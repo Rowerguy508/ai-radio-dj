@@ -97,9 +97,18 @@ enum StudioCaptureScenario: String {
 
     var snapshot: PlaybackSnapshot {
         switch self {
-        case .empty, .loading, .denied, .stations, .resize, .stationStarting, .stationStartFailed, .duoWideEmpty: PlaybackFixtures.stopped
-        case .error: PlaybackFixtures.recoverableError
-        default: PlaybackFixtures.playing
+        case .empty, .loading, .denied, .stations, .resize, .stationStarting, .stationStartFailed, .duoWideEmpty:
+            return PlaybackFixtures.stopped
+        case .error:
+            return PlaybackFixtures.recoverableError
+        case .duoWideReady:
+            // A playing song the listener can seek. The shared fixture leaves canSeek false,
+            // which draws the scrubber as a non-interactive element.
+            var playing = PlaybackFixtures.playing
+            playing.canSeek = true
+            return playing
+        default:
+            return PlaybackFixtures.playing
         }
     }
 
