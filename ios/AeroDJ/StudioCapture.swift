@@ -64,6 +64,9 @@ enum StudioCaptureScenario: String {
     /// container: below the Studio switch but wider than any phone in portrait, like the
     /// unfolded Duo's split-view detail (owner, build 25). Needs a window at least that big.
     case duoWideReady
+    /// The same 640 × 820 pt container with nothing playing, so Search Apple Music is the
+    /// content column's first control.
+    case duoWideEmpty
     /// The DJ is on air: a break became ready and the player reported it started
     /// (`breakReady` then `playbackStarted`, the same events the audio player sends), so the
     /// folded player draws the ON AIR pill. At AX5 on a phone it is pinned above the
@@ -94,7 +97,7 @@ enum StudioCaptureScenario: String {
 
     var snapshot: PlaybackSnapshot {
         switch self {
-        case .empty, .loading, .denied, .stations, .resize, .stationStarting, .stationStartFailed: PlaybackFixtures.stopped
+        case .empty, .loading, .denied, .stations, .resize, .stationStarting, .stationStartFailed, .duoWideEmpty: PlaybackFixtures.stopped
         case .error: PlaybackFixtures.recoverableError
         default: PlaybackFixtures.playing
         }
@@ -153,7 +156,7 @@ struct StudioCaptureView: View {
                 CaptureStationSplit(dependencies: dependencies)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("capture.shell")
-            } else if scenario == .duoWideReady {
+            } else if scenario == .duoWideReady || scenario == .duoWideEmpty {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else {
                 NavigationStack {
