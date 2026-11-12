@@ -433,6 +433,54 @@ final class StudioScreenTests: XCTestCase {
         return nil
     }
 
+    /// 640 × 820, nothing playing and playing. Every control in the content column is
+    /// hittable and its frame sits inside the window and inside that column.
+    @MainActor
+    func testDuoWideColumnControlsStayInsideTheWindow() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        assertDuoColumnControls(scenario: "duoWideEmpty", names: ["search": "playback.searchAppleMusic",
+                                                                   "station": "station.title"])
+        assertDuoColumnControls(scenario: "duoWideReady", names: ["play": "transport.playPause",
+                                                                  "skip": "transport.skip",
+                                                                  "station": "station.title",
+                                                                  "dj": "dj.ready",
+                                                                  "scrubber": "playback.progress"])
+    }
+
+    /// `names` maps a short label to an accessibility identifier in the content column.
+    @MainActor
+    private func assertDuoColumnControls(scenario: String, names: [String: String]) {
+        let app = launch(scenario: scenario)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window\n\(app.debugDescription)")
+        guard let windowFrame = settledFrame(of: window, "window") else { return }
+        let container = any["capture.duoContainer"]
+        XCTAssertTrue(container.waitForExistence(timeout: 5), "Duo container missing\n\(app.debugDescription)")
+        guard let box = settledFrame(of: container, "Duo container", isFinal: {
+            abs($0.width - 640) <= 1 && abs($0.height - 820) <= 1
+        }) else { return }
+        XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box),
+                      "container \(box) outside window \(windowFrame)")
+        let column = any["folded.contentColumn"]
+        XCTAssertTrue(column.waitForExistence(timeout: 10), "content column missing\n\(app.debugDescription)")
+        guard let columnFrame = settledFrame(of: column, "content column") else { return }
+        for (name, identifier) in names {
+            let element = any[identifier]
+            XCTAssertTrue(element.waitForExistence(timeout: 8),
+                          "\(name) missing in \(scenario)\n\(app.debugDescription)")
+            guard let frame = settledFrame(of: element, name) else { continue }
+            let detail = "\(scenario) \(name) \(frame) window \(windowFrame) column \(columnFrame)"
+            XCTAssertTrue(element.isHittable, "\(name) is not hittable: \(detail)")
+            XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(frame),
+                          "\(name) is outside the window: \(detail)")
+            XCTAssertTrue(columnFrame.insetBy(dx: -1, dy: -1).contains(frame),
+                          "\(name) is outside the content column: \(detail)")
+        }
+        app.terminate()
+    }
+
     /// Open (Studio): `.ready` must not print the break headline or its VoiceOver detail.
     /// Folded: a quiet, static "DJ break after this song" line shows instead (Fry, #161).
     @MainActor

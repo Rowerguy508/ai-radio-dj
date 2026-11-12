@@ -388,6 +388,17 @@ final class FoldedColumnLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(layout.barWidth, StudioLayoutMetrics.touchTargetMin)
         XCTAssertLessThan(layout.barWidth, layout.contentWidth, "the symbol bar stays thinner than the content column")
         XCTAssertGreaterThanOrEqual(layout.contentWidth, 68 + 52, "play and skip fit side by side")
+        // 640 − 16 − 56 − 334. Wider than the Search Apple Music control measured at 203.7 pt.
+        XCTAssertEqual(layout.contentWidth, 234, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(layout.contentWidth, 204)
+        XCTAssertLessThanOrEqual(layout.contentMinX + 204, layout.barMinX)
+        // The narrowest Duo (500 pt wide) leaves 164 pt. Play and skip still fit.
+        // The full Search Apple Music label (203.7 pt) does not, so that column uses a shorter fallback.
+        let narrow = FoldedColumnLayout.duoHorizontal(containerWidth: 500, containerHeight: 820,
+                                                      artMin: 140, artMax: 420)
+        XCTAssertEqual(narrow.contentWidth, 164, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(narrow.contentWidth, 68 + 52)
+        XCTAssertLessThan(narrow.contentWidth, 204)
         XCTAssertLessThanOrEqual(layout.artSide, layout.leftWidth)
         XCTAssertEqual(layout.topClearance, FoldedColumnLayout.duoStatusClearance)
         XCTAssertGreaterThanOrEqual(layout.foldGutter, 24)

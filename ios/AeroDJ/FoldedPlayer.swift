@@ -214,9 +214,12 @@ struct FoldedPlayer: View {
         let gap = CGFloat(FoldedColumnLayout.Spacing.betweenControls)
         return HStack(alignment: .top, spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
+                // An explicit column width. A vertical scroll view otherwise offers an
+                // unbounded width, the placeholder lays out on one line, and a centred
+                // overflow puts the leading edge off the column.
                 upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
-                      includesStatus: false, keepArtVisible: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                      includesStatus: false, keepArtVisible: true, includesSearch: false)
+                    .frame(width: CGFloat(layout.leftWidth), alignment: .leading)
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollContentBackground(.hidden)
@@ -251,8 +254,11 @@ struct FoldedPlayer: View {
         .frame(width: size.width, height: size.height)
     }
 
-    /// Horizontal scrubber, transport, station, and the DJ chip. The orb appears here only
-    /// while the DJ is actually on air, and it does not cover the artwork.
+    /// Horizontal scrubber, transport, station, and the DJ chip. Nothing playing puts
+    /// Search Apple Music here too: the left column is artwork and the title, and this
+    /// column is the only place a control is allowed. Each control takes the column
+    /// width and may grow downward, so an ideal width cannot centre itself off the column.
+    /// The orb appears here only while the DJ is actually on air, and it does not cover the artwork.
     private func wideContent(gap: CGFloat, top: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: gap) {
             if DuoPresentation.showsVisualizer(isOnAir: dj.state.isOnAir), let track = heroTrack {
@@ -263,23 +269,35 @@ struct FoldedPlayer: View {
                     .accessibilityIdentifier("folded.visualizer")
             }
             FoldedDJStatus(dj: dj)
+                .duoColumnWidth()
             PlaybackErrorBanner(error: snapshot.error, actions: actions)
+                .duoColumnWidth()
+            if case .nothingPlaying = content, search != nil {
+                ViewThatFits(in: .horizontal) {
+                    SearchAppleMusicButton(action: onQueue)
+                    SearchAppleMusicButton(action: onQueue, title: "Search", showsTitle: true)
+                    SearchAppleMusicButton(action: onQueue, title: "Search", showsTitle: false)
+                }
+                .duoColumnWidth()
+            }
             if showsProgress, let timeSource {
                 PlaybackScrubber(time: timeSource, transport: snapshot.transport,
                                  trackID: snapshot.nowPlaying?.id,
                                  canSeek: snapshot.canSeek,
                                  onSeek: { await actions.seek(to: $0, trackID: $1) },
                                  isDJSpeaking: dj.state.isOnAir)
+                    .duoColumnWidth()
             }
             FoldedStationChip(heading: heading, action: onQueue)
             Spacer(minLength: gap)
             if content.showsTransport {
                 TransportRow(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
                              actions: actions, onTune: nil, balancesSides: false)
+                    .duoColumnWidth()
             }
         }
         .padding(.top, top)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     /// Symbol-only chrome. Back replaces the navigation-bar back at this width. Queue and
@@ -348,9 +366,11 @@ struct FoldedPlayer: View {
     /// `includesStatus` false: the caller pins the DJ status in the controls instead (#310).
     /// `includesArt` false: phone width at accessibility sizes when the title block would not
     /// fit under the art (#345 review); the title then starts at the top.
+    /// `includesSearch` is false on the Duo: Search Apple Music lives in the content column.
     @ViewBuilder
     private func upper(artSide: CGFloat, centered: Bool, includesStatus: Bool = true,
-                       includesArt: Bool = true, keepArtVisible: Bool = false) -> some View {
+                       includesArt: Bool = true, keepArtVisible: Bool = false,
+                       includesSearch: Bool = true) -> some View {
         VStack(alignment: centered ? .center : .leading, spacing: 0) {
             switch content {
             case .track(let track):
@@ -373,7 +393,7 @@ struct FoldedPlayer: View {
                     .padding(.top, 24)
                 // #454: search is never a station's empty state; it sits behind an explicit
                 // button that opens the Queue workspace (where `StartListeningView` lives).
-                if search != nil {
+                if includesSearch, search != nil {
                     SearchAppleMusicButton(action: onQueue)
                         .padding(.top, 16)
                 }
@@ -446,6 +466,15 @@ struct FoldedPlayer: View {
         }
         .padding(.top, balancesTransport ? 0 : 8)
         .padding(.bottom, 8)
+    }
+}
+
+private extension View {
+    /// Take the proposed column width and the view's own height. An ideal width then
+    /// cannot centre the control past the column's leading edge.
+    func duoColumnWidth() -> some View {
+        frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -830,7 +859,8 @@ private struct FoldedStationChip: View {
             }
             .padding(.leading, 6)
             .padding(.trailing, 14)
-            .frame(maxWidth: .infinity, minHeight: FoldedStyle.toolbarHeight)
+            .frame(maxWidth: .infinity, minHeight: FoldedStyle.toolbarHeight, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
             .foldedGlass(Capsule(), role: .control)
             .contentShape(Capsule())
         }
