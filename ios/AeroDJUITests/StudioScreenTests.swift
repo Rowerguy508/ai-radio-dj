@@ -404,6 +404,15 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(play.frame.width, 44)
         XCTAssertGreaterThanOrEqual(back.frame.height, 44)
         XCTAssertGreaterThanOrEqual(more.frame.minY, barFrame.minY + 40, "chrome starts below the status clearance")
+        let timeline = app.buttons["duo.upNext"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 5), "up-next timeline missing\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(timeline.frame.midX, contentFrame.minX - 4, "timeline stays in the content column")
+        XCTAssertLessThanOrEqual(timeline.frame.midX, contentFrame.maxX + 4, "timeline stays in the content column")
+        XCTAssertTrue(timeline.label.contains("Morning Light"))
+        XCTAssertTrue(timeline.label.contains("DJ break after this song"))
+        XCTAssertTrue(timeline.label.contains("Slow Burn"))
+        timeline.tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5), "tapping the timeline opens the queue")
         XCTAssertEqual(container.frame.width, box.width, accuracy: 0.5, "container resized before the screenshot")
         save(app, "duo-wide-ready")
     }
@@ -453,6 +462,8 @@ final class StudioScreenTests: XCTestCase {
                            "a phone-width layout does not use the Duo content column")
             XCTAssertFalse(app.descendants(matching: .any)["folded.systemBar"].exists,
                            "a phone-width layout does not use the Duo symbol bar")
+            XCTAssertFalse(app.buttons["duo.upNext"].exists,
+                           "a phone-width layout does not show the up-next timeline")
             let play = app.buttons["transport.playPause"]
             let ready = app.descendants(matching: .any)["dj.ready"]
             XCTAssertGreaterThan(play.frame.minY, ready.frame.maxY,

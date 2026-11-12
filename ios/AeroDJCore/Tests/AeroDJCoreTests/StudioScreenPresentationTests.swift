@@ -398,3 +398,27 @@ final class FoldedColumnLayoutTests: XCTestCase {
         XCTAssertGreaterThan(DuoPresentation.washOpacity(reduceTransparency: false), 0)
     }
 }
+
+final class DuoUpNextTimelineTests: XCTestCase {
+    func testTimelineShowsTheSongAReadyBreakAndTheQueue() {
+        let lines = DuoUpNextTimeline.lines(
+            now: .init(title: "Morning Light", artist: "The Calm Collective"),
+            readyBreak: "DJ break after this song",
+            queued: [.init(title: "Slow Burn", artist: "Neon Harbor")])
+        XCTAssertEqual(lines.map(\.role), [.nowPlaying, .breakChip, .queued])
+        XCTAssertEqual(lines.map(\.title), ["Morning Light", "DJ break after this song", "Slow Burn"])
+    }
+
+    func testTimelineOmitsABreakThatIsNotReady() {
+        let quiet = DuoUpNextTimeline.lines(
+            now: .init(title: "Morning Light", artist: "The Calm Collective"),
+            readyBreak: nil,
+            queued: [])
+        XCTAssertEqual(quiet.map(\.role), [.nowPlaying])
+        let blank = DuoUpNextTimeline.lines(
+            now: .init(title: "Morning Light", artist: "The Calm Collective"),
+            readyBreak: "",
+            queued: [])
+        XCTAssertEqual(blank.map(\.role), [.nowPlaying])
+    }
+}
