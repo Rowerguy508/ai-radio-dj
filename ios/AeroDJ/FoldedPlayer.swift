@@ -92,6 +92,10 @@ struct FoldedPlayer: View {
     let onQueue: () -> Void
     let onTune: () -> Void
     let onReview: () -> Void
+    /// Stations the Duo dial can open. Empty on phone widths and when no list was passed.
+    var stationStops: [DuoStationSwitch.Stop] = []
+    /// The station-row open path. Nil hides the dial.
+    var onOpenStation: ((String) async -> Void)? = nil
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.dismiss) private var dismiss
@@ -265,6 +269,9 @@ struct FoldedPlayer: View {
                                  isDJSpeaking: dj.state.isOnAir)
             }
             FoldedStationChip(heading: heading, action: onQueue)
+            if stationStops.count > 1, let onOpenStation {
+                DuoStationDial(stops: stationStops, openedID: heading.opened.id, onOpen: onOpenStation)
+            }
             Spacer(minLength: gap)
             if content.showsTransport {
                 TransportRow(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
@@ -772,6 +779,63 @@ private struct FoldedToolbar: View {
                 }
             }
         }
+    }
+}
+
+/// Horizontal snap between stations. A stop that is not already open calls `onOpen`,
+/// the same action as a station row. Reduce Motion snaps with no animation.
+private struct DuoStationDial: View {
+    let stops: [DuoStationSwitch.Stop]
+    let openedID: String
+    let onOpen: (String) async -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @State private var snapped: String?
+
+    private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(stops) { stop in
+                    let selected = stop.id == openedID
+                    Button {
+                        guard stop.id != snapped else { return }
+                        snapped = stop.id
+                    } label: {
+                        Text(stop.name)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                            .padding(.horizontal, 14)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .foregroundStyle(.white.opacity(selected ? 1 : 0.72))
+                            .foldedGlass(Capsule(), role: .control)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(stop.name)
+                    .accessibilityHint("Plays the station now.")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityIdentifier("duo.station.\(stop.id)")
+                    .id(stop.id)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.viewAligned)
+        .scrollPosition(id: $snapped)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("duo.stationDial")
+        .onAppear { snapped = openedID }
+        .onChange(of: openedID) { _, id in snapped = id }
+        .onChange(of: snapped) { _, id in
+            guard let id, let stop = stops.first(where: { $0.id == id }) else { return }
+            DuoStationSwitch.choose(stop, currentID: openedID) { chosen in
+                Task { await onOpen(chosen) }
+            }
+        }
+        .transaction { if reduceMotion { $0.disablesAnimations = true } }
     }
 }
 

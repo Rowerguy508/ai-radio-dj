@@ -398,3 +398,27 @@ final class FoldedColumnLayoutTests: XCTestCase {
         XCTAssertGreaterThan(DuoPresentation.washOpacity(reduceTransparency: false), 0)
     }
 }
+
+final class DuoStationSwitchTests: XCTestCase {
+    func testSnapLandsOnAStationAndChoosingItCallsOpen() throws {
+        let stops = [
+            DuoStationSwitch.Stop(id: "morning", name: "Morning Calm"),
+            DuoStationSwitch.Stop(id: "late", name: "Late Night"),
+            DuoStationSwitch.Stop(id: "night", name: "After Hours"),
+        ]
+        XCTAssertEqual(DuoStationSwitch.snappedIndex(offset: 0.2, count: stops.count), 0)
+        XCTAssertEqual(DuoStationSwitch.snappedIndex(offset: 1.5, count: stops.count), 2)
+        XCTAssertEqual(DuoStationSwitch.snappedIndex(offset: -3, count: stops.count), 0)
+        XCTAssertEqual(DuoStationSwitch.snappedIndex(offset: 20, count: stops.count), 2)
+        XCTAssertNil(DuoStationSwitch.snappedIndex(offset: 0, count: 0))
+        XCTAssertNil(DuoStationSwitch.snappedIndex(offset: .nan, count: 3))
+
+        var opened: [String] = []
+        let index = try XCTUnwrap(DuoStationSwitch.snappedIndex(offset: 1.2, count: stops.count))
+        XCTAssertEqual(index, 1)
+        DuoStationSwitch.choose(stops[1], currentID: "morning") { opened.append($0) }
+        XCTAssertEqual(opened, ["late"], "the snapped station is handed to the existing open action")
+        DuoStationSwitch.choose(stops[0], currentID: "morning") { opened.append($0) }
+        XCTAssertEqual(opened, ["late"], "the station already open is not opened again")
+    }
+}
