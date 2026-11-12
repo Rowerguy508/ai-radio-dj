@@ -372,6 +372,12 @@ final class FoldedColumnLayoutTests: XCTestCase {
         XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 640, containerHeight: 820), .duoHorizontal)
         XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 500, containerHeight: 820), .duoHorizontal)
         XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 640, containerHeight: 499), .centredColumn)
+        // The compact-to-regular probe is wide and 680 pt tall. The horizontal split would
+        // pin Search Apple Music to the left edge, off a phone window.
+        let probeWidth = StudioLayoutMetrics.studioMinWidth - 64
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: probeWidth, containerHeight: 680),
+                       .centredColumn)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 652, containerHeight: 680), .centredColumn)
         let layout = FoldedColumnLayout.duoHorizontal(containerWidth: 640, containerHeight: 820,
                                                       artMin: 140, artMax: 420)
         XCTAssertEqual(layout.leftWidth + layout.foldGutter + layout.contentWidth + layout.barWidth + layout.edgeInset * 2,
