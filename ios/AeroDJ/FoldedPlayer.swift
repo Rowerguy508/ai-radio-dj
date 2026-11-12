@@ -789,8 +789,9 @@ private struct FoldedToolbar: View {
     }
 }
 
-/// Horizontal snap between stations. A stop that is not already open calls `onOpen`,
-/// the same action as a station row. Reduce Motion snaps with no animation.
+/// Horizontal snap between stations. Scrolling only moves the highlight. A station
+/// opens on a tap, or on Tune for the highlighted stop, through `onOpen`. One open
+/// at a time: a newer tap cancels the previous task.
 private struct DuoStationDial: View {
     let stops: [DuoStationSwitch.Stop]
     let openedID: String
@@ -798,51 +799,99 @@ private struct DuoStationDial: View {
 
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @State private var snapped: String?
+    @State private var flight = DuoStationSwitch.Flight(highlightID: "")
+    @State private var openTask: Task<Void, Never>?
 
     private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
+    private var highlightedID: String { snapped ?? openedID }
+    private var highlightedName: String {
+        stops.first { $0.id == highlightedID }?.name ?? ""
+    }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(stops) { stop in
-                    let selected = stop.id == openedID
-                    Button {
-                        guard stop.id != snapped else { return }
-                        snapped = stop.id
-                    } label: {
-                        Text(stop.name)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                            .padding(.horizontal, 14)
-                            .frame(minWidth: 44, minHeight: 44)
-                            .foregroundStyle(.white.opacity(selected ? 1 : 0.72))
-                            .foldedGlass(Capsule(), role: .control)
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(stops) { stop in
+                        let selected = stop.id == highlightedID
+                        Button {
+                            open(stop.id)
+                        } label: {
+                            Text(stop.name)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 14)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .foregroundStyle(.white.opacity(selected ? 1 : 0.72))
+                                .foldedGlass(Capsule(), role: .control)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(stop.name)
+                        .accessibilityHint("Plays the station now.")
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                        .accessibilityIdentifier("duo.station.\(stop.id)")
+                        .id(stop.id)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(stop.name)
-                    .accessibilityHint("Plays the station now.")
-                    .accessibilityAddTraits(selected ? .isSelected : [])
-                    .accessibilityIdentifier("duo.station.\(stop.id)")
-                    .id(stop.id)
                 }
+                .scrollTargetLayout()
             }
-            .scrollTargetLayout()
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $snapped)
+            .scrollBounceBehavior(.basedOnSize)
+
+            Button {
+                open(highlightedID)
+            } label: {
+                Text("Tune")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .padding(.horizontal, 8)
+                    .foregroundStyle(.white)
+                    .foldedGlass(Capsule(), role: .control)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Tune \(highlightedName)")
+            .accessibilityHint("Plays the highlighted station.")
+            .accessibilityIdentifier("duo.stationTune")
         }
-        .scrollTargetBehavior(.viewAligned)
-        .scrollPosition(id: $snapped)
-        .scrollBounceBehavior(.basedOnSize)
         .frame(minHeight: 44)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("duo.stationDial")
-        .onAppear { snapped = openedID }
+        .accessibilityLabel("Stations")
+        .accessibilityValue(highlightedName)
+        .accessibilityHint("Swipe up or down to move. Double-tap to play the highlighted station.")
+        .accessibilityAdjustableAction { direction in
+            guard let index = stops.firstIndex(where: { $0.id == highlightedID }) else { return }
+            let next: Int
+            switch direction {
+            case .increment: next = min(stops.count - 1, index + 1)
+            case .decrement: next = max(0, index - 1)
+            @unknown default: return
+            }
+            snapped = stops[next].id
+        }
+        .accessibilityAction(.default) { open(highlightedID) }
+        .onAppear {
+            snapped = openedID
+            flight = DuoStationSwitch.Flight(highlightID: openedID)
+        }
         .onChange(of: openedID) { _, id in snapped = id }
         .onChange(of: snapped) { _, id in
-            guard let id, let stop = stops.first(where: { $0.id == id }) else { return }
-            DuoStationSwitch.choose(stop, currentID: openedID) { chosen in
-                Task { await onOpen(chosen) }
-            }
+            guard let id else { return }
+            _ = flight.receive(.snap(id), playingID: openedID)
         }
         .transaction { if reduceMotion { $0.disablesAnimations = true } }
+    }
+
+    /// Tap or Tune. A swipe never reaches this. A newer tap cancels the previous open.
+    private func open(_ id: String) {
+        snapped = id
+        guard let token = flight.receive(.tap(id), playingID: openedID) else { return }
+        openTask?.cancel()
+        openTask = Task {
+            guard flight.accepts(token), !Task.isCancelled else { return }
+            await onOpen(id)
+        }
     }
 }
 

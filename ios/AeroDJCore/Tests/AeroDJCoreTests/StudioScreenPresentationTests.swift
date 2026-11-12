@@ -400,25 +400,42 @@ final class FoldedColumnLayoutTests: XCTestCase {
 }
 
 final class DuoStationSwitchTests: XCTestCase {
-    func testSnapLandsOnAStationAndChoosingItCallsOpen() throws {
-        let stops = [
-            DuoStationSwitch.Stop(id: "morning", name: "Morning Calm"),
-            DuoStationSwitch.Stop(id: "late", name: "Late Night"),
-            DuoStationSwitch.Stop(id: "night", name: "After Hours"),
-        ]
-        XCTAssertEqual(DuoStationSwitch.snappedIndex(offset: 0.2, count: stops.count), 0)
-        XCTAssertEqual(DuoStationSwitch.snappedIndex(offset: 1.5, count: stops.count), 2)
-        XCTAssertEqual(DuoStationSwitch.snappedIndex(offset: -3, count: stops.count), 0)
-        XCTAssertEqual(DuoStationSwitch.snappedIndex(offset: 20, count: stops.count), 2)
-        XCTAssertNil(DuoStationSwitch.snappedIndex(offset: 0, count: 0))
-        XCTAssertNil(DuoStationSwitch.snappedIndex(offset: .nan, count: 3))
+    private let stops = [
+        DuoStationSwitch.Stop(id: "morning", name: "Morning Calm"),
+        DuoStationSwitch.Stop(id: "late", name: "Late Night"),
+        DuoStationSwitch.Stop(id: "night", name: "After Hours"),
+    ]
 
-        var opened: [String] = []
+    func testSnappingAcrossStationsOpensNone() {
+        var flight = DuoStationSwitch.Flight(highlightID: "morning")
+        var tokens: [Int] = []
+        for stop in stops {
+            if let token = flight.receive(.snap(stop.id), playingID: "morning") {
+                tokens.append(token)
+            }
+        }
+        XCTAssertTrue(tokens.isEmpty, "a swipe only moves the highlight")
+        XCTAssertEqual(flight.highlightID, "night")
+        XCTAssertNil(flight.pendingID)
+    }
+
+    func testATapOpensThatStationOnce() throws {
+        var flight = DuoStationSwitch.Flight(highlightID: "morning")
         let index = try XCTUnwrap(DuoStationSwitch.snappedIndex(offset: 1.2, count: stops.count))
-        XCTAssertEqual(index, 1)
-        DuoStationSwitch.choose(stops[1], currentID: "morning") { opened.append($0) }
-        XCTAssertEqual(opened, ["late"], "the snapped station is handed to the existing open action")
-        DuoStationSwitch.choose(stops[0], currentID: "morning") { opened.append($0) }
-        XCTAssertEqual(opened, ["late"], "the station already open is not opened again")
+        let token = try XCTUnwrap(flight.receive(.tap(stops[index].id), playingID: "morning"))
+        XCTAssertTrue(flight.accepts(token))
+        XCTAssertEqual(flight.pendingID, "late")
+        XCTAssertNil(flight.receive(.tap("morning"), playingID: "morning"),
+                     "the station already playing is not opened again")
+    }
+
+    func testTwoQuickTapsLeaveOnlyTheLastOpen() throws {
+        var flight = DuoStationSwitch.Flight(highlightID: "morning")
+        let first = try XCTUnwrap(flight.receive(.tap("late"), playingID: "morning"))
+        let second = try XCTUnwrap(flight.receive(.tap("night"), playingID: "morning"))
+        XCTAssertFalse(flight.accepts(first))
+        XCTAssertTrue(flight.accepts(second))
+        XCTAssertEqual(flight.pendingID, "night")
+        XCTAssertEqual(flight.highlightID, "night")
     }
 }
