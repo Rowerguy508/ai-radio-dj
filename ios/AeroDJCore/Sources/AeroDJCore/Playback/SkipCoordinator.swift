@@ -6,7 +6,7 @@ public enum SkipLoadResult: Equatable, Sendable {
     case playing
     /// The skip walked off the end of the queue on purpose.
     case queueStopped
-    /// MusicKit cleared or rewound `target` before it played. Not a new Next.
+    /// MusicKit cleared or rewound `target` while our own `play()` for it was awaiting. Not a new Next.
     case loadCut(target: Int)
     /// The user paused, a hold landed, or a newer start owns the player.
     case cancelled
@@ -39,7 +39,8 @@ public enum SkipInvalidation: Equatable, Sendable {
     case queueReplaced
 }
 
-/// What an ambiguous pre-progress clear asks the caller to do. It never mints a Next.
+/// What an ambiguous clear of our own awaiting `play()` asks the caller to do. It never mints a
+/// Next. A cut seen after our `play()` returned is `noteCutAsNext` instead (#444 build 43).
 public enum LoadCutDisposition: Equatable, Sendable {
     /// A chain is already running. It recovers the selected track, or plays the one
     /// explicit follow-up already stored. This observation is not a second command.
@@ -79,8 +80,10 @@ extension SkipTerminalFailure {
 }
 
 /// #444 (-Echo): one skip chain. A second explicit Next while it is loading stores one
-/// follow-up. An ambiguous MusicKit clear of the song being loaded recovers that song;
-/// it is not another Next. A later Pause, route loss, interruption, or queue replacement
+/// follow-up. An ambiguous MusicKit clear of the song being loaded, while our own `play()` is
+/// awaiting, recovers that song; it is not another Next. #444 build 43 (-Atlas): a clear seen
+/// after our `play()` returned is MusicKit's own Next (`noteCutAsNext`), and a step that throws
+/// after a cut was seen during it advances once instead of reloading the song the user left. A later Pause, route loss, interruption, or queue replacement
 /// invalidates the chain so the follow-up and any reload cannot call `userPlay()` over the hold.
 @MainActor
 public final class SkipCoordinator {
@@ -116,6 +119,15 @@ public final class SkipCoordinator {
     private var recoveryTarget: Int?
     private var recoveries = 0
     private var terminalSurfaced = false
+    /// #444 build 43: a MusicKit cut (ambiguous or a Next) was observed during the running step.
+    private var cutDuringStep = false
+    /// #444 build 43: the index a cut-as-Next was observed on, until an advance selects a later one.
+    private var skippedFrom: Int?
+    /// #459 B1 (Sentinel): the chain about to start was opened by a MusicKit cut, not by the user's
+    /// own Next. Its opening step has no fresh-Next privilege: it must pass `allowsStep()`.
+    private var openingFromCut = false
+    /// The same for a Next stored as `pendingFresh` (`.beginWhenIdle`) that came from a cut.
+    private var pendingFreshFromCut = false
     private var stepGeneration = 0
     /// The step in `body` is the explicit Next that started this chain, not a stored follow-up.
     private var stepIsFresh = false
@@ -131,6 +143,13 @@ public final class SkipCoordinator {
 
     public init() {}
 
+    /// Same-target recoveries spent on the current recovery target. Diagnostics only.
+    public var recoveriesSpent: Int { recoveries }
+
+    /// #444 build 43: the song a lock-screen Next (seen as a cut) was meant to leave, while no
+    /// advance has selected a later song yet. Play must not reload it.
+    public var skippedPastIndex: Int? { skippedFrom }
+
     /// Pause, route loss, interruption began, or a new queue. Drops a stored follow-up.
     /// The in-flight load is left to finish; the next step sees the new generation and does not run.
     public func invalidate(_ reason: SkipInvalidation) {
@@ -140,8 +159,12 @@ public final class SkipCoordinator {
         // A Next pressed after an earlier hold is still pending until the old load returns.
         // This later Pause, call, or route loss cancels it.
         pendingFresh = false
+        pendingFreshFromCut = false
         if chainRunning || isInFlight { invalidated = true }
-        if reason == .queueReplaced { resetBudget() }
+        if reason == .queueReplaced {
+            resetBudget()
+            skippedFrom = nil
+        }
     }
 
     /// Call after the session policy has applied the end. Owed only while a chain is in flight,
@@ -166,12 +189,14 @@ public final class SkipCoordinator {
         // into the chain those just cancelled, and do not report a follow-up that will not run.
         if invalidated || ending {
             pendingFresh = true
+            pendingFreshFromCut = false
             pendingFreshGeneration = generation
             return .beginWhenIdle
         }
         if !isInFlight {
             authorizedGeneration = generation
             isInFlight = true
+            openingFromCut = false
             queued = false
             sealed = false
             return .begin
@@ -181,11 +206,41 @@ public final class SkipCoordinator {
         return .queueOneMore
     }
 
-    /// A pre-progress clear or rewind. Recovers `target` or folds into the chain. Never queues a Next.
+    /// #444 build 43 (-Atlas): MusicKit cleared or rewound the skipped-to song after our own `play()`
+    /// for it returned (or before it was called). That is the user's lock-screen Next: the same
+    /// intake as `requestAdvance()`, so it folds into `.queueOneMore` when a chain is running.
+    /// The caller has already checked that no hold is active (`SkipLoadCutRoute`), but a hold can
+    /// still land before the step runs. #459 B1: a cut is not the user's own command, so the step it
+    /// opens (or the `.beginWhenIdle` Next it stores) passes `allowsStep()` like a stored follow-up,
+    /// and cannot call `userPlay()` over a hold. A real user Next keeps its fresh-Next privilege.
+    public func noteCutAsNext(from index: Int) -> Intake {
+        if chainRunning { cutDuringStep = true }
+        skippedFrom = index
+        let userFreshPending = pendingFresh && !pendingFreshFromCut
+        let intake = requestAdvance()
+        switch intake {
+        case .begin:
+            openingFromCut = true
+        case .beginWhenIdle:
+            if !userFreshPending { pendingFreshFromCut = true }
+        case .queueOneMore, .ignore:
+            break
+        }
+        return intake
+    }
+
+    /// An advance selected `index`. A cut-as-Next observed on an earlier song has been served.
+    public func noteSelected(index: Int) {
+        if let from = skippedFrom, index > from { skippedFrom = nil }
+    }
+
+    /// A clear or rewind while our own `play()` was awaiting. Recovers `target` or folds into the
+    /// chain. Never queues a Next.
     public func noteLoadCut(target: Int) -> LoadCutDisposition {
         pendingCutTarget = target
         if isInFlight {
             loadCut = true
+            if chainRunning { cutDuringStep = true }
             return .folded
         }
         guard budgetAllows(target) else {
@@ -228,14 +283,22 @@ public final class SkipCoordinator {
         chainRunning = true
         isInFlight = true
         let ticket = authorizedGeneration
+        // #459 B1: a chain a cut opened has no fresh-Next privilege on its first step.
+        let cutOpened = openingFromCut
+        openingFromCut = false
         var job = first
         var opening = true
         while true {
             stepGeneration = ticket
-            let fresh = opening && job == .advance
+            let openingAdvance = opening && job == .advance
+            let fresh = openingAdvance && !cutOpened
             opening = false
             stepIsFresh = fresh
-            if fresh {
+            if openingAdvance && cutOpened {
+                // Gated like a stored follow-up. Still a new Next to a new song: the budget starts over.
+                guard allowsStep() else { break }
+                resetBudget()
+            } else if fresh {
                 guard stepGeneration == generation, !invalidated else { break }
                 // A new explicit Next, not a stored follow-up. The recovery budget starts over.
                 resetBudget()
@@ -253,6 +316,7 @@ public final class SkipCoordinator {
                 }
             }
             loadCut = false
+            cutDuringStep = false
             let captured = generation
             let result = await body(job)
             stepIsFresh = false
@@ -261,6 +325,16 @@ public final class SkipCoordinator {
             case .cancelled, .queueStopped:
                 break
             case let .failed(failure, target):
+                // #444 build 43: MusicKit cut this load and then it threw. The cut was the user's
+                // Next: one stored follow-up advance, never a reload of the song they left. A hold
+                // still cancels it (`takeFollowUp` checks the gate), and a sealed chain falls through.
+                if cutDuringStep, !sealed, !invalidated {
+                    queued = true
+                    if takeFollowUp() {
+                        job = .advance
+                        continue
+                    }
+                }
                 // One same-target retry for a throw. An unavailable song is never retried elsewhere.
                 // The stored Next waits until that retry finishes, then runs only if the hold allows.
                 if failure != .songUnavailable, job == .advance, budgetAllows(target) {
@@ -312,12 +386,15 @@ public final class SkipCoordinator {
         resumeOwed = false
         if owed, let resume { await resume() }
         let startFresh = pendingFresh && pendingFreshGeneration == generation
+        let freshFromCut = pendingFreshFromCut
         pendingFresh = false
+        pendingFreshFromCut = false
         invalidated = false
         ending = false
         if startFresh {
             authorizedGeneration = generation
             isInFlight = true
+            openingFromCut = freshFromCut
             await runChain(first: .advance, surface: surface, resume: resume, body)
         }
     }
