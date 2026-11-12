@@ -260,7 +260,14 @@ struct FoldedPlayer: View {
             wideSystemBar(top: CGFloat(layout.topClearance))
                 .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
                 .accessibilitySortPriority(0)
-                .accessibilityIdentifier("folded.systemBar")
+                .overlay {
+                    // Same as the columns: the identifier on this frame was copied onto
+                    // Back, More, Queue and Tune.
+                    Color.clear
+                        .accessibilityElement()
+                        .accessibilityIdentifier("folded.systemBar")
+                        .allowsHitTesting(false)
+                }
         }
         .padding(.horizontal, CGFloat(layout.edgeInset))
         .frame(width: size.width, height: size.height)

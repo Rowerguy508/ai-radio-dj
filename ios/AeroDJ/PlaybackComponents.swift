@@ -962,6 +962,7 @@ struct PlaybackScrubber: View {
             .foregroundStyle(dragging ? .primary : .secondary)
         }
         .accessibilityElement(children: .ignore)
+        .contentShape(Rectangle())
         .accessibilityLabel("Playback position")
         .accessibilityValue(PlaybackTimeFormat.accessibilityValue(position: position, duration: duration))
         .modifier(ScrubberAccessibility(isWired: isWired, canSeek: canSeek,
