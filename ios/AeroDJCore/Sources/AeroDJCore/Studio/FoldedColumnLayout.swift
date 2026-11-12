@@ -1,14 +1,13 @@
 import Foundation
 
 /// The listen player (`FoldedPlayer`) in a container wider than any phone held upright: the
-/// unfolded Duo's split view (sidebar + detail) or any compact-mode container below the
-/// Studio switch. Owner feedback on build 25 (d955152): at that width the player spread to
-/// both edges, the title sat left under centred art, and the controls pinned to the bottom
-/// left a large gap under the DJ status chip. In a wide container everything is drawn in
-/// one centred column instead, with the art width as the column width.
+/// unfolded Duo's split view, or any compact-mode container below the Studio switch.
+/// `isWide` (at least `wideMinWidth`) is that gate. Build 44 (#460): that width is fully
+/// horizontal. Artwork and the title stay in the left half, clear of the fold. The right
+/// half is a content column (horizontal scrubber, play, skip, station, DJ chip) plus a
+/// thin symbol bar (back, more, queue, tune). Below `wideMinWidth` nothing changes.
 ///
 /// Pure and UI-free so it is unit tested on Linux. Points of the container, never the device.
-/// Below `wideMinWidth` nothing changes: the iPhone portrait layout stays as it is.
 public enum FoldedColumnLayout {
     /// Wider than every iPhone in portrait (440 pt today) with room to spare, and still
     /// below `StudioLayoutMetrics.studioMinWidth`, where the Studio can take over.
@@ -48,5 +47,86 @@ public enum FoldedColumnLayout {
         let art = max(artMin, min(byWidth, byHeight, artMax))
         let column = min(available, max(columnMinWidth, min(art, columnMaxWidth)))
         return (min(art, column), column)
+    }
+
+    /// Where the transport lives. Phone portrait (and anything under `wideMinWidth`) keeps
+    /// the pinned bottom. A wide compact container uses the horizontal Duo layout.
+    public enum ControlPlacement: Equatable, Sendable {
+        case phoneBottom
+        case duoHorizontal
+    }
+
+    /// Full-width Duo layout (#460). The fold is an empty gutter on the centre line.
+    /// Artwork stays entirely in the left half. The right half is a content column plus
+    /// a thin symbol bar. `topClearance` is empty under the status cluster and Live Activity.
+    public struct DuoHorizontal: Equatable, Sendable {
+        public let edgeInset: Double
+        public let leftWidth: Double
+        public let foldGutter: Double
+        public let contentWidth: Double
+        public let barWidth: Double
+        public let topClearance: Double
+        public let artSide: Double
+
+        public init(edgeInset: Double, leftWidth: Double, foldGutter: Double, contentWidth: Double,
+                    barWidth: Double, topClearance: Double, artSide: Double) {
+            self.edgeInset = edgeInset
+            self.leftWidth = leftWidth
+            self.foldGutter = foldGutter
+            self.contentWidth = contentWidth
+            self.barWidth = barWidth
+            self.topClearance = topClearance
+            self.artSide = artSide
+        }
+
+        /// The content column begins strictly to the right of the centre fold.
+        public var contentMinX: Double { edgeInset + leftWidth + foldGutter }
+        /// The symbol bar is the trailing edge of the content column.
+        public var barMinX: Double { contentMinX + contentWidth }
+    }
+
+    /// Symbol-only bar. Wide enough for a 44 pt target, not for a scrubber or a title.
+    public static let duoBarWidth: Double = 56
+    /// Empty band on the centre line. No control is placed in it.
+    public static let duoFoldGutter: Double = 28
+    public static let duoEdgeInset: Double = 16
+    /// Clear of the status cluster and Live Activity before the first control.
+    public static let duoStatusClearance: Double = 56
+
+    public static func controlPlacement(containerWidth: Double) -> ControlPlacement {
+        isWide(containerWidth: containerWidth) ? .duoHorizontal : .phoneBottom
+    }
+
+    /// Horizontal Duo metrics. Phone widths do not call this.
+    public static func duoHorizontal(containerWidth: Double, containerHeight: Double,
+                                    artMin: Double, artMax: Double) -> DuoHorizontal {
+        let mid = containerWidth / 2
+        let left = max(0, mid - duoFoldGutter / 2 - duoEdgeInset)
+        let content = max(0, containerWidth - duoEdgeInset - duoBarWidth - (mid + duoFoldGutter / 2))
+        let art = min(left, artMax, max(artMin, containerHeight * 0.42))
+        return DuoHorizontal(edgeInset: duoEdgeInset, leftWidth: left, foldGutter: duoFoldGutter,
+                             contentWidth: content, barWidth: duoBarWidth,
+                             topClearance: duoStatusClearance, artSide: art)
+    }
+}
+
+/// Presentational Duo rules (#460). They read flags the UI already has. They do not
+/// touch playback or the DJ session.
+public enum DuoPresentation {
+    /// The orb shows in the right column only while the player has confirmed the DJ is speaking.
+    public static func showsVisualizer(isOnAir: Bool) -> Bool { isOnAir }
+
+    /// The thin bar's On Air mark uses the same label as the rest of the app, or nothing.
+    public static func onAirBadge(_ label: String?) -> String? {
+        guard let label, !label.isEmpty else { return nil }
+        return label
+    }
+
+    /// The day-part wash never moves, so Reduce Motion has nothing to stop.
+    public static let washAnimates = false
+
+    /// Content-layer tint only. Reduce Transparency drops it rather than frosting the art.
+    public static func washOpacity(reduceTransparency: Bool) -> Double {
+        reduceTransparency ? 0 : 0.16
     }
 }

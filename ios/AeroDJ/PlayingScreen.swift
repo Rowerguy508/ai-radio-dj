@@ -131,7 +131,7 @@ struct PlayingScreen: View {
         switch mode {
         case .compact:
             // Folded redesign (wireframe 08): back + ⋯ in the bar, the station chip below.
-            // Wide (open Duo split view): one centred column, ⋯ in the column's header row.
+            // Wide (unfolded Duo split view): track info on the left, controls in the right rail.
             let wide = FoldedColumnLayout.isWide(containerWidth: width)
             let openConnections = { segment = .connections; showWorkspace = true }
             FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
@@ -146,7 +146,7 @@ struct PlayingScreen: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
                 .foldedToolbar(heading.header, reviewCount: dj.reviewCount, showsMore: !wide,
-                               onConnections: openConnections)
+                               hidesSystemBack: wide, onConnections: openConnections)
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,

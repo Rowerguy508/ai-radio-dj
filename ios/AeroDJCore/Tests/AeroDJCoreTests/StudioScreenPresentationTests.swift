@@ -338,4 +338,40 @@ final class FoldedColumnLayoutTests: XCTestCase {
         XCTAssertEqual(m.column, 500 - 64)
         XCTAssertLessThanOrEqual(m.artSide, m.column)
     }
+
+    func testPhonePortraitKeepsControlsAtTheBottom() {
+        for width in [320.0, 375, 390, 393, 402, 430, 440] {
+            XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: width), .phoneBottom, "\(width) pt")
+        }
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: .nan), .phoneBottom)
+    }
+
+    func testDuoWideIsHorizontalAndClearsTheFold() {
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 500), .duoHorizontal)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 640), .duoHorizontal)
+        let layout = FoldedColumnLayout.duoHorizontal(containerWidth: 640, containerHeight: 820,
+                                                      artMin: 140, artMax: 420)
+        XCTAssertEqual(layout.leftWidth + layout.foldGutter + layout.contentWidth + layout.barWidth + layout.edgeInset * 2,
+                       640, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(layout.edgeInset + layout.leftWidth, 320)
+        XCTAssertGreaterThanOrEqual(layout.contentMinX, 320)
+        XCTAssertEqual(layout.barMinX, layout.contentMinX + layout.contentWidth)
+        XCTAssertGreaterThanOrEqual(layout.barWidth, StudioLayoutMetrics.touchTargetMin)
+        XCTAssertLessThan(layout.barWidth, layout.contentWidth, "the symbol bar stays thinner than the content column")
+        XCTAssertGreaterThanOrEqual(layout.contentWidth, 68 + 52, "play and skip fit side by side")
+        XCTAssertLessThanOrEqual(layout.artSide, layout.leftWidth)
+        XCTAssertEqual(layout.topClearance, FoldedColumnLayout.duoStatusClearance)
+        XCTAssertGreaterThanOrEqual(layout.foldGutter, 24)
+    }
+
+    func testDuoPresenceUsesPublishedDJStateOnly() {
+        XCTAssertFalse(DuoPresentation.showsVisualizer(isOnAir: false))
+        XCTAssertTrue(DuoPresentation.showsVisualizer(isOnAir: true))
+        XCTAssertNil(DuoPresentation.onAirBadge(nil))
+        XCTAssertNil(DuoPresentation.onAirBadge(""))
+        XCTAssertEqual(DuoPresentation.onAirBadge("On Air"), "On Air")
+        XCTAssertFalse(DuoPresentation.washAnimates)
+        XCTAssertEqual(DuoPresentation.washOpacity(reduceTransparency: true), 0)
+        XCTAssertGreaterThan(DuoPresentation.washOpacity(reduceTransparency: false), 0)
+    }
 }
