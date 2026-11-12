@@ -225,18 +225,13 @@ struct FoldedPlayer: View {
             .scrollContentBackground(.hidden)
             .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
             .background { dayWash.accessibilityHidden(true) }
+            // .contain first, then the identifier. An identifier on a container without
+            // .contain is copied onto every control inside it. The element is the column,
+            // not a clear layer over the rating button. The ScrollView is not the element:
+            // that also exposes the scroll view.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("folded.trackColumn")
             .accessibilitySortPriority(2)
-            .background {
-                // Behind the art and the rating button. An overlay accessibility element
-                // stays in XCUITest's hit test even with allowsHitTesting(false), so the
-                // centre of a control under it is not hittable. The ScrollView itself is
-                // not the element: that also exposes the scroll view.
-                Color.clear
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .accessibilityElement()
-                    .accessibilityIdentifier("folded.trackColumn")
-                    .allowsHitTesting(false)
-            }
 
             Color.clear
                 .frame(width: CGFloat(layout.foldGutter), height: size.height)
@@ -245,29 +240,15 @@ struct FoldedPlayer: View {
 
             wideContent(gap: gap, top: CGFloat(layout.topClearance))
                 .frame(width: CGFloat(layout.contentWidth), height: size.height, alignment: .top)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("folded.contentColumn")
                 .accessibilitySortPriority(1)
-                .background {
-                    // Behind the scrubber and the other controls. XCUITest's isHittable
-                    // uses the accessibility element at the control's centre, and
-                    // allowsHitTesting(false) does not remove an overlay from that check.
-                    Color.clear
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .accessibilityElement()
-                        .accessibilityIdentifier("folded.contentColumn")
-                        .allowsHitTesting(false)
-                }
 
             wideSystemBar(top: CGFloat(layout.topClearance))
                 .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("folded.systemBar")
                 .accessibilitySortPriority(0)
-                .background {
-                    // Behind Back, More, Queue and Tune, for the same hit-test reason.
-                    Color.clear
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .accessibilityElement()
-                        .accessibilityIdentifier("folded.systemBar")
-                        .allowsHitTesting(false)
-                }
         }
         .padding(.horizontal, CGFloat(layout.edgeInset))
         .frame(width: size.width, height: size.height)

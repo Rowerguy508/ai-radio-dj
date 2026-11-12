@@ -360,6 +360,8 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(track.waitForExistence(timeout: 10), "track column missing\n\(app.debugDescription)")
         XCTAssertTrue(content.waitForExistence(timeout: 10), "content column missing\n\(app.debugDescription)")
         XCTAssertTrue(bar.waitForExistence(timeout: 10), "system bar missing\n\(app.debugDescription)")
+        assertOneMatch(any, "folded.trackColumn", "duo wide")
+        assertOneMatch(any, "folded.contentColumn", "duo wide")
         let trackFrame = try XCTUnwrap(settledFrame(of: track, "track column"))
         let contentFrame = try XCTUnwrap(settledFrame(of: content, "content column"))
         let barFrame = try XCTUnwrap(settledFrame(of: bar, "system bar") {
@@ -472,6 +474,8 @@ final class StudioScreenTests: XCTestCase {
         }) else { return }
         XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box),
                       "container \(box) outside window \(windowFrame)")
+        assertOneMatch(any, "folded.contentColumn", scenario)
+        assertOneMatch(any, "folded.trackColumn", scenario)
         let column = any["folded.contentColumn"]
         XCTAssertTrue(column.waitForExistence(timeout: 10), "content column missing\n\(app.debugDescription)")
         guard let columnFrame = settledFrame(of: column, "content column") else { return }
@@ -488,6 +492,15 @@ final class StudioScreenTests: XCTestCase {
                           "\(name) is outside the content column: \(detail)")
         }
         app.terminate()
+    }
+
+    /// The column id names one container. More than one match means the id was copied onto its controls.
+    @MainActor
+    private func assertOneMatch(_ any: XCUIElementQuery, _ identifier: String, _ context: String) {
+        let matches = any.matching(NSPredicate(format: "identifier == %@", identifier))
+        XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 10),
+                      "\(identifier) missing in \(context)")
+        XCTAssertEqual(matches.count, 1, "\(identifier) matched \(matches.count) elements in \(context)")
     }
 
     /// Open (Studio): `.ready` must not print the break headline or its VoiceOver detail.
