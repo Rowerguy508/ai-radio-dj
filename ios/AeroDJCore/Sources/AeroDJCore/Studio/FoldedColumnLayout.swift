@@ -48,16 +48,21 @@ public enum FoldedColumnLayout {
         return (min(art, column), column)
     }
 
-    /// Shortest container that can be the unfolded Duo's detail, not a phone on its side.
-    /// A landscape iPhone's height is its shorter side: 430 pt at the largest (932 × 430),
-    /// and less once the safe area comes off. 500 pt is above every one of those and below
-    /// the Duo detail (640 × 820). Width alone is not enough: an SE-class phone in landscape
-    /// is wider than `wideMinWidth` and shorter than this. No device model is consulted.
-    public static let duoMinHeight: Double = 500
+    /// Shortest container that gets the horizontal Duo split.
+    ///
+    /// The split uses the full width, so controls sit at both edges. A wide compact
+    /// container that is not this tall is not the Duo detail: iPhone landscape is at
+    /// most 430 pt tall, and the compact-to-regular probe is 680 pt (`studioMinWidth` − 64
+    /// by 680). On a phone window that container is wider than the screen, and a control
+    /// at its left edge is off-screen. Those sizes keep the centred column, whose controls
+    /// sit in the middle and stay hittable. The threshold is `studioMinWidth` (716): above
+    /// the probe and every landscape phone, and below the Duo detail (640 × 820). No
+    /// device model is consulted.
+    public static var duoMinHeight: Double { StudioLayoutMetrics.studioMinWidth }
 
     /// Where the transport lives.
     /// - Phone portrait, and anything under `wideMinWidth`: controls pinned at the bottom.
-    /// - Wide but shorter than `duoMinHeight` (iPhone landscape): the previous centred column.
+    /// - Wide but shorter than `duoMinHeight` (iPhone landscape, and the compact resize probe): the previous centred column.
     /// - Wide and at least `duoMinHeight` (unfolded Duo): the horizontal right side.
     public enum ControlPlacement: Equatable, Sendable {
         case phoneBottom
