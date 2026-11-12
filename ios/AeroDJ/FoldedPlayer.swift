@@ -243,7 +243,15 @@ struct FoldedPlayer: View {
             wideContent(gap: gap, top: CGFloat(layout.topClearance))
                 .frame(width: CGFloat(layout.contentWidth), height: size.height, alignment: .top)
                 .accessibilitySortPriority(1)
-                .accessibilityIdentifier("folded.contentColumn")
+                .overlay {
+                    // One element, as with the track column. The identifier on this frame
+                    // was copied onto every control inside it (Search, Pause, Skip, the
+                    // station chip), so the UI test found several folded.contentColumn.
+                    Color.clear
+                        .accessibilityElement()
+                        .accessibilityIdentifier("folded.contentColumn")
+                        .allowsHitTesting(false)
+                }
 
             wideSystemBar(top: CGFloat(layout.topClearance))
                 .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
