@@ -66,10 +66,10 @@ private struct FoldedReduceMotion {
 /// bottom: progress, one primary action (Play/Pause) plus Skip, and a toolbar with the station
 /// chip, Queue and Tune. The navigation bar carries back and ⋯ (`foldedToolbar`).
 ///
-/// Wide container (`FoldedColumnLayout.isWide`, the unfolded Duo): full width, horizontal.
-/// Artwork, title and the favorite stay in the left half. The right half is a content
-/// column (horizontal scrubber, play/pause, skip, station, DJ chip, and the on-air orb)
-/// plus a thin symbol bar (back, more, queue, tune, On Air). Phone widths are unchanged.
+/// Wide and short (`FoldedColumnLayout.centredColumn`, iPhone landscape): one centred
+/// column, controls under the art. Wide and tall (the unfolded Duo): full width,
+/// horizontal. Artwork and the title stay in the left half. The right half is a content
+/// column plus a thin symbol bar. Phone portrait is unchanged.
 struct FoldedPlayer: View {
     /// The station the now-playing track belongs to (art fallback colours).
     let station: StationRef
@@ -99,10 +99,14 @@ struct FoldedPlayer: View {
 
     var body: some View {
         GeometryReader { geo in
-            if FoldedColumnLayout.isWide(containerWidth: Double(geo.size.width)) {
-                wideBody(in: geo.size)
-            } else {
+            switch FoldedColumnLayout.controlPlacement(containerWidth: Double(geo.size.width),
+                                                       containerHeight: Double(geo.size.height)) {
+            case .phoneBottom:
                 compactBody(in: geo.size)
+            case .centredColumn:
+                centredColumnBody(in: geo.size)
+            case .duoHorizontal:
+                wideBody(in: geo.size)
             }
         }
         .background {
@@ -162,6 +166,43 @@ struct FoldedPlayer: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
+    }
+
+    /// iPhone landscape: one centred column, the layout this width had before the Duo rail.
+    /// ⋯ is in the column header. Controls sit under the art. No fold gutter, no top clearance.
+    private func centredColumnBody(in size: CGSize) -> some View {
+        let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
+        let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
+                                           containerHeight: Double(size.height),
+                                           reserveBelowArt: reserve,
+                                           artMin: Double(FoldedStyle.artMinSide),
+                                           artMax: Double(FoldedStyle.artMaxSide))
+        let column = CGFloat(m.column)
+        typealias Gap = FoldedColumnLayout.Spacing
+        return ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    if let moreMenu {
+                        FoldedMoreMenu(reviewCount: moreMenu.reviewCount, onConnections: moreMenu.onConnections)
+                    }
+                }
+                .frame(height: CGFloat(FoldedColumnLayout.headerHeight))
+                upper(artSide: CGFloat(m.artSide), centered: true)
+                    .padding(.top, CGFloat(Gap.headerToArt))
+                controls(contentInset: 0, toolbarInset: 0,
+                         spacing: CGFloat(Gap.betweenControls), balancesTransport: true)
+                    .padding(.top, CGFloat(Gap.statusToControls))
+            }
+            .frame(width: column)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("folded.wideColumn")
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: size.height, alignment: .center)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollContentBackground(.hidden)
+        .frame(width: size.width, height: size.height)
     }
 
     /// Full-width Duo. The centre gutter is the fold: no control sits in it.
@@ -271,7 +312,7 @@ struct FoldedPlayer: View {
     private var dayWash: some View {
         let hour = Calendar.current.component(.hour, from: Date())
         let opacity = DuoPresentation.washOpacity(reduceTransparency: reduceTransparency)
-        DuoDayWashFill(part: DayPart(hour: hour))
+        return DuoDayWashFill(part: DayPart(hour: hour))
             .opacity(opacity)
             .allowsHitTesting(false)
             .accessibilityIdentifier("folded.dayWash")

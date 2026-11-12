@@ -2,10 +2,9 @@ import Foundation
 
 /// The listen player (`FoldedPlayer`) in a container wider than any phone held upright: the
 /// unfolded Duo's split view, or any compact-mode container below the Studio switch.
-/// `isWide` (at least `wideMinWidth`) is that gate. Build 44 (#460): that width is fully
-/// horizontal. Artwork and the title stay in the left half, clear of the fold. The right
-/// half is a content column (horizontal scrubber, play, skip, station, DJ chip) plus a
-/// thin symbol bar (back, more, queue, tune). Below `wideMinWidth` nothing changes.
+/// `isWide` (at least `wideMinWidth`) is the old centred column, including iPhone landscape.
+/// Build 44 (#460) is horizontal only when that width is also at least `duoMinHeight`
+/// (the unfolded Duo). Below `wideMinWidth` nothing changes.
 ///
 /// Pure and UI-free so it is unit tested on Linux. Points of the container, never the device.
 public enum FoldedColumnLayout {
@@ -49,10 +48,20 @@ public enum FoldedColumnLayout {
         return (min(art, column), column)
     }
 
-    /// Where the transport lives. Phone portrait (and anything under `wideMinWidth`) keeps
-    /// the pinned bottom. A wide compact container uses the horizontal Duo layout.
+    /// Shortest container that can be the unfolded Duo's detail, not a phone on its side.
+    /// A landscape iPhone's height is its shorter side: 430 pt at the largest (932 × 430),
+    /// and less once the safe area comes off. 500 pt is above every one of those and below
+    /// the Duo detail (640 × 820). Width alone is not enough: an SE-class phone in landscape
+    /// is wider than `wideMinWidth` and shorter than this. No device model is consulted.
+    public static let duoMinHeight: Double = 500
+
+    /// Where the transport lives.
+    /// - Phone portrait, and anything under `wideMinWidth`: controls pinned at the bottom.
+    /// - Wide but shorter than `duoMinHeight` (iPhone landscape): the previous centred column.
+    /// - Wide and at least `duoMinHeight` (unfolded Duo): the horizontal right side.
     public enum ControlPlacement: Equatable, Sendable {
         case phoneBottom
+        case centredColumn
         case duoHorizontal
     }
 
@@ -93,8 +102,10 @@ public enum FoldedColumnLayout {
     /// Clear of the status cluster and Live Activity before the first control.
     public static let duoStatusClearance: Double = 56
 
-    public static func controlPlacement(containerWidth: Double) -> ControlPlacement {
-        isWide(containerWidth: containerWidth) ? .duoHorizontal : .phoneBottom
+    public static func controlPlacement(containerWidth: Double, containerHeight: Double) -> ControlPlacement {
+        guard isWide(containerWidth: containerWidth) else { return .phoneBottom }
+        guard containerHeight.isFinite, containerHeight >= duoMinHeight else { return .centredColumn }
+        return .duoHorizontal
     }
 
     /// Horizontal Duo metrics. Phone widths do not call this.

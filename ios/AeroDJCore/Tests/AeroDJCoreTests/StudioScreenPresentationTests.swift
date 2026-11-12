@@ -341,14 +341,37 @@ final class FoldedColumnLayoutTests: XCTestCase {
 
     func testPhonePortraitKeepsControlsAtTheBottom() {
         for width in [320.0, 375, 390, 393, 402, 430, 440] {
-            XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: width), .phoneBottom, "\(width) pt")
+            XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: width, containerHeight: 800),
+                           .phoneBottom, "\(width) pt")
         }
-        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: .nan), .phoneBottom)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: .nan, containerHeight: 800), .phoneBottom)
+    }
+
+    func testLandscapePhonesKeepTheCentredColumn() {
+        let phones = [(568.0, 320.0), (667, 375), (844, 390), (932, 430)]
+        // Side and bottom insets a landscape safe area can take off the full screen.
+        let safeAreas = [(0.0, 0.0), (47, 21), (59, 21), (20, 0)]
+        for (width, height) in phones {
+            for (side, bottom) in safeAreas {
+                let containerWidth = width - side * 2
+                let containerHeight = height - bottom
+                let placement = FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
+                                                                    containerHeight: containerHeight)
+                XCTAssertNotEqual(placement, .duoHorizontal,
+                                  "\(containerWidth) × \(containerHeight) is still a landscape phone")
+                if containerWidth >= FoldedColumnLayout.wideMinWidth {
+                    XCTAssertEqual(placement, .centredColumn, "\(containerWidth) × \(containerHeight)")
+                } else {
+                    XCTAssertEqual(placement, .phoneBottom, "\(containerWidth) × \(containerHeight)")
+                }
+            }
+        }
     }
 
     func testDuoWideIsHorizontalAndClearsTheFold() {
-        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 500), .duoHorizontal)
-        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 640), .duoHorizontal)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 640, containerHeight: 820), .duoHorizontal)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 500, containerHeight: 820), .duoHorizontal)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 640, containerHeight: 499), .centredColumn)
         let layout = FoldedColumnLayout.duoHorizontal(containerWidth: 640, containerHeight: 820,
                                                       artMin: 140, artMax: 420)
         XCTAssertEqual(layout.leftWidth + layout.foldGutter + layout.contentWidth + layout.barWidth + layout.edgeInset * 2,
