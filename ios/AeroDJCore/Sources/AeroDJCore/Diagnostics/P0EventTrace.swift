@@ -86,7 +86,7 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case breakPrepared, noBreak, interludeSpeaking
     // DJBreakSkipReason, same raw values (a noBreak row's reason)
     case renderFailed, overDuration, costCap, timedOut, notReadyAtBoundary, overBreakBudget
-    case notPlanned, notNaturalBoundary, cancelled, sourceRevoked, interrupted, paidVoiceRevoked
+    case notPlanned, notNaturalBoundary, cancelled, sourceRevoked, interrupted, paidVoiceRevoked, stationIntro
     // startNextTrack / startTrack
     case called, started, deferredSilently, deferAndReport, refused, superseded, error
     case notQueued, autoplayOff, songUnavailable

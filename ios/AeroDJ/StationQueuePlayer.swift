@@ -47,14 +47,14 @@ final class StationQueuePlayer {
     /// #454: true while the playing queue was started by this type (a station start, hand-off or
     /// refill), so its station is `feed.playingKey`; false after a search or song tap.
     private var stationOwnsQueue = false
-    /// #454 seam for Fry (#442, `DJBreakSession` owner): songs appended behind a station's first
-    /// song. Nil until wired: the DJ then plans breaks only for the songs its queue started with
-    /// (it never names a song it was not given), and the next refill re-plans as today.
+    /// #454: songs appended behind a station's first song. Wired to `DJBreakSession.appendStationSongs`,
+    /// which plans breaks for them only while this generation and epoch are still current.
     var onStationSongsAppended: (@MainActor ([DJTrack]) -> Void)?
-    /// #454/#442 seam: airs a ready station intro at the first song boundary through the break path
-    /// (never over a song). Nil until the DJ session can air a prepared intro (Fry): the starter then
-    /// begins no intro at all, so no voice is rendered (or paid for) that nobody hears. When set, the
-    /// boundary must also call `createdStart.songBoundary(queueEpoch:)` (not wired yet).
+    /// The queue the DJ is planning, so a late fill can be matched or dropped.
+    private var armedAppendGeneration = 0
+    private var armedAppendEpoch = 0
+    /// #454/#442: airs a ready station intro at the first song boundary through the break path
+    /// (never over a song). Set in `init`, so a begun intro is taken at every natural boundary.
     var airStationIntro: (@MainActor (PreparedDJBreak) -> Void)? {
         get { createdStart.airIntro }
         set { createdStart.airIntro = newValue }
@@ -86,6 +86,25 @@ final class StationQueuePlayer {
         // #442: the station intro renders only in the DJ session (its preparer, voice quota and
         // reserve gate). Begun only once `airStationIntro` is set.
         createdStart.intro = djSession
+        airStationIntro = { [weak djSession] prepared in
+            djSession?.stageStationIntro(prepared)
+        }
+        // Pass the armed generation and epoch, not the live queueEpoch. The real stale
+        // checks are stationOwnsQueue, the first-song head check, and queueSetupGeneration.
+        // The live epoch would drop every append: scheduleBreakPrep arms before
+        // onQueueReplaced bumps queueEpoch.
+        onStationSongsAppended = { [weak self] tracks in
+            guard let self else { return }
+            self.djSession.appendStationSongs(tracks, generation: self.armedAppendGeneration,
+                                              queueEpoch: self.armedAppendEpoch)
+        }
+    }
+
+    /// Every natural boundary calls this once `airStationIntro` is set, so a begun intro is
+    /// taken (aired, skipped, or dropped) and cannot keep a voice reservation.
+    func stationIntroAtBoundary() async -> StationIntroDisposition? {
+        guard StationIntroAirGate.mustTakeIntro(airStationIntroIsSet: airStationIntro != nil) else { return nil }
+        return await createdStart.songBoundary(queueEpoch: queueEpoch)
     }
 
     /// Installs the three hooks and starts following the station. Call once, at launch.
@@ -282,8 +301,11 @@ final class StationQueuePlayer {
                 try await music.play(tracks, station: stationRef)
             },
             scheduleBreakPrep: { reservation in
-                djSession.beginQueueInBackground(reservation, djTracks,
-                                                 briefing: offer.briefing, sources: offer.sources)
+                self.armedAppendGeneration = reservation.generation
+                self.armedAppendEpoch = self.queueEpoch
+                djSession.acceptStationAppends(generation: reservation.generation, queueEpoch: self.queueEpoch)
+                return djSession.beginQueueInBackground(reservation, djTracks,
+                                                       briefing: offer.briefing, sources: offer.sources)
             },
             release: { djSession.releaseQueueSetup($0) })
             return .started

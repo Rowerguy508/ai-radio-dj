@@ -72,6 +72,12 @@ public enum CreatedStationNoStartReason: String, Equatable, Sendable, CaseIterab
 public protocol StationIntroHook: AnyObject {
     func beginStationIntro(_ facts: StationIntroFacts)
     func takeStationIntroAtSongStart(id: String) async -> PreparedDJBreak?
+    /// A taken intro will not be played (the queue changed, or nothing can air it).
+    func stationIntroWasNotAired()
+}
+
+extension StationIntroHook {
+    public func stationIntroWasNotAired() {}
 }
 
 extension DJBreakSession: StationIntroHook {}
@@ -394,9 +400,15 @@ public final class CreatedStationStarter<Item: Sendable> {
         guard let begun = begunIntro, let intro else { return nil }
         begunIntro = nil
         let prepared = await intro.takeStationIntroAtSongStart(id: begun.id)
-        guard queueEpoch == begun.epoch else { return .droppedQueueChanged }
+        guard queueEpoch == begun.epoch else {
+            if prepared != nil { intro.stationIntroWasNotAired() }
+            return .droppedQueueChanged
+        }
         guard let prepared else { return .notReady }
-        guard let airIntro else { return .droppedNoPlayer }
+        guard let airIntro else {
+            intro.stationIntroWasNotAired()
+            return .droppedNoPlayer
+        }
         airIntro(prepared)
         return .aired
     }
