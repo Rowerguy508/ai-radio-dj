@@ -270,6 +270,23 @@ final class MusicKitService: ObservableObject {
         }
     }
 
+    /// #454 (-Atlas): a station that started on its first song fills in behind it. Appends `tracks`
+    /// to the app queue only while `first` still heads it (no tap, skip-to-new-queue or station
+    /// start replaced it); songs already queued are left out. Never touches the player, the playing
+    /// song, the attempt or the transport: only the songs after the playing one grow (Up Next).
+    /// Only the current song is ever in the MusicKit player, so the next boundary loads from here.
+    @discardableResult
+    func appendStationSongs(_ tracks: [Track], after first: Track) -> Bool {
+        guard !tracks.isEmpty, let head = queue.first, head.id == first.id else { return false }
+        let known = Set(queue.map(\.id))
+        let fresh = tracks.filter { !known.contains($0.id) }
+        guard !fresh.isEmpty else { return false }
+        queue += fresh
+        // `send` also re-reads whether Next is enabled (a one-song queue now has a next song).
+        send(.queueExtended(tracks: fresh.map(\.info)))
+        return true
+    }
+
     /// The user pressed pause. A DJ line that is speaking stops too.
     func pause() {
         // A queued Next or a reload must not call userPlay() over this pause.

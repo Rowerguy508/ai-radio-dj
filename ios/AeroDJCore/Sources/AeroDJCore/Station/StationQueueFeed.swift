@@ -116,6 +116,8 @@ public enum StationQueueTrigger: String, Equatable, Sendable, CaseIterable {
     case songBoundary, idleStart
     /// The boundary before the queue's last song: the station continues after it.
     case refill
+    /// #454: a station started on one song; the rest of its queue is appended behind it.
+    case backgroundFill
 }
 
 /// Diagnostics. Enums and counts only.
@@ -195,6 +197,12 @@ public final class StationQueueFeed<Item: Sendable> {
     /// Song ID -> catalog artist ID from the last build, for love's discovery steering (the app's
     /// `Track` has no artist ID). Never logged.
     private var lastBuildArtistIDs: [String: String] = [:]
+    /// #454: a few songs from each station's last build, so a later tap on that station can start
+    /// at once without a catalog round trip. Bounded; in memory only, never logged or saved.
+    private var cachedOpeners: [StationQueueKey: [Item]] = [:]
+    private var cachedOpenerOrder: [StationQueueKey] = []
+    private static var maxCachedStations: Int { 16 }
+    private static var openersPerStation: Int { 5 }
     private var generation = 0
     /// The station the playing queue belongs to. `nil` before the first queue start, and for a
     /// queue started on a station with no seeds (see `queueStartReported`).
@@ -331,6 +339,7 @@ public final class StationQueueFeed<Item: Sendable> {
         guard !items.isEmpty else { return finish(mine, .unplayable, failed: pool.failedLookups) }
         building = nil
         staged = (key, bias.revision, items)
+        rememberOpeners(Array(items.prefix(Self.openersPerStation)), for: key)
         lastBuildArtistIDs = Dictionary(picks.compactMap { c in c.artistID.map { (c.id, $0) } },
                                         uniquingKeysWith: { first, _ in first })
         log(.built(songs: items.count, poolSongs: pool.count, failedLookups: pool.failedLookups,
@@ -347,6 +356,89 @@ public final class StationQueueFeed<Item: Sendable> {
         if mine == generation { building = nil }
         log(.notBuilt(skip, failedLookups: failed))
         return .skipped(skip)
+    }
+
+    // MARK: Fast start (#454)
+
+    private func rememberOpeners(_ items: [Item], for key: StationQueueKey) {
+        guard !items.isEmpty else { return }
+        cachedOpeners[key] = items
+        cachedOpenerOrder.removeAll { $0 == key }
+        cachedOpenerOrder.append(key)
+        while cachedOpenerOrder.count > Self.maxCachedStations {
+            cachedOpeners[cachedOpenerOrder.removeFirst()] = nil
+        }
+    }
+
+    /// True when the current ratings and the recently played songs still allow `item`.
+    private func mayOpen(with item: Item, key: StationQueueKey) -> Bool {
+        guard let id = songID(item) else { return true }
+        if currentRatings(for: key).excludedSongIDs.contains(id) { return false }
+        return !recentlyPlayed().contains(id)
+    }
+
+    /// #454: one playable song to start `configuration` with, as fast as possible, or nil.
+    /// In order: the staged queue's first song; a song from this station's last build (no catalog
+    /// call); else the FIRST seed alone, core songs only (`.only`), and a few picks made playable.
+    /// Screened against the current never/tired exclusions and the songs just played. Never touches
+    /// playback, `staged` or `playingKey`; the full build runs separately (`prepare`).
+    public func firstSong(for configuration: StationConfiguration) async -> Item? {
+        guard let key = StationQueueKey(configuration) else { return nil }
+        // No `Item` local in this async frame (the #456 macOS task-allocator abort): the ready
+        // song is looked up synchronously and returned straight through.
+        if hasReadyFirstSong(for: key) { return readyFirstSong(for: key) }
+        let config = configuration.validated()
+        guard let seed = config.seeds.first else { return nil }
+        let bias = currentRatings(for: key)
+        var one = config
+        one.seeds = [seed]
+        one.reach = .only
+        let pool = await resolver.resolve(seeds: [seed], reach: .only, affinity: [])
+        var opts = options
+        opts.limit = 3
+        opts.shuffleSeed = options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
+        opts.excludedSongIDs = options.excludedSongIDs.union(recentlyPlayed())
+        opts.ratings = bias
+        let picks = StationPoolBuilder.build(pool, configuration: one, options: opts)
+        guard !picks.isEmpty else { return nil }
+        let items = await materialize(picks)
+        return screened(items, for: key).first
+    }
+
+    /// The first song available without a catalog call: the staged queue's, else a cached opener.
+    private func readyFirstSong(for key: StationQueueKey) -> Item? {
+        if let ready = staged, ready.key == key, let song = screened(ready.items, for: key).first { return song }
+        return cachedOpeners[key]?.first(where: { mayOpen(with: $0, key: key) })
+    }
+
+    private func hasReadyFirstSong(for key: StationQueueKey) -> Bool { readyFirstSong(for: key) != nil }
+
+    /// #454: the station `active` is starting on `song` alone (a fast start). The playing queue
+    /// belongs to the station from now on, and a failed start (`handOffFinished(.failed)`) puts the
+    /// previous station back, exactly like a staged hand-off. False when `active` has no seeds.
+    @discardableResult
+    public func fastStartBegan(with song: Item, active: StationConfiguration) -> Bool {
+        guard let key = StationQueueKey(active) else { return false }
+        pendingHandOff = PendingHandOff(trigger: .idleStart, key: key, revision: currentRatings(for: key).revision,
+                                        items: [], previousKey: playingKey, previousReported: queueStartReported)
+        playingKey = key
+        queueStartReported = true
+        log(.handedOff(.idleStart, songs: 1))
+        return true
+    }
+
+    /// #454: the staged songs to append behind `first` once the full build is ready, screened, with
+    /// `first` itself left out. Nil (and nothing taken) unless the playing queue is `active`'s
+    /// station and its queue is staged.
+    public func takeForFill(active: StationConfiguration, after first: Item) -> [Item]? {
+        guard let key = StationQueueKey(active), key == playingKey else { return keep(.backgroundFill, .noStation) }
+        guard let ready = staged, ready.key == key else { return keep(.backgroundFill, .notReady) }
+        let firstID = songID(first)
+        let songs = screened(ready.items, for: key).filter { item in firstID == nil || songID(item) != firstID }
+        staged = nil
+        guard !songs.isEmpty else { return keep(.backgroundFill, .notReady) }
+        log(.handedOff(.backgroundFill, songs: songs.count))
+        return songs
     }
 
     // MARK: Playback hooks

@@ -16,8 +16,8 @@ import UIKit
 /// - `MusicKitService.stationQueueForIdlePlay`: Play with nothing queued starts the station.
 /// - `MusicKitService.onQueueReplaced`: every new queue belongs to the station committed then.
 /// A hand-off starts like a song tap (`TapPlaySequence`: reserve, play, then break prep), so the
-/// DJ session plans breaks for the new songs. A station START (idle Play, or a created-station
-/// row opened while idle, or a different station taking over at a song boundary) may carry one
+/// DJ session plans breaks for the new songs. A station START (idle Play, a station row tap, or a
+/// different station taking over at a song boundary) may carry one
 /// personal update (#332, `StationStartBriefing`); a same-station refill carries none.
 ///
 /// Fallbacks: no seeds, an empty pool, a failed fetch, no playable song, a queue not ready yet, or a
@@ -26,7 +26,7 @@ import UIKit
 @MainActor
 final class StationQueuePlayer {
     let feed: StationQueueFeed<Track>
-    /// Created-station row taps (core, tested on Linux): idle with nothing queued starts the station.
+    /// Every station row tap (core, tested on Linux, #454): starts the station on its first song.
     private let createdStart: CreatedStationStarter<Track>
     private let music: MusicKitService
     private let station: StationConfigurationModel
@@ -41,6 +41,24 @@ final class StationQueuePlayer {
     private var briefing: (@MainActor () -> ApprovedShowHandoff)?
     /// #445: the foreground observer token (kept for the app's lifetime, like the type itself).
     private var foregroundObserver: NSObjectProtocol?
+    /// #454: bumps every time the player's queue is replaced (`onQueueReplaced`), so a station tap
+    /// can tell that the listener started something else while it waited.
+    private var queueEpoch = 0
+    /// #454: true while the playing queue was started by this type (a station start, hand-off or
+    /// refill), so its station is `feed.playingKey`; false after a search or song tap.
+    private var stationOwnsQueue = false
+    /// #454 seam for Fry (#442, `DJBreakSession` owner): songs appended behind a station's first
+    /// song. Nil until wired: the DJ then plans breaks only for the songs its queue started with
+    /// (it never names a song it was not given), and the next refill re-plans as today.
+    var onStationSongsAppended: (@MainActor ([DJTrack]) -> Void)?
+    /// #454/#442 seam: airs a ready station intro at the first song boundary through the break path
+    /// (never over a song). Nil until the DJ session can air a prepared intro (Fry): the starter then
+    /// begins no intro at all, so no voice is rendered (or paid for) that nobody hears. When set, the
+    /// boundary must also call `createdStart.songBoundary(queueEpoch:)` (not wired yet).
+    var airStationIntro: (@MainActor (PreparedDJBreak) -> Void)? {
+        get { createdStart.airIntro }
+        set { createdStart.airIntro = newValue }
+    }
 
     /// `ratings`: the committed station's song ratings (`StationRatingsModel.bias`, PR B). Read on
     /// every build and hand-off; never logged, never passed to the DJ or a voice.
@@ -65,6 +83,9 @@ final class StationQueuePlayer {
             ratings: ratings,
             log: { event in log.notice("\(event.diagnostics, privacy: .public)") })
         createdStart = CreatedStationStarter(feed: feed)
+        // #442: the station intro renders only in the DJ session (its preparer, voice quota and
+        // reserve gate). Begun only once `airStationIntro` is set.
+        createdStart.intro = djSession
     }
 
     /// Installs the three hooks and starts following the station. Call once, at launch.
@@ -73,7 +94,9 @@ final class StationQueuePlayer {
         self.briefing = briefing
         music.onQueueReplaced = { [weak self] in
             guard let self else { return }
-            if self.ownQueueStarting { self.ownQueueStarting = false; return }
+            self.queueEpoch += 1
+            if self.ownQueueStarting { self.ownQueueStarting = false; self.stationOwnsQueue = true; return }
+            self.stationOwnsQueue = false
             self.feed.queueStarted(for: self.station.committedDisplayed, songCount: self.music.queue.count)
         }
         music.stationQueueAtBoundary = { [weak self] finishedIndex in
@@ -101,25 +124,96 @@ final class StationQueuePlayer {
         }
     }
 
-    /// A created-station row was opened (Orion, #213). User tap: authorize, apply the recipe, and when
-    /// the player is idle with nothing queued start the station on the idle-Play path, waiting a
-    /// bounded time for its queue; while something plays it switches at the song boundary.
-    /// Restore: nothing. Logs the outcome as an enum only and returns it (the list's start toast).
+    /// A created-station row was opened (Orion, #213; #454). Same start path as every station.
     @discardableResult
     func openCreatedStation(_ trigger: StationOpenTrigger, recipeID: UUID,
                             studio: StudioPresentationModel) async -> CreatedStationOpenOutcome {
+        await openStation(trigger, .created(recipeID), studio: studio)
+    }
+
+    /// A built-in row was opened (#454). Same start path, with the station's own configuration
+    /// from `BuiltInStations` (#442). An id that is not a built-in ends `.notAvailableYet`.
+    @discardableResult
+    func openBuiltInStation(_ trigger: StationOpenTrigger, stationID: UUID,
+                            studio: StudioPresentationModel) async -> CreatedStationOpenOutcome {
+        await openStation(trigger, .builtIn(stationID), studio: studio)
+    }
+
+    /// Which station a row tap opens. Library stations are created stations whose seeds are
+    /// `.library` (`MusicCatalogSeedSource` reads them on the device); they take the same path.
+    enum StationStartSource {
+        case created(UUID)
+        case builtIn(UUID)
+    }
+
+    /// #454 (-Atlas): every station row tap. User tap: authorize, apply the station, and start it at
+    /// once: the first playable song plays as soon as it is known, the rest of the queue is
+    /// appended in the background. While something else plays, it switches now; the station
+    /// already playing is a no-op, and the paused active station resumes (Fry N4). Restore: nothing. Logs the outcome as an enum only.
+    @discardableResult
+    func openStation(_ trigger: StationOpenTrigger, _ source: StationStartSource,
+                     studio: StudioPresentationModel) async -> CreatedStationOpenOutcome {
+        let station = self.station
+        let music = self.music
+        let recipeID: UUID
+        let available: Bool
+        let introFacts: StationIntroFacts?
+        let apply: @MainActor () async -> Bool
+        let liveRecipeID: @MainActor () -> UUID?
+        switch source {
+        case .created(let id):
+            recipeID = id
+            available = true
+            introFacts = studio.recipes.recipe(id).map(StationStartFacts.created)
+            apply = { if case .success = await studio.applyRecipe(id) { true } else { false } }
+            liveRecipeID = { studio.lastAppliedRecipeID }
+        case .builtIn(let id):
+            // #442: built-ins carry their own seeds (`BuiltInStations`); same path as created.
+            let recipe = trigger == .userTap ? StationStartFacts.builtInRecipe(for: id) : nil
+            recipeID = id
+            available = recipe != nil
+            introFacts = StationStartFacts.builtIn(id)
+            // Fry N3 (#456): recorded as the last applied recipe, so a re-tap on the active
+            // built-in is not applied again and unsaved Tune edits stay (as for created stations).
+            apply = {
+                guard let recipe else { return false }
+                await studio.applyBuiltInRecipe(recipe)
+                return true
+            }
+            liveRecipeID = { studio.lastAppliedRecipeID }
+        }
         let outcome = await createdStart.open(
             trigger,
             recipeID: recipeID,
-            liveRecipeID: { studio.lastAppliedRecipeID },
+            available: available,
+            introFacts: introFacts,
+            liveRecipeID: liveRecipeID,
             authorize: { await music.authorize() },
-            apply: { if case .success = await studio.applyRecipe(recipeID) { true } else { false } },
+            apply: apply,
             active: { station.active },
             nothingQueued: { music.queue.isEmpty && !music.isPlaying },
-            start: { tracks in _ = await play(tracks, .createdStationStart) })
+            playingStation: { [weak self] in
+                guard let self, self.stationOwnsQueue else { return nil }
+                return self.feed.playingKey
+            },
+            switchNow: { await station.applyPendingForStationSwitch() },
+            queueEpoch: { [weak self] in self?.queueEpoch ?? 0 },
+            // Fry N2: the intro waits for a confirmed `.playing`; Fry N4: a paused active station resumes.
+            transport: { music.snapshot.transport },
+            resume: { _ = try? await music.resume() },
+            start: { [weak self] tracks in _ = await self?.play(tracks, .createdStationStart) },
+            append: { [weak self] first, tracks in self?.appendStationSongs(tracks, after: first) ?? false })
         Logger(subsystem: "com.aerodj.app", category: "stationQueue")
-            .notice("createdStationOpen \(String(describing: outcome), privacy: .public)")
+            .notice("stationOpen \(String(describing: outcome), privacy: .public)")
         return outcome
+    }
+
+    /// #454: the background fill. Appends behind the station's first song only while that song's
+    /// queue is still the player's; never replaces the queue or touches the playing song.
+    private func appendStationSongs(_ tracks: [Track], after first: Track) -> Bool {
+        guard stationOwnsQueue, music.appendStationSongs(tracks, after: first) else { return false }
+        onStationSongsAppended?(tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName, origin: $0.origin) })
+        return true
     }
 
     /// A song was rated, a rating undone, or ratings cleared (PR B, #388, -Nova). Never logged.
@@ -156,8 +250,8 @@ final class StationQueuePlayer {
     /// The catalog artist ID the last build saw for `songID` (love's discovery steering only).
     func artistID(forSong songID: String) -> String? { feed.artistID(forSong: songID) }
 
-    /// A built-in station row was tapped (Fry #213 nit 2): a created-station tap still waiting for
-    /// its queue does not start.
+    /// Another tap path took over (Fry #213 nit 2): a station tap still waiting does not start, its
+    /// background fill stops.
     func cancelCreatedStationStart() {
         createdStart.cancelPending()
     }

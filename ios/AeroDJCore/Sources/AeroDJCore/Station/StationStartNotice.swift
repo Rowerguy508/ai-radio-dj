@@ -4,22 +4,23 @@ import Observation
 // "Couldn't start that station" (-Nova, Orion's ask after #214). A created-station row tap with
 // nothing queued starts the station on the idle-Play path (`CreatedStationStarter`). When that tap
 // ends with nothing going to play, the app shows a short toast. Decisions live here so they are
-// tested on Linux; the app only draws `message`. Restore never toasts, a boundary switch never
-// toasts, and a tap the listener replaced (a newer tap, or Play / a song tap meanwhile) never toasts.
+// tested on Linux; the app only draws `message`. Restore never toasts, a tap on the station already
+// playing never toasts, and a tap the listener replaced (a newer tap, or Play / a song tap meanwhile) never toasts.
 // Apple Music not authorized at that moment says so instead ("Connect Apple Music to play this station").
 
 extension CreatedStationOpenOutcome {
     /// True when the listener's own tap will not play anything and nothing else replaced it.
     public var warrantsStartFailureNotice: Bool {
         switch self {
-        case .restoredOnly, .switchesAtBoundary, .started:
+        case .restoredOnly, .alreadyPlaying, .resumed, .started:
             false
         case .notApplied:
             true
         case .notStarted(let reason):
             switch reason {
             case .noStation, .notReadyInTime, .buildFailed: true
-            case .playbackBegan, .superseded: false
+            // #454: a station with no recipe yet says so in place (the Starting screen), not in a toast.
+            case .playbackBegan, .superseded, .notAvailableYet: false
             }
         }
     }

@@ -147,10 +147,11 @@ final class CarPlayDisplayTests: XCTestCase {
         for transport in [TransportState.playing, .preparing, .paused, .stopped] {
             XCTAssertEqual(CarPlayScreen.effect(for: .created(id), transport: transport), .openCreatedStation(id))
         }
-        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .playing), .openBuiltIn(resumePlayback: false))
-        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .preparing), .openBuiltIn(resumePlayback: false))
-        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .paused), .openBuiltIn(resumePlayback: true))
-        XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: .stopped), .openBuiltIn(resumePlayback: true))
+        // #454: a built-in row starts through the phone's station start path, whatever the transport
+        // (it used to only authorize, or resume the old queue).
+        for transport in [TransportState.playing, .preparing, .paused, .stopped] {
+            XCTAssertEqual(CarPlayScreen.effect(for: .builtIn, transport: transport), .openBuiltInStation)
+        }
     }
 
     func testSectionsAreYourStationsThenBuiltIn() {
@@ -310,8 +311,8 @@ final class CarPlayDisplayTests: XCTestCase {
             "CPNowPlayingTemplate",
             "CPTemplateApplicationSceneDelegate",
             "openCreatedStation(.userTap",
-            "cancelCreatedStationStart",
-            "resume()",
+            // #454: built-in rows start the station instead of authorize-and-resume.
+            "openBuiltInStation(.userTap",
             "CarPlayNowPlayingMerge.apply",
             "MPNowPlayingInfoCenter.default()",
             "CarPlayTransport.previousTrackEnabled",
@@ -447,6 +448,10 @@ final class CarPlayStationSwitchTests: XCTestCase {
     private final class Player {
         var queue: [String] = []
         var playing = false
+        /// #454: bumps on every queue replace; the station whose queue the starter played.
+        var epoch = 0
+        var station: StationQueueKey?
+        var resumes = 0
         var nothingQueued: Bool { queue.isEmpty && !playing }
     }
 
@@ -487,9 +492,21 @@ final class CarPlayStationSwitchTests: XCTestCase {
             },
             active: { model.active },
             nothingQueued: { player.nothingQueued },
+            playingStation: { player.station },
+            switchNow: { await model.applyPendingForStationSwitch() },
+            queueEpoch: { player.epoch },
+            transport: { player.playing ? .playing : .paused },
+            resume: { player.resumes += 1; player.playing = true },
             start: { items in
+                player.epoch += 1
                 player.queue = items
+                player.station = StationQueueKey(model.active)
                 player.playing = true
+            },
+            append: { first, songs in
+                guard player.queue.first == first else { return false }
+                player.queue += songs
+                return true
             })
     }
 
@@ -511,7 +528,8 @@ final class CarPlayStationSwitchTests: XCTestCase {
         }
     }
 
-    func testPickingStationBWhileAIsPlayingKeepsAsQueueUntilTheBoundaryThenPlaysB() async {
+    // #454 reverses #213's boundary switch for a row pick: B starts now, A's queue is replaced.
+    func testPickingStationBWhileAIsPlayingSwitchesToBNow() async {
         let model = await makeModel()
         let feed = makeFeed()
         feed.follow(model)
@@ -522,21 +540,15 @@ final class CarPlayStationSwitchTests: XCTestCase {
         XCTAssertTrue(player.playing)
 
         let outcome = await pick(stationB, "station-b", starter, model, player)
-        XCTAssertEqual(outcome, .switchesAtBoundary)
-        XCTAssertEqual(player.queue, queueA, "the playing queue is still station A")
-        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-a"])
+        guard case .started = outcome else { return XCTFail("B starts now, got \(outcome)") }
+        XCTAssertNotEqual(player.queue, queueA, "station A's queue is replaced now, not at the boundary")
+        XCTAssertTrue(player.queue.allSatisfy { $0.hasPrefix("station-b-") }, "\(player.queue)")
+        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-b"])
         XCTAssertEqual(starter.currentRecipeID, stationB)
         XCTAssertEqual(CarPlayStationStart.trigger, .userTap)
-
-        await staged(feed, StationQueueKey(configuration("station-b"))!)
-        await model.handle(.songBoundary(afterTrack: 0))
-        let next = feed.takeForBoundary(active: model.active, playbackMayStart: true)
-        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-b"])
-        XCTAssertEqual(next?.allSatisfy { $0.hasPrefix("station-b-") }, true, "\(next ?? [])")
-        XCTAssertNotEqual(next, queueA)
     }
 
-    func testPickingStationBWhileAIsPausedKeepsAsQueueUntilTheBoundaryThenPlaysB() async {
+    func testPickingStationBWhileAIsPausedSwitchesToBNow() async {
         let model = await makeModel()
         let feed = makeFeed()
         feed.follow(model)
@@ -548,16 +560,47 @@ final class CarPlayStationSwitchTests: XCTestCase {
         XCTAssertFalse(player.nothingQueued, "paused mid-song still has station A's queue")
 
         let outcome = await pick(stationB, "station-b", starter, model, player)
-        XCTAssertEqual(outcome, .switchesAtBoundary)
-        XCTAssertEqual(player.queue, queueA)
-        XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-a"])
-        XCTAssertEqual(starter.currentRecipeID, stationB)
-
-        await staged(feed, StationQueueKey(configuration("station-b"))!)
-        await model.handle(.songBoundary(afterTrack: 0))
-        let next = feed.takeForBoundary(active: model.active, playbackMayStart: true)
+        guard case .started = outcome else { return XCTFail("B starts now, got \(outcome)") }
+        XCTAssertNotEqual(player.queue, queueA)
+        XCTAssertTrue(player.queue.allSatisfy { $0.hasPrefix("station-b-") }, "\(player.queue)")
         XCTAssertEqual(model.active.seeds.map(\.catalogID), ["station-b"])
-        XCTAssertEqual(next?.allSatisfy { $0.hasPrefix("station-b-") }, true, "\(next ?? [])")
+        XCTAssertEqual(starter.currentRecipeID, stationB)
+    }
+
+    func testPickingTheStationAlreadyPlayingChangesNothing() async {
+        let model = await makeModel()
+        let feed = makeFeed()
+        feed.follow(model)
+        let player = Player()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(2), pollInterval: .milliseconds(1))
+        let queueA = await startA(starter, model, player)
+        await model.setPlaybackActivity(.holdingSong)
+        let epoch = player.epoch
+
+        let outcome = await pick(stationA, "station-a", starter, model, player)
+        XCTAssertEqual(outcome, .alreadyPlaying)
+        XCTAssertEqual(player.epoch, epoch, "no new queue")
+        XCTAssertEqual(Array(player.queue.prefix(queueA.count)), queueA)
+    }
+
+    // Fry N4 (#456): the car resumes the paused active station, as before #454.
+    func testPickingThePausedStationAlreadyActiveResumesIt() async {
+        let model = await makeModel()
+        let feed = makeFeed()
+        feed.follow(model)
+        let player = Player()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(2), pollInterval: .milliseconds(1))
+        let queueA = await startA(starter, model, player)
+        player.playing = false                                   // paused on the car
+        await model.setPlaybackActivity(.holdingSong)
+        let epoch = player.epoch
+
+        let outcome = await pick(stationA, "station-a", starter, model, player)
+        XCTAssertEqual(outcome, .resumed)
+        XCTAssertEqual(player.resumes, 1)
+        XCTAssertTrue(player.playing)
+        XCTAssertEqual(player.epoch, epoch, "resumed, not restarted")
+        XCTAssertEqual(Array(player.queue.prefix(queueA.count)), queueA)
     }
 
     func testPickingStationBWhileIdleReplacesTheQueueWithB() async {

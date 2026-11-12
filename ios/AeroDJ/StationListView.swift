@@ -3,8 +3,8 @@ import SwiftUI
 
 /// Station selection screen. Adaptive container sizing (no hardcoded device dims).
 /// The split root owns the selection and the one shared studio/playback session.
-/// Neither column creates a model. Choosing a built-in station never starts playback; tapping a
-/// created one starts it only when nothing is queued (restore never does).
+/// Neither column creates a model. #454: tapping any station row starts that station right away
+/// (switching from whatever plays); restoring the selection never does.
 struct StationListView: View {
     /// Composed once at launch by `AppDependencies`; views receive it, never build it.
     let dependencies: AppDependencies
@@ -39,27 +39,7 @@ struct StationListView: View {
     private var split: some View {
         StationSplitRoot(stations: stations, showsSharedInbox: dependencies.mode == .live,
                          showSharedInbox: $showSharedInbox,
-                         onUserOpenedStation: { id in
-                             // Row tap only, never restore. A created station starts now when nothing
-                             // is queued, otherwise takes over at the song boundary (CreatedStationStarter).
-                             // Any tap clears the start toast; only this tap's idle-start failure shows it.
-                             let tap = startNotice.beginTap()
-                             guard let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes) else {
-                                 // HOOK(Atlas, Fry #213 nit 2): a built-in tap cancels a waiting created-station start.
-                                 dependencies.stationQueue?.cancelCreatedStationStart()
-                                 await dependencies.playback.authorize()
-                                 return
-                             }
-                             if let stationQueue = dependencies.stationQueue {
-                                 let outcome = await stationQueue.openCreatedStation(.userTap, recipeID: recipeID,
-                                                                                     studio: dependencies.studio)
-                                 // Status read only (never authorize() or a prompt), and only if a toast is due.
-                                 startNotice.finish(tap: tap, outcome: outcome, musicAuthorized: GenreAccess.isAuthorized)
-                             } else {
-                                 await dependencies.playback.authorize()
-                                 _ = await dependencies.studio.applyRecipe(recipeID)
-                             }
-                         },
+                         onUserOpenedStation: { id in await openStation(id) },
                          onAddStation: addStationAction,
                          onOpenSettings: { showSettings = true }) { station in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
@@ -103,6 +83,36 @@ struct StationListView: View {
         .environment(\.pickedNotes, dependencies.pickedNotes)
         .ownerVoiceTrialEntry() // AERODJ_OWNER_AB only; a no-op otherwise
         .testerCloudVoiceConsent() // AERODJ_TESTER_VOICE or AERODJ_OWNER_AB only; a no-op otherwise
+    }
+
+    /// #454 (-Atlas): every station row tap (built-in, library or created) starts that station on
+    /// one path (`StationQueuePlayer.openStation`): Now Playing shows "Starting <name>…" at once,
+    /// the first song plays as soon as it resolves, and a failure stays on that screen with Try
+    /// again (plus the existing toast). Row tap only, never restore. Any tap clears the toast.
+    private func openStation(_ id: Station.ID) async {
+        let tap = startNotice.beginTap()
+        let name = stations.first(where: { $0.id == id })?.name ?? "station"
+        let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes)
+        let status = dependencies.studio.stationStart
+        let statusTap = status.begin(stationID: id.uuidString, stationName: name,
+                                     songAtTap: dependencies.playback.snapshot.nowPlaying?.id,
+                                     retry: { Task { await openStation(id) } })
+        guard let stationQueue = dependencies.stationQueue else {
+            // No station queue (previews): the old behavior, no start.
+            await dependencies.playback.authorize()
+            if let recipeID { _ = await dependencies.studio.applyRecipe(recipeID) }
+            status.finish(tap: statusTap, outcome: .notStarted(.notAvailableYet))
+            return
+        }
+        let outcome: CreatedStationOpenOutcome
+        if let recipeID {
+            outcome = await stationQueue.openCreatedStation(.userTap, recipeID: recipeID, studio: dependencies.studio)
+        } else {
+            outcome = await stationQueue.openBuiltInStation(.userTap, stationID: id, studio: dependencies.studio)
+        }
+        status.finish(tap: statusTap, outcome: outcome)
+        // Status read only (never authorize() or a prompt), and only if a toast is due.
+        startNotice.finish(tap: tap, outcome: outcome, musicAuthorized: GenreAccess.isAuthorized)
     }
 
     /// The + action, or nil (no button) when the app has no seed search: previews and the Test Station.
@@ -283,8 +293,8 @@ struct StationSplitRoot<Detail: View>: View {
 
     /// The row the list selects. Nil is not stored: the split clears the binding while it
     /// builds the list, and writing that empty value would erase the station the next launch needs.
-    /// Choosing a station records its id and pushes the detail. Only a tap on a created station
-    /// with nothing queued plays (`StationQueuePlayer.openCreatedStation`).
+    /// Choosing a station records its id and pushes the detail. #454: a tap starts that station
+    /// (`StationListView.openStation`); restore never enters this setter.
     /// The back gesture writes `preferredCompactColumn`, so the list can show again.
     private var selection: Binding<Station.ID?> {
         Binding(
@@ -331,15 +341,13 @@ struct Station: Identifiable, Hashable {
     let id: UUID
     let name: String
     let description: String?
-    /// A station made with + (a seeded recipe). Its row tap can start playback (#213).
+    /// A station made with + (a seeded recipe, catalog or library seeds).
     var isCreated = false
 
-    /// VoiceOver hint for the list row and carousel card: what a tap does. A created station
-    /// starts right away when nothing is queued (CreatedStationStarter), else after this song.
+    /// VoiceOver hint for the list row and carousel card: what a tap does. #454: every station
+    /// starts right away, switching from whatever plays (`StationListView.openStation`).
     var openHint: String {
-        isCreated
-            ? "Plays the station now if nothing is queued, otherwise after this song."
-            : "Opens the station. Music starts only when you press Play."
+        "Plays the station now."
     }
 
     /// Stable IDs so a restored selection can find the same row after a relaunch.

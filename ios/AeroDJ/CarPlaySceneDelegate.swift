@@ -28,8 +28,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 }
 
 /// The car UI. Station rows and now playing come from `CarPlayScreen`. A created
-/// station starts through `openCreatedStation(.userTap)`. A built-in row uses the
-/// phone's built-in tap. Next and previous are not handled here.
+/// station starts through `openCreatedStation(.userTap)`, a built-in one through
+/// `openBuiltInStation(.userTap)` (#454: the same start path). Next and previous are not handled here.
 @MainActor
 final class CarPlaySession {
     static let shared = CarPlaySession()
@@ -137,11 +137,13 @@ final class CarPlaySession {
                 await music.authorize()
                 _ = await dependencies.studio.applyRecipe(id)
             }
-        case .openBuiltIn(let resumePlayback):
-            dependencies.stationQueue?.cancelCreatedStationStart()
-            await music.authorize()
-            if resumePlayback {
-                _ = try? await music.resume()
+        case .openBuiltInStation:
+            // #454: the phone's built-in tap, the same start path as a created station. It plays
+            // the station's own seeds (`BuiltInStations`, #442), a re-tap on the paused active station resumes it (Fry N4).
+            if let queue = dependencies.stationQueue, let id = UUID(uuidString: row.id) {
+                _ = await queue.openBuiltInStation(.userTap, stationID: id, studio: dependencies.studio)
+            } else {
+                await music.authorize()
             }
         }
         render()

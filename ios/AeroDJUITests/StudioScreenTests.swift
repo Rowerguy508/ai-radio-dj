@@ -710,10 +710,16 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertEqual(callLabel(app), "0/0")
         let before = modelIdentifiers(app)
         XCTAssertEqual(before.count, 1)
+        // #454: search is no longer the compact empty state; it sits behind Search Apple Music,
+        // which opens the Queue workspace sheet.
+        let searchButton = app.buttons["playback.searchAppleMusic"]
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 10), app.debugDescription)
+        searchButton.tap()
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         replaceText(field, with: "violet")
         dismissKeyboard(app)
+        if app.buttons["Done"].exists { app.buttons["Done"].tap() }
         app.buttons["probe.widen"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["layout.studio"].waitForExistence(timeout: 10),
                       "Regular width above the studio minimum opens the two panes")
@@ -848,6 +854,11 @@ final class StudioScreenTests: XCTestCase {
         try XCTSkipIf(isOpenLayout, "Compact search is checked on an iPhone-width simulator")
         let app = launch(scenario: "empty")
         XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15))
+        // #454: the empty state offers search behind an explicit button, not as the screen itself.
+        XCTAssertFalse(app.textFields["search.field"].exists, "Search is not the empty state\n\(app.debugDescription)")
+        let searchButton = app.buttons["playback.searchAppleMusic"]
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 10), app.debugDescription)
+        searchButton.tap()
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 10), app.debugDescription)
         replaceText(field, with: "jazz")
@@ -861,6 +872,58 @@ final class StudioScreenTests: XCTestCase {
         let calls = callLabel(app)
         XCTAssertTrue(calls.hasPrefix("0/"), "Search must not play: \(calls)\n\(app.debugDescription)")
         XCTAssertNotEqual(calls, "0/0", "Submit records a search: \(calls)")
+    }
+
+    // MARK: Station start (#454)
+
+    /// #454: a station tap lands on Now Playing for that station ("Starting <name>…"), never on the
+    /// Apple Music search field. iOS CI only: the capture drives the real `PlayingScreen` with the
+    /// start state a tap sets; it does not prove Apple Music playback.
+    @MainActor
+    func testStationTapShowsStartingNowPlayingNotSearch() {
+        let app = launch(scenario: "stationStarting")
+        let start = app.descendants(matching: .any)["nowPlaying.stationStart"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10), "Starting state on Now Playing\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Starting Morning Calm…"), app.debugDescription)
+        XCTAssertFalse(app.textFields["search.field"].exists, "A station tap never shows search\n\(app.debugDescription)")
+        XCTAssertFalse(app.buttons["playback.searchAppleMusic"].exists, "No search button while starting\n\(app.debugDescription)")
+        save(app, isOpenLayout ? "ipad-station-starting" : "iphone-station-starting")
+    }
+
+    /// #454: a start that fails stays on that station's screen with Try again, never search.
+    @MainActor
+    func testFailedStationStartOffersRetryInPlace() {
+        let app = launch(scenario: "stationStartFailed")
+        let retry = app.buttons["playback.retryStationStart"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10), "Try again on the same screen\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Couldn't start Morning Calm"), app.debugDescription)
+        XCTAssertFalse(app.textFields["search.field"].exists, "A failed start never shows search\n\(app.debugDescription)")
+        XCTAssertTrue(retry.isHittable)
+        save(app, isOpenLayout ? "ipad-station-start-failed" : "iphone-station-start-failed")
+        retry.tap()
+        XCTAssertFalse(app.textFields["search.field"].exists, "Retry stays off search\n\(app.debugDescription)")
+    }
+
+    /// #454: tapping a station row in the real split shows that station's Now Playing, not search.
+    @MainActor
+    func testStationRowTapShowsNowPlayingNotSearch() {
+        let app = launch(scenario: "shell", musicAuthStatus: "authorized")
+        let sidebar = app.descendants(matching: .any)["split.sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 15), app.debugDescription)
+        let calm = stationRow(sidebar, named: "Morning Calm")
+        XCTAssertTrue(calm.waitForExistence(timeout: 5), app.debugDescription)
+        calm.tap()
+        let title = app.descendants(matching: .any)["station.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(title.label.contains("Morning Calm"), app.debugDescription)
+        XCTAssertTrue(app.buttons["transport.playPause"].waitForExistence(timeout: 10)
+                      || app.descendants(matching: .any)["nowPlaying.stationStart"].exists,
+                      "Now Playing for the tapped station\n\(app.debugDescription)")
+        // The open Studio keeps search in its Queue tab beside a playing song (allowed by #454);
+        // the closed player must not show it at all.
+        if !isOpenLayout {
+            XCTAssertFalse(app.textFields["search.field"].exists, "A station tap never shows search\n\(app.debugDescription)")
+        }
     }
 
     /// Shared Items sheet always has Done and dismisses without force-quit.
