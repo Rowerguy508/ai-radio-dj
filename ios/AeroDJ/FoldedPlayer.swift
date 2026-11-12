@@ -223,7 +223,14 @@ struct FoldedPlayer: View {
             .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
             .background { dayWash.accessibilityHidden(true) }
             .accessibilitySortPriority(2)
-            .accessibilityIdentifier("folded.trackColumn")
+            .overlay {
+                // One element. Putting the identifier on the ScrollView itself also
+                // exposes the scroll view, so the UI test finds two matches.
+                Color.clear
+                    .accessibilityElement()
+                    .accessibilityIdentifier("folded.trackColumn")
+                    .allowsHitTesting(false)
+            }
 
             Color.clear
                 .frame(width: CGFloat(layout.foldGutter), height: size.height)
