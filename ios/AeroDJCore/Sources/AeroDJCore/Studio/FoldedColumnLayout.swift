@@ -114,6 +114,12 @@ public enum FoldedColumnLayout {
     }
 
     /// Horizontal Duo metrics. Phone widths do not call this.
+    ///
+    /// At 640 × 820 the content column is 234 pt: `640 − edge − bar − (mid + gutter / 2)`,
+    /// which is `640 − 16 − 56 − 334`. The Search Apple Music control measured 203.7 × 34.3,
+    /// so it fits that column. Its screen origin of x = −115 on the 652 × 680 probe was the
+    /// player centred in the 390 pt iPhone 16e window with the button on the 16 pt leading
+    /// inset: `(390 − 652) / 2 + 16 = −115`. It was not a content-column overflow.
     public static func duoHorizontal(containerWidth: Double, containerHeight: Double,
                                     artMin: Double, artMax: Double) -> DuoHorizontal {
         let mid = containerWidth / 2
