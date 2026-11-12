@@ -110,6 +110,9 @@ public final class CreatedStationStarter<Item: Sendable> {
     private let maxPolls: Int
     private let maxFillPolls: Int
     private let sleep: @MainActor (Duration) async -> Void
+    /// The clock the intro's confirmation wait is bounded by (tests supply their own).
+    private let now: @MainActor () -> ContinuousClock.Instant
+    private let readyTimeout: Duration
     private var tapGeneration = 0
     private var fillTask: Task<Void, Never>?
     /// Fry's intro (#442). Nil: no intro is asked for.
@@ -144,13 +147,16 @@ public final class CreatedStationStarter<Item: Sendable> {
                 pollInterval: Duration = .milliseconds(100),
                 fillTimeout: Duration = .seconds(30),
                 introDelay: Duration = .seconds(2),
-                sleep: (@MainActor (Duration) async -> Void)? = nil) {
+                sleep: (@MainActor (Duration) async -> Void)? = nil,
+                now: (@MainActor () -> ContinuousClock.Instant)? = nil) {
         let sleep = sleep ?? { try? await Task.sleep(for: $0) }
+        self.now = now ?? { ContinuousClock.now }
         self.feed = feed
         self.pollInterval = pollInterval
         self.maxPolls = max(1, Int((readyTimeout / pollInterval).rounded(.up)))
         self.maxFillPolls = max(1, Int((fillTimeout / pollInterval).rounded(.up)))
         self.introDelay = introDelay
+        self.readyTimeout = readyTimeout
         self.sleep = sleep
     }
 
@@ -353,13 +359,20 @@ public final class CreatedStationStarter<Item: Sendable> {
         let sleep = self.sleep
         let pollInterval = self.pollInterval
         let maxPolls = self.maxPolls
+        let now = self.now
+        // Fry N2: begin only once the first song is really playing (not preparing, held, or
+        // refused), waiting at most the start's own bound. The bound is a deadline on the clock,
+        // checked after every wake (#456 macOS): a count of polls stretched with every oversleep
+        // (40 "1 ms" polls ran past 150 ms on a loaded runner), so a release after the bound still
+        // began a render. The poll count stays as a backstop for a sleep that does not advance time.
+        let deadline = now() + delay + readyTimeout
         introTask = Task { @MainActor [weak self] in
             await sleep(delay)
-            // Fry N2: begin only once the first song is really playing (not preparing, held, or
-            // refused), waiting at most the start's own bound.
             var polls = 0
-            while transport() != .playing {
-                guard !Task.isCancelled, polls < maxPolls else { return }
+            while true {
+                guard !Task.isCancelled, now() <= deadline else { return }
+                if transport() == .playing { break }
+                guard polls < maxPolls else { return }
                 polls += 1
                 await sleep(pollInterval)
             }

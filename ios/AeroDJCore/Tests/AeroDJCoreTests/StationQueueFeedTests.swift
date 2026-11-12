@@ -1433,6 +1433,45 @@ final class StationStartInstantTests: XCTestCase {
         XCTAssertEqual(intro.begins, [], "no render for a start that never played")
     }
 
+    /// A test clock that only the starter's sleeps advance, each by `factor` times what was asked.
+    @MainActor private final class OversleepClock {
+        let origin = ContinuousClock.now
+        var elapsed = Duration.zero
+        var factor = 1
+        var releaseAt: Duration?
+        var now: ContinuousClock.Instant { origin + elapsed }
+    }
+
+    // #456 macOS: the confirmation wait is bounded by time, not by a count of polls. After the
+    // start every 1 ms poll oversleeps to 5 ms (a loaded macOS runner), and the call releases the
+    // song 150 ms in, well past the 40 ms bound. Counting 40 polls waited 200 ms and began a render
+    // for a start that was refused; the time bound gives up at 40 ms. The starter reads this
+    // test's clock, which only its own (oversleeping) polls advance, so the order is fixed.
+    func testARefusedStartNeverBeginsTheIntroWhenPollsOversleep() async throws {
+        let (model, feed, player) = await rig()
+        let clock = OversleepClock()
+        let s = CreatedStationStarter(feed: feed, readyTimeout: .milliseconds(40), pollInterval: .milliseconds(1),
+                                      fillTimeout: .seconds(5), introDelay: .milliseconds(5),
+                                      sleep: { requested in
+                                          clock.elapsed += requested * clock.factor
+                                          if let at = clock.releaseAt, clock.elapsed >= at { player.transport = .playing }
+                                          try? await Task.sleep(for: requested)
+                                      },
+                                      now: { clock.now })
+        let intro = FakeIntro()
+        s.intro = intro
+        s.airIntro = { _ in }
+        player.transportAfterStart = .preparing                 // held by a call: never confirmed
+        guard case .started = await open(s, model, player, station([seed(.artist, "a")]),
+                                         facts: StationIntroFacts(id: "a", name: "A")) else { return XCTFail() }
+        clock.factor = 5
+        clock.releaseAt = clock.elapsed + .milliseconds(150)
+        try await Task.sleep(nanoseconds: 300_000_000)          // every poll has run by now
+        player.transport = .playing
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(intro.begins, [], "no render for a start that never played in time")
+    }
+
     // N3: re-tapping the active built-in does not re-apply its recipe, so unsaved Tune edits stay
     // (the app's wiring: `applyBuiltInRecipe` records `lastAppliedRecipeID`).
     func testReTappingTheActiveBuiltInKeepsUnsavedTuneEdits() async throws {
