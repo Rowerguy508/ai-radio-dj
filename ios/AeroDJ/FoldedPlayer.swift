@@ -230,10 +230,13 @@ struct FoldedPlayer: View {
             .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
             .background { dayWash.accessibilityHidden(true) }
             .accessibilitySortPriority(2)
-            .overlay {
-                // One element. Putting the identifier on the ScrollView itself also
-                // exposes the scroll view, so the UI test finds two matches.
+            .background {
+                // Behind the art and the rating button. An overlay accessibility element
+                // stays in XCUITest's hit test even with allowsHitTesting(false), so the
+                // centre of a control under it is not hittable. The ScrollView itself is
+                // not the element: that also exposes the scroll view.
                 Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityElement()
                     .accessibilityIdentifier("folded.trackColumn")
                     .allowsHitTesting(false)
@@ -247,11 +250,12 @@ struct FoldedPlayer: View {
             wideContent(gap: gap, top: CGFloat(layout.topClearance))
                 .frame(width: CGFloat(layout.contentWidth), height: size.height, alignment: .top)
                 .accessibilitySortPriority(1)
-                .overlay {
-                    // One element, as with the track column. The identifier on this frame
-                    // was copied onto every control inside it (Search, Pause, Skip, the
-                    // station chip), so the UI test found several folded.contentColumn.
+                .background {
+                    // Behind the scrubber and the other controls. XCUITest's isHittable
+                    // uses the accessibility element at the control's centre, and
+                    // allowsHitTesting(false) does not remove an overlay from that check.
                     Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .accessibilityElement()
                         .accessibilityIdentifier("folded.contentColumn")
                         .allowsHitTesting(false)
@@ -260,10 +264,10 @@ struct FoldedPlayer: View {
             wideSystemBar(top: CGFloat(layout.topClearance))
                 .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
                 .accessibilitySortPriority(0)
-                .overlay {
-                    // Same as the columns: the identifier on this frame was copied onto
-                    // Back, More, Queue and Tune.
+                .background {
+                    // Behind Back, More, Queue and Tune, for the same hit-test reason.
                     Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .accessibilityElement()
                         .accessibilityIdentifier("folded.systemBar")
                         .allowsHitTesting(false)
