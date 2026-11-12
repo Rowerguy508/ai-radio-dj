@@ -105,6 +105,21 @@ public final class DJBreakSession {
     private var stationIntroGeneration = 0
     private var stationIntroClosed = false
     private var stationIntroChain: Task<Void, Never>?
+    /// Appends are accepted only for this queue generation and epoch.
+    private var stationAppendGeneration: Int?
+    private var stationAppendEpoch: Int?
+    private var stationAppendPending: [DJTrack] = []
+    /// A ready intro waiting for the natural boundary that airs it. Not played over a song.
+    private var stationIntroToAir: PreparedDJBreak?
+    /// Skips reported for a station intro, for tests.
+    var testReportedSkips: [(Int, DJBreakSkipReason)] = []
+    /// The generation of the intro that last began, for tests.
+    var testStationIntroGeneration: Int { stationIntroGeneration }
+
+    /// Applies a station-intro cancel for `generation`, the way a late `reserveQueueSetup` would.
+    func testCancelIntroRender(generation: Int) async {
+        await preparer.cancelIfOwner(generation, afterTrack: StationIntro.afterTrack)
+    }
 
     private func requestStop(afterTrack k: Int, _ reason: InterludeStopReason) {
         if let hook = onBreakMustStop { hook(reason, nil) } else { pendingStop = (k, reason) }
@@ -214,6 +229,11 @@ public final class DJBreakSession {
         reservedStation = .some(StationQueueKey(station.committedDisplayed))
         queueSetupGeneration += 1
         queueSetupPending = true
+        stationAppendPending = []
+        stationAppendGeneration = nil
+        // A new queue (station start, song tap, or search) must not let a station-intro
+        // render finish only to be dropped. Cancel it before play; the song does not wait.
+        cancelInFlightStationIntro()
         return QueueSetupReservation(generation: queueSetupGeneration)
     }
 
@@ -294,6 +314,13 @@ public final class DJBreakSession {
                 self.dj.send(.breakSkipped(afterTrack: StationIntro.afterTrack, .notPlanned))
                 return
             }
+            await self.preparer.noteBreakOwner(generation, afterTrack: StationIntro.afterTrack)
+            // That await is a preparer hop. A cancel in it bumps the generation and finds no
+            // render yet, so it releases nothing. Do not start one for the obsolete intro.
+            guard self.stationIntroGeneration == generation, !self.stationIntroClosed, !Task.isCancelled else {
+                await self.preparer.cancelIfOwner(generation, afterTrack: StationIntro.afterTrack)
+                return
+            }
             _ = await self.prepareBreak(planned.djBreak, deadline: .seconds(30), onDeviceOnly: planned.onDeviceOnly)
         }
         stationIntroChain = chain
@@ -339,6 +366,7 @@ public final class DJBreakSession {
         // line stops now, personal or not. Untagged, as in `purge`. Not `.sourceRevoked` (it
         // isn't one); there is no queue-change case, so the nearest non-revoke reason is used.
         if let live = onAir { requestStop(afterTrack: live.afterTrack, .interruption) }
+        if stationIntroToAir != nil { stationIntroWasNotAired() }
         await preparer.cancelAll()
         guard !Task.isCancelled else { return }
         if briefing != nil { await station.handle(.briefingWillPlan) }
@@ -401,6 +429,76 @@ public final class DJBreakSession {
         if let previous = openedStation, previous?.seeds != committed?.seeds { writer.greetAgain() }
         openedStation = .some(committed)
         replan(from: 0, keepingThrough: -1)
+        let queuedAppend = stationAppendPending
+        stationAppendPending = []
+        if stationAppendGeneration == queueSetupGeneration {
+            adoptAppendedSongs(queuedAppend)
+        }
+    }
+
+    /// The queue generation and epoch an append must name. Set when that queue is handed to
+    /// the session (`beginQueueInBackground`'s reservation). A later station, tap, or search
+    /// replaces them, so an append for the old queue is dropped.
+    public func acceptStationAppends(generation: Int, queueEpoch: Int) {
+        stationAppendGeneration = generation
+        stationAppendEpoch = queueEpoch
+    }
+
+    /// Songs filled in behind a fast start. Plans breaks for them with the same `replan`
+    /// a full queue uses. A generation or epoch that is not the current queue is ignored,
+    /// and songs already in the plan are not planned again.
+    public func appendStationSongs(_ songs: [DJTrack], generation: Int, queueEpoch: Int) {
+        guard stationAppendGeneration == generation, stationAppendEpoch == queueEpoch else { return }
+        guard queueSetupGeneration == generation, !songs.isEmpty else { return }
+        if queueSetupPending {
+            stationAppendPending.append(contentsOf: songs)
+            return
+        }
+        adoptAppendedSongs(songs)
+    }
+
+    /// Adds songs the plan does not already have and plans only the new tail.
+    private func adoptAppendedSongs(_ songs: [DJTrack]) {
+        var seen = Set(tracks.map(\.id))
+        let fresh = songs.filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
+        guard !fresh.isEmpty else { return }
+        let start = tracks.count
+        tracks.append(contentsOf: fresh)
+        replan(from: max(0, start - 1), keepingThrough: start - 2)
+    }
+
+    /// Stops a station-intro render that has not aired. Does not wait: the new song must not.
+    private func cancelInFlightStationIntro() {
+        let obsolete = stationIntroGeneration
+        stationIntroClosed = true
+        stationIntroID = nil
+        stationIntroGeneration &+= 1
+        if stationIntroToAir != nil { stationIntroWasNotAired() }
+        Task { @MainActor [weak self] in
+            // Only the generation that was rendering. A newer intro has already replaced the token.
+            await self?.preparer.cancelIfOwner(obsolete, afterTrack: StationIntro.afterTrack)
+        }
+    }
+
+    /// Holds a ready intro for the next natural boundary. Does not play it and does not render.
+    public func stageStationIntro(_ prepared: PreparedDJBreak) {
+        if stationIntroToAir != nil { stationIntroWasNotAired() }
+        guard prepared.talkOverCueID == nil, prepared.talkOverStartSeconds == nil else {
+            reportBreakSkipped(afterTrack: StationIntro.afterTrack, .cancelled, planned: true)
+            return
+        }
+        stationIntroToAir = prepared
+    }
+
+    /// The boundary already has another break, or the intro must not air. Reports the skip.
+    public func dropStagedStationIntro() {
+        guard stationIntroToAir != nil else { return }
+        stationIntroWasNotAired()
+    }
+
+    public func stationIntroWasNotAired() {
+        stationIntroToAir = nil
+        reportBreakSkipped(afterTrack: StationIntro.afterTrack, .cancelled, planned: true)
     }
 
     /// The station the planned queue belongs to. `unknown` fails closed.
@@ -429,6 +527,22 @@ public final class DJBreakSession {
     /// True when any seed of the station is from the listener's library.
     nonisolated static func speaksOnDeviceOnly(_ configuration: StationConfiguration) -> Bool {
         configuration.seeds.contains { $0.source == .library }
+    }
+
+    /// The station intro took boundary `k`. The planned break is taken and not played.
+    private func skipPlannedBreakForStationIntro(at k: Int, wasPlanned: Bool) async {
+        if let planned = breaks.removeValue(forKey: k) { writer.forgetPlannedBreaks([planned]) }
+        breakDayParts[k] = nil
+        preparedDayParts[k] = nil
+        _ = await preparer.takeBreak(afterTrack: k)
+        guard wasPlanned else { return }
+        reportBreakSkipped(afterTrack: k, .stationIntro, planned: true)
+    }
+
+    private func reportBreakSkipped(afterTrack k: Int, _ reason: DJBreakSkipReason, planned: Bool) {
+        dj.send(.breakSkipped(afterTrack: k, reason))
+        lastNoBreak = (reason, planned)
+        testReportedSkips.append((k, reason))
     }
 
     /// The only `preparer.prepare` call (#154). `onDeviceOnly` is for the station intro's own
@@ -504,7 +618,9 @@ public final class DJBreakSession {
 
     /// Song `k` ended on its own. Applies pending station edits at this safe boundary, then
     /// returns the prepared break, or nil when there is none (the player plays music at once).
-    public func naturalBoundary(afterTrack k: Int) async -> PreparedDJBreak? {
+    /// `airStationIntro` is true only at that boundary, never from an early talk-over take:
+    /// a staged intro then replaces this song's planned break (one break, no talk-over).
+    public func naturalBoundary(afterTrack k: Int, airStationIntro: Bool = false) async -> PreparedDJBreak? {
         let stationBefore = StationQueueKey(station.active)
         await station.handle(.songBoundary(afterTrack: k))
         let stationAfter = StationQueueKey(station.active)
@@ -516,6 +632,19 @@ public final class DJBreakSession {
         replanIfCadenceChanged(after: k)
         let cadencePlanned = breaks[k] != nil
         lastNoBreak = nil
+        if airStationIntro, let staged = stationIntroToAir {
+            stationIntroToAir = nil
+            if staged.talkOverCueID != nil || staged.talkOverStartSeconds != nil || nextMayChange {
+                reportBreakSkipped(afterTrack: StationIntro.afterTrack, .cancelled, planned: cadencePlanned)
+            } else {
+                await skipPlannedBreakForStationIntro(at: k, wasPlanned: cadencePlanned)
+                var aired = PreparedDJBreak(afterTrack: k, cues: staged.cues, clips: staged.clips,
+                                            attributions: staged.attributions)
+                aired.talkOverCueID = nil
+                onAir = (k, [], false)
+                return aired
+            }
+        }
         let taken = await preparer.takeBreak(afterTrack: k)
         if case .skipped(let reason) = taken { lastNoBreak = (reason, cadencePlanned) }
         guard case .ready(let ready) = taken else { return nil }
@@ -634,6 +763,7 @@ public final class DJBreakSession {
 
     /// Song `k` was cut (skip, queue change): its break is dropped, never played after a cut song.
     public func songCut(afterTrack k: Int) async {
+        if stationIntroToAir != nil { stationIntroWasNotAired() }
         _ = await preparer.takeBreak(afterTrack: k, natural: false)
     }
 

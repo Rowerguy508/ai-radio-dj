@@ -132,10 +132,12 @@ struct BleedNowPlaying: View {
                     StationSoundRow(tags: soundTags, action: onTune)
                 }
             case .nothingPlaying:
+                // #454: search is never a station's empty state; it sits behind an explicit
+                // button that opens the Queue workspace (where `StartListeningView` lives).
                 VStack(alignment: .leading, spacing: 12) {
                     NowPlayingPlaceholder(content: content, actions: actions)
-                    if let search {
-                        StartListeningView(search: search, model: studioSearch)
+                    if search != nil {
+                        SearchAppleMusicButton(action: onQueue)
                     }
                 }
                 .modifier(BleedStateScrim())

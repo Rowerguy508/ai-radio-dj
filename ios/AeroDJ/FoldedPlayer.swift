@@ -252,8 +252,10 @@ struct FoldedPlayer: View {
                 testTag
                 NowPlayingPlaceholder(content: content, actions: actions)
                     .padding(.top, 24)
-                if let search {
-                    StartListeningView(search: search, model: studioSearch)
+                // #454: search is never a station's empty state; it sits behind an explicit
+                // button that opens the Queue workspace (where `StartListeningView` lives).
+                if search != nil {
+                    SearchAppleMusicButton(action: onQueue)
                         .padding(.top, 16)
                 }
             default:
@@ -280,7 +282,8 @@ struct FoldedPlayer: View {
     /// session to look at (a track, or authorized with nothing queued).
     private var showsWorkspaceButtons: Bool {
         switch content {
-        case .track, .nothingPlaying: true
+        // #454: a starting or failed station still offers its Queue and Tune.
+        case .track, .nothingPlaying, .starting, .startFailed, .startUnavailable: true
         default: false
         }
     }

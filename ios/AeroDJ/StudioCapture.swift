@@ -72,6 +72,12 @@ enum StudioCaptureScenario: String {
     /// Station ratings (-Nova, PR B): `playing` with the rating button, unrated, with its
     /// first-time "Rate" label. The other scenarios get no rating controller, so they are unchanged.
     case ratingFirstTime
+    /// #454: a station row was tapped and its first song is on its way: "Starting <name>…" on
+    /// Now Playing, never the search field.
+    case stationStarting
+    /// #454: the tapped station could not start: "Couldn't start <name>" with Try again (which
+    /// counts a play in the capture), on the same screen, never the search field.
+    case stationStartFailed
     /// The playing song rated Like it (plus.circle), label already seen.
     case ratingLiked
     /// A queued song just rated Never: the Undo toast over the player (no skip in a capture).
@@ -88,7 +94,7 @@ enum StudioCaptureScenario: String {
 
     var snapshot: PlaybackSnapshot {
         switch self {
-        case .empty, .loading, .denied, .stations, .resize: PlaybackFixtures.stopped
+        case .empty, .loading, .denied, .stations, .resize, .stationStarting, .stationStartFailed: PlaybackFixtures.stopped
         case .error: PlaybackFixtures.recoverableError
         default: PlaybackFixtures.playing
         }
@@ -226,6 +232,14 @@ struct StudioCaptureView: View {
                 await studio.station.setEnergy(0.85)
                 await studio.station.setGenres(["pop", "indie", "synthwave"])
                 await studio.station.saveChanges()
+            case .stationStarting:
+                studio.stationStart.begin(stationID: PlaybackFixtures.station.id,
+                                          stationName: PlaybackFixtures.station.name, songAtTap: nil)
+            case .stationStartFailed:
+                let tap = studio.stationStart.begin(stationID: PlaybackFixtures.station.id,
+                                                    stationName: PlaybackFixtures.station.name, songAtTap: nil,
+                                                    retry: { PlaybackCallLog.shared.recordPlay() })
+                studio.stationStart.finish(tap: tap, outcome: .notStarted(.notReadyInTime))
             case .ratingFirstTime:
                 captureRating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id)
             case .ratingLiked:
