@@ -416,14 +416,22 @@ public enum StationPoolBuilder {
 /// #418 (-Fry): where a station build's shuffle seed comes from. Privacy (Sentinel): the default
 /// seed is drawn from `SystemRandomNumberGenerator` only, never from user, device, account or
 /// listening data, and it is never logged or stored (`StationQueueEvent` has no seed).
-public enum StationShuffleSeedSource: Equatable, Sendable {
-    /// A fresh seed per build from the system generator (the app's default).
-    case systemRandom
+public struct StationShuffleSeedSource: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case systemRandom
+        case perDay
+        case fixed(UInt64)
+    }
+
+    let kind: Kind
+
+    /// A fresh seed per build from the system generator (the app's default and the only public source).
+    public static let systemRandom = StationShuffleSeedSource(kind: .systemRandom)
     /// The pre-#418 seed: the station key and the day, so a rebuild that day repeats the order.
-    /// Tests that predict a feed's order use it.
-    case perDay
-    /// One fixed seed for every build (tests).
-    case fixed(UInt64)
+    /// Internal: only tests reach it (`@testable import`); the app can't select it.
+    static let perDay = StationShuffleSeedSource(kind: .perDay)
+    /// One fixed seed for every build. Internal, for tests only.
+    static func fixed(_ value: UInt64) -> StationShuffleSeedSource { StationShuffleSeedSource(kind: .fixed(value)) }
 
     /// The seed for one build. `perDay` is evaluated only for `.perDay`.
     public func seed(perDay: @autoclosure () -> UInt64) -> UInt64 {
@@ -432,7 +440,7 @@ public enum StationShuffleSeedSource: Equatable, Sendable {
     }
 
     func seed<G: RandomNumberGenerator>(perDay: @autoclosure () -> UInt64, using generator: inout G) -> UInt64 {
-        switch self {
+        switch kind {
         case .systemRandom: generator.next()
         case .perDay: perDay()
         case let .fixed(value): value
