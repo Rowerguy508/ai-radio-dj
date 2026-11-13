@@ -599,7 +599,7 @@ jobs:
                       closed-ax5-dark open-ax5-dark \
                       closed-onair open-onair \
                       iphone-landscape iphone-landscape-dark ipad-landscape ipad-landscape-dark \
-                      duo-wide-ready; do
+                      duo-wide-ready duo-wide-onair; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
