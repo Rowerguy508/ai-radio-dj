@@ -28,9 +28,18 @@ public enum StationQueueOwner {
         return StationRef(id: id.uuidString, name: recipe.name)
     }
 
-    /// The tag for a new station queue: its owner, or (owner unknown) the playing queue's tag,
-    /// which is what every station start used before #438.
-    public static func tag(owner: StationRef?, playing: StationRef?) -> StationRef? {
-        owner ?? playing
+    /// The tag for a new station queue. The owner always wins. When there is no owner (edited
+    /// seeds, an unnamed station, a deleted recipe), a same-station continuation keeps the
+    /// previous tag — the committed seeds still match the previous queue's, as on a refill or
+    /// an idle Play of the same station — and a new start falls back to nil, so the car does
+    /// not keep the previous station's name or mark (it shows the generic "OnAirly" fallback
+    /// when nothing else is known).
+    public static func tag(owner: StationRef?, playing: StationRef?,
+                           committed: StationConfiguration,
+                           previous: StationQueueKey?) -> StationRef? {
+        if let owner { return owner }
+        guard let current = StationQueueKey(committed),
+              current.seedsFingerprint == previous?.seedsFingerprint else { return nil }
+        return playing
     }
 }
