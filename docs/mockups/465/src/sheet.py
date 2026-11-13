@@ -18,7 +18,7 @@ pts=[("Studio, not library","The right half of the unfolded screen is a live stu
      ("Glass on controls only","Liquid Glass is used only on the transport, the tuner, the symbol bar and the tab bar. Content stays solid and high-contrast."),
      ("Fold respected","The 28 pt band at x = 306 to 334 stays empty, and the 56 pt symbol bar sits on the outer edge (FoldedColumnLayout metrics)."),
      ("Lock screen and StandBy","These show station, track and the on-air dot only, redacted by default (privacySensitive), with no script text."),
-     ("Open questions","The folded reskin needs the owner's yes. The tent pose API is unconfirmed in the 27.1 SDK. Folded, tent and lock-screen sizes are assumed.")]
+     ("Open questions","The folded reskin needs the owner's yes. The tent frame is hinge-angle based and needs 27.1. The vertical symbol bar needs 27.1 too, and CI is on 26.5. Folded, tent and lock-screen sizes are assumed.")]
 b+=('<div class="a" style="left:1080px;top:600px;width:600px;display:flex;flex-direction:column;gap:16px">'+"".join(
     f'<div><div style="font-weight:800;font-size:16px">{t}</div><div style="font-size:13px;line-height:1.45;font-weight:500;color:rgba(255,255,255,.72);margin-top:3px">{d}</div></div>' for t,d in pts)+'</div>')
 page("contact-sheet",W,H,b)

@@ -10,7 +10,7 @@ The unfolded frames use the real `FoldedColumnLayout` metrics: 16 pt edge, a 28 
 | `01-folded.png` | Outer screen, compact player (idle, ember) with glass transport and tab bar | 390×844 | **Assumed size.** Reskin needs the owner's yes, because the iPhone path is byte-identical by rule |
 | `02-unfolded-speaking.png` | Unfolded, DJ speaking: hero orb, On Air, SAMPLE caption, art at 0.94 | 640×820 | Measured |
 | `02b-unfolded-ready.png` | Unfolded, DJ ready: ring, "DJ break after this song" in up next, no On Air | 640×820 | Measured |
-| `03-tent.png` | Tent radio face: orb, big clock, station, with controls hidden behind a tap | 820×640 | **Assumed size.** Pose API unconfirmed in the 27.1 SDK |
+| `03-tent.png` | Tent radio face: orb, big clock, station, with controls hidden behind a tap | 820×640 | **Assumed size.** hinge-angle based, needs 27.1 (no tent pose API; hinge .partiallyOpen plus angle, per Fry’s SDK check) |
 | `04-standby.png` | StandBy clock radio, DJ speaking (after Face ID) | 844×390 | **Assumed size** |
 | `04b-standby-redacted.png` | StandBy, default redacted (privacySensitive) | 844×390 | **Assumed size** |
 | `05-live-activity.png` | Lock screen with a redacted Live Activity, plus Dynamic Island compact and expanded specimens | 390×844 | **Assumed size** |

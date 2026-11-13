@@ -5,7 +5,7 @@ b=[f'<div class="a" style="left:0;top:0;width:820px;height:306px;background:radi
    '<div class="a" style="left:0;top:319.5px;width:820px;height:1px;background:rgba(255,255,255,.10)"></div>',
    '<div class="a" style="left:0;top:334px;width:820px;height:306px;background:#020304"></div>',
    f'<div class="cap" style="left:20px;top:14px"><b>03 · Tent pose · radio face</b> · 820×640 pt · assumed size (unfolded, rotated)</div>',
-   f'<div class="flag" style="right:20px;top:10px">Pose API unconfirmed in 27.1 SDK</div>',
+   f'<div class="flag" style="right:20px;top:10px">Hinge-angle based, needs 27.1</div>',
    # orb + tally
    f'<div class="a" style="left:70px;top:70px">{orb("speaking",140)}</div>',
    f'<div class="a" style="left:88px;top:240px"><span class="tally"><i></i>ON AIR</span></div>',
@@ -27,7 +27,7 @@ b=[f'<div class="a" style="left:0;top:0;width:820px;height:306px;background:radi
    f'<span class="k">STATE</span>Shown in DJ speaking. In ready it shows the breathing ring, with no tally. In idle it shows the ember, and the clock keeps the face. '
    f'<span class="k">MOTION</span>Nothing loops while idle. Tapping fades the glass transport up over about 250 ms, and it hides again after 5 s with no touch. '
    f'<span class="k">A11Y</span>Reduce Motion gives a crossfade, and Reduce Transparency gives solid controls. '
-   f'<span class="k">SDK</span>The tent layout ships only if the iOS 27.1 SDK exposes a pose or hinge API (#465 items 2 and 3). Otherwise this frame is dropped, not faked.</div>',
+   f'<span class="k">SDK</span>There is no tent pose API. The only signal is hinge .partiallyOpen plus the angle, which needs the iOS 27.1 SDK. CI builds on 26.5 today.</div>',
    f'<div class="a" style="left:330px;top:548px;width:160px;height:72px"><svg width="160" height="72" viewBox="0 0 160 72" fill="none" stroke-linecap="round">'
    f'<path d="M30 66 L80 10 L130 66" stroke="rgba(255,255,255,.35)" stroke-width="3"/><path d="M30 66 L80 10" stroke="rgb({TEAL})" stroke-width="5"/>'
    f'<circle cx="80" cy="10" r="4" fill="#fff"/><text x="0" y="40" font-family="Inter" font-size="9" font-weight="800" fill="rgb({TEAL})">FACE</text>'
