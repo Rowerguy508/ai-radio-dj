@@ -24,6 +24,9 @@ struct PlayingScreen: View {
 
     @SceneStorage("aerodj.studio.segment") private var segment: WorkspaceSegment = .queue
     @State private var showWorkspace = false
+    /// Collapse on the unfolded rail shows the centred column. The container size stays,
+    /// and nothing starts or stops. A real fold clears it.
+    @State private var duoCollapsed = false
     /// One search session above the compact/Studio switch so a fold cannot wipe results.
     @StateObject private var studioSearch = StudioSearchModel()
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -135,8 +138,11 @@ struct PlayingScreen: View {
             // (the unfolded Duo) moves the controls to the right.
             let placement = FoldedColumnLayout.controlPlacement(containerWidth: width,
                                                                 containerHeight: Double(height))
+            let showsRail = placement == .duoHorizontal && !duoCollapsed
             let movesMoreIntoThePlayer = placement != .phoneBottom
             let openConnections = { segment = .connections; showWorkspace = true }
+            let openQueue = { segment = .queue; showWorkspace = true }
+            let openTune = { segment = .tune; showWorkspace = true }
             FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
                          content: content, snapshot: snapshot, actions: actions, dj: dj,
                          search: search, studioSearch: studioSearch, timeSource: timeSource,
@@ -144,15 +150,25 @@ struct PlayingScreen: View {
                          moreMenu: movesMoreIntoThePlayer
                             ? FoldedMoreMenuItems(reviewCount: dj.reviewCount, onConnections: openConnections)
                             : nil,
-                         onQueue: { segment = .queue; showWorkspace = true },
-                         onTune: { segment = .tune; showWorkspace = true },
-                         onReview: { segment = .connections; showWorkspace = true })
+                         onQueue: openQueue,
+                         onTune: openTune,
+                         onReview: { segment = .connections; showWorkspace = true },
+                         showsUnfoldedRail: showsRail,
+                         onCollapseRail: { duoCollapsed = true })
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
                 .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
                                showsMore: !movesMoreIntoThePlayer,
-                               hidesSystemBack: placement == .duoHorizontal,
-                               onConnections: openConnections)
+                               hidesSystemBack: showsRail,
+                               onConnections: openConnections,
+                               systemRail: showsRail ? DuoRailHooks(
+                                    dj: dj, reviewCount: dj.reviewCount, upNext: snapshot.upNext,
+                                    onConnections: openConnections, onQueue: openQueue, onTune: openTune,
+                                    onCollapse: { duoCollapsed = true }, pause: { actions.pause() }) : nil,
+                               keepSystemVerticalBar: placement == .duoHorizontal)
+                .onChange(of: placement) { _, new in
+                    if new != .duoHorizontal { duoCollapsed = false }
+                }
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,

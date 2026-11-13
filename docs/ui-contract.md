@@ -214,8 +214,10 @@ so the compact layout and its sheet keep their radii.
   (`controlPlacement` is `.duoHorizontal`): artwork and the title stay in the
   left half, an empty gutter sits on the centre fold, and the right half is a content
   column (horizontal scrubber, play/pause, skip, station, DJ chip, and Search Apple
-  Music when nothing is playing, fitted to the column width) plus a thin symbol
-  bar (back, more, queue, tune). Controls start below `duoStatusClearance`. Below 500 pt
+  Music when nothing is playing, fitted to the column width) plus a glass rail
+  (collapse, more, queue, sleep timer, and a live dot). The dot is lit only while
+  the DJ state is `.speaking`. Collapse shows this centred column and does not
+  change playback. Controls start below `duoStatusClearance`. Below 500 pt
   wide (every iPhone in portrait) the compact player is unchanged.
 - **No `ViewThatFits` at the top level.** Use it inside a zone, for example to pick
   between icon+label and icon-only transport buttons at large text sizes.

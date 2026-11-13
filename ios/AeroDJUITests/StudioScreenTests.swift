@@ -332,8 +332,8 @@ final class StudioScreenTests: XCTestCase {
 
     /// Owner, build 44 (#460): the unfolded Duo (640 pt, compact class) is fully horizontal.
     /// Artwork and the title stay left of the fold. The content column holds the horizontal
-    /// scrubber, play/pause, skip, the station pill and the DJ chip. The thin bar holds
-    /// back, more, queue and tune.
+    /// scrubber, play/pause, skip, the station pill and the DJ chip. The rail holds
+    /// collapse, more, queue and the sleep timer. Tune stays in More.
     @MainActor
     func testDuoWideControlsSitInTheRightRail() throws {
         try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
@@ -380,14 +380,15 @@ final class StudioScreenTests: XCTestCase {
         let scrubber = any["playback.progress"]
         let chip = any["station.title"]
         let more = any["folded.more"]
-        let tune = app.buttons["transport.tune"]
+        let collapse = app.buttons["folded.collapse"]
+        let sleep = app.buttons["folded.sleepTimer"]
         let queue = app.buttons["queue.affordance"]
-        let back = app.buttons["folded.back"]
+        let dot = any["folded.liveDot"]
         // The up-next line also labels the current song "Morning Light". The title under test is the one in the track column.
         let title = track.staticTexts["Morning Light"]
         for (name, element) in [("play", play), ("skip", skip), ("ready", ready), ("scrubber", scrubber),
-                                ("chip", chip), ("more", more), ("tune", tune), ("queue", queue),
-                                ("back", back), ("title", title)] {
+                                ("chip", chip), ("more", more), ("sleep", sleep), ("queue", queue),
+                                ("collapse", collapse), ("dot", dot), ("title", title)] {
             XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing\n\(app.debugDescription)")
         }
         let frames = "track \(trackFrame) content \(contentFrame) bar \(barFrame) fold \(foldFrame) "
@@ -400,13 +401,27 @@ final class StudioScreenTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(element.frame.midX, contentFrame.minX - 4, "\(name) left the content column: \(frames)")
             XCTAssertLessThanOrEqual(element.frame.midX, contentFrame.maxX + 4, "\(name) left the content column: \(frames)")
         }
-        for (name, element) in [("back", back), ("more", more), ("queue", queue), ("tune", tune)] {
+        for (name, element) in [("collapse", collapse), ("more", more), ("queue", queue), ("sleep", sleep), ("dot", dot)] {
             XCTAssertGreaterThanOrEqual(element.frame.midX, barFrame.minX - 4, "\(name) left the symbol bar: \(frames)")
+            XCTAssertGreaterThanOrEqual(element.frame.width, 44, "\(name) is under 44 pt wide: \(frames)")
+            XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(name) is under 44 pt tall: \(frames)")
         }
+        XCTAssertGreaterThan(dot.frame.minY, sleep.frame.maxY, "the live dot sits below the rail controls: \(frames)")
+        XCTAssertEqual(dot.value as? String, "Off", "ready is not On Air: \(dot.label) \(String(describing: dot.value))")
+        XCTAssertFalse(dot.label.localizedCaseInsensitiveContains("on air"), dot.label)
         XCTAssertGreaterThan(scrubber.frame.width, scrubber.frame.height, "the scrubber stays horizontal: \(frames)")
         XCTAssertGreaterThanOrEqual(play.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(back.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(collapse.frame.height, 44)
         XCTAssertGreaterThanOrEqual(more.frame.minY, barFrame.minY + 40, "chrome starts below the status clearance")
+        more.tap()
+        let tune = app.buttons["transport.tune"]
+        XCTAssertTrue(tune.waitForExistence(timeout: 5), "Tune stays in More\n\(app.debugDescription)")
+        XCTAssertTrue(tune.isHittable, "Tune in More is not hittable")
+        XCTAssertGreaterThanOrEqual(tune.frame.height, 44, "Tune in More is under 44 pt")
+        // The menu covers the rail. A tap on the artwork column closes it without tuning.
+        track.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        let tuneClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: tune)
+        XCTAssertEqual(XCTWaiter().wait(for: [tuneClosed], timeout: 5), .completed, "More did not close")
         let timeline = app.buttons["duo.upNext"]
         XCTAssertTrue(timeline.waitForExistence(timeout: 5), "up-next timeline missing\n\(app.debugDescription)")
         XCTAssertGreaterThanOrEqual(timeline.frame.midX, contentFrame.minX - 4, "timeline stays in the content column")
@@ -418,6 +433,57 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5), "tapping the timeline opens the queue")
         XCTAssertEqual(container.frame.width, box.width, accuracy: 0.5, "container resized before the screenshot")
         save(app, "duo-wide-ready")
+    }
+
+    /// The live dot follows the published DJ state on the unfolded rail. Idle and ready stay off.
+    /// Speaking lights it, and that frame is the screenshot next to mockup 02.
+    @MainActor
+    func testDuoRailLiveDotFollowsSpeaking() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        for scenario in ["duoWideEmpty", "duoWideReady"] {
+            let app = launch(scenario: scenario)
+            let dot = app.descendants(matching: .any)["folded.liveDot"]
+            XCTAssertTrue(dot.waitForExistence(timeout: 15), "\(scenario) live dot missing\n\(app.debugDescription)")
+            XCTAssertEqual(dot.value as? String, "Off", "\(scenario) lit the dot: \(dot.label)")
+            XCTAssertFalse(dot.label.localizedCaseInsensitiveContains("on air"), "\(scenario) \(dot.label)")
+            app.terminate()
+        }
+        let app = launch(scenario: "duoWideSpeaking")
+        let any = app.descendants(matching: .any)
+        let dot = any["folded.liveDot"]
+        let bar = any["folded.systemBar"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(dot.waitForExistence(timeout: 5), "speaking live dot missing\n\(app.debugDescription)")
+        XCTAssertEqual(dot.value as? String, "On Air", "speaking did not light the dot: \(dot.label) \(String(describing: dot.value))")
+        guard let barFrame = settledFrame(of: bar, "system bar"), let dotFrame = settledFrame(of: dot, "live dot") else { return }
+        XCTAssertGreaterThanOrEqual(dotFrame.midX, barFrame.minX - 4, "lit dot left the rail")
+        XCTAssertTrue(app.buttons["folded.collapse"].isHittable)
+        XCTAssertTrue(app.buttons["folded.sleepTimer"].isHittable)
+        XCTAssertTrue(app.buttons["queue.affordance"].isHittable)
+        save(app, "duo-wide-speaking")
+    }
+
+    /// Collapse leaves the unfolded rail and shows the centred column. Playback stays up.
+    @MainActor
+    func testCollapseUnfoldedRailShowsTheFoldedColumn() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoWideReady")
+        let bar = app.descendants(matching: .any)["folded.systemBar"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 15), app.debugDescription)
+        let collapse = app.buttons["folded.collapse"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(collapse.isHittable)
+        XCTAssertGreaterThanOrEqual(collapse.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(collapse.frame.height, 44)
+        collapse.tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed,
+                       "collapse left the unfolded rail up\n\(app.debugDescription)")
+        XCTAssertTrue(app.descendants(matching: .any)["folded.wideColumn"].waitForExistence(timeout: 5),
+                      "folded column missing\n\(app.debugDescription)")
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["folded.systemBar"].exists)
+        XCTAssertTrue(app.buttons["transport.playPause"].exists, "playback stays on screen")
     }
 
     /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and
