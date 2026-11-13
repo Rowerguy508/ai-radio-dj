@@ -53,6 +53,8 @@ jobs:
         run: ios/scripts/check-release-disables-paid-voice.sh
       - name: GDELT news only in the tester-voice Release build
         run: ios/scripts/check-release-excludes-gdelt.sh
+      - name: Self-hosted CI dirs are keyed per runner (script test)
+        run: ios/scripts/ci-selfhosted-isolation-test.sh
 
   # Linux SwiftPM discovery. swift test here is the official Swift 6.2 image.
   # It does not replace the macOS AeroDJCore job or the iOS simulator gates.
@@ -404,12 +406,28 @@ jobs:
               CODE_SIGNING_ALLOWED=NO
           done
       - name: Boot an iPhone simulator
+        if: runner.environment != 'self-hosted'
         timeout-minutes: ${{ runner.environment == 'self-hosted' && 5 || 360 }}
         run: |
           UDID=$(xcrun simctl list devices available -j \
             | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
                       | select(.name | startswith("iPhone"))] | last | .udid // empty')
           test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+      - name: Boot this runner's iPhone simulator clone (self-hosted)
+        # Same pick as the hosted step, then a private clone. The hosted step is skipped here
+        # so this job does not boot the shared device. -Fry
+        if: runner.environment == 'self-hosted'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[]
+                      | select(.name | startswith("iPhone"))] | last | .udid // empty')
+          test -n "$UDID" || { echo "No available iPhone simulator"; exit 1; }
+          UDID=$(ios/scripts/ci-selfhosted-clone-sim.sh runtime-mode phone "$UDID")
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
@@ -435,10 +453,10 @@ jobs:
             fi
             echo "OK: $cfg AeroDJ.app has no Phonon content."
           done
-      - name: Self-hosted cleanup (stop tests and simulators)
+      - name: Self-hosted cleanup (this job's clones and recorded pids)
         if: always() && runner.environment == 'self-hosted'
         timeout-minutes: 3
-        run: ios/scripts/ci-selfhosted-cleanup.sh
+        run: ios/scripts/ci-selfhosted-cleanup.sh runtime-mode
 
   studio-screenshots:
     name: Studio UI tests and screenshots (closed + open)
@@ -493,6 +511,16 @@ jobs:
           echo "PHONE_UDID=$PHONE" >> "$GITHUB_ENV"
           echo "PAD_UDID=$PAD" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep -E "$PHONE|$PAD"
+      - name: Clone iPhone and iPad simulators for this runner (self-hosted)
+        # Hosted jobs keep the picked UDIDs. Here each job boots its own clones. -Fry
+        if: runner.environment == 'self-hosted'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          PHONE=$(ios/scripts/ci-selfhosted-clone-sim.sh studio-screenshots phone "$PHONE_UDID")
+          PAD=$(ios/scripts/ci-selfhosted-clone-sim.sh studio-screenshots pad "$PAD_UDID")
+          printf 'PHONE_UDID=%s\n' "$PHONE" >> "$GITHUB_ENV"
+          printf 'PAD_UDID=%s\n' "$PAD" >> "$GITHUB_ENV"
       - name: Build for testing
         run: |
           xcodebuild build-for-testing \
@@ -535,11 +563,20 @@ jobs:
           # records to the internal disk and the file is copied into $SHOTS. Hosted: unchanged. -Orion
           OUT="$SHOTS/walkthrough-closed.mp4"
           if [ "$RUNNER_ENV" = "self-hosted" ]; then
-            mkdir -p "$HOME/ci-rec/studio-screenshots"
-            OUT="$HOME/ci-rec/studio-screenshots/walkthrough-closed.mp4"
+            # Internal disk, keyed by this runner and job (CI_REC_DIR from prep). Hosted: unchanged.
+            REC_DIR=$(ios/scripts/ci-selfhosted-record-pid.sh --print-dir studio-screenshots) || exit 1
+            if [ "${CI_REC_DIR:-}" != "$REC_DIR" ]; then
+              echo "::error::CI_REC_DIR is unset or is not this runner's recording directory"
+              exit 1
+            fi
+            mkdir -p -- "$REC_DIR"
+            OUT="$REC_DIR/walkthrough-closed.mp4"
           fi
           xcrun simctl io "$PHONE_UDID" recordVideo --codec h264 --force "$OUT" &
           REC=$!
+          if [ "$RUNNER_ENV" = "self-hosted" ]; then
+            ios/scripts/ci-selfhosted-record-pid.sh studio-screenshots "$REC" || exit 1
+          fi
           sleep 2
           # The recorder must still be running before the walkthrough starts.
           kill -0 "$REC" 2>/dev/null || { echo "::error::simctl recordVideo exited before the walkthrough started (see its error above)"; exit 1; }
@@ -625,7 +662,7 @@ jobs:
           name: pad-xcresult
           path: ${{ runner.temp }}/pad.xcresult
           if-no-files-found: warn
-      - name: Self-hosted cleanup (stop tests and simulators)
+      - name: Self-hosted cleanup (this job's clones and recorded pids)
         if: always() && runner.environment == 'self-hosted'
         timeout-minutes: 3
-        run: ios/scripts/ci-selfhosted-cleanup.sh
+        run: ios/scripts/ci-selfhosted-cleanup.sh studio-screenshots
