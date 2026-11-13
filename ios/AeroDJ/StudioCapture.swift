@@ -67,10 +67,15 @@ enum StudioCaptureScenario: String {
     /// The same 640 × 820 pt container with nothing playing, so Search Apple Music is the
     /// content column's first control.
     case duoWideEmpty
+    /// The same 640 × 820 pt container with the DJ on air: `breakReady` then `playbackStarted`,
+    /// the same events as `onAir`, with the ON AIR timer frozen at 0:12. The track column
+    /// keeps the art (`keepArtVisible`); the orb sits in the content column (`folded.visualizer`).
+    case duoWideOnAir
     /// The DJ is on air: a break became ready and the player reported it started
     /// (`breakReady` then `playbackStarted`, the same events the audio player sends), so the
-    /// folded player draws the ON AIR pill. At AX5 on a phone it is pinned above the
-    /// scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
+    /// folded player draws the ON AIR pill. At default size, `testDefaultOnAirShowsOrbOnlyArtCard`
+    /// captures `closed-onair` / `open-onair` (#435 n1). At AX5 on a phone the pill is pinned
+    /// above the scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
     case onAir
     /// Station ratings (-Nova, PR B): `playing` with the rating button, unrated, with its
     /// first-time "Rate" label. The other scenarios get no rating controller, so they are unchanged.
@@ -101,7 +106,7 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.stopped
         case .error:
             return PlaybackFixtures.recoverableError
-        case .duoWideReady:
+        case .duoWideReady, .duoWideOnAir:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
             // which draws the scrubber as a non-interactive element.
             var playing = PlaybackFixtures.playing
@@ -165,7 +170,7 @@ struct StudioCaptureView: View {
                 CaptureStationSplit(dependencies: dependencies)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("capture.shell")
-            } else if scenario == .duoWideReady || scenario == .duoWideEmpty {
+            } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideOnAir {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else {
                 NavigationStack {
@@ -231,7 +236,7 @@ struct StudioCaptureView: View {
                 studio.dj.send(.playbackFailed(afterTrack: 0))
             case .breakReady, .duoWideReady:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
-            case .onAir:
+            case .onAir, .duoWideOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
                 StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
