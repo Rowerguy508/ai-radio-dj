@@ -601,6 +601,8 @@ jobs:
                       duo-wide-ready; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
+          # #465 item 3: the tent pose, required like duo-wide-ready (TentPoseTests). -Nova
+          ls "$SHOTS" | grep -q '^duo-tent_' || { echo "missing duo-tent screenshot"; exit 1; }
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
       - name: Upload screenshots
         if: always()
