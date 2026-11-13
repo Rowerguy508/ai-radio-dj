@@ -163,6 +163,7 @@ final class AppWideLayoutTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(button.frame.minX, box.minX + 63, "\(id) \(button.frame)")
             XCTAssertLessThanOrEqual(button.frame.maxX, box.maxX - 63, "\(id) \(button.frame)")
             XCTAssertTrue(box.contains(button.frame), "\(id) left the container")
+            assertTarget(button, in: box, id) // #515 N1 (Fry): 44 pt minimum height
         }
         let title = app.staticTexts["Local weather and news?"]
         XCTAssertGreaterThanOrEqual(title.frame.minX, box.minX + 63, "title \(title.frame)")

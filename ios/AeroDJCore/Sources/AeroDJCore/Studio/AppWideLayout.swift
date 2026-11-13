@@ -74,8 +74,9 @@ public enum AppWideLayout {
         public var accessibilityTextSize: Bool
         /// Only for a screen whose measured height is its own content, not the window
         /// (`LocalAreaPrompt`, a medium-detent sheet). Then `containerHeight` says nothing
-        /// about landscape, so the vertical size class stands in for the height test: every
-        /// iPhone in landscape is vertically compact. Nil (the default) uses the height.
+        /// about landscape, so the vertical size class alone decides once the width passes:
+        /// every iPhone in landscape is vertically compact, including the Plus and Max, which
+        /// are regular width there. Nil (the default) uses the height.
         public var hasRegularHeight: Bool?
         /// TODO(#465 item 2): nil until fold awareness supplies it. Ignored today.
         public var foldDivision: FoldDivision?
@@ -181,7 +182,10 @@ public enum AppWideLayout {
         let height = finite(input.containerHeight)
         if let hasRegularHeight = input.hasRegularHeight {
             guard FoldedColumnLayout.isWide(containerWidth: width) else { return false }
-            return input.hasRegularWidth || hasRegularHeight
+            // The vertical class alone (Fry, #515 B1): a Plus or Max iPhone in landscape is
+            // regular width but compact height, and must stay the phone path. The iPad and
+            // the Duo are vertically regular, so they stay wide.
+            return hasRegularHeight
         }
         guard FoldedColumnLayout.isWide(containerWidth: width), height > 0 else { return false }
         // Compact and short is a phone on its side (at most 430 pt tall), or the

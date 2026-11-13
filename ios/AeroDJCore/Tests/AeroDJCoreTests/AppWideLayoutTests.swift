@@ -141,6 +141,26 @@ final class AppWideLayoutTests: XCTestCase {
         XCTAssertEqual(AppWideLayout.decide(padSheet, for: .onboarding).sideInset, 0, "under the 560 cap")
     }
 
+    /// #515 B1 (Fry): Plus and Max iPhones in landscape are regular width and compact height.
+    /// A full-width onboarding sheet there is the phone path with no inset, at every
+    /// landscape width the fixtures use (956 Pro Max, 932 older Pro Max / Plus, 926 Plus).
+    func testPlusAndMaxLandscapeOnboardingSheetsStayThePhonePath() {
+        for width in [956.0, 932, 926] {
+            let sheet = AppWideLayout.Input(hasRegularWidth: true, containerWidth: width, containerHeight: 380,
+                                            hasRegularHeight: false)
+            XCTAssertFalse(AppWideLayout.isWide(sheet), "\(width)")
+            let decision = AppWideLayout.decide(sheet, for: .onboarding)
+            XCTAssertEqual(decision.mode, .phone, "\(width)")
+            XCTAssertEqual(decision.sideInset, 0, "\(width)")
+            XCTAssertEqual(decision.columns, 1, "\(width)")
+            XCTAssertEqual(decision.readableWidth, width, "\(width)")
+        }
+        // Compact-width landscape too (every other iPhone).
+        let compact = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 852, containerHeight: 380,
+                                          hasRegularHeight: false)
+        XCTAssertEqual(AppWideLayout.decide(compact, for: .onboarding).sideInset, 0)
+    }
+
     func testNonFiniteAndZeroContainersArePhone() {
         for input in [AppWideLayout.Input(hasRegularWidth: true, containerWidth: .nan, containerHeight: 800),
                       AppWideLayout.Input(hasRegularWidth: true, containerWidth: .infinity, containerHeight: 800),
