@@ -58,6 +58,64 @@ private actor RecordingCache: AudioCache {
     func providersHeld(for key: String) async -> String? { await base.audio(for: key)?.providerID }
 }
 
+/// Cache whose read of one key parks after fetching the clip and before returning it, so a test
+/// can withdraw consent while `audio(for:)` is in flight, then let the read finish.
+private final class SuspendingReadCache: AudioCache, @unchecked Sendable {
+    let base = InMemoryAudioCache()
+    private let lock = NSLock()
+    private var key: String?
+    private var parked: CheckedContinuation<Void, Never>?
+    private var arrivalWaiter: CheckedContinuation<Void, Never>?
+    private var arrived = false
+    private var released = false
+    func suspendReads(of key: String) { lock.withLock { self.key = key } }
+    func audio(for key: String) async -> CachedAudio? {
+        let hit = await base.audio(for: key)
+        let shouldPark = lock.withLock { () -> Bool in
+            guard key == self.key, !arrived else { return false }
+            arrived = true
+            return true
+        }
+        guard shouldPark else { return hit }
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let (waiter, resumeNow) = lock.withLock { () -> (CheckedContinuation<Void, Never>?, Bool) in
+                let w = arrivalWaiter
+                arrivalWaiter = nil
+                if released { return (w, true) }
+                parked = c
+                return (w, false)
+            }
+            waiter?.resume()
+            if resumeNow { c.resume() }
+        }
+        return hit
+    }
+    /// Returns once a read of the key is parked.
+    func untilReadIsSuspended() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let ready = lock.withLock { () -> Bool in
+                if parked != nil { return true }
+                arrivalWaiter = c
+                return false
+            }
+            if ready { c.resume() }
+        }
+    }
+    func finishRead() {
+        let c = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            released = true
+            defer { parked = nil }
+            return parked
+        }
+        c?.resume()
+    }
+    func store(_ audio: CachedAudio, for key: String) async { await base.store(audio, for: key) }
+    func purge(sourceItemIDs: Set<UUID>) async { await base.purge(sourceItemIDs: sourceItemIDs) }
+    func purgeExpired() async { await base.purgeExpired() }
+    func purgeAllPersonal() async { await base.purgeAllPersonal() }
+    func purgeClips(keepingProviders providerIDs: Set<String>) async { await base.purgeClips(keepingProviders: providerIDs) }
+}
+
 final class CuePrivacyGateTests: XCTestCase {
     private let item = UUID()
     private var calendarCue: NarrationCue {
@@ -143,6 +201,30 @@ final class CuePrivacyGateTests: XCTestCase {
         XCTAssertEqual(clip.audio.providerID, "device", "the cached cloud clip must not be served")
         XCTAssertTrue(cloud.received.isEmpty)
         XCTAssertTrue(clip.attempts.contains { $0.result == .failed(VoiceRenderer.privacyGateSkip) })
+    }
+
+    /// Atlas's B1 on #498: a plain decline (no item revoked) that lands while the cache read is in
+    /// flight must not hand back the cached cloud clip; the cue falls through to the on-device voice.
+    func testLookupGateDoesNotServeACachedCloudClipWhenConsentIsWithdrawnDuringTheRead() async {
+        let cloud = RecordingCloud(), cache = SuspendingReadCache()
+        let scope = ScopeSwitch(.allLines)
+        let r = renderer(cloud, cache: cache, scope: scope)
+        let cue = calendarCue
+        let key = cloudKey(cue, r)
+        await cache.store(CachedAudio(data: Data("old-cloud".utf8), seconds: 1, providerID: "cloud", voiceID: djVoice.id,
+                                      sourceItemIDs: [item, VoiceRenderer.allLinesClipTag]), for: key)
+        cache.suspendReads(of: key)
+        let attribution = calendarAttribution
+        let rendering = Task { await r.render(cue, userID: "u", stationID: "s", attribution: attribution) }
+        await cache.untilReadIsSuspended()   // gate 1 passed under `.allLines`; the read is in flight
+        scope.withdraw()                      // plain decline: no revoke, no purge
+        cache.finishRead()
+        let result = await rendering.value
+        guard case .success(let clip) = result else { return XCTFail("falls through to the on-device voice") }
+        XCTAssertEqual(clip.audio.providerID, "device", "the cached cloud clip must not be served after the decline")
+        XCTAssertFalse(clip.attempts.contains { $0.result == .cacheHit && $0.providerID == "cloud" })
+        XCTAssertTrue(clip.attempts.contains { $0.providerID == "cloud" && $0.result == .failed(VoiceRenderer.privacyGateSkip) })
+        XCTAssertTrue(cloud.received.isEmpty, "no cue text reaches the cloud voice either")
     }
 
     // MARK: gate 2: TTS call
