@@ -904,12 +904,15 @@ final class StudioScreenTests: XCTestCase {
 
         let app = launch(scenario: "ratingNever")
         let toast = app.descendants(matching: .any)["nowPlaying.ratingToast"]
+        let undo = app.buttons["nowPlaying.rating.undo"]
         XCTAssertTrue(toast.waitForExistence(timeout: 5), "never toast:\n\(app.debugDescription)")
         XCTAssertTrue(shows(app, "Won't play on this station again."))
-        XCTAssertTrue(app.buttons["nowPlaying.rating.undo"].isHittable)
-        save(app, "rating-never-toast")
-        app.buttons["nowPlaying.rating.undo"].tap()
+        XCTAssertTrue(undo.isHittable)
+        // Dismiss is 6s. Wait for Undo again and tap it before another query or the screenshot. -Fry
+        XCTAssertTrue(undo.waitForExistence(timeout: 5))
+        undo.tap()
         XCTAssertTrue(toast.waitForNonExistence(timeout: 3), "undo hides the toast")
+        save(app, "rating-never-toast")
     }
 
     /// Compact empty state: submit search shows fixture results and does not play.
