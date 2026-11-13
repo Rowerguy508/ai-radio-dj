@@ -38,13 +38,15 @@ private struct AppWideHost: ViewModifier {
     let formMargins: Bool
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var size: CGSize = .zero
 
     private var decision: AppWideLayout.Decision? {
         let input = AppWideLayout.Input(hasRegularWidth: horizontalSizeClass == .regular,
                                         containerWidth: size.width, containerHeight: size.height,
-                                        accessibilityTextSize: typeSize.isAccessibilitySize)
+                                        accessibilityTextSize: typeSize.isAccessibilitySize,
+                                        hasRegularHeight: verticalSizeClass.map { $0 == .regular })
         let decision = AppWideLayout.decide(input, for: screen)
         return decision.adapts ? decision : nil
     }
