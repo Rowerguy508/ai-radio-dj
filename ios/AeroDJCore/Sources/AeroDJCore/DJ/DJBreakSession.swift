@@ -436,16 +436,23 @@ public final class DJBreakSession {
         if let reserved = reservedStation, reserved != committed { queueStation = .unknown }
         else { queueStation = .known(committed) }
         reservedStation = nil
-        // The name the opener and later station IDs speak. Nil keeps the writer's name (OnAirly
-        // until a queue names one). An unusable name is ignored, so a bad string cannot wipe a
-        // name already in use. Set before the re-greet, so the new opener says this station.
-        if let name = stationName.flatMap(EditorialStationName.usable) { writer.stationName = name }
+        // The name the opener and later station IDs speak. A usable name is this station's.
+        // Seeds changed and the name is missing or unusable (no owner: `StationQueueOwner.tag`
+        // is nil, and the UI shows "OnAirly"): drop the previous station's name. The same seeds
+        // keep it, including a refill that passes no name. Set before the re-greet.
+        let spokenName = stationName.flatMap(EditorialStationName.usable)
+        let seedsChanged = openedStation.map { $0?.seeds != committed?.seeds } ?? false
+        if let spokenName {
+            writer.stationName = spokenName
+        } else if seedsChanged {
+            writer.stationName = DJScriptWriter.builtInStationName
+        }
         // A different station opens the show again (#358). Its old queue's opener, if it already
         // aired, stays remembered by `forgetPlannedBreaks` above, so without this the new station
         // would start with no opener. Anti-repeat memory is kept (#472): the new opener won't
         // echo the last one, and a re-queue of the same seeds does not greet again. A time check
         // still inside 30 minutes is left out of that opener and reported as `.spacing`.
-        if let previous = openedStation, previous?.seeds != committed?.seeds { writer.greetAgain() }
+        if seedsChanged { writer.greetAgain() }
         openedStation = .some(committed)
         replan(from: 0, keepingThrough: -1)
         let queuedAppend = stationAppendPending

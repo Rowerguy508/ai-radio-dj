@@ -149,6 +149,39 @@ final class StationChangeRegreetTests: XCTestCase {
         await session.stop()
     }
 
+    /// No owner (`StationQueueOwner.tag` is nil): the UI says "OnAirly", and so does the opener.
+    func testAStationChangeWithNoNameUsesTheOnAirlyFallback() async {
+        let (session, station, _) = await rig()
+        await session.queueStarted(djTracks(30), stationName: "Kitchen Radio")
+        _ = await passTheOpener(session, "named station")
+
+        await save(session, station) { await station.setSeeds(seeds("second")) }
+        await session.queueStarted(djTracks(30), stationName: nil)
+        guard let again = opener(session, "unnamed station") else { return }
+        let spoken = again.cues.map(\.text).joined(separator: " ")
+        XCTAssertFalse(spoken.contains("Kitchen Radio"), spoken)
+        XCTAssertTrue(spoken.contains(DJScriptWriter.builtInStationName), spoken)
+        XCTAssertEqual(again.attributions[again.cues[0].id], .presenter, "the brand is not a typed station name")
+        await session.stop()
+    }
+
+    /// A name the opener must not speak (braces) is the same as no name: the fallback, not the last station.
+    func testAStationChangeWithAnUnusableNameUsesTheOnAirlyFallback() async {
+        let (session, station, _) = await rig()
+        await session.queueStarted(djTracks(30), stationName: "Kitchen Radio")
+        _ = await passTheOpener(session, "named station")
+
+        await save(session, station) { await station.setSeeds(seeds("second")) }
+        await session.queueStarted(djTracks(30), stationName: "{not a name}")
+        guard let again = opener(session, "unusable name") else { return }
+        let spoken = again.cues.map(\.text).joined(separator: " ")
+        XCTAssertFalse(spoken.contains("Kitchen Radio"), spoken)
+        XCTAssertFalse(spoken.contains("{not a name}"), spoken)
+        XCTAssertTrue(spoken.contains(DJScriptWriter.builtInStationName), spoken)
+        XCTAssertEqual(again.attributions[again.cues[0].id], .presenter)
+        await session.stop()
+    }
+
     func testAStationChangeMidBreakStopsTheTalkOverAndGreetsOnce() async {
         let (session, station, _) = await rig()
         await session.queueStarted(djTracks(30), stationName: "Kitchen Radio")
