@@ -113,6 +113,32 @@ final class CarPlayStartNoticeTests: XCTestCase {
         }
     }
 
+    func testASuccessfulRetryClearsTheOldNoticeAndPushesNowPlayingOnce() {
+        var picks = CarPlayPickTracker()
+        var host = CarPlayStartNoticeHost()
+
+        host.beginPick()
+        let failed = picks.begin()
+        guard case .notice(let notice) = picks.finish(failed, outcome: .notStarted(.notReadyInTime),
+                                                      stationName: "Late Night", access: .authorized) else {
+            return XCTFail("a failed pick shows the notice")
+        }
+        host.apply(.notice(notice))
+        XCTAssertEqual(host.presented?.titleVariants.first, "Couldn't start Late Night. Try again.")
+        XCTAssertEqual(host.nowPlayingPushes, 0)
+
+        // Try Again starts a new pick and takes the old notice down first.
+        host.beginPick()
+        XCTAssertNil(host.presented, "Try Again dismisses the failed notice before the retry starts")
+        let retry = picks.begin()
+        let finish = picks.finish(retry, outcome: .started(songs: 1, waited: true),
+                                  stationName: "Late Night", access: .authorized)
+        XCTAssertEqual(finish, .showNowPlaying)
+        host.apply(finish)
+        XCTAssertNil(host.presented, "a successful retry leaves no notice up")
+        XCTAssertEqual(host.nowPlayingPushes, 1)
+    }
+
     // MARK: the app wiring (iOS-only code; a source check, not a CarPlay run)
 
     func testTheCarPlaySceneShowsTheNoticeFromTheTrackerAndRetriesTheSamePick() throws {
@@ -142,5 +168,9 @@ final class CarPlayStartNoticeTests: XCTestCase {
         let pickOnly = String(pickBody[..<end.lowerBound])
         XCTAssertEqual(pickOnly.components(separatedBy: "showNowPlaying()").count - 1, 1, pickOnly)
         XCTAssertTrue(pickOnly.contains("case .showNowPlaying:\n            showNowPlaying()"), pickOnly)
+        // Try Again re-enters pick(), which dismisses the notice before the new start runs.
+        let dismissRange = try XCTUnwrap(pickOnly.range(of: "dismissStartNotice()"), pickOnly)
+        let awaitRange = try XCTUnwrap(pickOnly.range(of: "outcome = await"), pickOnly)
+        XCTAssertLessThan(dismissRange.lowerBound, awaitRange.lowerBound, pickOnly)
     }
 }

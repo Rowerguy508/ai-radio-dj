@@ -546,6 +546,33 @@ public struct CarPlayPickTracker: Equatable, Sendable {
     }
 }
 
+/// The start notice on the car, and how many times Now Playing was pushed. A new pick,
+/// including Try Again, takes the notice down before the start runs; only a current
+/// pick's success pushes Now Playing, and it leaves no notice up.
+public struct CarPlayStartNoticeHost: Equatable, Sendable {
+    public private(set) var presented: CarPlayStartNotice?
+    public private(set) var nowPlayingPushes = 0
+
+    public init() {}
+
+    /// The listener picked again, or tapped Try Again: the old notice comes down first.
+    public mutating func beginPick() {
+        presented = nil
+    }
+
+    public mutating func apply(_ finish: CarPlayPickFinish) {
+        switch finish {
+        case .stale:
+            break
+        case .showNowPlaying:
+            presented = nil
+            nowPlayingPushes += 1
+        case .notice(let notice):
+            presented = notice
+        }
+    }
+}
+
 extension CarPlayScreen {
     /// The car's notice for a pick that did not start, or nil when the outcome needs none (a start,
     /// a resume, the station already playing, a replaced or restored pick, or a row with nothing to
