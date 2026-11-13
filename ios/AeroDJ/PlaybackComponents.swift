@@ -425,6 +425,7 @@ struct TransportRow: View {
         #endif
     }
     @Environment(\.onSlab) private var onSlab
+    @Environment(\.controlGlass) private var controlGlass
 
     private var ink: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
 
@@ -447,6 +448,7 @@ struct TransportRow: View {
                             .contentShape(Circle())
                     }
                     .foregroundStyle(ink)
+                    .controlGlassButton(prominent: false)
                     .accessibilityHint("Opens the tuner. Music continues.")
                     .accessibilityIdentifier("transport.tune")
                 } else if balancesSides {
@@ -488,10 +490,13 @@ struct TransportRow: View {
                 .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(AeroDJPalette.onMediaInk)
                 .frame(width: 68, height: 68)
-                .background(Circle().fill(AeroDJPalette.onMediaLight))
+                .background {
+                    if !controlGlass { Circle().fill(AeroDJPalette.onMediaLight) }
+                }
                 .contentShape(Circle())
                 .modifier(SymbolReplace(enabled: !reduceMotion))
             }
+            .controlGlassButton(prominent: ControlGlassDecision.isProminent(play: true))
             // Nova: while starting, VoiceOver reads "Starting playback" with no button trait.
             // Not `.disabled`, so nothing dims; a tap that still arrives is ignored above.
             .accessibilityLabel(face.accessibilityLabel)
@@ -510,10 +515,12 @@ struct TransportRow: View {
                         .contentShape(Circle())
                 }
                 .foregroundStyle(ink)
+                .controlGlassButton(prominent: false)
                 .accessibilityIdentifier("transport.skip")
             }
         }
         .buttonStyle(.plain)
+        .controlGlassGroup()
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
     }
 
@@ -725,6 +732,7 @@ struct SearchAppleMusicButton: View {
             }
         }
         .buttonStyle(.bordered)
+        .controlGlassButton(prominent: false)
         .accessibilityLabel(title)
         .accessibilityIdentifier("playback.searchAppleMusic")
     }
@@ -757,6 +765,7 @@ struct StartListeningView: View {
                 Button("Search") { model.run(using: search) }
                     .disabled(model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || model.phase == .searching)
+                    .controlGlassButton(prominent: false)
                     .accessibilityIdentifier("search.submit")
             }
             .padding(12)

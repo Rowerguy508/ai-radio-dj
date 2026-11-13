@@ -169,3 +169,23 @@ public enum DuoSleepTimer {
         return "\(minutes) minutes"
     }
 }
+
+/// Whether a control draws Liquid Glass. Content and artwork do not use this.
+/// Opaque when Reduce Transparency or Increase Contrast is on. Play is the only
+/// prominent (tinted) control. Reduce Motion adds no animation of its own.
+public enum ControlGlassDecision: Equatable, Sendable {
+    case glass
+    case opaque(strongBorder: Bool)
+
+    public static func resolve(reduceTransparency: Bool, increaseContrast: Bool) -> ControlGlassDecision {
+        if reduceTransparency || increaseContrast {
+            return .opaque(strongBorder: increaseContrast)
+        }
+        return .glass
+    }
+
+    /// Only the play control is tinted.
+    public static func isProminent(play: Bool) -> Bool { play }
+
+    public static func allowsAddedMotion(reduceMotion: Bool) -> Bool { !reduceMotion }
+}

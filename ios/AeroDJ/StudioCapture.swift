@@ -18,6 +18,10 @@ enum StudioCapture {
     static let darkKey = "AeroDJStudioCaptureDark"
     /// Optional: `YES` forces Reduce Motion for the capture, whatever the simulator setting is.
     static let reduceMotionKey = "AeroDJReduceMotion"
+    /// Optional: `YES` forces Reduce Transparency for the capture.
+    static let reduceTransparencyKey = "AeroDJReduceTransparency"
+    /// Optional: `YES` forces Increase Contrast for the capture.
+    static let increaseContrastKey = "AeroDJIncreaseContrast"
     /// `duoWideReady`: the stand-in for the unfolded Duo's split-view detail. The UI test
     /// (`testDuoWideListenPlayerIsOneCentredColumn`) checks the same 640 × 820 pt.
     static let duoWideContainerSize = CGSize(width: 640, height: 820)

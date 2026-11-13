@@ -270,6 +270,7 @@ struct FoldedPlayer: View {
         }
         .padding(.horizontal, CGFloat(layout.edgeInset))
         .frame(width: size.width, height: size.height)
+        .environment(\.controlGlass, true)
     }
 
     /// Horizontal scrubber, transport, station, and the DJ chip. Nothing playing puts
@@ -840,7 +841,13 @@ private struct DuoUpNextList: View {
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .foldedGlass(RoundedRectangle(cornerRadius: FoldedStyle.fieldRadius, style: .continuous), role: .surface)
+            .background(FoldedStyle.opaqueGlass,
+                        in: RoundedRectangle(cornerRadius: FoldedStyle.fieldRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: FoldedStyle.fieldRadius, style: .continuous)
+                    .strokeBorder(FoldedStyle.hairline, lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
@@ -901,16 +908,30 @@ private struct FoldedStationChip: View {
             .padding(.trailing, 14)
             .frame(maxWidth: .infinity, minHeight: FoldedStyle.toolbarHeight, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
-            .foldedGlass(Capsule(), role: .control)
+            .modifier(StationChipChrome())
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .controlGlassButton(prominent: false)
         .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(caption) \(heading.opened.name)")
         .accessibilityHint("Opens the queue")
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("station.title")
+    }
+}
+
+/// Phone folded chip keeps its existing glass fill. The unfolded Duo uses the shared control glass.
+private struct StationChipChrome: ViewModifier {
+    @Environment(\.controlGlass) private var controlGlass
+
+    func body(content: Content) -> some View {
+        if controlGlass {
+            content
+        } else {
+            content.foldedGlass(Capsule(), role: .control)
+        }
     }
 }
 

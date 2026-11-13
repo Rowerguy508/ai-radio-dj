@@ -49,6 +49,7 @@ struct StudioLayout: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .frame(height: containerHeight, alignment: .top)
         .background(Color(.systemBackground))
+        .environment(\.controlGlass, true)
     }
 }
 
@@ -73,6 +74,7 @@ struct StudioStackedLayout: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             zoneA.chromeBar
         }
+        .environment(\.controlGlass, true)
     }
 }
 

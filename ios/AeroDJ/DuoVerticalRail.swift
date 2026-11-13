@@ -1,8 +1,8 @@
 import AeroDJCore
 import SwiftUI
 
-// The unfolded Duo's right rail (#465, mockup 02). Glass styling lives only in this file
-// so it can move into Nova's shared glass helper later. No other control is restyled here.
+// The unfolded Duo's right rail (#465, mockup 02). Its glass plate is `controlGlassRail`
+// in ControlGlass.swift, the same treatment as the other glass controls.
 //
 // On iOS 27.1, built with that SDK, the same controls go in the system vertical toolbar.
 // Xcode 26.6 / iphoneos 26.5 (CI) compiles only the custom rail below.
@@ -64,56 +64,11 @@ struct DuoVerticalRail: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Identifiers stay on the buttons. The glass modifier must not become the element.
         .accessibilityElement(children: .contain)
-        .modifier(DuoRailGlass())
+        .controlGlassRail()
     }
 
     static func queueLabel(_ upNext: [TrackInfo]) -> String {
         upNext.first.map { "Up next: \($0.title) by \($0.artistName)" } ?? "Up next: nothing queued"
-    }
-}
-
-// MARK: - Glass (local to this rail)
-
-/// One glass column. Reduce Transparency and Increase Contrast use an opaque fill.
-/// Nothing here animates, so Reduce Motion has no transition to remove.
-private struct DuoRailGlass: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorSchemeContrast) private var contrast
-
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 25, style: .continuous)
-        let strong = contrast == .increased
-        if reduceTransparency || strong {
-            content
-                .background(FoldedStyle.opaqueGlass, in: shape)
-                .overlay {
-                    shape.strokeBorder(Color.white.opacity(strong ? 0.95 : 0.45),
-                                       lineWidth: strong ? 2 : 1)
-                }
-        } else {
-            glass(content, shape: shape)
-        }
-    }
-
-    @ViewBuilder
-    private func glass<S: InsettableShape>(_ content: Content, shape: S) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 12) {
-                content.glassEffect(.regular, in: shape)
-            }
-        } else {
-            filled(content, shape: shape)
-        }
-        #else
-        filled(content, shape: shape)
-        #endif
-    }
-
-    private func filled<S: InsettableShape>(_ content: Content, shape: S) -> some View {
-        content
-            .background(FoldedStyle.glassFill, in: shape)
-            .overlay { shape.strokeBorder(FoldedStyle.hairline, lineWidth: 1) }
     }
 }
 

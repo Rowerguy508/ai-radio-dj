@@ -108,6 +108,7 @@ struct SongRatingButton: View {
             .contentShape(Rectangle())
         }
         .menuIndicator(.hidden)
+        .controlGlassButton(prominent: false)
         .accessibilityLabel(SongRatingPresentation.accessibilityLabel(current))
         .accessibilityIdentifier("nowPlaying.rating")
         .confirmationDialog(SongRatingPresentation.clearStationTitle, isPresented: $confirmingClearStation,

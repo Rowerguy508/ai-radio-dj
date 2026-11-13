@@ -17,6 +17,7 @@ final class StudioScreenTests: XCTestCase {
     @MainActor
     private func launch(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
                         dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
+                        reduceTransparency: Bool = false, increaseContrast: Bool = false,
                         restoreStationID: String? = nil,
                         musicAuthStatus: String? = nil,
                         orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
@@ -25,6 +26,7 @@ final class StudioScreenTests: XCTestCase {
         _ = isOpenLayout
         return startApp(segment: segment, scenario: scenario, largeText: largeText, dark: dark,
                         contentSize: contentSize, reduceMotion: reduceMotion,
+                        reduceTransparency: reduceTransparency, increaseContrast: increaseContrast,
                         restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus,
                         orientation: orientation)
     }
@@ -32,6 +34,7 @@ final class StudioScreenTests: XCTestCase {
     @MainActor
     private func startApp(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
                           dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
+                          reduceTransparency: Bool = false, increaseContrast: Bool = false,
                           restoreStationID: String? = nil,
                           musicAuthStatus: String? = nil,
                           orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
@@ -46,6 +49,8 @@ final class StudioScreenTests: XCTestCase {
         }
         if dark { app.launchArguments += ["-AeroDJStudioCaptureDark", "YES"] }
         if reduceMotion { app.launchArguments += ["-AeroDJReduceMotion", "YES"] }
+        if reduceTransparency { app.launchArguments += ["-AeroDJReduceTransparency", "YES"] }
+        if increaseContrast { app.launchArguments += ["-AeroDJIncreaseContrast", "YES"] }
         if let restoreStationID {
             app.launchArguments += ["-AeroDJRestoreStationID", restoreStationID]
         }
@@ -484,6 +489,52 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["folded.systemBar"].exists)
         XCTAssertTrue(app.buttons["transport.playPause"].exists, "playback stays on screen")
+    }
+
+    /// Glass controls stay hittable when Reduce Transparency forces the opaque plate.
+    @MainActor
+    func testGlassControlsStayHittableWithReduceTransparency() throws {
+        try XCTSkipUnless(isOpenLayout, "The unfolded rail is checked on an iPad-size simulator")
+        let app = launch(scenario: "duoWideSpeaking", reduceTransparency: true)
+        assertGlassControls(app, marker: "glass.reduceTransparency")
+        save(app, "duo-wide-glass-transparency")
+    }
+
+    /// Glass controls stay hittable when Increase Contrast forces the opaque plate.
+    @MainActor
+    func testGlassControlsStayHittableWithIncreaseContrast() throws {
+        try XCTSkipUnless(isOpenLayout, "The unfolded rail is checked on an iPad-size simulator")
+        let app = launch(scenario: "duoWideSpeaking", increaseContrast: true)
+        assertGlassControls(app, marker: "glass.increaseContrast")
+        save(app, "duo-wide-glass-contrast")
+    }
+
+    /// Reduce Motion adds no glass animation, and the same controls stay hittable.
+    @MainActor
+    func testGlassControlsStayHittableWithReduceMotion() throws {
+        try XCTSkipUnless(isOpenLayout, "The unfolded rail is checked on an iPad-size simulator")
+        let app = launch(scenario: "duoWideSpeaking", reduceMotion: true)
+        assertGlassControls(app, marker: "motion.reduced")
+        save(app, "duo-wide-glass-motion")
+    }
+
+    @MainActor
+    private func assertGlassControls(_ app: XCUIApplication, marker: String) {
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15),
+                      app.debugDescription)
+        XCTAssertTrue(app.descendants(matching: .any)[marker].waitForExistence(timeout: 5),
+                      "\(marker) was not applied\n\(app.debugDescription)")
+        for identifier in ["transport.playPause", "transport.skip", "folded.collapse",
+                           "folded.sleepTimer", "queue.affordance"] {
+            let control = app.buttons[identifier]
+            XCTAssertTrue(control.waitForExistence(timeout: 8), "\(identifier) missing\n\(app.debugDescription)")
+            XCTAssertTrue(control.isHittable, "\(identifier) is not hittable")
+            XCTAssertGreaterThanOrEqual(control.frame.width, 44, identifier)
+            XCTAssertGreaterThanOrEqual(control.frame.height, 44, identifier)
+        }
+        let dot = app.descendants(matching: .any)["folded.liveDot"]
+        XCTAssertTrue(dot.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertEqual(dot.value as? String, "On Air", "speaking still lights the dot")
     }
 
     /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and

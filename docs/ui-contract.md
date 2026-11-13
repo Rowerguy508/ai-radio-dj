@@ -215,8 +215,11 @@ so the compact layout and its sheet keep their radii.
   left half, an empty gutter sits on the centre fold, and the right half is a content
   column (horizontal scrubber, play/pause, skip, station, DJ chip, and Search Apple
   Music when nothing is playing, fitted to the column width) plus a glass rail
-  (collapse, more, queue, sleep timer, and a live dot). The dot is lit only while
-  the DJ state is `.speaking`. Collapse shows this centred column and does not
+  (collapse, more, queue, sleep timer, and a live dot). Transport, rating, station
+  and search controls on this layout use the same Liquid Glass as the rail. Only
+  play is tinted. Artwork and the up-next list stay opaque. The phone folded layout
+  keeps its current controls. The dot is lit only while
+  the DJ state is `.speaking`. Collapse shows the centred column and does not
   change playback. Controls start below `duoStatusClearance`. Below 500 pt
   wide (every iPhone in portrait) the compact player is unchanged.
 - **No `ViewThatFits` at the top level.** Use it inside a zone, for example to pick

@@ -286,6 +286,7 @@ struct StationSoundRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .controlGlassButton(prominent: false)
         .accessibilityLabel("Station sound: \(tags.joined(separator: ", "))")
         .accessibilityHint("Opens the tuner")
         .accessibilityIdentifier("station.sound")

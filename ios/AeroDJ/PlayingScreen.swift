@@ -95,6 +95,22 @@ struct PlayingScreen: View {
                         .accessibilityIdentifier("motion.reduced")
                         .accessibilityLabel("Reduce Motion")
                 }
+                #if DEBUG
+                if UserDefaults.standard.bool(forKey: StudioCapture.reduceTransparencyKey) {
+                    Text("Reduce Transparency")
+                        .font(.system(size: 1))
+                        .opacity(0.02)
+                        .accessibilityIdentifier("glass.reduceTransparency")
+                        .accessibilityLabel("Reduce Transparency")
+                }
+                if UserDefaults.standard.bool(forKey: StudioCapture.increaseContrastKey) {
+                    Text("Increase Contrast")
+                        .font(.system(size: 1))
+                        .opacity(0.02)
+                        .accessibilityIdentifier("glass.increaseContrast")
+                        .accessibilityLabel("Increase Contrast")
+                }
+                #endif
             }
             .allowsHitTesting(false)
         }

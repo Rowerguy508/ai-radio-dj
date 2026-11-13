@@ -451,6 +451,20 @@ final class FoldedColumnLayoutTests: XCTestCase {
         XCTAssertFalse(DuoSleepTimer.accessibilityValue(minutes: nil).localizedCaseInsensitiveContains("on air"))
         XCTAssertFalse(DuoSleepTimer.accessibilityValue(minutes: 15).localizedCaseInsensitiveContains("on air"))
     }
+
+    func testControlGlassFallsBackForTransparencyAndContrast() {
+        XCTAssertEqual(ControlGlassDecision.resolve(reduceTransparency: false, increaseContrast: false), .glass)
+        XCTAssertEqual(ControlGlassDecision.resolve(reduceTransparency: true, increaseContrast: false),
+                       .opaque(strongBorder: false))
+        XCTAssertEqual(ControlGlassDecision.resolve(reduceTransparency: false, increaseContrast: true),
+                       .opaque(strongBorder: true))
+        XCTAssertEqual(ControlGlassDecision.resolve(reduceTransparency: true, increaseContrast: true),
+                       .opaque(strongBorder: true))
+        XCTAssertTrue(ControlGlassDecision.isProminent(play: true))
+        XCTAssertFalse(ControlGlassDecision.isProminent(play: false))
+        XCTAssertFalse(ControlGlassDecision.allowsAddedMotion(reduceMotion: true))
+        XCTAssertTrue(ControlGlassDecision.allowsAddedMotion(reduceMotion: false))
+    }
 }
 
 final class DuoUpNextTimelineTests: XCTestCase {
