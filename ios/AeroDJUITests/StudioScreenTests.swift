@@ -912,6 +912,16 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(undo.waitForExistence(timeout: 5))
         undo.tap()
         XCTAssertTrue(toast.waitForNonExistence(timeout: 3), "undo hides the toast")
+        save(app, "rating-never-undone")
+    }
+
+    /// The never toast while it is still on screen. No Undo tap, so the 6s dismissal is not in this shot.
+    @MainActor
+    func testRatingNeverToastScreenshot() throws {
+        let app = launch(scenario: "ratingNever")
+        let toast = app.descendants(matching: .any)["nowPlaying.ratingToast"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 5), "never toast:\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Won't play on this station again."))
         save(app, "rating-never-toast")
     }
 
