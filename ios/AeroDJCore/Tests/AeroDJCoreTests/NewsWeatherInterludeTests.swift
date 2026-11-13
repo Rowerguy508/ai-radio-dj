@@ -159,7 +159,9 @@ final class NewsWeatherInterludeTests: XCTestCase {
         defer { task.cancel() }
         feed.publish(.items([UUID()]))
         feed.publish(.all)
-        for _ in 0..<200 where store.consent != .declined { await Task.yield() }
+        // Wait on the withdrawal itself, not a yield count (flaky on loaded runners).
+        let deadline = ContinuousClock.now + .seconds(10)
+        while store.consent != .declined, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(1)) }
         XCTAssertEqual(store.consent, .declined)
         XCTAssertNil(store.manualPlace)
         XCTAssertNil(store.area)
