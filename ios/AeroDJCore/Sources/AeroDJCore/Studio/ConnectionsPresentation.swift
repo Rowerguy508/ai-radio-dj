@@ -426,6 +426,8 @@ public struct NarrationPurger: NarrationPurging {
         if let session { await session.purge(sourceItemIDs: sourceItemIDs) }
         await preparer?.purge(sourceItemIDs: sourceItemIDs)
         await cache.purge(sourceItemIDs: sourceItemIDs)
+        // #318: the same withdrawal drops the on-device recent-line ids (no titles or spoken text).
+        await session?.purgeSpokenLineMemory()
         revocations.purgeCompleted(sourceItemIDs)
         await AudioCacheFileLog.record(cache, after: .purge)
         feed.publish(.items(sourceItemIDs))
@@ -441,6 +443,8 @@ public struct NarrationPurger: NarrationPurging {
         let known = await session?.purgeAllPersonal() ?? []
         if !known.isEmpty { await preparer?.purge(sourceItemIDs: known) }
         await cache.purgeAllPersonal()
+        // #318: data reset and the purge-all consent path. Same moment as the narration cache.
+        await session?.purgeSpokenLineMemory()
         revocations.purgeAllCompleted()
         await AudioCacheFileLog.record(cache, after: .purge)
         feed.publish(.all)
