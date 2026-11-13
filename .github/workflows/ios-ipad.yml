@@ -20,12 +20,10 @@ on:
 permissions:
   contents: read
 
-# A new push to a PR branch cancels that branch's stale run. Pushes to
-# integration/device-duo are not cancelled mid-run. workflow_dispatch keeps
-# its own group via github.ref and is not cancelled.
+# A newer push to the same branch supersedes a queued or running iPad run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ios-ipad-${{ github.ref }}
+  cancel-in-progress: true
 
 # Same runs-on expression as the macOS jobs in ios.yml. This workflow has no pull_request
 # trigger, so it always resolves to GitHub-hosted macos-latest. -Atlas
