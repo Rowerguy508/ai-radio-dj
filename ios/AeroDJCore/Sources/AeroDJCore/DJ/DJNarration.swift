@@ -712,7 +712,6 @@ public struct DJScriptWriter: Sendable {
             unspeakable = unavailable.reason == .notOnTheClock
             timeCheckAvailable = false
         }
-        let pastTimeCheckGrace = picker.breaksSinceGreeting >= config.timeCheckGraceBreaks
         let metadata = ["title": prev.title, "artist": prev.artist]
         let nextValues = ["nextTitle": next.title, "nextArtist": next.artist]
         let bothValues = metadata.merging(nextValues) { a, _ in a }
@@ -724,6 +723,14 @@ public struct DJScriptWriter: Sendable {
                                           canForwardSell: fits(closing, nextValues),
                                           stationIDUsable: stationName.map { fits(stationIDs, ["station": $0]) } ?? false,
                                           timeCheckAvailable: timeCheckAvailable)
+        // Same offer the picker would have made if the clock had been speakable, including
+        // not-twice-in-a-row. Reporting every unspeakable boundary would count a time check
+        // the picker was not going to say (Fry, #470).
+        var asIfSpoken = context
+        asIfSpoken.timeCheckAvailable = true
+        var offered = picker.eligible(asIfSpoken)
+        if offered.count > 1, let last = picker.lastShape { offered.removeAll { $0 == last } }
+        let timeCheckWouldHaveBeenOffered = unspeakable && offered.contains(.timeCheckIntro)
         guard let shape = picker.pick(context) else { return .notApplicable }
 
         struct Line {
@@ -917,19 +924,19 @@ public struct DJScriptWriter: Sendable {
             shapeLog.append((id, shape))
             if shapeLog.count > RecentSpokenTemplates.historyLimit { shapeLog.removeFirst(shapeLog.count - RecentSpokenTemplates.historyLimit) }
         }
-        if unspeakable, pastTimeCheckGrace, fits(closing, nextValues), let id = cues.first?.id {
+        if timeCheckWouldHaveBeenOffered, let id = cues.first?.id {
             noteUnspeakableTimeCheck(boundary, breakID: id, report: &report)
         }
         return .planned(planned)
     }
 
-    /// A time check the rules allowed, whose rounded clock is not a real wall time (#360, #347).
-    /// The break's first cue occupies the spacing slot so the same false clock is not reported
-    /// on every later boundary; `forgetPlannedBreaks` releases it with that break. The drop's
-    /// own id is not a cue: no line was written, and no clock time is in the script.
+    /// A time check the picker would have offered, whose rounded clock is not a real wall time
+    /// (#360, #347). `breakID` is that break's first cue: the report names a cue that exists,
+    /// because no time-check line was written. It also occupies the spacing slot, so the same
+    /// false clock is not reported on every later boundary. `forgetPlannedBreaks` releases it.
     private mutating func noteUnspeakableTimeCheck(_ boundary: Int, breakID: UUID, report: inout OrdinaryBreakCapReport) {
         guard let now = planClock?.now else { return }
-        report.droppedTimeChecks[boundary] = DJTimeCheckDrop(cueID: UUID(), reason: .notOnTheClock)
+        report.droppedTimeChecks[boundary] = DJTimeCheckDrop(cueID: breakID, reason: .notOnTheClock)
         timeCheckLog.append((breakID, now))
         if timeCheckLog.count > RecentSpokenTemplates.historyLimit { timeCheckLog.removeFirst() }
     }

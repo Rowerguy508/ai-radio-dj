@@ -221,6 +221,8 @@ final class DJTimeCheckCalendarDSTTests: XCTestCase {
         XCTAssertNil(opener.timeCheck, "no time-check slot when 2:00 is not the next wall time")
         XCTAssertEqual(plan.ordinaryCapReport.omittedOpenerTimeChecks[opener.afterTrack], .notOnTheClock)
         XCTAssertEqual(plan.ordinaryCapReport.droppedTimeChecks[opener.afterTrack]?.reason, .notOnTheClock)
+        XCTAssertEqual(plan.ordinaryCapReport.droppedTimeChecks[opener.afterTrack]?.cueID, opener.cues.first?.id,
+                       "the report names the break's first cue, not an id that was never planned")
         for cue in plan.breaks.flatMap(\.cues) {
             XCTAssertFalse(cue.text.localizedCaseInsensitiveContains("o'clock"), cue.text)
             XCTAssertFalse(cue.text.contains("2:00"), cue.text)
@@ -234,5 +236,29 @@ final class DJTimeCheckCalendarDSTTests: XCTestCase {
         XCTAssertNotNil(spoken.breaks[0].timeCheck)
         XCTAssertTrue(spoken.breaks[0].cues.contains { $0.text.contains("2 o'clock") })
         XCTAssertNil(spoken.ordinaryCapReport.omittedOpenerTimeChecks[spoken.breaks[0].afterTrack])
+    }
+
+    /// An ordinary break reports the omission only when a time check would have been the next
+    /// shape. After one has just aired, the not-twice-in-a-row rule means the next break is not
+    /// a dropped time check (Fry, #470).
+    func testAnOrdinaryDropFollowsTheNotTwiceInARowRule() {
+        var config = DJBreakShapeConfig(weights: [.timeCheckIntro: 1000, .comingUpOnly: 1],
+                                        timeCheckGraceBreaks: 0, timeCheckMinSpacingSeconds: 0)
+        config.showOpener = false
+        let cadence = DJCadence(talkFraction: 1, minSongsBetweenBreaks: 1)
+        var writer = DJScriptWriter(cadence: cadence, seed: 1, shapes: config)
+        let normal = DJPlanClock(now: utc("2026-11-02T14:40:00Z"), calendar: eastern, style: .twelveHour)
+        _ = writer.plan(tracks: djTracks(4), briefing: nil, hour: 9, clock: normal)
+        XCTAssertEqual(writer.testLastShape, .timeCheckIntro)
+
+        let dst = DJPlanClock(now: utc("2026-11-01T05:58:00Z"), calendar: eastern, style: .twelveHour)
+        let plan = writer.plan(tracks: djTracks(4), briefing: nil, hour: 1, clock: dst)
+        XCTAssertNil(plan.ordinaryCapReport.droppedTimeChecks[0], "the previous break was a time check")
+        let later = plan.breaks.first { $0.afterTrack == 2 }
+        XCTAssertEqual(plan.ordinaryCapReport.droppedTimeChecks[2]?.reason, .notOnTheClock)
+        XCTAssertEqual(plan.ordinaryCapReport.droppedTimeChecks[2]?.cueID, later?.cues.first?.id)
+        for cue in plan.breaks.flatMap(\.cues) {
+            XCTAssertFalse(cue.text.localizedCaseInsensitiveContains("o'clock"), cue.text)
+        }
     }
 }
