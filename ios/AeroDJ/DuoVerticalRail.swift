@@ -188,7 +188,7 @@ private struct DuoRailMoreMenu: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .modifier(RailHint(hint))
+        .modifier(RailHint(hint: hint))
         .accessibilityIdentifier(identifier)
     }
 }
