@@ -553,6 +553,19 @@ private struct FoldedArtCard: View {
         .frame(width: side, height: side)
         .animation(.easeInOut(duration: FoldedArtCardLayers.crossfadeSeconds), value: isOnAir)
         .accessibilityHidden(true)
+        // Test-only. VoiceOver never sees the card. XCUITest can still query a hidden
+        // identifier (same pattern as `folded.fold`). The id follows the visible layers
+        // so a default-size on-air capture can assert orb-only (`folded.artCard.orb`)
+        // versus art (`folded.artCard.artwork`).
+        .accessibilityIdentifier(Self.testIdentifier(layers: layers))
+    }
+
+    /// `folded.artCard.orb` when only the orb is showing; `folded.artCard.artwork` when
+    /// only the art is showing. Mixed opacity during the cross-fade uses `folded.artCard`.
+    private static func testIdentifier(layers: FoldedArtCardLayers) -> String {
+        if layers.showsOrb && layers.artworkOpacity == 0 { return "folded.artCard.orb" }
+        if !layers.showsOrb && layers.artworkOpacity > 0 { return "folded.artCard.artwork" }
+        return "folded.artCard"
     }
 
     /// The art and the orb in one fixed frame, so the swap never changes the card's size.

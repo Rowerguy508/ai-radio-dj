@@ -624,6 +624,38 @@ final class StudioScreenTests: XCTestCase {
         save(app, "closed-ax5-onair")
     }
 
+    /// #435 n1 (#434): default-size on-air stills, so the orb-only art card is visible.
+    /// `closed-ax5-onair` often hides the card (`includesArt: false` at AX5). The existing
+    /// `onAir` scenario is unchanged (frozen ON AIR timer at 0:12). Closed (phone) is the
+    /// folded player, where `FoldedArtCard` swaps art for the orb. Open (iPad) is the
+    /// two-zone Studio, which has no folded art card; the shot still records the Studio
+    /// while the DJ is on air.
+    @MainActor
+    func testDefaultOnAirShowsOrbOnlyArtCard() throws {
+        let app = launch(scenario: "onAir")
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "\(layout) expected at default size:\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        let any = app.descendants(matching: .any)
+        if isOpenLayout {
+            XCTAssertFalse(any["folded.artCard.orb"].exists,
+                           "the two-zone Studio has no folded art card")
+        } else {
+            let onAir = any["dj.onAir"]
+            XCTAssertTrue(onAir.waitForExistence(timeout: 5), "dj.onAir missing\n\(app.debugDescription)")
+            XCTAssertFalse(any["dj.ready"].exists, "On Air replaces the ready line")
+            let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
+            XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
+            XCTAssertTrue(any["folded.artCard.orb"].waitForExistence(timeout: 5),
+                          "the art card shows the orb while on air\n\(app.debugDescription)")
+            XCTAssertFalse(any["folded.artCard.artwork"].exists,
+                           "the art is hidden while on air")
+        }
+        save(app, isOpenLayout ? "open-onair" : "closed-onair")
+    }
+
     // MARK: Duo shell, fold, and rotation
 
     /// Tapping a station selects it and shows one studio model. It does not search or play.

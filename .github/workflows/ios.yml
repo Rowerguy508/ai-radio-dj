@@ -597,6 +597,7 @@ jobs:
                       open-state-empty-dark open-state-loading-dark open-state-error-dark \
                       open-state-denied-dark open-state-playbackFailed-dark \
                       closed-ax5-dark open-ax5-dark \
+                      closed-onair open-onair \
                       iphone-landscape iphone-landscape-dark ipad-landscape ipad-landscape-dark \
                       duo-wide-ready; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }

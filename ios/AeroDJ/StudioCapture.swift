@@ -69,8 +69,9 @@ enum StudioCaptureScenario: String {
     case duoWideEmpty
     /// The DJ is on air: a break became ready and the player reported it started
     /// (`breakReady` then `playbackStarted`, the same events the audio player sends), so the
-    /// folded player draws the ON AIR pill. At AX5 on a phone it is pinned above the
-    /// scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
+    /// folded player draws the ON AIR pill. At default size, `testDefaultOnAirShowsOrbOnlyArtCard`
+    /// captures `closed-onair` / `open-onair` (#435 n1). At AX5 on a phone the pill is pinned
+    /// above the scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
     case onAir
     /// Station ratings (-Nova, PR B): `playing` with the rating button, unrated, with its
     /// first-time "Rate" label. The other scenarios get no rating controller, so they are unchanged.
