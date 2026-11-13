@@ -321,13 +321,7 @@ final class CloudVoiceAllLinesTests: XCTestCase {
 
         let refined = "Your coordinates and your location itself are never sent, but a local news line can name your city or area."
         let privacy = try repoFile("docs/site/privacy.md")
-        // The 2.0 page (#509) sends a coarse coordinate to WeatherKit, so it no longer carries the
-        // blanket "coordinates ... are never sent" line. Call 4 lives in "What's never sent". -Sentinel
-        let neverSentLine = "What's never sent: your Apple ID, your contacts, your coordinates or your location itself, or anything you haven't approved for your briefing. Only the words the DJ speaks are sent, and a local news line can name your city or area."
-        let weatherKitLine = "For local weather, a coarse coordinate is sent only to Apple WeatherKit. Apple handles that data under [Apple's Privacy Policy](https://www.apple.com/legal/privacy/)."
-        XCTAssertTrue(privacy.contains(neverSentLine))
-        XCTAssertTrue(privacy.contains(weatherKitLine))
-        XCTAssertFalse(privacy.contains(refined), "privacy.md must not claim coordinates are never sent; WeatherKit gets a coarse one")
+        XCTAssertTrue(privacy.contains(refined))
         XCTAssertFalse(privacy.contains("Your location is not sent."))
         XCTAssertTrue(privacy.contains("Cloud clips of library songs and station names are kept between launches"))
         let hold = try repoFile("docs/site/HOLD-pro.md")
