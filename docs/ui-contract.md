@@ -203,9 +203,14 @@ Unfolded Studio corners (`StudioCornerRadius`, continuous): panes 30, workspace 
 fields 14, segmented control capsule. Only Zone B's workspace reads them (`\.studioPanes`),
 so the compact layout and its sheet keep their radii.
 
-- **Switch rule:** `GeometryReader` on the root of the playing screen. If
-  `width >= studioMinWidth` → Studio; else → compact. The switch is the only
-  layout decision. Nothing else reads size class to pick a layout.
+- **Switch rule:** `GeometryReader` on the root of the playing screen calls
+  `DisplayContinuity.layout`, and the folded player calls that same function
+  with its own container. Size class gates the Studio (`horizontalSizeClass == .regular`);
+  a missing size class stays compact. Below `studioMinWidth` the compact arm
+  chooses the phone column, the centred column, or the horizontal Duo. No other
+  view reads size class to pick a player layout, and no layout is keyed with `.id`
+  on the size class. Opening the phone keeps the scroll anchor, the selected
+  station and playback; it does not load again.
 - **Wide listen layout:** below the Studio switch the compact player is used.
   iPhone landscape, and any wide container shorter than `FoldedColumnLayout.duoMinHeight`
   (`studioMinWidth`, 716 pt — including the 680 pt compact-to-regular probe), keeps the

@@ -2,14 +2,17 @@ import AeroDJCore
 import SwiftUI
 
 /// The playing screen: one `GeometryReader` decides compact (closed Duo) or Studio (open
-/// Duo) from the container width alone (`StudioLayoutMode.resolve`). Folding only changes
-/// that width. Nothing here creates or restarts playback: the session is app-scoped
-/// (`AppDependencies.playback`) and arrives as a snapshot plus actions.
+/// Duo) through `DisplayContinuity.layout`, the same function the folded player uses.
+/// Size class gates the Studio. Folding changes that class and the container. Nothing
+/// here creates or restarts playback: the session is app-scoped (`AppDependencies.playback`)
+/// and arrives as a snapshot plus actions.
 ///
 /// State that must survive folding lives here, above the switch: the workspace segment
-/// (`@SceneStorage`, so it also survives scene restoration), the search text and whether
-/// the compact workspace sheet is open. Unfolding with that sheet open moves its content
-/// into Zone B on the same segment.
+/// (`@SceneStorage`, so it also survives scene restoration), the player scroll anchor,
+/// the opened station, the playback token, the search text and whether the compact
+/// workspace sheet is open. Unfolding with that sheet open moves its content into
+/// Zone B on the same segment. The layout `switch` does not own any of that state,
+/// and nothing is keyed on the size class with `.id`.
 struct PlayingScreen: View {
     let station: StationRef
     let access: PlaybackAccess
@@ -27,6 +30,10 @@ struct PlayingScreen: View {
     var onOpenStation: ((String) async -> Void)? = nil
 
     @SceneStorage("aerodj.studio.segment") private var segment: WorkspaceSegment = .queue
+    /// Survives the compact / Studio switch and a scene restore. Not `.id`'d on the size class.
+    @SceneStorage("aerodj.player.scrollAnchor") private var storedScrollAnchor = ""
+    @SceneStorage("aerodj.continuity.station") private var continuityStation = ""
+    @SceneStorage("aerodj.continuity.playback") private var continuityPlayback = ""
     @State private var showWorkspace = false
     /// One search session above the compact/Studio switch so a fold cannot wipe results.
     @StateObject private var studioSearch = StudioSearchModel()
@@ -52,6 +59,28 @@ struct PlayingScreen: View {
         return bleedArt
     }
 
+    private var scrollAnchor: Binding<String?> {
+        Binding(
+            get: { storedScrollAnchor.isEmpty ? nil : storedScrollAnchor },
+            set: { next in
+                let stored = next ?? ""
+                #if DEBUG
+                // The continuity probe scrolls to a row, then the placement switch
+                // builds a new scroll view. That view's first layout pass reports
+                // the art id. Keep the row so the new view scrolls back to it.
+                if storedScrollAnchor.hasPrefix("continuity.row."), !stored.hasPrefix("continuity.row.") {
+                    return
+                }
+                #endif
+                if stored != storedScrollAnchor { storedScrollAnchor = stored }
+            }
+        )
+    }
+
+    private var playbackToken: String {
+        DisplayContinuity.playbackToken(transport: snapshot.transport, trackID: snapshot.nowPlaying?.id)
+    }
+
     var body: some View {
         GeometryReader { geo in
             let width = Double(geo.size.width)
@@ -60,6 +89,11 @@ struct PlayingScreen: View {
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: mode)
             #if DEBUG
             .onAppear {
+                // A UI test launch clears a scroll anchor left by the previous test.
+                // Later appears of this screen (a fold that rebuilds it) do not clear.
+                if DisplayContinuityLaunch.shouldReset("player-scroll") {
+                    storedScrollAnchor = ""
+                }
                 if let initial = StudioCaptureSegment.initial {
                     segment = initial
                     StudioCaptureSegment.initial = nil
@@ -73,8 +107,15 @@ struct PlayingScreen: View {
             #endif
             .onChange(of: mode) { _, newMode in
                 // The compact sheet's content moves into Zone B on the same segment.
-                // This must not search or play: folding only changes which column is visible.
+                // This must not search or play, and it must not clear the scroll anchor:
+                // folding only changes which column is visible.
                 if newMode != .compact { showWorkspace = false }
+            }
+            .onChange(of: station.id, initial: true) { _, id in
+                continuityStation = id
+            }
+            .onChange(of: playbackToken, initial: true) { _, token in
+                continuityPlayback = token
             }
         }
         .overlay(alignment: .topLeading) {
@@ -137,8 +178,12 @@ struct PlayingScreen: View {
             // Folded redesign (wireframe 08): back + ⋯ in the bar, the station chip below.
             // iPhone landscape stays the centred column. Only a wide-and-tall container
             // (the unfolded Duo) moves the controls to the right.
-            let placement = FoldedColumnLayout.controlPlacement(containerWidth: width,
-                                                                containerHeight: Double(height))
+            let placement = DisplayContinuity.layout(
+                hasRegularWidth: horizontalSizeClass == .regular,
+                containerWidth: width,
+                containerHeight: Double(height),
+                accessibilityTextSize: typeSize.isAccessibilitySize
+            ).controlPlacement ?? .phoneBottom
             let movesMoreIntoThePlayer = placement != .phoneBottom
             let openConnections = { segment = .connections; showWorkspace = true }
             FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
@@ -152,7 +197,8 @@ struct PlayingScreen: View {
                          onTune: { segment = .tune; showWorkspace = true },
                          onReview: { segment = .connections; showWorkspace = true },
                          stationStops: stationStops,
-                         onOpenStation: onOpenStation)
+                         onOpenStation: onOpenStation,
+                         scrollAnchor: scrollAnchor)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
                 .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
@@ -178,11 +224,17 @@ struct PlayingScreen: View {
 
     /// Only a regular width class can open the Studio; compact or no size class (nil)
     /// collapses to Listen. Otherwise the existing width rule decides Studio vs the stacked
-    /// accessibility layout. No device size is named here.
+    /// accessibility layout. No device size is named here. The same `DisplayContinuity.layout`
+    /// call the folded player makes; height is not an input of this gate.
     private func resolvedMode(containerWidth: Double) -> StudioLayoutMode {
-        StudioLayoutMode.resolve(hasRegularWidth: horizontalSizeClass == .regular,
-                                 containerWidth: containerWidth,
-                                 accessibilityTextSize: typeSize.isAccessibilitySize)
+        switch DisplayContinuity.layout(hasRegularWidth: horizontalSizeClass == .regular,
+                                        containerWidth: containerWidth,
+                                        containerHeight: 0,
+                                        accessibilityTextSize: typeSize.isAccessibilitySize) {
+        case .studio: .studio
+        case .studioStacked: .studioStacked
+        case .phoneBottom, .centredColumn, .duoHorizontal: .compact
+        }
     }
 
     private var studioIdentity: String {

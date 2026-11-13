@@ -49,6 +49,21 @@ extension View {
     }
 }
 
+/// The continuity capture names the player scroll so a test can swipe it.
+/// Other launches leave the accessibility tree as it was.
+private struct ContinuityScrollerID: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.accessibilityIdentifier("continuity.scroller")
+        } else {
+            content
+        }
+    }
+}
+
 /// Reduce Motion, including the capture launch flag the UI tests use.
 private struct FoldedReduceMotion {
     static func resolve(_ system: Bool) -> Bool {
@@ -96,15 +111,41 @@ struct FoldedPlayer: View {
     var stationStops: [DuoStationSwitch.Stop] = []
     /// The station-row open path. Nil hides the dial.
     var onOpenStation: ((String) async -> Void)? = nil
+    /// Owned by `PlayingScreen`, above the layout switch. A placement change
+    /// rebuilds the scroll view and reads this same anchor back.
+    var scrollAnchor: Binding<String?> = .constant(Optional<String>.none)
 
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    /// `DisplayContinuity.layout` with this container and the width class. Studio
+    /// results are not drawn here (the screen embeds this player only for a
+    /// compact decision); those fall through to the geometry-only column, which
+    /// is the phone path this view had before the size class was an input.
+    private func playerPlacement(in size: CGSize) -> FoldedColumnLayout.ControlPlacement {
+        let decision = DisplayContinuity.layout(
+            hasRegularWidth: horizontalSizeClass == .regular,
+            containerWidth: Double(size.width),
+            containerHeight: Double(size.height),
+            accessibilityTextSize: typeSize.isAccessibilitySize)
+        if let placement = decision.controlPlacement { return placement }
+        return FoldedColumnLayout.controlPlacement(containerWidth: Double(size.width),
+                                                   containerHeight: Double(size.height))
+    }
+
+    private var continuityProbe: Bool {
+        #if DEBUG
+        UserDefaults.standard.bool(forKey: DisplayContinuityLaunch.probeKey)
+        #else
+        false
+        #endif
+    }
+
     var body: some View {
         GeometryReader { geo in
-            switch FoldedColumnLayout.controlPlacement(containerWidth: Double(geo.size.width),
-                                                       containerHeight: Double(geo.size.height)) {
+            switch playerPlacement(in: geo.size) {
             case .phoneBottom:
                 compactBody(in: geo.size)
             case .centredColumn:
@@ -167,9 +208,12 @@ struct FoldedPlayer: View {
                                     includesStatus: Bool) -> some View {
         ScrollView(.vertical, showsIndicators: showsIndicators) {
             compactUpper(artSide: artSide, includesArt: true, includesStatus: includesStatus)
+                .scrollTargetLayout()
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
+        .scrollPosition(id: scrollAnchor)
+        .modifier(ContinuityScrollerID(enabled: continuityProbe))
     }
 
     /// iPhone landscape: one centred column, the layout this width had before the Duo rail.
@@ -203,9 +247,11 @@ struct FoldedPlayer: View {
             .accessibilityIdentifier("folded.wideColumn")
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, minHeight: size.height, alignment: .center)
+            .scrollTargetLayout()
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
+        .scrollPosition(id: scrollAnchor)
         .frame(width: size.width, height: size.height)
     }
 
@@ -224,9 +270,12 @@ struct FoldedPlayer: View {
                 upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
                       includesStatus: false, keepArtVisible: true, includesSearch: false)
                     .frame(width: CGFloat(layout.leftWidth), alignment: .leading)
+                    .scrollTargetLayout()
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollContentBackground(.hidden)
+            .scrollPosition(id: scrollAnchor)
+            .modifier(ContinuityScrollerID(enabled: continuityProbe))
             .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
             .background { dayWash.accessibilityHidden(true) }
             // .contain first, then the identifier. An identifier on a container without
@@ -387,10 +436,12 @@ struct FoldedPlayer: View {
                                   isOnAir: keepArtVisible ? false : dj.state.isOnAir,
                                   side: artSide, namespace: artworkNamespace, speechLevel: speechLevel)
                         .frame(maxWidth: .infinity)
+                        .id(DisplayContinuity.artAnchor)
                 }
                 FoldedTitleBlock(track: track, isTestStation: isTestStation, centered: centered)
                     .padding(.top, includesArt
                              ? (centered ? CGFloat(FoldedColumnLayout.Spacing.artToTitle) : 24) : 0)
+                    .id(DisplayContinuity.titleAnchor)
                 if includesStatus {
                     FoldedDJStatus(dj: dj)
                         .padding(.top, centered ? CGFloat(FoldedColumnLayout.Spacing.titleToStatus) : 16)
@@ -410,7 +461,17 @@ struct FoldedPlayer: View {
                 NowPlayingPlaceholder(content: content, actions: actions)
                     .padding(.top, 24)
             }
+            if continuityProbe {
+                ForEach(0..<8, id: \.self) { index in
+                    Text("Continuity row \(index)")
+                        .font(.body)
+                        .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
+                        .id(DisplayContinuity.rowAnchor(index))
+                        .accessibilityIdentifier(DisplayContinuity.rowAnchor(index))
+                }
+            }
         }
+        .scrollTargetLayout()
     }
 
     @ViewBuilder
@@ -828,12 +889,22 @@ private struct DuoStationDial: View {
     let onOpen: (String) async -> Void
 
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    @State private var snapped: String?
+    /// Survives the dial being created again when the horizontal layout appears.
+    /// `onAppear` must not write the opened station over a stored anchor.
+    @SceneStorage("aerodj.duo.dialAnchor") private var storedSnap = ""
     @State private var flight = DuoStationSwitch.Flight(highlightID: "")
     @State private var openTask: Task<Void, Never>?
 
     private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
+    private var snapped: String? { storedSnap.isEmpty ? nil : storedSnap }
     private var highlightedID: String { snapped ?? openedID }
+
+    private var snapBinding: Binding<String?> {
+        Binding(
+            get: { storedSnap.isEmpty ? nil : storedSnap },
+            set: { storedSnap = $0 ?? "" }
+        )
+    }
     private var highlightedName: String {
         stops.first { $0.id == highlightedID }?.name ?? ""
     }
@@ -866,7 +937,7 @@ private struct DuoStationDial: View {
                 .scrollTargetLayout()
             }
             .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $snapped)
+            .scrollPosition(id: snapBinding)
             .scrollBounceBehavior(.basedOnSize)
 
             Button {
@@ -898,16 +969,28 @@ private struct DuoStationDial: View {
             case .decrement: next = max(0, index - 1)
             @unknown default: return
             }
-            snapped = stops[next].id
+            storedSnap = stops[next].id
         }
         .accessibilityAction(.default) { open(highlightedID) }
         .onAppear {
-            snapped = openedID
-            flight = DuoStationSwitch.Flight(highlightID: openedID)
+            #if DEBUG
+            if DisplayContinuityLaunch.shouldReset("dial") { storedSnap = "" }
+            #endif
+            // A stored highlight wins. The opened station is only the default
+            // when the dial has never been scrolled, including the first time
+            // the horizontal layout creates this view.
+            let session = DisplayContinuity.Session(
+                selectedStationID: openedID,
+                scrollAnchor: storedSnap.isEmpty ? nil : storedSnap,
+                playbackToken: "",
+                loadCount: 0
+            ).appeared(defaultAnchor: openedID)
+            if let anchor = session.scrollAnchor, anchor != storedSnap { storedSnap = anchor }
+            flight = DuoStationSwitch.Flight(highlightID: storedSnap.isEmpty ? openedID : storedSnap)
         }
-        .onChange(of: openedID) { _, id in snapped = id }
-        .onChange(of: snapped) { _, id in
-            guard let id else { return }
+        .onChange(of: openedID) { _, id in storedSnap = id }
+        .onChange(of: storedSnap) { _, id in
+            guard !id.isEmpty else { return }
             _ = flight.receive(.snap(id), playingID: openedID)
         }
         .transaction { if reduceMotion { $0.disablesAnimations = true } }
@@ -915,7 +998,7 @@ private struct DuoStationDial: View {
 
     /// Tap or Tune. A swipe never reaches this. A newer tap cancels a pending open.
     private func open(_ id: String) {
-        snapped = id
+        storedSnap = id
         guard let token = flight.receive(.tap(id), playingID: openedID) else { return }
         openTask?.cancel()
         openTask = Task {

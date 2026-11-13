@@ -36,7 +36,8 @@ final class StudioScreenTests: XCTestCase {
                           musicAuthStatus: String? = nil,
                           orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
+        app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
+                               "-AeroDJResetContinuity", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
         if let scenario { app.launchArguments += ["-AeroDJStudioCaptureScenario", scenario] }
         if let contentSize {
@@ -429,6 +430,102 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertEqual(opened.label, "late-night", "the dial calls the station-open action")
         XCTAssertEqual(container.frame.width, box.width, accuracy: 0.5, "container resized before the screenshot")
         save(app, "duo-wide-ready")
+    }
+
+    /// #492 (#465 item 5): opening the phone. The capture starts at the folded phone
+    /// container (compact) and unfolds to the 640×820 Duo (regular). Playback, the
+    /// selected station, the scroll anchor and the load count stay. The size class
+    /// is the change; the layout still comes from `DisplayContinuity`.
+    @MainActor
+    func testOpeningThePhoneKeepsPlaybackScrollAndStation() throws {
+        try XCTSkipUnless(isOpenLayout, "The unfolded 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoContinuity")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertFalse(any["layout.studio"].exists, "the folded phone stays the compact player")
+        XCTAssertEqual(readout(app, "continuity.pose"), "folded")
+        XCTAssertEqual(readout(app, "continuity.sizeClass"), "compact")
+        waitReadout(app, "continuity.station", "morning-calm")
+        waitReadout(app, "continuity.playback", "playing|1")
+        waitReadout(app, "continuity.loads", "1")
+        XCTAssertEqual(callLabel(app), "0/0")
+        let title = any["station.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(title.label.contains("Morning Calm"), title.label)
+        let play = app.buttons["transport.playPause"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
+        let playLabel = play.label
+        let unfold = app.buttons["continuity.unfold"]
+        let scrollTo = app.buttons["continuity.scrollToRow"]
+        XCTAssertTrue(unfold.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(scrollTo.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(unfold.frame.width, 44 - 0.01)
+        XCTAssertGreaterThanOrEqual(unfold.frame.height, 44 - 0.01)
+        XCTAssertGreaterThanOrEqual(scrollTo.frame.height, 44 - 0.01)
+
+        let container = any["continuity.container"]
+        XCTAssertTrue(container.waitForExistence(timeout: 5))
+        _ = settledFrame(of: container, "folded container") {
+            abs($0.width - 390) <= 1 && abs($0.height - 844) <= 1
+        }
+        scrollTo.tap()
+        let anchor = any["continuity.anchor"]
+        let row = any["continuity.row.4"]
+        let scrolled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "continuity.row.4"),
+                                                 object: anchor)
+        XCTAssertEqual(XCTWaiter().wait(for: [scrolled], timeout: 5), .completed,
+                       "the scroll anchor did not move to row 4: \(anchor.label)\n\(app.debugDescription)")
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let rowOnScreen = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: row)
+        XCTAssertEqual(XCTWaiter().wait(for: [rowOnScreen], timeout: 5), .completed,
+                       "row 4 is not on screen after scrolling: \(row.frame)")
+        save(app, "duo-continuity-folded")
+
+        let loads = readout(app, "continuity.loads")
+        let playback = readout(app, "continuity.playback")
+        unfold.tap()
+        XCTAssertEqual(readout(app, "continuity.pose"), "unfolded")
+        XCTAssertEqual(readout(app, "continuity.sizeClass"), "regular",
+                       "opening the phone changes the size class")
+        _ = settledFrame(of: container, "unfolded container") {
+            abs($0.width - 640) <= 1 && abs($0.height - 820) <= 1
+        }
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 10),
+                      "640 pt stays the compact player at either size class\n\(app.debugDescription)")
+        XCTAssertFalse(any["layout.studio"].exists)
+        XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10),
+                      "the unfolded Duo is the horizontal player\n\(app.debugDescription)")
+        let held = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "continuity.row.4"),
+                                             object: anchor)
+        XCTAssertEqual(XCTWaiter().wait(for: [held], timeout: 5), .completed,
+                       "the scroll anchor jumped: \(anchor.label)")
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let rowStillOnScreen = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: row)
+        XCTAssertEqual(XCTWaiter().wait(for: [rowStillOnScreen], timeout: 5), .completed,
+                       "row 4 left the screen when the phone opened: \(row.frame)")
+        XCTAssertEqual(readout(app, "continuity.station"), "morning-calm")
+        XCTAssertTrue(any["station.title"].label.contains("Morning Calm"))
+        XCTAssertEqual(readout(app, "continuity.playback"), playback)
+        XCTAssertEqual(play.label, playLabel, "playback was restarted")
+        XCTAssertEqual(readout(app, "continuity.loads"), loads, "opening the phone reloaded")
+        assertCallsStayZero(app, "opening the phone must not search or play")
+        save(app, "duo-continuity-unfolded")
+    }
+
+    @MainActor
+    private func readout(_ app: XCUIApplication, _ identifier: String) -> String {
+        let element = app.descendants(matching: .any)[identifier]
+        XCTAssertTrue(element.waitForExistence(timeout: 5), "\(identifier) missing\n\(app.debugDescription)")
+        return element.label
+    }
+
+    /// Scene storage written by the player can land a frame after the chrome exists.
+    @MainActor
+    private func waitReadout(_ app: XCUIApplication, _ identifier: String, _ expected: String) {
+        let element = app.descendants(matching: .any)[identifier]
+        let match = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", expected), object: element)
+        XCTAssertEqual(XCTWaiter().wait(for: [match], timeout: 5), .completed,
+                       "\(identifier) was \(element.exists ? element.label : "missing"), expected \(expected)\n\(app.debugDescription)")
     }
 
     /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and
