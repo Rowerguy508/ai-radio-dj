@@ -49,9 +49,11 @@ on:
 permissions:
   contents: read
 
+# workflow_dispatch only: the group is this workflow plus github.ref, and the
+# run is not cancelled (cancel-in-progress is true only for pull_request).
 concurrency:
-  group: testflight-upload
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   upload:
