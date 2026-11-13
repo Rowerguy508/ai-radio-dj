@@ -59,9 +59,10 @@ final class SpeechContextTests: XCTestCase {
     }
 
     private func renderer(_ routes: [VoiceRoute], cache: any AudioCache = InMemoryAudioCache(),
+                          revocations: NarrationRevocations = NarrationRevocations(),
                           scope: @escaping @Sendable () -> CloudVoiceScope = { .transitionsOnly }) -> VoiceRenderer {
         VoiceRenderer(routes: routes, budget: VoiceBudget(dailyCapMicrodollars: 0), cache: cache,
-                      revocations: NarrationRevocations(), cloudScope: scope)
+                      revocations: revocations, cloudScope: scope)
     }
 
     private func proxy(_ upstream: ProxyVoiceProvider.Upstream, _ transport: BodyTransport,
@@ -116,10 +117,9 @@ final class SpeechContextTests: XCTestCase {
         let fields = ProxyVoiceProvider.requestBody(text: "Hi.", voice: djVoice,
                                                     context: RequestContext(stationID: "s", isReusableGeneric: false),
                                                     upstream: .elevenlabs)
-        // The pre-#365 body: the same five keys, encoded by the same JSONEncoder. Darwin does not
-        // order object keys, so two encodes of this object are not byte-identical there (Linux
-        // sorts them, which is why a raw Data compare passes on one platform only). The contract
-        // is the object.
+        // The pre-#365 body: the same five keys, encoded by the same JSONEncoder. Object key order
+        // is not stable (Darwin never; Linux only when two dictionaries share a layout), so the
+        // contract is the object, not the raw bytes.
         let five: [String: String] = [
             "upstream": "elevenlabs", "voiceId": djVoice.id, "text": "Hi.", "format": "text", "stationId": "s",
         ]
@@ -127,13 +127,6 @@ final class SpeechContextTests: XCTestCase {
         XCTAssertEqual(try body(sent), five)
         XCTAssertNil(try body(sent)["previousText"])
         XCTAssertNil(try body(sent)["nextText"])
-        let encodedFive = try JSONEncoder().encode(five)
-        let encodedFiveAgain = try JSONEncoder().encode([
-            "upstream": "elevenlabs", "voiceId": djVoice.id, "text": "Hi.", "format": "text", "stationId": "s",
-        ])
-        if encodedFive == encodedFiveAgain {
-            XCTAssertEqual(sent, encodedFive, "where the encoder orders keys stably, the bytes match too")
-        }
     }
 
     func testProxyTrimsContextKeepingTheSideNearestTheLine() {
@@ -329,10 +322,11 @@ final class SpeechContextTests: XCTestCase {
         XCTAssertEqual(VoiceRenderer.neighbours(of: line, in: cues, attributions: attrs, scope: .noLines), .none)
         let unattributed = transition("No attribution.")
         XCTAssertEqual(VoiceRenderer.neighbours(of: line, in: [unattributed, line], attributions: [line.id: .presenter], scope: .allLines),
-                       .none, "copy v2 still does not send a cue with no attribution")
+                       .none, "a cue with no attribution still does not leave")
         XCTAssertEqual(VoiceRenderer.neighbours(of: line, in: cues, attributions: attrs, scope: .allLines),
-                       SpeechNeighbours(previous: "Dentist at 3.", next: nil),
-                       "allLines widens context only because mayLeaveDevice does")
+                       SpeechNeighbours(previous: "Dentist at 3.", next: nil,
+                                        sourceItemIDs: [personalCue.sourceItemID!], needsAllLinesTag: true),
+                       "allLines widens context only because mayLeaveDevice does, and the item stays tagged")
 
         let strict = ContextSpy()
         _ = await renderer([cloud(strict)]).render(line, userID: "u", stationID: "s", attribution: .presenter,
@@ -457,6 +451,68 @@ final class SpeechContextTests: XCTestCase {
         let encoded = try JSONEncoder().encode(RequestContext(stationID: "s", isReusableGeneric: false))
         let keys = try XCTUnwrap(try JSONSerialization.jsonObject(with: encoded) as? [String: Any]).keys
         XCTAssertEqual(Set(keys), ["stationID", "isReusableGeneric"], "nil context is omitted when the struct is encoded")
+    }
+
+    // MARK: Purge covers neighbour context (Sentinel B1)
+
+    func testPendingRevokeOfANeighbourBlocksItsTextAsContext() async {
+        let item = UUID()
+        let calendar = NarrationCue(id: UUID(), order: 0, group: 0, kind: .upcomingEvent, text: "Dentist at 3.",
+                                    estimatedSeconds: 3, maxSeconds: 20, sourceItemID: item, source: .calendar, provenance: "test:item")
+        let line = transition("That was Holocene.")
+        let cues = [calendar, line]
+        let attrs: [UUID: SpokenAttribution] = [
+            calendar.id: .personalContext(itemID: item, source: .calendar, provenance: "test:item"),
+            line.id: .presenter,
+        ]
+        let revocations = NarrationRevocations()
+        revocations.revoke([item])
+        let spy = ContextSpy()
+        let refused = await renderer([cloud(spy)], revocations: revocations, scope: { .allLines }).render(
+            line, userID: "u", stationID: "s", attribution: .presenter, breakCues: cues, breakAttributions: attrs)
+        guard case .failure = refused else { return XCTFail("a pending purge of the neighbour must refuse the render") }
+        XCTAssertTrue(spy.calls.isEmpty, "the neighbour's text must not leave while its purge is pending")
+
+        revocations.purgeCompleted([item])
+        let cache = InMemoryAudioCache()
+        let again = ContextSpy()
+        guard case .success(let clip) = await renderer([cloud(again)], cache: cache, revocations: revocations, scope: { .allLines }).render(
+            line, userID: "u", stationID: "s", attribution: .presenter, breakCues: cues, breakAttributions: attrs) else {
+            return XCTFail("once the purge finishes, the line renders")
+        }
+        XCTAssertEqual(again.calls.first?.context.previousText, "Dentist at 3.")
+        XCTAssertTrue(clip.audio.sourceItemIDs.contains(item))
+        XCTAssertTrue(clip.audio.sourceItemIDs.contains(VoiceRenderer.allLinesClipTag))
+        await cache.purge(sourceItemIDs: [item])
+        let left = await cache.count
+        XCTAssertEqual(left, 0, "a later purge of the neighbour finds the clip")
+    }
+
+    func testPendingRevokeAllBlocksNeighbourContext() async {
+        let item = UUID()
+        let calendar = NarrationCue(id: UUID(), order: 0, group: 0, kind: .upcomingEvent, text: "Dentist at 3.",
+                                    estimatedSeconds: 3, maxSeconds: 20, sourceItemID: item, source: .calendar, provenance: "test:item")
+        let line = transition("That was Holocene.")
+        let cues = [calendar, line]
+        let attrs: [UUID: SpokenAttribution] = [
+            calendar.id: .personalContext(itemID: item, source: .calendar, provenance: "test:item"),
+            line.id: .presenter,
+        ]
+        let revocations = NarrationRevocations()
+        revocations.revokeAll()
+        let spy = ContextSpy()
+        let refused = await renderer([cloud(spy)], revocations: revocations, scope: { .allLines }).render(
+            line, userID: "u", stationID: "s", attribution: .presenter, breakCues: cues, breakAttributions: attrs)
+        guard case .failure = refused else { return XCTFail("a purge-all in flight must refuse context that quotes a personal line") }
+        XCTAssertTrue(spy.calls.isEmpty)
+
+        revocations.purgeAllCompleted()
+        let again = ContextSpy()
+        guard case .success = await renderer([cloud(again)], revocations: revocations, scope: { .allLines }).render(
+            line, userID: "u", stationID: "s", attribution: .presenter, breakCues: cues, breakAttributions: attrs) else {
+            return XCTFail("after the purge-all finishes, the line renders")
+        }
+        XCTAssertEqual(again.calls.first?.context.previousText, "Dentist at 3.")
     }
 
     // MARK: Time check (#347)

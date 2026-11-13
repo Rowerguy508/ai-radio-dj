@@ -767,20 +767,33 @@ public struct VoiceRenderer: Sendable {
     /// `mayLeaveDevice` with its own attribution and `scope` — the same per-cue rule that decides
     /// whether the neighbour's own render may leave the device (#176). An ineligible neighbour is
     /// omitted; the other side is still sent. This does not widen that rule: `.noLines` and
-    /// `.transitionsOnly` stay as they are, and `.allLines` (copy v2, #432/#441) is the only scope
-    /// that lets more cues through, by the same check. Empty when `cue` is not in `cues`.
+    /// `.transitionsOnly` stay as they are, and `.allLines` is the only scope that lets more cues
+    /// through, by the same check. Included neighbours carry their item ids, and
+    /// `needsAllLinesTag` when one of them may leave only under `.allLines`, so a purge of that
+    /// item (or a purge-all) covers the clip that quoted it. Empty when `cue` is not in `cues`.
     public static func neighbours(of cue: NarrationCue, in cues: [NarrationCue],
                                   attributions: [UUID: SpokenAttribution],
                                   scope: CloudVoiceScope = .transitionsOnly) -> SpeechNeighbours {
         guard let index = cues.firstIndex(where: { $0.id == cue.id }) else { return .none }
-        func text(at i: Int) -> String? {
+        struct Side {
+            let text: String
+            let itemID: UUID?
+            let needsAllLines: Bool
+        }
+        func side(at i: Int) -> Side? {
             guard cues.indices.contains(i) else { return nil }
             let neighbour = cues[i]
-            guard mayLeaveDevice(neighbour, attribution: attributions[neighbour.id], scope: scope) else { return nil }
+            let attribution = attributions[neighbour.id]
+            guard mayLeaveDevice(neighbour, attribution: attribution, scope: scope) else { return nil }
             let text = neighbour.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? nil : text
+            guard !text.isEmpty else { return nil }
+            let widened = !mayLeaveDevice(neighbour, attribution: attribution, scope: .transitionsOnly)
+            return Side(text: text, itemID: neighbour.sourceItemID, needsAllLines: widened)
         }
-        return SpeechNeighbours(previous: text(at: index - 1), next: text(at: index + 1))
+        let previous = side(at: index - 1), next = side(at: index + 1)
+        return SpeechNeighbours(previous: previous?.text, next: next?.text,
+                                sourceItemIDs: [previous?.itemID, next?.itemID].compactMap { $0 },
+                                needsAllLinesTag: (previous?.needsAllLines ?? false) || (next?.needsAllLines ?? false))
     }
 
     public func render(_ handoff: NarrationHandoff, userID: String, stationID: String) async -> RenderedNarration {
@@ -871,7 +884,17 @@ public struct VoiceRenderer: Sendable {
         let scope = cloudScope()
         let offDeviceAllowed = Self.mayLeaveDevice(cue, attribution: attribution, scope: scope)
         let widened = offDeviceAllowed && !Self.mayLeaveDevice(cue, attribution: attribution, scope: .transitionsOnly)
-        let sources = (cue.sourceItemID.map { [$0] } ?? []) + (widened ? [Self.allLinesClipTag] : [])
+        // Neighbours are decided with the same scope, before the purge check. A context-sending
+        // route quotes their text, so their item ids (and `allLinesClipTag` when one of them may
+        // leave only under `.allLines`) have to be in `sources` or a purge of that item, including
+        // a purge-all still in flight, cannot see the clip. -Echo
+        let mates = Self.neighbours(of: cue, in: breakCues, attributions: breakAttributions, scope: scope)
+        var sourceList = (cue.sourceItemID.map { [$0] } ?? []) + (widened ? [Self.allLinesClipTag] : [])
+        if offDeviceAllowed, routes.contains(where: \.sendsSpeechContext), !mates.isEmpty {
+            for id in mates.sourceItemIDs where !sourceList.contains(id) { sourceList.append(id) }
+            if mates.needsAllLinesTag, !sourceList.contains(Self.allLinesClipTag) { sourceList.append(Self.allLinesClipTag) }
+        }
+        let sources = sourceList
         let token = revocations.token()  // before any synthesis: a later purge of `sources` wins
         if revocations.purgePending(sources) {
             // A purge of this item is still running: render nothing that it could miss.
@@ -887,9 +910,8 @@ public struct VoiceRenderer: Sendable {
             }
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
             let text = Self.spokenText(cue.text, for: route)
-            // Same `scope` as `offDeviceAllowed` above. A local-only cue sends nothing, and a
+            // Same `mates` as the purge check above. A local-only cue sends nothing, and a
             // neighbour is included only when it may leave the device itself.
-            let mates = Self.neighbours(of: cue, in: breakCues, attributions: breakAttributions, scope: scope)
             let speech = route.sendsSpeechContext && offDeviceAllowed ? mates.spoken() : .none
             let key = Self.cacheKey(text: text, route: route, context: speech)
             if useCache, let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
@@ -1041,23 +1063,31 @@ public struct DessaVoiceProvider: VoiceProvider {
 public struct SpeechNeighbours: Equatable, Sendable {
     public let previous: String?
     public let next: String?
+    /// Item ids of the neighbours whose text is included. A purge of one of these finds the clip.
+    public let sourceItemIDs: [UUID]
+    /// An included neighbour may leave the device only under `.allLines`, so the clip also carries
+    /// `VoiceRenderer.allLinesClipTag` and a purge-all can find it.
+    public let needsAllLinesTag: Bool
     public static let none = SpeechNeighbours(previous: nil, next: nil)
 
-    public init(previous: String?, next: String?) {
+    public init(previous: String?, next: String?, sourceItemIDs: [UUID] = [], needsAllLinesTag: Bool = false) {
         self.previous = previous
         self.next = next
+        self.sourceItemIDs = sourceItemIDs
+        self.needsAllLinesTag = needsAllLinesTag
     }
 
     public var isEmpty: Bool { (previous ?? "").isEmpty && (next ?? "").isEmpty }
 
     /// Plain text with brackets removed. Context never carries audio tags, even on a route that
-    /// would keep an allowlisted tag in the line it speaks.
+    /// would keep an allowlisted tag in the line it speaks. Purge tags are kept.
     func spoken() -> SpeechNeighbours {
         func plain(_ t: String?) -> String? {
             guard let t else { return nil }
             let s = SpeechDelivery.speakable(t, keepingAudioTags: false)
             return s.isEmpty ? nil : s
         }
-        return SpeechNeighbours(previous: plain(previous), next: plain(next))
+        return SpeechNeighbours(previous: plain(previous), next: plain(next),
+                                sourceItemIDs: sourceItemIDs, needsAllLinesTag: needsAllLinesTag)
     }
 }
