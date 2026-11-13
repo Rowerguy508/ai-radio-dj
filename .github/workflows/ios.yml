@@ -40,6 +40,9 @@ jobs:
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Self-hosted Mac persists between jobs: do not leave the job token in .git/config (#517 N1, -Sentinel).
+          persist-credentials: false
       - name: Check Xcode 26.6 and Swift 6.3
         if: runner.environment == 'self-hosted'
         run: |
@@ -265,6 +268,9 @@ jobs:
       DERIVED_DATA: ios/build/DerivedData-device
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Self-hosted Mac persists between jobs: do not leave the job token in .git/config (#517 N1, -Sentinel).
+          persist-credentials: false
       - name: Check Xcode 26.6 and Swift 6.3
         if: runner.environment == 'self-hosted'
         run: |
@@ -432,6 +438,9 @@ jobs:
       DERIVED_DATA: ios/build/DerivedData-runtime
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Self-hosted Mac persists between jobs: do not leave the job token in .git/config (#517 N1, -Sentinel).
+          persist-credentials: false
       - name: Check Xcode 26.6 and Swift 6.3
         if: runner.environment == 'self-hosted'
         run: |
@@ -554,6 +563,9 @@ jobs:
       SHOTS: ${{ github.workspace }}/studio-screenshots
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Self-hosted Mac persists between jobs: do not leave the job token in .git/config (#517 N1, -Sentinel).
+          persist-credentials: false
       - name: Check Xcode 26.6 and Swift 6.3
         if: runner.environment == 'self-hosted'
         run: |
