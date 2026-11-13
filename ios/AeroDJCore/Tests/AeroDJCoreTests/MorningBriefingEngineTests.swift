@@ -36,6 +36,8 @@ private struct StubSource: ContextSource {
 
 private struct StubRewriter: BriefingRewriter {
     let transform: @Sendable (BriefingScriptSegment) throws -> String
+    /// On-device stub: the #400 consent gate applies only to rewriters that leave the device.
+    var leavesDevice: Bool { false }
     func rewrite(_ segment: BriefingScriptSegment, style: BriefingStyle) async throws -> String {
         try transform(segment)
     }
