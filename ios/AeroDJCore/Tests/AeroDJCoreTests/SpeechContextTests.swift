@@ -116,13 +116,24 @@ final class SpeechContextTests: XCTestCase {
         let fields = ProxyVoiceProvider.requestBody(text: "Hi.", voice: djVoice,
                                                     context: RequestContext(stationID: "s", isReusableGeneric: false),
                                                     upstream: .elevenlabs)
-        let five = try JSONEncoder().encode([
+        // The pre-#365 body: the same five keys, encoded by the same JSONEncoder. Darwin does not
+        // order object keys, so two encodes of this object are not byte-identical there (Linux
+        // sorts them, which is why a raw Data compare passes on one platform only). The contract
+        // is the object.
+        let five: [String: String] = [
+            "upstream": "elevenlabs", "voiceId": djVoice.id, "text": "Hi.", "format": "text", "stationId": "s",
+        ]
+        XCTAssertEqual(fields, five, "no context is exactly the five fields the old body encoded")
+        XCTAssertEqual(try body(sent), five)
+        XCTAssertNil(try body(sent)["previousText"])
+        XCTAssertNil(try body(sent)["nextText"])
+        let encodedFive = try JSONEncoder().encode(five)
+        let encodedFiveAgain = try JSONEncoder().encode([
             "upstream": "elevenlabs", "voiceId": djVoice.id, "text": "Hi.", "format": "text", "stationId": "s",
         ])
-        XCTAssertEqual(fields.keys.sorted(), ["format", "stationId", "text", "upstream", "voiceId"])
-        XCTAssertEqual(sent, try JSONEncoder().encode(fields))
-        XCTAssertEqual(sent, five, "no context encodes to the same bytes as the five-field body")
-        XCTAssertEqual(try body(sent), try body(five))
+        if encodedFive == encodedFiveAgain {
+            XCTAssertEqual(sent, encodedFive, "where the encoder orders keys stably, the bytes match too")
+        }
     }
 
     func testProxyTrimsContextKeepingTheSideNearestTheLine() {
