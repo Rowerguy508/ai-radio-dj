@@ -54,6 +54,12 @@ final class AppWideLayoutTests: XCTestCase {
         XCTAssertEqual(settings.columns, 1, "Settings stays one readable column")
         XCTAssertEqual(settings.sideInset, 40)
         XCTAssertEqual(settings.readableWidth, 560)
+
+        let onboarding = AppWideLayout.decide(duo, for: .onboarding)
+        XCTAssertEqual(onboarding.readableWidth, 560, "LocalAreaPrompt holds a 560 pt column")
+        XCTAssertEqual(onboarding.sideInset, 40)
+        XCTAssertEqual(onboarding.columns, 1, "onboarding is always one column")
+        XCTAssertEqual(onboarding.decisionText, "wide 1 40")
     }
 
     func testEveryColumnLeavesRoomForItsContentAndATouchTarget() {
@@ -124,6 +130,55 @@ final class AppWideLayoutTests: XCTestCase {
         let short = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 640,
                                         containerHeight: FoldedColumnLayout.duoMinHeight - 1)
         XCTAssertFalse(AppWideLayout.isWide(short))
+    }
+
+    /// `LocalAreaPrompt` is a medium-detent sheet: its measured height is its content, so the
+    /// vertical size class replaces the height test. Landscape iPhones stay the phone path.
+    func testContentSizedSheetsUseTheVerticalSizeClassForHeight() {
+        let duoSheet = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 640, containerHeight: 380,
+                                           hasRegularHeight: true, heightIsContent: true)
+        XCTAssertTrue(AppWideLayout.isWide(duoSheet))
+        XCTAssertEqual(AppWideLayout.decide(duoSheet, for: .onboarding).decisionText, "wide 1 40")
+        // Without the flag the same 380 pt measurement is just short, and compact: phone.
+        var measured = duoSheet
+        measured.heightIsContent = false
+        XCTAssertFalse(AppWideLayout.isWide(measured))
+        // A missing vertical class on a content-sized sheet counts as compact.
+        XCTAssertFalse(AppWideLayout.isWide(.init(hasRegularWidth: true, containerWidth: 900, containerHeight: 380,
+                                                  heightIsContent: true)))
+        let landscapePhone = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 852, containerHeight: 300,
+                                                 hasRegularHeight: false, heightIsContent: true)
+        XCTAssertEqual(AppWideLayout.decide(landscapePhone, for: .onboarding).mode, .phone)
+        let portraitPhone = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 440, containerHeight: 300,
+                                                hasRegularHeight: true, heightIsContent: true)
+        XCTAssertEqual(AppWideLayout.decide(portraitPhone, for: .onboarding).mode, .phone)
+        let narrowSplit = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 340, containerHeight: 300,
+                                              hasRegularHeight: true, heightIsContent: true)
+        XCTAssertEqual(AppWideLayout.decide(narrowSplit, for: .onboarding).mode, .phone)
+        let padSheet = AppWideLayout.Input(hasRegularWidth: true, containerWidth: 540, containerHeight: 300,
+                                           hasRegularHeight: true, heightIsContent: true)
+        XCTAssertEqual(AppWideLayout.decide(padSheet, for: .onboarding).mode, .wide)
+        XCTAssertEqual(AppWideLayout.decide(padSheet, for: .onboarding).sideInset, 0, "under the 560 cap")
+    }
+
+    /// #515 B1 (Fry): Plus and Max iPhones in landscape are regular width and compact height.
+    /// A full-width onboarding sheet there is the phone path with no inset, at every
+    /// landscape width the fixtures use (956 Pro Max, 932 older Pro Max / Plus, 926 Plus).
+    func testPlusAndMaxLandscapeOnboardingSheetsStayThePhonePath() {
+        for width in [956.0, 932, 926] {
+            let sheet = AppWideLayout.Input(hasRegularWidth: true, containerWidth: width, containerHeight: 380,
+                                            hasRegularHeight: false, heightIsContent: true)
+            XCTAssertFalse(AppWideLayout.isWide(sheet), "\(width)")
+            let decision = AppWideLayout.decide(sheet, for: .onboarding)
+            XCTAssertEqual(decision.mode, .phone, "\(width)")
+            XCTAssertEqual(decision.sideInset, 0, "\(width)")
+            XCTAssertEqual(decision.columns, 1, "\(width)")
+            XCTAssertEqual(decision.readableWidth, width, "\(width)")
+        }
+        // Compact-width landscape too (every other iPhone).
+        let compact = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 852, containerHeight: 380,
+                                          hasRegularHeight: false, heightIsContent: true)
+        XCTAssertEqual(AppWideLayout.decide(compact, for: .onboarding).sideInset, 0)
     }
 
     /// #512 B1 (Fry, via #515): regular width counts only with regular height. Plus and Max

@@ -16,6 +16,10 @@ struct LocalAreaPrompt: View {
     @State private var typing = false
     @State private var place = ""
     @State private var rejected = false
+    /// #465 item 10 (onboarding): nil on every phone and narrow split, which adds 0 pt and
+    /// keeps this prompt exactly as it was. Wide: holds the column at 560 pt. Layout only;
+    /// the copy, the consent version and every action are unchanged (Sentinel, #509).
+    @Environment(\.appWideLayout) private var appWide
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -55,6 +59,7 @@ struct LocalAreaPrompt: View {
             .accessibilityIdentifier("localArea.notNow")
         }
         .padding(24)
+        .padding(.horizontal, CGFloat(appWide?.sideInset ?? 0))
         .interactiveDismissDisabled(false)
     }
 

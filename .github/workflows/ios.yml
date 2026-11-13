@@ -588,7 +588,7 @@ jobs:
           ls "$SHOTS" | grep -q '^open-studio-queue_' || { echo "missing open screenshot"; exit 1; }
           # #465 item 10: Library, Stations and Settings at Duo width, required like
           # duo-wide-ready (AppWideLayoutTests). -Nova
-          for shot in duo-wide-library duo-wide-stations duo-wide-settings; do
+          for shot in duo-wide-library duo-wide-stations duo-wide-settings duo-wide-localarea; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
           for shot in closed-dark closed-state-empty closed-state-loading closed-state-error closed-state-denied \

@@ -14,6 +14,8 @@ enum AppWideCaptureScenario: String, CaseIterable {
     case splitNarrowLibrary
     case splitNarrowStations
     case splitNarrowSettings
+    /// Onboarding: `LocalAreaPrompt` at Duo width. Nothing is tapped; no location prompt.
+    case duoWideLocalArea
 
     /// The scenario named in `-AeroDJStudioCaptureScenario`, if it is one of these.
     static func requested(defaults: UserDefaults = .standard) -> AppWideCaptureScenario? {
@@ -25,12 +27,13 @@ enum AppWideCaptureScenario: String, CaseIterable {
         case .duoWideLibrary, .splitNarrowLibrary: .library
         case .duoWideStations, .splitNarrowStations: .stations
         case .duoWideSettings, .splitNarrowSettings: .settings
+        case .duoWideLocalArea: .onboarding
         }
     }
 
     var input: AppWideLayout.Input {
         switch self {
-        case .duoWideLibrary, .duoWideStations, .duoWideSettings: AppWideLayout.duoWide
+        case .duoWideLibrary, .duoWideStations, .duoWideSettings, .duoWideLocalArea: AppWideLayout.duoWide
         case .splitNarrowLibrary, .splitNarrowStations, .splitNarrowSettings: AppWideLayout.splitNarrow
         }
     }
@@ -46,6 +49,8 @@ struct AppWideCaptureView: View {
 
     @State private var creation: StationCreationModel?
     @State private var failure: String?
+    @State private var localAreaStore = LocalAreaStore.inMemory()
+    @State private var localAreaLocation = CoarseDeviceLocation()
 
     var body: some View {
         Group {
@@ -119,7 +124,15 @@ struct AppWideCaptureView: View {
             SettingsView(isPresented: .constant(true), isTestStation: true)
                 .appWideScreen(.settings, formMargins: true)
         case .onboarding:
-            EmptyView()
+            // As the Tune card presents it: a sheet, content at the top. In-memory store; the
+            // location object asks Core Location only if "Use approximate location" is tapped.
+            VStack(spacing: 0) {
+                LocalAreaPrompt(store: localAreaStore, location: localAreaLocation) {}
+                    .appWideScreen(.onboarding)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
         }
     }
 }
