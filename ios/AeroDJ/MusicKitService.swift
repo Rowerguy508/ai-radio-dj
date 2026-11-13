@@ -615,8 +615,10 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Explicit and remote Play. An in-flight skip is over: its follow-up and its load flag stop now.
+    /// #453: this includes a chain that is ending and awaiting its owed resume, so a Next stored
+    /// there does not advance past the song this Play started.
     private func stopSkipForPlay() {
-        guard skipCoordinator.isInFlight else { return }
+        guard skipCoordinator.hasPendingSkipWork else { return }
         skipCoordinator.invalidate(.userPlay)
         boundaries.setSkipLoadInFlight(false)
     }

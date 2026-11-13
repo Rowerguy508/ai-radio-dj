@@ -453,6 +453,47 @@ final class FoldedColumnLayoutTests: XCTestCase {
     }
 }
 
+final class DuoStationSwitchTests: XCTestCase {
+    private let stops = [
+        DuoStationSwitch.Stop(id: "morning", name: "Morning Calm"),
+        DuoStationSwitch.Stop(id: "late", name: "Late Night"),
+        DuoStationSwitch.Stop(id: "night", name: "After Hours"),
+    ]
+
+    func testSnappingAcrossStationsOpensNone() {
+        var flight = DuoStationSwitch.Flight(highlightID: "morning")
+        var tokens: [Int] = []
+        for stop in stops {
+            if let token = flight.receive(.snap(stop.id), playingID: "morning") {
+                tokens.append(token)
+            }
+        }
+        XCTAssertTrue(tokens.isEmpty, "a swipe only moves the highlight")
+        XCTAssertEqual(flight.highlightID, "night")
+        XCTAssertNil(flight.pendingID)
+    }
+
+    func testATapOpensThatStationOnce() throws {
+        var flight = DuoStationSwitch.Flight(highlightID: "morning")
+        let index = try XCTUnwrap(DuoStationSwitch.snappedIndex(offset: 1.2, count: stops.count))
+        let token = try XCTUnwrap(flight.receive(.tap(stops[index].id), playingID: "morning"))
+        XCTAssertTrue(flight.accepts(token))
+        XCTAssertEqual(flight.pendingID, "late")
+        XCTAssertNil(flight.receive(.tap("morning"), playingID: "morning"),
+                     "the station already playing is not opened again")
+    }
+
+    func testTwoQuickTapsLeaveOnlyTheLastOpen() throws {
+        var flight = DuoStationSwitch.Flight(highlightID: "morning")
+        let first = try XCTUnwrap(flight.receive(.tap("late"), playingID: "morning"))
+        let second = try XCTUnwrap(flight.receive(.tap("night"), playingID: "morning"))
+        XCTAssertFalse(flight.accepts(first))
+        XCTAssertTrue(flight.accepts(second))
+        XCTAssertEqual(flight.pendingID, "night")
+        XCTAssertEqual(flight.highlightID, "night")
+    }
+}
+
 final class DuoUpNextTimelineTests: XCTestCase {
     func testTimelineShowsTheSongAReadyBreakAndTheQueue() {
         let lines = DuoUpNextTimeline.lines(

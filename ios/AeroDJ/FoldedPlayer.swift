@@ -96,6 +96,10 @@ struct FoldedPlayer: View {
     /// Phone portrait and landscape ignore it. Playback is not involved.
     var showsUnfoldedRail: Bool = true
     var onCollapseRail: () -> Void = {}
+    /// Stations the Duo dial can open. Empty on phone widths and when no list was passed.
+    var stationStops: [DuoStationSwitch.Stop] = []
+    /// The station-row open path. Nil hides the dial.
+    var onOpenStation: ((String) async -> Void)? = nil
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -307,6 +311,9 @@ struct FoldedPlayer: View {
                     .duoColumnWidth()
             }
             FoldedStationChip(heading: heading, action: onQueue)
+            if stationStops.count > 1, let onOpenStation {
+                DuoStationDial(stops: stationStops, openedID: heading.opened.id, onOpen: onOpenStation)
+            }
             DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
             Spacer(minLength: gap)
             if content.showsTransport {
@@ -796,6 +803,113 @@ private struct FoldedToolbar: View {
         }
     }
 }
+
+/// Horizontal snap between stations. Scrolling only moves the highlight. A station
+/// opens on a tap, or on Tune for the highlighted stop, through `onOpen`. A newer
+/// tap cancels a pending open. A started open is not cancelled.
+private struct DuoStationDial: View {
+    let stops: [DuoStationSwitch.Stop]
+    let openedID: String
+    let onOpen: (String) async -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @State private var snapped: String?
+    @State private var flight = DuoStationSwitch.Flight(highlightID: "")
+    @State private var openTask: Task<Void, Never>?
+
+    private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
+    private var highlightedID: String { snapped ?? openedID }
+    private var highlightedName: String {
+        stops.first { $0.id == highlightedID }?.name ?? ""
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(stops) { stop in
+                        let selected = stop.id == highlightedID
+                        Button {
+                            open(stop.id)
+                        } label: {
+                            Text(stop.name)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 14)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .foregroundStyle(.white.opacity(selected ? 1 : 0.72))
+                                .foldedGlass(Capsule(), role: .control)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(stop.name)
+                        .accessibilityHint("Plays the station now.")
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                        .accessibilityIdentifier("duo.station.\(stop.id)")
+                        .id(stop.id)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $snapped)
+            .scrollBounceBehavior(.basedOnSize)
+
+            Button {
+                open(highlightedID)
+            } label: {
+                Text("Tune")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .padding(.horizontal, 8)
+                    .foregroundStyle(.white)
+                    .foldedGlass(Capsule(), role: .control)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Tune \(highlightedName)")
+            .accessibilityHint("Plays the highlighted station.")
+            .accessibilityIdentifier("duo.stationTune")
+        }
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("duo.stationDial")
+        .accessibilityLabel("Stations")
+        .accessibilityValue(highlightedName)
+        .accessibilityHint("Swipe up or down to move. Double-tap to play the highlighted station.")
+        .accessibilityAdjustableAction { direction in
+            guard let index = stops.firstIndex(where: { $0.id == highlightedID }) else { return }
+            let next: Int
+            switch direction {
+            case .increment: next = min(stops.count - 1, index + 1)
+            case .decrement: next = max(0, index - 1)
+            @unknown default: return
+            }
+            snapped = stops[next].id
+        }
+        .accessibilityAction(.default) { open(highlightedID) }
+        .onAppear {
+            snapped = openedID
+            flight = DuoStationSwitch.Flight(highlightID: openedID)
+        }
+        .onChange(of: openedID) { _, id in snapped = id }
+        .onChange(of: snapped) { _, id in
+            guard let id else { return }
+            _ = flight.receive(.snap(id), playingID: openedID)
+        }
+        .transaction { if reduceMotion { $0.disablesAnimations = true } }
+    }
+
+    /// Tap or Tune. A swipe never reaches this. A newer tap cancels a pending open.
+    private func open(_ id: String) {
+        snapped = id
+        guard let token = flight.receive(.tap(id), playingID: openedID) else { return }
+        openTask?.cancel()
+        openTask = Task {
+            guard flight.accepts(token), !Task.isCancelled else { return }
+            await onOpen(id)
+        }
+    }
+}
+
 
 /// Current song, a ready DJ break, and the queued songs. One button: it opens the queue.
 /// Nothing here animates, so Reduce Motion changes nothing.

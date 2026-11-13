@@ -297,9 +297,15 @@ private struct DuoWideCaptureContainer: View {
     let scenario: StudioCaptureScenario
     let studio: StudioPresentationModel
 
+    @State private var openedStation = ""
+
     var body: some View {
         let size = StudioCapture.duoWideContainerSize
         let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let stops = [
+            DuoStationSwitch.Stop(id: PlaybackFixtures.station.id, name: PlaybackFixtures.station.name),
+            DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
+        ]
         ZStack {
             Color(white: 0.14)
                 .ignoresSafeArea()
@@ -309,7 +315,14 @@ private struct DuoWideCaptureContainer: View {
                               snapshot: scenario.snapshot, actions: .preview,
                               search: .captureOffline,
                               studio: studio, isTestStation: true,
-                              timeSource: .fixture)
+                              timeSource: .fixture,
+                              stationStops: stops,
+                              onOpenStation: { openedStation = $0 })
+                Text(verbatim: openedStation)
+                    .font(.system(size: 1))
+                    .accessibilityIdentifier("duo.openedStation")
+                    .accessibilityLabel(openedStation)
+                    .allowsHitTesting(false)
             }
             .environment(\.horizontalSizeClass, .compact)
             .frame(width: size.width, height: size.height)

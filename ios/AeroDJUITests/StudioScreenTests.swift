@@ -413,12 +413,18 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(play.frame.width, 44)
         XCTAssertGreaterThanOrEqual(collapse.frame.height, 44)
         XCTAssertGreaterThanOrEqual(more.frame.minY, barFrame.minY + 40, "chrome starts below the status clearance")
+        let dial = any["duo.stationDial"]
+        let late = app.buttons["duo.station.late-night"]
+        XCTAssertTrue(dial.waitForExistence(timeout: 5), "station dial missing\n\(app.debugDescription)")
+        XCTAssertTrue(late.waitForExistence(timeout: 5), "Late Night stop missing")
+        XCTAssertGreaterThanOrEqual(dial.frame.midX, contentFrame.minX - 4, "the dial stays in the content column")
+        XCTAssertLessThanOrEqual(dial.frame.midX, contentFrame.maxX + 4, "the dial stays in the content column")
         more.tap()
         let tune = app.buttons["transport.tune"]
         XCTAssertTrue(tune.waitForExistence(timeout: 5), "Tune stays in More\n\(app.debugDescription)")
         XCTAssertTrue(tune.isHittable, "Tune in More is not hittable")
         XCTAssertGreaterThanOrEqual(tune.frame.height, 44, "Tune in More is under 44 pt")
-        // The menu covers the rail. A tap on the artwork column closes it without tuning.
+        // The popover covers the rail. A tap on the artwork column closes it without tuning.
         track.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
         let tuneClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: tune)
         XCTAssertEqual(XCTWaiter().wait(for: [tuneClosed], timeout: 5), .completed, "More did not close")
@@ -431,6 +437,11 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(timeline.label.contains("Slow Burn"))
         timeline.tap()
         XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5), "tapping the timeline opens the queue")
+        app.buttons["Done"].tap()
+        late.tap()
+        let opened = any["duo.openedStation"]
+        XCTAssertTrue(opened.waitForExistence(timeout: 5))
+        XCTAssertEqual(opened.label, "late-night", "the dial calls the station-open action")
         XCTAssertEqual(container.frame.width, box.width, accuracy: 0.5, "container resized before the screenshot")
         save(app, "duo-wide-ready")
     }
@@ -590,6 +601,8 @@ final class StudioScreenTests: XCTestCase {
                            "a phone-width layout does not use the Duo content column")
             XCTAssertFalse(app.descendants(matching: .any)["folded.systemBar"].exists,
                            "a phone-width layout does not use the Duo symbol bar")
+            XCTAssertFalse(app.descendants(matching: .any)["duo.stationDial"].exists,
+                           "a phone-width layout does not show the station dial")
             XCTAssertFalse(app.buttons["duo.upNext"].exists,
                            "a phone-width layout does not show the up-next timeline")
             let play = app.buttons["transport.playPause"]
