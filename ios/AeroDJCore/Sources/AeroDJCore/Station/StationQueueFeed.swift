@@ -203,6 +203,14 @@ public final class StationQueueFeed<Item: Sendable> {
     private var cachedOpenerOrder: [StationQueueKey] = []
     private static var maxCachedStations: Int { 16 }
     private static var openersPerStation: Int { 5 }
+    /// #418: the songs (and seeds) each station opened with most recently, newest last, so the next
+    /// start opens with something else. Bounded; in memory only, never logged or saved.
+    private var recentOpeners: [StationQueueKey: [String]] = [:]
+    private var recentOpenerSeeds: [StationQueueKey: [Int]] = [:]
+    /// The seed the last first-song lookup used, per station, until that song is really opened.
+    private var lookedUpOpenerSeed: [StationQueueKey: (songID: String, seed: Int)] = [:]
+    /// #418: a station does not open with any of its last `openerMemory` openers while it has another.
+    static var openerMemory: Int { 3 }
     private var generation = 0
     /// The station the playing queue belongs to. `nil` before the first queue start, and for a
     /// queue started on a station with no seeds (see `queueStartReported`).
@@ -388,7 +396,10 @@ public final class StationQueueFeed<Item: Sendable> {
         // song is looked up synchronously and returned straight through.
         if hasReadyFirstSong(for: key) { return readyFirstSong(for: key) }
         let config = configuration.validated()
-        guard let seed = config.seeds.first else { return nil }
+        guard !config.seeds.isEmpty else { return nil }
+        let buildSeed = options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
+        let seedIndex = openerSeedIndex(for: key, seedCount: config.seeds.count, buildSeed: buildSeed)
+        let seed = config.seeds[seedIndex]
         let bias = currentRatings(for: key)
         var one = config
         one.seeds = [seed]
@@ -396,19 +407,67 @@ public final class StationQueueFeed<Item: Sendable> {
         let pool = await resolver.resolve(seeds: [seed], reach: .only, affinity: [])
         var opts = options
         opts.limit = 3
-        opts.shuffleSeed = options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
+        opts.shuffleSeed = buildSeed
         opts.excludedSongIDs = options.excludedSongIDs.union(recentlyPlayed())
         opts.ratings = bias
         let picks = StationPoolBuilder.build(pool, configuration: one, options: opts)
         guard !picks.isEmpty else { return nil }
         let items = await materialize(picks)
-        return screened(items, for: key).first
+        return pickOpener(screened(items, for: key), key: key, seedIndex: seedIndex)
+    }
+
+    /// #418: which seed a cold first-song lookup starts from. Before, it was always the first seed,
+    /// so a station with song seeds (the built-ins) opened with the same song on every cold start.
+    /// Now a seed the station did not open with in its last `openerMemory` starts, drawn with the
+    /// build's own shuffle seed (`SplitMix64`, so `.fixed` seeds are deterministic in tests).
+    /// `.perDay` (the pre-#418 predictable order that tests use) keeps the lowest such seed, so its
+    /// first start still opens on the first seed.
+    private func openerSeedIndex(for key: StationQueueKey, seedCount: Int, buildSeed: UInt64) -> Int {
+        guard seedCount > 1 else { return 0 }
+        let recent = Set((recentOpenerSeeds[key] ?? []).suffix(min(Self.openerMemory, seedCount - 1)))
+        let candidates = (0..<seedCount).filter { !recent.contains($0) }
+        guard !candidates.isEmpty else { return 0 }
+        #if DEBUG
+        if options.seedSource == .perDay { return candidates[0] }
+        #endif
+        var rng = SplitMix64(seed: buildSeed ^ 0x0BE7_0A11_5EED_F00D)
+        return candidates[Int(rng.next() % UInt64(candidates.count))]
+    }
+
+    /// The first screened song that is not one of the station's recent openers (else the first).
+    private func pickOpener(_ items: [Item], key: StationQueueKey, seedIndex: Int) -> Item? {
+        guard let song = items.first(where: { !isRecentOpener($0, key: key) }) ?? items.first else { return nil }
+        if let id = songID(song) { lookedUpOpenerSeed[key] = (id, seedIndex) }
+        return song
+    }
+
+    private func isRecentOpener(_ item: Item, key: StationQueueKey) -> Bool {
+        guard let id = songID(item), let recent = recentOpeners[key] else { return false }
+        return recent.suffix(Self.openerMemory).contains(id)
+    }
+
+    /// #418: `song` opened `key` (a fast start, or a staged queue handed out at a station start).
+    private func rememberOpened(_ song: Item, key: StationQueueKey) {
+        guard let id = songID(song) else { return }
+        if recentOpeners[key] == nil, recentOpeners.count >= Self.maxCachedStations {
+            recentOpeners = [:]
+            recentOpenerSeeds = [:]
+            lookedUpOpenerSeed = [:]
+        }
+        recentOpeners[key, default: []].append(id)
+        recentOpeners[key] = Array(recentOpeners[key, default: []].suffix(Self.openerMemory))
+        if let looked = lookedUpOpenerSeed[key], looked.songID == id {
+            recentOpenerSeeds[key, default: []].append(looked.seed)
+            recentOpenerSeeds[key] = Array(recentOpenerSeeds[key, default: []].suffix(Self.openerMemory))
+        }
+        lookedUpOpenerSeed[key] = nil
     }
 
     /// The first song available without a catalog call: the staged queue's, else a cached opener.
     private func readyFirstSong(for key: StationQueueKey) -> Item? {
         if let ready = staged, ready.key == key, let song = screened(ready.items, for: key).first { return song }
-        return cachedOpeners[key]?.first(where: { mayOpen(with: $0, key: key) })
+        let allowed = cachedOpeners[key]?.filter { mayOpen(with: $0, key: key) } ?? []
+        return allowed.first { !isRecentOpener($0, key: key) } ?? allowed.first
     }
 
     private func hasReadyFirstSong(for key: StationQueueKey) -> Bool { readyFirstSong(for: key) != nil }
@@ -423,6 +482,7 @@ public final class StationQueueFeed<Item: Sendable> {
                                         items: [], previousKey: playingKey, previousReported: queueStartReported)
         playingKey = key
         queueStartReported = true
+        rememberOpened(song, key: key)
         log(.handedOff(.idleStart, songs: 1))
         return true
     }
@@ -564,6 +624,7 @@ public final class StationQueueFeed<Item: Sendable> {
                                         previousKey: playingKey, previousReported: queueStartReported)
         staged = nil
         playingKey = key
+        if let first = items.first { rememberOpened(first, key: key) }
         log(.handedOff(trigger, songs: items.count))
         return items
     }
