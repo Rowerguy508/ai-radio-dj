@@ -493,7 +493,7 @@ public struct DJScriptWriter: Sendable {
             // Natural shapes (opt-in): ordinary breaks after the greeting.
             if !wantsBriefing, hasGreeted, shapePicker != nil {
                 switch naturalBreak(boundary: boundary, prev: prev, next: next, station: station, dayPart: dayPart,
-                                    tracks: tracks, order: &order) {
+                                    tracks: tracks, report: &capReport, order: &order) {
                 case .planned(let planned):
                     breaks.append(planned)
                     lastBreak = boundary
@@ -754,8 +754,22 @@ public struct DJScriptWriter: Sendable {
     /// One ordinary break in a natural shape (`DJBreakShapes.swift`). Each cue is filled from
     /// one source, so attribution stays exact; the combined line names both tracks.
     private mutating func naturalBreak(boundary: Int, prev: DJTrack, next: DJTrack, station: String, dayPart: DayPart,
-                                       tracks: [DJTrack], order: inout Int) -> NaturalOutcome {
+                                       tracks: [DJTrack], report: inout OrdinaryBreakCapReport, order: inout Int) -> NaturalOutcome {
         guard var picker = shapePicker, let config = shapes else { return .notApplicable }
+        let availability = timeCheckAvailability(boundary: boundary, config: config)
+        let unspeakable: Bool
+        let timeCheckAvailable: Bool
+        switch availability {
+        case .success:
+            unspeakable = false
+            timeCheckAvailable = true
+        case .failure(let unavailable):
+            // Spacing, drift and a missing clock stay silent, as before. An unspeakable clock
+            // is a time check the rules would have allowed and then could not say truthfully.
+            unspeakable = unavailable.reason == .notOnTheClock
+            timeCheckAvailable = false
+        }
+        let pastTimeCheckGrace = picker.breaksSinceGreeting >= config.timeCheckGraceBreaks
         let metadata = ["title": prev.title, "artist": prev.artist]
         let nextValues = ["nextTitle": next.title, "nextArtist": next.artist]
         let bothValues = metadata.merging(nextValues) { a, _ in a }
@@ -766,7 +780,7 @@ public struct DJScriptWriter: Sendable {
         let context = DJBreakShapeContext(canBackAnnounce: fits(backAnnounce, metadata),
                                           canForwardSell: fits(closing, nextValues),
                                           stationIDUsable: stationName.map { fits(stationIDs, ["station": $0]) } ?? false,
-                                          timeCheckAvailable: timeCheckReading(boundary: boundary, config: config) != nil)
+                                          timeCheckAvailable: timeCheckAvailable)
         guard let shape = picker.pick(context) else { return .notApplicable }
 
         struct Line {
@@ -966,14 +980,29 @@ public struct DJScriptWriter: Sendable {
             shapeLog.append((id, shape))
             if shapeLog.count > RecentSpokenTemplates.historyLimit { shapeLog.removeFirst(shapeLog.count - RecentSpokenTemplates.historyLimit) }
         }
+        if unspeakable, pastTimeCheckGrace, fits(closing, nextValues), let id = cues.first?.id {
+            noteUnspeakableTimeCheck(boundary, breakID: id, report: &report)
+        }
         return .planned(planned)
+    }
+
+    /// A time check the rules allowed, whose rounded clock is not a real wall time (#360, #347).
+    /// The break's first cue occupies the spacing slot so the same false clock is not reported
+    /// on every later boundary; `forgetPlannedBreaks` releases it with that break. The drop's
+    /// own id is not a cue: no line was written, and no clock time is in the script.
+    private mutating func noteUnspeakableTimeCheck(_ boundary: Int, breakID: UUID, report: inout OrdinaryBreakCapReport) {
+        guard let now = planClock?.now else { return }
+        report.droppedTimeChecks[boundary] = DJTimeCheckDrop(cueID: UUID(), reason: .notOnTheClock)
+        timeCheckLog.append((breakID, now))
+        if timeCheckLog.count > RecentSpokenTemplates.historyLimit { timeCheckLog.removeFirst() }
     }
 
     /// The time check this boundary may speak, or nil when a rule rules it out:
     ///   - no planning clock (the caller gave none),
     ///   - the boundary's known air time is more than `timeCheckMaxDriftSeconds` from `clock.now`
     ///     (the spoken time would be wrong on air),
-    ///   - another planned or aired time check is within `timeCheckMinSpacingSeconds` of wall time.
+    ///   - another planned or aired time check is within `timeCheckMinSpacingSeconds` of wall time,
+    ///   - the rounded time is not the wall clock the listener will see (daylight-saving).
     /// The first-break-after-the-greeting and not-twice-in-a-row rules live in the picker.
     private func timeCheckReading(boundary: Int, config: DJBreakShapeConfig)
         -> (time: String, relation: DJTimeCheckRelation, at: Date)? {
@@ -993,7 +1022,9 @@ public struct DJScriptWriter: Sendable {
         }
         guard !timeCheckLog.contains(where: { abs(clock.now.timeIntervalSince($0.at)) < config.timeCheckMinSpacingSeconds })
         else { return .failure(.init(reason: .spacing)) }
-        let reading = DJTimeCheck.reading(clock.now, calendar: clock.calendar, style: clock.style)
+        guard let reading = DJTimeCheck.reading(clock.now, calendar: clock.calendar, style: clock.style) else {
+            return .failure(.init(reason: .notOnTheClock))
+        }
         return .success((reading.time, reading.relation, clock.now))
     }
 
@@ -1067,9 +1098,11 @@ public struct DJScriptWriter: Sendable {
         // 3. The time (optional), from the time-check machinery only. Never invented: no
         //    truthful reading, no time, and the reason is reported.
         var timeCheck: (template: String, relation: DJTimeCheckRelation, at: Date)?
+        var clockNotOnTheClock = false
         switch timeCheckAvailability(boundary: boundary, config: config) {
         case .failure(let unavailable):
             report.omittedOpenerTimeChecks[boundary] = unavailable.reason
+            clockNotOnTheClock = unavailable.reason == .notOnTheClock
         case .success(let reading):
             if var pool = timeCheckPools[reading.relation], !pool.templates.isEmpty,
                let line = draw(&pool, ["time": reading.time], optional: true) {
@@ -1110,8 +1143,9 @@ public struct DJScriptWriter: Sendable {
             }
         }
         guard !overCap() else {
+            let unspeakable = report.omittedOpenerTimeChecks[boundary] == .notOnTheClock
             report.trimmedOptionalLines[boundary] = nil
-            report.omittedOpenerTimeChecks[boundary] = nil
+            report.omittedOpenerTimeChecks[boundary] = unspeakable ? .notOnTheClock : nil
             return nil
         }
 
@@ -1132,6 +1166,8 @@ public struct DJScriptWriter: Sendable {
                 calendar: planClock?.calendar ?? .autoupdatingCurrent, style: planClock?.style ?? .twelveHour)
             timeCheckLog.append((id, timeCheck.at))
             if timeCheckLog.count > RecentSpokenTemplates.historyLimit { timeCheckLog.removeFirst() }
+        } else if clockNotOnTheClock, let id = cues.first?.id {
+            noteUnspeakableTimeCheck(boundary, breakID: id, report: &report)
         }
         // #320's measured trim drops these, last first: the time check (the preparer renders it
         // late and drops it on its own, #347), then the mood line. Never the welcome or closing.
