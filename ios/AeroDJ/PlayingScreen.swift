@@ -139,7 +139,9 @@ struct PlayingScreen: View {
             // (the unfolded Duo) moves the controls to the right.
             let placement = FoldedColumnLayout.controlPlacement(containerWidth: width,
                                                                 containerHeight: Double(height))
-            let movesMoreIntoThePlayer = placement != .phoneBottom
+            // The 01-folded reskin draws back and ⋯ itself. Only when the DEBUG flag is on.
+            let usesOuterReskin = FoldedOuterLayout.isEnabled() && placement == .phoneBottom
+            let movesMoreIntoThePlayer = placement != .phoneBottom || usesOuterReskin
             let openConnections = { segment = .connections; showWorkspace = true }
             FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
                          content: content, snapshot: snapshot, actions: actions, dj: dj,
@@ -157,7 +159,7 @@ struct PlayingScreen: View {
                 .accessibilityIdentifier("layout.compact")
                 .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
                                showsMore: !movesMoreIntoThePlayer,
-                               hidesSystemBack: placement == .duoHorizontal,
+                               hidesSystemBack: placement == .duoHorizontal || usesOuterReskin,
                                onConnections: openConnections)
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
