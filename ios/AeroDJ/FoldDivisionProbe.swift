@@ -28,7 +28,7 @@ struct FoldDivisionProbe: View {
 /// `reservedRegions(kind: .division)`, sorted so an unchanged fold does not write state again.
 private enum FoldDivisionReading {
     static func regions(in proxy: GeometryProxy) -> [FoldAwareness.Division] {
-        #if compiler(>=6.4)
+        #if compiler(>=6.4.2)
         if #available(iOS 27.1, *) {
             return proxy.reservedRegions(kind: .division).map { region in
                 FoldAwareness.Division(
@@ -60,7 +60,7 @@ private struct HingeObserver: ViewModifier {
 
     @ViewBuilder
     private func hingeBody(_ content: Content) -> some View {
-        #if compiler(>=6.4)
+        #if compiler(>=6.4.2)
         if #available(iOS 27.1, *) {
             content.onHingeChange(isEnabled: true) { _, newContext in
                 guard let device = newContext.hinge else {
