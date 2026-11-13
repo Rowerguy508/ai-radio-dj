@@ -21,6 +21,9 @@ enum StudioCapture {
     /// `duoWideReady`: the stand-in for the unfolded Duo's split-view detail. The UI test
     /// (`testDuoWideListenPlayerIsOneCentredColumn`) checks the same 640 × 820 pt.
     static let duoWideContainerSize = CGSize(width: 640, height: 820)
+    /// `duoTent` (#465 item 3): the unfolded Duo rotated, fold horizontal at y = 320. Assumed
+    /// from the 640 × 820 pt measurement, as in the owner mockup; not measured in a tent.
+    static let duoTentContainerSize = CGSize(width: 820, height: 640)
 
     static func isRequested(mode: AppRuntimeMode, defaults: UserDefaults = .standard) -> Bool {
         mode == .testStation && defaults.bool(forKey: defaultsKey)
@@ -85,6 +88,10 @@ enum StudioCaptureScenario: String {
     case ratingLiked
     /// A queued song just rated Never: the Undo toast over the player (no skip in a capture).
     case ratingNever
+    /// #465 item 3: the tent pose with the DJ on air (`breakReady` then `playbackStarted`), in
+    /// an 820 × 640 pt container. The hinge is forced to partially open at 100° and fed to the
+    /// real `DuoPoseDecision`; the clock and the on-air timer are frozen. Needs an iPad window.
+    case duoTent
 
     var access: PlaybackAccess {
         switch self {
@@ -155,6 +162,8 @@ struct StudioCaptureView: View {
                 Text("Loading studio capture")
                     .font(.body)
                     .accessibilityIdentifier("capture.loading")
+            } else if scenario == .duoTent {
+                TentCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .stations {
                 // The split is the root. An outer NavigationStack makes compact width
                 // open the detail column, so the fixture list never appears.
@@ -256,6 +265,12 @@ struct StudioCaptureView: View {
                 captureRating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id)
             case .ratingLiked:
                 captureRating = await SongRatingController.fixture(rated: .like, songID: PlaybackFixtures.songs[0].id, labelSeen: true)
+            case .duoTent:
+                TentPoseCapture.forcedHinge = TentPoseCapture.capturedHinge
+                TentPoseCapture.frozenDate = TentPoseCapture.capturedDate
+                StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
+                studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
+                studio.dj.send(.playbackStarted(afterTrack: 0))
             case .ratingNever:
                 let rating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id, labelSeen: true)
                 await rating.rate(.never, songID: PlaybackFixtures.songs[1].id, artistName: PlaybackFixtures.songs[1].artistName)
@@ -323,6 +338,50 @@ private struct DuoWideCaptureContainer: View {
             .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("capture.duoContainer")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+/// The tent pose (#465 item 3) in a fixed 820 × 640 pt container on the same neutral
+/// backdrop as `DuoWideCaptureContainer`. `capture.tentContainer` lets the UI test wait for
+/// its final size before the screenshot.
+private struct TentCaptureContainer: View {
+    let scenario: StudioCaptureScenario
+    let studio: StudioPresentationModel
+
+    @State private var openedStation = ""
+
+    var body: some View {
+        let size = StudioCapture.duoTentContainerSize
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let stops = [
+            DuoStationSwitch.Stop(id: PlaybackFixtures.station.id, name: PlaybackFixtures.station.name),
+            DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
+        ]
+        ZStack {
+            Color(white: 0.14)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+            NavigationStack {
+                PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                              snapshot: scenario.snapshot, actions: .preview,
+                              search: .captureOffline,
+                              studio: studio, isTestStation: true,
+                              timeSource: .fixture,
+                              stationStops: stops,
+                              onOpenStation: { openedStation = $0 })
+                Text(verbatim: openedStation)
+                    .font(.system(size: 1))
+                    .accessibilityIdentifier("tent.openedStation")
+                    .accessibilityLabel(openedStation)
+                    .allowsHitTesting(false)
+            }
+            .frame(width: size.width, height: size.height)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("capture.tentContainer")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
