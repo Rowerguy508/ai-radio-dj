@@ -44,9 +44,10 @@ as part of one thought (request stitching):
 
 - `previousText` / `nextText`: strings, forwarded as `previous_text` /
   `next_text`. Not spoken and not charged to our caps. Each is reduced to
-  plain text with brackets removed, then trimmed to 300 characters (previous
-  keeps its end, next keeps its start). A non-string, or one over 2,400
-  characters, is 400.
+  plain text with brackets removed (an allowlisted tag such as `[warmly]` is
+  dropped entirely, so `[warmly] Hi.` becomes `Hi.`), then trimmed to 300
+  characters (previous keeps its end, next keeps its start). A non-string,
+  or one over 2,400 characters, is 400.
 - `previousRequestIds`: at most 3 ElevenLabs request ids
   (`^[A-Za-z0-9_-]{1,64}$`), forwarded as `previous_request_ids`. Anything
   else is 400. A 200 returns ElevenLabs' own id as `X-Upstream-Request-Id`
@@ -54,12 +55,15 @@ as part of one thought (request stitching):
 - None of the three are sent to `eleven_v3` (request stitching is not
   available on v3).
 
-Square brackets never reach a model as text: they are removed from the
-spoken text and the context (a title like "Song [Live]" is spoken as "Song
-Live"). Only on a model that reads audio tags (`eleven_v3`, `eleven_v4`,
-`eleven_v4_turbo`) does an exact allowlisted tag survive in the spoken text:
-`[warmly]`, `[relaxed]`, `[chuckles]`, `[softly]`, `[excited]`. On every other
-model those tags are dropped. Characters are counted after this step.
+Square brackets never reach a model as an audio tag. Spoken text goes
+through `stripAllBrackets` for every model, including `eleven_v3`,
+`eleven_v4` and `eleven_v4_turbo`: every `[` and `]` is removed and the
+words are kept, so "Song [Live]" is spoken as "Song Live" and `[warmly]`
+is spoken as the word "warmly". Allowlisted tags (`warmly`, `relaxed`,
+`chuckles`, `softly`, `excited`) do not survive as `[tag]` on any model.
+Audio tags stay off; no request field opts into them (iOS
+`VoiceRoute.supportsAudioTags` defaults off). Characters are counted after
+this step.
 
 Success: `200`, `Content-Type: audio/wav` (16-bit mono 22,050 Hz PCM in a RIFF
 header), body non-empty and at most 5 MB, plus
@@ -437,7 +441,7 @@ either (`test/install-token.test.ts`); refusals log enum reasons only.
 | `ELEVENLABS_API_KEY` | yes | Server-only. Restricted key, Text to Speech only. Production scope only. |
 | `AERODJ_TTS_TOKEN_SHA256` | yes | 64-char hex SHA-256 of the owner token. Never the token itself. |
 | `AERODJ_TTS_VOICE_IDS` | yes | Comma-separated ElevenLabs voice ID allowlist. |
-| `ELEVENLABS_MODEL_ID` | no | Default `eleven_flash_v2_5`. Picks the `voice_settings` family above and whether audio tags and stitching are sent. |
+| `ELEVENLABS_MODEL_ID` | no | Default `eleven_flash_v2_5`. Picks the `voice_settings` family above and whether stitching is sent. Audio tags are never sent, on any model. |
 | `AERODJ_TTS_MAX_TEXT_CHARS` | no | Default 600. |
 | `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP` | no | Global daily ceiling. Default: `AERODJ_TTS_DAILY_CHAR_CAP`, else 9000. |
 | `AERODJ_TTS_DAILY_CHAR_CAP` | no | Legacy name, used for the global ceiling when the new name is unset. |
