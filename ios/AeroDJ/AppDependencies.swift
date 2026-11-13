@@ -102,6 +102,12 @@ struct AppDependencies {
                                        bundledClips: bundledClips)
         // Tester and owner A/B builds (Echo's N2 on #395, #433): a decline drops prepared cloud breaks and cached cloud clips.
         TesterCloudVoiceConsentHooks.attach(preparer: preparer, renderer: voice)
+        // #397 (-Sentinel): cloud clips left from a decline or a superseded acceptance (copy v2
+        // or earlier) are deleted at launch, before any sheet can grant again. Tester and owner
+        // A/B builds only; nil in every other build.
+        if let consent = TesterCloudVoiceConsentHooks.preparerConsent {
+            Task { await voice.purgeCloudClipsAtLaunch(isGranted: consent) }
+        }
         // #401 (-Fry): local weather (WeatherKit) and, in the tester build only, local news
         // (GDELT), each fact one on-device line. Nothing is gathered and no location is read
         // before the listener opts in (Tune → DJ → Local weather & news).

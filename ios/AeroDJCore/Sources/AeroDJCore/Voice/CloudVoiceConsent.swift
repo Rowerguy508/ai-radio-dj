@@ -166,6 +166,21 @@ extension VoiceRenderer {
     }
 }
 
+extension VoiceRenderer {
+    /// #397 (-Sentinel): the launch purge for cloud clips. While consent is not granted now
+    /// (declined, never answered, or an acceptance of a superseded copy version: v2 or earlier
+    /// while v3 is current), every cached clip not rendered by an on-device, free route is
+    /// deleted. Such clips are never served (`CloudVoiceConsentCache`), but they must not wait on
+    /// disk for a decline or the 7-day expiry. While consent is granted nothing is touched.
+    /// Returns whether it purged. Reads `isGranted` once, at the call.
+    @discardableResult
+    public func purgeCloudClipsAtLaunch(isGranted: @Sendable () -> Bool) async -> Bool {
+        guard !isGranted() else { return false }
+        await purgeCloudClips()
+        return true
+    }
+}
+
 /// When the sheet must be shown. A cloud voice is offered only when the build allows paid
 /// voices and one is selected; the sheet then appears until the listener answers. A decline is
 /// not asked again automatically; the Cloud voice toggle asks again when turned on.

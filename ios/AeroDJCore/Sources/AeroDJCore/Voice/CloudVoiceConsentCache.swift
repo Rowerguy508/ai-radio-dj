@@ -25,7 +25,14 @@ public struct CloudVoiceConsentCache: AudioCache {
 
     public func audio(for key: String) async -> CachedAudio? {
         guard let clip = await base.audio(for: key) else { return nil }
-        guard localProviders.contains(clip.providerID) || isGranted() else { return nil }
+        guard localProviders.contains(clip.providerID) || isGranted() else {
+            // #397 (-Sentinel): a cloud clip found while consent is not granted (declined, or an
+            // acceptance of a superseded copy version, v2 or earlier while v3 is current) is
+            // deleted on sight, with every other cloud clip, instead of waiting for a decline or
+            // the 7-day expiry. On-device clips stay.
+            await base.purgeClips(keepingProviders: localProviders)
+            return nil
+        }
         return clip
     }
 
