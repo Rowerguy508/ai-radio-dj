@@ -10,8 +10,9 @@ import UIKit
 ///
 /// Rules (Echo, Sentinel):
 /// - Everything that leaves the app is one `NowPlayingDisplay`: station, track, artist,
-///   generated art, playback state and `DJStudioState.onAirLabel`. No script or briefing text,
-///   tokens, user ID, consent state or tester_voice data; the type has no field for them.
+///   generated art, playback state, `DJStudioState.onAirLabel` and the Ready line. No script
+///   or briefing text, tokens, user ID, consent state or tester_voice data; the type has no
+///   field for them. `widgetCopy` drops On Air and Ready before the App Group write.
 /// - Never on the playback path. The `$snapshot` and DJ observers only enqueue a value; one
 ///   background task writes the App Group and talks to ActivityKit. Nothing awaits it, nothing
 ///   in playback reads it, and every failure is swallowed and logged without identifiers.
