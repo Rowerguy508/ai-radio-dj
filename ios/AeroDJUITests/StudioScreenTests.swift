@@ -795,7 +795,15 @@ final class StudioScreenTests: XCTestCase {
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         replaceText(field, with: "violet")
-        dismissKeyboard(app)
+        // iPad reports "Hide keyboard" below the screen. tap() scrolls that key into
+        // view and fails with kAXErrorCannotComplete (Xcode 26.6, self-hosted mini).
+        // The sheet toolbar's Done removes the focused field, so the keyboard leaves
+        // with it. Done only sets showWorkspace = false. Return would submit: the
+        // field's onSubmit runs the search, and the counting fixture records a call.
+        // iPhone still uses the on-screen Hide key when that key exists.
+        if UIDevice.current.userInterfaceIdiom != .pad {
+            dismissKeyboard(app)
+        }
         if app.buttons["Done"].exists { app.buttons["Done"].tap() }
         app.buttons["probe.widen"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["layout.studio"].waitForExistence(timeout: 10),
