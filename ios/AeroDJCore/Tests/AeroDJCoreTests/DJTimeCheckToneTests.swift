@@ -79,7 +79,9 @@ final class DJTimeCheckToneTests: XCTestCase {
         for (name, tone) in Self.tones {
             for style in DJClockStyle.allCases {
                 for raw in 0..<(24 * 60) {
-                    let reading = DJTimeCheck.reading(date(raw / 60, raw % 60), calendar: eastern, style: style)
+                    guard let reading = DJTimeCheck.reading(date(raw / 60, raw % 60), calendar: eastern, style: style) else {
+                        return XCTFail("\(name) \(style) \(raw / 60):\(raw % 60): a normal day has a wall-clock reading")
+                    }
                     for relation in DJTimeCheckRelation.allCases {
                         for template in tone.timeChecks.templates(for: relation) {
                             guard let line = TemplatePool.fill(template, ["time": reading.time]) else {

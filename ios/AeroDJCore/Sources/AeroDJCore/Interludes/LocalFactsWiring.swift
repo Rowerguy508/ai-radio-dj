@@ -355,6 +355,9 @@ public final class LocalFactsWiring: @unchecked Sendable {
         let ticket = lock.withLock { generation }
         testBeforeTask?()
         let task = Task { [self] in await refreshBody(ticket) }
+        // #487: nil in production, so this does not suspend and the insert stays where it was.
+        // A test holds the gap open until a provider has withdrawn, before this task is registered.
+        if let testBeforeRegister { await testBeforeRegister() }
         lock.withLock {
             inflight.insert(task)
             if generation != ticket { task.cancel() }   // invalidated before it was registered
@@ -369,6 +372,9 @@ public final class LocalFactsWiring: @unchecked Sendable {
     /// Test seam (Sentinel's #410 n6b, -Fry): runs after the generation is taken, before the
     /// refresh task exists, so a test can invalidate in the gap the late-registration cancel covers.
     var testBeforeTask: (@Sendable () -> Void)?
+    /// Test seam (#487, -Echo): runs after the refresh task is created, before it is inserted
+    /// into `inflight`. Nil unless a test sets it.
+    var testBeforeRegister: (@Sendable () async -> Void)?
 
     private func refreshBody(_ ticket: Int) async -> RefreshOutcome {
         await testAfterTicket?()
@@ -409,7 +415,8 @@ public final class LocalFactsWiring: @unchecked Sendable {
         let kinds = Set(enabled.map(\.kind))
         let refresh = FactRefresh(gatherer: BroadcastFactGatherer(providers: enabled), summarizer: summarizer)
         let (counts, paraphrase) = await refresh.run(FactRequest(now: start, area: area, unit: unit()), into: source,
-                                                     stillAllowed: { [self] in allowed(ticket, kinds) })
+                                                     stillAllowed: { [self] in allowed(ticket, kinds) },
+                                                     shouldContinue: { [self] in isCurrent(ticket) })
         guard allowed(ticket, kinds) else {
             source.clear()
             return .superseded

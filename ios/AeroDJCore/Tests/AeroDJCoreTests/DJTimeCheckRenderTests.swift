@@ -179,6 +179,28 @@ final class DJTimeCheckRenderTests: XCTestCase {
         XCTAssertEqual(drops.all, [], "nothing dropped, nothing reported")
     }
 
+    /// Fall-back 1:58 EDT: the time line is not synthesized (no paid or free voice call for it),
+    /// the closing line still airs, and the omission is the #347 drop (#360).
+    func testATimeCheckAcrossTheFallBackIsDroppedBeforeAnyVoiceCall() async {
+        let fallBack = ISO8601DateFormatter().date(from: "2026-11-01T05:58:00Z")!  // 1:58 EDT
+        let clock = Clock(fallBack)
+        let voice = ScriptedVoice()
+        let p = preparer([route("device", voice, microdollarsPerThousand: 0)], clock: clock)
+        let planned = timeCheckBreak()
+        let drops = await drops(p)
+        await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
+        let ready = await eventually { await Self.ready(p) != nil }
+        XCTAssertTrue(ready)
+        XCTAssertEqual(voice.texts, [Self.closingText], "the false hour is never sent to a voice: \(voice.texts)")
+        assertRestOnly(await Self.ready(p), planned)
+        let outcome = await p.takeBreak(afterTrack: 0)
+        assertDropped(outcome, planned, .notOnTheClock, drops)
+        if case .ready(let taken) = outcome {
+            XCTAssertFalse(taken.cues.contains { $0.text.localizedCaseInsensitiveContains("o'clock") })
+            XCTAssertLessThanOrEqual(taken.measuredSeconds, 12, "the ordinary break stays inside the 12 s cap")
+        }
+    }
+
     // MARK: Stale at the take (Echo blocker 1)
 
     /// A ready break with "Almost 9:55." for a 9:53 boundary.
@@ -429,7 +451,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
         await p?.prepare(timeCheckBreak(), deadline: .seconds(200), onDeviceOnly: false)
         let isWaiting = await eventually { waiting.isSet }
         XCTAssertTrue(isWaiting)
-        weak let freed = p
+        weak var freed = p
         p = nil
         let gone = await eventually { cancelled.isSet }
         XCTAssertTrue(gone, "the wait is cancelled when the preparer is freed")
