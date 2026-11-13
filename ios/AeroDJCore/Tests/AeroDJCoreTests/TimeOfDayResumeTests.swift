@@ -497,6 +497,28 @@ final class TimeOfDayResumeTests: XCTestCase {
         return (k, try XCTUnwrap(r.session.testPlannedBreaks[k]))
     }
 
+    // MARK: Play after a lock-screen Next while paused (#444's advance path)
+
+    /// Paused at 8 AM, a lock-screen Next is pressed, and Play at 2 PM takes it (#459): the
+    /// skipped song is cut and the next one starts. The app re-reads the day part before that
+    /// start, so the show greets the afternoon once and nothing morning is left.
+    func testAPlayThatAdvancesPastTheSkippedSongGreetsTheNewDayPart() async {
+        for seed in UInt64(0)..<10 {
+            let r = await rig(startingAt: Self.at(8), seed: seed)
+            let playing = await openTheShow(r)
+            r.clock.now = Self.at(14)
+            r.session.timeOfDayMayHaveChanged()                     // Play at 2 PM (advance path)
+            await r.session.songCut(afterTrack: playing)            // the skipped song
+            await r.session.songStarted(index: playing + 1, remaining: .seconds(180))
+            XCTAssertTrue(greets(r.session, after: playing, in: .afternoon, r.tone),
+                          "seed \(seed): the show greets the afternoon")
+            XCTAssertEqual(openers(r.session, after: playing).count, 1, "seed \(seed): one opener")
+            XCTAssertFalse(speaks(texts(r.session, after: playing), anyOf: lines(.morning, r.tone)),
+                           "seed \(seed): no morning lines after 2 PM")
+            await r.session.stop()
+        }
+    }
+
     // MARK: App wiring (iOS-only files, checked from source on Linux)
 
     func testTheAppRecomputesOnPlayAndOnForeground() throws {
@@ -514,6 +536,20 @@ final class TimeOfDayResumeTests: XCTestCase {
         XCTAssertFalse(refused.contains("onUserResumed?()"), "a refused or closed resume does not re-plan the day part")
         let deps = try appSource("AppDependencies.swift")
         XCTAssertFalse(deps.contains("hour:"), "the live session reads the hour from its clock, not a launch value")
+    }
+
+    /// A Play that takes a Next pressed while paused (#459's advance path) is a resume too: it
+    /// re-reads the day part before the skip loads the next song, whose start does not greet.
+    func testAPlayThatAdvancesPastTheSkippedSongRecomputesTheDayPart() throws {
+        let music = try appSource("MusicKitService.swift")
+        let start = try XCTUnwrap(music.range(of: "func resume() async throws {"))
+        let resume = music[start.upperBound...]
+        let branch = try XCTUnwrap(resume.range(of: "if case .advancePastSkipped = SkippedPastResume.decide("))
+        let end = try XCTUnwrap(resume[branch.upperBound...].range(of: "await startSkip(skipCoordinator.requestAdvance())"))
+        let advance = resume[branch.upperBound..<end.lowerBound]
+        XCTAssertTrue(advance.contains("send(.userResumed)"), "the advance path is the Play the gate allowed")
+        XCTAssertTrue(advance.contains("onUserResumed?()"),
+                      "the advance path re-reads the day part before the next song starts")
     }
 
     private func appSource(_ name: String) throws -> String {
