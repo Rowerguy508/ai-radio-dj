@@ -72,12 +72,17 @@ public enum AppWideLayout {
         public var containerWidth: Double
         public var containerHeight: Double
         public var accessibilityTextSize: Bool
-        /// Only for a screen whose measured height is its own content, not the window
-        /// (`LocalAreaPrompt`, a medium-detent sheet). Then `containerHeight` says nothing
-        /// about landscape, so the vertical size class alone decides once the width passes:
-        /// every iPhone in landscape is vertically compact, including the Plus and Max, which
-        /// are regular width there. Nil (the default) uses the height.
+        /// The vertical size class (`verticalSizeClass == .regular`). Decides a regular-width
+        /// container: Plus and Max iPhones in landscape are regular width but vertically
+        /// compact, and stay the phone path; the iPad (any orientation, form sheets, Split
+        /// View) is vertically regular. Nil falls back to `containerHeight >= duoMinHeight`.
         public var hasRegularHeight: Bool?
+        /// Only for a screen whose measured height is its own content, not the window
+        /// (`LocalAreaPrompt`, a medium-detent sheet). The height test can't tell the Duo
+        /// from a phone then, so `hasRegularHeight` alone decides for both width classes
+        /// (missing counts as compact). Every iPhone in landscape, Plus and Max included, is
+        /// vertically compact and stays the phone path (#515 B1).
+        public var heightIsContent: Bool
         /// TODO(#465 item 2): nil until fold awareness supplies it. Ignored today.
         public var foldDivision: FoldDivision?
         /// TODO(#465 item 4): nil until `ArrangementView` supplies it. Ignored today.
@@ -85,12 +90,14 @@ public enum AppWideLayout {
 
         public init(hasRegularWidth: Bool, containerWidth: Double, containerHeight: Double,
                     accessibilityTextSize: Bool = false, hasRegularHeight: Bool? = nil,
+                    heightIsContent: Bool = false,
                     foldDivision: FoldDivision? = nil, arrangement: Arrangement? = nil) {
             self.hasRegularWidth = hasRegularWidth
             self.containerWidth = containerWidth
             self.containerHeight = containerHeight
             self.accessibilityTextSize = accessibilityTextSize
             self.hasRegularHeight = hasRegularHeight
+            self.heightIsContent = heightIsContent
             self.foldDivision = foldDivision
             self.arrangement = arrangement
         }
@@ -180,17 +187,21 @@ public enum AppWideLayout {
     public static func isWide(_ input: Input) -> Bool {
         let width = finite(input.containerWidth)
         let height = finite(input.containerHeight)
-        if let hasRegularHeight = input.hasRegularHeight {
+        if input.heightIsContent {
             guard FoldedColumnLayout.isWide(containerWidth: width) else { return false }
-            // The vertical class alone (Fry, #515 B1): a Plus or Max iPhone in landscape is
-            // regular width but compact height, and must stay the phone path. The iPad and
-            // the Duo are vertically regular, so they stay wide.
-            return hasRegularHeight
+            return input.hasRegularHeight ?? false
         }
         guard FoldedColumnLayout.isWide(containerWidth: width), height > 0 else { return false }
-        // Compact and short is a phone on its side (at most 430 pt tall), or the
-        // compact-to-regular probe. Regular width needs no height: iPad sheets are shorter.
-        return input.hasRegularWidth || height >= FoldedColumnLayout.duoMinHeight
+        let tall = height >= FoldedColumnLayout.duoMinHeight
+        // Regular width (#512 B1): wide only when the height is regular too. The vertical
+        // size class, not the measured height: an iPad form sheet (540 × 620) is short but
+        // vertically regular, and a Plus or Max iPhone in landscape (956 × 440, regular
+        // width) is vertically compact. A size class doesn't depend on what is measured.
+        if input.hasRegularWidth { return input.hasRegularHeight ?? tall }
+        // Compact and short is a phone on its side (at most 430 pt tall), or the 652 × 680
+        // compact-to-regular probe, which is vertically regular on an iPad, so compact
+        // width keeps the height test. The unfolded Duo (640 × 820) passes it.
+        return tall
     }
 
     public static func decide(_ input: Input, for screen: Screen) -> Decision {

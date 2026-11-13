@@ -7,7 +7,15 @@ final class AppWideLayoutTests: XCTestCase {
         ("iPhone portrait", .init(hasRegularWidth: false, containerWidth: 393, containerHeight: 852)),
         ("Pro Max portrait", .init(hasRegularWidth: false, containerWidth: 440, containerHeight: 956)),
         ("iPhone landscape", .init(hasRegularWidth: false, containerWidth: 852, containerHeight: 393)),
-        ("Pro Max landscape", .init(hasRegularWidth: false, containerWidth: 956, containerHeight: 440)),
+        // Plus and Max iPhones in landscape are regular width, compact height (#512 B1).
+        ("Pro Max landscape", .init(hasRegularWidth: true, containerWidth: 956, containerHeight: 440,
+                                    hasRegularHeight: false)),
+        ("older Pro Max / Plus landscape", .init(hasRegularWidth: true, containerWidth: 932, containerHeight: 430,
+                                                 hasRegularHeight: false)),
+        ("Plus landscape", .init(hasRegularWidth: true, containerWidth: 926, containerHeight: 428,
+                                 hasRegularHeight: false)),
+        ("Pro Max landscape, no vertical class", .init(hasRegularWidth: true, containerWidth: 956,
+                                                       containerHeight: 440)),
         ("narrow Split View", AppWideLayout.splitNarrow),
         ("compact resize probe", .init(hasRegularWidth: false, containerWidth: 652, containerHeight: 680)),
     ]
@@ -57,10 +65,10 @@ final class AppWideLayoutTests: XCTestCase {
     func testEveryColumnLeavesRoomForItsContentAndATouchTarget() {
         let wide: [AppWideLayout.Input] = [
             AppWideLayout.duoWide,
-            .init(hasRegularWidth: true, containerWidth: 540, containerHeight: 760),   // Split half
-            .init(hasRegularWidth: true, containerWidth: 680, containerHeight: 760),   // Split two-thirds
-            .init(hasRegularWidth: true, containerWidth: 540, containerHeight: 620),   // iPad form sheet
-            .init(hasRegularWidth: true, containerWidth: 1024, containerHeight: 1366), // iPad full
+            .init(hasRegularWidth: true, containerWidth: 540, containerHeight: 760, hasRegularHeight: true),   // Split half
+            .init(hasRegularWidth: true, containerWidth: 680, containerHeight: 760, hasRegularHeight: true),   // Split two-thirds
+            .init(hasRegularWidth: true, containerWidth: 540, containerHeight: 620, hasRegularHeight: true),   // iPad form sheet
+            .init(hasRegularWidth: true, containerWidth: 1024, containerHeight: 1366, hasRegularHeight: true), // iPad full
         ]
         for input in wide {
             for screen in AppWideLayout.Screen.allCases {
@@ -81,16 +89,21 @@ final class AppWideLayoutTests: XCTestCase {
     }
 
     func testSplitHalfAndIPadUseTheSameRules() {
-        let half = AppWideLayout.Input(hasRegularWidth: true, containerWidth: 540, containerHeight: 760)
+        let half = AppWideLayout.Input(hasRegularWidth: true, containerWidth: 540, containerHeight: 760,
+                                       hasRegularHeight: true)
         XCTAssertEqual(AppWideLayout.decide(half, for: .library).columns, 2)
         XCTAssertEqual(AppWideLayout.decide(half, for: .library).sideInset, 0, "540 is under the 560 cap")
-        let pad = AppWideLayout.Input(hasRegularWidth: true, containerWidth: 1024, containerHeight: 1366)
+        let pad = AppWideLayout.Input(hasRegularWidth: true, containerWidth: 1024, containerHeight: 1366,
+                                      hasRegularHeight: true)
         XCTAssertEqual(AppWideLayout.decide(pad, for: .stations).columns, 4, "capped at maxColumns")
         XCTAssertEqual(AppWideLayout.decide(pad, for: .stations).readableWidth, 960)
         XCTAssertEqual(AppWideLayout.decide(pad, for: .library).sideInset, 232)
         // A regular sheet shorter than the Duo still adapts; height only gates compact.
-        let sheet = AppWideLayout.Input(hasRegularWidth: true, containerWidth: 540, containerHeight: 620)
-        XCTAssertTrue(AppWideLayout.isWide(sheet))
+        let sheet = AppWideLayout.Input(hasRegularWidth: true, containerWidth: 540, containerHeight: 620,
+                                        hasRegularHeight: true)
+        XCTAssertTrue(AppWideLayout.isWide(sheet), "the vertical class, not the sheet's height, decides")
+        // Without a vertical class the height decides, and a 620 pt sheet is not tall.
+        XCTAssertFalse(AppWideLayout.isWide(.init(hasRegularWidth: true, containerWidth: 540, containerHeight: 620)))
         XCTAssertFalse(AppWideLayout.isWide(.init(hasRegularWidth: false, containerWidth: 540, containerHeight: 620)))
     }
 
@@ -123,20 +136,27 @@ final class AppWideLayoutTests: XCTestCase {
     /// vertical size class replaces the height test. Landscape iPhones stay the phone path.
     func testContentSizedSheetsUseTheVerticalSizeClassForHeight() {
         let duoSheet = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 640, containerHeight: 380,
-                                           hasRegularHeight: true)
+                                           hasRegularHeight: true, heightIsContent: true)
         XCTAssertTrue(AppWideLayout.isWide(duoSheet))
         XCTAssertEqual(AppWideLayout.decide(duoSheet, for: .onboarding).decisionText, "wide 1 40")
+        // Without the flag the same 380 pt measurement is just short, and compact: phone.
+        var measured = duoSheet
+        measured.heightIsContent = false
+        XCTAssertFalse(AppWideLayout.isWide(measured))
+        // A missing vertical class on a content-sized sheet counts as compact.
+        XCTAssertFalse(AppWideLayout.isWide(.init(hasRegularWidth: true, containerWidth: 900, containerHeight: 380,
+                                                  heightIsContent: true)))
         let landscapePhone = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 852, containerHeight: 300,
-                                                 hasRegularHeight: false)
+                                                 hasRegularHeight: false, heightIsContent: true)
         XCTAssertEqual(AppWideLayout.decide(landscapePhone, for: .onboarding).mode, .phone)
         let portraitPhone = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 440, containerHeight: 300,
-                                                hasRegularHeight: true)
+                                                hasRegularHeight: true, heightIsContent: true)
         XCTAssertEqual(AppWideLayout.decide(portraitPhone, for: .onboarding).mode, .phone)
         let narrowSplit = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 340, containerHeight: 300,
-                                              hasRegularHeight: true)
+                                              hasRegularHeight: true, heightIsContent: true)
         XCTAssertEqual(AppWideLayout.decide(narrowSplit, for: .onboarding).mode, .phone)
         let padSheet = AppWideLayout.Input(hasRegularWidth: true, containerWidth: 540, containerHeight: 300,
-                                           hasRegularHeight: true)
+                                           hasRegularHeight: true, heightIsContent: true)
         XCTAssertEqual(AppWideLayout.decide(padSheet, for: .onboarding).mode, .wide)
         XCTAssertEqual(AppWideLayout.decide(padSheet, for: .onboarding).sideInset, 0, "under the 560 cap")
     }
@@ -147,7 +167,7 @@ final class AppWideLayoutTests: XCTestCase {
     func testPlusAndMaxLandscapeOnboardingSheetsStayThePhonePath() {
         for width in [956.0, 932, 926] {
             let sheet = AppWideLayout.Input(hasRegularWidth: true, containerWidth: width, containerHeight: 380,
-                                            hasRegularHeight: false)
+                                            hasRegularHeight: false, heightIsContent: true)
             XCTAssertFalse(AppWideLayout.isWide(sheet), "\(width)")
             let decision = AppWideLayout.decide(sheet, for: .onboarding)
             XCTAssertEqual(decision.mode, .phone, "\(width)")
@@ -157,8 +177,39 @@ final class AppWideLayoutTests: XCTestCase {
         }
         // Compact-width landscape too (every other iPhone).
         let compact = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 852, containerHeight: 380,
-                                          hasRegularHeight: false)
+                                          hasRegularHeight: false, heightIsContent: true)
         XCTAssertEqual(AppWideLayout.decide(compact, for: .onboarding).sideInset, 0)
+    }
+
+    /// #512 B1 (Fry, via #515): regular width counts only with regular height. Plus and Max
+    /// iPhones in landscape stay the phone path for every screen; the Duo, iPad and Split
+    /// View results are unchanged.
+    func testRegularWidthNeedsRegularHeight() {
+        for width in [956.0, 932, 926] {
+            let phone = AppWideLayout.Input(hasRegularWidth: true, containerWidth: width, containerHeight: 430,
+                                            hasRegularHeight: false)
+            for screen in AppWideLayout.Screen.allCases {
+                let d = AppWideLayout.decide(phone, for: screen)
+                XCTAssertEqual(d.mode, .phone, "\(width) \(screen)")
+                XCTAssertEqual(d.sideInset, 0, "\(width) \(screen)")
+                XCTAssertEqual(d.columns, 1, "\(width) \(screen)")
+            }
+        }
+        // The vertical class wins over a tall measured height for regular width.
+        XCTAssertFalse(AppWideLayout.isWide(.init(hasRegularWidth: true, containerWidth: 956, containerHeight: 900,
+                                                  hasRegularHeight: false)))
+        // Compact width keeps the height test whatever the vertical class says: the 652 × 680
+        // resize probe is vertically regular on an iPad and stays phone; the Duo stays wide.
+        XCTAssertFalse(AppWideLayout.isWide(.init(hasRegularWidth: false, containerWidth: 652, containerHeight: 680,
+                                                  hasRegularHeight: true)))
+        var duo = AppWideLayout.duoWide
+        duo.hasRegularHeight = true
+        XCTAssertEqual(AppWideLayout.decide(duo, for: .library).decisionText, "wide 2 40")
+        XCTAssertEqual(AppWideLayout.decide(duo, for: .stations).decisionText, "wide 3 0")
+        XCTAssertEqual(AppWideLayout.decide(duo, for: .settings).decisionText, "wide 1 40")
+        var narrow = AppWideLayout.splitNarrow
+        narrow.hasRegularHeight = true
+        XCTAssertEqual(AppWideLayout.decide(narrow, for: .library).mode, .phone)
     }
 
     func testNonFiniteAndZeroContainersArePhone() {
