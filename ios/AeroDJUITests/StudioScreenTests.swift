@@ -472,6 +472,17 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(app.buttons["folded.sleepTimer"].isHittable)
         XCTAssertTrue(app.buttons["queue.affordance"].isHittable)
         save(app, "duo-wide-speaking")
+        let more = app.buttons["folded.more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5), "More missing\n\(app.debugDescription)")
+        more.tap()
+        let popover = app.popovers.firstMatch
+        XCTAssertTrue(popover.waitForExistence(timeout: 5), "More popover did not open\n\(app.debugDescription)")
+        let rows = popover.buttons.allElementsBoundByIndex
+        XCTAssertFalse(rows.isEmpty, "More popover has no rows\n\(app.debugDescription)")
+        for row in rows {
+            XCTAssertGreaterThanOrEqual(row.frame.height, 44, "\(row.identifier) is under 44 pt")
+        }
+        save(app, "duo-wide-more-popover")
     }
 
     /// Collapse leaves the unfolded rail and shows the centred column. Playback stays up.
