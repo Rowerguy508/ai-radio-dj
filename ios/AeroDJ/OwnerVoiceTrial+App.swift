@@ -27,15 +27,15 @@ extension VoiceRenderer {
             credentials: OwnerProxyKeychain.load(),
             backoff: OwnerVoiceTrial.proxyBackoff)
         OwnerProxyKeychain.logDecision(composition.decision, routeCount: composition.routes.count)
-        // Owner, Nov 9 2026 (#433): the same v2 consent as testers. `.noLines` until "Use cloud
-        // voice" on copy v2 (the owner route hears nothing), `.allLines` after it. -Fry
+        // Owner, Nov 9 2026 (#433): the same consent as testers. `.noLines` until "Use cloud
+        // voice" on copy v3 (#432) (the owner route hears nothing), `.allLines` after it. -Fry
         return VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
                              revocations: base.revocations).gated(by: OwnerCloudVoice.consentStore)
         #elseif AERODJ_TESTER_VOICE
         // Internal TestFlight tester build (#378): ElevenLabs through an App Attest install token,
         // only after the consent sheet; on-device on any attest failure. AppAttestService+App.swift.
-        // Owner, Nov 9 2026 ("I want it all elevenlabs."): every attributed DJ line once copy v2
-        // is accepted, nothing before (`CloudVoiceConsentStore.scope`), read per cue. -Fry
+        // Owner, Nov 9 2026 ("I want it all elevenlabs."): every attributed DJ line once copy v3
+        // is accepted (#432), nothing before (`CloudVoiceConsentStore.scope`), read per cue. -Fry
         return VoiceRenderer(routes: TesterCloudVoice.compose(onDevice: base.routes), budget: base.budget,
                              cache: base.cache, revocations: base.revocations)
             .gated(by: TesterCloudVoice.consentStore)
