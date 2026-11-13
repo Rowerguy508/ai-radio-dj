@@ -33,6 +33,10 @@ public struct SelfStartInterruptionGate: Equatable, Sendable {
     private var playReturnedAt: TimeInterval?
     private var pending: [AudioSessionNotice] = []
     private var ignoreNextEnded = false
+    /// #444 (-Atlas): the attempt whose `play()` has been called and has neither returned nor
+    /// thrown. Not cleared by a confirm or a failure report, only by the end of that `play()`
+    /// or a newer start.
+    private var awaitingPlay: PlaybackAttemptID?
 
     public init() {}
 
@@ -48,16 +52,32 @@ public struct SelfStartInterruptionGate: Equatable, Sendable {
         self.attempt = attempt
         playCalledAt = nil
         playReturnedAt = nil
+        awaitingPlay = nil
     }
 
     public mutating func playCalled(_ attempt: PlaybackAttemptID, at time: TimeInterval) {
         guard attempt == self.attempt else { return }
         playCalledAt = time
+        awaitingPlay = attempt
     }
 
     public mutating func playReturned(_ attempt: PlaybackAttemptID, at time: TimeInterval) {
+        if awaitingPlay == attempt { awaitingPlay = nil }
         guard attempt == self.attempt, playCalledAt != nil else { return }
         playReturnedAt = time
+    }
+
+    /// #444 (-Atlas): `play()` threw for `attempt`. It is no longer awaiting. The deferral window
+    /// is unchanged (a throw is not a return).
+    public mutating func playThrew(_ attempt: PlaybackAttemptID) {
+        if awaitingPlay == attempt { awaitingPlay = nil }
+    }
+
+    /// #444 (-Atlas): `attempt` called `play()` and that call has not returned or thrown yet. A
+    /// MusicKit cut seen now is the ambiguous cut of our own start, not the user's Next.
+    public func isAwaitingPlay(_ attempt: PlaybackAttemptID?) -> Bool {
+        guard let attempt else { return false }
+        return awaitingPlay == attempt
     }
 
     /// MusicKit reached `.playing` for `attempt`. True when a deferred `.began` was discarded.

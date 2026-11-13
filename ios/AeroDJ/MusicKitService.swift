@@ -324,9 +324,24 @@ final class MusicKitService: ObservableObject {
             throw MusicKitError.playbackFailed(message: message)
         }
         sessionPolicy.userPlay()
+        // #444 build 43: read before `stopSkipForPlay`. A song the user's lock-screen Next was
+        // meant to leave is not reloaded by this Play.
+        let skippedPast = skipCoordinator.skippedPastIndex
         // Play replaces a skip that is still loading. Drop the chain and the skip-load flag now,
         // before this Play's attempt, so the old load cannot recover over it.
         stopSkipForPlay()
+        if case .advancePastSkipped = SkippedPastResume.decide(
+            resumeTargetDecision(), selectedIndex: queueIndex, skippedPast: skippedPast, queueCount: queue.count) {
+            logPlayback(PlaybackLog.resumeDecision("advancePastSkipped", index: queueIndex))
+            // The user's explicit Play takes the Next they already pressed: the skip path, so the
+            // skipped song's break is dropped and the next song loads. No hold is active (userPlay
+            // above). The transport leaves the surfaced pause for `.preparing`; the load confirms it.
+            // `onUserResumed` stays in `.played` only: the new song's start plans its breaks.
+            send(.userResumed)
+            installSkipGate()
+            await startSkip(skipCoordinator.requestAdvance())
+            return
+        }
         // Re-arms the confirm for a new attempt; the rule is the same as for a tap: the deadline
         // reports and never pauses, and a late `.playing` confirms this attempt.
         let attempt = beginAttempt(userChangedQueue: false)
@@ -446,7 +461,12 @@ final class MusicKitService: ObservableObject {
     /// chain so a stored advance or a reload cannot clear that hold.
     func skip() async throws {
         installSkipGate()
-        switch skipCoordinator.requestAdvance() {
+        await startSkip(skipCoordinator.requestAdvance())
+    }
+
+    /// Runs the chain for a Next the coordinator accepted (`requestAdvance` or `noteCutAsNext`).
+    private func startSkip(_ intake: SkipCoordinator.Intake) async {
+        switch intake {
         case .queueOneMore, .ignore, .beginWhenIdle:
             // `.beginWhenIdle`: this Next is a new command after a cancelled chain. That chain
             // starts it when it exits. Starting another chain here would no-op on `chainRunning`.
@@ -469,14 +489,16 @@ final class MusicKitService: ObservableObject {
 
     private func runSkipChain(first: SkipJob = .advance) async {
         let surface: @MainActor (SkipTerminalFailure) -> Void = { [weak self] failure in
-            self?.surfaceSkipFailure(failure)
+            self?.surfaceSkipFailure(failure, reason: SkipSurfaceReason(failure))
         }
         let resume: @MainActor () async -> Void = { [weak self] in
             await self?.resumeIfAllowed()
         }
         let body: @MainActor (SkipJob) async -> SkipLoadResult = { [weak self] job in
             guard let self else { return .cancelled }
-            return await self.oneSkip(job)
+            let result = await self.oneSkip(job)
+            self.logPlayback(PlaybackLog.skipStep(job: job, target: self.queueIndex, result: result))
+            return result
         }
         if first == .reload {
             await skipCoordinator.runRecovery(surface: surface, resume: resume, body)
@@ -516,6 +538,7 @@ final class MusicKitService: ObservableObject {
             // Commit the target before the load can throw, so a failure stays on this song
             // instead of reloading the one the snapshot already left.
             queueIndex = next
+            skipCoordinator.noteSelected(index: next)
             currentTrack = queue[next]
             send(.userSkipped(nextIndex: next))
             if queue[next].song == nil {
@@ -605,8 +628,9 @@ final class MusicKitService: ObservableObject {
     /// on the main actor, before `runChain` drops `isInFlight` and before any newer `skip()` can
     /// set the flag, so the clear cannot belong to a newer chain. Gating it on `!isInFlight`
     /// would miss the in-chain failure, which is reported while the chain is still active.
-    private func surfaceSkipFailure(_ failure: SkipTerminalFailure) {
+    private func surfaceSkipFailure(_ failure: SkipTerminalFailure, reason: SkipSurfaceReason) {
         defer { boundaries.setSkipLoadInFlight(false) }
+        logPlayback(PlaybackLog.skipSurface(reason: reason, index: queueIndex))
         noteLoadedTargetStale()
         // The MusicKit queue may still be the song we left. Stop it so that song is not audible
         // under the new index, and so the next poll cannot treat it as the song that failed.
@@ -907,11 +931,12 @@ final class MusicKitService: ObservableObject {
                 Task { @MainActor [weak self] in _ = try? await self?.skip() }
                 return
             }
-            if boundaries.takeSkipLoadCut() {
-                // #444 (-Echo): an ambiguous clear of the song being loaded. Recover that song.
-                // It is not a second Next, and it does not pause.
-                logPlayback("skipLoadCut index=\(queueIndex)")
-                noteSkipLoadCut()
+            let cut = boundaries.pendingSkipLoadCut
+            if boundaries.takeSkipLoadCut(), let cut {
+                // #444 build 43 (-Atlas): a clear or rewind of the song a skip loaded. After our own
+                // `play()` returned it is the user's lock-screen Next; only while that `play()` is
+                // awaiting is it the ambiguous cut #446 recovers. Never `userPlay()` over a hold.
+                noteSkipLoadCut(cut)
                 return
             }
             if boundaries.takeNoProgressEnd() {
@@ -956,16 +981,49 @@ final class MusicKitService: ObservableObject {
         }
     }
 
-    /// #444: MusicKit cleared or rewound the song a skip is loading. Recover that song once.
-    /// An explicit Next already stored is not duplicated. Past the budget, surface the error.
-    private func noteSkipLoadCut() {
+    /// #444: MusicKit cleared or rewound the song a skip loaded. `SkipLoadCutRoute` decides:
+    /// ignored under a hold, the user's Next once our `play()` returned, or the ambiguous cut of our
+    /// own awaiting `play()`, which recovers that song once. Past the budget, a song seen playing
+    /// advances; only one never seen playing surfaces the error.
+    private func noteSkipLoadCut(_ cut: SkipLoadCut) {
         installSkipGate()
+        let awaitingPlay = selfStartGate.isAwaitingPlay(attempts.current)
+        let route = SkipLoadCutRoute.decide(awaitingOwnPlay: awaitingPlay,
+                                            userWantsPlayback: sessionPolicy.userWantsPlayback,
+                                            pausedBySystem: sessionPolicy.pausedBySystem)
+        let index = queueIndex
+        let chainInFlight = skipCoordinator.isInFlight
+        func logCut(_ disposition: String) {
+            logPlayback(PlaybackLog.skipLoadCut(
+                index: index, generation: attempts.queueGeneration, shape: cut.shape,
+                chainInFlight: chainInFlight, awaitingPlay: awaitingPlay,
+                recoveries: skipCoordinator.recoveriesSpent, disposition: disposition))
+        }
+        switch route {
+        case .ignoreHeld:
+            // The hold stays: no user Play, no load, nothing starts.
+            logCut("ignoredHeld")
+            noteLoadedTargetStale()
+            return
+        case .advance:
+            logCut("advance")
+            noteLoadedTargetStale()
+            // Same path as an explicit Next: `oneSkip(.advance)` drops the cut song's break. The
+            // intake is taken now, so a chain that is running sees the cut during its step.
+            let intake = skipCoordinator.noteCutAsNext(from: index)
+            Task { @MainActor [weak self] in await self?.startSkip(intake) }
+            return
+        case .reloadSameSong:
+            break
+        }
         noteLoadedTargetStale()
-        guard sessionPolicy.userWantsPlayback, !sessionPolicy.pausedBySystem else { return }
-        switch skipCoordinator.noteLoadCut(target: queueIndex) {
+        let disposition = skipCoordinator.noteLoadCut(target: index)
+        switch disposition {
         case .folded:
+            logCut("folded")
             return
         case .recover:
+            logCut("recover")
             boundaries.setSkipLoadInFlight(true)
             let generation = attempts.queueGeneration
             Task { @MainActor [weak self] in
@@ -977,7 +1035,15 @@ final class MusicKitService: ObservableObject {
                 if !self.isPlaying { self.boundaries.setSkipLoadInFlight(false) }
             }
         case .exhausted:
-            surfaceSkipFailure(.couldNotStart)
+            guard !SkipLoadCutRoute.exhaustedIsAdvance(cut) else {
+                // The song played, so it is playable: this cut is a Next, not a failure.
+                logCut("exhaustedAdvance")
+                let intake = skipCoordinator.noteCutAsNext(from: index)
+                Task { @MainActor [weak self] in await self?.startSkip(intake) }
+                return
+            }
+            logCut("exhausted")
+            surfaceSkipFailure(.couldNotStart, reason: .exhausted)
         }
     }
 
@@ -1213,14 +1279,21 @@ final class MusicKitService: ObservableObject {
         case failedClosed
     }
 
-    private func playResume(attempt: PlaybackAttemptID, userInitiated: Bool) async throws -> ResumePlayback {
+    /// The `LoadedTargetPolicy` decision for the selected song, on the service's own state.
+    private func resumeTargetDecision() -> ResumeTargetDecision {
         let playable = queue.indices.contains(queueIndex) && queue[queueIndex].song != nil
-        switch LoadedTargetPolicy.decide(
+        return LoadedTargetPolicy.decide(
             loaded: loadedTarget,
             selectedIndex: queueIndex,
             generation: attempts.queueGeneration,
             selectedIsPlayable: playable
-        ) {
+        )
+    }
+
+    private func playResume(attempt: PlaybackAttemptID, userInitiated: Bool) async throws -> ResumePlayback {
+        let decision = resumeTargetDecision()
+        logPlayback(PlaybackLog.resumeDecision(decision.logToken, index: queueIndex))
+        switch decision {
         case .failClosed:
             reportResumeTargetFailure(attempt)
             return .failedClosed
@@ -1278,6 +1351,8 @@ final class MusicKitService: ObservableObject {
                 do {
                     try await player.play()
                 } catch {
+                    // #444: this attempt's `play()` is no longer awaiting, so a later cut is a Next.
+                    selfStartGate.playThrew(attempt)
                     logPlaybackError("player.play", error)
                     throw error
                 }
@@ -1413,6 +1488,7 @@ final class MusicKitService: ObservableObject {
                 // Off-main delivery (not expected): the queue cannot be read here, so the
                 // decision is made after the hop. The command reports success either way.
                 Task { @MainActor in
+                    self.logPlayback(PlaybackLog.remoteNextCommand(index: self.queueIndex))
                     guard RemoteNextCommand.decide(queueIndex: self.queueIndex,
                                                    queueCount: self.queue.count) == .skip else { return }
                     _ = try? await self.skip()
@@ -1420,6 +1496,8 @@ final class MusicKitService: ObservableObject {
                 return .success
             }
             return MainActor.assumeIsolated {
+                // #444 diagnostic: does the system ever call this target with ApplicationMusicPlayer?
+                self.logPlayback(PlaybackLog.remoteNextCommand(index: self.queueIndex))
                 switch RemoteNextCommand.decide(queueIndex: self.queueIndex, queueCount: self.queue.count) {
                 case .skip:
                     Task { @MainActor in _ = try? await self.skip() }
