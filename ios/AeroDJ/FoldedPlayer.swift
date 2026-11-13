@@ -342,13 +342,10 @@ struct FoldedPlayer: View {
     }
 
     /// A still wash behind the art, from the clock's day part. It does not animate.
-    /// The day part is re-read at the top of each hour so the tint does not go stale.
+    /// The day part is re-read at the top of each calendar hour so the tint does not go stale.
     private var dayWash: some View {
         let calendar = Calendar.current
-        let startOfHour = calendar.date(
-            from: calendar.dateComponents([.year, .month, .day, .hour], from: Date())
-        ) ?? Date()
-        return TimelineView(.periodic(from: startOfHour, by: 3600)) { context in
+        return TimelineView(CalendarHourSchedule()) { context in
             let hour = calendar.component(.hour, from: context.date)
             let opacity = DuoPresentation.washOpacity(reduceTransparency: reduceTransparency)
             DuoDayWashFill(part: DayPart(hour: hour))
@@ -356,6 +353,8 @@ struct FoldedPlayer: View {
                 .allowsHitTesting(false)
                 .accessibilityIdentifier("folded.dayWash")
         }
+        // A parent transaction must not animate the hourly gradient swap.
+        .transaction { $0.disablesAnimations = true }
     }
 
     private var heroTrack: TrackInfo? {
@@ -984,6 +983,14 @@ private struct DuoUpNextList: View {
         .accessibilityLabel(rows.map { $0.detail.isEmpty ? $0.title : "\($0.title), \($0.detail)" }.joined(separator: ". "))
         .accessibilityHint("Opens the queue")
         .accessibilityIdentifier("duo.upNext")
+    }
+}
+
+/// Yields the start of the current hour, then each following hour start, from `Calendar.current`.
+/// A fixed 3600-second period can land up to 59 minutes late and skips or duplicates an hour around DST.
+private struct CalendarHourSchedule: TimelineSchedule {
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> some Sequence<Date> {
+        DayWashSchedule.hourStarts(from: startDate, calendar: .current)
     }
 }
 
