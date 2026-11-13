@@ -10,6 +10,20 @@ import XCTest
 // allows that neighbour off the device (#176, the renderer's current scope). In-process fakes
 // only: no network, no paid service. -Echo
 
+private final class TimedContextSpy: VoiceProvider, @unchecked Sendable {
+    let seconds: @Sendable (String) -> Double
+    init(seconds: @escaping @Sendable (String) -> Double) { self.seconds = seconds }
+    private let lock = NSLock()
+    private var seen: [(text: String, context: RequestContext)] = []
+    var calls: [(text: String, context: RequestContext)] { lock.withLock { seen } }
+    func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+        lock.withLock { seen.append((text, context)) }
+        let duration = seconds(text)
+        return VoiceArtifact(data: Data("clip".utf8), durationSeconds: duration, billableUnits: text.count,
+                             provider: "cloud", cacheKey: nil)
+    }
+}
+
 private final class ContextSpy: VoiceProvider, @unchecked Sendable {
     private let lock = NSLock()
     private var seen: [(text: String, context: RequestContext)] = []
@@ -551,6 +565,50 @@ final class SpeechContextTests: XCTestCase {
         XCTAssertTrue(calls[1].text.contains("9:55"))
         XCTAssertNil(calls[1].context.previousText)
         XCTAssertEqual(calls[1].context.nextText, "Up next, Song 1 by Artist 1.", "the late line still hears its planned neighbour")
+        await p.cancelAll()
+    }
+
+    /// A line the cap trims, and the held-back time check, are not neighbours of the lines that air.
+    func testATrimmedOrHeldBackCueIsNotSentAsANeighbour() async {
+        let clock = LockedClock(Self.date(9, 40))
+        let spy = TimedContextSpy { text in
+            if text.hasPrefix("Grey morning") { return 9 }
+            if text.hasPrefix("Up next") { return 3 }
+            return 1
+        }
+        let route = VoiceRoute(providerID: "cloud", provider: spy, voice: VoiceProfile(id: "cloud-voice", name: "Host"),
+                               leavesDevice: true, sendsSpeechContext: true, supportsAudioTags: false)
+        let p = DJBreakPreparer(renderer: renderer([route]), userID: "u", stationID: "s", talkOverEnabled: { true },
+                                now: { clock.now }, sleepUntil: { _ in clock.now = Self.date(9, 52) })
+        let color = NarrationCue(id: UUID(), order: 1, group: -1, kind: .transition, text: "Grey morning secret line.",
+                                 estimatedSeconds: 9, maxSeconds: 20, sourceItemID: nil, source: nil, provenance: nil)
+        let base = Self.timeCheckBreak()
+        var attributions = base.attributions
+        attributions[color.id] = .presenter
+        var planned = DJBreak(afterTrack: base.afterTrack, cues: [color] + base.cues, attributions: attributions)
+        planned.talkOverCueID = base.talkOverCueID
+        planned.shape = base.shape
+        planned.timeCheck = base.timeCheck
+        planned.optionalCueIDs = [color.id]
+        await p.prepare(planned, deadline: .seconds(60), onDeviceOnly: false)
+        let aired = await eventually { await Self.ready(p)?.cues.count == 2 }
+        XCTAssertTrue(aired)
+        let ready = await Self.ready(p)
+        XCTAssertEqual(ready?.trimmedCueIDs, [color.id], "the long optional line is what the cap drops")
+        XCTAssertFalse(ready?.cues.contains { $0.id == color.id } ?? true)
+        let dropped = ["Grey morning secret line.", "It's 9:40.", "9:40"]
+        for call in spy.calls {
+            for secret in dropped {
+                XCTAssertFalse(call.context.previousText?.contains(secret) ?? false, "previous carried \(secret): \(call)")
+                XCTAssertFalse(call.context.nextText?.contains(secret) ?? false, "next carried \(secret): \(call)")
+            }
+        }
+        let time = spy.calls.first { $0.text.contains("9:55") }
+        XCTAssertEqual(time?.context.nextText, "Up next, Song 1 by Artist 1.", "the line that airs next is the neighbour")
+        XCTAssertNil(time?.context.previousText)
+        let closing = spy.calls.first { $0.text.hasPrefix("Up next") }
+        XCTAssertNil(closing?.context.previousText, "the trimmed line and the held-back time check are not before it")
+        XCTAssertNil(closing?.context.nextText)
         await p.cancelAll()
     }
 
