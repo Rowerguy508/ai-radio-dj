@@ -44,7 +44,12 @@ struct StationListView: View {
                          onOpenSettings: { showSettings = true }) { station in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
-                       isTestStation: dependencies.mode == .testStation)
+                       isTestStation: dependencies.mode == .testStation,
+                       stationStops: stations.map { DuoStationSwitch.Stop(id: $0.id.uuidString, name: $0.name) },
+                       onOpenStation: { id in
+                           guard let uuid = UUID(uuidString: id) else { return }
+                           await openStation(uuid)
+                       })
             // Inside the detail's NavigationStack: the top of the content, below the nav bar,
             // so it never covers Back or the title. A tap always opens this column. Never takes a tap.
             .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
