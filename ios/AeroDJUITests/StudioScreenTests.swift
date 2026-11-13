@@ -803,8 +803,12 @@ final class StudioScreenTests: XCTestCase {
         // iPhone still uses the on-screen Hide key when that key exists.
         if UIDevice.current.userInterfaceIdiom != .pad {
             dismissKeyboard(app)
+            if app.buttons["Done"].exists { app.buttons["Done"].tap() }
+        } else {
+            let done = app.buttons["Done"]
+            XCTAssertTrue(done.waitForExistence(timeout: 10), "search sheet Done button")
+            done.tap()
         }
-        if app.buttons["Done"].exists { app.buttons["Done"].tap() }
         app.buttons["probe.widen"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["layout.studio"].waitForExistence(timeout: 10),
                       "Regular width above the studio minimum opens the two panes")
