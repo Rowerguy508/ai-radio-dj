@@ -144,11 +144,28 @@ public enum DuoPresentation {
         return label
     }
 
+    /// The unfolded rail's live dot. Lit only while `onAirLabel` is present, which
+    /// `DJStudioState` sets only for `.speaking`. Idle, preparing, ready and failed stay off.
+    public static func railLiveDotLit(_ state: DJStudioState) -> Bool {
+        state.onAirLabel != nil
+    }
+
     /// The day-part wash never moves, so Reduce Motion has nothing to stop.
     public static let washAnimates = false
 
     /// Content-layer tint only. Reduce Transparency drops it rather than frosting the art.
     public static func washOpacity(reduceTransparency: Bool) -> Double {
         reduceTransparency ? 0 : 0.16
+    }
+}
+
+/// Choices for the unfolded rail's sleep timer. The rail calls the existing pause
+/// action when one elapses. This does not start, skip or seek.
+public enum DuoSleepTimer {
+    public static let minuteChoices = [15, 30, 45, 60]
+
+    public static func accessibilityValue(minutes: Int?) -> String {
+        guard let minutes else { return "Off" }
+        return "\(minutes) minutes"
     }
 }

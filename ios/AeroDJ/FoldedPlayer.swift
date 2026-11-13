@@ -69,7 +69,7 @@ private struct FoldedReduceMotion {
 /// Wide and short (`FoldedColumnLayout.centredColumn`, iPhone landscape): one centred
 /// column, controls under the art. Wide and tall (the unfolded Duo): full width,
 /// horizontal. Artwork and the title stay in the left half. The right half is a content
-/// column plus a thin symbol bar. Phone portrait is unchanged.
+/// column plus the vertical rail. Phone portrait is unchanged.
 struct FoldedPlayer: View {
     /// The station the now-playing track belongs to (art fallback colours).
     let station: StationRef
@@ -92,13 +92,16 @@ struct FoldedPlayer: View {
     let onQueue: () -> Void
     let onTune: () -> Void
     let onReview: () -> Void
+    /// False shows the centred column in a container that is still the unfolded Duo.
+    /// Phone portrait and landscape ignore it. Playback is not involved.
+    var showsUnfoldedRail: Bool = true
+    var onCollapseRail: () -> Void = {}
     /// Stations the Duo dial can open. Empty on phone widths and when no list was passed.
     var stationStops: [DuoStationSwitch.Stop] = []
     /// The station-row open path. Nil hides the dial.
     var onOpenStation: ((String) async -> Void)? = nil
 
     @Environment(\.dynamicTypeSize) private var typeSize
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
@@ -110,7 +113,11 @@ struct FoldedPlayer: View {
             case .centredColumn:
                 centredColumnBody(in: geo.size)
             case .duoHorizontal:
-                wideBody(in: geo.size)
+                if showsUnfoldedRail {
+                    wideBody(in: geo.size)
+                } else {
+                    centredColumnBody(in: geo.size)
+                }
             }
         }
         .background {
@@ -216,6 +223,10 @@ struct FoldedPlayer: View {
                                                       artMin: Double(FoldedStyle.artMinSide),
                                                       artMax: Double(FoldedStyle.artMaxSide))
         let gap = CGFloat(FoldedColumnLayout.Spacing.betweenControls)
+        // 27.1 draws the rail as the system vertical bar, outside this width.
+        // 26.5 keeps the custom rail in `layout.barWidth`.
+        let systemBar = DuoVerticalRail.usesSystemBar
+        let contentWidth = layout.contentWidth + (systemBar ? layout.barWidth : 0)
         return HStack(alignment: .top, spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
                 // An explicit column width. A vertical scroll view otherwise offers an
@@ -243,16 +254,23 @@ struct FoldedPlayer: View {
                 .accessibilityIdentifier("folded.fold")
 
             wideContent(gap: gap, top: CGFloat(layout.topClearance))
-                .frame(width: CGFloat(layout.contentWidth), height: size.height, alignment: .top)
+                .frame(width: CGFloat(contentWidth), height: size.height, alignment: .top)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("folded.contentColumn")
                 .accessibilitySortPriority(1)
 
-            wideSystemBar(top: CGFloat(layout.topClearance))
-                .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("folded.systemBar")
-                .accessibilitySortPriority(0)
+            if !systemBar {
+                DuoVerticalRail(dj: dj, reviewCount: moreMenu?.reviewCount, upNext: snapshot.upNext,
+                                onCollapse: onCollapseRail,
+                                onConnections: moreMenu?.onConnections ?? {},
+                                onQueue: onQueue, onTune: onTune, pause: { actions.pause() })
+                    .padding(.top, CGFloat(layout.topClearance))
+                    .padding(.bottom, 8)
+                    .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("folded.systemBar")
+                    .accessibilitySortPriority(0)
+            }
         }
         .padding(.horizontal, CGFloat(layout.edgeInset))
         .frame(width: size.width, height: size.height)
@@ -306,39 +324,6 @@ struct FoldedPlayer: View {
         }
         .padding(.top, top)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    /// Symbol-only chrome. Back replaces the navigation-bar back at this width. Queue and
-    /// tune call the same actions as the phone toolbar.
-    private func wideSystemBar(top: CGFloat) -> some View {
-        VStack(spacing: 8) {
-            FoldedToolbarButton(systemImage: "chevron.backward", label: "Back",
-                                hint: "Returns to your stations", identifier: "folded.back",
-                                action: { dismiss() })
-            if let moreMenu {
-                FoldedMoreMenu(reviewCount: moreMenu.reviewCount, onConnections: moreMenu.onConnections)
-            }
-            if let badge = DuoPresentation.onAirBadge(dj.onAirBadge) {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .accessibilityLabel(badge)
-                    .accessibilityIdentifier("folded.onAirBadge")
-            }
-            Spacer(minLength: 8)
-            if showsWorkspaceButtons {
-                FoldedToolbarButton(systemImage: "list.bullet",
-                                    label: snapshot.upNext.first.map { "Up next: \($0.title) by \($0.artistName)" } ?? "Up next: nothing queued",
-                                    hint: "Opens the queue",
-                                    identifier: "queue.affordance", action: onQueue)
-                FoldedToolbarButton(systemImage: "slider.horizontal.3", label: "Tune station",
-                                    hint: "Opens the tuner. Music continues.",
-                                    identifier: "transport.tune", action: onTune)
-            }
-        }
-        .padding(.top, top)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     /// A still wash behind the art, from the clock's day part. It does not animate.
@@ -1080,7 +1065,9 @@ extension View {
     /// `showsMore: false` when the player draws ⋯ in its own column header (wide container).
     func foldedToolbar(_ station: StationRef, reviewCount: Int?, showsMore: Bool = true,
                        hidesSystemBack: Bool = false,
-                       onConnections: @escaping () -> Void) -> some View {
+                       onConnections: @escaping () -> Void,
+                       systemRail: DuoRailHooks? = nil,
+                       keepSystemVerticalBar: Bool = false) -> some View {
         navigationTitle(station.name)
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden(hidesSystemBack)
@@ -1096,6 +1083,7 @@ extension View {
                     }
                 }
             }
+            .duoSystemVerticalRail(systemRail, keepBehavior: keepSystemVerticalBar)
     }
 }
 

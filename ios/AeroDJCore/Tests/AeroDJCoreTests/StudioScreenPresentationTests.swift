@@ -414,6 +414,43 @@ final class FoldedColumnLayoutTests: XCTestCase {
         XCTAssertEqual(DuoPresentation.washOpacity(reduceTransparency: true), 0)
         XCTAssertGreaterThan(DuoPresentation.washOpacity(reduceTransparency: false), 0)
     }
+
+    /// Echo: the rail's live dot reads `DJStudioState.onAirLabel`, which exists only for `.speaking`.
+    func testRailLiveDotIsLitOnlyWhileSpeaking() {
+        let states: [DJStudioState] = [
+            .idle,
+            .preparing(includesBriefing: false),
+            .preparing(includesBriefing: true),
+            .ready(includesBriefing: false, seconds: 30),
+            .ready(includesBriefing: true, seconds: 12),
+            .speaking(includesBriefing: false),
+            .speaking(includesBriefing: true),
+            .failed(.voiceFailed),
+            .failed(.budgetReached),
+            .failed(.consentReviewRequired(pendingCount: 0)),
+            .failed(.consentReviewRequired(pendingCount: 3)),
+        ]
+        for state in states {
+            switch state {
+            case .speaking:
+                XCTAssertTrue(DuoPresentation.railLiveDotLit(state), "\(state)")
+                XCTAssertEqual(state.onAirLabel, "On Air", "\(state)")
+                XCTAssertTrue(state.isOnAir, "\(state)")
+            case .idle, .preparing, .ready, .failed:
+                XCTAssertFalse(DuoPresentation.railLiveDotLit(state), "\(state)")
+                XCTAssertNil(state.onAirLabel, "\(state)")
+                XCTAssertFalse(state.isOnAir, "\(state)")
+            }
+        }
+    }
+
+    func testSleepTimerChoicesDoNotClaimOnAir() {
+        XCTAssertEqual(DuoSleepTimer.minuteChoices, [15, 30, 45, 60])
+        XCTAssertEqual(DuoSleepTimer.accessibilityValue(minutes: nil), "Off")
+        XCTAssertEqual(DuoSleepTimer.accessibilityValue(minutes: 30), "30 minutes")
+        XCTAssertFalse(DuoSleepTimer.accessibilityValue(minutes: nil).localizedCaseInsensitiveContains("on air"))
+        XCTAssertFalse(DuoSleepTimer.accessibilityValue(minutes: 15).localizedCaseInsensitiveContains("on air"))
+    }
 }
 
 final class DuoStationSwitchTests: XCTestCase {
