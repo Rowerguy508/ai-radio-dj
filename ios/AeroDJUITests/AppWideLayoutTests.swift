@@ -145,6 +145,30 @@ final class AppWideLayoutTests: XCTestCase {
         save(app, "duo-wide-settings")
     }
 
+    /// Onboarding (`LocalAreaPrompt`): the 560 pt column at Duo width. Layout only; the
+    /// copy is pinned by `LocalAreaPromptCopyTests` (Linux).
+    @MainActor
+    func testDuoWideLocalAreaPromptIsTheReadableColumn() throws {
+        let (app, box) = try launch("duoWideLocalArea", size: Self.duo)
+        XCTAssertEqual(decision(app), "wide 1 40")
+        let approximate = app.buttons["localArea.approximate"]
+        XCTAssertTrue(approximate.waitForExistence(timeout: 10), "prompt missing\n\(app.debugDescription)")
+        XCTAssertEqual(approximate.label, "Use approximate location")
+        XCTAssertEqual(app.buttons["localArea.manual"].label, "Enter a city or ZIP instead")
+        XCTAssertEqual(app.buttons["localArea.notNow"].label, "Not now")
+        XCTAssertTrue(app.staticTexts["Local weather and news?"].exists)
+        // 40 pt inset plus the prompt's own 24 pt padding on each side.
+        for id in ["localArea.approximate", "localArea.manual", "localArea.notNow"] {
+            let button = app.buttons[id]
+            XCTAssertGreaterThanOrEqual(button.frame.minX, box.minX + 63, "\(id) \(button.frame)")
+            XCTAssertLessThanOrEqual(button.frame.maxX, box.maxX - 63, "\(id) \(button.frame)")
+            XCTAssertTrue(box.contains(button.frame), "\(id) left the container")
+        }
+        let title = app.staticTexts["Local weather and news?"]
+        XCTAssertGreaterThanOrEqual(title.frame.minX, box.minX + 63, "title \(title.frame)")
+        save(app, "duo-wide-localarea")
+    }
+
     // MARK: Narrow Split View: the phone path, unchanged
 
     @MainActor

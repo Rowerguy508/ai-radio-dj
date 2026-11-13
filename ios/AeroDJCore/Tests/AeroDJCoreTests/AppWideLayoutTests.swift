@@ -46,6 +46,12 @@ final class AppWideLayoutTests: XCTestCase {
         XCTAssertEqual(settings.columns, 1, "Settings stays one readable column")
         XCTAssertEqual(settings.sideInset, 40)
         XCTAssertEqual(settings.readableWidth, 560)
+
+        let onboarding = AppWideLayout.decide(duo, for: .onboarding)
+        XCTAssertEqual(onboarding.readableWidth, 560, "LocalAreaPrompt holds a 560 pt column")
+        XCTAssertEqual(onboarding.sideInset, 40)
+        XCTAssertEqual(onboarding.columns, 1, "onboarding is always one column")
+        XCTAssertEqual(onboarding.decisionText, "wide 1 40")
     }
 
     func testEveryColumnLeavesRoomForItsContentAndATouchTarget() {
@@ -111,6 +117,28 @@ final class AppWideLayoutTests: XCTestCase {
         let short = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 640,
                                         containerHeight: FoldedColumnLayout.duoMinHeight - 1)
         XCTAssertFalse(AppWideLayout.isWide(short))
+    }
+
+    /// `LocalAreaPrompt` is a medium-detent sheet: its measured height is its content, so the
+    /// vertical size class replaces the height test. Landscape iPhones stay the phone path.
+    func testContentSizedSheetsUseTheVerticalSizeClassForHeight() {
+        let duoSheet = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 640, containerHeight: 380,
+                                           hasRegularHeight: true)
+        XCTAssertTrue(AppWideLayout.isWide(duoSheet))
+        XCTAssertEqual(AppWideLayout.decide(duoSheet, for: .onboarding).decisionText, "wide 1 40")
+        let landscapePhone = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 852, containerHeight: 300,
+                                                 hasRegularHeight: false)
+        XCTAssertEqual(AppWideLayout.decide(landscapePhone, for: .onboarding).mode, .phone)
+        let portraitPhone = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 440, containerHeight: 300,
+                                                hasRegularHeight: true)
+        XCTAssertEqual(AppWideLayout.decide(portraitPhone, for: .onboarding).mode, .phone)
+        let narrowSplit = AppWideLayout.Input(hasRegularWidth: false, containerWidth: 340, containerHeight: 300,
+                                              hasRegularHeight: true)
+        XCTAssertEqual(AppWideLayout.decide(narrowSplit, for: .onboarding).mode, .phone)
+        let padSheet = AppWideLayout.Input(hasRegularWidth: true, containerWidth: 540, containerHeight: 300,
+                                           hasRegularHeight: true)
+        XCTAssertEqual(AppWideLayout.decide(padSheet, for: .onboarding).mode, .wide)
+        XCTAssertEqual(AppWideLayout.decide(padSheet, for: .onboarding).sideInset, 0, "under the 560 cap")
     }
 
     func testNonFiniteAndZeroContainersArePhone() {
