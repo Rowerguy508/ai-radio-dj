@@ -19,14 +19,15 @@ final class StudioScreenTests: XCTestCase {
                         dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                         restoreStationID: String? = nil,
                         musicAuthStatus: String? = nil,
-                        orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
+                        orientation: UIDeviceOrientation = .portrait,
+                        splitExample: String? = nil) -> XCUIApplication {
         // Probe the layout before this test's own launch: the probe launches and terminates
         // its own app, so it must never run while the test's app is up.
         _ = isOpenLayout
         return startApp(segment: segment, scenario: scenario, largeText: largeText, dark: dark,
                         contentSize: contentSize, reduceMotion: reduceMotion,
                         restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus,
-                        orientation: orientation)
+                        orientation: orientation, splitExample: splitExample)
     }
 
     @MainActor
@@ -34,7 +35,8 @@ final class StudioScreenTests: XCTestCase {
                           dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                           restoreStationID: String? = nil,
                           musicAuthStatus: String? = nil,
-                          orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
+                          orientation: UIDeviceOrientation = .portrait,
+                          splitExample: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
@@ -52,6 +54,9 @@ final class StudioScreenTests: XCTestCase {
         // DEBUG capture override for MusicAuthorization.currentStatus (default notDetermined).
         if let musicAuthStatus {
             app.launchArguments += ["-AeroDJMusicAuthStatus", musicAuthStatus]
+        }
+        if let splitExample {
+            app.launchArguments += ["-AeroDJSplitExample", splitExample]
         }
         XCUIDevice.shared.orientation = orientation
         app.launch()
@@ -1175,6 +1180,149 @@ final class StudioScreenTests: XCTestCase {
     private func shows(_ app: XCUIApplication, _ text: String) -> Bool {
         app.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS[c] %@", text)).firstMatch.exists
+    }
+
+    /// Compact narrow, half and two-thirds. Full is covered by `SplitViewLayoutTests`.
+    /// Widths match `SplitViewLayout.narrow`, `.half` and `.wide`.
+    @MainActor
+    func testSplitViewKeepsEveryScreenInsideTheWindow() throws {
+        try XCTSkipUnless(isOpenLayout, "Split widths need an iPad-size simulator window")
+        let widths: [(name: String, width: CGFloat, height: CGFloat, leading: CGFloat, trailing: CGFloat,
+                      span: String, shot: String)] = [
+            ("narrow", 340, 760, 28, 0, "compactNarrow", "split-narrow"),
+            ("half", 540, 760, 28, 0, "half", "split-half"),
+            ("wide", 680, 760, 0, 28, "twoThirds", "split-wide"),
+        ]
+        for width in widths {
+            try assertSplit(width)
+        }
+    }
+
+    @MainActor
+    private func assertSplit(_ sample: (name: String, width: CGFloat, height: CGFloat, leading: CGFloat,
+                                       trailing: CGFloat, span: String, shot: String)) throws {
+        let app = launch(scenario: "splitView", splitExample: sample.name)
+        let any = app.descendants(matching: .any)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window")
+        guard let windowFrame = settledFrame(of: window, "window") else { return }
+        if windowFrame.width + 8 < sample.width || windowFrame.height + 8 < sample.height {
+            throw XCTSkip("window \(windowFrame) cannot hold \(sample.width) × \(sample.height)")
+        }
+        let container = any["split.container"]
+        XCTAssertTrue(container.waitForExistence(timeout: 15), app.debugDescription)
+        guard let box = settledFrame(of: container, sample.name, isFinal: {
+            abs($0.width - sample.width) <= 1 && abs($0.height - sample.height) <= 1
+        }) else { return }
+        XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box),
+                      "container \(box) outside window \(windowFrame)")
+        let edge = sample.leading > sample.trailing ? "leading" : "trailing"
+        let screens = ["library", "stations", "settings", "nowPlaying"]
+        for screen in screens {
+            let show = app.buttons["split.show.\(screen)"]
+            XCTAssertTrue(show.waitForExistence(timeout: 5), screen)
+            XCTAssertGreaterThanOrEqual(show.frame.width, 44, screen)
+            XCTAssertGreaterThanOrEqual(show.frame.height, 44, screen)
+            show.tap()
+            let decision = any["split.decision"]
+            XCTAssertTrue(decision.waitForExistence(timeout: 8), "\(screen) never resolved\n\(app.debugDescription)")
+            let expected = "\(sample.span) \(edge)"
+            let matched = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label == %@", expected), object: decision)
+            XCTAssertEqual(XCTWaiter().wait(for: [matched], timeout: 8), .completed,
+                           "\(screen) decision \(decision.label), expected \(expected)")
+            try assertSplitScreen(screen, app: app, box: box, leading: sample.leading,
+                                  trailing: sample.trailing, edge: edge,
+                                  sideBar: sample.name != "narrow")
+        }
+        save(app, sample.shot)
+        app.terminate()
+    }
+
+    @MainActor
+    private func assertSplitScreen(_ screen: String, app: XCUIApplication, box: CGRect,
+                                   leading: CGFloat, trailing: CGFloat, edge: String,
+                                   sideBar: Bool) throws {
+        let any = app.descendants(matching: .any)
+        switch screen {
+        case "nowPlaying":
+            XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertFalse(any["layout.studio"].exists)
+            let play = app.buttons["transport.playPause"]
+            let skip = app.buttons["transport.skip"]
+            XCTAssertTrue(play.waitForExistence(timeout: 8))
+            XCTAssertTrue(skip.waitForExistence(timeout: 8))
+            try assertInside(play, box: box, leading: leading, trailing: trailing, name: "play")
+            try assertInside(skip, box: box, leading: leading, trailing: trailing, name: "skip")
+            XCTAssertTrue(play.isHittable, "play is not hittable")
+            if sideBar {
+                let bar = any["folded.systemBar"]
+                XCTAssertTrue(bar.waitForExistence(timeout: 5), "the symbol bar is the outer edge")
+                try assertInside(bar, box: box, leading: leading, trailing: trailing, name: "bar")
+                try assertOuterEdge(bar, box: box, edge: edge, name: "bar")
+                let more = any["folded.more"]
+                XCTAssertTrue(more.waitForExistence(timeout: 5), "More stays on the bar")
+                try assertInside(more, box: box, leading: leading, trailing: trailing, name: "more")
+            } else {
+                XCTAssertFalse(any["folded.systemBar"].exists, "a narrow split keeps the phone column")
+                let more = any["folded.more"]
+                XCTAssertTrue(more.waitForExistence(timeout: 5), "narrow split keeps More")
+                try assertInside(more, box: box, leading: leading, trailing: trailing, name: "more")
+                try assertOuterEdge(more, box: box, edge: edge, name: "more")
+            }
+        case "library":
+            let edit = app.buttons["library.edit"]
+            let row = any["library.row.0"]
+            XCTAssertTrue(edit.waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertTrue(row.waitForExistence(timeout: 8))
+            try assertInside(edit, box: box, leading: leading, trailing: trailing, name: "library edit")
+            try assertInside(row, box: box, leading: leading, trailing: trailing, name: "library row")
+            try assertOuterEdge(edit, box: box, edge: edge, name: "library edit")
+        case "stations":
+            let gear = app.buttons["stations.settings"]
+            XCTAssertTrue(gear.waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertTrue(any["split.sidebar"].waitForExistence(timeout: 5))
+            try assertInside(gear, box: box, leading: leading, trailing: trailing, name: "settings gear")
+            try assertOuterEdge(gear, box: box, edge: edge, name: "settings gear")
+            let identifier = sideBar
+                ? "stations.row.7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+                : "stations.card.7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+            let row = any[identifier]
+            XCTAssertTrue(row.waitForExistence(timeout: 5), "station row \(identifier)")
+            try assertInside(row, box: box, leading: leading, trailing: trailing, name: "station row")
+        case "settings":
+            let done = app.buttons["settings.done"]
+            let toggle = app.switches["settings.talkoverToggle"]
+            XCTAssertTrue(done.waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertTrue(toggle.waitForExistence(timeout: 8))
+            try assertInside(done, box: box, leading: leading, trailing: trailing, name: "done")
+            try assertInside(toggle, box: box, leading: leading, trailing: trailing, name: "talk-over")
+            try assertOuterEdge(done, box: box, edge: edge, name: "done")
+        default:
+            XCTFail(screen)
+        }
+    }
+
+    @MainActor
+    private func assertInside(_ element: XCUIElement, box: CGRect, leading: CGFloat, trailing: CGFloat,
+                              name: String) throws {
+        guard let frame = settledFrame(of: element, name) else { return }
+        let detail = "\(name) \(frame) container \(box) insets \(leading),\(trailing)"
+        XCTAssertGreaterThanOrEqual(frame.width, 44, detail)
+        XCTAssertGreaterThanOrEqual(frame.height, 44, detail)
+        XCTAssertGreaterThanOrEqual(frame.minX, box.minX + leading - 2, detail)
+        XCTAssertLessThanOrEqual(frame.maxX, box.maxX - trailing + 2, detail)
+        XCTAssertTrue(box.insetBy(dx: -2, dy: -2).contains(frame), "\(name) is clipped: \(detail)")
+    }
+
+    @MainActor
+    private func assertOuterEdge(_ element: XCUIElement, box: CGRect, edge: String, name: String) throws {
+        guard let frame = settledFrame(of: element, name) else { return }
+        if edge == "leading" {
+            XCTAssertLessThan(frame.midX, box.midX, "\(name) \(frame) is not on the leading outer edge of \(box)")
+        } else {
+            XCTAssertGreaterThan(frame.midX, box.midX, "\(name) \(frame) is not on the trailing outer edge of \(box)")
+        }
     }
 
     @MainActor

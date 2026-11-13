@@ -182,6 +182,13 @@ struct StationSplitRoot<Detail: View>: View {
     }
 
     var body: some View {
+        SplitBarHost(preferred: .leading) { insets in
+            columns(insets)
+        }
+    }
+
+    /// `insets` nil keeps the sidebar on the leading edge and the gear where it is.
+    private func columns(_ insets: SplitInsets?) -> some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: preferredCompactColumn) {
             stationPicker
             .navigationTitle(AppName.display)
@@ -193,10 +200,13 @@ struct StationSplitRoot<Detail: View>: View {
             .morphingLargeTitle("Stations", subtitle: "Your AI-hosted radio, on Apple Music")
             .toolbar {
                 if let onOpenSettings {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItem(placement: SplitToolbar.placement(
+                        preferred: .leading, edge: insets?.barEdge,
+                        leading: .topBarLeading, trailing: .topBarTrailing)) {
                         Button(action: onOpenSettings) {
                             Label("Settings", systemImage: "gearshape")
                         }
+                        .modifier(SplitMinimumTarget(enabled: insets != nil))
                         .accessibilityIdentifier("stations.settings")
                     }
                 }
@@ -223,6 +233,7 @@ struct StationSplitRoot<Detail: View>: View {
             // an `if`, so folding or unfolding keeps the column's identity and scroll state.
             .environment(\.colorScheme, isCompact ? .dark : systemColorScheme)
             .toolbarColorScheme(isCompact ? .dark : nil, for: .navigationBar)
+            .modifier(SplitColumnText(enabled: insets?.barEdge == .trailing))
         } detail: {
             if let station = stations.first(where: { $0.id == selectedStationID }) {
                 NavigationStack {
@@ -231,11 +242,13 @@ struct StationSplitRoot<Detail: View>: View {
                     detail(station)
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("split.detail")
+                        .modifier(SplitColumnText(enabled: insets?.barEdge == .trailing))
                 }
             } else {
                 Text("Choose a station")
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("split.placeholder")
+                    .modifier(SplitColumnText(enabled: insets?.barEdge == .trailing))
             }
         }
         // Balanced keeps the sidebar beside the detail. The prominent style lays the
@@ -254,6 +267,8 @@ struct StationSplitRoot<Detail: View>: View {
             navigation.setRegularWidth(sizeClass == .regular)
             columnVisibility = navigation.showsBothColumns ? .all : .automatic
         }
+        .modifier(SplitLeadingBar(enabled: insets?.barEdge == .trailing))
+        .environment(\.splitBarEdge, insets?.barEdge)
     }
 
     /// Compact width (the folded phone) gets the arc carousel; regular width keeps the

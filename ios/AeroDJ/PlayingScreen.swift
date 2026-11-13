@@ -43,6 +43,8 @@ struct PlayingScreen: View {
         #endif
     }
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Set by the split host. Nil keeps the phone and the centred column as they are.
+    @Environment(\.splitBarEdge) private var splitBarEdge
     @Namespace private var bleedArt
 
     private var morphNamespace: Namespace.ID? {
@@ -56,7 +58,7 @@ struct PlayingScreen: View {
         GeometryReader { geo in
             let width = Double(geo.size.width)
             let mode = resolvedMode(containerWidth: width)
-            layout(mode: mode, width: width, height: geo.size.height)
+            layout(mode: mode, width: width, height: geo.size.height, barEdge: splitBarEdge)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: mode)
             #if DEBUG
             .onAppear {
@@ -131,7 +133,8 @@ struct PlayingScreen: View {
     /// Late Night, so the next song tap looked like a station jump. Folded uses `foldedToolbar`
     /// (back + ⋯) and names the same opened station in its bottom chip.
     @ViewBuilder
-    private func layout(mode: StudioLayoutMode, width: Double, height: CGFloat) -> some View {
+    private func layout(mode: StudioLayoutMode, width: Double, height: CGFloat,
+                        barEdge: SplitViewLayout.BarEdge?) -> some View {
         switch mode {
         case .compact:
             // Folded redesign (wireframe 08): back + ⋯ in the bar, the station chip below.
@@ -152,13 +155,15 @@ struct PlayingScreen: View {
                          onTune: { segment = .tune; showWorkspace = true },
                          onReview: { segment = .connections; showWorkspace = true },
                          stationStops: stationStops,
-                         onOpenStation: onOpenStation)
+                         onOpenStation: onOpenStation,
+                         splitBarEdge: barEdge)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
                 .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
                                showsMore: !movesMoreIntoThePlayer,
                                hidesSystemBack: placement == .duoHorizontal,
-                               onConnections: openConnections)
+                               onConnections: openConnections,
+                               barEdge: barEdge)
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,
