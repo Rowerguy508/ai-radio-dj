@@ -224,6 +224,15 @@ so the compact layout and its sheet keep their radii.
 - **Rotation and fold:** they change the container only. No `onChange` of size
   class starts or stops anything (see the fold rules in `docs/device-install.md`
   and PR #52's review).
+- **App-wide screens** (`AppWideLayout`, #465 item 10): Library (the add-station
+  walkthrough's playlist step), Stations and Settings share one decision from the width
+  class and the container. Under `wideMinWidth`, and any compact container shorter than
+  `duoMinHeight` (every iPhone, narrow Split View), is the phone path and the screen is
+  unchanged. Wider: Library and Settings hold a 560 pt readable column and Library's
+  results go to two columns; Stations on the unfolded Duo (compact class) is a grid of
+  the carousel cards, while regular width keeps the list beside the detail. Accessibility
+  text sizes keep one column. Bars are not moved here (Split View's outer edge is
+  `SplitViewLayout`). `foldDivision` and `arrangement` are reserved for items 2 and 4.
 
 ---
 
