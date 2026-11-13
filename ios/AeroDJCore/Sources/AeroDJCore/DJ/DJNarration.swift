@@ -720,8 +720,9 @@ public struct DJScriptWriter: Sendable {
     }
 
     /// The next break opens the show again (greeting, or the show opener with natural shapes on).
-    /// For a new station: `DJBreakSession` calls this when `queueStarted` changes station (Fry).
-    /// Anti-repeat memory is kept, so the new opener does not echo the last one.
+    /// For a new station: `DJBreakSession` calls this when `queueStarted` changes station (Fry, #358).
+    /// Anti-repeat memory is kept (`RecentSpokenTemplates`, the pool rotation, and #472's aired
+    /// line memory), so the new opener does not echo the last one and does not wipe what aired.
     public mutating func greetAgain() {
         hasGreeted = false
     }

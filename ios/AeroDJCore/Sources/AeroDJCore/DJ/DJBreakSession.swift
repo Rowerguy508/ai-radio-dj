@@ -92,7 +92,11 @@ public final class DJBreakSession {
     /// The committed station when the pending queue was reserved, to catch a save that lands
     /// between the tap and `queueStarted` (the feed keys the queue inside `music.play`).
     private var reservedStation: StationQueueKey??
-    /// Show opener on a new station (-Fry, for Echo's #359): the `StationQueueKey` of the station
+    /// Why the last plan's show opener left the time out, by the break's `afterTrack` (#358).
+    /// Empty when that opener gave the time. A station change within 30 minutes of the last
+    /// time check records `.spacing` here; the line itself is not planned.
+    private var openerTimeOmissions: [Int: DJOpenerTimeCheckOmission] = [:]
+    /// Show opener on a new station (-Fry, #358, for Echo's #359): the `StationQueueKey` of the station
     /// the last queue was started for (outer nil: no queue yet). This is the value the feed records
     /// for every queue start (`StationQueueKey(committedDisplayed)`), and `queueStarted` reopens the
     /// show (`DJScriptWriter.greetAgain()`) only when its SEED part differs (Echo, #362): reach and
@@ -219,8 +223,8 @@ public final class DJBreakSession {
     /// `mayBeNarrated` before they are planned.
     @discardableResult
     public func beginQueueInBackground(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
-                                       sources: [ConnectionItem] = []) -> Task<Void, Never> {
-        beginQueueInBackground(reserveQueueSetup(), tracks, briefing: briefing, sources: sources)
+                                       sources: [ConnectionItem] = [], stationName: String? = nil) -> Task<Void, Never> {
+        beginQueueInBackground(reserveQueueSetup(), tracks, briefing: briefing, sources: sources, stationName: stationName)
     }
 
     /// #116 (-Atlas): marks a new queue as pending *before* `music.play` is called, so a
@@ -251,13 +255,14 @@ public final class DJBreakSession {
     @discardableResult
     public func beginQueueInBackground(_ reservation: QueueSetupReservation, _ tracks: [DJTrack],
                                        briefing: NarrationHandoff? = nil,
-                                       sources: [ConnectionItem] = []) -> Task<Void, Never> {
+                                       sources: [ConnectionItem] = [],
+                                       stationName: String? = nil) -> Task<Void, Never> {
         let generation = reservation.generation
         guard generation == queueSetupGeneration, queueSetupPending else { return Task {} }
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
-            await self.queueStarted(tracks, briefing: briefing, sources: sources)
+            await self.queueStarted(tracks, briefing: briefing, sources: sources, stationName: stationName)
             guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
             self.queueSetupPending = false
             if let pending = self.pendingSongStart {
@@ -365,7 +370,7 @@ public final class DJBreakSession {
     /// `sources` are the items its personal cues come from. A personal cue whose source is
     /// missing from `sources` or not narratable now is left out (fails closed).
     public func queueStarted(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
-                             sources: [ConnectionItem] = []) async {
+                             sources: [ConnectionItem] = [], stationName: String? = nil) async {
         if let hook = testBeforeQueueStarted {
             await hook()
             guard !Task.isCancelled else { return }
@@ -431,9 +436,15 @@ public final class DJBreakSession {
         if let reserved = reservedStation, reserved != committed { queueStation = .unknown }
         else { queueStation = .known(committed) }
         reservedStation = nil
-        // A different station opens the show again. Its old queue's opener, if it already aired,
-        // stays remembered by `forgetPlannedBreaks` above, so without this the new station would
-        // start with no opener. Anti-repeat memory is kept: the new opener won't echo the old one.
+        // The name the opener and later station IDs speak. Nil keeps the writer's name (OnAirly
+        // until a queue names one). An unusable name is ignored, so a bad string cannot wipe a
+        // name already in use. Set before the re-greet, so the new opener says this station.
+        if let name = stationName.flatMap(EditorialStationName.usable) { writer.stationName = name }
+        // A different station opens the show again (#358). Its old queue's opener, if it already
+        // aired, stays remembered by `forgetPlannedBreaks` above, so without this the new station
+        // would start with no opener. Anti-repeat memory is kept (#472): the new opener won't
+        // echo the last one, and a re-queue of the same seeds does not greet again. A time check
+        // still inside 30 minutes is left out of that opener and reported as `.spacing`.
         if let previous = openedStation, previous?.seeds != committed?.seeds { writer.greetAgain() }
         openedStation = .some(committed)
         replan(from: 0, keepingThrough: -1)
@@ -1046,6 +1057,8 @@ public final class DJBreakSession {
         writer.forgetPlannedBreaks(breaks.filter { $0.key > kept }.map(\.value))
         breaks = breaks.filter { $0.key <= kept }
         breakDayParts = breakDayParts.filter { $0.key <= kept }
+        // Omissions belong to the plan just written. Breaks we are about to replace drop theirs.
+        openerTimeOmissions = openerTimeOmissions.filter { $0.key <= kept }
         guard first < tracks.count - 1 else { return }
         let lastBreak = breaks.keys.max()
         let spokenBriefing = deliveredBriefing.union(breaks.values.flatMap(\.briefingCueIDs))
@@ -1076,6 +1089,9 @@ public final class DJBreakSession {
             shifted.catalogFactCues = b.catalogFactCues   // #199 provenance
             breaks[k] = shifted
             breakDayParts[k] = dayPart
+            if let reason = plan.ordinaryCapReport.omittedOpenerTimeChecks[b.afterTrack] {
+                openerTimeOmissions[k] = reason
+            }
         }
     }
 
@@ -1085,6 +1101,8 @@ public final class DJBreakSession {
     var plannedBoundaries: [Int] { breaks.keys.sorted() }
     /// Test hook: the planned breaks by boundary (what `replan` wrote).
     var testPlannedBreaks: [Int: DJBreak] { breaks }
+    /// Test hook (#358): why a planned opener left the time out, by boundary.
+    var testOpenerTimeOmissions: [Int: DJOpenerTimeCheckOmission] { openerTimeOmissions }
     /// Test hook: the phrase bank the session's writer plans with.
     var testWriterTone: EditorialTone { writer.tone }
     /// Test hook (#401): the extra-line source the session's writer plans with.
