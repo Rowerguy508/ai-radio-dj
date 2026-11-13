@@ -99,6 +99,10 @@ struct ReadyCaption: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(WidgetPalette.secondaryText)
             .lineLimit(1)
+            // Fixed-height row (LiveActivityLayout.readyLineHeight): shrink rather than
+            // truncate at large Dynamic Type so the whole sentence stays readable.
+            .minimumScaleFactor(0.7)
+            .allowsTightening(true)
             .accessibilityLabel(label)
     }
 }
