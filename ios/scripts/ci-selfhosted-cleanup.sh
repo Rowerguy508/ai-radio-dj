@@ -6,7 +6,11 @@
 # (the UDID `simctl clone` printed). Missing files mean that work never
 # started; that is success.
 # Does not select processes or simulators by name. An empty RUNNER_NAME fails
-# before any simulator command. State files hold UDIDs and PIDs only. -Fry
+# before any simulator command. State files hold UDIDs and PIDs only.
+# A hung xcodebuild test is not recorded. Cancelling the job kills that step's
+# process tree, and deleting this job's simulator clone ends the test session
+# that was using it. Recording only the background recorder avoids signalling
+# the other runner's xcodebuild. -Fry
 set -euo pipefail
 
 JOB_RAW=${1:?usage: ci-selfhosted-cleanup.sh JOB}
@@ -51,20 +55,6 @@ ci_kill_recorded_pids() {
         kill -TERM "$pid" 2>/dev/null || true
       fi
     fi
-  done < "$file"
-}
-
-ci_delete_recorded_sims() {
-  local file=$1 udid
-  [ -f "$file" ] || return 0
-  while IFS= read -r udid || [ -n "$udid" ]; do
-    [ -n "$udid" ] || continue
-    if [[ ! "$udid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
-      echo "::warning::skipping a recorded simulator id that is not a UDID"
-      continue
-    fi
-    xcrun simctl shutdown "$udid" || true
-    xcrun simctl delete "$udid" || true
   done < "$file"
 }
 

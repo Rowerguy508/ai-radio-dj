@@ -169,8 +169,35 @@ export XCRUN_LOG="$tmp/xcrun.log"
 RUNNER_NAME=claudio-mini "$CLEAN" runtime-mode >"$tmp/clean-empty.out"
 [ ! -s "$XCRUN_LOG" ] || fail "cleanup with no state file called xcrun: $(cat "$XCRUN_LOG")"
 
+# A cancelled job's sim-udids must be applied before prep removes the file:
+# the same job's previous file, and a stale sibling directory of this runner.
+# The other runner's file stays, even when it is old.
+stale_udid='CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC'
+reset_udid='DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD'
+kept_udid='EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE'
+stale_dir="$home/ci-host/ci-rec/claudio-mini/old-simjob"
+kept_dir="$home/ci-host/ci-rec/claudio-mini-2/old-simjob"
+mkdir -p "$stale_dir" "$kept_dir" "$home/ci-host/ci-rec/claudio-mini/runtime-mode"
+printf '%s\n' "$stale_udid" > "$stale_dir/sim-udids"
+printf '%s\n' "$reset_udid" > "$home/ci-host/ci-rec/claudio-mini/runtime-mode/sim-udids"
+printf '%s\n' "$kept_udid" > "$kept_dir/sim-udids"
+stamp_old "$stale_dir"
+stamp_old "$kept_dir"
+: > "$XCRUN_LOG"
+RUNNER_NAME=claudio-mini DERIVED_DATA="$ws/ios/build/DerivedData-runtime" \
+  "$PREP" runtime-mode >"$tmp/prep-sims.out"
+grep -qx "simctl delete $stale_udid" "$XCRUN_LOG" || fail "stale sweep did not delete the recorded clone: $(cat "$XCRUN_LOG")"
+grep -qx "simctl delete $reset_udid" "$XCRUN_LOG" || fail "prep reset did not delete the previous job's clone: $(cat "$XCRUN_LOG")"
+if grep -F "$kept_udid" "$XCRUN_LOG" >/dev/null; then
+  fail "prep deleted the other runner's recorded clone: $(cat "$XCRUN_LOG")"
+fi
+[ ! -e "$stale_dir" ] || fail "stale recording dir was kept after its clones were deleted"
+grep -qx "$kept_udid" "$kept_dir/sim-udids" || fail "other runner's sim-udids was removed"
+[ ! -e "$home/ci-host/ci-rec/claudio-mini/runtime-mode/sim-udids" ] || fail "prep left the previous sim-udids file in place"
+
 # Recorded UDIDs are deleted. A non-UDID, the source device, and the other
 # runner's UDID are not passed to xcrun.
+: > "$XCRUN_LOG"
 mine='AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE'
 other_udid='11111111-2222-3333-4444-555555555555'
 bad='all'

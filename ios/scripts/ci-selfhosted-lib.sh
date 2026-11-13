@@ -170,8 +170,28 @@ ci_rm_rf_under() {
   rm -rf -- "$canon_target"
 }
 
+# Shut down and delete simulators listed in a sim-udids file. Only values that
+# are UDIDs are passed to simctl. A missing file, or a symlink, is success:
+# prep and the stale sweep call this before they remove the file, so a job
+# that never reached cleanup does not leave its clones behind unnamed.
+ci_delete_recorded_sims() {
+  local file=$1 udid
+  [ -f "$file" ] && [ ! -L "$file" ] || return 0
+  while IFS= read -r udid || [ -n "$udid" ]; do
+    [ -n "$udid" ] || continue
+    if [[ ! "$udid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+      echo "::warning::skipping a recorded simulator id that is not a UDID"
+      continue
+    fi
+    xcrun simctl shutdown "$udid" || true
+    xcrun simctl delete "$udid" || true
+  done < "$file"
+}
+
 # Direct children of this runner's directory, older than a day. No job runs
 # that long. Other runners are outside the prefix this passes to ci_rm_rf_under.
+# A stale recording directory's simulators are deleted from its sim-udids file
+# before the directory, and that file, is removed.
 ci_sweep_stale() {
   local role=$1 runner=$2
   local prefix old
@@ -180,6 +200,9 @@ ci_sweep_stale() {
   [ -d "$prefix" ] || return 0
   while IFS= read -r old; do
     [ -n "$old" ] || continue
+    if [ "$role" = rec ]; then
+      ci_delete_recorded_sims "$old/sim-udids" || return 1
+    fi
     ci_rm_rf_under "$role" "$runner" "$old" || return 1
   done < <(find -P "$prefix" -mindepth 1 -maxdepth 1 -mmin +1440 -print)
 }

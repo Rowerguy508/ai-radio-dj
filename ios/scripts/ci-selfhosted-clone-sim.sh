@@ -46,6 +46,8 @@ mkdir -p -- "$rec_runner" "$rec_job"
 echo "Cloning simulator $SRC as $name" >&2
 new=$(xcrun simctl clone "$SRC" "$name" | tr -d '[:space:]')
 if [[ ! "$new" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+  # A device may exist under $name. It is not deleted here: deletion is by the
+  # UDID clone printed, and a name lookup could match another runner.
   echo "::error::simctl clone did not print a UDID" >&2
   exit 1
 fi
