@@ -646,17 +646,15 @@ jobs:
         run: ios/scripts/ci-selfhosted-cleanup.sh
 
   # Not a required check (continue-on-error, and not added to branch protection).
-  # Runs only where macOS minutes are worth it: a push to integration/device-duo,
-  # a PR whose branch or title references #465, or a manual workflow_dispatch.
-  # Image label: actions/runner-images#14404 (`xcode-27`). The toolchain is
-  # /Applications/Xcode_27.2.app, the same Xcode TestFlight archives with.
+  # Runs on every pull request, on a push to integration/device-duo, and on
+  # workflow_dispatch. Image label: actions/runner-images#14404 (`xcode-27`).
+  # The toolchain is /Applications/Xcode_27.2.app, the same Xcode TestFlight archives with.
   xcode-27-build:
     name: iOS build (Xcode 27, not required)
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/integration/device-duo') ||
-      (github.event_name == 'pull_request' &&
-        (contains(github.head_ref, '#465') || contains(github.event.pull_request.title, '#465')))
+      github.event_name == 'pull_request'
     runs-on: xcode-27
     continue-on-error: true
     timeout-minutes: 45
