@@ -79,6 +79,10 @@ public struct BoundaryInterpreter: Sendable {
         detector.takeSkipLoadCut()
     }
 
+    /// #444 (-Atlas): the pending cut's shape and whether its song was seen playing. Read before
+    /// `takeSkipLoadCut()`.
+    public var pendingSkipLoadCut: SkipLoadCut? { detector.pendingSkipLoadCut }
+
     /// #444: true once when that load played past the failed-start window.
     public mutating func takeSkipLoadProgress() -> Bool {
         detector.takeSkipLoadProgress()
