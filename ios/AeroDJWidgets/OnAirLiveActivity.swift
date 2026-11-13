@@ -2,11 +2,12 @@ import AeroDJCore
 import SwiftUI
 import WidgetKit
 
-/// #465 item 7: the Live Activity (05). Lock screen, StandBy and the Dynamic Island show the
-/// station, the song, the generated art and the tally light, nothing else. The tally reads
-/// `onAirLabel`, which the app takes from `DJStudioState.onAirLabel` (confirmed `.speaking`).
-/// This view only reads published state: the app starts, updates and ends the activity
-/// fire-and-forget, so it can never drive or delay playback.
+/// #465 item 7 / #486: the Live Activity (05). Lock screen, StandBy and the Dynamic Island
+/// show the station, the song, the generated art, the On Air tally and the Ready line,
+/// nothing else. The tally reads `onAirLabel` (confirmed `.speaking` only). The Ready line
+/// reads `readyLabel` ("DJ break after this song") and is never shown as On Air. This view
+/// only reads published state: the app starts, updates and ends the activity fire-and-forget,
+/// so it can never drive or delay playback.
 struct OnAirLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: OnAirlyActivityAttributes.self) { context in
@@ -45,6 +46,8 @@ struct OnAirLiveActivity: Widget {
                         Spacer(minLength: 0)
                         if let label = context.state.onAirLabel {
                             OnAirTally(label: label)
+                        } else if let ready = context.state.readyLabel {
+                            ReadyCaption(label: ready)
                         }
                     }
                 }
@@ -64,7 +67,7 @@ struct OnAirLiveActivity: Widget {
                 Circle()
                     .fill(context.state.isOnAir ? WidgetPalette.tallyDot : (context.state.art?.color(0) ?? WidgetPalette.stationLabel))
                     .frame(width: 10, height: 10)
-                    .accessibilityLabel(context.state.onAirLabel ?? AppName.display)
+                    .accessibilityLabel(context.state.onAirLabel ?? context.state.readyLabel ?? AppName.display)
             }
         }
     }
@@ -106,6 +109,10 @@ struct LockScreenActivityView: View {
                 Spacer(minLength: 0)
             }
             .frame(height: CGFloat(LiveActivityLayout.artSize))
+            if let ready = display.readyLabel {
+                ReadyCaption(label: ready)
+                    .frame(height: CGFloat(LiveActivityLayout.readyLineHeight), alignment: .leading)
+            }
         }
         .padding(CGFloat(LiveActivityLayout.padding))
         .frame(maxHeight: CGFloat(LiveActivityLayout.maxHeight))
