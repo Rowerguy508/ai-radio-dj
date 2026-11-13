@@ -480,3 +480,91 @@ public struct CarPlayArtworkGate: Equatable, Sendable {
         openFetch = nil
     }
 }
+
+// MARK: - #438: a station pick that does not start
+
+/// What the car shows when the listener's own station pick ends with nothing going to play
+/// (`.notStarted(.notReadyInTime)`, `.notStarted(.buildFailed)`, and the phone toast's other
+/// failures: `.notStarted(.noStation)` and `.notApplied`). Fixed copy plus the row's own name,
+/// which the car list already shows. Never an error's text, a DJ line, or anything personal.
+public struct CarPlayStartNotice: Equatable, Sendable {
+    /// Longest first, as `CPAlertTemplate(titleVariants:)` takes them; the car picks one that fits.
+    public let titleVariants: [String]
+    /// True when the alert offers Try Again (it re-runs the same pick). False when Apple Music is
+    /// not usable, since retrying cannot help; the list's own access row is the way forward then.
+    public let offersRetry: Bool
+
+    public static let retryTitle = "Try Again"
+    public static let dismissTitle = "OK"
+    /// The short variant, with no station name, for a car screen that cannot fit the long one.
+    public static let shortTitle = "Couldn't start station"
+
+    public init(titleVariants: [String], offersRetry: Bool) {
+        self.titleVariants = titleVariants
+        self.offersRetry = offersRetry
+    }
+
+    /// Every line the alert can show, actions included.
+    public var visibleText: [String] {
+        titleVariants + (offersRetry ? [Self.retryTitle] : []) + [Self.dismissTitle]
+    }
+}
+
+/// What the car does once a pick's start returns.
+public enum CarPlayPickFinish: Equatable, Sendable {
+    /// Push Now Playing, as before #438's notice.
+    case showNowPlaying
+    /// Show this alert over the list; Now Playing is not pushed (nothing new is playing).
+    case notice(CarPlayStartNotice)
+    /// A newer pick took over while this one waited: do nothing, the newer one decides.
+    case stale
+}
+
+/// Only the latest car pick may push Now Playing or show a notice (a start can wait up to its
+/// bound, and the driver may pick again meanwhile).
+public struct CarPlayPickTracker: Equatable, Sendable {
+    private var latest = 0
+
+    public init() {}
+
+    /// A row was picked. Returns this pick's token.
+    public mutating func begin() -> Int {
+        latest += 1
+        return latest
+    }
+
+    /// The pick's start returned. `outcome` is nil when the app has no station queue (previews):
+    /// Now Playing is pushed as before.
+    public func finish(_ pick: Int, outcome: CreatedStationOpenOutcome?, stationName: String,
+                       access: PlaybackAccess) -> CarPlayPickFinish {
+        guard pick == latest else { return .stale }
+        guard let outcome, let notice = CarPlayScreen.startNotice(for: outcome, stationName: stationName,
+                                                                   access: access) else {
+            return .showNowPlaying
+        }
+        return .notice(notice)
+    }
+}
+
+extension CarPlayScreen {
+    /// The car's notice for a pick that did not start, or nil when the outcome needs none (a start,
+    /// a resume, the station already playing, a replaced or restored pick, or a row with nothing to
+    /// apply, which the phone also shows in place rather than as a failure).
+    public static func startNotice(for outcome: CreatedStationOpenOutcome, stationName: String,
+                                   access: PlaybackAccess) -> CarPlayStartNotice? {
+        guard outcome.warrantsStartFailureNotice else { return nil }
+        switch access {
+        case .checking, .authorized:
+            break
+        case .needsAuthorization, .denied, .subscriptionRequired:
+            return CarPlayStartNotice(titleVariants: [StationStartNotice.connectAppleMusic, shortStartFailure],
+                                      offersRetry: false)
+        }
+        // One line: the row's name with its whitespace collapsed (a name is never multi-line here).
+        let name = stationName.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let long = name.isEmpty ? "Couldn't start that station. Try again." : "Couldn't start \(name). Try again."
+        return CarPlayStartNotice(titleVariants: [long, shortStartFailure], offersRetry: true)
+    }
+
+    private static var shortStartFailure: String { CarPlayStartNotice.shortTitle }
+}
