@@ -184,6 +184,9 @@ test('upstreamBody omits empty context', () => {
 });
 
 // --- Bracket safety ---
+// `keepAllowedTags: true` is unused and off on the request path (spoken text uses
+// stripAllBrackets). These cases pin that branch; the request tests below require every
+// model, including v3/v4/v4_turbo, to drop brackets.
 test('sanitizeBrackets: titles and user text can never become audio tags', () => {
   assert.equal(sanitizeBrackets('That was Song [Live] from Band.', true), 'That was Song Live from Band.');
   assert.equal(sanitizeBrackets('[whispers] secret', true), 'whispers secret');
