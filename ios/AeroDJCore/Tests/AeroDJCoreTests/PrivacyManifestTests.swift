@@ -23,15 +23,33 @@ final class PrivacyManifestTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: script.path), script.path)
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.executableURL = try Self.python3()
         process.arguments = [script.path] + arguments
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
         try process.run()
-        process.waitUntilExit()
+        // Drain before waiting so a large report can't fill the pipe and stall the child.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         let output = String(data: data, encoding: .utf8) ?? ""
         return (process.terminationStatus, output)
+    }
+
+    /// `python3` from `PATH`. The Linux swift container has no Python, so the check is
+    /// skipped there; it still runs for real in macOS core tests and the CI checks job.
+    /// On macOS a missing interpreter fails instead of skipping, so it can't go quiet.
+    private static func python3() throws -> URL {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+        for dir in path.split(separator: ":") where !dir.isEmpty {
+            let candidate = URL(fileURLWithPath: String(dir)).appendingPathComponent("python3")
+            if FileManager.default.isExecutableFile(atPath: candidate.path) { return candidate }
+        }
+        #if os(macOS)
+        XCTFail("python3 not found on PATH (\(path)); the privacy manifest check must run on macOS")
+        throw XCTSkip("python3 missing")
+        #else
+        throw XCTSkip("python3 not on PATH in this container; check-privacy-manifests.py runs in macOS core tests and the CI checks job")
+        #endif
     }
 }
