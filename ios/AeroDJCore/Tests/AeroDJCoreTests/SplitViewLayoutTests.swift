@@ -3,11 +3,13 @@ import XCTest
 
 final class SplitViewLayoutTests: XCTestCase {
     func testSamplesCoverEverySplitWidth() {
+        // Named on SplitViewLayout. A leading dot here is Sample, which does not
+        // own the windows, and Linux then fails the test target.
         let expected: [(SplitViewLayout.Sample, SplitViewLayout.Span)] = [
-            (.narrow, .compactNarrow),
-            (.half, .half),
-            (.wide, .twoThirds),
-            (.full, .full),
+            (SplitViewLayout.narrow, .compactNarrow),
+            (SplitViewLayout.half, .half),
+            (SplitViewLayout.wide, .twoThirds),
+            (SplitViewLayout.full, .full),
         ]
         for (sample, span) in expected {
             let chrome = SplitViewLayout.chrome(hasRegularWidth: sample.hasRegularWidth,
