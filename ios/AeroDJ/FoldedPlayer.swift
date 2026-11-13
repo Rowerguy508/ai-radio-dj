@@ -296,6 +296,7 @@ struct FoldedPlayer: View {
             if stationStops.count > 1, let onOpenStation {
                 DuoStationDial(stops: stationStops, openedID: heading.opened.id, onOpen: onOpenStation)
             }
+            DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
             Spacer(minLength: gap)
             if content.showsTransport {
                 TransportRow(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
@@ -921,6 +922,61 @@ private struct DuoStationDial: View {
             guard flight.accepts(token), !Task.isCancelled else { return }
             await onOpen(id)
         }
+    }
+}
+
+
+/// Current song, a ready DJ break, and the queued songs. One button: it opens the queue.
+/// Nothing here animates, so Reduce Motion changes nothing.
+private struct DuoUpNextList: View {
+    let dj: DJStatusPresentation
+    let track: TrackInfo?
+    let queued: [TrackInfo]
+    let onOpen: () -> Void
+
+    private var readyBreak: String? {
+        if case .ready = dj.state { return dj.headline }
+        return nil
+    }
+
+    private var lines: [DuoUpNextTimeline.Line] {
+        guard let track else { return [] }
+        return DuoUpNextTimeline.lines(
+            now: .init(title: track.title, artist: track.artistName),
+            readyBreak: readyBreak,
+            queued: queued.map { .init(title: $0.title, artist: $0.artistName) })
+    }
+
+    var body: some View {
+        let rows = lines
+        return Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, line in
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(line.title)
+                            .font(.subheadline.weight(line.role == .nowPlaying ? .semibold : .regular))
+                            .lineLimit(1)
+                        if !line.detail.isEmpty {
+                            Text(line.detail)
+                                .font(.caption)
+                                .foregroundStyle(FoldedStyle.secondaryInk)
+                                .lineLimit(1)
+                        }
+                    }
+                    .accessibilityIdentifier("duo.upNext.\(line.role.rawValue)")
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .foldedGlass(RoundedRectangle(cornerRadius: FoldedStyle.fieldRadius, style: .continuous), role: .surface)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(rows.map { $0.detail.isEmpty ? $0.title : "\($0.title), \($0.detail)" }.joined(separator: ". "))
+        .accessibilityHint("Opens the queue")
+        .accessibilityIdentifier("duo.upNext")
     }
 }
 

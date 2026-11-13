@@ -383,7 +383,8 @@ final class StudioScreenTests: XCTestCase {
         let tune = app.buttons["transport.tune"]
         let queue = app.buttons["queue.affordance"]
         let back = app.buttons["folded.back"]
-        let title = app.staticTexts["Morning Light"]
+        // The up-next line also labels the current song "Morning Light". The title under test is the one in the track column.
+        let title = track.staticTexts["Morning Light"]
         for (name, element) in [("play", play), ("skip", skip), ("ready", ready), ("scrubber", scrubber),
                                 ("chip", chip), ("more", more), ("tune", tune), ("queue", queue),
                                 ("back", back), ("title", title)] {
@@ -412,6 +413,16 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(late.waitForExistence(timeout: 5), "Late Night stop missing")
         XCTAssertGreaterThanOrEqual(dial.frame.midX, contentFrame.minX - 4, "the dial stays in the content column")
         XCTAssertLessThanOrEqual(dial.frame.midX, contentFrame.maxX + 4, "the dial stays in the content column")
+        let timeline = app.buttons["duo.upNext"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 5), "up-next timeline missing\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(timeline.frame.midX, contentFrame.minX - 4, "timeline stays in the content column")
+        XCTAssertLessThanOrEqual(timeline.frame.midX, contentFrame.maxX + 4, "timeline stays in the content column")
+        XCTAssertTrue(timeline.label.contains("Morning Light"))
+        XCTAssertTrue(timeline.label.contains("DJ break after this song"))
+        XCTAssertTrue(timeline.label.contains("Slow Burn"))
+        timeline.tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5), "tapping the timeline opens the queue")
+        app.buttons["Done"].tap()
         late.tap()
         let opened = any["duo.openedStation"]
         XCTAssertTrue(opened.waitForExistence(timeout: 5))
@@ -526,6 +537,8 @@ final class StudioScreenTests: XCTestCase {
                            "a phone-width layout does not use the Duo symbol bar")
             XCTAssertFalse(app.descendants(matching: .any)["duo.stationDial"].exists,
                            "a phone-width layout does not show the station dial")
+            XCTAssertFalse(app.buttons["duo.upNext"].exists,
+                           "a phone-width layout does not show the up-next timeline")
             let play = app.buttons["transport.playPause"]
             let ready = app.descendants(matching: .any)["dj.ready"]
             XCTAssertGreaterThan(play.frame.minY, ready.frame.maxY,
