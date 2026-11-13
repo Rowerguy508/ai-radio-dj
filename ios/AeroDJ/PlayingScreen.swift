@@ -21,6 +21,10 @@ struct PlayingScreen: View {
     /// Capture/fixture progress only for now. Live stays nil until Atlas's read-only
     /// playbackTime/currentDuration can be polled (do not reference them here yet).
     var timeSource: PlaybackTimeSource? = nil
+    /// Duo station dial. Empty keeps the player as it was.
+    var stationStops: [DuoStationSwitch.Stop] = []
+    /// The list's station-open action. The dial calls this and nothing else.
+    var onOpenStation: ((String) async -> Void)? = nil
 
     @SceneStorage("aerodj.studio.segment") private var segment: WorkspaceSegment = .queue
     @State private var showWorkspace = false
@@ -146,7 +150,9 @@ struct PlayingScreen: View {
                             : nil,
                          onQueue: { segment = .queue; showWorkspace = true },
                          onTune: { segment = .tune; showWorkspace = true },
-                         onReview: { segment = .connections; showWorkspace = true })
+                         onReview: { segment = .connections; showWorkspace = true },
+                         stationStops: stationStops,
+                         onOpenStation: onOpenStation)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
                 .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
