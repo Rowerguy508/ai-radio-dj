@@ -658,14 +658,14 @@ extension SpokenAttribution {
 
 /// Which DJ lines a route that leaves the device or is paid may hear (`VoiceRenderer.mayLeaveDevice`).
 /// Owner, Nov 9 2026: "I want it all elevenlabs." The wider scope needs cloud-voice consent to
-/// the copy that says so (`CloudVoiceConsentCopy.version` 2, `CloudVoiceConsentStore.scope`). -Fry
+/// the copy that says so (`CloudVoiceConsentCopy.version` 3 since #432, `CloudVoiceConsentStore.scope`). -Fry
 public enum CloudVoiceScope: Equatable, Sendable {
     /// Nothing leaves the device: no consent to the current copy, or the cloud voice is off.
     case noLines
     /// #176: only an attributed, non-personal DJ transition with no source or provenance. The
     /// default for a renderer with no consent check (owner A/B build, on-device default, tests).
     case transitionsOnly
-    /// Copy v2 accepted: every attributed line, including personal items (calendar, shared
+    /// Copy v3 accepted (#432; v2 before OnAirly 2.0): every attributed line, including personal items (calendar, shared
     /// email digest, notes), news and weather, library tracks and typed station names. A cue
     /// with no attribution still stays on the device.
     case allLines
@@ -787,7 +787,7 @@ public struct VoiceRenderer: Sendable {
     }
 
     /// `scope` (owner, Nov 9 2026): `.transitionsOnly` is the rule above; `.noLines` keeps every
-    /// cue local; `.allLines` (consent to copy v2) lets every attributed cue go. A cue with no
+    /// cue local; `.allLines` (consent to copy v3, #432) lets every attributed cue go. A cue with no
     /// attribution is local-only whatever the scope.
     public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?,
                                       scope: CloudVoiceScope = .transitionsOnly) -> Bool {
