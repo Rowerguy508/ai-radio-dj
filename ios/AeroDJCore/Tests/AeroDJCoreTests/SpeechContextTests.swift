@@ -643,8 +643,8 @@ final class SpeechContextTests: XCTestCase {
     }
 
     private func eventually(_ seconds: Double = 5, _ check: @escaping @Sendable () async -> Bool) async -> Bool {
-        let end = Date().addingTimeInterval(seconds)
-        while Date() < end {
+        let end = ContinuousClock.now + .seconds(seconds)
+        while ContinuousClock.now < end {
             if await check() { return true }
             try? await Task.sleep(for: .milliseconds(10))
         }
