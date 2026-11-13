@@ -96,6 +96,8 @@ struct FoldedPlayer: View {
     var stationStops: [DuoStationSwitch.Stop] = []
     /// The station-row open path. Nil hides the dial.
     var onOpenStation: ((String) async -> Void)? = nil
+    /// Outer edge while the window is a split. Nil keeps the symbol bar on the trailing side.
+    var splitBarEdge: SplitViewLayout.BarEdge? = nil
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.dismiss) private var dismiss
@@ -236,26 +238,31 @@ struct FoldedPlayer: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("folded.trackColumn")
             .accessibilitySortPriority(2)
+            .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
 
             Color.clear
                 .frame(width: CGFloat(layout.foldGutter), height: size.height)
                 .accessibilityHidden(true)
                 .accessibilityIdentifier("folded.fold")
+                .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
 
             wideContent(gap: gap, top: CGFloat(layout.topClearance))
                 .frame(width: CGFloat(layout.contentWidth), height: size.height, alignment: .top)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("folded.contentColumn")
                 .accessibilitySortPriority(1)
+                .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
 
             wideSystemBar(top: CGFloat(layout.topClearance))
                 .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("folded.systemBar")
                 .accessibilitySortPriority(0)
+                .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
         }
         .padding(.horizontal, CGFloat(layout.edgeInset))
         .frame(width: size.width, height: size.height)
+        .modifier(SplitLeadingBar(enabled: splitBarEdge == .leading))
     }
 
     /// Horizontal scrubber, transport, station, and the DJ chip. Nothing playing puts
@@ -1080,7 +1087,8 @@ extension View {
     /// `showsMore: false` when the player draws ⋯ in its own column header (wide container).
     func foldedToolbar(_ station: StationRef, reviewCount: Int?, showsMore: Bool = true,
                        hidesSystemBack: Bool = false,
-                       onConnections: @escaping () -> Void) -> some View {
+                       onConnections: @escaping () -> Void,
+                       barEdge: SplitViewLayout.BarEdge? = nil) -> some View {
         navigationTitle(station.name)
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden(hidesSystemBack)
@@ -1091,8 +1099,11 @@ extension View {
                     Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
                 }
                 if showsMore {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: SplitToolbar.placement(
+                        preferred: .trailing, edge: barEdge,
+                        leading: .topBarLeading, trailing: .topBarTrailing)) {
                         FoldedMoreMenu(reviewCount: reviewCount, onConnections: onConnections)
+                            .modifier(SplitMinimumTarget(enabled: barEdge != nil))
                     }
                 }
             }

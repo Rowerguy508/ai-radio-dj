@@ -121,6 +121,14 @@ struct AddStationWalkthroughView: View {
     }
 
     var body: some View {
+        SplitBarHost(preferred: .leading) { insets in
+            libraryBrowser(insets)
+        }
+    }
+
+    /// Library playlists are one step of this walkthrough. `insets` nil keeps Cancel
+    /// on the leading edge.
+    private func libraryBrowser(_ insets: SplitInsets?) -> some View {
         NavigationStack {
             VStack(spacing: 0) {
                 StepIndicator(current: step, complete: { AddStationWalkthrough.isComplete($0, progress) })
@@ -148,9 +156,12 @@ struct AddStationWalkthroughView: View {
             }
             .background(AddStationStyle.canvas.ignoresSafeArea())
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: SplitToolbar.placement(
+                    preferred: .leading, edge: insets?.barEdge,
+                    leading: .cancellationAction, trailing: .topBarTrailing)) {
                     Button(savedName == nil ? "Cancel" : "Done") { onClose() }
                         .disabled(creation.isSaving)
+                        .modifier(SplitMinimumTarget(enabled: insets != nil))
                         .accessibilityIdentifier("addStation.cancel")
                 }
             }

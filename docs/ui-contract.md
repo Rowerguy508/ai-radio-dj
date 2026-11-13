@@ -251,6 +251,12 @@ so the compact layout and its sheet keep their radii.
 - Artwork and the background may ignore the safe area.
 - Compact: transport and queue affordance sit in `.safeAreaInset(edge: .bottom)`,
   so the home indicator never covers them.
+- **Split View** (`SplitViewLayout`): compact narrow, half, two-thirds and full.
+  The leading and trailing safe areas are read separately. The larger one is the
+  outer edge, and the Now Playing symbol bar, the station sidebar, and the Library
+  and Settings bar buttons sit on that side. Equal insets keep the current side.
+  A full-screen iPhone, including landscape, does not take this path. Hit targets
+  stay at least 44 pt, and controls stay inside the container.
 - Scroll only where content can exceed the container: the queue list, the Tune and
   Connections segments, and the whole layout at accessibility sizes. Zone A itself
   does not scroll in Studio.

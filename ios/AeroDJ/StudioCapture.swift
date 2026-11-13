@@ -67,6 +67,8 @@ enum StudioCaptureScenario: String {
     /// The same 640 × 820 pt container with nothing playing, so Search Apple Music is the
     /// content column's first control.
     case duoWideEmpty
+    /// A side-by-side split. `AeroDJSplitExample` is `narrow`, `half` or `wide`.
+    case splitView
     /// The DJ is on air: a break became ready and the player reported it started
     /// (`breakReady` then `playbackStarted`, the same events the audio player sends), so the
     /// folded player draws the ON AIR pill. At AX5 on a phone it is pinned above the
@@ -167,6 +169,8 @@ struct StudioCaptureView: View {
                     .accessibilityIdentifier("capture.shell")
             } else if scenario == .duoWideReady || scenario == .duoWideEmpty {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario == .splitView {
+                SplitViewCapture(studio: dependencies.studio)
             } else {
                 NavigationStack {
                     if showsProbe {
@@ -498,5 +502,136 @@ enum StudioCaptureOnAir {
     /// What `closed-ax5-onair` shows: "0:12". Same width as a live "0:0x".
     static let capturedElapsed: TimeInterval = 12
     static var frozenElapsed: TimeInterval?
+}
+
+private enum SplitCaptureScreen: String, CaseIterable, Identifiable {
+    case nowPlaying, library, stations, settings
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .nowPlaying: "Now Playing"
+        case .library: "Library"
+        case .stations: "Stations"
+        case .settings: "Settings"
+        }
+    }
+}
+
+/// One split width, then Now Playing, Library, Stations and Settings inside it.
+/// The safe area is the sample's leading and trailing insets. The host pads by
+/// those, because this container is the window and not already inside a safe area.
+private struct SplitViewCapture: View {
+    let studio: StudioPresentationModel
+    @State private var screen: SplitCaptureScreen = .nowPlaying
+
+    private var sample: SplitViewLayout.Sample? {
+        let name = UserDefaults.standard.string(forKey: "AeroDJSplitExample") ?? ""
+        return SplitViewLayout.sample(named: name)
+    }
+
+    var body: some View {
+        if let sample {
+            let measure = SplitMeasure(containerWidth: sample.width, containerHeight: sample.height,
+                                       leading: sample.leading, trailing: sample.trailing)
+            ZStack {
+                Color(white: 0.14).ignoresSafeArea().accessibilityHidden(true)
+                splitScreen
+                    .environment(\.horizontalSizeClass, sample.hasRegularWidth ? .regular : .compact)
+                    .environment(\.splitMeasure, measure)
+                    .frame(width: CGFloat(sample.width), height: CGFloat(sample.height))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                            .allowsHitTesting(false)
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("split.container")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .overlay(alignment: .top) { switcher }
+        } else {
+            Text("Studio capture failed: unknown split example")
+                .accessibilityIdentifier("capture.failed")
+        }
+    }
+
+    @ViewBuilder
+    private var splitScreen: some View {
+        switch screen {
+        case .nowPlaying:
+            SplitBarHost(preferred: .trailing) { insets in
+                NavigationStack {
+                    nowPlaying
+                }
+                .environment(\.splitBarEdge, insets?.barEdge)
+            }
+        case .library:
+            SplitLibraryPane()
+        case .stations:
+            StationSplitRoot(stations: Station.defaultStations, onOpenSettings: {}) { _ in
+                Text("Choose a station")
+                    .accessibilityIdentifier("split.placeholder")
+            }
+        case .settings:
+            SettingsView(isPresented: .constant(true), isTestStation: true)
+        }
+    }
+
+    private var nowPlaying: some View {
+        var playing = PlaybackFixtures.playing
+        playing.canSeek = true
+        return PlayingScreen(station: PlaybackFixtures.station, access: .authorized,
+                             snapshot: playing, actions: .preview, search: .captureOffline,
+                             studio: studio, isTestStation: true, timeSource: .fixture)
+    }
+
+    private var switcher: some View {
+        HStack(spacing: 8) {
+            ForEach(SplitCaptureScreen.allCases) { item in
+                Button {
+                    screen = item
+                } label: {
+                    Text(item.title)
+                        .font(.caption.weight(.semibold))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("split.show.\(item.rawValue)")
+            }
+        }
+        .padding(6)
+        .background(.regularMaterial, in: Capsule())
+        .padding(.top, 8)
+    }
+}
+
+/// The listener's library: the fixture songs, with the bar button on the outer edge.
+private struct SplitLibraryPane: View {
+    var body: some View {
+        SplitBarHost(preferred: .trailing) { insets in
+            NavigationStack {
+                List {
+                    ForEach(Array(PlaybackFixtures.songs.enumerated()), id: \.element.id) { index, song in
+                        Button {} label: {
+                            Text("\(song.title) · \(song.artistName)")
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        .accessibilityIdentifier("library.row.\(index)")
+                    }
+                }
+                .navigationTitle("Library")
+                .toolbar {
+                    ToolbarItem(placement: SplitToolbar.placement(
+                        preferred: .trailing, edge: insets?.barEdge,
+                        leading: .topBarLeading, trailing: .topBarTrailing)) {
+                        Button("Edit") {}
+                            .modifier(SplitMinimumTarget(enabled: true))
+                            .accessibilityIdentifier("library.edit")
+                    }
+                }
+            }
+        }
+    }
 }
 #endif

@@ -14,18 +14,23 @@ struct SettingsView: View {
     @Environment(\.songRating) private var songRating
 
     var body: some View {
-        NavigationStack {
-            Form {
-                TalkoverSettingsRow(isTestStation: isTestStation)
-                if let songRating { StationRatingsSettingsSection(controller: songRating) }
-                if let personalDataReset { PersonalDataResetSection(purger: personalDataReset) }
-            }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { isPresented = false }
-                        .accessibilityIdentifier("settings.done")
+        SplitBarHost(preferred: .trailing) { insets in
+            NavigationStack {
+                Form {
+                    TalkoverSettingsRow(isTestStation: isTestStation)
+                    if let songRating { StationRatingsSettingsSection(controller: songRating) }
+                    if let personalDataReset { PersonalDataResetSection(purger: personalDataReset) }
+                }
+                .navigationTitle("Settings")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: SplitToolbar.placement(
+                        preferred: .trailing, edge: insets?.barEdge,
+                        leading: .topBarLeading, trailing: .confirmationAction)) {
+                        Button("Done") { isPresented = false }
+                            .modifier(SplitMinimumTarget(enabled: insets != nil))
+                            .accessibilityIdentifier("settings.done")
+                    }
                 }
             }
         }
