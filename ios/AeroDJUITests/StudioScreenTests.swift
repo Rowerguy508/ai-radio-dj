@@ -383,7 +383,8 @@ final class StudioScreenTests: XCTestCase {
         let tune = app.buttons["transport.tune"]
         let queue = app.buttons["queue.affordance"]
         let back = app.buttons["folded.back"]
-        let title = app.staticTexts["Morning Light"]
+        // The up-next line also labels the current song "Morning Light". The title under test is the one in the track column.
+        let title = track.staticTexts["Morning Light"]
         for (name, element) in [("play", play), ("skip", skip), ("ready", ready), ("scrubber", scrubber),
                                 ("chip", chip), ("more", more), ("tune", tune), ("queue", queue),
                                 ("back", back), ("title", title)] {
