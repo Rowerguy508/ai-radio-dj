@@ -557,6 +557,7 @@ final class DisplayContinuityLoadCounter: ObservableObject {
 /// UI tests pass `-AeroDJResetContinuity YES` so a scroll anchor stored by an earlier
 /// test cannot move the next screenshot. The first appear of each view clears; a later
 /// appear in the same launch (the unfold) does not.
+@MainActor
 enum DisplayContinuityLaunch {
     static let resetKey = "AeroDJResetContinuity"
     static let probeKey = "AeroDJContinuityProbe"
