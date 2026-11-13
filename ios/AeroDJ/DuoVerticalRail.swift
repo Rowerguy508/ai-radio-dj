@@ -230,19 +230,27 @@ private struct DuoLiveDot: View {
 
     var body: some View {
         let strong = contrast == .increased
-        Circle()
-            .fill(lit ? Self.litColor : Color.white.opacity(strong ? 0.85 : 0.28))
-            .frame(width: strong ? 14 : 12, height: strong ? 14 : 12)
-            .overlay {
-                if strong { Circle().strokeBorder(Color.white, lineWidth: 1.5) }
-            }
-            .shadow(color: lit && !reduceTransparency && !strong ? Self.litColor.opacity(0.75) : .clear,
-                    radius: 8)
-            .frame(width: 44, height: 44)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("DJ live dot")
-            .accessibilityValue(state.onAirLabel ?? "Off")
-            .accessibilityIdentifier("folded.liveDot")
+        // The visible mark stays the mockup's small dot. The 44 pt plate is the hit target,
+        // so VoiceOver and the UI test measure the control, not the 12 pt mark.
+        ZStack {
+            Circle()
+                .fill(Color.white.opacity(0.01))
+                .frame(width: 44, height: 44)
+            Circle()
+                .fill(lit ? Self.litColor : Color.white.opacity(strong ? 0.85 : 0.28))
+                .frame(width: strong ? 14 : 12, height: strong ? 14 : 12)
+                .overlay {
+                    if strong { Circle().strokeBorder(Color.white, lineWidth: 1.5) }
+                }
+                .shadow(color: lit && !reduceTransparency && !strong ? Self.litColor.opacity(0.75) : .clear,
+                        radius: 8)
+        }
+        .frame(width: 44, height: 44)
+        .contentShape(Circle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("DJ live dot")
+        .accessibilityValue(state.onAirLabel ?? "Off")
+        .accessibilityIdentifier("folded.liveDot")
     }
 
     /// Mockup 02's live dot.
