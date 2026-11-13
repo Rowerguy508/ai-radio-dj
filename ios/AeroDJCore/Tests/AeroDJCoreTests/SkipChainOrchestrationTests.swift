@@ -570,6 +570,105 @@ final class SkipChainOrchestrationTests: XCTestCase {
         XCTAssertTrue(player.surfaces.isEmpty)
     }
 
+    /// #453: the old chain is ending and awaits its owed interruption resume (`isInFlight` is
+    /// already false). A Next pressed there is stored to run after that resume. A newer explicit
+    /// Play of B at 18 s must cancel it: no later advance, same song, same playhead.
+    func testPlayDuringTheOwedResumeCancelsTheNextStoredThere() async {
+        let player = Driver()
+        let running = await player.skipIntoSuspendedOwedResume()
+        let stored = await player.nextIntake()
+        XCTAssertEqual(stored, .beginWhenIdle, "a Next during the owed resume is stored")
+        player.landPlaying(at: 18)
+        player.userResume()
+        let queues = player.queueAssignments
+        let starts = player.songStarts
+        player.releaseOwedResume()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.owedResumes, 1, "the legitimate owed resume still runs")
+        XCTAssertEqual(player.plays, [.advance], "the Next stored before Play does not advance after it")
+        XCTAssertEqual(player.index, 1)
+        XCTAssertEqual(player.position, 18)
+        XCTAssertEqual(player.queueAssignments, queues, "no reload")
+        XCTAssertEqual(player.songStarts, starts)
+        XCTAssertEqual(player.engine.snapshot.nowPlaying?.id, "t1")
+        XCTAssertTrue(player.surfaces.isEmpty)
+    }
+
+    /// Remote Play is the same `resume()` and cancels the same stored Next.
+    func testRemotePlayDuringTheOwedResumeCancelsTheNextStoredThere() async {
+        let player = Driver()
+        let running = await player.skipIntoSuspendedOwedResume()
+        _ = await player.nextIntake()
+        player.landPlaying(at: 18)
+        await player.remoteResume()
+        player.releaseOwedResume()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.plays, [.advance])
+        XCTAssertEqual(player.index, 1)
+        XCTAssertEqual(player.position, 18)
+    }
+
+    /// Control: a Next pressed after the newer Play is the user's latest intent. It runs once.
+    func testNextAfterPlayDuringTheOwedResumeStillRunsOnce() async {
+        let player = Driver()
+        let running = await player.skipIntoSuspendedOwedResume()
+        _ = await player.nextIntake()
+        player.landPlaying(at: 18)
+        player.userResume()
+        let later = await player.nextIntake()
+        let repeated = await player.nextIntake()
+        XCTAssertEqual(later, .beginWhenIdle)
+        XCTAssertEqual(repeated, .beginWhenIdle, "a repeat is the same one pending Next")
+        player.releaseOwedResume()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.owedResumes, 1)
+        XCTAssertEqual(player.plays, [.advance, .advance], "exactly one advance after the Play")
+        XCTAssertEqual(player.index, 2)
+    }
+
+    /// Control: Pause, route loss, or an interruption after that later Next still cancels it.
+    func testHoldAfterTheLaterNextCancelsIt() async {
+        for hold in ["pause", "route", "interruption"] {
+            let player = Driver()
+            let running = await player.skipIntoSuspendedOwedResume()
+            _ = await player.nextIntake()
+            player.landPlaying(at: 18)
+            player.userResume()
+            _ = await player.nextIntake()
+            switch hold {
+            case "pause": player.pause()
+            case "route": player.routeRemoved()
+            default: player.interruptionBegan()
+            }
+            let userPlays = player.userPlayCount
+            player.releaseOwedResume()
+            await running.value
+            await player.untilIdle()
+            XCTAssertEqual(player.plays, [.advance], "\(hold) cancels the pending Next")
+            XCTAssertEqual(player.index, 1, hold)
+            XCTAssertEqual(player.userPlayCount, userPlays, "\(hold): no userPlay() over the hold")
+        }
+    }
+
+    func testMusicKitServicePlayCancelsSkipWorkThroughTheOwedResume() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("AeroDJ/MusicKitService.swift"), encoding: .utf8)
+        let stop = source.split(separator: "private func stopSkipForPlay").dropFirst().first
+            .map(String.init)?
+            .split(separator: "\n    }\n").first
+            .map(String.init) ?? ""
+        XCTAssertTrue(stop.contains("guard skipCoordinator.hasPendingSkipWork else { return }"),
+                      "Play cancels a chain that is ending as well as one in flight (#453)")
+        XCTAssertFalse(stop.contains("guard skipCoordinator.isInFlight"))
+    }
+
     func testAdmitCancelsAThrowWhenOnlyTheAttemptChanged() {
         var attempts = PlaybackAttempts()
         let skip = attempts.beginStart()
@@ -700,6 +799,10 @@ private final class Driver {
     private var clock: TimeInterval = 100
     private var reloadCounts: [Int: Int] = [:]
     private let gate = OrchestrationGate()
+    /// #453: holds the owed interruption resume a chain awaits as it ends. Open unless a test closes it.
+    private let owedResumeGate = OrchestrationGate()
+    /// Owed resumes the chain ran after the gate opened.
+    private(set) var owedResumes = 0
     private let songs = 6
 
     init() {
@@ -718,6 +821,32 @@ private final class Driver {
         case .queueOneMore, .ignore, .beginWhenIdle:
             return
         }
+    }
+
+    /// One explicit Next, returning the coordinator's intake. Starts a chain only on `.begin`.
+    func nextIntake() async -> SkipCoordinator.Intake {
+        let intake = coordinator.requestAdvance()
+        if intake == .begin { await run(first: .advance) }
+        return intake
+    }
+
+    /// #453 setup: Skip selects B and its load is held. An interruption begins and ends with
+    /// permission to resume while the Skip is in flight. The load is released, and the chain
+    /// ends awaiting its owed resume, which is held. Returns the old chain's task.
+    func skipIntoSuspendedOwedResume() async -> Task<Void, Never> {
+        holdNextLoad()
+        holdOwedResume()
+        let running = Task { await self.skip() }
+        await untilWaiting()
+        interruptionBegan()
+        await interruptionEnded(shouldResume: true)
+        XCTAssertTrue(coordinator.resumeOwed)
+        finishLoad()
+        await untilOwedResumeWaiting()
+        XCTAssertFalse(coordinator.isInFlight, "the chain is in its ending window")
+        XCTAssertTrue(coordinator.hasPendingSkipWork)
+        XCTAssertEqual(index, 1)
+        return running
     }
 
     /// Lock-screen Next: the same `skip()` `nextTrackCommand` targets.
@@ -752,7 +881,7 @@ private final class Driver {
     /// A skip that is still loading is invalidated and its flag drops before this Play starts.
     func userResume() {
         policy.userPlay()
-        if coordinator.isInFlight {
+        if coordinator.hasPendingSkipWork {
             coordinator.invalidate(.userPlay)
             skipLoadOpen = false
         }
@@ -893,6 +1022,23 @@ private final class Driver {
         XCTAssertTrue(gate.isWaiting)
     }
 
+    func holdOwedResume() { owedResumeGate.close() }
+    func releaseOwedResume() { owedResumeGate.release() }
+
+    /// Waits on a clock deadline, not a poll count, until the ending chain awaits its owed resume.
+    func untilOwedResumeWaiting() async {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !owedResumeGate.isWaiting, ContinuousClock.now < deadline { await Task.yield() }
+        XCTAssertTrue(owedResumeGate.isWaiting)
+    }
+
+    /// The `resume` the chain calls when it ends with an owed interruption resume.
+    private func owedResume() async {
+        await owedResumeGate.wait()
+        owedResumes += 1
+        await resumeIfAllowed()
+    }
+
     func untilIdle() async {
         for _ in 0..<1000 where coordinator.isInFlight || gate.isWaiting { await Task.yield() }
         XCTAssertFalse(coordinator.isInFlight)
@@ -910,12 +1056,12 @@ private final class Driver {
         if first == .reload {
             await coordinator.runRecovery(
                 surface: { self.surface($0) },
-                resume: { await self.resumeIfAllowed() },
+                resume: { await self.owedResume() },
                 body)
         } else {
             await coordinator.runChain(
                 surface: { self.surface($0) },
-                resume: { await self.resumeIfAllowed() },
+                resume: { await self.owedResume() },
                 body)
         }
     }
