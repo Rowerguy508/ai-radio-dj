@@ -39,7 +39,7 @@ if [ -e "$dd_job" ] || [ -L "$dd_job" ]; then
   ci_rm_rf_under dd "$runner" "$dd_job"
 fi
 # Drop this job's previous clones before removing the file that lists them.
-ci_delete_recorded_sims "$rec_job/sim-udids"
+ci_delete_recorded_sims "$runner" "$rec_job/sim-udids"
 if [ -e "$rec_job" ] || [ -L "$rec_job" ]; then
   ci_rm_rf_under rec "$runner" "$rec_job"
 fi

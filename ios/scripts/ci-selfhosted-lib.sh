@@ -29,6 +29,11 @@ ci_assert_token() {
   esac
 }
 
+# 36-character uppercase UUID (8-4-4-4-12). Lowercase is not accepted.
+ci_udid_is_upper() {
+  [[ "$1" =~ ^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$ ]]
+}
+
 ci_runner() {
   if [ -z "${RUNNER_NAME:-}" ]; then
     echo "::error::RUNNER_NAME is empty. Self-hosted CI will not share DerivedData, recordings, or simulators between runners on this Mac." >&2
@@ -170,16 +175,49 @@ ci_rm_rf_under() {
   rm -rf -- "$canon_target"
 }
 
-# Shut down and delete simulators listed in a sim-udids file. Only values that
-# are UDIDs are passed to simctl. A missing file, or a symlink, is success:
-# prep and the stale sweep call this before they remove the file, so a job
-# that never reached cleanup does not leave its clones behind unnamed.
+# Shut down and delete simulators listed in this runner's own
+# ci-rec/<runner>/<job>/sim-udids file. Only 36-character uppercase UDIDs are
+# passed to simctl. A missing file is success. A symlink, or any file outside
+# this runner's recording directory (including the old $HOME/ci-dd and
+# $HOME/ci-rec trees), is refused and nothing is deleted.
+#   ci_delete_recorded_sims RUNNER PATH
 ci_delete_recorded_sims() {
-  local file=$1 udid
-  [ -f "$file" ] && [ ! -L "$file" ] || return 0
+  local runner=$1 file=$2 udid
+  local parent base canon_parent root job
+  ci_assert_token "RUNNER_NAME" "$runner" || return 1
+  if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+    return 0
+  fi
+  if [ -L "$file" ] || [ ! -f "$file" ]; then
+    echo "::error::refusing to delete simulators from $file" >&2
+    return 1
+  fi
+  parent=$(dirname -- "$file")
+  base=$(basename -- "$file")
+  if [ "$base" != sim-udids ]; then
+    echo "::error::refusing to delete simulators from $file" >&2
+    return 1
+  fi
+  canon_parent=$(ci_canon_dir "$parent") || return 1
+  root=$(ci_runner_root rec "$runner") || return 1
+  root=$(ci_canon_dir "$root") || return 1
+  case "$canon_parent" in
+    "$root"/*) ;;
+    *)
+      echo "::error::refusing to delete simulators listed outside this runner's recording directory" >&2
+      return 1
+      ;;
+  esac
+  job=${canon_parent#"$root"/}
+  case "$job" in
+    ''|*/*|*[!A-Za-z0-9_-]*)
+      echo "::error::refusing to delete simulators for recording path $canon_parent" >&2
+      return 1
+      ;;
+  esac
   while IFS= read -r udid || [ -n "$udid" ]; do
     [ -n "$udid" ] || continue
-    if [[ ! "$udid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+    if ! ci_udid_is_upper "$udid"; then
       echo "::warning::skipping a recorded simulator id that is not a UDID"
       continue
     fi
@@ -201,7 +239,7 @@ ci_sweep_stale() {
   while IFS= read -r old; do
     [ -n "$old" ] || continue
     if [ "$role" = rec ]; then
-      ci_delete_recorded_sims "$old/sim-udids" || return 1
+      ci_delete_recorded_sims "$runner" "$old/sim-udids" || return 1
     fi
     ci_rm_rf_under "$role" "$runner" "$old" || return 1
   done < <(find -P "$prefix" -mindepth 1 -maxdepth 1 -mmin +1440 -print)

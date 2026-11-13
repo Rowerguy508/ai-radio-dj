@@ -160,6 +160,9 @@ mkdir -p "$tmp/bin"
 cat > "$tmp/bin/xcrun" << 'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${XCRUN_LOG:?}"
+if [ "${1:-} ${2:-}" = "simctl clone" ]; then
+  printf '%s\n' "${FAKE_CLONE_OUT:-}"
+fi
 exit 0
 EOF
 chmod +x "$tmp/bin/xcrun"
@@ -175,12 +178,16 @@ RUNNER_NAME=claudio-mini "$CLEAN" runtime-mode >"$tmp/clean-empty.out"
 stale_udid='CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC'
 reset_udid='DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD'
 kept_udid='EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE'
+old_udid='FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF'
 stale_dir="$home/ci-host/ci-rec/claudio-mini/old-simjob"
 kept_dir="$home/ci-host/ci-rec/claudio-mini-2/old-simjob"
-mkdir -p "$stale_dir" "$kept_dir" "$home/ci-host/ci-rec/claudio-mini/runtime-mode"
+mkdir -p "$stale_dir" "$kept_dir" "$home/ci-host/ci-rec/claudio-mini/runtime-mode" \
+  "$home/ci-rec/runtime-mode" "$home/ci-dd/runtime-mode"
 printf '%s\n' "$stale_udid" > "$stale_dir/sim-udids"
 printf '%s\n' "$reset_udid" > "$home/ci-host/ci-rec/claudio-mini/runtime-mode/sim-udids"
 printf '%s\n' "$kept_udid" > "$kept_dir/sim-udids"
+printf '%s\n' "$old_udid" > "$home/ci-rec/runtime-mode/sim-udids"
+echo old-dd > "$home/ci-dd/runtime-mode/marker"
 stamp_old "$stale_dir"
 stamp_old "$kept_dir"
 : > "$XCRUN_LOG"
@@ -188,12 +195,52 @@ RUNNER_NAME=claudio-mini DERIVED_DATA="$ws/ios/build/DerivedData-runtime" \
   "$PREP" runtime-mode >"$tmp/prep-sims.out"
 grep -qx "simctl delete $stale_udid" "$XCRUN_LOG" || fail "stale sweep did not delete the recorded clone: $(cat "$XCRUN_LOG")"
 grep -qx "simctl delete $reset_udid" "$XCRUN_LOG" || fail "prep reset did not delete the previous job's clone: $(cat "$XCRUN_LOG")"
-if grep -F "$kept_udid" "$XCRUN_LOG" >/dev/null; then
-  fail "prep deleted the other runner's recorded clone: $(cat "$XCRUN_LOG")"
+if grep -F -e "$kept_udid" -e "$old_udid" "$XCRUN_LOG" >/dev/null; then
+  fail "prep deleted a simulator this runner did not record: $(cat "$XCRUN_LOG")"
 fi
 [ ! -e "$stale_dir" ] || fail "stale recording dir was kept after its clones were deleted"
 grep -qx "$kept_udid" "$kept_dir/sim-udids" || fail "other runner's sim-udids was removed"
+grep -qx "$old_udid" "$home/ci-rec/runtime-mode/sim-udids" || fail "old ci-rec tree was removed or rewritten"
+grep -qx old-dd "$home/ci-dd/runtime-mode/marker" || fail "old ci-dd tree was removed"
 [ ! -e "$home/ci-host/ci-rec/claudio-mini/runtime-mode/sim-udids" ] || fail "prep left the previous sim-udids file in place"
+: > "$XCRUN_LOG"
+if ci_delete_recorded_sims claudio-mini "$home/ci-rec/runtime-mode/sim-udids" >"$tmp/old-del.out" 2>"$tmp/old-del.err"; then
+  fail "delete accepted a sim-udids file outside this runner's ci-host directory"
+fi
+[ ! -s "$XCRUN_LOG" ] || fail "a file outside ci-host caused a simctl call: $(cat "$XCRUN_LOG")"
+grep -qx "$old_udid" "$home/ci-rec/runtime-mode/sim-udids" || fail "refused delete rewrote the old ci-rec file"
+
+# (b) simctl clone must print a 36-character uppercase UDID. Anything else
+# fails the step and does not delete by name.
+src_udid='AABBCCDD-1111-2222-3333-444455556666'
+clone_udid() {
+  FAKE_CLONE_OUT=$1 RUNNER_NAME=claudio-mini GITHUB_RUN_ID=9 GITHUB_RUN_ATTEMPT=1 \
+    "$CLONE" runtime-mode phone "$src_udid"
+}
+: > "$XCRUN_LOG"
+if clone_udid 'not-a-device' >"$tmp/clone-bad.out" 2>"$tmp/clone-bad.err"; then
+  fail "invalid clone output was accepted"
+fi
+grep -q 'uppercase UDID' "$tmp/clone-bad.err" || fail "invalid clone output was not a loud failure: $(cat "$tmp/clone-bad.err")"
+if grep -E 'simctl (delete|shutdown)' "$XCRUN_LOG" >/dev/null; then
+  fail "invalid clone output led to a simulator delete: $(cat "$XCRUN_LOG")"
+fi
+: > "$XCRUN_LOG"
+if clone_udid 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' >"$tmp/clone-lower.out" 2>"$tmp/clone-lower.err"; then
+  fail "lowercase clone output was accepted"
+fi
+if grep -E 'simctl (delete|shutdown)' "$XCRUN_LOG" >/dev/null; then
+  fail "lowercase clone output led to a simulator delete: $(cat "$XCRUN_LOG")"
+fi
+good_udid='ABCDEFAB-1234-5678-9ABC-DEF012345678'
+: > "$XCRUN_LOG"
+got=$(clone_udid "$good_udid" 2>"$tmp/clone-ok.err")
+[ "$got" = "$good_udid" ] || fail "clone stdout was $got"
+grep -qx "$good_udid" "$home/ci-host/ci-rec/claudio-mini/runtime-mode/sim-udids" || fail "valid UDID was not recorded"
+if grep -E 'simctl (delete|shutdown)' "$XCRUN_LOG" >/dev/null; then
+  fail "a valid clone was deleted by name or by UDID: $(cat "$XCRUN_LOG")"
+fi
+unset FAKE_CLONE_OUT
 
 # Recorded UDIDs are deleted. A non-UDID, the source device, and the other
 # runner's UDID are not passed to xcrun.

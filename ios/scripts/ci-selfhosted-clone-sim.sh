@@ -33,8 +33,8 @@ if [ "$print_name" -eq 1 ]; then
 fi
 
 SRC=${3:?usage: ci-selfhosted-clone-sim.sh JOB phone|pad SRC_UDID}
-if [[ ! "$SRC" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
-  echo "::error::source simulator id is not a UDID" >&2
+if ! ci_udid_is_upper "$SRC"; then
+  echo "::error::source simulator id is not a 36-character uppercase UDID" >&2
   exit 1
 fi
 
@@ -45,10 +45,10 @@ mkdir -p -- "$rec_runner" "$rec_job"
 
 echo "Cloning simulator $SRC as $name" >&2
 new=$(xcrun simctl clone "$SRC" "$name" | tr -d '[:space:]')
-if [[ ! "$new" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
-  # A device may exist under $name. It is not deleted here: deletion is by the
-  # UDID clone printed, and a name lookup could match another runner.
-  echo "::error::simctl clone did not print a UDID" >&2
+if ! ci_udid_is_upper "$new"; then
+  # Do not use the device, and do not delete by name. A name lookup could
+  # match another runner. A missing or non-UDID print fails the step.
+  echo "::error::simctl clone did not print a 36-character uppercase UDID; not using the device" >&2
   exit 1
 fi
 if [ "$new" = "$SRC" ]; then

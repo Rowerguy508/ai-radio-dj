@@ -59,4 +59,4 @@ ci_kill_recorded_pids() {
 }
 
 ci_kill_recorded_pids "$rec_job/pids"
-ci_delete_recorded_sims "$rec_job/sim-udids"
+ci_delete_recorded_sims "$runner" "$rec_job/sim-udids"
