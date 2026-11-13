@@ -203,6 +203,11 @@ public final class StationQueueFeed<Item: Sendable> {
     private var cachedOpenerOrder: [StationQueueKey] = []
     private static var maxCachedStations: Int { 16 }
     private static var openersPerStation: Int { 5 }
+    /// #442: song ID -> artist key (`StationCandidate.artistKey`) from recent builds and first-song
+    /// lookups, so the background fill can keep `artistGap` from the song a fast start played.
+    /// Bounded; in memory only, never logged or saved.
+    private var spacingArtists: [String: String] = [:]
+    private static var maxSpacingArtists: Int { 2048 }
     private var generation = 0
     /// The station the playing queue belongs to. `nil` before the first queue start, and for a
     /// queue started on a station with no seeds (see `queueStartReported`).
@@ -340,6 +345,7 @@ public final class StationQueueFeed<Item: Sendable> {
         building = nil
         staged = (key, bias.revision, items)
         rememberOpeners(Array(items.prefix(Self.openersPerStation)), for: key)
+        rememberArtists(of: picks)
         lastBuildArtistIDs = Dictionary(picks.compactMap { c in c.artistID.map { (c.id, $0) } },
                                         uniquingKeysWith: { first, _ in first })
         log(.built(songs: items.count, poolSongs: pool.count, failedLookups: pool.failedLookups,
@@ -368,6 +374,35 @@ public final class StationQueueFeed<Item: Sendable> {
         while cachedOpenerOrder.count > Self.maxCachedStations {
             cachedOpeners[cachedOpenerOrder.removeFirst()] = nil
         }
+    }
+
+    private func rememberArtists(of picks: [StationCandidate]) {
+        if spacingArtists.count + picks.count > Self.maxSpacingArtists { spacingArtists = [:] }
+        for pick in picks { spacingArtists[pick.id] = pick.artistKey }
+    }
+
+    private func artistKey(of item: Item) -> String? { songID(item).flatMap { spacingArtists[$0] } }
+
+    /// #442: `songs` re-spaced to follow `first` (the song a fast start is playing) as one run, with
+    /// the builder's own rule (`StationPoolBuilder.spaced`): the earliest song whose artist is not
+    /// among the last `artistGap` played; if every remaining song breaks the gap, the earliest.
+    /// The build was spaced without `first` at its head and with `first` still inside it, so both the
+    /// seam and the hole `first` left can put one artist too close. Only moves songs; drops none.
+    private func spaced(_ songs: [Item], after first: Item) -> [Item] {
+        let gap = max(options.artistGap, 0)
+        guard gap > 0 else { return songs }
+        var remaining = songs.map { (item: $0, artist: artistKey(of: $0)) }
+        var recent: [String?] = [artistKey(of: first)]
+        var result: [Item] = []
+        result.reserveCapacity(songs.count)
+        while !remaining.isEmpty {
+            let blocked = Set(recent.suffix(gap).compactMap { $0 })
+            let pick = remaining.firstIndex { $0.artist.map { !blocked.contains($0) } ?? true } ?? 0
+            let next = remaining.remove(at: pick)
+            result.append(next.item)
+            recent.append(next.artist)
+        }
+        return result
     }
 
     /// True when the current ratings and the recently played songs still allow `item`.
@@ -401,6 +436,7 @@ public final class StationQueueFeed<Item: Sendable> {
         opts.ratings = bias
         let picks = StationPoolBuilder.build(pool, configuration: one, options: opts)
         guard !picks.isEmpty else { return nil }
+        rememberArtists(of: picks)
         let items = await materialize(picks)
         return screened(items, for: key).first
     }
@@ -428,15 +464,17 @@ public final class StationQueueFeed<Item: Sendable> {
     }
 
     /// #454: the staged songs to append behind `first` once the full build is ready, screened, with
-    /// `first` itself left out. Nil (and nothing taken) unless the playing queue is `active`'s
+    /// `first` itself left out, and spaced as one run after `first` (#442: `artistGap` holds across the
+    /// seam). Nil (and nothing taken) unless the playing queue is `active`'s
     /// station and its queue is staged.
     public func takeForFill(active: StationConfiguration, after first: Item) -> [Item]? {
         guard let key = StationQueueKey(active), key == playingKey else { return keep(.backgroundFill, .noStation) }
         guard let ready = staged, ready.key == key else { return keep(.backgroundFill, .notReady) }
         let firstID = songID(first)
-        let songs = screened(ready.items, for: key).filter { item in firstID == nil || songID(item) != firstID }
+        let unspaced = screened(ready.items, for: key).filter { item in firstID == nil || songID(item) != firstID }
         staged = nil
-        guard !songs.isEmpty else { return keep(.backgroundFill, .notReady) }
+        guard !unspaced.isEmpty else { return keep(.backgroundFill, .notReady) }
+        let songs = spaced(unspaced, after: first)
         log(.handedOff(.backgroundFill, songs: songs.count))
         return songs
     }
