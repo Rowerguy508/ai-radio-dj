@@ -44,17 +44,17 @@ PINNED_REASONS = {
         FILE_TIMESTAMP: {"C617.1"},
     },
     "AeroDJWidgets": {
-        USERDEFAULTS: {"1C8F.1"},
+        USERDEFAULTS: {"CA92.1", "1C8F.1"},
+        FILE_TIMESTAMP: {"C617.1"},
     },
 }
 
-# Source roots scanned for required-reason API use. The share extension
-# links AeroDJCore, so Core is included there. Widgets are scanned alone:
-# they only read NowPlayingDisplayStore (once #485 lands).
+# Source roots scanned for required-reason API use. The share and widgets
+# extensions both link AeroDJCore (#485 project.yml), so Core is scanned too.
 SCAN_ROOTS = {
     "AeroDJ": ["AeroDJ", "AeroDJCore/Sources"],
     "AeroDJShare": ["AeroDJShare", "AeroDJCore/Sources"],
-    "AeroDJWidgets": ["AeroDJWidgets"],
+    "AeroDJWidgets": ["AeroDJWidgets", "AeroDJCore/Sources"],
 }
 
 SKIP_DIR_NAMES = {"Tests", "AeroDJCoreTests", "AeroDJUITests", "AeroDJStoreKitTests"}

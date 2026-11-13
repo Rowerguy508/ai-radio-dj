@@ -3,7 +3,8 @@
 <!--
   Privacy manifest for AeroDJWidgets.appex (#485 StandBy / Now Playing widget and
   Live Activity). The extension reads one display-only value from the App Group
-  UserDefaults suite (NowPlayingDisplayStore). No data leaves the device. -Sentinel
+  UserDefaults suite (NowPlayingDisplayStore). It links AeroDJCore, which uses
+  UserDefaults.standard and attributesOfItem. No data leaves the device. -Sentinel
 -->
 <plist version="1.0">
 <dict>
@@ -20,7 +21,16 @@
 			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
+				<string>CA92.1</string>
 				<string>1C8F.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
 			</array>
 		</dict>
 	</array>
