@@ -58,6 +58,9 @@ public final class DJBreakSession {
     private var observing = false
     /// The break handed to the player at the last natural boundary, until its audio ends.
     private var onAir: (afterTrack: Int, sources: Set<UUID>, includesBriefing: Bool)?
+    /// #318: the planned break handed out at `afterTrack` (its first cue). Template ids are
+    /// recorded only once its lines have actually aired, then this is cleared with `onAir`.
+    private var handedBreak: (afterTrack: Int, id: UUID)?
     /// Stops the DJ line on air. Same declaration as #67: PlayerView (82664c8) routes it to
     /// `InterludePlaybackAdapter.stopCurrentInterlude(reason:)`. `purge` calls it exactly once,
     /// and only when it removes a source the break on air depends on.
@@ -150,6 +153,8 @@ public final class DJBreakSession {
     /// #332 (-Fry): the once-a-day ledger. The app passes ONE instance and reads it back here for
     /// every `LiveQueueBriefing.provider` (song tap and station start), so all share the limit.
     public let personalUpdates: PersonalUpdateLedger
+    /// #318: template ids of lines that aired, shared with the writer. Purged with the narration cache.
+    let lineMemory: any SpokenLineMemoryStoring
     /// Personal cues of the break handed out at `afterTrack` not yet recorded on the ledger.
     /// #332 P1 (-Nova): a cue is recorded only when ITS line played to the end
     /// (`lineFinished`), or when the whole break finished naturally on a player that reports no
@@ -166,12 +171,14 @@ public final class DJBreakSession {
                 now: @escaping () -> Date = { Date() },
                 personalUpdates: PersonalUpdateLedger = PersonalUpdateLedger(),
                 calendar: Calendar = .autoupdatingCurrent, clockStyle: DJClockStyle? = nil,
-                extraLineSource: (any DJBreakExtraLineSource)? = nil) {
+                extraLineSource: (any DJBreakExtraLineSource)? = nil,
+                lineMemory: any SpokenLineMemoryStoring = InMemorySpokenLineMemoryStore()) {
         self.preparer = preparer
         self.now = now
         self.calendar = calendar
         self.clockStyle = clockStyle ?? DJClockStyle(locale: calendar.locale ?? .autoupdatingCurrent)
         self.personalUpdates = personalUpdates
+        self.lineMemory = lineMemory
         self.station = station
         self.dj = dj
         self.base = base
@@ -179,7 +186,8 @@ public final class DJBreakSession {
         // The station's DJ personality picks the copy bank (lane 4, docs/dj-persona.md). Only the
         // words change: no new data, request or provider (-Fry, agreed with Echo).
         self.writer = DJScriptWriter(cadence: station.active.cadence(base: base), seed: seed,
-                                     tone: .forPersonality(station.active.personality), shapes: .natural)
+                                     tone: .forPersonality(station.active.personality), shapes: .natural,
+                                     lineMemory: lineMemory)
         // #401 (-Fry): the writer's optional extra line per natural break (Echo's
         // `FactExtraLineSource`: weather and local news). Nil, the default, plans exactly as before.
         self.writer.extraLineSource = extraLineSource
@@ -739,6 +747,8 @@ public final class DJBreakSession {
             prepared.timeCheckAirTime = ready.timeCheckAirTime
         }
         deliveredBriefing.formUnion(prepared.cues.filter(\.isContent).map(\.id))
+        // The writer's id is the planned break's first cue, even if a later filter dropped it.
+        if let id = breaks[k]?.cues.first?.id { handedBreak = (k, id) }
         // #332: recorded on the ledger per line, once that line has played (`lineFinished`).
         let personal = prepared.cues.filter { $0.isContent && $0.sourceItemID != nil }
         handedOutPersonal = personal.isEmpty ? nil : (k, personal, false)
@@ -787,6 +797,8 @@ public final class DJBreakSession {
     /// personal update on it counts toward the daily limit and the gap now; any other line, or
     /// a line of another break, records nothing.
     public func lineFinished(afterTrack k: Int, cueID: UUID) {
+        // #318: a line that played to its end, personal or not. Ordinary breaks have no personal cue.
+        writer.noteCueFinished(handedID(k), cueID)
         guard var aired = handedOutPersonal, aired.afterTrack == k else { return }
         aired.reportsLines = true
         if let index = aired.cues.firstIndex(where: { $0.id == cueID }) {
@@ -796,7 +808,10 @@ public final class DJBreakSession {
     }
 
     /// #332 B1 (-Nova): the break at `afterTrack` will report its lines; set before any can end.
-    public func breakReportsLines(afterTrack k: Int) { if handedOutPersonal?.afterTrack == k { handedOutPersonal?.reportsLines = true } }
+    public func breakReportsLines(afterTrack k: Int) {
+        if handedOutPersonal?.afterTrack == k { handedOutPersonal?.reportsLines = true }
+        writer.markLineReporting(break: handedID(k))
+    }
 
     /// The whole break ended `.finished`. Whether that means every line was heard depends on the
     /// player: one that said at `play` it reports each line (`breakReportsLines`) is counted only
@@ -809,16 +824,33 @@ public final class DJBreakSession {
             handedOutPersonal = nil
             personalUpdates.recordAired(aired.cues, at: now())
         }
+        // A player that reports lines has already named the ones that finished. Otherwise the
+        // whole break played through, and that is what the next session avoids.
+        writer.finishAiredBreak(handedID(k), wholeIfUnreported: true)
         endOnAir(k)
         dj.send(.playbackFinished(afterTrack: k))
     }
     /// The break was stopped by a consent revoke. Not a voice failure (the Studio shows it as
     /// finished), but lines it cut never played: only `lineFinished` lines count.
-    public func playbackRevoked(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFinished(afterTrack: k)) }
-    public func playbackFailed(afterTrack k: Int) { endOnAir(k); dj.send(.playbackFailed(afterTrack: k)) }
+    public func playbackRevoked(afterTrack k: Int) {
+        writer.finishAiredBreak(handedID(k), wholeIfUnreported: false)
+        endOnAir(k)
+        dj.send(.playbackFinished(afterTrack: k))
+    }
+    public func playbackFailed(afterTrack k: Int) {
+        writer.finishAiredBreak(handedID(k), wholeIfUnreported: false)
+        endOnAir(k)
+        dj.send(.playbackFailed(afterTrack: k))
+    }
+
+    /// #318: consent withdrawal and data reset. Next to the narration-cache purge. Template ids only.
+    public func purgeSpokenLineMemory() { lineMemory.purge() }
+
+    private func handedID(_ k: Int) -> UUID? { handedBreak?.afterTrack == k ? handedBreak?.id : nil }
 
     private func endOnAir(_ k: Int) {
         if onAir?.afterTrack == k { onAir = nil }
+        if handedBreak?.afterTrack == k { handedBreak = nil }
         if handedOutPersonal?.afterTrack == k { handedOutPersonal = nil }   // lines not finished: not aired
         if pendingStop?.afterTrack == k { pendingStop = nil }   // nothing left to stop
     }

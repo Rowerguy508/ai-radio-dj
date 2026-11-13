@@ -149,10 +149,24 @@ public struct TemplatePool: Sendable {
 
     /// Picks a template whose placeholders can all be filled from `values`; nil if none can.
     public mutating func next(filling values: [String: String], using rng: inout SeededGenerator) -> String? {
+        nextPicked(filling: values, using: &rng)?.text
+    }
+
+    /// `next(filling:using:)`, plus the template it drew (the text is the filled line).
+    mutating func nextPicked(filling values: [String: String], using rng: inout SeededGenerator) -> (template: String, text: String)? {
         let usable = templates.indices.filter { Self.fill(templates[$0], values) != nil }
         guard !usable.isEmpty else { return nil }
-        guard let pick = pickIndex(from: usable, usable: usable, using: &rng) else { return nil }
-        return Self.fill(templates[pick], values)
+        guard let pick = pickIndex(from: usable, usable: usable, using: &rng),
+              let text = Self.fill(templates[pick], values) else { return nil }
+        return (templates[pick], text)
+    }
+
+    /// Seeds the used-set from lines that aired in an earlier session (#318). Indices outside
+    /// this pool are ignored. Empty is the original pool, draw for draw.
+    mutating func restoreAired(indices: Set<Int>, last: Int?) {
+        let valid = Set(templates.indices)
+        used = indices.intersection(valid)
+        self.last = last.flatMap { valid.contains($0) ? $0 : nil }
     }
 
     /// Cycles `candidates` (a subset of `usable`) without repeats, never repeating the last pick
@@ -340,8 +354,27 @@ public struct DJScriptWriter: Sendable {
     /// The clock of the plan in progress. Nil: no time checks (the caller gave no clock).
     private var planClock: DJPlanClock?
 
+    /// #318: template ids of lines that aired in earlier sessions. Empty (the default) leaves
+    /// every draw where it was. Not copied into the plan; the writer asks it only at init and
+    /// when a break has actually aired.
+    private let lineMemory: any SpokenLineMemoryStoring
+    /// Lines drawn for a planned break (first-cue id), so a replan can drop them before they
+    /// are recorded. Only `finishAiredBreak` writes them to `lineMemory`.
+    private var plannedUses: [UUID: [SpokenUse]] = [:]
+    /// The break whose player reports each line. Nil: `finishAiredBreak` may record the whole
+    /// break, which is the player that does not report lines.
+    private var reportingBreak: UUID?
+    private var airedCues: [UUID] = []
+
+    private struct SpokenUse {
+        var cue: UUID
+        var pool: String
+        var template: String
+    }
+
     public init(cadence: DJCadence = .init(), seed: UInt64 = UInt64.random(in: .min ... .max), stationName: String = DJScriptWriter.builtInStationName,
-                tone: EditorialTone = .warm, shapes: DJBreakShapeConfig? = nil) {
+                tone: EditorialTone = .warm, shapes: DJBreakShapeConfig? = nil,
+                lineMemory: any SpokenLineMemoryStoring = InMemorySpokenLineMemoryStore()) {
         self.cadence = cadence
         self.stationName = stationName
         self.tone = tone
@@ -365,6 +398,8 @@ public struct DJScriptWriter: Sendable {
         briefingLead = TemplatePool(tone.briefingLead)
         briefingOutro = TemplatePool(tone.briefingOutro)
         greetings = tone.greetings.mapValues { TemplatePool($0) }
+        self.lineMemory = lineMemory
+        applyLineMemory()
     }
 
     /// Swaps the phrase bank (a station's DJ personality changed, -Fry). Only which copy the
@@ -389,6 +424,9 @@ public struct DJScriptWriter: Sendable {
         briefingLead = TemplatePool(newTone.briefingLead)
         briefingOutro = TemplatePool(newTone.briefingOutro)
         greetings = newTone.greetings.mapValues { TemplatePool($0) }
+        // The new banks start empty, then pick up aired ids that still name one of their lines.
+        // The cross-pool window is left as it is (it already has this session and the last).
+        restorePools(lineMemory.load())
     }
 
     /// The tone's time-check bank by relation (empty without shapes: no time checks).
@@ -443,9 +481,13 @@ public struct DJScriptWriter: Sendable {
             // Each pool sees only one track's fields, so attribution is exact by construction.
             var attributions: [UUID: SpokenAttribution] = [:]
             var cues: [NarrationCue] = []
-            func add(_ text: String, _ attribution: SpokenAttribution) -> NarrationCue {
+            // Template ids for lines this boundary keeps. Dropped with the break when it does
+            // not air (`remember` runs only after the break is actually appended).
+            var uses: [SpokenUse] = []
+            func add(_ text: String, _ attribution: SpokenAttribution, pool: String? = nil, template: String? = nil) -> NarrationCue {
                 let cue = transitionCue(text, order: &order)
                 attributions[cue.id] = attribution.resolvingTrackOrigins(in: tracks)
+                if let pool, let template { uses.append(SpokenUse(cue: cue.id, pool: pool, template: template)) }
                 return cue
             }
             // Natural shapes (opt-in): ordinary breaks after the greeting.
@@ -475,25 +517,32 @@ public struct DJScriptWriter: Sendable {
                 hasGreeted = true
                 continue
             }
-            if !hasGreeted, let greeting = greetings[dayPart]?.next(filling: [:], using: &phrasing) {
-                cues.append(add(greeting, .presenter))
+            // Dictionary pools (`greetings`, `atmosphere`) are copied: writing the used-set back
+            // would change which line the classic planner draws next, and the pinned tests depend
+            // on today's discarded copy. The aired template is still recorded for the next session.
+            // `greetingPool` is a copy and is not written back: that is what
+            // `greetings[dayPart]?.next` already did, and writing it back would move later draws.
+            var greetingPool = greetings[dayPart]
+            if !hasGreeted, let greeting = greetingPool?.nextPicked(filling: [:], using: &phrasing) {
+                cues.append(add(greeting.text, .presenter, pool: SpokenLinePool.greeting(dayPart), template: greeting.template))
                 hasGreeted = true
-            } else if shape.artistOpener, let line = artistFocus.next(filling: metadata, using: &phrasing) {
-                cues.append(add(line, .trackMetadata(trackIDs: [prev.id])))
-            } else if let line = backAnnounce.next(filling: metadata, using: &phrasing) {
-                cues.append(add(line, .trackMetadata(trackIDs: [prev.id])))
+            } else if shape.artistOpener, let line = artistFocus.nextPicked(filling: metadata, using: &phrasing) {
+                cues.append(add(line.text, .trackMetadata(trackIDs: [prev.id]), pool: SpokenLinePool.artistFocus, template: line.template))
+            } else if let line = backAnnounce.nextPicked(filling: metadata, using: &phrasing) {
+                cues.append(add(line.text, .trackMetadata(trackIDs: [prev.id]), pool: SpokenLinePool.backAnnounce, template: line.template))
             }
             // Closing line: its own cue, attributed to the next track only, so it goes through
             // `VoiceRenderer.mayLeaveDevice` per cue exactly like the main segment.
-            let closingLine = closing.next(filling: ["nextTitle": next.title, "nextArtist": next.artist], using: &phrasing)
+            let closingPick = closing.nextPicked(filling: ["nextTitle": next.title, "nextArtist": next.artist], using: &phrasing)
+            let closingLine = closingPick?.text
             let closingFits = closingLine.map { estimate($0) <= Double(cadence.maxClosingSeconds) } ?? false
 
             var optionalCueIDs: [UUID] = []
             if wantsBriefing {
                 let limit = Double(cadence.maxBriefingBreakSeconds)
                 var spent = cues.reduce(0) { $0 + $1.plannedSeconds } + estimate(closingLine)
-                if let lead = briefingLead.next(filling: [:], using: &phrasing) {
-                    let leadCue = add(lead, .presenter)
+                if let lead = briefingLead.nextPicked(filling: [:], using: &phrasing) {
+                    let leadCue = add(lead.text, .presenter, pool: SpokenLinePool.briefingLead, template: lead.template)
                     spent += leadCue.plannedSeconds
                     var taken: [NarrationCue] = []
                     while let cue = pending.first, taken.count < cadence.maxPersonalUpdatesPerBreak,
@@ -512,8 +561,8 @@ public struct DJScriptWriter: Sendable {
                             attributions[cue.id] = .personalContext(itemID: cue.sourceItemID!, source: cue.source!, provenance: cue.provenance!)
                         }
                         // A short sign-off, only when it still fits the briefing cap.
-                        if let outro = briefingOutro.next(filling: [:], using: &phrasing), spent + estimate(outro) <= limit {
-                            cues.append(add(outro, .presenter))
+                        if let outro = briefingOutro.nextPicked(filling: [:], using: &phrasing), spent + estimate(outro.text) <= limit {
+                            cues.append(add(outro.text, .presenter, pool: SpokenLinePool.briefingOutro, template: outro.template))
                         }
                     } else {
                         attributions[leadCue.id] = nil
@@ -523,10 +572,10 @@ public struct DJScriptWriter: Sendable {
                 // Main-segment color, then a continuation; dropped (continuation first) to fit.
                 var extras: [NarrationCue] = []
                 if let colored = colorLine(shape.color, dayPart: dayPart, station: station) {
-                    extras.append(add(colored.text, colored.attribution))
+                    extras.append(add(colored.text, colored.attribution, pool: colored.pool, template: colored.template))
                 }
-                if shape.continues, let line = continuation.next(filling: [:], using: &phrasing) {
-                    extras.append(add(line, .presenter))
+                if shape.continues, let line = continuation.nextPicked(filling: [:], using: &phrasing) {
+                    extras.append(add(line.text, .presenter, pool: SpokenLinePool.continuation, template: line.template))
                 }
                 let closingInMain = closingFits ? 0 : estimate(closingLine)
                 func main() -> Double { (cues + extras).reduce(0) { $0 + $1.plannedSeconds } + closingInMain }
@@ -549,8 +598,8 @@ public struct DJScriptWriter: Sendable {
                 cues += extras
             }
             var talkOverCueID: UUID?
-            if let closingLine {
-                let cue = add(closingLine, .trackMetadata(trackIDs: [next.id]))
+            if let closingPick {
+                let cue = add(closingPick.text, .trackMetadata(trackIDs: [next.id]), pool: SpokenLinePool.closing, template: closingPick.template)
                 cues.append(cue)
                 if closingFits { talkOverCueID = cue.id }
             }
@@ -567,6 +616,8 @@ public struct DJScriptWriter: Sendable {
             }
             breaks.append(planned)
             lastBreak = boundary
+            let keptCues = Set(cues.map(\.id))
+            remember(break: cues.first?.id, uses.filter { keptCues.contains($0.cue) && !$0.template.isEmpty })
             if shapes != nil {
                 // Natural shapes on: the classic and briefing breaks' own lines (never personal
                 // text) count toward the cross-pool window too, so a later break never echoes them.
@@ -627,30 +678,36 @@ public struct DJScriptWriter: Sendable {
         return BreakShape(artistOpener: artist, color: color, continues: editorial.next() % 100 < 65)
     }
 
-    /// One color line with no track facts, or nil.
-    private mutating func colorLine(_ color: BreakColor, dayPart: DayPart, station: String) -> (text: String, attribution: SpokenAttribution)? {
+    /// One color line with no track facts, or nil. `pool` and `template` name the phrase bank
+    /// the line came from, for the cross-session id only (the station name is not stored).
+    private mutating func colorLine(_ color: BreakColor, dayPart: DayPart, station: String) -> (text: String, attribution: SpokenAttribution, pool: String, template: String)? {
         switch color {
         case .none:
             return nil
         case .station:
             guard let name = EditorialStationName.usable(station),
-                  let line = stationIDs.next(filling: ["station": name], using: &phrasing) else { return nil }
+                  let line = stationIDs.nextPicked(filling: ["station": name], using: &phrasing) else { return nil }
             // Only the built-in brand is fixed phrasing; any other name is the listener's own words.
-            return (line, name == Self.builtInStationName ? .presenter : .stationName)
+            return (line.text, name == Self.builtInStationName ? .presenter : .stationName, SpokenLinePool.stationID, line.template)
         case .atmosphere:
-            guard let line = atmosphere[dayPart]?.next(filling: [:], using: &phrasing) else { return nil }
-            return (line, .presenter)
+            // Same discarded copy as the classic greeting: the in-session draw is unchanged.
+            var atmospherePool = atmosphere[dayPart]
+            guard let line = atmospherePool?.nextPicked(filling: [:], using: &phrasing) else { return nil }
+            return (line.text, .presenter, SpokenLinePool.atmosphere(dayPart), line.template)
         }
     }
 
     /// A replan discarded these planned breaks before they aired: they leave the cross-pool
     /// memory and the shape history, so the next plan follows what actually aired (or is kept).
-    /// No-op with natural shapes off. Pool cycling (`TemplatePool`) is not rewound.
+    /// The shape half is a no-op with natural shapes off. Either way the discarded lines are not
+    /// recorded for the next session. Pool cycling (`TemplatePool`) is not rewound.
     /// A discarded show opener never aired, so the next plan opens the show again.
     public mutating func forgetPlannedBreaks(_ discarded: [DJBreak]) {
+        // Unaired lines are not recorded, shapes or not. Pool cycling stays unwound, as before.
+        let ids = Set(discarded.compactMap { $0.cues.first?.id })
+        for id in ids { plannedUses[id] = nil }
         guard shapes != nil, var picker = shapePicker else { return }
         if discarded.contains(where: { $0.shape == .showOpener }) { hasGreeted = false }
-        let ids = Set(discarded.compactMap { $0.cues.first?.id })
         guard !ids.isEmpty else { return }
         recentTemplates.forget(ids: ids)
         timeCheckLog.removeAll { ids.contains($0.id) }
@@ -714,6 +771,9 @@ public struct DJScriptWriter: Sendable {
 
         struct Line {
             var template: String; var text: String; var attribution: SpokenAttribution; var optional: Bool
+            /// Phrase bank the template was drawn from. Nil for an extra line (weather, news):
+            /// that text is never given an id (#318).
+            var pool: String? = nil
             /// #200: set only on a provider-fact extra line.
             var provenance: String? = nil; var expiresAt: Date? = nil
             /// #199: the catalog facts this line speaks (fact lines only).
@@ -721,7 +781,7 @@ public struct DJScriptWriter: Sendable {
         }
         var lines: [Line] = []
         let recent = recentTemplates
-        func draw(_ pool: inout TemplatePool, _ values: [String: String], _ attribution: SpokenAttribution,
+        func draw(_ pool: inout TemplatePool, _ poolKey: String, _ values: [String: String], _ attribution: SpokenAttribution,
                   optional: Bool = false) -> Bool {
             let sameBreak = lines.map(\.template) + lines.map(\.text)
             let isOpener = lines.isEmpty
@@ -750,7 +810,7 @@ public struct DJScriptWriter: Sendable {
                 guard pool.templates.contains(where: { text($0) != nil && !tiers[3]($0) }) else { return false }
             }
             guard let picked = pool.next(filling: values, avoiding: tiers, using: &phrasing) else { return false }
-            lines.append(Line(template: picked.template, text: picked.text, attribution: attribution, optional: optional))
+            lines.append(Line(template: picked.template, text: picked.text, attribution: attribution, optional: optional, pool: poolKey))
             return true
         }
         let prevAttribution = SpokenAttribution.trackMetadata(trackIDs: [prev.id])
@@ -773,7 +833,7 @@ public struct DJScriptWriter: Sendable {
             factEligible = true
             guard !catalogFactLog.suffix(CatalogFactLine.eligibleBreaksPerFactLine - 1).contains(where: \.spoke) else { return }
             let at = lines.count
-            guard draw(&catalogFactPool, values, prevAttribution, optional: true), lines.count == at + 1 else { return }
+            guard draw(&catalogFactPool, SpokenLinePool.catalogFact, values, prevAttribution, optional: true), lines.count == at + 1 else { return }
             guard estimate(lines[at].text) <= Double(CatalogFactLine.maxLineSeconds) else { lines.removeLast(); return }
             lines[at].facts = CatalogFactLine.usedFacts(template: lines[at].template, facts: facts)
         }
@@ -781,24 +841,24 @@ public struct DJScriptWriter: Sendable {
         var timeCheckLine: (template: String, relation: DJTimeCheckRelation, at: Date)?
         switch shape {
         case .classic:
-            if phrasing.next() % 100 >= 20 || !draw(&artistFocus, metadata, prevAttribution) {
-                _ = draw(&backAnnounce, metadata, prevAttribution)
+            if phrasing.next() % 100 >= 20 || !draw(&artistFocus, SpokenLinePool.artistFocus, metadata, prevAttribution) {
+                _ = draw(&backAnnounce, SpokenLinePool.backAnnounce, metadata, prevAttribution)
             }
             if !lines.isEmpty { drawFact() }
             if phrasing.next() % 100 < 40, var pool = atmosphere[dayPart] {
-                _ = draw(&pool, [:], .presenter, optional: true)
+                _ = draw(&pool, SpokenLinePool.atmosphere(dayPart), [:], .presenter, optional: true)
                 atmosphere[dayPart] = pool
             }
-            if phrasing.next() % 100 < 50 { _ = draw(&continuation, [:], .presenter, optional: true) }
-            if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
+            if phrasing.next() % 100 < 50 { _ = draw(&continuation, SpokenLinePool.continuation, [:], .presenter, optional: true) }
+            if draw(&closing, SpokenLinePool.closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
         case .backAnnounceOnly:
-            if draw(&backAnnounce, metadata, prevAttribution) { drawFact() }
+            if draw(&backAnnounce, SpokenLinePool.backAnnounce, metadata, prevAttribution) { drawFact() }
         case .comingUpOnly:
-            if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
+            if draw(&closing, SpokenLinePool.closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
         case .combined:
-            if draw(&combined, bothValues, .trackMetadata(trackIDs: [prev.id, next.id])) {
+            if draw(&combined, SpokenLinePool.combined, bothValues, .trackMetadata(trackIDs: [prev.id, next.id])) {
                 closingIndex = lines.count - 1
-            } else if draw(&closing, nextValues, nextAttribution) {
+            } else if draw(&closing, SpokenLinePool.closing, nextValues, nextAttribution) {
                 closingIndex = lines.count - 1
             }
         case .timeCheckIntro:
@@ -806,20 +866,20 @@ public struct DJScriptWriter: Sendable {
             // closing line). Presenter text only: no station name, no personal text.
             if let reading = timeCheckReading(boundary: boundary, config: config),
                var pool = timeCheckPools[reading.relation] {
-                if draw(&pool, ["time": reading.time], .presenter, optional: true) {
+                if draw(&pool, SpokenLinePool.timeCheck(reading.relation), ["time": reading.time], .presenter, optional: true) {
                     timeCheckLine = (lines[lines.count - 1].template, reading.relation, reading.at)
                 }
                 timeCheckPools[reading.relation] = pool
             }
-            if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
+            if draw(&closing, SpokenLinePool.closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
             // A time check never airs alone: without a closing line it is not spoken.
             else if timeCheckLine != nil { lines.removeAll { $0.template == timeCheckLine?.template }; timeCheckLine = nil }
         case .stationID:
             if let stationName {
                 let attribution: SpokenAttribution = stationName == Self.builtInStationName ? .presenter : .stationName
-                _ = draw(&stationIDs, ["station": stationName], attribution)
+                _ = draw(&stationIDs, SpokenLinePool.stationID, ["station": stationName], attribution)
             }
-            if draw(&closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
+            if draw(&closing, SpokenLinePool.closing, nextValues, nextAttribution) { closingIndex = lines.count - 1 }
         case .showOpener:
             break   // never picked (`DJBreakShapePicker.eligible`); `showOpener(...)` plans it
         }
@@ -892,6 +952,9 @@ public struct DJScriptWriter: Sendable {
         planned.optionalCueIDs = zip(lines, cues).filter { $0.0.optional }.map { $0.1.id }.reversed()
         picker.record(shape)
         shapePicker = picker
+        remember(break: cues.first?.id, zip(lines, cues).compactMap { line, cue in
+            line.pool.map { SpokenUse(cue: cue.id, pool: $0, template: line.template) }
+        })
         recentTemplates.record(lines.map(\.template), texts: lines.map(\.text), id: cues.first?.id)
         if factEligible, let id = cues.first?.id {
             catalogFactLog.append((id, !factCues.isEmpty))
@@ -946,7 +1009,8 @@ public struct DJScriptWriter: Sendable {
         guard let config = shapes, var greetingPool = greetings[dayPart] else { return nil }
         struct Line {
             /// One entry per pool line drawn (the welcome cue joins two), with its spoken text.
-            var templates: [String]; var texts: [String]; var attribution: SpokenAttribution
+            /// `pools` is parallel to `templates` (the phrase bank of each). Not persisted as text.
+            var templates: [String]; var pools: [String]; var texts: [String]; var attribution: SpokenAttribution
             var kind: Kind
             var text: String { texts.joined(separator: " ") }
             enum Kind { case welcome, setup, timeCheck, closing }
@@ -982,10 +1046,12 @@ public struct DJScriptWriter: Sendable {
         //    brand is fixed phrasing. No usable name: the greeting airs alone.
         guard let greeting = draw(&greetingPool, [:], optional: false) else { return nil }
         greetings[dayPart] = greetingPool
-        var welcome = Line(templates: [greeting.template], texts: [greeting.text], attribution: .presenter, kind: .welcome)
+        var welcome = Line(templates: [greeting.template], pools: [SpokenLinePool.greeting(dayPart)],
+                           texts: [greeting.text], attribution: .presenter, kind: .welcome)
         if let name = EditorialStationName.usable(station),
            let named = draw(&openerStation, ["station": name], optional: false, extra: [greeting.template, greeting.text]) {
             welcome.templates.append(named.template)
+            welcome.pools.append(SpokenLinePool.openerStation)
             welcome.texts.append(named.text)
             if name != Self.builtInStationName { welcome.attribution = .stationName }
         }
@@ -993,7 +1059,8 @@ public struct DJScriptWriter: Sendable {
         // 2. Mood (optional).
         if var pool = openerSetup[dayPart] {
             if let setup = draw(&pool, [:], optional: true) {
-                lines.append(Line(templates: [setup.template], texts: [setup.text], attribution: .presenter, kind: .setup))
+                lines.append(Line(templates: [setup.template], pools: [SpokenLinePool.openerSetup(dayPart)],
+                                  texts: [setup.text], attribution: .presenter, kind: .setup))
             }
             openerSetup[dayPart] = pool
         }
@@ -1006,7 +1073,8 @@ public struct DJScriptWriter: Sendable {
         case .success(let reading):
             if var pool = timeCheckPools[reading.relation], !pool.templates.isEmpty,
                let line = draw(&pool, ["time": reading.time], optional: true) {
-                lines.append(Line(templates: [line.template], texts: [line.text], attribution: .presenter, kind: .timeCheck))
+                lines.append(Line(templates: [line.template], pools: [SpokenLinePool.timeCheck(reading.relation)],
+                                  texts: [line.text], attribution: .presenter, kind: .timeCheck))
                 timeCheck = (line.template, reading.relation, reading.at)
                 timeCheckPools[reading.relation] = pool
             } else {
@@ -1015,7 +1083,7 @@ public struct DJScriptWriter: Sendable {
         }
         // 4. The first song's intro, talk-over when it fits the closing cap.
         if let line = draw(&closing, ["nextTitle": next.title, "nextArtist": next.artist], optional: false) {
-            lines.append(Line(templates: [line.template], texts: [line.text],
+            lines.append(Line(templates: [line.template], pools: [SpokenLinePool.closing], texts: [line.text],
                               attribution: .trackMetadata(trackIDs: [next.id]), kind: .closing))
         }
 
@@ -1069,6 +1137,13 @@ public struct DJScriptWriter: Sendable {
         // late and drops it on its own, #347), then the mood line. Never the welcome or closing.
         planned.optionalCueIDs = zip(lines, cues).filter { $0.0.kind == .setup || $0.0.kind == .timeCheck }
             .map { $0.1.id }.reversed()
+        var openerUses: [SpokenUse] = []
+        for (line, cue) in zip(lines, cues) {
+            for (pool, template) in zip(line.pools, line.templates) {
+                openerUses.append(SpokenUse(cue: cue.id, pool: pool, template: template))
+            }
+        }
+        remember(break: cues.first?.id, openerUses)
         recentTemplates.record(lines.flatMap(\.templates), texts: lines.flatMap(\.texts), id: cues.first?.id)
         return planned
     }
@@ -1087,6 +1162,170 @@ public struct DJScriptWriter: Sendable {
 
     private func estimate(_ text: String?) -> Double {
         text.map { Double(DefaultBriefingPlanner.estimatedSpokenSeconds(for: $0)) } ?? 0
+    }
+
+    private mutating func remember(break id: UUID?, _ uses: [SpokenUse]) {
+        guard let id, !uses.isEmpty else { return }
+        plannedUses[id] = uses
+    }
+
+    /// The player said this break reports each line, so only lines that play to the end are recorded.
+    /// A repeat for the same break keeps cues already noted.
+    mutating func markLineReporting(break id: UUID?) {
+        if reportingBreak != id { airedCues.removeAll() }
+        reportingBreak = id
+    }
+
+    /// One cue played to its end. The first such cue, with no earlier `markLineReporting`, still
+    /// counts: a player that reports lines must not have `.finished` record the lines it cut.
+    mutating func noteCueFinished(_ breakID: UUID?, _ cueID: UUID) {
+        guard let breakID else { return }
+        if reportingBreak == nil { reportingBreak = breakID }
+        guard reportingBreak == breakID, !airedCues.contains(cueID) else { return }
+        airedCues.append(cueID)
+    }
+
+    /// The break ended. `wholeIfUnreported` records every kept line when the player does not
+    /// report lines (the break played through). A reporting player records only the cues that
+    /// finished; a revoke or failure with none finished records nothing.
+    mutating func finishAiredBreak(_ id: UUID?, wholeIfUnreported: Bool) {
+        guard let id, let uses = plannedUses[id] else {
+            if reportingBreak == id { reportingBreak = nil; airedCues.removeAll() }
+            return
+        }
+        let reported = reportingBreak == id
+        let selected: [SpokenUse]
+        if reported {
+            let aired = Set(airedCues)
+            selected = uses.filter { aired.contains($0.cue) }
+        } else if wholeIfUnreported {
+            selected = uses
+        } else {
+            selected = []
+        }
+        plannedUses[id] = nil
+        if reportingBreak == id { reportingBreak = nil; airedCues.removeAll() }
+        guard !selected.isEmpty else { return }
+        var pools: [String: [String]] = [:]
+        var recent: [String] = []
+        for use in selected {
+            let templateID = SpokenTemplateID.of(use.template)
+            pools[use.pool, default: []].append(templateID)
+            recent.append(templateID)
+        }
+        lineMemory.record(pools: pools, recent: recent, known: knownTemplateIDs())
+    }
+
+    /// Records the whole planned break. The session uses it only when the player does not
+    /// report lines and the break finished; tests use it for a simulated airing.
+    mutating func commitAiredBreak(_ id: UUID) {
+        finishAiredBreak(id, wholeIfUnreported: true)
+    }
+
+    /// Loads aired ids into the pools and the cross-pool window. Unknown ids are skipped.
+    private mutating func applyLineMemory() {
+        let memory = lineMemory.load()
+        restorePools(memory)
+        restoreRecent(memory)
+    }
+
+    private mutating func restorePools(_ memory: SpokenLineMemory) {
+        func restore(_ pool: inout TemplatePool, _ key: String) {
+            guard let entry = memory.pools[key] else { return }
+            let ids = pool.templates.map(SpokenTemplateID.of)
+            var indices = Set<Int>()
+            for (index, id) in ids.enumerated() where entry.used.contains(id) { indices.insert(index) }
+            pool.restoreAired(indices: indices, last: entry.last.flatMap { ids.firstIndex(of: $0) })
+        }
+        restore(&backAnnounce, SpokenLinePool.backAnnounce)
+        restore(&closing, SpokenLinePool.closing)
+        restore(&artistFocus, SpokenLinePool.artistFocus)
+        restore(&stationIDs, SpokenLinePool.stationID)
+        restore(&continuation, SpokenLinePool.continuation)
+        restore(&briefingLead, SpokenLinePool.briefingLead)
+        restore(&briefingOutro, SpokenLinePool.briefingOutro)
+        restore(&combined, SpokenLinePool.combined)
+        restore(&catalogFactPool, SpokenLinePool.catalogFact)
+        restore(&openerStation, SpokenLinePool.openerStation)
+        for part in DayPart.allCases {
+            if var pool = greetings[part] {
+                restore(&pool, SpokenLinePool.greeting(part))
+                greetings[part] = pool
+            }
+            if var pool = atmosphere[part] {
+                restore(&pool, SpokenLinePool.atmosphere(part))
+                atmosphere[part] = pool
+            }
+            if var pool = openerSetup[part] {
+                restore(&pool, SpokenLinePool.openerSetup(part))
+                openerSetup[part] = pool
+            }
+        }
+        for relation in DJTimeCheckRelation.allCases {
+            if var pool = timeCheckPools[relation] {
+                restore(&pool, SpokenLinePool.timeCheck(relation))
+                timeCheckPools[relation] = pool
+            }
+        }
+    }
+
+    /// Seeds the in-session window with the previous session's aired templates, resolved from
+    /// the current banks. An id this version does not know is skipped. Nil break ids, so a
+    /// replan cannot forget lines that already aired.
+    private mutating func restoreRecent(_ memory: SpokenLineMemory) {
+        var byID: [String: String] = [:]
+        func index(_ templates: [String]) {
+            for template in templates { byID[SpokenTemplateID.of(template)] = template }
+        }
+        index(backAnnounce.templates)
+        index(closing.templates)
+        index(artistFocus.templates)
+        index(stationIDs.templates)
+        index(continuation.templates)
+        index(briefingLead.templates)
+        index(briefingOutro.templates)
+        index(combined.templates)
+        index(catalogFactPool.templates)
+        index(openerStation.templates)
+        for part in DayPart.allCases {
+            index(greetings[part]?.templates ?? [])
+            index(atmosphere[part]?.templates ?? [])
+            index(openerSetup[part]?.templates ?? [])
+        }
+        for relation in DJTimeCheckRelation.allCases {
+            index(timeCheckPools[relation]?.templates ?? [])
+        }
+        for breakIDs in memory.recent {
+            let templates = breakIDs.compactMap { byID[$0] }
+            if !templates.isEmpty { recentTemplates.record(templates, id: nil) }
+        }
+    }
+
+    private func knownTemplateIDs() -> [String: Set<String>] {
+        var out: [String: Set<String>] = [:]
+        func add(_ key: String, _ templates: [String]) {
+            guard !templates.isEmpty else { return }
+            out[key] = Set(templates.map(SpokenTemplateID.of))
+        }
+        add(SpokenLinePool.backAnnounce, backAnnounce.templates)
+        add(SpokenLinePool.closing, closing.templates)
+        add(SpokenLinePool.artistFocus, artistFocus.templates)
+        add(SpokenLinePool.stationID, stationIDs.templates)
+        add(SpokenLinePool.continuation, continuation.templates)
+        add(SpokenLinePool.briefingLead, briefingLead.templates)
+        add(SpokenLinePool.briefingOutro, briefingOutro.templates)
+        add(SpokenLinePool.combined, combined.templates)
+        add(SpokenLinePool.catalogFact, catalogFactPool.templates)
+        add(SpokenLinePool.openerStation, openerStation.templates)
+        for part in DayPart.allCases {
+            add(SpokenLinePool.greeting(part), greetings[part]?.templates ?? [])
+            add(SpokenLinePool.atmosphere(part), atmosphere[part]?.templates ?? [])
+            add(SpokenLinePool.openerSetup(part), openerSetup[part]?.templates ?? [])
+        }
+        for relation in DJTimeCheckRelation.allCases {
+            add(SpokenLinePool.timeCheck(relation), timeCheckPools[relation]?.templates ?? [])
+        }
+        return out
     }
 
     private func transitionCue(_ text: String, order: inout Int, provenance: String? = nil) -> NarrationCue {
