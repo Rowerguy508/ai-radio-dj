@@ -29,15 +29,21 @@ private final class ObservingDefaults: UserDefaults {
     var mutations: [String] { lock.withLock { _mutations } }
     func resetMutations() { lock.withLock { _mutations = [] } }
 
+    /// Darwin's `removeObject(forKey:)` calls `set(nil, forKey:)` internally (Linux doesn't),
+    /// so a set made from inside a remove is part of that remove, not a second write.
+    private var removing = 0
+
     override func set(_ value: Any?, forKey defaultName: String) {
         super.set(value, forKey: defaultName)
+        guard lock.withLock({ removing == 0 }) else { return }
         lock.withLock { _mutations.append("set \(defaultName)") }
         observer?(defaultName)
     }
 
     override func removeObject(forKey defaultName: String) {
+        lock.withLock { removing += 1 }
         super.removeObject(forKey: defaultName)
-        lock.withLock { _mutations.append("remove \(defaultName)") }
+        lock.withLock { removing -= 1; _mutations.append("remove \(defaultName)") }
         observer?(defaultName)
     }
 }
