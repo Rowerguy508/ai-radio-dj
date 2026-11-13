@@ -42,14 +42,28 @@ public struct VoiceRoute: Sendable {
     /// priced at 0 like the owner A/B ElevenLabs route. Such a route never speaks private text.
     public let leavesDevice: Bool
 
+    /// The route forwards the neighbouring lines of the same break as stitching context
+    /// (ElevenLabs `previous_text` / `next_text`, through the proxy). Off unless the route leaves
+    /// the device: an on-device route cannot be given this, and a cue still sends context only
+    /// when `mayLeaveDevice` already allows that cue off the device.
+    public let sendsSpeechContext: Bool
+
+    /// The voice reads square-bracket audio tags (ElevenLabs v3/v4), so an allowlisted tag such
+    /// as `[warmly]` is kept for it. Off by default on every route. With it off, every `[` and `]`
+    /// is stripped before off-device text leaves the device.
+    public let supportsAudioTags: Bool
+
     public var isPaid: Bool { microdollarsPerThousandCharacters > 0 }
     /// On-device and free: safe for private text and for the over-cap fallback.
     public var isLocalAndFree: Bool { !leavesDevice && !isPaid }
 
     public init(providerID: String, provider: any VoiceProvider, voice: VoiceProfile,
                 microdollarsPerThousandCharacters: Int = 0, timeout: Duration = .seconds(8), acceptsSSML: Bool = false,
-                leavesDevice: Bool = false) {
+                leavesDevice: Bool = false, sendsSpeechContext: Bool = false, supportsAudioTags: Bool = false) {
         self.leavesDevice = leavesDevice
+        // On-device routes never carry stitching context, whatever the caller asked.
+        self.sendsSpeechContext = sendsSpeechContext && leavesDevice
+        self.supportsAudioTags = supportsAudioTags
         self.providerID = providerID
         self.provider = provider
         self.voice = voice
@@ -738,6 +752,37 @@ public struct VoiceRenderer: Sendable {
             .joined(separator: "\u{1F}"))
     }
 
+    /// The cache key with stitching context. A line voiced after one line and before another is
+    /// a different take from the same words in another break, so the context is part of the key.
+    /// With no context it is exactly `cacheKey(text:route:)`, so existing clips keep their keys.
+    public static func cacheKey(text: String, route: VoiceRoute, context: SpeechNeighbours) -> String {
+        guard !context.isEmpty else { return cacheKey(text: text, route: route) }
+        return SHA256Digest.hex([cacheFormatVersion, route.providerID, route.voice.id, route.acceptsSSML ? "ssml" : "text", text,
+                                 "prev", context.previous ?? "", "next", context.next ?? ""]
+            .joined(separator: "\u{1F}"))
+    }
+
+    /// The neighbouring lines of `cue` in `cues` (one break, in air order) that may be sent as
+    /// stitching context. Each side is included only when that neighbour itself passes
+    /// `mayLeaveDevice` with its own attribution and `scope` — the same per-cue rule that decides
+    /// whether the neighbour's own render may leave the device (#176). An ineligible neighbour is
+    /// omitted; the other side is still sent. This does not widen that rule: `.noLines` and
+    /// `.transitionsOnly` stay as they are, and `.allLines` (copy v2, #432/#441) is the only scope
+    /// that lets more cues through, by the same check. Empty when `cue` is not in `cues`.
+    public static func neighbours(of cue: NarrationCue, in cues: [NarrationCue],
+                                  attributions: [UUID: SpokenAttribution],
+                                  scope: CloudVoiceScope = .transitionsOnly) -> SpeechNeighbours {
+        guard let index = cues.firstIndex(where: { $0.id == cue.id }) else { return .none }
+        func text(at i: Int) -> String? {
+            guard cues.indices.contains(i) else { return nil }
+            let neighbour = cues[i]
+            guard mayLeaveDevice(neighbour, attribution: attributions[neighbour.id], scope: scope) else { return nil }
+            let text = neighbour.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        }
+        return SpeechNeighbours(previous: text(at: index - 1), next: text(at: index + 1))
+    }
+
     public func render(_ handoff: NarrationHandoff, userID: String, stationID: String) async -> RenderedNarration {
         var cues: [NarrationCue] = []
         var clips: [UUID: RenderedClip] = [:]
@@ -810,8 +855,16 @@ public struct VoiceRenderer: Sendable {
     /// (even one built without `leavesDevice`) is skipped, never looked up in the cache, reserved
     /// against or called. With no attribution the cue is local-only, and if no local, free route
     /// exists it fails closed with `.renderFailed`; it never falls back to cloud or a paid voice.
+    ///
+    /// `breakCues` / `breakAttributions` are the cue's break, in air order. A route with
+    /// `sendsSpeechContext` receives each neighbouring line as stitching context only when this
+    /// cue and that neighbour both pass `mayLeaveDevice` under this renderer's `cloudScope`.
+    /// Empty `breakCues` (every caller that is not a break) sends no context, and the request
+    /// body and cache key stay as they were.
     public func render(_ cue: NarrationCue, userID: String, stationID: String,
-                       attribution: SpokenAttribution? = nil) async -> Result<RenderedClip, Failure> {
+                       attribution: SpokenAttribution? = nil,
+                       breakCues: [NarrationCue] = [],
+                       breakAttributions: [UUID: SpokenAttribution] = [:]) async -> Result<RenderedClip, Failure> {
         var attempts: [VoiceAttempt] = []
         // Decided once, before any cache key, reservation or provider call (#176). Ineligible
         // cues use `isLocalAndFree` routes only.
@@ -833,8 +886,12 @@ public struct VoiceRenderer: Sendable {
                 continue
             }
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
-            let text = route.acceptsSSML ? SpeechDelivery.ssml(cue.text) : SpeechDelivery.speakable(cue.text)
-            let key = Self.cacheKey(text: text, route: route)
+            let text = Self.spokenText(cue.text, for: route)
+            // Same `scope` as `offDeviceAllowed` above. A local-only cue sends nothing, and a
+            // neighbour is included only when it may leave the device itself.
+            let mates = Self.neighbours(of: cue, in: breakCues, attributions: breakAttributions, scope: scope)
+            let speech = route.sendsSpeechContext && offDeviceAllowed ? mates.spoken() : .none
+            let key = Self.cacheKey(text: text, route: route, context: speech)
             if useCache, let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
                 // Keys are text + voice, so the clip may carry other items' ids: check both.
                 let hitSources = Array(Set(sources).union(cached.sourceItemIDs))
@@ -855,10 +912,11 @@ public struct VoiceRenderer: Sendable {
                 }
                 reservation = r
             }
-            let context = RequestContext(stationID: stationID, isReusableGeneric: false)
+            let request = RequestContext(stationID: stationID, isReusableGeneric: false,
+                                         previousText: speech.previous, nextText: speech.next)
             do {
                 let artifact = try await Self.withTimeout(route.timeout) {
-                    try await route.provider.synthesize(text, voice: route.voice, context: context)
+                    try await route.provider.synthesize(text, voice: route.voice, context: request)
                 }
                 if let r = reservation { await budget.commit(r, microdollars: route.cost(characters: artifact.billableUnits)) }
                 guard !artifact.data.isEmpty, artifact.durationSeconds.isFinite, artifact.durationSeconds > 0 else {
@@ -903,6 +961,18 @@ public struct VoiceRenderer: Sendable {
         }
         let overDuration = attempts.contains { if case .overDuration = $0.result { true } else { false } }
         return .failure(Failure(reason: overDuration ? .overDuration : .renderFailed, attempts: attempts))
+    }
+
+    /// The text a route receives. A route that leaves the device gets plain text with every `[`
+    /// and `]` stripped (an allowlisted audio tag kept only when `supportsAudioTags` is on), or
+    /// SSML of that text when the route accepts SSML. Any other route gets the same SSML or
+    /// `speakable` text as before. Bracket-free text is unchanged, so its cache key is too.
+    public static func spokenText(_ text: String, for route: VoiceRoute) -> String {
+        if route.leavesDevice {
+            let plain = SpeechDelivery.speakable(text, keepingAudioTags: route.supportsAudioTags)
+            return route.acceptsSSML ? SpeechDelivery.ssml(plain) : plain
+        }
+        return route.acceptsSSML ? SpeechDelivery.ssml(text) : SpeechDelivery.speakable(text)
     }
 
     /// Returns at the deadline even if the provider ignores cancellation
@@ -964,5 +1034,30 @@ public struct DessaVoiceProvider: VoiceProvider {
     public init() {}
     public func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
         throw VoiceRenderError.notImplemented("Dessa adapter is not implemented yet")
+    }
+}
+
+/// The spoken neighbours of one line in its break: stitching context for a voice that uses it.
+public struct SpeechNeighbours: Equatable, Sendable {
+    public let previous: String?
+    public let next: String?
+    public static let none = SpeechNeighbours(previous: nil, next: nil)
+
+    public init(previous: String?, next: String?) {
+        self.previous = previous
+        self.next = next
+    }
+
+    public var isEmpty: Bool { (previous ?? "").isEmpty && (next ?? "").isEmpty }
+
+    /// Plain text with brackets removed. Context never carries audio tags, even on a route that
+    /// would keep an allowlisted tag in the line it speaks.
+    func spoken() -> SpeechNeighbours {
+        func plain(_ t: String?) -> String? {
+            guard let t else { return nil }
+            let s = SpeechDelivery.speakable(t, keepingAudioTags: false)
+            return s.isEmpty ? nil : s
+        }
+        return SpeechNeighbours(previous: plain(previous), next: plain(next))
     }
 }

@@ -404,8 +404,14 @@ public actor DJBreakPreparer {
         let attribution = djBreak.attributions[line.id]
         let left = end - ContinuousClock.now
         guard left > .zero else { return .dropped(.late) }
+        // Still rendered alone and late (#347). Its planned neighbours go along as stitching
+        // context when each of them may leave the device (#365). The other lines were rendered
+        // from `rest`, which does not contain this cue, so their cache keys do not include this
+        // minute's reading.
+        let cues = djBreak.cues, attributions = djBreak.attributions
         let work: @Sendable () async -> Result<RenderedClip, VoiceRenderer.Failure> = {
-            await voice.render(line, userID: userID, stationID: stationID, attribution: attribution)
+            await voice.render(line, userID: userID, stationID: stationID, attribution: attribution,
+                               breakCues: cues, breakAttributions: attributions)
         }
         guard let rendered = try? await VoiceRenderer.withTimeout(left, work) else {
             return Task.isCancelled ? .cancelled : .dropped(.late)
@@ -1012,8 +1018,11 @@ public actor DJBreakPreparer {
             let resolved = await bundled?.gatedClip(for: cue, attribution: djBreak.attributions[cue.id], renderer: renderer)
             let result: Result<RenderedClip, VoiceRenderer.Failure>
             if let resolved { result = .success(resolved) }
-            else { result = await renderer.render(cue, userID: userID, stationID: stationID,
-                                                  attribution: djBreak.attributions[cue.id]) }
+            else {
+                result = await renderer.render(cue, userID: userID, stationID: stationID,
+                                               attribution: djBreak.attributions[cue.id],
+                                               breakCues: djBreak.cues, breakAttributions: djBreak.attributions)
+            }
             switch result {
             case .success(let clip):
                 cue.renderedSeconds = clip.audio.seconds
