@@ -123,7 +123,19 @@ final class DuoPoseTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(TentControlsPolicy.skipSide, TentControlsPolicy.bigTransportMinSide)
         XCTAssertGreaterThanOrEqual(TentControlsPolicy.bigTransportMinSide, 60)
         XCTAssertGreaterThanOrEqual(TentControlsPolicy.targetMinSide, TentControlsPolicy.hitTargetFloor)
+        XCTAssertEqual(TentControlsPolicy.targetMinSide, 52)
         XCTAssertEqual(TentControlsPolicy.hitTargetFloor, 44)
+    }
+
+    func testChipFloorsDoNotCapTallerAccessibilityText() {
+        // Dial chips (52) and "Tap to show controls" / the break chip (44) use a
+        // minHeight floor. A larger label, as at accessibility text sizes, must grow.
+        for floor in [TentControlsPolicy.targetMinSide, TentControlsPolicy.hitTargetFloor] {
+            XCTAssertGreaterThanOrEqual(floor, TentControlsPolicy.hitTargetFloor)
+            XCTAssertGreaterThan(floor + 20, floor, "floor \(floor) is not a cap")
+            XCTAssertEqual(max(floor, 80), 80, "an 80 pt label grows past the \(floor) pt floor")
+            XCTAssertEqual(max(floor, 20), floor, "shorter content still meets the floor")
+        }
     }
 
     func testControlsHiddenUntilTouchedAndHideAfterFiveSeconds() {
@@ -192,14 +204,22 @@ final class DuoPoseTests: XCTestCase {
     }
 
     func testAccessibilitySummaryUsesTheAppName() {
+        let speaking = DJStudioState.speaking(includesBriefing: false)
         let summary = TentFace.accessibilitySummary(time: "9:41", station: "Morning Calm",
-                                                    state: .speaking(includesBriefing: false),
+                                                    state: speaking,
                                                     next: (title: "Slow Burn", artist: "Neon Harbor"))
         XCTAssertEqual(summary, "\(AppName.display) radio face. 9:41. Station Morning Calm. On Air. "
                        + "Up after the break: Slow Burn by Neon Harbor")
         XCTAssertTrue(summary.hasPrefix("OnAirly"))
+        // The summary is the only VoiceOver readout for On Air and the station;
+        // each appears once, and On Air still comes only from onAirLabel.
+        XCTAssertEqual(TentFace.onAirLabel(speaking), "On Air")
+        XCTAssertEqual(summary.components(separatedBy: "On Air").count - 1, 1)
+        XCTAssertEqual(summary.components(separatedBy: "Morning Calm").count - 1, 1)
         let quiet = TentFace.accessibilitySummary(time: "9:41", station: "Morning Calm", state: .idle, next: nil)
         XCTAssertEqual(quiet, "OnAirly radio face. 9:41. Station Morning Calm")
         XCTAssertFalse(quiet.contains("On Air"))
+        XCTAssertNil(TentFace.onAirLabel(.idle))
+        XCTAssertEqual(quiet.components(separatedBy: "Morning Calm").count - 1, 1)
     }
 }

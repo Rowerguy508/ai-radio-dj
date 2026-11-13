@@ -100,7 +100,9 @@ private struct TentHingeObserver: ViewModifier {
     func body(content: Content) -> some View {
         #if compiler(>=6.4.2)
         if #available(iOS 27.1, *) {
-            content.onHingeChange { _, context in
+            // Apple's iOS 27.1 signature:
+            // nonisolated func onHingeChange(isEnabled: Bool = true, _ action: @escaping (DeviceHingeContext, DeviceHingeContext) -> Void) -> some View
+            content.onHingeChange(isEnabled: true) { _, context in
                 sample = context.hinge.map { hinge in
                     DuoHingeSample(status: Self.status(hinge.status), angleDegrees: hinge.angle.degrees)
                 }
@@ -212,19 +214,27 @@ struct TentPosePlayer: View {
                 if layout.usesColumns {
                     faceColumns(layout)
                 } else {
+                    // At accessibility text sizes, controls live in this scroll so
+                    // growing chips are not clipped by the fixed face height.
                     ScrollView(.vertical, showsIndicators: true) {
-                        faceStacked(layout)
+                        VStack(alignment: .leading, spacing: 16) {
+                            faceStacked(layout)
+                            if typeSize.isAccessibilitySize && controlsOnFace(layout) && showsControls {
+                                controls
+                                    .transition(controlsTransition)
+                            }
+                        }
                     }
                     .scrollBounceBehavior(.basedOnSize)
                 }
             }
-            .opacity(controlsOnFace(layout) && showsControls ? 0.35 : 1)
+            .opacity(controlsOnFace(layout) && showsControls && !typeSize.isAccessibilitySize ? 0.35 : 1)
             .contentShape(Rectangle())
             .onTapGesture { touch() }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("tent.face")
 
-            if controlsOnFace(layout) && showsControls {
+            if controlsOnFace(layout) && showsControls && !typeSize.isAccessibilitySize {
                 controls
                     .padding(.horizontal, 20)
                     .padding(.bottom, 12)
@@ -375,37 +385,43 @@ struct TentPosePlayer: View {
 
     private func stationColumn(_ layout: TentPoseLayout) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            TentLabel(text: "Station", color: TentStyle.teal)
-            Text(heading.opened.name)
-                .font(.system(.largeTitle, weight: .heavy))
-                .tracking(-1)
-                .foregroundStyle(TentStyle.ink)
-                .lineLimit(3)
-                .minimumScaleFactor(0.7)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 6)
-            if let next = snapshot.upNext.first {
-                TentLabel(text: TentFace.nextCaption(state: dj.state), color: TentStyle.secondaryInk)
-                    .padding(.top, 16)
-                Text(next.title)
-                    .font(.headline.weight(.heavy))
+            VStack(alignment: .leading, spacing: 0) {
+                TentLabel(text: "Station", color: TentStyle.teal)
+                Text(heading.opened.name)
+                    .font(.system(.largeTitle, weight: .heavy))
+                    .tracking(-1)
                     .foregroundStyle(TentStyle.ink)
-                    .lineLimit(2)
-                    .padding(.top, 5)
-                Text(next.artistName)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(TentStyle.secondaryInk)
-                    .lineLimit(2)
-                    .padding(.top, 2)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.7)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+                if let next = snapshot.upNext.first {
+                    TentLabel(text: TentFace.nextCaption(state: dj.state), color: TentStyle.secondaryInk)
+                        .padding(.top, 16)
+                    Text(next.title)
+                        .font(.headline.weight(.heavy))
+                        .foregroundStyle(TentStyle.ink)
+                        .lineLimit(2)
+                        .padding(.top, 5)
+                    Text(next.artistName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(TentStyle.secondaryInk)
+                        .lineLimit(2)
+                        .padding(.top, 2)
+                }
             }
+            .accessibilityHidden(true)
             if !showsControls {
                 Button(action: touch) {
                     Text("Tap to show controls")
                         .font(.footnote.weight(.bold))
                         .foregroundStyle(Color.white.opacity(0.8))
+                        .multilineTextAlignment(.center)
                         .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
                         .frame(minHeight: CGFloat(TentControlsPolicy.hitTargetFloor))
-                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.28), lineWidth: 1).padding(.vertical, 7))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
@@ -414,6 +430,8 @@ struct TentPosePlayer: View {
             }
         }
         // The clock's summary already reads the station and the next song.
+        // Hide this copy so VoiceOver does not hear them twice; keep the
+        // show-controls button in the tree.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("tent.station")
     }
@@ -561,6 +579,8 @@ private struct TentTally: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
         .accessibilityIdentifier("tent.onAir")
+        // The clock summary already speaks On Air from DJStudioState.onAirLabel.
+        .accessibilityHidden(true)
     }
 }
 
@@ -659,7 +679,9 @@ private struct TentStationDial: View {
                             .font(.headline)
                             .lineLimit(1)
                             .padding(.horizontal, 18)
+                            .padding(.vertical, 8)
                             .frame(minWidth: 60, minHeight: CGFloat(TentControlsPolicy.targetMinSide))
+                            .fixedSize(horizontal: true, vertical: true)
                             .foregroundStyle(.white.opacity(selected ? 1 : 0.72))
                             .aeroGlass(Capsule(), role: .control, fallback: AnyShapeStyle(Color.white.opacity(selected ? 0.18 : 0.08)),
                                        hairline: Color.white.opacity(0.10), opaqueFill: TentStyle.opaqueGlass)
@@ -674,6 +696,7 @@ private struct TentStationDial: View {
             }
         }
         .scrollBounceBehavior(.basedOnSize)
+        .fixedSize(horizontal: false, vertical: true)
         .frame(minHeight: CGFloat(TentControlsPolicy.targetMinSide))
         .frame(maxWidth: 320)
         .accessibilityElement(children: .contain)
@@ -707,7 +730,9 @@ private struct TentBreakChip: View {
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(Color.white.opacity(0.85))
         .padding(.horizontal, 16)
+        .padding(.vertical, 8)
         .frame(minHeight: CGFloat(TentControlsPolicy.hitTargetFloor))
+        .fixedSize(horizontal: false, vertical: true)
         .aeroGlass(Capsule(), role: .surface, fallback: AnyShapeStyle(Color.white.opacity(0.08)),
                    hairline: Color.white.opacity(0.10), opaqueFill: TentStyle.opaqueGlass)
         .accessibilityElement(children: .ignore)

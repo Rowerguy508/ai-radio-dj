@@ -3,8 +3,10 @@ import Foundation
 // #465 item 3: the tent / tabletop pose (owner mockup onairly2-mockups/03-tent.png).
 //
 // There is no "tent" or "tabletop" pose type in Apple's SDK. The only signal is the hinge:
-// SwiftUI `onHingeChange(isEnabled:_:)` hands over a `DeviceHingeContext` whose optional
-// `hinge` has a `status` (.closed / .partiallyOpen / .fullyOpen) and an `angle`. That API is
+// SwiftUI `onHingeChange(isEnabled:_:)` is documented as
+// `nonisolated func onHingeChange(isEnabled: Bool = true, _ action: @escaping (DeviceHingeContext, DeviceHingeContext) -> Void) -> some View`.
+// It hands over a `DeviceHingeContext` whose optional `hinge` has a `status`
+// (.closed / .partiallyOpen / .fullyOpen) and an `angle`. That API is
 // iOS 27.1 and needs the Xcode 27 SDK; the required CI build is Xcode 26.6 with the iOS 26.5
 // SDK, so the app reads the hinge only under `#if compiler(>=6.4.2)` and
 // `if #available(iOS 27.1, *)`, and hands this file a plain `DuoHingeSample`.
@@ -135,6 +137,8 @@ public enum TentControlsPolicy {
     public static let skipSide: Double = 72
     public static let bigTransportMinSide: Double = 60
     /// Station dial stops, the break chip and the small chrome buttons.
+    /// Dial chips, the break chip and "Tap to show controls" use these as a
+    /// minHeight floor, not a cap, so accessibility text sizes can grow the chip.
     public static let targetMinSide: Double = 52
     public static let hitTargetFloor: Double = 44
 
@@ -205,6 +209,8 @@ public enum TentFace {
     }
 
     /// One VoiceOver summary for the whole face, so a listener hears it as one radio readout.
+    /// On Air (from `onAirLabel` only), the station and the next song are included here;
+    /// the visual tally and station column hide their own copy so they are not read twice.
     public static func accessibilitySummary(time: String, station: String, state: DJStudioState,
                                             next: (title: String, artist: String)?) -> String {
         var parts = ["\(AppName.display) radio face", time, "Station \(station)"]
