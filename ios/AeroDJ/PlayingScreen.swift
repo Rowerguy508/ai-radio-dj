@@ -131,21 +131,27 @@ struct PlayingScreen: View {
         switch mode {
         case .compact:
             // Folded redesign (wireframe 08): back + ⋯ in the bar, the station chip below.
-            // Wide (open Duo split view): one centred column, ⋯ in the column's header row.
-            let wide = FoldedColumnLayout.isWide(containerWidth: width)
+            // iPhone landscape stays the centred column. Only a wide-and-tall container
+            // (the unfolded Duo) moves the controls to the right.
+            let placement = FoldedColumnLayout.controlPlacement(containerWidth: width,
+                                                                containerHeight: Double(height))
+            let movesMoreIntoThePlayer = placement != .phoneBottom
             let openConnections = { segment = .connections; showWorkspace = true }
             FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
                          content: content, snapshot: snapshot, actions: actions, dj: dj,
                          search: search, studioSearch: studioSearch, timeSource: timeSource,
                          artworkNamespace: morphNamespace, speechLevel: studio.dj,
-                         moreMenu: wide ? FoldedMoreMenuItems(reviewCount: dj.reviewCount,
-                                                              onConnections: openConnections) : nil,
+                         moreMenu: movesMoreIntoThePlayer
+                            ? FoldedMoreMenuItems(reviewCount: dj.reviewCount, onConnections: openConnections)
+                            : nil,
                          onQueue: { segment = .queue; showWorkspace = true },
                          onTune: { segment = .tune; showWorkspace = true },
                          onReview: { segment = .connections; showWorkspace = true })
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
-                .foldedToolbar(heading.header, reviewCount: dj.reviewCount, showsMore: !wide,
+                .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
+                               showsMore: !movesMoreIntoThePlayer,
+                               hidesSystemBack: placement == .duoHorizontal,
                                onConnections: openConnections)
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {

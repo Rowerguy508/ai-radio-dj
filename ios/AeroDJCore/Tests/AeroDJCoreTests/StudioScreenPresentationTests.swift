@@ -338,4 +338,80 @@ final class FoldedColumnLayoutTests: XCTestCase {
         XCTAssertEqual(m.column, 500 - 64)
         XCTAssertLessThanOrEqual(m.artSide, m.column)
     }
+
+    func testPhonePortraitKeepsControlsAtTheBottom() {
+        for width in [320.0, 375, 390, 393, 402, 430, 440] {
+            XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: width, containerHeight: 800),
+                           .phoneBottom, "\(width) pt")
+        }
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: .nan, containerHeight: 800), .phoneBottom)
+    }
+
+    func testLandscapePhonesKeepTheCentredColumn() {
+        let phones = [(568.0, 320.0), (667, 375), (844, 390), (932, 430)]
+        // Side and bottom insets a landscape safe area can take off the full screen.
+        let safeAreas = [(0.0, 0.0), (47, 21), (59, 21), (20, 0)]
+        for (width, height) in phones {
+            for (side, bottom) in safeAreas {
+                let containerWidth = width - side * 2
+                let containerHeight = height - bottom
+                let placement = FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
+                                                                    containerHeight: containerHeight)
+                XCTAssertNotEqual(placement, .duoHorizontal,
+                                  "\(containerWidth) × \(containerHeight) is still a landscape phone")
+                if containerWidth >= FoldedColumnLayout.wideMinWidth {
+                    XCTAssertEqual(placement, .centredColumn, "\(containerWidth) × \(containerHeight)")
+                } else {
+                    XCTAssertEqual(placement, .phoneBottom, "\(containerWidth) × \(containerHeight)")
+                }
+            }
+        }
+    }
+
+    func testDuoWideIsHorizontalAndClearsTheFold() {
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 640, containerHeight: 820), .duoHorizontal)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 500, containerHeight: 820), .duoHorizontal)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 640, containerHeight: 499), .centredColumn)
+        // The compact-to-regular probe is wide and 680 pt tall. The horizontal split would
+        // pin Search Apple Music to the left edge, off a phone window.
+        let probeWidth = StudioLayoutMetrics.studioMinWidth - 64
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: probeWidth, containerHeight: 680),
+                       .centredColumn)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 652, containerHeight: 680), .centredColumn)
+        let layout = FoldedColumnLayout.duoHorizontal(containerWidth: 640, containerHeight: 820,
+                                                      artMin: 140, artMax: 420)
+        XCTAssertEqual(layout.leftWidth + layout.foldGutter + layout.contentWidth + layout.barWidth + layout.edgeInset * 2,
+                       640, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(layout.edgeInset + layout.leftWidth, 320)
+        XCTAssertGreaterThanOrEqual(layout.contentMinX, 320)
+        XCTAssertEqual(layout.barMinX, layout.contentMinX + layout.contentWidth)
+        XCTAssertGreaterThanOrEqual(layout.barWidth, StudioLayoutMetrics.touchTargetMin)
+        XCTAssertLessThan(layout.barWidth, layout.contentWidth, "the symbol bar stays thinner than the content column")
+        XCTAssertGreaterThanOrEqual(layout.contentWidth, 68 + 52, "play and skip fit side by side")
+        // 640 − 16 − 56 − 334. Wider than the Search Apple Music control measured at 203.7 pt.
+        XCTAssertEqual(layout.contentWidth, 234, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(layout.contentWidth, 204)
+        XCTAssertLessThanOrEqual(layout.contentMinX + 204, layout.barMinX)
+        // The narrowest Duo (500 pt wide) leaves 164 pt. Play and skip still fit.
+        // The full Search Apple Music label (203.7 pt) does not, so that column uses a shorter fallback.
+        let narrow = FoldedColumnLayout.duoHorizontal(containerWidth: 500, containerHeight: 820,
+                                                      artMin: 140, artMax: 420)
+        XCTAssertEqual(narrow.contentWidth, 164, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(narrow.contentWidth, 68 + 52)
+        XCTAssertLessThan(narrow.contentWidth, 204)
+        XCTAssertLessThanOrEqual(layout.artSide, layout.leftWidth)
+        XCTAssertEqual(layout.topClearance, FoldedColumnLayout.duoStatusClearance)
+        XCTAssertGreaterThanOrEqual(layout.foldGutter, 24)
+    }
+
+    func testDuoPresenceUsesPublishedDJStateOnly() {
+        XCTAssertFalse(DuoPresentation.showsVisualizer(isOnAir: false))
+        XCTAssertTrue(DuoPresentation.showsVisualizer(isOnAir: true))
+        XCTAssertNil(DuoPresentation.onAirBadge(nil))
+        XCTAssertNil(DuoPresentation.onAirBadge(""))
+        XCTAssertEqual(DuoPresentation.onAirBadge("On Air"), "On Air")
+        XCTAssertFalse(DuoPresentation.washAnimates)
+        XCTAssertEqual(DuoPresentation.washOpacity(reduceTransparency: true), 0)
+        XCTAssertGreaterThan(DuoPresentation.washOpacity(reduceTransparency: false), 0)
+    }
 }

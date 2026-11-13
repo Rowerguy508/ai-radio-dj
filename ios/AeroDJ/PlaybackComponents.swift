@@ -711,12 +711,21 @@ extension EnvironmentValues {
 /// tap shows by itself; this opens the Queue workspace, where `StartListeningView` lives.
 struct SearchAppleMusicButton: View {
     let action: () -> Void
+    /// Full label. The Duo column passes a shorter one when this label's ideal width
+    /// does not fit (`ViewThatFits`).
+    var title: String = "Search Apple Music"
+    var showsTitle: Bool = true
 
     var body: some View {
         Button(action: action) {
-            Label("Search Apple Music", systemImage: "magnifyingglass")
+            if showsTitle {
+                Label(title, systemImage: "magnifyingglass")
+            } else {
+                Label(title, systemImage: "magnifyingglass").labelStyle(.iconOnly)
+            }
         }
         .buttonStyle(.bordered)
+        .accessibilityLabel(title)
         .accessibilityIdentifier("playback.searchAppleMusic")
     }
 }
@@ -953,6 +962,7 @@ struct PlaybackScrubber: View {
             .foregroundStyle(dragging ? .primary : .secondary)
         }
         .accessibilityElement(children: .ignore)
+        .contentShape(Rectangle())
         .accessibilityLabel("Playback position")
         .accessibilityValue(PlaybackTimeFormat.accessibilityValue(position: position, duration: duration))
         .modifier(ScrubberAccessibility(isWired: isWired, canSeek: canSeek,

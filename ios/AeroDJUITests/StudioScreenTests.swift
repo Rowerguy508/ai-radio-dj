@@ -330,31 +330,18 @@ final class StudioScreenTests: XCTestCase {
         }
     }
 
-    /// Owner, build 25 on the unfolded Duo: the listen player in a wide, compact-class container
-    /// (640 pt, below the Studio switch) is one centred column. Play/Pause and the ready line
-    /// sit on the column's centre line, the scrubber, the Playing-from chip and ⋯ share its
-    /// edges, and the controls follow the DJ line without a large gap.
-    ///
-    /// Fry, #207: never screenshot before the layout settles. The test waits for the window and
-    /// the 640 × 820 container (`capture.duoContainer`) to hold their final frames, for the
-    /// column (`folded.wideColumn`) to hold a stable frame at the column width, and for every
-    /// spinner to go, then checks the column is centred in the window before saving.
-    ///
-    /// Run 40919120200: `folded.wideColumn`'s accessibility frame came back 376 pt while the
-    /// drawn column (art rule → `columnMinWidth` 360 pt), the scrubber track and the toolbar
-    /// were all 360 pt (230–590 pt in the failure recording). SwiftUI sizes a `.contain`
-    /// container's accessibility frame from its children, not from `.frame(width:)`, so it is
-    /// 8 pt wider each side than the layout. The edges are therefore measured on the toolbar,
-    /// whose station chip is `maxWidth: .infinity` and so spans the drawn column exactly;
-    /// the accessibility frame is used only for settling and centring.
+    /// Owner, build 44 (#460): the unfolded Duo (640 pt, compact class) is fully horizontal.
+    /// Artwork and the title stay left of the fold. The content column holds the horizontal
+    /// scrubber, play/pause, skip, the station pill and the DJ chip. The thin bar holds
+    /// back, more, queue and tune.
     @MainActor
-    func testDuoWideListenPlayerIsOneCentredColumn() throws {
+    func testDuoWideControlsSitInTheRightRail() throws {
         try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
         let app = launch(scenario: "duoWideReady")
         let any = app.descendants(matching: .any)
         XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertFalse(any["layout.studio"].exists, "the Duo split stays the compact player")
 
-        // Final window and container size first: everything below is measured inside them.
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 5), "no window\n\(app.debugDescription)")
         let windowFrame = try XCTUnwrap(settledFrame(of: window, "window"))
@@ -366,63 +353,61 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box),
                       "container \(box) outside window \(windowFrame)")
 
-        // Column: exists, holds still, and is as wide as the column rule allows in 640 pt
-        // (FoldedColumnLayout: 360…min(640 − 2 × 32, 560) = 560), plus the accessibility
-        // frame's slack (see `DuoWideColumn`).
-        let column = any["folded.wideColumn"]
-        XCTAssertTrue(column.waitForExistence(timeout: 10), "wide column missing\n\(app.debugDescription)")
-        let col = try XCTUnwrap(settledFrame(of: column, "wide column") {
-            $0.width >= DuoWideColumn.minWidth - 1 && $0.width <= DuoWideColumn.maxWidth + DuoWideColumn.accessibilitySlack
-        }, "wide column never settled at a column width: \(column.frame)")
+        let track = any["folded.trackColumn"]
+        let content = any["folded.contentColumn"]
+        let bar = any["folded.systemBar"]
+        let fold = any["folded.fold"]
+        XCTAssertTrue(track.waitForExistence(timeout: 10), "track column missing\n\(app.debugDescription)")
+        XCTAssertTrue(content.waitForExistence(timeout: 10), "content column missing\n\(app.debugDescription)")
+        XCTAssertTrue(bar.waitForExistence(timeout: 10), "system bar missing\n\(app.debugDescription)")
+        assertOneMatch(any, "folded.trackColumn", "duo wide")
+        assertOneMatch(any, "folded.contentColumn", "duo wide")
+        let trackFrame = try XCTUnwrap(settledFrame(of: track, "track column"))
+        let contentFrame = try XCTUnwrap(settledFrame(of: content, "content column"))
+        let barFrame = try XCTUnwrap(settledFrame(of: bar, "system bar") {
+            $0.width >= 44 && $0.width <= 80
+        }, "system bar never settled: \(bar.frame)")
+        let foldFrame = try XCTUnwrap(settledFrame(of: fold, "fold"))
 
-        // No spinner anywhere in the app (the Play/Pause face, art or queue loading).
         let spinners = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"),
                                                  object: app.activityIndicators)
         XCTAssertEqual(XCTWaiter().wait(for: [spinners], timeout: 10), .completed,
                        "a spinner is still showing\n\(app.debugDescription)")
 
         let play = app.buttons["transport.playPause"]
+        let skip = app.buttons["transport.skip"]
         let ready = any["dj.ready"]
         let scrubber = any["playback.progress"]
         let chip = any["station.title"]
         let more = any["folded.more"]
-        let tune = app.buttons["transport.tune"]   // wide: Tune is only in the toolbar
-        for (name, element) in [("play", play), ("ready", ready), ("scrubber", scrubber),
-                                ("chip", chip), ("more", more), ("tune", tune)] {
+        let tune = app.buttons["transport.tune"]
+        let queue = app.buttons["queue.affordance"]
+        let back = app.buttons["folded.back"]
+        let title = app.staticTexts["Morning Light"]
+        for (name, element) in [("play", play), ("skip", skip), ("ready", ready), ("scrubber", scrubber),
+                                ("chip", chip), ("more", more), ("tune", tune), ("queue", queue),
+                                ("back", back), ("title", title)] {
             XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing\n\(app.debugDescription)")
         }
-        // The drawn column: chip leading edge to Tune's trailing edge.
-        let edges = (minX: chip.frame.minX, maxX: tune.frame.maxX)
-        let drawn = edges.maxX - edges.minX
-        let frames = "column(ax) \(col) drawn \(edges) scrubber \(scrubber.frame) chip \(chip.frame) "
-            + "tune \(tune.frame) more \(more.frame) play \(play.frame) ready \(ready.frame)"
-        XCTAssertGreaterThanOrEqual(drawn, DuoWideColumn.minWidth - 1, "column below the minimum: \(frames)")
-        XCTAssertLessThanOrEqual(drawn, DuoWideColumn.maxWidth + 1, "column above the cap: \(frames)")
-        XCTAssertLessThanOrEqual(drawn, col.width + 1, "drawn column wider than its container: \(frames)")
-        XCTAssertEqual(col.midX, box.midX, accuracy: 2, "column centred in the container")
-        XCTAssertEqual(col.midX, windowFrame.midX, accuracy: 2, "column centred in the window")
-        let midX = col.midX
-        XCTAssertEqual((edges.minX + edges.maxX) / 2, midX, accuracy: 2, "toolbar centred: \(frames)")
-        XCTAssertEqual(scrubber.frame.minX, edges.minX, accuracy: 2, "scrubber on the column's leading edge: \(frames)")
-        XCTAssertEqual(scrubber.frame.maxX, edges.maxX, accuracy: 2, "scrubber on the column's trailing edge: \(frames)")
-        XCTAssertEqual(play.frame.midX, midX, accuracy: 2, "Play/Pause on the column centre: \(frames)")
-        XCTAssertEqual(ready.frame.midX, midX, accuracy: 2, "DJ line centred: \(frames)")
-        XCTAssertEqual(scrubber.frame.midX, midX, accuracy: 2, "scrubber centred: \(frames)")
-        XCTAssertEqual(more.frame.maxX, edges.maxX, accuracy: 2, "⋯ on the column edge: \(frames)")
-        XCTAssertLessThanOrEqual(scrubber.frame.minY - ready.frame.maxY, 48, "no gap under the DJ line: \(frames)")
-        // Re-check nothing moved while the assertions ran, then capture.
-        XCTAssertEqual(column.frame.midX, col.midX, accuracy: 0.5, "column moved before the screenshot")
+        let frames = "track \(trackFrame) content \(contentFrame) bar \(barFrame) fold \(foldFrame) "
+            + "title \(title.frame) play \(play.frame) scrubber \(scrubber.frame) ready \(ready.frame)"
+        XCTAssertLessThan(trackFrame.maxX, foldFrame.minX + 2, "artwork stays left of the fold: \(frames)")
+        XCTAssertLessThan(title.frame.maxX, contentFrame.minX, "title stays left of the controls: \(frames)")
+        XCTAssertGreaterThanOrEqual(contentFrame.minX, foldFrame.maxX - 2, "controls start right of the fold: \(frames)")
+        XCTAssertLessThan(contentFrame.maxX, barFrame.minX + 8, "content column is left of the symbol bar: \(frames)")
+        for (name, element) in [("play", play), ("skip", skip), ("scrubber", scrubber), ("chip", chip), ("ready", ready)] {
+            XCTAssertGreaterThanOrEqual(element.frame.midX, contentFrame.minX - 4, "\(name) left the content column: \(frames)")
+            XCTAssertLessThanOrEqual(element.frame.midX, contentFrame.maxX + 4, "\(name) left the content column: \(frames)")
+        }
+        for (name, element) in [("back", back), ("more", more), ("queue", queue), ("tune", tune)] {
+            XCTAssertGreaterThanOrEqual(element.frame.midX, barFrame.minX - 4, "\(name) left the symbol bar: \(frames)")
+        }
+        XCTAssertGreaterThan(scrubber.frame.width, scrubber.frame.height, "the scrubber stays horizontal: \(frames)")
+        XCTAssertGreaterThanOrEqual(play.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(back.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(more.frame.minY, barFrame.minY + 40, "chrome starts below the status clearance")
         XCTAssertEqual(container.frame.width, box.width, accuracy: 0.5, "container resized before the screenshot")
         save(app, "duo-wide-ready")
-    }
-
-    /// `FoldedColumnLayout` in a 640 pt container (the UI tests don't link AeroDJCore):
-    /// 360…min(640 − 2 × 32, 560). `accessibilitySlack`: the column's `.contain` frame can be
-    /// up to 8 pt wider each side than the drawn column (run 40919120200: 376 for 360).
-    private enum DuoWideColumn {
-        static let minWidth: CGFloat = 360
-        static let maxWidth: CGFloat = 560
-        static let accessibilitySlack: CGFloat = 2 * 8 + 1
     }
 
     /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and
@@ -450,6 +435,65 @@ final class StudioScreenTests: XCTestCase {
         return nil
     }
 
+    /// 640 × 820, nothing playing and playing. Every control in the content column is
+    /// hittable and its frame sits inside the window and inside that column.
+    @MainActor
+    func testDuoWideColumnControlsStayInsideTheWindow() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        assertDuoColumnControls(scenario: "duoWideEmpty", names: ["search": "playback.searchAppleMusic",
+                                                                   "station": "station.title"])
+        assertDuoColumnControls(scenario: "duoWideReady", names: ["play": "transport.playPause",
+                                                                  "skip": "transport.skip",
+                                                                  "station": "station.title",
+                                                                  "dj": "dj.ready",
+                                                                  "scrubber": "playback.progress"])
+    }
+
+    /// `names` maps a short label to an accessibility identifier in the content column.
+    @MainActor
+    private func assertDuoColumnControls(scenario: String, names: [String: String]) {
+        let app = launch(scenario: scenario)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window\n\(app.debugDescription)")
+        guard let windowFrame = settledFrame(of: window, "window") else { return }
+        let container = any["capture.duoContainer"]
+        XCTAssertTrue(container.waitForExistence(timeout: 5), "Duo container missing\n\(app.debugDescription)")
+        guard let box = settledFrame(of: container, "Duo container", isFinal: {
+            abs($0.width - 640) <= 1 && abs($0.height - 820) <= 1
+        }) else { return }
+        XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box),
+                      "container \(box) outside window \(windowFrame)")
+        assertOneMatch(any, "folded.contentColumn", scenario)
+        assertOneMatch(any, "folded.trackColumn", scenario)
+        let column = any["folded.contentColumn"]
+        XCTAssertTrue(column.waitForExistence(timeout: 10), "content column missing\n\(app.debugDescription)")
+        guard let columnFrame = settledFrame(of: column, "content column") else { return }
+        for (name, identifier) in names {
+            let element = any[identifier]
+            XCTAssertTrue(element.waitForExistence(timeout: 8),
+                          "\(name) missing in \(scenario)\n\(app.debugDescription)")
+            guard let frame = settledFrame(of: element, name) else { continue }
+            let detail = "\(scenario) \(name) \(frame) window \(windowFrame) column \(columnFrame)"
+            XCTAssertTrue(element.isHittable, "\(name) is not hittable: \(detail)")
+            XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(frame),
+                          "\(name) is outside the window: \(detail)")
+            XCTAssertTrue(columnFrame.insetBy(dx: -1, dy: -1).contains(frame),
+                          "\(name) is outside the content column: \(detail)")
+        }
+        app.terminate()
+    }
+
+    /// The column id names one container. More than one match means the id was copied onto its controls.
+    @MainActor
+    private func assertOneMatch(_ any: XCUIElementQuery, _ identifier: String, _ context: String) {
+        let matches = any.matching(NSPredicate(format: "identifier == %@", identifier))
+        XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 10),
+                      "\(identifier) missing in \(context)")
+        XCTAssertEqual(matches.count, 1, "\(identifier) matched \(matches.count) elements in \(context)")
+    }
+
     /// Open (Studio): `.ready` must not print the break headline or its VoiceOver detail.
     /// Folded: a quiet, static "DJ break after this song" line shows instead (Fry, #161).
     @MainActor
@@ -466,6 +510,14 @@ final class StudioScreenTests: XCTestCase {
         } else {
             XCTAssertTrue(app.descendants(matching: .any)["dj.ready"].exists, "folded .ready shows its quiet line")
             XCTAssertFalse(shows(app, "On Air"), ".ready never claims the DJ is speaking")
+            XCTAssertFalse(app.descendants(matching: .any)["folded.contentColumn"].exists,
+                           "a phone-width layout does not use the Duo content column")
+            XCTAssertFalse(app.descendants(matching: .any)["folded.systemBar"].exists,
+                           "a phone-width layout does not use the Duo symbol bar")
+            let play = app.buttons["transport.playPause"]
+            let ready = app.descendants(matching: .any)["dj.ready"]
+            XCTAssertGreaterThan(play.frame.minY, ready.frame.maxY,
+                                 "phone controls stay under the DJ line, not beside it")
         }
         XCTAssertTrue(app.buttons["transport.playPause"].exists)
         save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-line")
