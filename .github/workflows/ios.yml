@@ -12,6 +12,13 @@ permissions:
   contents: read
   pull-requests: read # paths-filter lists PR files via the API
 
+# A new push to a PR branch cancels that branch's stale run. Pushes to main
+# are not cancelled mid-run. workflow_dispatch and schedule (none here) would
+# keep their own group via github.ref and would not be cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # macOS jobs: the owner's self-hosted Mac (labels self-hosted, macOS, aerodj) runs only
 # same-repo pull_request events, and only once the repo variable AERODJ_SELF_HOSTED is '1'.
 # The repo is public, so fork PRs (head repo != this repo), pushes and every other event
