@@ -142,39 +142,67 @@ private struct DuoRailIconButton: View {
 }
 
 /// ⋯ for the rail only. The navigation-bar menu is untouched.
+/// A system menu row measured 38 pt, under the 44 pt target, so this popover owns the row height.
 private struct DuoRailMoreMenu: View {
     let reviewCount: Int?
     let onConnections: () -> Void
     let onTune: () -> Void
+    @State private var open = false
 
     var body: some View {
-        Menu {
-            Button(action: onConnections) {
-                Label("Connections", systemImage: "link")
-            }
-            .accessibilityIdentifier("more.connections")
-            if let reviewCount, reviewCount > 0 {
-                Button(action: onConnections) {
-                    Label("Review \(reviewCount) shared \(reviewCount == 1 ? "item" : "items")",
-                          systemImage: "exclamationmark.bubble")
-                }
-                .accessibilityIdentifier("more.review")
-            }
-            Button(action: onTune) {
-                Label("Tune station", systemImage: "slider.horizontal.3")
-                    .frame(minHeight: 44)
-            }
-            .accessibilityHint("Opens the tuner. Music continues.")
-            .accessibilityIdentifier("transport.tune")
-        } label: {
+        Button { open = true } label: {
             Image(systemName: "ellipsis")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .accessibilityLabel(reviewCount.map { $0 > 0 ? "More, \($0) to review" : "More" } ?? "More")
         .accessibilityIdentifier("folded.more")
+        .popover(isPresented: $open, arrowEdge: .leading) {
+            VStack(alignment: .leading, spacing: 0) {
+                row("Connections", systemImage: "link", identifier: "more.connections", action: onConnections)
+                if let reviewCount, reviewCount > 0 {
+                    row("Review \(reviewCount) shared \(reviewCount == 1 ? "item" : "items")",
+                        systemImage: "exclamationmark.bubble", identifier: "more.review", action: onConnections)
+                }
+                row("Tune station", systemImage: "slider.horizontal.3", identifier: "transport.tune",
+                    hint: "Opens the tuner. Music continues.", action: onTune)
+            }
+            .padding(.vertical, 4)
+            .frame(minWidth: 220)
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private func row(_ title: String, systemImage: String, identifier: String, hint: String? = nil,
+                     action: @escaping () -> Void) -> some View {
+        Button {
+            open = false
+            action()
+        } label: {
+            Label(title, systemImage: systemImage)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .padding(.horizontal, 16)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(RailHint(hint))
+        .accessibilityIdentifier(identifier)
+    }
+}
+
+private struct RailHint: ViewModifier {
+    var hint: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let hint, !hint.isEmpty {
+            content.accessibilityHint(hint)
+        } else {
+            content
+        }
     }
 }
 
