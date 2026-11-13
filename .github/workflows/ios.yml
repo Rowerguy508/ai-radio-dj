@@ -648,9 +648,8 @@ jobs:
   # Not a required check (continue-on-error, and not added to branch protection).
   # Runs only where macOS minutes are worth it: a push to integration/device-duo,
   # a PR whose branch or title references #465, or a manual workflow_dispatch.
-  # Image label and Xcode path: actions/runner-images#14404. The issue's original
-  # beta path is gone; the current xcode-27 image readme lists Xcode 27.1
-  # (default, iOS 27.1 SDK) at /Applications/Xcode_27.1.app.
+  # Image label: actions/runner-images#14404 (`xcode-27`). The toolchain is
+  # /Applications/Xcode_27.2.app, the same Xcode TestFlight archives with.
   xcode-27-build:
     name: iOS build (Xcode 27, not required)
     if: >-
@@ -663,11 +662,11 @@ jobs:
     timeout-minutes: 45
     env:
       XCODEGEN_VERSION: 2.46.0
-      XCODE_PATH: /Applications/Xcode_27.1.app
+      XCODE_PATH: /Applications/Xcode_27.2.app
       DERIVED_DATA: ios/build/DerivedData-xcode27
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode 27.1 and print the toolchain
+      - name: Select Xcode 27.2 and print the toolchain
         run: |
           set -euo pipefail
           if [ ! -d "$XCODE_PATH" ]; then
