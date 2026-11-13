@@ -859,6 +859,7 @@ private struct DuoUpNextList: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
         .accessibilityLabel(rows.map { $0.detail.isEmpty ? $0.title : "\($0.title), \($0.detail)" }.joined(separator: ". "))
         .accessibilityHint("Opens the queue")
         .accessibilityIdentifier("duo.upNext")
