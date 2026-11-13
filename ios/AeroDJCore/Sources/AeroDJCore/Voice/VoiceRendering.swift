@@ -789,21 +789,28 @@ public struct VoiceRenderer: Sendable {
     /// `scope` (owner, Nov 9 2026): `.transitionsOnly` is the rule above; `.noLines` keeps every
     /// cue local; `.allLines` (consent to copy v3, #432) lets every attributed cue go. A cue with no
     /// attribution is local-only whatever the scope.
+    /// #400: the same rule, now read from the cue's one privacy class (`CuePrivacy.classify`).
     public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?,
                                       scope: CloudVoiceScope = .transitionsOnly) -> Bool {
-        guard let attribution else { return false }
-        switch scope {
-        case .noLines: return false
-        case .allLines: return true
-        case .transitionsOnly: break
-        }
-        switch attribution {
-        case .personalContext, .stationName: return false
-        case .trackMetadata(_, let origin): guard origin == .catalog else { return false }
-        case .presenter: break
-        }
-        return cue.kind == .transition && !cue.isContent && cue.source == nil && cue.provenance == nil
+        CuePrivacy.classify(cue, attribution: attribution).mayLeaveDevice(scope: scope)
     }
+
+    /// #400 (-Sentinel): the one per-cue choke point. An on-device, free route is always usable.
+    /// Any other route is usable only while a cue of class `privacy` may leave the device under
+    /// the consent scope read now (`cloudScope()`, live). `render` asks it immediately before
+    /// that route's cache lookup, immediately before its provider call (inside the timed task),
+    /// and immediately before and after its cache write, so a decline that lands mid-render stops
+    /// the next step: no text is sent, no clip is cached or served, and the cue falls through to
+    /// the on-device route.
+    public func mayUse(_ route: VoiceRoute, for privacy: CuePrivacyClass) -> Bool {
+        route.isLocalAndFree || privacy.mayLeaveDevice(scope: cloudScope())
+    }
+
+    /// Attempt detail when the choke point refused a route mid-render. Fixed text, no cue text.
+    public static let privacyGateSkip = "cue no longer eligible: off-device route skipped"
+
+    /// Thrown inside the timed provider task when the choke point refuses just before the call.
+    struct PrivacyGateRefusal: Error {}
 
     /// Renders `cue` on the first route that succeeds. Unless `mayLeaveDevice(cue, attribution:)`
     /// holds, only `isLocalAndFree` routes are used: any route that leaves the device or is paid
@@ -815,9 +822,10 @@ public struct VoiceRenderer: Sendable {
         var attempts: [VoiceAttempt] = []
         // Decided once, before any cache key, reservation or provider call (#176). Ineligible
         // cues use `isLocalAndFree` routes only.
+        let privacy = CuePrivacy.classify(cue, attribution: attribution)
         let scope = cloudScope()
-        let offDeviceAllowed = Self.mayLeaveDevice(cue, attribution: attribution, scope: scope)
-        let widened = offDeviceAllowed && !Self.mayLeaveDevice(cue, attribution: attribution, scope: .transitionsOnly)
+        let offDeviceAllowed = privacy.mayLeaveDevice(scope: scope)
+        let widened = offDeviceAllowed && !privacy.mayLeaveDevice(scope: .transitionsOnly)
         let sources = (cue.sourceItemID.map { [$0] } ?? []) + (widened ? [Self.allLinesClipTag] : [])
         let token = revocations.token()  // before any synthesis: a later purge of `sources` wins
         if revocations.purgePending(sources) {
@@ -830,6 +838,12 @@ public struct VoiceRenderer: Sendable {
                 // Local-only cue: its text never reaches this off-device or paid route, its cache
                 // keys or its budget (Echo: a paid route without `leavesDevice` is not local).
                 attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.localOnlySkip)))
+                continue
+            }
+            if !mayUse(route, for: privacy) {
+                // #400 gate 1 (lookup): consent changed since the cue started. Neither this route's
+                // cache nor its provider is touched.
+                attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
                 continue
             }
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
@@ -857,8 +871,11 @@ public struct VoiceRenderer: Sendable {
             }
             let context = RequestContext(stationID: stationID, isReusableGeneric: false)
             do {
+                let renderer = self
                 let artifact = try await Self.withTimeout(route.timeout) {
-                    try await route.provider.synthesize(text, voice: route.voice, context: context)
+                    // #400 gate 2 (TTS): checked last, right before the text is handed to the provider.
+                    guard renderer.mayUse(route, for: privacy) else { throw PrivacyGateRefusal() }
+                    return try await route.provider.synthesize(text, voice: route.voice, context: context)
                 }
                 if let r = reservation { await budget.commit(r, microdollars: route.cost(characters: artifact.billableUnits)) }
                 guard !artifact.data.isEmpty, artifact.durationSeconds.isFinite, artifact.durationSeconds > 0 else {
@@ -877,7 +894,22 @@ public struct VoiceRenderer: Sendable {
                     attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
                     return .failure(Failure(reason: .renderFailed, attempts: attempts))
                 }
-                if useCache { await cache.store(audio, for: key) }
+                guard mayUse(route, for: privacy) else {
+                    // #400 gate 3 (cache write): consent withdrawn while the provider ran. The clip
+                    // is neither cached nor returned; the cue falls through to the on-device route.
+                    attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
+                    continue
+                }
+                if useCache {
+                    await cache.store(audio, for: key)
+                    if !mayUse(route, for: privacy) {
+                        // Withdrawn while the write was in flight; the decline's own purge may have
+                        // run before it. Remove off-device clips again and do not return this one.
+                        await purgeCloudClips()
+                        attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
+                        continue
+                    }
+                }
                 if revocations.revoked(sources, since: token) {
                     // A purge landed while the write was in flight and may have run before it:
                     // remove what we just wrote. (A purge after the write removes it itself.)
@@ -887,6 +919,10 @@ public struct VoiceRenderer: Sendable {
                 }
                 attempts.append(VoiceAttempt(providerID: route.providerID, result: .rendered))
                 return .success(RenderedClip(cueID: cue.id, audio: audio, cacheKey: key, attempts: attempts))
+            } catch is PrivacyGateRefusal {
+                // Refused before the call: nothing was sent or billed.
+                if let r = reservation { await budget.release(r) }
+                attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
             } catch is CancellationError {
                 // Cancelled by the caller (skip, stop, consent revoked): release the hold and stop trying routes.
                 if let r = reservation { await budget.release(r) }
