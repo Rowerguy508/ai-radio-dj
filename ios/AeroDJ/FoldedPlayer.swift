@@ -342,13 +342,19 @@ struct FoldedPlayer: View {
     }
 
     /// A still wash behind the art, from the clock's day part. It does not animate.
+    /// The day part is re-read at the top of each calendar hour so the tint does not go stale.
     private var dayWash: some View {
-        let hour = Calendar.current.component(.hour, from: Date())
-        let opacity = DuoPresentation.washOpacity(reduceTransparency: reduceTransparency)
-        return DuoDayWashFill(part: DayPart(hour: hour))
-            .opacity(opacity)
-            .allowsHitTesting(false)
-            .accessibilityIdentifier("folded.dayWash")
+        let calendar = Calendar.current
+        return TimelineView(CalendarHourSchedule()) { context in
+            let hour = calendar.component(.hour, from: context.date)
+            let opacity = DuoPresentation.washOpacity(reduceTransparency: reduceTransparency)
+            DuoDayWashFill(part: DayPart(hour: hour))
+                .opacity(opacity)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("folded.dayWash")
+        }
+        // A parent transaction must not animate the hourly gradient swap.
+        .transaction { $0.disablesAnimations = true }
     }
 
     private var heroTrack: TrackInfo? {
@@ -980,23 +986,30 @@ private struct DuoUpNextList: View {
     }
 }
 
+/// Yields the start of the current hour, then each following hour start, from `Calendar.current`.
+/// A fixed 3600-second period can land up to 59 minutes late and skips or duplicates an hour around DST.
+private struct CalendarHourSchedule: TimelineSchedule {
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> some Sequence<Date> {
+        DayWashSchedule.hourStarts(from: startDate, calendar: .current)
+    }
+}
+
 /// Still day-part tint behind Duo artwork. No animation, so Reduce Motion changes nothing.
+/// Colours come from `DayWashPalette` so the values stay identical to #462 and Linux can test them.
 private struct DuoDayWashFill: View {
     let part: DayPart
 
     var body: some View {
-        LinearGradient(colors: [tint.opacity(0.9), tint.opacity(0)], startPoint: .top, endPoint: .bottom)
+        let colors = DayWashPalette.colors(for: part)
+        LinearGradient(colors: [Color(colors.top).opacity(0.9), Color(colors.bottom).opacity(0)],
+                       startPoint: .top, endPoint: .bottom)
             .allowsHitTesting(false)
     }
+}
 
-    private var tint: Color {
-        switch part {
-        case .earlyMorning: Color(red: 0.96, green: 0.78, blue: 0.62)
-        case .morning: Color(red: 0.98, green: 0.86, blue: 0.55)
-        case .afternoon: Color(red: 0.62, green: 0.78, blue: 0.92)
-        case .evening: Color(red: 0.86, green: 0.58, blue: 0.42)
-        case .lateNight: Color(red: 0.35, green: 0.42, blue: 0.72)
-        }
+private extension Color {
+    init(_ rgb: DayWashPalette.RGB) {
+        self.init(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 }
 
