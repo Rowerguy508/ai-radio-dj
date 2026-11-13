@@ -601,6 +601,7 @@ jobs:
                       duo-wide-ready; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
+          ls "$SHOTS" | grep -q '^duo-arrangement_' || { echo "missing duo-arrangement screenshot"; exit 1; }
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
       - name: Upload screenshots
         if: always()

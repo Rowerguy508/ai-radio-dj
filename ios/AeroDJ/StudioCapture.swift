@@ -67,6 +67,9 @@ enum StudioCaptureScenario: String {
     /// The same 640 × 820 pt container with nothing playing, so Search Apple Music is the
     /// content column's first control.
     case duoWideEmpty
+    /// Regular width at the same 640 × 820 pt: artwork and controls in one pane, the
+    /// up-next timeline in the other. The compact-class `duoWideReady` container is unchanged.
+    case duoArrangement
     /// The DJ is on air: a break became ready and the player reported it started
     /// (`breakReady` then `playbackStarted`, the same events the audio player sends), so the
     /// folded player draws the ON AIR pill. At AX5 on a phone it is pinned above the
@@ -101,7 +104,7 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.stopped
         case .error:
             return PlaybackFixtures.recoverableError
-        case .duoWideReady:
+        case .duoWideReady, .duoArrangement:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
             // which draws the scrubber as a non-interactive element.
             var playing = PlaybackFixtures.playing
@@ -167,6 +170,8 @@ struct StudioCaptureView: View {
                     .accessibilityIdentifier("capture.shell")
             } else if scenario == .duoWideReady || scenario == .duoWideEmpty {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario == .duoArrangement {
+                ArrangementCaptureContainer(studio: dependencies.studio)
             } else {
                 NavigationStack {
                     if showsProbe {
@@ -229,7 +234,7 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady, .duoWideReady:
+            case .breakReady, .duoWideReady, .duoArrangement:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .onAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
