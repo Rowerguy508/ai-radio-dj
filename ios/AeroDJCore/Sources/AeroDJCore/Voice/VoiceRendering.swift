@@ -677,8 +677,10 @@ public struct VoiceRenderer: Sendable {
     public let budget: VoiceBudget
     public let cache: any AudioCache
     public let revocations: NarrationRevocations
-    /// Read once per cue, before any cache key, reservation or provider call, so a consent
-    /// change applies to the very next line. Every narrowed view of this renderer shares it.
+    /// Read live: once when the cue starts (before any cache key, reservation or provider call),
+    /// then again by `mayUse` at each #400 gate (before and after an off-device route's cache
+    /// read, inside the timed provider task, before and after its cache write), so a consent
+    /// change applies mid-cue, not only from the next line. Every narrowed view shares it.
     public let cloudScope: @Sendable () -> CloudVoiceScope
 
     public init(routes: [VoiceRoute], budget: VoiceBudget, cache: any AudioCache,
@@ -798,7 +800,7 @@ public struct VoiceRenderer: Sendable {
     /// #400 (-Sentinel): the one per-cue choke point. An on-device, free route is always usable.
     /// Any other route is usable only while a cue of class `privacy` may leave the device under
     /// the consent scope read now (`cloudScope()`, live). `render` asks it immediately before
-    /// that route's cache lookup, immediately before its provider call (inside the timed task),
+    /// and after that route's cache lookup, immediately before its provider call (inside the timed task),
     /// and immediately before and after its cache write, so a decline that lands mid-render stops
     /// the next step: no text is sent, no clip is cached or served, and the cue falls through to
     /// the on-device route.
@@ -851,6 +853,13 @@ public struct VoiceRenderer: Sendable {
             let key = Self.cacheKey(text: text, route: route)
             if useCache, let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
                 // Keys are text + voice, so the clip may carry other items' ids: check both.
+                guard mayUse(route, for: privacy) else {
+                    // #400 gate 1b (after the read; Atlas's B1 on #498): consent was withdrawn while the
+                    // read was in flight. A plain decline revokes no item id, so the revocation check
+                    // below would pass: never hand back this cloud clip; fall through to the on-device route.
+                    attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
+                    continue
+                }
                 let hitSources = Array(Set(sources).union(cached.sourceItemIDs))
                 if revocations.revoked(hitSources, since: token) || revocations.purgePending(hitSources) {
                     // Revoked while the read was in flight: never hand back, and remove, that clip.
@@ -905,6 +914,9 @@ public struct VoiceRenderer: Sendable {
                     if !mayUse(route, for: privacy) {
                         // Withdrawn while the write was in flight; the decline's own purge may have
                         // run before it. Remove off-device clips again and do not return this one.
+                        // Deliberately fail-closed (Echo's nit on #498): this drops every off-device
+                        // clip, including transition clips still allowed when the scope only narrows
+                        // from all lines to transitions only; those just render again.
                         await purgeCloudClips()
                         attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
                         continue
