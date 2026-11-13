@@ -249,13 +249,18 @@ public struct BroadcastFactGatherer: Sendable {
     public let providers: [any BroadcastFactProvider]
     public init(providers: [any BroadcastFactProvider]) { self.providers = providers }
 
-    public func gather(_ request: FactRequest) async -> (facts: [BroadcastFact], counts: FactCueCounts) {
+    /// `shouldContinue` (#487, -Echo): re-read before every provider, with `Task.isCancelled`.
+    /// The default keeps callers that only cancel the task. The wiring passes its generation
+    /// ticket: a withdrawal can land before the refresh task is in `inflight`, so there is
+    /// nothing to cancel and `Task.isCancelled` stays false while the next provider would be asked.
+    public func gather(_ request: FactRequest, shouldContinue: @Sendable () -> Bool = { true }) async -> (facts: [BroadcastFact], counts: FactCueCounts) {
         var counts = FactCueCounts()
         var facts: [BroadcastFact] = []
         for provider in providers {
             // #410 n2 (-Fry): the refresh was cancelled (a switch turned off, location withdrawn):
             // no further provider is asked, so no request goes out after the change.
-            guard !Task.isCancelled else { break }
+            // #487: the same stop when the ticket is already stale and cancel has not landed.
+            guard !Task.isCancelled, shouldContinue() else { break }
             counts.offered += 1
             if provider.kind.needsLocation, request.area == nil {
                 // Not called at all: no location reaches a provider without consent.
