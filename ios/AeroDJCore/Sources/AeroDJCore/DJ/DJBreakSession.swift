@@ -458,13 +458,23 @@ public final class DJBreakSession {
     }
 
     /// Adds songs the plan does not already have and plans only the new tail.
+    /// A tail append reads the clock. If the time of day moved since the plan was written
+    /// (paused at 8 AM, songs filled in at 2 PM), the breaks already queued are re-planned
+    /// too. Planning only the new songs would stamp the plan as "now" and leave the next
+    /// break greeting the morning, and a later resume would see nothing left to re-plan.
     private func adoptAppendedSongs(_ songs: [DJTrack]) {
         var seen = Set(tracks.map(\.id))
         let fresh = songs.filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
         guard !fresh.isEmpty else { return }
         let start = tracks.count
+        let dayPartMoved = plannedDayPart.map { $0 != currentDayPart() } ?? false
         tracks.append(contentsOf: fresh)
-        replan(from: max(0, start - 1), keepingThrough: start - 2)
+        if dayPartMoved {
+            writer.greetAgain()
+            replanForNewDayPart(keepingThrough: playing ?? -1)
+        } else {
+            replan(from: max(0, start - 1), keepingThrough: start - 2)
+        }
     }
 
     /// Stops a station-intro render that has not aired. Does not wait: the new song must not.
