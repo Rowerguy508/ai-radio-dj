@@ -53,6 +53,9 @@ final class StationQueuePlayer {
     /// The queue the DJ is planning, so a late fill can be matched or dropped.
     private var armedAppendGeneration = 0
     private var armedAppendEpoch = 0
+    /// #438: the studio the last station row tap used, so a station queue is tagged with the
+    /// station it plays (`StationQueueOwner`). Nil before the first tap: the old tag is kept.
+    private weak var studio: StudioPresentationModel?
     /// #454/#442: airs a ready station intro at the first song boundary through the break path
     /// (never over a song). Set in `init`, so a begun intro is taken at every natural boundary.
     var airStationIntro: (@MainActor (PreparedDJBreak) -> Void)? {
@@ -172,6 +175,7 @@ final class StationQueuePlayer {
     @discardableResult
     func openStation(_ trigger: StationOpenTrigger, _ source: StationStartSource,
                      studio: StudioPresentationModel) async -> CreatedStationOpenOutcome {
+        self.studio = studio
         let station = self.station
         let music = self.music
         let recipeID: UUID
@@ -291,7 +295,12 @@ final class StationQueuePlayer {
         let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName, origin: $0.origin) }
         // #332: read at start time, like a song tap; consent runs inside (`forQueue()`).
         let offer = StationStartBriefing.offer(for: kind, briefing: briefing)
-        let stationRef = music.snapshot.station
+        // #438: the queue belongs to the committed station, not to whatever played before it.
+        let owner = studio.flatMap {
+            StationQueueOwner.station(lastApplied: $0.lastAppliedRecipeID, recipes: $0.recipes.recipes,
+                                      committed: station.committedDisplayed)
+        }
+        let stationRef = StationQueueOwner.tag(owner: owner, playing: music.snapshot.station)
         do {
             try await TapPlaySequence.run(
             reserve: { djSession.reserveQueueSetup() },
