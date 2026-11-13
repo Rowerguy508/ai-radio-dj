@@ -206,6 +206,17 @@ so the compact layout and its sheet keep their radii.
 - **Switch rule:** `GeometryReader` on the root of the playing screen. If
   `width >= studioMinWidth` → Studio; else → compact. The switch is the only
   layout decision. Nothing else reads size class to pick a layout.
+- **Wide listen layout:** below the Studio switch the compact player is used.
+  iPhone landscape, and any wide container shorter than `FoldedColumnLayout.duoMinHeight`
+  (`studioMinWidth`, 716 pt — including the 680 pt compact-to-regular probe), keeps the
+  centred column: ⋯ in a header row, title and DJ status centred, controls under the
+  art, Play/Pause on the centre line. The unfolded Duo is wide and at least that tall
+  (`controlPlacement` is `.duoHorizontal`): artwork and the title stay in the
+  left half, an empty gutter sits on the centre fold, and the right half is a content
+  column (horizontal scrubber, play/pause, skip, station, DJ chip, and Search Apple
+  Music when nothing is playing, fitted to the column width) plus a thin symbol
+  bar (back, more, queue, tune). Controls start below `duoStatusClearance`. Below 500 pt
+  wide (every iPhone in portrait) the compact player is unchanged.
 - **No `ViewThatFits` at the top level.** Use it inside a zone, for example to pick
   between icon+label and icon-only transport buttons at large text sizes.
 - **Height:** if the container height is below 480 pt in Studio, Zone A keeps the

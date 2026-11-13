@@ -13,7 +13,9 @@ import Security
 ///
 /// The proxy URL and owner token come only from a Keychain entry the owner fills in at
 /// runtime; nothing is compiled in or stored in the repo, Info.plist or build settings.
-/// Spend: ElevenLabs Free plan, no pay-as-you-go ($0), plus the proxy's daily cap.
+/// Spend: ElevenLabs Starter, hard 40k-credit ceiling with no usage-based billing, a 9k-credit
+/// key cap and the proxy's 9,000-character daily cap. The route is priced at 0 µ$, so the
+/// app-side VoiceBudget does not apply to it.
 extension VoiceRenderer {
     static func liveDefault() -> VoiceRenderer {
         let base = onDeviceDefault()
@@ -21,11 +23,22 @@ extension VoiceRenderer {
         let composition = PremiumVoiceRoutes.compose(
             onDevice: base.routes,
             paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled,
-            selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
-            credentials: OwnerProxyKeychain.load())
+            access: .ownerTrial, selectedVoiceID: PremiumVoiceSelectionStore().selectedVoiceID,
+            credentials: OwnerProxyKeychain.load(),
+            backoff: OwnerVoiceTrial.proxyBackoff)
         OwnerProxyKeychain.logDecision(composition.decision, routeCount: composition.routes.count)
+        // Owner, Nov 9 2026 (#433): the same v2 consent as testers. `.noLines` until "Use cloud
+        // voice" on copy v2 (the owner route hears nothing), `.allLines` after it. -Fry
         return VoiceRenderer(routes: composition.routes, budget: base.budget, cache: base.cache,
-                             revocations: base.revocations)
+                             revocations: base.revocations).gated(by: OwnerCloudVoice.consentStore)
+        #elseif AERODJ_TESTER_VOICE
+        // Internal TestFlight tester build (#378): ElevenLabs through an App Attest install token,
+        // only after the consent sheet; on-device on any attest failure. AppAttestService+App.swift.
+        // Owner, Nov 9 2026 ("I want it all elevenlabs."): every attributed DJ line once copy v2
+        // is accepted, nothing before (`CloudVoiceConsentStore.scope`), read per cue. -Fry
+        return VoiceRenderer(routes: TesterCloudVoice.compose(onDevice: base.routes), budget: base.budget,
+                             cache: base.cache, revocations: base.revocations)
+            .gated(by: TesterCloudVoice.consentStore)
         #else
         return base
         #endif
@@ -44,6 +57,35 @@ extension View {
 }
 
 #if AERODJ_OWNER_AB
+/// The owner A/B build's cloud-voice consent (owner, Nov 9 2026, #433): the same store type, copy
+/// and sheet as the tester build (`CloudVoiceConsentApp`). A decline drops prepared cloud breaks
+/// and deletes cached cloud clips, as in the tester build. -Fry
+enum OwnerCloudVoice {
+    static let consentStore = CloudVoiceConsentStore()
+    /// Set once at launch (`TesterCloudVoiceConsentHooks.attach`).
+    @MainActor static var preparer: DJBreakPreparer?
+    @MainActor static var renderer: VoiceRenderer?
+
+    @MainActor static func record(accepted: Bool) {
+        if accepted {
+            consentStore.accept()
+        } else {
+            consentStore.decline()
+            let preparer = preparer, renderer = renderer
+            Task {
+                await preparer?.dropCloudVoiceBreaks()
+                await renderer?.purgeCloudClips()
+            }
+        }
+    }
+}
+
+extension OwnerVoiceTrial {
+    /// One backoff for the proxy route, persisted in UserDefaults so a relaunch during a 429
+    /// suspension goes straight to the on-device voice (see `PaidVoiceBackoff`).
+    static let proxyBackoff = PaidVoiceBackoff(store: UserDefaultsPaidVoiceBackoffStore())
+}
+
 /// Keychain entry (this device only, when unlocked) for the proxy endpoint and owner token.
 enum OwnerProxyKeychain {
     private static let service = "com.aerodj.owner-ab.tts-proxy"
@@ -119,7 +161,7 @@ private struct OwnerVoiceTrialEntry: ViewModifier {
 private struct OwnerVoicePickerSheet: View {
     @Binding var isPresented: Bool
     @State private var selected: String = PremiumVoiceSelectionStore().selectedVoiceID ?? ""
-    @State private var endpoint: String = OwnerProxyKeychain.endpoint
+    @State private var endpoint: String = PremiumVoicePickerStatus.initialEndpoint(saved: OwnerProxyKeychain.endpoint)
     @State private var token: String = ""
     private let store = PremiumVoiceSelectionStore()
 
@@ -141,7 +183,7 @@ private struct OwnerVoicePickerSheet: View {
                 } footer: {
                     Text("ElevenLabs first, on-device voice as fallback. Captions show whole lines. Applies on next launch.")
                 }
-                Section("Proxy (owner only)") {
+                Section {
                     TextField("Proxy URL (exact pinned host)", text: $endpoint)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
@@ -153,6 +195,24 @@ private struct OwnerVoicePickerSheet: View {
                         endpoint = ""
                         token = ""
                     }
+                } header: {
+                    Text("Proxy (owner only)")
+                } footer: {
+                    Text(PremiumVoicePickerStatus.endpointFooter(endpoint))
+                        .accessibilityIdentifier("ownerVoiceTrial.hostCheck")
+                }
+                Section {
+                    // Read-only: catalog index or omit reason code, never the token.
+                    Text(PremiumVoicePickerStatus.statusLine(PremiumVoicePickerStatus.pendingDecision(
+                        paidProvidersEnabled: OwnerVoiceTrial.paidProvidersEnabled,
+                        selectedVoiceID: selected.isEmpty ? nil : selected, endpoint: endpoint,
+                        enteredToken: token, hasSavedToken: OwnerProxyKeychain.hasToken)))
+                        .font(.footnote.monospaced())
+                        .accessibilityIdentifier("ownerVoiceTrial.status")
+                    // Read-only: reason and resume time of any 429 / 5xx backoff.
+                    Text(OwnerVoiceTrial.proxyBackoff.statusLine())
+                        .font(.footnote.monospaced())
+                        .accessibilityIdentifier("ownerVoiceTrial.backoff")
                 }
             }
             .navigationTitle("Owner voice test")

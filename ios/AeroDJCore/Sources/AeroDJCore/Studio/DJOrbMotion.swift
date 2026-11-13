@@ -30,6 +30,35 @@ public enum DJOrbPolicy {
     }
 }
 
+/// What the Folded Now Playing art card shows (owner, Nov 9 2026): while the DJ talks the album
+/// art disappears completely, glow included, and only the orb shows inside the art's frame; the
+/// art comes back when the song plays. The two cross-fade. The card keeps its size either way,
+/// so nothing around it moves. -Fry
+public struct FoldedArtCardLayers: Equatable, Sendable {
+    /// The album or station art in the card.
+    public var artworkOpacity: Double
+    /// The soft glow behind the card, taken from the same art.
+    public var glowOpacity: Double
+    public var showsOrb: Bool
+
+    /// Cross-fade between the art and the orb. An opacity fade, with no movement, so it is kept
+    /// under Reduce Motion too.
+    public static let crossfadeSeconds = 0.3
+    /// The orb's side as a fraction of the card's (unchanged from the dimmed-art card).
+    public static let orbFraction = 0.72
+
+    public init(artworkOpacity: Double, glowOpacity: Double, showsOrb: Bool) {
+        self.artworkOpacity = artworkOpacity
+        self.glowOpacity = glowOpacity
+        self.showsOrb = showsOrb
+    }
+
+    public static func layers(isOnAir: Bool) -> FoldedArtCardLayers {
+        isOnAir ? FoldedArtCardLayers(artworkOpacity: 0, glowOpacity: 0, showsOrb: true)
+                : FoldedArtCardLayers(artworkOpacity: 1, glowOpacity: 0.5, showsOrb: false)
+    }
+}
+
 /// One frame of the orb.
 public struct DJOrbFrame: Equatable, Sendable {
     /// The eased voice level the frame was built from, 0...1.

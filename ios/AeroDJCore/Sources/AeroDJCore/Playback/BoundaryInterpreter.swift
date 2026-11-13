@@ -52,10 +52,40 @@ public struct BoundaryInterpreter: Sendable {
     /// or after its end was reported. Read once at the boundary by the song-end hold decision.
     public var interruptionBeganNearEnd: Bool { detector.interruptionBeganNearEnd }
 
+    /// #149 (-Atlas): MusicKit cleared, changed or rewound the finished entry after the latest
+    /// interruption began. The only evidence a never-ended interruption may be released on.
+    public var queueFinishedSinceInterruption: Bool { detector.queueFinishedSinceInterruption }
+
     /// True once after the detector refused a change or clear because the entry never
     /// progressed (build 9 P0). The caller must surface a failed start and must not advance.
     public mutating func takeNoProgressEnd() -> Bool {
         detector.takeNoProgressEnd()
+    }
+
+    /// P0 lock-screen skip (-Echo): true once after MusicKit ended the current song mid-song with
+    /// no cause the app knows of (see `PlaybackBoundaryDetector.takeRemoteSkip()`). The caller
+    /// runs its user-skip path: no break for the cut song, and the next song loads.
+    public mutating func takeRemoteSkip() -> Bool {
+        detector.takeRemoteSkip()
+    }
+
+    /// #444 (-Echo): the app's skip is loading a song. See `PlaybackBoundaryDetector.setSkipLoadInFlight`.
+    public mutating func setSkipLoadInFlight(_ inFlight: Bool) {
+        detector.setSkipLoadInFlight(inFlight)
+    }
+
+    /// #444: true once when that load was cleared or rewound before it played. Not a failed start.
+    public mutating func takeSkipLoadCut() -> Bool {
+        detector.takeSkipLoadCut()
+    }
+
+    /// #444 (-Atlas): the pending cut's shape and whether its song was seen playing. Read before
+    /// `takeSkipLoadCut()`.
+    public var pendingSkipLoadCut: SkipLoadCut? { detector.pendingSkipLoadCut }
+
+    /// #444: true once when that load played past the failed-start window.
+    public mutating func takeSkipLoadProgress() -> Bool {
+        detector.takeSkipLoadProgress()
     }
 
     public mutating func interpret(

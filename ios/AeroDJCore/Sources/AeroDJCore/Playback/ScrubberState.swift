@@ -162,9 +162,10 @@ public enum PlaybackTimeFormat {
         return "\(m):\(pad(s))"
     }
 
-    /// Time left, never negative.
+    /// Time left, never negative, with a leading minus ("-0:13") so it can't be read as the
+    /// elapsed time (owner, build 25: "4:32 … 0:13" looked backwards).
     public static func remaining(position: TimeInterval, duration: TimeInterval) -> String {
-        label(max(0, duration - position))
+        "-" + label(max(0, duration - position))
     }
 
     /// VoiceOver value: "1:12 of 3:45".

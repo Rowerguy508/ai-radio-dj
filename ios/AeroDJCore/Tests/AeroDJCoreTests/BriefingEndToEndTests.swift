@@ -260,12 +260,15 @@ final class DJSessionEndToEndTests: XCTestCase {
         XCTAssertEqual(handoff.cues.filter(\.isContent).count, 2)
 
         // Real MusicKit metadata for the queue; seeded session.
-        let tracks = [DJTrack(id: "1", title: "Harvest Moon", artist: "Neil Young"),
-                      DJTrack(id: "2", title: "Dreams", artist: "Fleetwood Mac"),
-                      DJTrack(id: "3", title: "Holocene", artist: "Bon Iver"),
-                      DJTrack(id: "4", title: "Pink + White", artist: "Frank Ocean"),
-                      DJTrack(id: "5", title: "Vienna", artist: "Billy Joel")]
-        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 2), seed: 11)
+        let tracks = [DJTrack(id: "1", title: "Harvest Moon", artist: "Neil Young", origin: .catalog),
+                      DJTrack(id: "2", title: "Dreams", artist: "Fleetwood Mac", origin: .catalog),
+                      DJTrack(id: "3", title: "Holocene", artist: "Bon Iver", origin: .catalog),
+                      DJTrack(id: "4", title: "Pink + White", artist: "Frank Ocean", origin: .catalog),
+                      DJTrack(id: "5", title: "Vienna", artist: "Billy Joel", origin: .catalog)]
+        // Opts in to two personal updates in one break (#332 default is 1) so this presentation
+        // check keeps one briefing break and one ordinary break.
+        var writer = DJScriptWriter(cadence: .init(talkFraction: 1, minSongsBetweenBreaks: 2, maxPersonalUpdatesPerBreak: 2),
+                                    seed: 11)
         let plan = writer.plan(tracks: tracks, briefing: handoff, hour: newYork.component(.hour, from: fixedNow))
         XCTAssertEqual(plan.breaks.map(\.afterTrack), [0, 3])
         let first = plan.breaks[0], second = plan.breaks[1]
@@ -322,7 +325,7 @@ final class DJSessionEndToEndTests: XCTestCase {
         XCTAssertEqual(Set(prepared.attributions.keys), Set(prepared.cues.map(\.id)), "every spoken cue carries attribution")
     }
 
-    private func waitUntil(_ condition: @Sendable () async -> Bool) async throws {
+    private func waitUntil(_ condition: @escaping @Sendable () async -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(3)
         while await !condition() {
             guard ContinuousClock.now < deadline else { return XCTFail("condition not met in time") }

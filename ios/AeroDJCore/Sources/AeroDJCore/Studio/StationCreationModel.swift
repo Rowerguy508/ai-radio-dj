@@ -32,6 +32,8 @@ public final class StationCreationModel {
         case empty
         /// `message` is nil when there is nothing to show (a newer search replaced this one).
         case failed(message: String?)
+        /// Genre step only: Apple Music isn't authorized ("Connect Apple Music to see genres.").
+        case notAuthorized
     }
 
     /// Which list `results` holds, so the UI can label it ("Your playlists" vs search results).
@@ -65,12 +67,21 @@ public final class StationCreationModel {
     @ObservationIgnored private let search: any StationSeedSearching
     @ObservationIgnored private let classifyFailure: @MainActor (Error) -> SearchFailureKind
     @ObservationIgnored private var generation = 0
+    /// Genre step source (`GenreProviding`); fetched once per flow, cached only on success.
+    @ObservationIgnored private let genreProvider: any GenreProviding
+    @ObservationIgnored private var cachedGenres: [CatalogGenre]?
+    /// The genre load's failure (`.failed` / `.notAuthorized`), kept until `retryGenres`, so
+    /// typing in the filter never refetches after a failure (Sentinel, #214).
+    @ObservationIgnored private var genreFailure: Phase?
+    @ObservationIgnored private var genreTask: Task<[CatalogGenre], Error>?
 
     public init(studio: StudioPresentationModel, search: any StationSeedSearching,
                 kind: StationCreationKind = .artists, level: StationDiscoveryLevel? = nil,
+                genres: (any GenreProviding)? = nil,
                 classifyFailure: @escaping @MainActor (Error) -> SearchFailureKind = { SearchFailureCopy.kind(for: $0) }) {
         self.studio = studio
         self.search = search
+        self.genreProvider = genres ?? SeedSearchGenreProvider(search)
         self.kind = kind
         self.level = level ?? StationDiscoveryLevel.closest(to: studio.station.displayed)
         self.classifyFailure = classifyFailure
@@ -143,12 +154,28 @@ public final class StationCreationModel {
             clearResults()
             return
         }
+        if kind == .genre, cachedGenres == nil, let genreFailure {
+            // Filtering works on the cached list only; after a failure only "Try again" fetches.
+            generation += 1
+            results = []
+            resultsSource = .none
+            phase = genreFailure
+            return
+        }
         await run(source) { search in
             switch kind {
-            case .genre: try await search.genreSeeds(matching: term)
+            case .genre: GenrePicker.rows(try await self.catalogGenres(), matching: term)
             case .artists, .playlist: try await search.searchSeeds(term, kinds: [kind.seedKind], limit: Self.resultLimit)
             }
         }
+    }
+
+    /// "Try again" on the genre step: clears the kept failure and fetches exactly once, then
+    /// filters by `term`. Never requests Apple Music access.
+    public func retryGenres(matching term: String) async {
+        guard kind == .genre else { return }
+        genreFailure = nil
+        await search(term)
     }
 
     /// Lists the listener's library playlists (playlist stations only). They stay on the device.
@@ -176,7 +203,32 @@ public final class StationCreationModel {
         return finish(result)
     }
 
+    /// True while the genre list has not loaded yet (the genre step's first fetch or a retry
+    /// after an error). Lets the UI say "Loading genres" rather than "Searching".
+    public var isLoadingGenres: Bool { kind == .genre && phase == .searching && cachedGenres == nil }
+
     // MARK: Internals
+
+    /// The storefront's genres: the cached list, or one fetch (a failure isn't cached, so the
+    /// next search retries).
+    private func catalogGenres() async throws -> [CatalogGenre] {
+        if let cachedGenres { return cachedGenres }
+        // One fetch shared by every keystroke that arrives while it runs.
+        let provider = genreProvider
+        let task = genreTask ?? Task { try await provider.genres() }
+        genreTask = task
+        do {
+            let fetched = try await task.value
+            genreTask = nil
+            cachedGenres = fetched
+            try Task.checkCancellation()
+            return fetched
+        } catch {
+            genreTask = nil
+            throw error
+        }
+    }
+
 
     private func finish(_ result: Result<StationRecipe, StationRecipeError>) -> Result<StationRecipe, StationRecipeError> {
         if case .failure(let e) = result { saveError = e } else { saveError = nil }
@@ -212,7 +264,14 @@ public final class StationCreationModel {
             }
             results = []
             resultsSource = .none
-            phase = .failed(message: SearchFailureCopy.message(for: classifyFailure(error)))
+            if source == .genres, GenrePickerCopy.isNotAuthorized(error, classifyFailure) {
+                phase = .notAuthorized
+                genreFailure = .notAuthorized
+                return
+            }
+            let message = SearchFailureCopy.message(for: classifyFailure(error))
+            phase = .failed(message: message)
+            if source == .genres, cachedGenres == nil, message != nil { genreFailure = phase }
         }
     }
 }
@@ -222,6 +281,7 @@ public extension StudioPresentationModel {
     /// (previews and the Test Station pass none). Create one per walkthrough presentation.
     func makeStationCreation(kind: StationCreationKind = .artists) -> StationCreationModel? {
         guard let seedSearch else { return nil }
-        return StationCreationModel(studio: self, search: seedSearch, kind: kind, classifyFailure: seedSearchFailureKind)
+        return StationCreationModel(studio: self, search: seedSearch, kind: kind, genres: genreProvider,
+                                    classifyFailure: seedSearchFailureKind)
     }
 }

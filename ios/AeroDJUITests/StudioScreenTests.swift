@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Integration tests for the playing screen in the Debug test station's capture mode
 /// (`-AeroDJTestStation YES -AeroDJStudioCapture YES`): the real `PlayingScreen`, the test
@@ -17,20 +18,23 @@ final class StudioScreenTests: XCTestCase {
     private func launch(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
                         dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                         restoreStationID: String? = nil,
-                        musicAuthStatus: String? = nil) -> XCUIApplication {
+                        musicAuthStatus: String? = nil,
+                        orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
         // Probe the layout before this test's own launch: the probe launches and terminates
         // its own app, so it must never run while the test's app is up.
         _ = isOpenLayout
         return startApp(segment: segment, scenario: scenario, largeText: largeText, dark: dark,
                         contentSize: contentSize, reduceMotion: reduceMotion,
-                        restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus)
+                        restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus,
+                        orientation: orientation)
     }
 
     @MainActor
     private func startApp(segment: String? = nil, scenario: String? = nil, largeText: Bool = false,
                           dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                           restoreStationID: String? = nil,
-                          musicAuthStatus: String? = nil) -> XCUIApplication {
+                          musicAuthStatus: String? = nil,
+                          orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
@@ -49,7 +53,7 @@ final class StudioScreenTests: XCTestCase {
         if let musicAuthStatus {
             app.launchArguments += ["-AeroDJMusicAuthStatus", musicAuthStatus]
         }
-        XCUIDevice.shared.orientation = .portrait
+        XCUIDevice.shared.orientation = orientation
         app.launch()
         // The capture view loads the station before rendering. Never screenshot on a timer:
         // wait for loading to end, and fail by name if the capture could not set up.
@@ -326,6 +330,191 @@ final class StudioScreenTests: XCTestCase {
         }
     }
 
+    /// Owner, build 44 (#460): the unfolded Duo (640 pt, compact class) is fully horizontal.
+    /// Artwork and the title stay left of the fold. The content column holds the horizontal
+    /// scrubber, play/pause, skip, the station pill and the DJ chip. The thin bar holds
+    /// back, more, queue and tune.
+    @MainActor
+    func testDuoWideControlsSitInTheRightRail() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoWideReady")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertFalse(any["layout.studio"].exists, "the Duo split stays the compact player")
+
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window\n\(app.debugDescription)")
+        let windowFrame = try XCTUnwrap(settledFrame(of: window, "window"))
+        let container = any["capture.duoContainer"]
+        XCTAssertTrue(container.waitForExistence(timeout: 5), "Duo container missing\n\(app.debugDescription)")
+        let box = try XCTUnwrap(settledFrame(of: container, "Duo container") {
+            abs($0.width - 640) <= 1 && abs($0.height - 820) <= 1
+        }, "container never settled at 640 × 820 pt: \(container.frame)")
+        XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box),
+                      "container \(box) outside window \(windowFrame)")
+
+        let track = any["folded.trackColumn"]
+        let content = any["folded.contentColumn"]
+        let bar = any["folded.systemBar"]
+        let fold = any["folded.fold"]
+        XCTAssertTrue(track.waitForExistence(timeout: 10), "track column missing\n\(app.debugDescription)")
+        XCTAssertTrue(content.waitForExistence(timeout: 10), "content column missing\n\(app.debugDescription)")
+        XCTAssertTrue(bar.waitForExistence(timeout: 10), "system bar missing\n\(app.debugDescription)")
+        assertOneMatch(any, "folded.trackColumn", "duo wide")
+        assertOneMatch(any, "folded.contentColumn", "duo wide")
+        let trackFrame = try XCTUnwrap(settledFrame(of: track, "track column"))
+        let contentFrame = try XCTUnwrap(settledFrame(of: content, "content column"))
+        let barFrame = try XCTUnwrap(settledFrame(of: bar, "system bar") {
+            $0.width >= 44 && $0.width <= 80
+        }, "system bar never settled: \(bar.frame)")
+        let foldFrame = try XCTUnwrap(settledFrame(of: fold, "fold"))
+
+        let spinners = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"),
+                                                 object: app.activityIndicators)
+        XCTAssertEqual(XCTWaiter().wait(for: [spinners], timeout: 10), .completed,
+                       "a spinner is still showing\n\(app.debugDescription)")
+
+        let play = app.buttons["transport.playPause"]
+        let skip = app.buttons["transport.skip"]
+        let ready = any["dj.ready"]
+        let scrubber = any["playback.progress"]
+        let chip = any["station.title"]
+        let more = any["folded.more"]
+        let tune = app.buttons["transport.tune"]
+        let queue = app.buttons["queue.affordance"]
+        let back = app.buttons["folded.back"]
+        // The up-next line also labels the current song "Morning Light". The title under test is the one in the track column.
+        let title = track.staticTexts["Morning Light"]
+        for (name, element) in [("play", play), ("skip", skip), ("ready", ready), ("scrubber", scrubber),
+                                ("chip", chip), ("more", more), ("tune", tune), ("queue", queue),
+                                ("back", back), ("title", title)] {
+            XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing\n\(app.debugDescription)")
+        }
+        let frames = "track \(trackFrame) content \(contentFrame) bar \(barFrame) fold \(foldFrame) "
+            + "title \(title.frame) play \(play.frame) scrubber \(scrubber.frame) ready \(ready.frame)"
+        XCTAssertLessThan(trackFrame.maxX, foldFrame.minX + 2, "artwork stays left of the fold: \(frames)")
+        XCTAssertLessThan(title.frame.maxX, contentFrame.minX, "title stays left of the controls: \(frames)")
+        XCTAssertGreaterThanOrEqual(contentFrame.minX, foldFrame.maxX - 2, "controls start right of the fold: \(frames)")
+        XCTAssertLessThan(contentFrame.maxX, barFrame.minX + 8, "content column is left of the symbol bar: \(frames)")
+        for (name, element) in [("play", play), ("skip", skip), ("scrubber", scrubber), ("chip", chip), ("ready", ready)] {
+            XCTAssertGreaterThanOrEqual(element.frame.midX, contentFrame.minX - 4, "\(name) left the content column: \(frames)")
+            XCTAssertLessThanOrEqual(element.frame.midX, contentFrame.maxX + 4, "\(name) left the content column: \(frames)")
+        }
+        for (name, element) in [("back", back), ("more", more), ("queue", queue), ("tune", tune)] {
+            XCTAssertGreaterThanOrEqual(element.frame.midX, barFrame.minX - 4, "\(name) left the symbol bar: \(frames)")
+        }
+        XCTAssertGreaterThan(scrubber.frame.width, scrubber.frame.height, "the scrubber stays horizontal: \(frames)")
+        XCTAssertGreaterThanOrEqual(play.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(back.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(more.frame.minY, barFrame.minY + 40, "chrome starts below the status clearance")
+        let dial = any["duo.stationDial"]
+        let late = app.buttons["duo.station.late-night"]
+        XCTAssertTrue(dial.waitForExistence(timeout: 5), "station dial missing\n\(app.debugDescription)")
+        XCTAssertTrue(late.waitForExistence(timeout: 5), "Late Night stop missing")
+        XCTAssertGreaterThanOrEqual(dial.frame.midX, contentFrame.minX - 4, "the dial stays in the content column")
+        XCTAssertLessThanOrEqual(dial.frame.midX, contentFrame.maxX + 4, "the dial stays in the content column")
+        let timeline = app.buttons["duo.upNext"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 5), "up-next timeline missing\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(timeline.frame.midX, contentFrame.minX - 4, "timeline stays in the content column")
+        XCTAssertLessThanOrEqual(timeline.frame.midX, contentFrame.maxX + 4, "timeline stays in the content column")
+        XCTAssertTrue(timeline.label.contains("Morning Light"))
+        XCTAssertTrue(timeline.label.contains("DJ break after this song"))
+        XCTAssertTrue(timeline.label.contains("Slow Burn"))
+        timeline.tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5), "tapping the timeline opens the queue")
+        app.buttons["Done"].tap()
+        late.tap()
+        let opened = any["duo.openedStation"]
+        XCTAssertTrue(opened.waitForExistence(timeout: 5))
+        XCTAssertEqual(opened.label, "late-night", "the dial calls the station-open action")
+        XCTAssertEqual(container.frame.width, box.width, accuracy: 0.5, "container resized before the screenshot")
+        save(app, "duo-wide-ready")
+    }
+
+    /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and
+    /// accepted by `isFinal`; nil after `timeout`. Polls on the run loop, never a fixed sleep
+    /// before a screenshot.
+    @MainActor
+    private func settledFrame(of element: XCUIElement, _ name: String, timeout: TimeInterval = 10,
+                              poll: TimeInterval = 0.25,
+                              isFinal: (CGRect) -> Bool = { _ in true }) -> CGRect? {
+        func same(_ a: CGRect, _ b: CGRect) -> Bool {
+            abs(a.minX - b.minX) <= 0.5 && abs(a.minY - b.minY) <= 0.5
+                && abs(a.width - b.width) <= 0.5 && abs(a.height - b.height) <= 0.5
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        var last: CGRect?
+        while Date() < deadline {
+            let frame = element.exists ? element.frame : .null
+            if !frame.isNull, !frame.isEmpty, isFinal(frame), let last, same(last, frame) {
+                return frame
+            }
+            last = (frame.isNull || frame.isEmpty || !isFinal(frame)) ? nil : frame
+            RunLoop.current.run(until: Date().addingTimeInterval(poll))
+        }
+        XCTFail("\(name) frame did not settle within \(timeout) s (last \(element.frame))")
+        return nil
+    }
+
+    /// 640 × 820, nothing playing and playing. Every control in the content column is
+    /// hittable and its frame sits inside the window and inside that column.
+    @MainActor
+    func testDuoWideColumnControlsStayInsideTheWindow() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        assertDuoColumnControls(scenario: "duoWideEmpty", names: ["search": "playback.searchAppleMusic",
+                                                                   "station": "station.title"])
+        assertDuoColumnControls(scenario: "duoWideReady", names: ["play": "transport.playPause",
+                                                                  "skip": "transport.skip",
+                                                                  "station": "station.title",
+                                                                  "dj": "dj.ready",
+                                                                  "scrubber": "playback.progress"])
+    }
+
+    /// `names` maps a short label to an accessibility identifier in the content column.
+    @MainActor
+    private func assertDuoColumnControls(scenario: String, names: [String: String]) {
+        let app = launch(scenario: scenario)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window\n\(app.debugDescription)")
+        guard let windowFrame = settledFrame(of: window, "window") else { return }
+        let container = any["capture.duoContainer"]
+        XCTAssertTrue(container.waitForExistence(timeout: 5), "Duo container missing\n\(app.debugDescription)")
+        guard let box = settledFrame(of: container, "Duo container", isFinal: {
+            abs($0.width - 640) <= 1 && abs($0.height - 820) <= 1
+        }) else { return }
+        XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box),
+                      "container \(box) outside window \(windowFrame)")
+        assertOneMatch(any, "folded.contentColumn", scenario)
+        assertOneMatch(any, "folded.trackColumn", scenario)
+        let column = any["folded.contentColumn"]
+        XCTAssertTrue(column.waitForExistence(timeout: 10), "content column missing\n\(app.debugDescription)")
+        guard let columnFrame = settledFrame(of: column, "content column") else { return }
+        for (name, identifier) in names {
+            let element = any[identifier]
+            XCTAssertTrue(element.waitForExistence(timeout: 8),
+                          "\(name) missing in \(scenario)\n\(app.debugDescription)")
+            guard let frame = settledFrame(of: element, name) else { continue }
+            let detail = "\(scenario) \(name) \(frame) window \(windowFrame) column \(columnFrame)"
+            XCTAssertTrue(element.isHittable, "\(name) is not hittable: \(detail)")
+            XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(frame),
+                          "\(name) is outside the window: \(detail)")
+            XCTAssertTrue(columnFrame.insetBy(dx: -1, dy: -1).contains(frame),
+                          "\(name) is outside the content column: \(detail)")
+        }
+        app.terminate()
+    }
+
+    /// The column id names one container. More than one match means the id was copied onto its controls.
+    @MainActor
+    private func assertOneMatch(_ any: XCUIElementQuery, _ identifier: String, _ context: String) {
+        let matches = any.matching(NSPredicate(format: "identifier == %@", identifier))
+        XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 10),
+                      "\(identifier) missing in \(context)")
+        XCTAssertEqual(matches.count, 1, "\(identifier) matched \(matches.count) elements in \(context)")
+    }
+
     /// Open (Studio): `.ready` must not print the break headline or its VoiceOver detail.
     /// Folded: a quiet, static "DJ break after this song" line shows instead (Fry, #161).
     @MainActor
@@ -342,6 +531,18 @@ final class StudioScreenTests: XCTestCase {
         } else {
             XCTAssertTrue(app.descendants(matching: .any)["dj.ready"].exists, "folded .ready shows its quiet line")
             XCTAssertFalse(shows(app, "On Air"), ".ready never claims the DJ is speaking")
+            XCTAssertFalse(app.descendants(matching: .any)["folded.contentColumn"].exists,
+                           "a phone-width layout does not use the Duo content column")
+            XCTAssertFalse(app.descendants(matching: .any)["folded.systemBar"].exists,
+                           "a phone-width layout does not use the Duo symbol bar")
+            XCTAssertFalse(app.descendants(matching: .any)["duo.stationDial"].exists,
+                           "a phone-width layout does not show the station dial")
+            XCTAssertFalse(app.buttons["duo.upNext"].exists,
+                           "a phone-width layout does not show the up-next timeline")
+            let play = app.buttons["transport.playPause"]
+            let ready = app.descendants(matching: .any)["dj.ready"]
+            XCTAssertGreaterThan(play.frame.minY, ready.frame.maxY,
+                                 "phone controls stay under the DJ line, not beside it")
         }
         XCTAssertTrue(app.buttons["transport.playPause"].exists)
         save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-line")
@@ -377,6 +578,50 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(isOpenLayout ? play.exists : play.isHittable, "Play/pause stays reachable at AX5")
         assertReadingOrder(app, title: "Morning Light")
         save(app, isOpenLayout ? "open-ax5-dark" : "closed-ax5-dark")
+    }
+
+    /// #310 / #326: at AX5 on a phone the DJ status moves out of the scrolling upper part and
+    /// is pinned above the scrubber. The other AX5 captures have an idle DJ, so this is the one
+    /// that draws the ON AIR pill there: on screen without scrolling, above the scrubber and
+    /// the transport, read after the title. The capture freezes the pill's timer at "0:12"
+    /// (`StudioCaptureOnAir`), so the screenshot is the same every run.
+    @MainActor
+    func testAX5OnAirPinnedAboveScrubber() throws {
+        try XCTSkipIf(isOpenLayout, "The pinned status is the phone-width folded player at AX5")
+        let app = launch(scenario: "onAir", contentSize: Self.ax5)
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15),
+                      "layout.compact expected at AX5:\n\(app.debugDescription)")
+        let any = app.descendants(matching: .any)
+        let onAir = any["dj.onAir"]
+        let scrubber = any["playback.progress"]
+        let play = app.buttons["transport.playPause"]
+        for (name, element) in [("onAir", onAir), ("scrubber", scrubber), ("play", play)] {
+            XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing at AX5\n\(app.debugDescription)")
+        }
+        XCTAssertTrue(shows(app, "Morning Light"))
+        XCTAssertFalse(any["dj.ready"].exists, "On Air replaces the ready line")
+        guard let pill = settledFrame(of: onAir, "dj.onAir") else { return }
+        let window = app.windows.firstMatch.frame
+        let frames = "window \(window) onAir \(pill) scrubber \(scrubber.frame) play \(play.frame)"
+        XCTAssertGreaterThanOrEqual(pill.minY, window.minY, "ON AIR on screen without scrolling: \(frames)")
+        XCTAssertLessThanOrEqual(pill.maxY, window.maxY, "ON AIR on screen without scrolling: \(frames)")
+        XCTAssertLessThanOrEqual(pill.maxY, scrubber.frame.minY + 1, "ON AIR pinned above the scrubber: \(frames)")
+        XCTAssertLessThan(pill.minY, play.frame.minY, "ON AIR above the transport: \(frames)")
+        XCTAssertTrue(play.isHittable, "Play/pause stays reachable at AX5")
+        // #345 review: the pinned pill must not cover the TEST STATION tag (capture mode
+        // always shows it; a real station has none, so only check it when it exists).
+        let tag = any["folded.testStation"]
+        if tag.exists {
+            let chip = tag.frame
+            let both = "\(frames) testStation \(chip)"
+            XCTAssertFalse(chip.intersects(pill), "TEST STATION clear of ON AIR: \(both)")
+            XCTAssertLessThanOrEqual(chip.maxY, pill.minY, "TEST STATION above ON AIR: \(both)")
+            XCTAssertGreaterThanOrEqual(chip.minY, window.minY, "TEST STATION on screen: \(both)")
+        }
+        assertReadingOrder(app, title: "Morning Light", status: "On Air")
+        let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
+        XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
+        save(app, "closed-ax5-onair")
     }
 
     // MARK: Duo shell, fold, and rotation
@@ -478,6 +723,62 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
     }
 
+    // MARK: Width-class change keeps the restored station (Fry, #280 review)
+
+    /// Whether the station split in `app` is in regular width: the sidebar is the station list.
+    /// Compact width draws the carousel instead (`StationSplitRoot.stationPicker`).
+    @MainActor
+    private func splitIsRegular(_ app: XCUIApplication) -> Bool {
+        let row = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "stations.row.")).firstMatch
+        return row.waitForExistence(timeout: 5) && !app.descendants(matching: .any)["stations.carousel"].exists
+    }
+
+    @MainActor
+    private func assertRestoredStationVisible(_ app: XCUIApplication, _ name: String, _ message: String,
+                                              file: StaticString = #filePath, line: UInt = #line) {
+        let title = app.descendants(matching: .any)["station.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "\(message): station detail missing\n\(visibleIdentifiers(app))",
+                      file: file, line: line)
+        XCTAssertTrue(title.label.contains(name), "\(message): wrong station \(title.label)", file: file, line: line)
+        XCTAssertTrue(title.isHittable, "\(message): station detail is not on screen\n\(visibleIdentifiers(app))",
+                      file: file, line: line)
+        XCTAssertFalse(app.descendants(matching: .any)["split.placeholder"].exists, message, file: file, line: line)
+        XCTAssertEqual(callLabel(app), "0/0", "\(message): a width change must not search or play", file: file, line: line)
+    }
+
+    /// (b) A Max-class phone in landscape is regular width. Restore there, rotate to portrait
+    /// (compact): the station stays open instead of the carousel. Skips where landscape is
+    /// still compact (smaller phones) and on iPad, where rotation keeps the width class.
+    @MainActor
+    func testRestoreInRegularLandscapeThenPortraitKeepsStation() throws {
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom == .pad, "iPad rotation does not change the width class")
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let app = startApp(scenario: "shell", restoreStationID: morningCalm, orientation: .landscapeLeft)
+        try XCTSkipUnless(splitIsRegular(app), "Landscape is compact on this phone; needs a Plus/Max-class simulator")
+        assertRestoredStationVisible(app, "Morning Calm", "regular landscape restore")
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 10),
+                      "Portrait is the compact player\n\(visibleIdentifiers(app))")
+        assertRestoredStationVisible(app, "Morning Calm", "rotating to portrait")
+    }
+
+    /// (c) The reverse: restore in portrait (compact), rotate to regular landscape, and back.
+    @MainActor
+    func testRestoreInPortraitThenRegularLandscapeKeepsStation() throws {
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom == .pad, "iPad rotation does not change the width class")
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let app = startApp(scenario: "shell", restoreStationID: morningCalm)
+        assertRestoredStationVisible(app, "Morning Calm", "compact portrait restore")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        try XCTSkipUnless(splitIsRegular(app), "Landscape is compact on this phone; needs a Plus/Max-class simulator")
+        assertRestoredStationVisible(app, "Morning Calm", "rotating to regular landscape")
+        XCUIDevice.shared.orientation = .portrait
+        assertRestoredStationVisible(app, "Morning Calm", "rotating back to portrait")
+    }
+
     /// Widening from compact to regular keeps the search text and the studio identity, and counts no calls.
     @MainActor
     func testCompactToRegularDoesNotSearchOrPlay() {
@@ -486,10 +787,16 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertEqual(callLabel(app), "0/0")
         let before = modelIdentifiers(app)
         XCTAssertEqual(before.count, 1)
+        // #454: search is no longer the compact empty state; it sits behind Search Apple Music,
+        // which opens the Queue workspace sheet.
+        let searchButton = app.buttons["playback.searchAppleMusic"]
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 10), app.debugDescription)
+        searchButton.tap()
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         replaceText(field, with: "violet")
         dismissKeyboard(app)
+        if app.buttons["Done"].exists { app.buttons["Done"].tap() }
         app.buttons["probe.widen"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["layout.studio"].waitForExistence(timeout: 10),
                       "Regular width above the studio minimum opens the two panes")
@@ -572,12 +879,63 @@ final class StudioScreenTests: XCTestCase {
         assertReadingOrder(app, title: "Morning Light")
     }
 
+    /// Station ratings (-Nova, PR B): the button sits on the now-playing block only in the rating
+    /// scenarios; `playing` (and every other scenario) has none, so those screenshots are unchanged.
+    @MainActor
+    func testRatingButtonOnNowPlaying() throws {
+        let plain = launch(scenario: "playing")
+        XCTAssertTrue(shows(plain, "Morning Light"))
+        XCTAssertFalse(plain.buttons["nowPlaying.rating"].exists, "no rating controller, no button")
+        plain.terminate()
+
+        let app = launch(scenario: "ratingFirstTime")
+        let button = app.buttons["nowPlaying.rating"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10), "rating button:\n\(app.debugDescription)")
+        XCTAssertTrue(button.label.contains("not rated"), button.label)
+        XCTAssertTrue(button.isHittable)
+        // Simulators report sub-point float noise (43.99999999999994 on iPhone Air), so allow 0.01 pt.
+        XCTAssertGreaterThanOrEqual(button.frame.width, 44 - 0.01, "44 pt tap target")
+        XCTAssertGreaterThanOrEqual(button.frame.height, 44 - 0.01, "44 pt tap target")
+        XCTAssertTrue(shows(app, "Rate"), "first-time label")
+        XCTAssertTrue(shows(app, "Morning Light, The Calm Collective"), "the labels stay one element")
+        save(app, "rating-first-time")
+        button.tap()
+        for item in ["More like this", "Like it", "Tired of it", "Never play on this station"] {
+            XCTAssertTrue(app.buttons[item].waitForExistence(timeout: 5), "\(item) in the menu")
+        }
+        save(app, "rating-menu")
+    }
+
+    @MainActor
+    func testRatedSongAndNeverToast() throws {
+        let liked = launch(scenario: "ratingLiked")
+        let button = liked.buttons["nowPlaying.rating"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        XCTAssertTrue(button.label.contains("Like it"), button.label)
+        save(liked, "rating-liked")
+        liked.terminate()
+
+        let app = launch(scenario: "ratingNever")
+        let toast = app.descendants(matching: .any)["nowPlaying.ratingToast"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 5), "never toast:\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Won't play on this station again."))
+        XCTAssertTrue(app.buttons["nowPlaying.rating.undo"].isHittable)
+        save(app, "rating-never-toast")
+        app.buttons["nowPlaying.rating.undo"].tap()
+        XCTAssertTrue(toast.waitForNonExistence(timeout: 3), "undo hides the toast")
+    }
+
     /// Compact empty state: submit search shows fixture results and does not play.
     @MainActor
     func testCompactSearchShowsFixtureResults() throws {
         try XCTSkipIf(isOpenLayout, "Compact search is checked on an iPhone-width simulator")
         let app = launch(scenario: "empty")
         XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15))
+        // #454: the empty state offers search behind an explicit button, not as the screen itself.
+        XCTAssertFalse(app.textFields["search.field"].exists, "Search is not the empty state\n\(app.debugDescription)")
+        let searchButton = app.buttons["playback.searchAppleMusic"]
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 10), app.debugDescription)
+        searchButton.tap()
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 10), app.debugDescription)
         replaceText(field, with: "jazz")
@@ -591,6 +949,58 @@ final class StudioScreenTests: XCTestCase {
         let calls = callLabel(app)
         XCTAssertTrue(calls.hasPrefix("0/"), "Search must not play: \(calls)\n\(app.debugDescription)")
         XCTAssertNotEqual(calls, "0/0", "Submit records a search: \(calls)")
+    }
+
+    // MARK: Station start (#454)
+
+    /// #454: a station tap lands on Now Playing for that station ("Starting <name>…"), never on the
+    /// Apple Music search field. iOS CI only: the capture drives the real `PlayingScreen` with the
+    /// start state a tap sets; it does not prove Apple Music playback.
+    @MainActor
+    func testStationTapShowsStartingNowPlayingNotSearch() {
+        let app = launch(scenario: "stationStarting")
+        let start = app.descendants(matching: .any)["nowPlaying.stationStart"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10), "Starting state on Now Playing\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Starting Morning Calm…"), app.debugDescription)
+        XCTAssertFalse(app.textFields["search.field"].exists, "A station tap never shows search\n\(app.debugDescription)")
+        XCTAssertFalse(app.buttons["playback.searchAppleMusic"].exists, "No search button while starting\n\(app.debugDescription)")
+        save(app, isOpenLayout ? "ipad-station-starting" : "iphone-station-starting")
+    }
+
+    /// #454: a start that fails stays on that station's screen with Try again, never search.
+    @MainActor
+    func testFailedStationStartOffersRetryInPlace() {
+        let app = launch(scenario: "stationStartFailed")
+        let retry = app.buttons["playback.retryStationStart"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10), "Try again on the same screen\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Couldn't start Morning Calm"), app.debugDescription)
+        XCTAssertFalse(app.textFields["search.field"].exists, "A failed start never shows search\n\(app.debugDescription)")
+        XCTAssertTrue(retry.isHittable)
+        save(app, isOpenLayout ? "ipad-station-start-failed" : "iphone-station-start-failed")
+        retry.tap()
+        XCTAssertFalse(app.textFields["search.field"].exists, "Retry stays off search\n\(app.debugDescription)")
+    }
+
+    /// #454: tapping a station row in the real split shows that station's Now Playing, not search.
+    @MainActor
+    func testStationRowTapShowsNowPlayingNotSearch() {
+        let app = launch(scenario: "shell", musicAuthStatus: "authorized")
+        let sidebar = app.descendants(matching: .any)["split.sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 15), app.debugDescription)
+        let calm = stationRow(sidebar, named: "Morning Calm")
+        XCTAssertTrue(calm.waitForExistence(timeout: 5), app.debugDescription)
+        calm.tap()
+        let title = app.descendants(matching: .any)["station.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(title.label.contains("Morning Calm"), app.debugDescription)
+        XCTAssertTrue(app.buttons["transport.playPause"].waitForExistence(timeout: 10)
+                      || app.descendants(matching: .any)["nowPlaying.stationStart"].exists,
+                      "Now Playing for the tapped station\n\(app.debugDescription)")
+        // The open Studio keeps search in its Queue tab beside a playing song (allowed by #454);
+        // the closed player must not show it at all.
+        if !isOpenLayout {
+            XCTAssertFalse(app.textFields["search.field"].exists, "A station tap never shows search\n\(app.debugDescription)")
+        }
     }
 
     /// Shared Items sheet always has Done and dismisses without force-quit.

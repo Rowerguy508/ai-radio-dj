@@ -60,14 +60,14 @@ final class StaleUpNextDropTests: XCTestCase {
     }
 
     @MainActor
-    private func until(_ condition: @MainActor () -> Bool, _ message: String = "") async {
+    private func until(_ condition: @escaping @MainActor () -> Bool, _ message: String = "") async {
         for _ in 0..<500 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(condition(), message)
     }
 
     /// Song 0 plays and its break renders, then the edit is saved mid-song (pending).
     @MainActor
-    private func readyBreakAfterSongZero(_ r: Rig, edit: () async -> Void) async {
+    private func readyBreakAfterSongZero(_ r: Rig, edit: @escaping @MainActor () async -> Void) async {
         XCTAssertEqual(r.session.plannedBoundaries.first, 0)
         await r.session.songStarted(index: 0, remaining: .seconds(180))
         await until({ if case .ready = r.dj.studioState { true } else { false } }, "ready before the boundary")
@@ -79,7 +79,7 @@ final class StaleUpNextDropTests: XCTestCase {
     @MainActor
     private func names(_ trackID: String, in prepared: PreparedDJBreak) -> [NarrationCue] {
         prepared.cues.filter {
-            if case .trackMetadata(let ids)? = prepared.attributions[$0.id] { ids.contains(trackID) } else { false }
+            if case .trackMetadata(let ids, _)? = prepared.attributions[$0.id] { ids.contains(trackID) } else { false }
         }
     }
 
@@ -159,7 +159,7 @@ final class StaleUpNextDropTests: XCTestCase {
         XCTAssertEqual(r.session.plannedBoundaries.first, 0)
         let queue = ["t0", "t1"]
         let feed = StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: RefillCatalog()),
-                                            materialize: { $0.map(\.id) }, day: { 42 })
+                                            materialize: { $0.map(\.id) }, options: .init(seedSource: .perDay), day: { 42 })
         feed.queueStarted(for: r.station.committedDisplayed, songCount: queue.count)
         _ = await feed.prepare(r.station.active)
         let key = StationQueueKey(r.station.active)

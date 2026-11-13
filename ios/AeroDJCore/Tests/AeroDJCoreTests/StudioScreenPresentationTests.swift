@@ -116,6 +116,7 @@ final class StudioScreenPresentationTests: XCTestCase {
 
     // MARK: Now Playing gate
 
+    #if DEBUG // PlaybackFixtures is Debug-only; `swift test -c release` builds this file too.
     func testTransportOnlyWithAControllableTrack() {
         let playing = PlaybackFixtures.playing
         XCTAssertEqual(NowPlayingContent.resolve(access: .checking, snapshot: playing), .connecting)
@@ -129,6 +130,7 @@ final class StudioScreenPresentationTests: XCTestCase {
         }
         XCTAssertTrue(NowPlayingContent.track(PlaybackFixtures.songs[0]).showsTransport)
     }
+    #endif
 
     // MARK: Errors (#60 review P1: no dead CTA; recoverable retry resumes)
 
@@ -299,5 +301,182 @@ final class TunerIndicatorTests: XCTestCase {
             XCTAssertTrue(s.isReadToday)
             XCTAssertFalse(TunerIndicator(status: .idle, setting: s).accessibilityLabel.contains("doesn't use"))
         }
+    }
+}
+
+final class FoldedColumnLayoutTests: XCTestCase {
+    func testPhonesInPortraitStayCompact() {
+        for width in [320.0, 375, 390, 393, 402, 430, 440] {
+            XCTAssertFalse(FoldedColumnLayout.isWide(containerWidth: width), "\(width) pt")
+        }
+    }
+
+    func testWideBelowTheStudioSwitch() {
+        XCTAssertTrue(FoldedColumnLayout.isWide(containerWidth: 500))
+        XCTAssertTrue(FoldedColumnLayout.isWide(containerWidth: 640))
+        XCTAssertLessThan(FoldedColumnLayout.wideMinWidth, StudioLayoutMetrics.studioMinWidth)
+        XCTAssertFalse(FoldedColumnLayout.isWide(containerWidth: .nan))
+    }
+
+    func testColumnIsTheArtWidthAndCentredCapped() {
+        let m = FoldedColumnLayout.metrics(containerWidth: 640, containerHeight: 900,
+                                           reserveBelowArt: 360, artMin: 140, artMax: 420)
+        XCTAssertEqual(m.artSide, 420)
+        XCTAssertEqual(m.column, 420)
+    }
+
+    func testShortContainerShrinksArtButKeepsAColumnForTheToolbar() {
+        let m = FoldedColumnLayout.metrics(containerWidth: 640, containerHeight: 600,
+                                           reserveBelowArt: 360, artMin: 140, artMax: 420)
+        XCTAssertEqual(m.artSide, 600 - 360 - 44 - 8)
+        XCTAssertEqual(m.column, FoldedColumnLayout.columnMinWidth)
+    }
+
+    func testColumnNeverWiderThanTheContainer() {
+        let m = FoldedColumnLayout.metrics(containerWidth: 500, containerHeight: 1200,
+                                           reserveBelowArt: 360, artMin: 140, artMax: 900)
+        XCTAssertEqual(m.column, 500 - 64)
+        XCTAssertLessThanOrEqual(m.artSide, m.column)
+    }
+
+    func testPhonePortraitKeepsControlsAtTheBottom() {
+        for width in [320.0, 375, 390, 393, 402, 430, 440] {
+            XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: width, containerHeight: 800),
+                           .phoneBottom, "\(width) pt")
+        }
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: .nan, containerHeight: 800), .phoneBottom)
+    }
+
+    func testLandscapePhonesKeepTheCentredColumn() {
+        let phones = [(568.0, 320.0), (667, 375), (844, 390), (932, 430)]
+        // Side and bottom insets a landscape safe area can take off the full screen.
+        let safeAreas = [(0.0, 0.0), (47, 21), (59, 21), (20, 0)]
+        for (width, height) in phones {
+            for (side, bottom) in safeAreas {
+                let containerWidth = width - side * 2
+                let containerHeight = height - bottom
+                let placement = FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
+                                                                    containerHeight: containerHeight)
+                XCTAssertNotEqual(placement, .duoHorizontal,
+                                  "\(containerWidth) × \(containerHeight) is still a landscape phone")
+                if containerWidth >= FoldedColumnLayout.wideMinWidth {
+                    XCTAssertEqual(placement, .centredColumn, "\(containerWidth) × \(containerHeight)")
+                } else {
+                    XCTAssertEqual(placement, .phoneBottom, "\(containerWidth) × \(containerHeight)")
+                }
+            }
+        }
+    }
+
+    func testDuoWideIsHorizontalAndClearsTheFold() {
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 640, containerHeight: 820), .duoHorizontal)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 500, containerHeight: 820), .duoHorizontal)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 640, containerHeight: 499), .centredColumn)
+        // The compact-to-regular probe is wide and 680 pt tall. The horizontal split would
+        // pin Search Apple Music to the left edge, off a phone window.
+        let probeWidth = StudioLayoutMetrics.studioMinWidth - 64
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: probeWidth, containerHeight: 680),
+                       .centredColumn)
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 652, containerHeight: 680), .centredColumn)
+        let layout = FoldedColumnLayout.duoHorizontal(containerWidth: 640, containerHeight: 820,
+                                                      artMin: 140, artMax: 420)
+        XCTAssertEqual(layout.leftWidth + layout.foldGutter + layout.contentWidth + layout.barWidth + layout.edgeInset * 2,
+                       640, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(layout.edgeInset + layout.leftWidth, 320)
+        XCTAssertGreaterThanOrEqual(layout.contentMinX, 320)
+        XCTAssertEqual(layout.barMinX, layout.contentMinX + layout.contentWidth)
+        XCTAssertGreaterThanOrEqual(layout.barWidth, StudioLayoutMetrics.touchTargetMin)
+        XCTAssertLessThan(layout.barWidth, layout.contentWidth, "the symbol bar stays thinner than the content column")
+        XCTAssertGreaterThanOrEqual(layout.contentWidth, 68 + 52, "play and skip fit side by side")
+        // 640 − 16 − 56 − 334. Wider than the Search Apple Music control measured at 203.7 pt.
+        XCTAssertEqual(layout.contentWidth, 234, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(layout.contentWidth, 204)
+        XCTAssertLessThanOrEqual(layout.contentMinX + 204, layout.barMinX)
+        // The narrowest Duo (500 pt wide) leaves 164 pt. Play and skip still fit.
+        // The full Search Apple Music label (203.7 pt) does not, so that column uses a shorter fallback.
+        let narrow = FoldedColumnLayout.duoHorizontal(containerWidth: 500, containerHeight: 820,
+                                                      artMin: 140, artMax: 420)
+        XCTAssertEqual(narrow.contentWidth, 164, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(narrow.contentWidth, 68 + 52)
+        XCTAssertLessThan(narrow.contentWidth, 204)
+        XCTAssertLessThanOrEqual(layout.artSide, layout.leftWidth)
+        XCTAssertEqual(layout.topClearance, FoldedColumnLayout.duoStatusClearance)
+        XCTAssertGreaterThanOrEqual(layout.foldGutter, 24)
+    }
+
+    func testDuoPresenceUsesPublishedDJStateOnly() {
+        XCTAssertFalse(DuoPresentation.showsVisualizer(isOnAir: false))
+        XCTAssertTrue(DuoPresentation.showsVisualizer(isOnAir: true))
+        XCTAssertNil(DuoPresentation.onAirBadge(nil))
+        XCTAssertNil(DuoPresentation.onAirBadge(""))
+        XCTAssertEqual(DuoPresentation.onAirBadge("On Air"), "On Air")
+        XCTAssertFalse(DuoPresentation.washAnimates)
+        XCTAssertEqual(DuoPresentation.washOpacity(reduceTransparency: true), 0)
+        XCTAssertGreaterThan(DuoPresentation.washOpacity(reduceTransparency: false), 0)
+    }
+}
+
+final class DuoStationSwitchTests: XCTestCase {
+    private let stops = [
+        DuoStationSwitch.Stop(id: "morning", name: "Morning Calm"),
+        DuoStationSwitch.Stop(id: "late", name: "Late Night"),
+        DuoStationSwitch.Stop(id: "night", name: "After Hours"),
+    ]
+
+    func testSnappingAcrossStationsOpensNone() {
+        var flight = DuoStationSwitch.Flight(highlightID: "morning")
+        var tokens: [Int] = []
+        for stop in stops {
+            if let token = flight.receive(.snap(stop.id), playingID: "morning") {
+                tokens.append(token)
+            }
+        }
+        XCTAssertTrue(tokens.isEmpty, "a swipe only moves the highlight")
+        XCTAssertEqual(flight.highlightID, "night")
+        XCTAssertNil(flight.pendingID)
+    }
+
+    func testATapOpensThatStationOnce() throws {
+        var flight = DuoStationSwitch.Flight(highlightID: "morning")
+        let index = try XCTUnwrap(DuoStationSwitch.snappedIndex(offset: 1.2, count: stops.count))
+        let token = try XCTUnwrap(flight.receive(.tap(stops[index].id), playingID: "morning"))
+        XCTAssertTrue(flight.accepts(token))
+        XCTAssertEqual(flight.pendingID, "late")
+        XCTAssertNil(flight.receive(.tap("morning"), playingID: "morning"),
+                     "the station already playing is not opened again")
+    }
+
+    func testTwoQuickTapsLeaveOnlyTheLastOpen() throws {
+        var flight = DuoStationSwitch.Flight(highlightID: "morning")
+        let first = try XCTUnwrap(flight.receive(.tap("late"), playingID: "morning"))
+        let second = try XCTUnwrap(flight.receive(.tap("night"), playingID: "morning"))
+        XCTAssertFalse(flight.accepts(first))
+        XCTAssertTrue(flight.accepts(second))
+        XCTAssertEqual(flight.pendingID, "night")
+        XCTAssertEqual(flight.highlightID, "night")
+    }
+}
+
+final class DuoUpNextTimelineTests: XCTestCase {
+    func testTimelineShowsTheSongAReadyBreakAndTheQueue() {
+        let lines = DuoUpNextTimeline.lines(
+            now: .init(title: "Morning Light", artist: "The Calm Collective"),
+            readyBreak: "DJ break after this song",
+            queued: [.init(title: "Slow Burn", artist: "Neon Harbor")])
+        XCTAssertEqual(lines.map(\.role), [.nowPlaying, .breakChip, .queued])
+        XCTAssertEqual(lines.map(\.title), ["Morning Light", "DJ break after this song", "Slow Burn"])
+    }
+
+    func testTimelineOmitsABreakThatIsNotReady() {
+        let quiet = DuoUpNextTimeline.lines(
+            now: .init(title: "Morning Light", artist: "The Calm Collective"),
+            readyBreak: nil,
+            queued: [])
+        XCTAssertEqual(quiet.map(\.role), [.nowPlaying])
+        let blank = DuoUpNextTimeline.lines(
+            now: .init(title: "Morning Light", artist: "The Calm Collective"),
+            readyBreak: "",
+            queued: [])
+        XCTAssertEqual(blank.map(\.role), [.nowPlaying])
     }
 }

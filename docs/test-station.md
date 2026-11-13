@@ -11,7 +11,7 @@ The whole file is wrapped in `#if DEBUG`, so it doesn't exist in Release builds.
 | Voice | On-device `AVSpeechSynthesizer` only (`OnDeviceSpeechProvider`). `TestStation.makeRenderer` drops every paid route, and the budget is `$0` (`VoiceBudget(dailyCapMicrodollars: 0)`), so a paid reservation can never succeed |
 | Briefing content | Synthetic fixtures only (`TestStation.fixtureSources`): 2 calendar items, 1 shared item and 1 note. Every title starts with `[TEST]`, and provenance is `fixture:synthetic/...`. They contain no PII and read no EventKit, files or share inbox. They expire at the end of the day |
 | Consent | `TestStation.fixtureConsent` grants consent **for the fixture sources only**. Never pair it with a real context source |
-| Settings | `TestStation.configuration` and `TestStation.cadence` use the final beta defaults: 30% talk cadence, 12 s plain breaks, 45 s briefing cap, briefing on with a 5-minute flexible target |
+| Settings | `TestStation.configuration` and `TestStation.cadence` use the final beta defaults: 30% talk cadence, 15 s plain-break main segment plus a 4 s talk-over closing line, 45 s briefing cap, briefing on with a 5-minute flexible target |
 | Cache | 7-day retention (`AudioCacheRetention.maximum`) |
 
 ## Enabling it

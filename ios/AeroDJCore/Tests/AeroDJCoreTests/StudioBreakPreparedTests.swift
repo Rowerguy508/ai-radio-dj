@@ -119,7 +119,7 @@ final class StudioBreakPreparedTests: XCTestCase {
     }
 
     /// Waits for the next DJ state matching `condition` (bounded only by the suite timeout).
-    private func until(_ dj: DJPresentationStore, _ condition: (DJPresentationState) -> Bool) async {
+    private func until(_ dj: DJPresentationStore, _ condition: @escaping (DJPresentationState) -> Bool) async {
         for await s in dj.updates() where condition(s) { return }
     }
     private func isReady(_ s: DJPresentationState) -> Bool { if case .ready = s { true } else { false } }

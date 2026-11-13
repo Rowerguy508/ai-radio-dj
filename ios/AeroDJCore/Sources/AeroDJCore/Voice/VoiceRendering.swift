@@ -23,6 +23,8 @@ public enum VoiceRenderError: Error, Equatable, Sendable {
     case notImplemented(String)
     case invalidResponse(String)
     case insecureEndpoint
+    /// The paid proxy route is backing off after a 429 or 5xx (`PaidVoiceBackoff`); no call was made.
+    case suspended
 }
 
 /// One provider in the fallback chain, in preference order.
@@ -208,6 +210,28 @@ public protocol AudioCache: Sendable {
     /// Removes every clip derived from any personal item, whatever its id. For when consent
     /// cannot be checked per item (live mode does not persist consent across launches).
     func purgeAllPersonal() async
+    /// The launch purge (owner, Nov 9 2026): every clip derived from a personal item, like
+    /// `purgeAllPersonal`, but a clip tagged only `VoiceRenderer.allLinesClipTag` (a library song
+    /// or a typed station name in the cloud voice, no item id) is kept between launches, so it is
+    /// not paid for again. "Delete my DJ data" (`purgeAllPersonal`) still removes it.
+    func purgePersonalItems() async
+    /// Removes every clip not rendered by one of `providerIDs` (cloud-voice consent withdrawn,
+    /// Echo's N2 on #395: cloud and paid clips go, on-device clips stay). Unattributable entries
+    /// are removed too. Same shape as #258's, so the two converge when it lands. -Nova
+    func purgeClips(keepingProviders providerIDs: Set<String>) async
+}
+
+extension AudioCache {
+    /// Test doubles that never hold cloud audio. Both shipping caches implement this.
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {}
+    /// Fail-safe default for test doubles: everything personal goes. Both shipping caches and
+    /// `CloudVoiceConsentCache` implement it.
+    public func purgePersonalItems() async { await purgeAllPersonal() }
+}
+
+extension CachedAudio {
+    /// Derived from a real personal item: any source id other than `VoiceRenderer.allLinesClipTag`.
+    var hasPersonalItem: Bool { sourceItemIDs.contains { $0 != VoiceRenderer.allLinesClipTag } }
 }
 
 /// Enforces the 7-day cap on a schedule, not only when a clip is read: an expired clip that
@@ -237,10 +261,12 @@ public struct AudioCacheSweeper: Sendable {
 
     /// The launch step, finished before the first tick: personal clips from an earlier launch
     /// (when asked), expired clips and unattributable files are deleted, then the count of what
-    /// is left is logged. Returns the log line (nil if the cache can't count).
+    /// is left is logged. Returns the log line (nil if the cache can't count). Cloud clips of
+    /// library songs and typed station names (`allLinesClipTag` only) are kept (owner, Nov 9
+    /// 2026); "Delete my DJ data" removes them.
     @discardableResult
     public func prepareForLaunch(purgingPersonalFirst: Bool) async -> String? {
-        if purgingPersonalFirst { await cache.purgeAllPersonal() }
+        if purgingPersonalFirst { await cache.purgePersonalItems() }
         await cache.purgeExpired()
         return await AudioCacheFileLog.record(cache, after: .launch)
     }
@@ -300,6 +326,13 @@ public actor InMemoryAudioCache: AudioCache {
         clips = clips.filter { t.timeIntervalSince($0.value.createdAt) <= maxAge }
     }
     public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
+    /// `async`, matching the protocol requirement exactly (see `purgeClips`).
+    public func purgePersonalItems() async { clips = clips.filter { !$0.value.hasPersonalItem } }
+    /// `async`, matching the protocol requirement exactly: a synchronous overload here let a
+    /// direct `await` call from outside resolve to the no-op `AudioCache` extension default.
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {
+        clips = clips.filter { providerIDs.contains($0.value.providerID) }
+    }
     public var count: Int { clips.count }
 }
 
@@ -311,12 +344,14 @@ extension InMemoryAudioCache: AudioCacheCounting {
 
 extension FileAudioCache: AudioCacheCounting {
     /// Every file counts, metadata and audio alike. Files of personal or unattributable keys
-    /// (orphaned audio included) count as personal.
+    /// (orphaned audio included) count as personal. Clips held in memory while the disk is
+    /// closed count too (one each), so the launch log never reports an empty cache that isn't.
     public func fileCount() async -> AudioCacheCount {
         let groups = groups()
-        return AudioCacheCount(files: groups.reduce(0) { $0 + $1.files.count },
+        let held = await memoryFallback.fileCount()
+        return AudioCacheCount(files: groups.reduce(0) { $0 + $1.files.count } + held.files,
                                personal: groups.filter { $0.clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
-                                   .reduce(0) { $0 + $1.files.count })
+                                   .reduce(0) { $0 + $1.files.count } + held.personal)
     }
 }
 
@@ -328,13 +363,36 @@ public struct FileAudioCache: AudioCache {
     public let maxAge: TimeInterval
 
     private let now: @Sendable () -> Date
+    /// Sets the folder's excluded-from-backup flag (src: CacheBackupExclusion.swift).
+    let backupExclusion: any BackupExclusionMarking
+    /// Sink for the content-free line logged when setting that flag fails.
+    let backupExclusionLog: @Sendable (String) -> Void
+    /// Closed when the folder cannot be marked excluded: nothing more is written to disk this session.
+    let diskGate = CacheDiskGate()
+    /// Serves clips stored while the disk is closed, so playback is unaffected (session only).
+    let memoryFallback: InMemoryAudioCache
 
     /// `maxAge` is clamped to `AudioCacheRetention.maximum` (7 days).
+    /// Opening a cache whose folder already exists re-applies the excluded-from-backup flag,
+    /// since a restore can drop it; `store` applies it whenever it (re)creates the folder.
+    /// Fail closed: if the flag cannot be set (or reads back unset) on open, every personal clip
+    /// in the folder is deleted, and on any failure nothing more is written to disk this session.
+    /// By design, generic clips (no `sourceItemIDs`: station idents, generic links) stay on disk
+    /// after an open failure: they carry no personal data and are swept by retention as usual.
     public init(directory: URL, maxAge: TimeInterval = AudioCacheRetention.maximum,
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                now: @escaping @Sendable () -> Date = { Date() },
+                backupExclusion: any BackupExclusionMarking = FoundationBackupExclusion(),
+                backupExclusionLog: @escaping @Sendable (String) -> Void = CacheBackupExclusionLog.emit) {
         self.directory = directory
         self.maxAge = AudioCacheRetention.clamp(maxAge)
         self.now = now
+        self.backupExclusion = backupExclusion
+        self.backupExclusionLog = backupExclusionLog
+        self.memoryFallback = InMemoryAudioCache(maxAge: maxAge, now: now)
+        if FileManager.default.fileExists(atPath: directory.path), !applyBackupExclusion(.open) {
+            diskGate.close()
+            removePersonalGroups()
+        }
     }
 
     private func url(_ key: String) -> URL { directory.appendingPathComponent("\(key).json") }
@@ -344,6 +402,7 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func audio(for key: String) async -> CachedAudio? {
+        if let held = await memoryFallback.audio(for: key) { return held }
         guard let clip = read(url(key)).map({ clampingFutureStamp($0, key: key) }) else { return nil }
         guard now().timeIntervalSince(clip.createdAt) <= maxAge else {
             remove(group: key)
@@ -375,7 +434,7 @@ public struct FileAudioCache: AudioCache {
         guard clip.createdAt > t else { return clip }
         var clamped = clip
         clamped.createdAt = t
-        if let data = try? JSONEncoder().encode(clamped) { try? ProtectedFile.write(data, to: url(key)) }
+        if !diskGate.isClosed, let data = try? JSONEncoder().encode(clamped) { try? ProtectedFile.write(data, to: url(key)) }
         return clamped
     }
 
@@ -393,10 +452,12 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func purge(sourceItemIDs: Set<UUID>) async {
+        await memoryFallback.purge(sourceItemIDs: sourceItemIDs)
         removeGroups { clip in clip.map { !sourceItemIDs.isDisjoint(with: $0.sourceItemIDs) } ?? true }
     }
 
     public func purgeExpired() async {
+        await memoryFallback.purgeExpired()
         let t = now()
         for group in groups() {
             let clip = group.clip.map { clampingFutureStamp($0, key: group.key) }
@@ -406,14 +467,52 @@ public struct FileAudioCache: AudioCache {
     }
 
     public func purgeAllPersonal() async {
+        await memoryFallback.purgeAllPersonal()
+        removePersonalGroups()
+    }
+
+    /// The launch purge: personal-item and unattributable files go; `allLinesClipTag`-only clips stay.
+    public func purgePersonalItems() async {
+        await memoryFallback.purgePersonalItems()
+        removeGroups { clip in clip.map(\.hasPersonalItem) ?? true }
+    }
+
+    /// Personal and unattributable files (the same rule as `purgeAllPersonal`), synchronously.
+    private func removePersonalGroups() {
         removeGroups { clip in clip.map { !$0.sourceItemIDs.isEmpty } ?? true }
     }
 
+    public func purgeClips(keepingProviders providerIDs: Set<String>) async {
+        // Clips held in memory while the disk is closed obey the cloud-consent purge too.
+        await memoryFallback.purgeClips(keepingProviders: providerIDs)
+        removeGroups { clip in clip.map { !providerIDs.contains($0.providerID) } ?? true }
+    }
+
+    /// Fail closed: if the folder could not be marked excluded from backup (on open, or now when
+    /// creating it), the clip is held in memory for this session and nothing is written to disk.
     public func store(_ audio: CachedAudio, for key: String) async {
         var stamped = audio; stamped.createdAt = now()
         guard let data = try? JSONEncoder().encode(stamped) else { return }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? ProtectedFile.write(data, to: url(key))
+        // Create + mark + write under the gate's lock: a concurrent store can neither see a
+        // folder that was created but not yet marked, nor write after a failed mark closed it.
+        let written = diskGate.serialized { closed -> Bool in
+            guard !closed else { return false }
+            if !FileManager.default.fileExists(atPath: directory.path) {
+                try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                // Created or re-created (after a delete): the new folder has no flag yet.
+                guard applyBackupExclusion(.create) else {
+                    closed = true
+                    // Leave no unmarked folder behind (only if empty: never delete foreign files).
+                    if (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.isEmpty == true {
+                        try? FileManager.default.removeItem(at: directory)
+                    }
+                    return false
+                }
+            }
+            try? ProtectedFile.write(data, to: url(key))
+            return true
+        }
+        if !written { await memoryFallback.store(audio, for: key) }
     }
 }
 
@@ -526,20 +625,83 @@ public final class NarrationRevocations: @unchecked Sendable {
     }
 }
 
+/// Where a track entered the queue (Sentinel). Set by the app where tracks are built from
+/// MusicKit: catalog search and catalog seed lookups are `.catalog`, `MusicLibraryRequest`
+/// results are `.library`, anything else is `.unknown`. Fail-closed: only `.catalog` is
+/// non-personal; `.library` and `.unknown` narration never leaves the device.
+public enum TrackOrigin: String, Codable, Equatable, Hashable, Sendable {
+    case catalog, library, unknown
+
+    /// The more restrictive of two origins: `.library` over `.unknown` over `.catalog`.
+    public func restricted(by other: TrackOrigin) -> TrackOrigin {
+        if self == .library || other == .library { return .library }
+        if self == .unknown || other == .unknown { return .unknown }
+        return .catalog
+    }
+}
+
+extension SpokenAttribution {
+    /// Track metadata with `origin` derived from `tracks` (any existing origin is replaced): the
+    /// most restrictive origin of every named id, `.unknown` when an id is not in `tracks` or
+    /// no id is named. Other attributions are returned unchanged.
+    public func resolvingTrackOrigins(in tracks: [DJTrack]) -> SpokenAttribution {
+        guard case .trackMetadata(let ids, _) = self else { return self }
+        var origin: TrackOrigin = ids.isEmpty ? .unknown : .catalog
+        for id in ids {
+            let matches = tracks.filter { $0.id == id }
+            origin = origin.restricted(by: matches.isEmpty ? .unknown
+                                       : matches.map(\.origin).reduce(.catalog) { $0.restricted(by: $1) })
+        }
+        return .trackMetadata(trackIDs: ids, origin: origin)
+    }
+}
+
+/// Which DJ lines a route that leaves the device or is paid may hear (`VoiceRenderer.mayLeaveDevice`).
+/// Owner, Nov 9 2026: "I want it all elevenlabs." The wider scope needs cloud-voice consent to
+/// the copy that says so (`CloudVoiceConsentCopy.version` 2, `CloudVoiceConsentStore.scope`). -Fry
+public enum CloudVoiceScope: Equatable, Sendable {
+    /// Nothing leaves the device: no consent to the current copy, or the cloud voice is off.
+    case noLines
+    /// #176: only an attributed, non-personal DJ transition with no source or provenance. The
+    /// default for a renderer with no consent check (owner A/B build, on-device default, tests).
+    case transitionsOnly
+    /// Copy v2 accepted: every attributed line, including personal items (calendar, shared
+    /// email digest, notes), news and weather, library tracks and typed station names. A cue
+    /// with no attribution still stays on the device.
+    case allLines
+}
+
 public struct VoiceRenderer: Sendable {
     public static let cacheFormatVersion = "v1"
     public let routes: [VoiceRoute]
     public let budget: VoiceBudget
     public let cache: any AudioCache
     public let revocations: NarrationRevocations
+    /// Read once per cue, before any cache key, reservation or provider call, so a consent
+    /// change applies to the very next line. Every narrowed view of this renderer shares it.
+    public let cloudScope: @Sendable () -> CloudVoiceScope
 
     public init(routes: [VoiceRoute], budget: VoiceBudget, cache: any AudioCache,
-                revocations: NarrationRevocations = .shared) {
+                revocations: NarrationRevocations = .shared,
+                cloudScope: @escaping @Sendable () -> CloudVoiceScope = { .transitionsOnly }) {
         self.routes = routes
         self.budget = budget
         self.cache = cache
         self.revocations = revocations
+        self.cloudScope = cloudScope
     }
+
+    /// This renderer's budget, cache, revocations and scope over `routes`.
+    func narrowed(to routes: [VoiceRoute]) -> VoiceRenderer {
+        VoiceRenderer(routes: routes, budget: budget, cache: cache, revocations: revocations, cloudScope: cloudScope)
+    }
+
+    /// Tag on every clip of a line that only the wider scope (`.allLines`) lets leave the device,
+    /// so "Delete my DJ data" (`purgeAllPersonal`) and a purge-all in flight find it even when the
+    /// line has no `sourceItemID` (a library track, a typed station name). The launch purge
+    /// (`purgePersonalItems`) keeps a clip with only this tag, so it isn't paid for again.
+    /// Not a real item id; never logged. -Fry
+    public static let allLinesClipTag = UUID(uuidString: "A11C10D0-0000-4000-8000-00000000F2A1")!
 
     /// The last route alone (the on-device standard voice), sharing this renderer's budget,
     /// cache and revocations. Nil when there is only one route, or when the last route is paid
@@ -547,7 +709,7 @@ public struct VoiceRenderer: Sendable {
     /// that ran over its cap; it is a narrowed view, not a second renderer.
     public var lastRouteOnly: VoiceRenderer? {
         guard routes.count > 1, let last = routes.last, last.isLocalAndFree else { return nil }
-        return VoiceRenderer(routes: [last], budget: budget, cache: cache, revocations: revocations)
+        return narrowed(to: [last])
     }
 
     /// Only the on-device, free routes, in order, sharing this renderer's budget, cache and
@@ -557,7 +719,15 @@ public struct VoiceRenderer: Sendable {
     public var onDeviceOnly: VoiceRenderer? {
         let local = routes.filter(\.isLocalAndFree)
         guard !local.isEmpty else { return nil }
-        return VoiceRenderer(routes: local, budget: budget, cache: cache, revocations: revocations)
+        return narrowed(to: local)
+    }
+
+    /// Cloud-voice consent withdrawn (Echo's N2 on #395): deletes every cached clip that was not
+    /// rendered by one of this renderer's on-device, free routes, so a cloud clip is never served
+    /// again from the cache (the cache is read before a route's provider, and so before the tester
+    /// route's consent check). On-device clips stay. -Nova
+    public func purgeCloudClips() async {
+        await cache.purgeClips(keepingProviders: Set(routes.filter(\.isLocalAndFree).map(\.providerID)))
     }
 
     /// Attempt detail for an off-device or paid route skipped for a local-only cue. Fixed text, no cue text.
@@ -600,13 +770,37 @@ public struct VoiceRenderer: Sendable {
     /// Whether `cue` may be sent to a route that leaves the device (#176). Fail-closed: only a
     /// cue with an explicit non-personal attribution (`.presenter` or `.trackMetadata`) that is
     /// itself a DJ transition with no source item, source kind or provenance is eligible.
-    /// Missing attribution, `.personalContext`, any sourced or briefing cue (Calendar, Share,
+    /// Missing attribution, `.personalContext`, `.stationName` (a created station's name), any sourced or briefing cue (Calendar, Share,
     /// Obsidian, library notes…) or a cue whose fields disagree with its attribution is local-only.
-    public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?) -> Bool {
+    ///
+    /// Track metadata is eligible only when every named track is `.catalog` (Sentinel): a track
+    /// from the listener's library, or one of `.unknown` origin, is personal and stays on-device,
+    /// even on a catalog station (main segment and closing line alike).
+    /// #200 (-Echo, Sentinel's #401 B1): a clip may go in the narration cache only if a purge can
+    /// find it. A provider-fact line (local news, weather: `FactProvenance`) or any other expiring
+    /// line with no `sourceItemID` would sit there untagged, so `purgeAllPersonal` and a location
+    /// withdrawal could not remove it for up to the 7-day cache life. Such a cue is never looked
+    /// up in or written to the cache: it renders fresh, and lives only in the prepared break.
+    public static func mayUseCache(_ cue: NarrationCue) -> Bool {
+        if FactProvenance.isFact(cue.provenance) { return false }
+        return cue.expiresAt == nil || cue.sourceItemID != nil
+    }
+
+    /// `scope` (owner, Nov 9 2026): `.transitionsOnly` is the rule above; `.noLines` keeps every
+    /// cue local; `.allLines` (consent to copy v2) lets every attributed cue go. A cue with no
+    /// attribution is local-only whatever the scope.
+    public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?,
+                                      scope: CloudVoiceScope = .transitionsOnly) -> Bool {
         guard let attribution else { return false }
+        switch scope {
+        case .noLines: return false
+        case .allLines: return true
+        case .transitionsOnly: break
+        }
         switch attribution {
-        case .personalContext: return false
-        case .presenter, .trackMetadata: break
+        case .personalContext, .stationName: return false
+        case .trackMetadata(_, let origin): guard origin == .catalog else { return false }
+        case .presenter: break
         }
         return cue.kind == .transition && !cue.isContent && cue.source == nil && cue.provenance == nil
     }
@@ -619,15 +813,18 @@ public struct VoiceRenderer: Sendable {
     public func render(_ cue: NarrationCue, userID: String, stationID: String,
                        attribution: SpokenAttribution? = nil) async -> Result<RenderedClip, Failure> {
         var attempts: [VoiceAttempt] = []
-        let sources = cue.sourceItemID.map { [$0] } ?? []
+        // Decided once, before any cache key, reservation or provider call (#176). Ineligible
+        // cues use `isLocalAndFree` routes only.
+        let scope = cloudScope()
+        let offDeviceAllowed = Self.mayLeaveDevice(cue, attribution: attribution, scope: scope)
+        let widened = offDeviceAllowed && !Self.mayLeaveDevice(cue, attribution: attribution, scope: .transitionsOnly)
+        let sources = (cue.sourceItemID.map { [$0] } ?? []) + (widened ? [Self.allLinesClipTag] : [])
         let token = revocations.token()  // before any synthesis: a later purge of `sources` wins
         if revocations.purgePending(sources) {
             // A purge of this item is still running: render nothing that it could miss.
             return .failure(Failure(reason: .renderFailed, attempts: [VoiceAttempt(providerID: routes.first?.providerID ?? "", result: .cancelled)]))
         }
-        // Decided once, before any cache key, reservation or provider call (#176). Ineligible
-        // cues use `isLocalAndFree` routes only.
-        let offDeviceAllowed = Self.mayLeaveDevice(cue, attribution: attribution)
+        let useCache = Self.mayUseCache(cue)
         for route in routes {
             if !route.isLocalAndFree && !offDeviceAllowed {
                 // Local-only cue: its text never reaches this off-device or paid route, its cache
@@ -638,7 +835,7 @@ public struct VoiceRenderer: Sendable {
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
             let text = route.acceptsSSML ? SpeechDelivery.ssml(cue.text) : SpeechDelivery.speakable(cue.text)
             let key = Self.cacheKey(text: text, route: route)
-            if let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
+            if useCache, let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
                 // Keys are text + voice, so the clip may carry other items' ids: check both.
                 let hitSources = Array(Set(sources).union(cached.sourceItemIDs))
                 if revocations.revoked(hitSources, since: token) || revocations.purgePending(hitSources) {
@@ -674,13 +871,13 @@ public struct VoiceRenderer: Sendable {
                 }
                 let audio = CachedAudio(data: artifact.data, seconds: artifact.durationSeconds,
                                         providerID: route.providerID, voiceID: route.voice.id,
-                                        sourceItemIDs: cue.sourceItemID.map { [$0] } ?? [])
+                                        sourceItemIDs: sources)
                 if Task.isCancelled || revocations.revoked(sources, since: token) {
                     // The caller gave up, or the source was purged mid-render: nothing is cached or returned.
                     attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
                     return .failure(Failure(reason: .renderFailed, attempts: attempts))
                 }
-                await cache.store(audio, for: key)
+                if useCache { await cache.store(audio, for: key) }
                 if revocations.revoked(sources, since: token) {
                     // A purge landed while the write was in flight and may have run before it:
                     // remove what we just wrote. (A purge after the write removes it itself.)

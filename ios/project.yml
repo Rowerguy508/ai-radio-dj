@@ -35,6 +35,7 @@ targets:
     dependencies:
       - package: AeroDJCore
       - target: AeroDJShare # embedded into AeroDJ.app/PlugIns
+      - sdk: CarPlay.framework # templates; the audio entitlement is in the app entitlements files
       # AeroDJPhonon is not embedded: build 12 failed App Store processing with ITMS-90755
       # (prohibited instructions) in AeroDJPhonon.framework. With no framework, dlopen returns nil
       # and speech falls back to AVSpeech, the same as AeroDJPhononEnabled off. Re-embed after the fix.
@@ -44,15 +45,24 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_OBJC_BRIDGING_HEADER: AeroDJ/AeroDJ-Bridging-Header.h
         OTHER_LDFLAGS: "$(inherited) -lz"
-        INFOPLIST_KEY_NSAppleMusicUsageDescription: AeroDJ uses Apple Music to play your station.
+        # Home-screen and Settings name (OnAirly, AppName.display in code). The bundle ID, target,
+        # module, scheme, executable and paths keep the AeroDJ names.
+        INFOPLIST_KEY_CFBundleDisplayName: OnAirly
+        INFOPLIST_KEY_NSAppleMusicUsageDescription: OnAirly uses Apple Music to play your station.
         # UIBackgroundModes (audio) lives in AeroDJ/Info.plist: Xcode doesn't generate it from INFOPLIST_KEY_UIBackgroundModes.
-        INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: AeroDJ reads today's events, read-only, to mention them in your briefing.
+        INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: OnAirly reads today's events, read-only, to mention them in your briefing.
+        # #200: must match LocalAreaConsentCopy.usageDescription (NewsWeatherInterludeTests). Reduced accuracy is in AeroDJ/Info.plist.
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: OnAirly uses your approximate location, only while the app is open, to mention local weather and news between songs. Your location itself is never sent to the voice service.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         # Explicit UIApplicationSceneManifest (app-resizability skill, scene lifecycle) with
-        # UIApplicationSupportsMultipleScenes = false: one window, because the app has one
-        # app-scoped DJ session. It lives in AeroDJ/Info.plist, merged with the generated
-        # keys above: INFOPLIST_KEY_UIApplicationSceneManifest_Generation alone generates
+        # UIApplicationSupportsMultipleScenes = false: one phone window, because the app has
+        # one app-scoped DJ session. The CarPlay audio scene is a template scene in
+        # AeroDJ/Info.plist (CPTemplateApplicationScene), not a second window. It lives in
+        # that plist, merged with the generated keys above:
+        # INFOPLIST_KEY_UIApplicationSceneManifest_Generation alone generates
         # UIApplicationSupportsMultipleScenes = true. CI asserts the built value.
+        # Apple granted the CarPlay audio entitlement. It is set in both app
+        # entitlements files, not in this generated plist.
         INFOPLIST_FILE: AeroDJ/Info.plist
         # App Store requires an icon and declared orientations (ITMS 90022/90023/90713/90474).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -94,6 +104,22 @@ targets:
         INFOPLIST_FILE: AeroDJShare/Info.plist
         CODE_SIGN_ENTITLEMENTS: AeroDJShare/AeroDJShare.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
+  AeroDJStoreKitTests:
+    # StoreKitTest (SKTestSession) coverage for the Pro subscription: purchase, restore, expiry,
+    # refund. Hosted in the app so it can see ProEntitlementObserver. The .storekit file is a
+    # test resource here and the Run action's StoreKit configuration; it is not in the app bundle.
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: AeroDJStoreKitTests
+      - path: StoreKit/OnAirlyPro.storekit
+        buildPhase: resources
+    dependencies:
+      - target: AeroDJ
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app.storekittests
+        GENERATE_INFOPLIST_FILE: YES
   AeroDJUITests:
     # Debug-only UI integration tests and screenshots of the playing screen (capture mode).
     type: bundle.ui-testing
@@ -111,9 +137,14 @@ schemes:
     build:
       targets:
         AeroDJ: all
+    run:
+      # Local StoreKit testing in Xcode (Run only). TestFlight and App Store builds use the
+      # real App Store products, which the owner creates in App Store Connect.
+      storeKitConfiguration: StoreKit/OnAirlyPro.storekit
     test:
       targets:
         - package: AeroDJCore/AeroDJCoreTests
+        - AeroDJStoreKitTests
   AeroDJStudioUI:
     # Separate scheme so the unit-test scheme stays fast; CI runs this on iPhone and iPad.
     build:

@@ -21,6 +21,10 @@ struct PlayingScreen: View {
     /// Capture/fixture progress only for now. Live stays nil until Atlas's read-only
     /// playbackTime/currentDuration can be polled (do not reference them here yet).
     var timeSource: PlaybackTimeSource? = nil
+    /// Duo station dial. Empty keeps the player as it was.
+    var stationStops: [DuoStationSwitch.Stop] = []
+    /// The list's station-open action. The dial calls this and nothing else.
+    var onOpenStation: ((String) async -> Void)? = nil
 
     @SceneStorage("aerodj.studio.segment") private var segment: WorkspaceSegment = .queue
     @State private var showWorkspace = false
@@ -102,6 +106,8 @@ struct PlayingScreen: View {
         }
         .background(Color(.systemBackground))
         .environment(\.artStation, currentStation)
+        // #454: Try again on a failed station start (the placeholder reads it).
+        .environment(\.stationStart, studio.stationStart)
         .sheet(isPresented: $showWorkspace) {
             NavigationStack {
                 workspace
@@ -129,17 +135,30 @@ struct PlayingScreen: View {
         switch mode {
         case .compact:
             // Folded redesign (wireframe 08): back + ⋯ in the bar, the station chip below.
+            // iPhone landscape stays the centred column. Only a wide-and-tall container
+            // (the unfolded Duo) moves the controls to the right.
+            let placement = FoldedColumnLayout.controlPlacement(containerWidth: width,
+                                                                containerHeight: Double(height))
+            let movesMoreIntoThePlayer = placement != .phoneBottom
+            let openConnections = { segment = .connections; showWorkspace = true }
             FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
                          content: content, snapshot: snapshot, actions: actions, dj: dj,
                          search: search, studioSearch: studioSearch, timeSource: timeSource,
                          artworkNamespace: morphNamespace, speechLevel: studio.dj,
+                         moreMenu: movesMoreIntoThePlayer
+                            ? FoldedMoreMenuItems(reviewCount: dj.reviewCount, onConnections: openConnections)
+                            : nil,
                          onQueue: { segment = .queue; showWorkspace = true },
                          onTune: { segment = .tune; showWorkspace = true },
-                         onReview: { segment = .connections; showWorkspace = true })
+                         onReview: { segment = .connections; showWorkspace = true },
+                         stationStops: stationStops,
+                         onOpenStation: onOpenStation)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
                 .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
-                               onConnections: { segment = .connections; showWorkspace = true })
+                               showsMore: !movesMoreIntoThePlayer,
+                               hidesSystemBack: placement == .duoHorizontal,
+                               onConnections: openConnections)
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,
@@ -180,7 +199,13 @@ struct PlayingScreen: View {
         return Array((active.genres + active.moods).prefix(4))
     }
 
-    private var content: NowPlayingContent { NowPlayingContent.resolve(access: access, snapshot: snapshot) }
+    /// #454: a station row tap shows that station's start state (Starting / Couldn't start /
+    /// can't start yet) here, never the empty search screen.
+    private var content: NowPlayingContent {
+        let start = StationStartStatus.shown(studio.stationStart.state, openedStationID: station.id,
+                                             nowPlaying: snapshot.nowPlaying)
+        return NowPlayingContent.resolve(access: access, snapshot: snapshot, start: start)
+    }
 
     /// DJ activity comes only from the Studio model (`studio.djState`), which the player
     /// feeds from real audio callbacks. `PlaybackSnapshot.dj` is not used, and no caption

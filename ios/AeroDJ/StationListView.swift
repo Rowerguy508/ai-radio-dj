@@ -3,14 +3,24 @@ import SwiftUI
 
 /// Station selection screen. Adaptive container sizing (no hardcoded device dims).
 /// The split root owns the selection and the one shared studio/playback session.
-/// Neither column creates a model, and choosing a station never starts playback.
+/// Neither column creates a model. #454: tapping any station row starts that station right away
+/// (switching from whatever plays); restoring the selection never does.
 struct StationListView: View {
     /// Composed once at launch by `AppDependencies`; views receive it, never build it.
     let dependencies: AppDependencies
-    @State private var stations: [Station] = Station.defaultStations
+    /// Built-in stations, then every station created with the + walkthrough (P0 build 25: the
+    /// list was only the built-ins, so a saved station never appeared). Created rows come from
+    /// the recipe library, the store `StationCreationModel.save` writes, so they update live.
+    private var stations: [Station] {
+        Station.defaultStations + CreatedStations.entries(from: dependencies.studio.recipes.recipes).map(Station.init(created:))
+    }
     @State private var showSharedInbox = false
+    /// Settings sheet (gear on the Stations list), every build (-Fry).
+    @State private var showSettings = false
     /// One add-station flow per presentation (nil when closed). Never created in the Test Station.
     @State private var stationCreation: StationCreationModel?
+    /// "Couldn't start that station" (core decides; `StationStartToast` draws it). Row taps only.
+    @State private var startNotice = StationStartNotice()
 
     var body: some View {
         #if DEBUG
@@ -29,22 +39,39 @@ struct StationListView: View {
     private var split: some View {
         StationSplitRoot(stations: stations, showsSharedInbox: dependencies.mode == .live,
                          showSharedInbox: $showSharedInbox,
-                         onUserOpenedStation: { await dependencies.playback.authorize() },
-                         onAddStation: addStationAction) { station in
+                         onUserOpenedStation: { id in await openStation(id) },
+                         onAddStation: addStationAction,
+                         onOpenSettings: { showSettings = true }) { station in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
-                       isTestStation: dependencies.mode == .testStation)
+                       isTestStation: dependencies.mode == .testStation,
+                       stationStops: stations.map { DuoStationSwitch.Stop(id: $0.id.uuidString, name: $0.name) },
+                       onOpenStation: { id in
+                           guard let uuid = UUID(uuidString: id) else { return }
+                           await openStation(uuid)
+                       })
+            // Inside the detail's NavigationStack: the top of the content, below the nav bar,
+            // so it never covers Back or the title. A tap always opens this column. Never takes a tap.
+            .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
         }
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(isPresented: $showSettings, isTestStation: dependencies.mode == .testStation,
+                         // Sentinel's #410 n4: the app's one purge-all.
+                         personalDataReset: dependencies.purger)
+        }
         .sheet(isPresented: $showSharedInbox) {
             // Always a NavigationStack with Done. An empty `if` body left an undismissable sheet.
             SharedInboxSheet(isPresented: $showSharedInbox) {
                 if dependencies.mode == .live, let review = SharedInboxReview.appGroupInbox() {
-                    SharedInboxReviewView(review: review)
+                    // #313: Connections re-reads after each change, so the briefing sees it; an edit purges first.
+                    SharedInboxReviewView(review: review,
+                                          onChange: { await dependencies.studio.connections.refresh() },
+                                          willRedact: { await dependencies.studio.connections.purgeNarration(for: [$0]) })
                 } else {
                     ContentUnavailableView(
                         "Nothing shared yet", systemImage: "tray",
-                        description: Text("In Mail, Messages or Safari, tap Share and choose AeroDJ."))
+                        description: Text("In Mail, Messages or Safari, tap Share and choose \(AppName.display)."))
                 }
             }
         }
@@ -60,6 +87,37 @@ struct StationListView: View {
         // Live only: lets Connections offer the .md file picker (nil in the test station).
         .environment(\.pickedNotes, dependencies.pickedNotes)
         .ownerVoiceTrialEntry() // AERODJ_OWNER_AB only; a no-op otherwise
+        .testerCloudVoiceConsent() // AERODJ_TESTER_VOICE or AERODJ_OWNER_AB only; a no-op otherwise
+    }
+
+    /// #454 (-Atlas): every station row tap (built-in, library or created) starts that station on
+    /// one path (`StationQueuePlayer.openStation`): Now Playing shows "Starting <name>…" at once,
+    /// the first song plays as soon as it resolves, and a failure stays on that screen with Try
+    /// again (plus the existing toast). Row tap only, never restore. Any tap clears the toast.
+    private func openStation(_ id: Station.ID) async {
+        let tap = startNotice.beginTap()
+        let name = stations.first(where: { $0.id == id })?.name ?? "station"
+        let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes)
+        let status = dependencies.studio.stationStart
+        let statusTap = status.begin(stationID: id.uuidString, stationName: name,
+                                     songAtTap: dependencies.playback.snapshot.nowPlaying?.id,
+                                     retry: { Task { await openStation(id) } })
+        guard let stationQueue = dependencies.stationQueue else {
+            // No station queue (previews): the old behavior, no start.
+            await dependencies.playback.authorize()
+            if let recipeID { _ = await dependencies.studio.applyRecipe(recipeID) }
+            status.finish(tap: statusTap, outcome: .notStarted(.notAvailableYet))
+            return
+        }
+        let outcome: CreatedStationOpenOutcome
+        if let recipeID {
+            outcome = await stationQueue.openCreatedStation(.userTap, recipeID: recipeID, studio: dependencies.studio)
+        } else {
+            outcome = await stationQueue.openBuiltInStation(.userTap, stationID: id, studio: dependencies.studio)
+        }
+        status.finish(tap: statusTap, outcome: outcome)
+        // Status read only (never authorize() or a prompt), and only if a toast is due.
+        startNotice.finish(tap: tap, outcome: outcome, musicAuthorized: GenreAccess.isAuthorized)
     }
 
     /// The + action, or nil (no button) when the app has no seed search: previews and the Test Station.
@@ -77,42 +135,56 @@ struct StationSplitRoot<Detail: View>: View {
     @Binding var showSharedInbox: Bool
     /// Fired only from the list selection setter (a row tap). Restore never calls this, so a
     /// relaunch with a stored station ID cannot request Apple Music permission.
-    var onUserOpenedStation: (() async -> Void)? = nil
+    var onUserOpenedStation: ((Station.ID) async -> Void)? = nil
     /// Opens the add-station walkthrough. Nil hides the + button.
     var onAddStation: (() -> Void)? = nil
+    /// Opens Settings. Nil hides the gear (StudioCapture passes none).
+    var onOpenSettings: (() -> Void)? = nil
     private let detail: (Station) -> Detail
 
-    @State private var selectedStationID: Station.ID? = nil
+    /// The one source of truth for both layouts: the selected station, whether restore has
+    /// run, and what compact width shows. The regular detail and the compact column are both
+    /// derived from it, so a width-class change in either direction keeps the open station.
+    /// The back gesture may leave the list showing; that must not copy the stored id again.
+    @State private var navigation = StationSplitNavigation<Station.ID>()
     @SceneStorage("aerodj.selectedStationID") private var storedStationID = ""
-    /// Set once the stored id has been copied into `selectedStationID` this appearance.
-    /// The back gesture may leave the list showing; that must not copy the id again.
-    @State private var didApplyRestore = false
     /// Regular width shows both columns. Compact uses `preferredCompactColumn`.
     @State private var columnVisibility = NavigationSplitViewVisibility.automatic
-    /// Nothing selected opens on the list. A selection pushes the detail.
-    @State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     /// The scheme around the split. Regular width keeps it; compact forces dark (see `body`).
     @Environment(\.colorScheme) private var systemColorScheme
 
     init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
-         onUserOpenedStation: (() async -> Void)? = nil,
+         onUserOpenedStation: ((Station.ID) async -> Void)? = nil,
          onAddStation: (() -> Void)? = nil,
+         onOpenSettings: (() -> Void)? = nil,
          @ViewBuilder detail: @escaping (Station) -> Detail) {
         self.stations = stations
         self.showsSharedInbox = showsSharedInbox
         self._showSharedInbox = showSharedInbox
         self.onUserOpenedStation = onUserOpenedStation
         self.onAddStation = onAddStation
+        self.onOpenSettings = onOpenSettings
         self.detail = detail
     }
 
     private var isCompact: Bool { horizontalSizeClass != .regular }
 
+    private var selectedStationID: Station.ID? { navigation.selectedID }
+
+    /// Derived from `navigation`: the open station whenever one is selected, unless the
+    /// listener went back in compact width. Writes made in regular width are ignored there.
+    private var preferredCompactColumn: Binding<NavigationSplitViewColumn> {
+        Binding(
+            get: { navigation.compactColumn == .detail ? .detail : .sidebar },
+            set: { navigation.compactColumnWritten($0 == .sidebar ? .list : .detail) }
+        )
+    }
+
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredCompactColumn) {
+        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: preferredCompactColumn) {
             stationPicker
-            .navigationTitle("AeroDJ")
+            .navigationTitle(AppName.display)
             // Contain first, so this identifier stays on the list and does not replace the rows.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("split.sidebar")
@@ -120,6 +192,14 @@ struct StationSplitRoot<Detail: View>: View {
             // iOS 17 keeps the system large title. Rows and selection are untouched.
             .morphingLargeTitle("Stations", subtitle: "Your AI-hosted radio, on Apple Music")
             .toolbar {
+                if let onOpenSettings {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: onOpenSettings) {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                        .accessibilityIdentifier("stations.settings")
+                    }
+                }
                 // The real App Group inbox is never opened in the test station: its
                 // data must not appear next to fixtures.
                 if showsSharedInbox {
@@ -165,10 +245,14 @@ struct StationSplitRoot<Detail: View>: View {
         // and a stored id can arrive after the first render.
         .task { restoreSelection() }
         .onChange(of: storedStationID) { _, _ in restoreSelection() }
+        // Created stations arrive when the recipes load, after the first render.
+        .onChange(of: stations.map(\.id)) { _, _ in restoreSelection() }
         // Regular is both columns. Compact leaves the visible column to
-        // `preferredCompactColumn`. Visibility never writes the selection.
+        // `preferredCompactColumn`, which `navigation` derives from the selection, so a fold,
+        // rotation or Split View change shows the same open station. Never writes the selection.
         .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
-            columnVisibility = sizeClass == .regular ? .all : .automatic
+            navigation.setRegularWidth(sizeClass == .regular)
+            columnVisibility = navigation.showsBothColumns ? .all : .automatic
         }
     }
 
@@ -194,19 +278,28 @@ struct StationSplitRoot<Detail: View>: View {
                 // that row and the split pushes the detail.
                 NavigationLink(value: station.id) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(station.name).font(.headline)
-                        Text(station.description ?? "").font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
+                        // ui-contract §6: station name is one line, truncated. Created names run to 40 characters.
+                        Text(station.name).font(.headline).lineLimit(1)
+                        if let description = station.description {
+                            Text(description).font(.subheadline).foregroundStyle(AeroDJPalette.secondaryText)
+                                .lineLimit(2)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .tag(station.id)
+                // Same label, hint and identifier scheme as the carousel card (StationCarousel.swift:189-193),
+                // so UI tests and VoiceOver treat a created station like any other row.
+                .accessibilityHint(station.openHint)
+                .accessibilityIdentifier("stations.row.\(station.id.uuidString)")
             }
         }
     }
 
     /// The row the list selects. Nil is not stored: the split clears the binding while it
     /// builds the list, and writing that empty value would erase the station the next launch needs.
-    /// Choosing a station records only its id and pushes the detail. It does not play.
+    /// Choosing a station records its id and pushes the detail. #454: a tap starts that station
+    /// (`StationListView.openStation`); restore never enters this setter.
     /// The back gesture writes `preferredCompactColumn`, so the list can show again.
     private var selection: Binding<Station.ID?> {
         Binding(
@@ -216,32 +309,26 @@ struct StationSplitRoot<Detail: View>: View {
                 // Keep the system NavigationSplitView push. Setting the column outside
                 // an animation was skipping the transition on compact width.
                 withAnimation {
-                    selectedStationID = newValue
-                    preferredCompactColumn = .detail
+                    navigation.select(newValue)
                 }
-                didApplyRestore = true
                 storedStationID = newValue.uuidString
-                // Explicit row tap only. `restoreSelection` writes `selectedStationID` directly
+                // Explicit row tap only. `restoreSelection` writes `navigation` directly
                 // and never enters this setter, so restore cannot request Apple Music.
                 if let onUserOpenedStation {
-                    Task { await onUserOpenedStation() }
+                    Task { await onUserOpenedStation(newValue) }
                 }
             }
         )
     }
 
-    /// Copies the stored station into `@State` once. Playback still starts only from
-    /// `PlaybackActions`. Compact shows that detail.
+    /// Copies the stored station into `navigation` once. Playback still starts only from
+    /// `PlaybackActions`. It opens the station for both width classes, whichever is current, so
+    /// a restore in regular width still shows the station after a fold or rotation.
     ///
     /// Debug launches may pass `-AeroDJRestoreStationID <uuid>`. That string is the stored
     /// value for this path and is not written anywhere else. Release does not compile it.
     private func restoreSelection() {
-        guard !didApplyRestore else { return }
-        guard let id = UUID(uuidString: storedStationRaw),
-              stations.contains(where: { $0.id == id }) else { return }
-        didApplyRestore = true
-        selectedStationID = id
-        if isCompact { preferredCompactColumn = .detail }
+        navigation.restore(UUID(uuidString: storedStationRaw), available: stations.map(\.id))
     }
 
     /// `@SceneStorage` only. In Debug, a launch argument stands in for that stored id.
@@ -259,17 +346,32 @@ struct Station: Identifiable, Hashable {
     let id: UUID
     let name: String
     let description: String?
+    /// A station made with + (a seeded recipe, catalog or library seeds).
+    var isCreated = false
+
+    /// VoiceOver hint for the list row and carousel card: what a tap does. #454: every station
+    /// starts right away, switching from whatever plays (`StationListView.openStation`).
+    var openHint: String {
+        "Plays the station now."
+    }
 
     /// Stable IDs so a restored selection can find the same row after a relaunch.
-    static let morningCalmID = UUID(uuidString: "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D")!
-    static let lateNightID = UUID(uuidString: "8D3B2C21-5F60-4B7C-9D0E-1F2A3B4C5D6E")!
+    /// The same ids as `BuiltInStations`, which holds the seeds those rows play.
+    static let morningCalmID = BuiltInStations.morningCalm.id
+    static let lateNightID = BuiltInStations.lateNight.id
 
-    static let defaultStations: [Station] = [
-        Station(id: morningCalmID, name: "Morning Calm", description: "Warm, unhurried host"),
-        Station(id: lateNightID, name: "Late Night", description: "Smooth vinyl-bar vibes"),
-    ]
+    static let defaultStations: [Station] = BuiltInStations.all.map {
+        Station(id: $0.id, name: $0.name, description: $0.summary)
+    }
 }
 
+extension Station {
+    /// A station the listener created (`CreatedStations`). Its id is the recipe id. An extension,
+    /// so the memberwise init the built-ins use stays.
+    init(created: CreatedStationEntry) {
+        self.init(id: created.id, name: created.name, description: created.summary, isCreated: true)
+    }
+}
 
 /// Share-inbox sheet chrome: Done always dismisses; swipe-to-dismiss stays enabled.
 struct SharedInboxSheet<Content: View>: View {
