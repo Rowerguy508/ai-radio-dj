@@ -45,6 +45,18 @@ on:
         required: false
         default: false
         type: boolean
+      toolchain:
+        # current: today's pin, Xcode 27.2 / iphoneos 27.2. Do not change that default
+        # until the owner confirms. xcode27: the same Xcode 27.1 the optional CI job
+        # "iOS build (Xcode 27, not required)" selects. The repository variable
+        # AERODJ_TESTFLIGHT_TOOLCHAIN=xcode27 selects that toolchain too; unset keeps current.
+        description: Archive toolchain. current keeps Xcode 27.2. xcode27 uses the CI preview job's Xcode 27.1.
+        required: false
+        default: current
+        type: choice
+        options:
+          - current
+          - xcode27
 
 permissions:
   contents: read
@@ -56,9 +68,10 @@ concurrency:
 jobs:
   upload:
     name: Archive and upload to TestFlight
-    # xcode-27 image (actions/runner-images#14404): Xcode 27.0, 27.1 and 27.2 RC
-    # with iphoneos27.2. macos-26 tops out at iphoneos26.5, which letterboxes on
-    # the Duo (TestFlight run 40437725131).
+    # xcode-27 image (actions/runner-images#14404) has Xcode 27.0, 27.1 and 27.2.
+    # The default archive stays Xcode 27.2 / iphoneos 27.2. The input `toolchain`
+    # (or AERODJ_TESTFLIGHT_TOOLCHAIN=xcode27) selects Xcode 27.1, the same path
+    # the optional CI job uses. macos-26 still tops out at iphoneos26.5.
     runs-on: xcode-27
     timeout-minutes: 60
     # Signing and ASC secrets live in this GitHub Environment. The owner limits
@@ -178,15 +191,33 @@ jobs:
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
 
-      # Owner requirement: build on the iOS 27.2 SDK. Pinned to Xcode 27.2
-      # (27B48, an RC on the xcode-27 image). Fails fast, with no fallback, if that
-      # Xcode or SDK isn't on the runner.
-      - name: Select Xcode 27.2
+      # Default stays today's pin (Xcode 27.2 / iphoneos 27.2). xcode27, from the
+      # workflow input or AERODJ_TESTFLIGHT_TOOLCHAIN, uses the same Xcode 27.1 the
+      # optional CI job selects. Nothing here changes the default.
+      - name: Select Xcode
         env:
-          XCODE_PATH: /Applications/Xcode_27.2.app
-          REQUIRED_SDK: "27.2"
+          TOOLCHAIN_INPUT: ${{ inputs.toolchain }}
+          TOOLCHAIN_VAR: ${{ vars.AERODJ_TESTFLIGHT_TOOLCHAIN }}
         run: |
           set -euo pipefail
+          choice="${TOOLCHAIN_INPUT:-current}"
+          if [ "${TOOLCHAIN_VAR:-}" = "xcode27" ]; then
+            choice=xcode27
+          fi
+          case "$choice" in
+            xcode27)
+              XCODE_PATH=/Applications/Xcode_27.1.app
+              REQUIRED_SDK=27.1
+              ;;
+            current)
+              XCODE_PATH=/Applications/Xcode_27.2.app
+              REQUIRED_SDK=27.2
+              ;;
+            *)
+              echo "::error::Unknown toolchain '$choice' (use current or xcode27)"
+              exit 1
+              ;;
+          esac
           if [ ! -d "$XCODE_PATH" ]; then
             echo "::error::$XCODE_PATH not found on this runner. Installed: $(ls -d /Applications/Xcode*.app | tr '\n' ' ')"
             exit 1
@@ -200,6 +231,7 @@ jobs:
           fi
           {
             echo "### Toolchain"
+            echo "- Choice: \`$choice\`"
             echo "- Xcode: \`$XCODE_PATH\` ($(xcodebuild -version | tr '\n' ' '))"
             echo "- iOS SDK: \`iphoneos$SDK_VERSION\`"
           } >> "$GITHUB_STEP_SUMMARY"

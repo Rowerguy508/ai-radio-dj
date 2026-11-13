@@ -5,8 +5,11 @@ name: iOS
 # and a skipped job reports success.
 on:
   push:
-    branches: [main]
+    # integration/device-duo is only for the optional Xcode 27 job below.
+    # Every other job skips that push (and workflow_dispatch).
+    branches: [main, integration/device-duo]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -36,7 +39,9 @@ jobs:
   core-tests:
     name: AeroDJCore tests
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    # Not on workflow_dispatch, and not on a push to integration/device-duo:
+    # those events exist for the optional Xcode 27 job only.
+    if: needs.changes.outputs.ios == 'true' && github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/integration/device-duo'
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +64,9 @@ jobs:
   linux-core-tests:
     name: AeroDJCore tests (Linux)
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    # Not on workflow_dispatch, and not on a push to integration/device-duo:
+    # those events exist for the optional Xcode 27 job only.
+    if: needs.changes.outputs.ios == 'true' && github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/integration/device-duo'
     runs-on: ubuntu-latest
     container: swift:6.2
     steps:
@@ -74,7 +81,9 @@ jobs:
   simulator-build:
     name: iOS simulator build
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    # Not on workflow_dispatch, and not on a push to integration/device-duo:
+    # those events exist for the optional Xcode 27 job only.
+    if: needs.changes.outputs.ios == 'true' && github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/integration/device-duo'
     # Always GitHub-hosted (Orion's call, #384): on the self-hosted Mac every SKTestSession call
     # fails with SKInternalErrorDomain Code=3 and the StoreKit tests get 0 products, wherever
     # DerivedData lives (run 41543137869). Back on the Mac only once that is fixed; see #383.
@@ -224,7 +233,9 @@ jobs:
   device-build:
     name: iOS device build (unsigned)
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    # Not on workflow_dispatch, and not on a push to integration/device-duo:
+    # those events exist for the optional Xcode 27 job only.
+    if: needs.changes.outputs.ios == 'true' && github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/integration/device-duo'
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     env:
       XCODEGEN_VERSION: 2.46.0
@@ -356,7 +367,9 @@ jobs:
   runtime-mode:
     name: Runtime mode on simulator (Debug vs Release)
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    # Not on workflow_dispatch, and not on a push to integration/device-duo:
+    # those events exist for the optional Xcode 27 job only.
+    if: needs.changes.outputs.ios == 'true' && github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/integration/device-duo'
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     timeout-minutes: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
     env:
@@ -443,7 +456,9 @@ jobs:
   studio-screenshots:
     name: Studio UI tests and screenshots (closed + open)
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    # Not on workflow_dispatch, and not on a push to integration/device-duo:
+    # those events exist for the optional Xcode 27 job only.
+    if: needs.changes.outputs.ios == 'true' && github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/integration/device-duo'
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     timeout-minutes: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
     env:
@@ -629,3 +644,79 @@ jobs:
         if: always() && runner.environment == 'self-hosted'
         timeout-minutes: 3
         run: ios/scripts/ci-selfhosted-cleanup.sh
+
+  # Not a required check (continue-on-error, and not added to branch protection).
+  # Runs only where macOS minutes are worth it: a push to integration/device-duo,
+  # a PR whose branch or title references #465, or a manual workflow_dispatch.
+  # Image label and Xcode path: actions/runner-images#14404. The issue's original
+  # beta path is gone; the current xcode-27 image readme lists Xcode 27.1
+  # (default, iOS 27.1 SDK) at /Applications/Xcode_27.1.app.
+  xcode-27-build:
+    name: iOS build (Xcode 27, not required)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/integration/device-duo') ||
+      (github.event_name == 'pull_request' &&
+        (contains(github.head_ref, '#465') || contains(github.event.pull_request.title, '#465')))
+    runs-on: xcode-27
+    continue-on-error: true
+    timeout-minutes: 45
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      XCODE_PATH: /Applications/Xcode_27.1.app
+      DERIVED_DATA: ios/build/DerivedData-xcode27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27.1 and print the toolchain
+        run: |
+          set -euo pipefail
+          if [ ! -d "$XCODE_PATH" ]; then
+            echo "::error::$XCODE_PATH not found. Installed: $(ls -d /Applications/Xcode*.app 2>/dev/null | tr '\n' ' ')"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_PATH"
+          echo "xcode-select: $(xcode-select -p)"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun swift --version
+          {
+            echo "### Xcode 27 toolchain"
+            echo "- Path: \`$XCODE_PATH\`"
+            echo "- \`xcodebuild -version\`: $(xcodebuild -version | tr '\n' ' ')"
+            echo "- iphoneos SDK: \`$(xcrun --sdk iphoneos --show-sdk-version)\`"
+            echo "- Swift: \`$(xcrun swift --version | head -n 1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading component"
+            xcodebuild -downloadComponent MetalToolchain
+            if ! xcrun metal --version; then
+              echo "::error::Metal toolchain still unavailable after xcodebuild -downloadComponent MetalToolchain"
+              exit 1
+            fi
+          fi
+      - name: Build for a physical device without signing
+        run: |
+          xcodebuild build \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=''

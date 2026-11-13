@@ -121,6 +121,20 @@ xcrun devicectl device process launch --console --device <DEVICE_ID> com.aerodj.
 Keep the output file private. Do not paste raw device output into the repository or a
 PR; describe the timings instead.
 
+## iOS 27.1 APIs
+
+The required CI build is Xcode 26.6 and the iOS 26.5 SDK. That Xcode ships the Swift 6.3 compiler. Xcode 27.1 ships the Swift 6.4 compiler and the iOS 27.1 SDK (Apple's Xcode 27.1 release notes). The optional job `iOS build (Xcode 27, not required)` selects `/Applications/Xcode_27.1.app` and prints `xcodebuild -version`, the iphoneos SDK, and `swift --version`.
+
+Code that needs the 27.1 SDK has to stay out of the 26.5 build. `#if compiler(>=6.3)` does not do that: it is already true on Xcode 26.6. Use the 27 compiler, then the availability check:
+
+```swift
+#if compiler(>=6.4)
+if #available(iOS 27.1, *) {
+    // Calls that exist only in the iOS 27.1 SDK.
+}
+#endif
+```
+
 ## Known limitations
 
 - **Physical-device validation has not happened.** Nothing in this guide proves
