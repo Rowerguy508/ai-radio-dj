@@ -484,6 +484,7 @@ struct FoldedPlayer: View {
 }
 
 
+extension FoldedPlayer {
     /// 01-folded outer-screen reskin. Only called when `FoldedOuterLayout.isEnabled` is
     /// on and a track is showing. Transport still goes through `TransportTapPolicy`.
     /// There is no Previous: `PlaybackActions` has none. The mockup's tab bar is not
@@ -541,6 +542,7 @@ struct FoldedPlayer: View {
         .frame(width: size.width, height: size.height)
         .accessibilityIdentifier("folded.outer")
     }
+}
 
 private extension View {
     /// Take the proposed column width and the view's own height. An ideal width then
