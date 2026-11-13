@@ -451,6 +451,7 @@ final class DJTimeCheckRenderTests: XCTestCase {
         await p?.prepare(timeCheckBreak(), deadline: .seconds(200), onDeviceOnly: false)
         let isWaiting = await eventually { waiting.isSet }
         XCTAssertTrue(isWaiting)
+        // Swift 6.2.1 rejects `weak let`: a weak reference can become nil, so it has to be var.
         weak var freed = p
         p = nil
         let gone = await eventually { cancelled.isSet }
