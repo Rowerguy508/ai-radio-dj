@@ -40,6 +40,40 @@ jobs:
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Check Xcode 26.6 and Swift 6.3
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          echo "xcode-select -p:"
+          sel="$(xcode-select -p)"
+          printf '%s\n' "$sel"
+          if [ ! -d "$sel" ]; then
+            echo "::error::Selected Xcode path does not exist: $sel"
+            exit 1
+          fi
+          echo "xcodebuild -version:"
+          xcode_out="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_out"
+          echo "swift --version:"
+          swift_out="$(swift --version)"
+          printf '%s\n' "$swift_out"
+          xcode_ver="$(printf '%s\n' "$xcode_out" | awk 'NR==1 { print $2 }')"
+          swift_ver="$(printf '%s\n' "$swift_out" | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p')"
+          swift_ver="${swift_ver%%$'\n'*}"
+          case "$xcode_ver" in
+            26.6|26.6.*) ;;
+            *)
+              echo "::error::Xcode is ${xcode_ver:-unknown} at $sel; this job requires Xcode 26.6"
+              exit 1
+              ;;
+          esac
+          case "$swift_ver" in
+            6.3|6.3.*) ;;
+            *)
+              echo "::error::Swift is ${swift_ver:-unknown}; this job requires Swift 6.3"
+              exit 1
+              ;;
+          esac
       - name: Run core tests
         run: swift test
         working-directory: ios/AeroDJCore
@@ -231,6 +265,40 @@ jobs:
       DERIVED_DATA: ios/build/DerivedData-device
     steps:
       - uses: actions/checkout@v4
+      - name: Check Xcode 26.6 and Swift 6.3
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          echo "xcode-select -p:"
+          sel="$(xcode-select -p)"
+          printf '%s\n' "$sel"
+          if [ ! -d "$sel" ]; then
+            echo "::error::Selected Xcode path does not exist: $sel"
+            exit 1
+          fi
+          echo "xcodebuild -version:"
+          xcode_out="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_out"
+          echo "swift --version:"
+          swift_out="$(swift --version)"
+          printf '%s\n' "$swift_out"
+          xcode_ver="$(printf '%s\n' "$xcode_out" | awk 'NR==1 { print $2 }')"
+          swift_ver="$(printf '%s\n' "$swift_out" | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p')"
+          swift_ver="${swift_ver%%$'\n'*}"
+          case "$xcode_ver" in
+            26.6|26.6.*) ;;
+            *)
+              echo "::error::Xcode is ${xcode_ver:-unknown} at $sel; this job requires Xcode 26.6"
+              exit 1
+              ;;
+          esac
+          case "$swift_ver" in
+            6.3|6.3.*) ;;
+            *)
+              echo "::error::Swift is ${swift_ver:-unknown}; this job requires Swift 6.3"
+              exit 1
+              ;;
+          esac
       - name: Install pinned XcodeGen
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
@@ -364,6 +432,40 @@ jobs:
       DERIVED_DATA: ios/build/DerivedData-runtime
     steps:
       - uses: actions/checkout@v4
+      - name: Check Xcode 26.6 and Swift 6.3
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          echo "xcode-select -p:"
+          sel="$(xcode-select -p)"
+          printf '%s\n' "$sel"
+          if [ ! -d "$sel" ]; then
+            echo "::error::Selected Xcode path does not exist: $sel"
+            exit 1
+          fi
+          echo "xcodebuild -version:"
+          xcode_out="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_out"
+          echo "swift --version:"
+          swift_out="$(swift --version)"
+          printf '%s\n' "$swift_out"
+          xcode_ver="$(printf '%s\n' "$xcode_out" | awk 'NR==1 { print $2 }')"
+          swift_ver="$(printf '%s\n' "$swift_out" | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p')"
+          swift_ver="${swift_ver%%$'\n'*}"
+          case "$xcode_ver" in
+            26.6|26.6.*) ;;
+            *)
+              echo "::error::Xcode is ${xcode_ver:-unknown} at $sel; this job requires Xcode 26.6"
+              exit 1
+              ;;
+          esac
+          case "$swift_ver" in
+            6.3|6.3.*) ;;
+            *)
+              echo "::error::Swift is ${swift_ver:-unknown}; this job requires Swift 6.3"
+              exit 1
+              ;;
+          esac
       - name: Self-hosted prep (volume check, DerivedData on the internal disk)
         # See the script: simulator services stall or are denied on the removable work volume. -Orion
         if: runner.environment == 'self-hosted'
@@ -452,6 +554,49 @@ jobs:
       SHOTS: ${{ github.workspace }}/studio-screenshots
     steps:
       - uses: actions/checkout@v4
+      - name: Check Xcode 26.6 and Swift 6.3
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          echo "xcode-select -p:"
+          sel="$(xcode-select -p)"
+          printf '%s\n' "$sel"
+          if [ ! -d "$sel" ]; then
+            echo "::error::Selected Xcode path does not exist: $sel"
+            exit 1
+          fi
+          echo "xcodebuild -version:"
+          xcode_out="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_out"
+          echo "swift --version:"
+          swift_out="$(swift --version)"
+          printf '%s\n' "$swift_out"
+          xcode_ver="$(printf '%s\n' "$xcode_out" | awk 'NR==1 { print $2 }')"
+          swift_ver="$(printf '%s\n' "$swift_out" | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p')"
+          swift_ver="${swift_ver%%$'\n'*}"
+          case "$xcode_ver" in
+            26.6|26.6.*) ;;
+            *)
+              echo "::error::Xcode is ${xcode_ver:-unknown} at $sel; this job requires Xcode 26.6"
+              exit 1
+              ;;
+          esac
+          case "$swift_ver" in
+            6.3|6.3.*) ;;
+            *)
+              echo "::error::Swift is ${swift_ver:-unknown}; this job requires Swift 6.3"
+              exit 1
+              ;;
+          esac
+          # The screenshot dir is a fixed workspace path on this Mac. Remove it
+          # before any step can treat a previous run's PNGs as this run's shots.
+          case "$SHOTS" in
+            "$GITHUB_WORKSPACE"/studio-screenshots) rm -rf "$SHOTS" ;;
+            *)
+              echo "::error::Refusing to remove unexpected screenshot dir: ${SHOTS:-unset}"
+              exit 1
+              ;;
+          esac
       - name: Self-hosted prep (volume check, DerivedData on the internal disk)
         # See the script: simulator services stall or are denied on the removable work volume. -Orion
         if: runner.environment == 'self-hosted'
