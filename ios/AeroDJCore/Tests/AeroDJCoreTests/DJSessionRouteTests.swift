@@ -540,6 +540,51 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertFalse(core.restorePending)
     }
 
+    /// Fry's N1 (#527, 093a4a13): the accepted latch-then-killed case. The switch is on, the restore
+    /// fails twice (latched), then the switch is killed. The next `probeBeforeSong` (before play()) or
+    /// `beginGapBreak` (before the clip) still re-applies `.normal` exactly once and clears the latch,
+    /// and after that the killed paths make no further session call.
+    @MainActor
+    func testALatchSetBeforeAKillIsReappliedExactlyOnceThenKilledIsZeroTouch() {
+        for site in [DJRouteSessionCore.RestoreSite.beforePlay, .beforeClip] {
+            var on = true
+            var events: [DJRouteSessionCore.RestoreEvent] = []
+            let s = CountingSession(longForm: [.headphones], local: [.headphones])
+            let core = DJRouteSessionCore(state: DJLongFormRouteState(flag: { on }), flag: { on })
+            core.onRestore = { events.append($0) }
+            s.failNormal = 2
+            _ = core.beginGapBreak(s)
+            XCTAssertTrue(core.restorePending, "\(site): latched with the switch on")
+            on = false
+            // Killed and latched: the talk-over still cannot duck a possibly long-form session.
+            s.calls = []
+            events = []
+            XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .hardBreak(.restoreFailed), "\(site)")
+            XCTAssertEqual(s.calls, [], "\(site): the re-check makes no call")
+            // The next boundary re-applies `.normal` exactly once, whatever the switch, and clears.
+            if site == .beforePlay {
+                XCTAssertNil(core.probeBeforeSong(s), "\(site): killed, no launch probe")
+            } else {
+                let gap = core.beginGapBreak(s)
+                XCTAssertNil(gap.probe, "\(site): killed, no probe")
+                XCTAssertEqual(gap.shape, .mixDefault, "\(site)")
+            }
+            XCTAssertEqual(s.calls, [Self.normalCall], "\(site): exactly one .normal")
+            XCTAssertEqual(events, [.cleared(site)], "\(site)")
+            XCTAssertFalse(core.restorePending, "\(site)")
+            // Then killed is zero-touch again: no further call at any boundary.
+            s.calls = []
+            events = []
+            XCTAssertNil(core.probeBeforeSong(s))
+            let gap = core.beginGapBreak(s)
+            core.endGapBreak(s, shape: gap.shape)
+            XCTAssertNil(core.probeBeforeSong(s))
+            XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .talkover(Self.plan), "\(site): killed, talk-over as today")
+            XCTAssertEqual(s.calls, [], "\(site): no further session call")
+            XCTAssertEqual(events, [], "\(site)")
+        }
+    }
+
     // MARK: Orion's call: routeChangeNotification marks the next boundary
 
     /// Song starts on headphones, the listener picks AirPlay mid-song, the next boundary is a
