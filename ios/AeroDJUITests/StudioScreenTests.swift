@@ -806,7 +806,7 @@ final class StudioScreenTests: XCTestCase {
             if app.buttons["Done"].exists { app.buttons["Done"].tap() }
         } else {
             let done = app.buttons["Done"]
-            XCTAssertTrue(done.waitForExistence(timeout: 10), "search sheet Done button")
+            XCTAssertTrue(done.waitForExistence(timeout: 5))
             done.tap()
         }
         app.buttons["probe.widen"].tap()
