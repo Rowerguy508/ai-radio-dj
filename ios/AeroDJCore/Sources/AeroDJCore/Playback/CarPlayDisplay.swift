@@ -324,12 +324,55 @@ public enum CarPlayNowPlayingMerge {
     }
 }
 
+/// What a render does with the now-playing publication (#449).
+public enum CarPlayPublicationStep: Equatable, Sendable {
+    /// Nothing changed. No write.
+    case keep
+    /// A new or changed publication: write it through the artwork gate.
+    case apply(CarPlayNowPlaying)
+    /// The song is gone: void any artwork fetch for it (`CarPlayArtworkGate.reset()`). No write.
+    case withdraw
+
+    public static func next(from last: CarPlayNowPlayingPublication?,
+                            to current: CarPlayNowPlayingPublication?) -> Self {
+        guard let current else { return last == nil ? .keep : .withdraw }
+        return current == last ? .keep : .apply(current.fields)
+    }
+}
+
+/// What image the shared now-playing dictionary actually holds when a publish starts (#449).
+///
+/// The bridge reads it from the dictionary itself, not from what the gate last decided, so a
+/// reconnect cannot leave the previous song's image under the next song's title.
+public enum CarPlayArtworkObservation: Equatable, Sendable {
+    /// No image in the dictionary.
+    case none
+    /// The image the bridge itself last wrote, for this URL.
+    case written(URL)
+    /// An image the bridge cannot vouch for: another writer's, or one from before a reset.
+    case unknown
+
+    /// `current` is the image in the dictionary now. `written` is the image object the bridge
+    /// last set (the same instance, not an equal one) and `writtenURL` the URL it was set for.
+    public static func observe(current: AnyObject?, written: AnyObject?, writtenURL: URL?) -> Self {
+        guard let current else { return .none }
+        guard let written, let writtenURL, current === written else { return .unknown }
+        return .written(writtenURL)
+    }
+}
+
 /// Decides what a now-playing publish does to text and artwork.
 ///
 /// The publication generation is the track. The URL is the artwork. A fetch may set
 /// artwork only when its token is still the open one and the URL is still the latest
 /// publication's URL. It never carries title, artist, or station name, so a late fetch
 /// cannot write an older song back over the one on screen.
+///
+/// #449: the generation only ever grows, across `reset()` too, so a fetch begun before a
+/// disconnect can never match a token handed out after it. The first publish after `init` or
+/// `reset()` reconciles with the dictionary's real image (`CarPlayArtworkObservation`): an image
+/// the bridge cannot vouch for is cleared at once, a known match for the same URL is kept
+/// without a reload.
 public struct CarPlayArtworkGate: Equatable, Sendable {
     public struct Token: Equatable, Sendable, Hashable {
         public var id: UInt64
@@ -361,14 +404,51 @@ public struct CarPlayArtworkGate: Equatable, Sendable {
     private var latestURL: URL?
     private var openFetch: Token?
     private var showing: URL?
+    /// True until the first publish after `init` or `reset()` has read the real dictionary.
+    private var needsReconcile = true
 
     public init() {}
 
+    /// The car disconnected, or there is no song to show (#449). Any fetch already started is
+    /// void, and the next publish reconciles with the dictionary instead of trusting this gate.
+    /// Writes nothing: the dictionary's other fields stay as the player left them.
+    public mutating func reset() {
+        generation += 1
+        latestURL = nil
+        openFetch = nil
+        showing = nil
+        needsReconcile = true
+    }
+
+    /// `observed` is the dictionary's image right now. The first publish after `init` or
+    /// `reset()` uses it: `.unknown` is cleared at once, `.none` and `.written` replace the
+    /// gate's own belief. Later publishes follow the gate (nil: the same).
+    public mutating func publish(_ fields: CarPlayNowPlaying, observed: CarPlayArtworkObservation?) -> [Command] {
+        var mustClear = false
+        if needsReconcile, let observed {
+            needsReconcile = false
+            switch observed {
+            case .none:
+                showing = nil
+            case .written(let url):
+                showing = url
+            case .unknown:
+                showing = nil
+                mustClear = true
+            }
+        }
+        return publish(fields, mustClear: mustClear)
+    }
+
     public mutating func publish(_ fields: CarPlayNowPlaying) -> [Command] {
+        publish(fields, mustClear: false)
+    }
+
+    private mutating func publish(_ fields: CarPlayNowPlaying, mustClear: Bool) -> [Command] {
         generation += 1
         var commands: [Command] = [.writeText(fields)]
         guard let url = fields.artworkURL else {
-            if showing != nil || openFetch != nil { commands.append(.clearArtwork) }
+            if showing != nil || openFetch != nil || mustClear { commands.append(.clearArtwork) }
             showing = nil
             openFetch = nil
             latestURL = nil
@@ -377,7 +457,7 @@ public struct CarPlayArtworkGate: Equatable, Sendable {
         latestURL = url
         if showing == url, openFetch == nil { return commands }
         if openFetch?.url == url { return commands }
-        if showing != nil || openFetch != nil { commands.append(.clearArtwork) }
+        if showing != nil || openFetch != nil || mustClear { commands.append(.clearArtwork) }
         showing = nil
         let token = Token(id: generation, url: url)
         openFetch = token

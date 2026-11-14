@@ -108,9 +108,16 @@ final class CarPlaySession {
         guard isConnected else { return }
         let model = projected()
         updateList(model)
-        if let publication = model.publication, publication != lastPublication {
-            lastPublication = publication
-            bridge.apply(publication.fields)
+        let step = CarPlayPublicationStep.next(from: lastPublication, to: model.publication)
+        lastPublication = model.publication
+        switch step {
+        case .keep:
+            break
+        case .apply(let fields):
+            bridge.apply(fields)
+        case .withdraw:
+            // #449: the song is gone. A fetch still running for it must not set an image later.
+            bridge.cancel()
         }
     }
 
