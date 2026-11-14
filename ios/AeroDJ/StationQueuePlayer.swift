@@ -53,6 +53,16 @@ final class StationQueuePlayer {
     /// The queue the DJ is planning, so a late fill can be matched or dropped.
     private var armedAppendGeneration = 0
     private var armedAppendEpoch = 0
+    /// #438: the studio the last station row tap used, so a station queue is tagged with the
+    /// station it plays (`StationQueueOwner`). Idle Play and boundary hand-offs reuse this
+    /// studio; they do not capture a new one. Nil before the first tap: no owner, and the
+    /// tag is nil unless the start continues the same station (see `lastStartedStationKey`).
+    private weak var studio: StudioPresentationModel?
+    /// #438: the key of the queue that is actually playing. A same-station continuation
+    /// (a refill, or idle Play of the same seeds) keeps the previous tag when the owner
+    /// is unknown. Updated on a successful station start, and when a non-station queue
+    /// starts (`queueStarted` belongs to the station committed then).
+    private var lastStartedStationKey: StationQueueKey?
     /// #454/#442: airs a ready station intro at the first song boundary through the break path
     /// (never over a song). Set in `init`, so a begun intro is taken at every natural boundary.
     var airStationIntro: (@MainActor (PreparedDJBreak) -> Void)? {
@@ -116,6 +126,7 @@ final class StationQueuePlayer {
             self.queueEpoch += 1
             if self.ownQueueStarting { self.ownQueueStarting = false; self.stationOwnsQueue = true; return }
             self.stationOwnsQueue = false
+            self.lastStartedStationKey = StationQueueKey(self.station.committedDisplayed)
             self.feed.queueStarted(for: self.station.committedDisplayed, songCount: self.music.queue.count)
         }
         music.stationQueueAtBoundary = { [weak self] finishedIndex in
@@ -172,6 +183,7 @@ final class StationQueuePlayer {
     @discardableResult
     func openStation(_ trigger: StationOpenTrigger, _ source: StationStartSource,
                      studio: StudioPresentationModel) async -> CreatedStationOpenOutcome {
+        self.studio = studio
         let station = self.station
         let music = self.music
         let recipeID: UUID
@@ -291,7 +303,19 @@ final class StationQueuePlayer {
         let djTracks = tracks.map { DJTrack(id: $0.id, title: $0.title, artist: $0.artistName, origin: $0.origin) }
         // #332: read at start time, like a song tap; consent runs inside (`forQueue()`).
         let offer = StationStartBriefing.offer(for: kind, briefing: briefing)
-        let stationRef = music.snapshot.station
+        // #438: the queue belongs to the committed station, not to whatever played before it.
+        // `studio` is the one `openStation` last captured. That is intended: idle Play and
+        // boundary hand-offs tag from that studio (or no owner, before the first tap).
+        let committed = station.committedDisplayed
+        let owner = studio.flatMap {
+            StationQueueOwner.station(lastApplied: $0.lastAppliedRecipeID, recipes: $0.recipes.recipes,
+                                      committed: committed)
+        }
+        // No owner on a new start (edited seeds, unnamed, deleted recipe): nil, so the car
+        // does not keep the previous station's name or mark. A same-station continuation
+        // (committed seeds still equal the previous queue's) keeps the previous tag.
+        let stationRef = StationQueueOwner.tag(owner: owner, playing: music.snapshot.station,
+                                               committed: committed, previous: lastStartedStationKey)
         do {
             try await TapPlaySequence.run(
             reserve: { djSession.reserveQueueSetup() },
@@ -308,10 +332,12 @@ final class StationQueuePlayer {
                                                        briefing: offer.briefing, sources: offer.sources)
             },
             release: { djSession.releaseQueueSetup($0) })
+            lastStartedStationKey = StationQueueKey(committed)
             return .started
         } catch MusicKitError.superseded {
             return .superseded
         } catch let MusicKitError.playbackFailed(message) where message == PlaybackFailureCopy.message(for: .onHold) {
+            lastStartedStationKey = StationQueueKey(committed)
             return .started
         } catch {
             return .failed

@@ -17,10 +17,15 @@ struct PlayerView: View {
     let djSession: DJBreakSession
     let studio: StudioPresentationModel
     let isTestStation: Bool
+    /// Stations the Duo dial can open, and the list's open action.
+    var stationStops: [DuoStationSwitch.Stop] = []
+    var onOpenStation: ((String) async -> Void)? = nil
 
     /// `music` and `interlude` are the app-scoped players from `AppDependencies`. Never new ones.
     init(station: Station, music: MusicKitService, interlude: InterludePlaybackAdapter,
-         djSession: DJBreakSession, studio: StudioPresentationModel, isTestStation: Bool) {
+         djSession: DJBreakSession, studio: StudioPresentationModel, isTestStation: Bool,
+         stationStops: [DuoStationSwitch.Stop] = [],
+         onOpenStation: ((String) async -> Void)? = nil) {
         precondition(music === MusicKitService.shared, "MusicKitService.shared is the only player")
         self.station = station
         self.music = music
@@ -28,6 +33,8 @@ struct PlayerView: View {
         self.studio = studio
         self.isTestStation = isTestStation
         self.interlude = interlude
+        self.stationStops = stationStops
+        self.onOpenStation = onOpenStation
     }
 
     var body: some View {
@@ -38,7 +45,9 @@ struct PlayerView: View {
                       search: .live(music, station: stationRef, djSession: djSession, briefing: djSession.briefingProvider(studio: studio)),
                       studio: studio,
                       isTestStation: isTestStation,
-                      timeSource: .live)
+                      timeSource: .live,
+                      stationStops: stationStops,
+                      onOpenStation: onOpenStation)
         #if AERODJ_P0_DIAG
         .safeAreaInset(edge: .bottom) { P0EventTracePanel().frame(height: 450).padding(.horizontal, 8) }
         #endif

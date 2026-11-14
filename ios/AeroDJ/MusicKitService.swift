@@ -336,8 +336,11 @@ final class MusicKitService: ObservableObject {
             // The user's explicit Play takes the Next they already pressed: the skip path, so the
             // skipped song's break is dropped and the next song loads. No hold is active (userPlay
             // above). The transport leaves the surfaced pause for `.preparing`; the load confirms it.
-            // `onUserResumed` stays in `.played` only: the new song's start plans its breaks.
             send(.userResumed)
+            // #445: this Play also ends a pause, which may have lasted hours. The day part is
+            // re-read before the next song starts: the new song's start re-plans in the new day
+            // part but does not greet, so after it a morning pause would never say "Good afternoon".
+            onUserResumed?()
             installSkipGate()
             await startSkip(skipCoordinator.requestAdvance())
             return
@@ -615,8 +618,10 @@ final class MusicKitService: ObservableObject {
     }
 
     /// Explicit and remote Play. An in-flight skip is over: its follow-up and its load flag stop now.
+    /// #453: this includes a chain that is ending and awaiting its owed resume, so a Next stored
+    /// there does not advance past the song this Play started.
     private func stopSkipForPlay() {
-        guard skipCoordinator.isInFlight else { return }
+        guard skipCoordinator.hasPendingSkipWork else { return }
         skipCoordinator.invalidate(.userPlay)
         boundaries.setSkipLoadInFlight(false)
     }

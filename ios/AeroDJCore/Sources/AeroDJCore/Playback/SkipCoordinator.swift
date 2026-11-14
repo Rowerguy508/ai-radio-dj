@@ -150,6 +150,11 @@ public final class SkipCoordinator {
     /// advance has selected a later song yet. Play must not reload it.
     public var skippedPastIndex: Int? { skippedFrom }
 
+    /// #453 (-Atlas): skip work an explicit or remote Play must cancel. A chain in flight, and also
+    /// the ending window after it, while it awaits an owed interruption resume: a Next pressed there
+    /// is stored as `pendingFresh` and would start once that resume returns, after the newer Play.
+    public var hasPendingSkipWork: Bool { isInFlight || ending }
+
     /// Pause, route loss, interruption began, or a new queue. Drops a stored follow-up.
     /// The in-flight load is left to finish; the next step sees the new generation and does not run.
     public func invalidate(_ reason: SkipInvalidation) {

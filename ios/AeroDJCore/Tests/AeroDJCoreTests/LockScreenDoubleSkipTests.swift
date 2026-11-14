@@ -846,7 +846,7 @@ private final class Show {
         policy.userPlay()
         userPlays += 1
         let skippedPast = coordinator.skippedPastIndex
-        if coordinator.isInFlight {
+        if coordinator.hasPendingSkipWork {
             coordinator.invalidate(.userPlay)
             boundaries.setSkipLoadInFlight(false)
         }

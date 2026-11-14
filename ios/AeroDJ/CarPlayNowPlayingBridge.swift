@@ -8,30 +8,37 @@ import UIKit
 /// installed. Text is written only from the latest publication. A fetch sets artwork
 /// only when `CarPlayArtworkGate` still accepts that token, and never writes the song
 /// that was current when the fetch began.
+///
+/// #449: the image this bridge wrote is remembered across a disconnect, so the first publish
+/// after a reconnect can tell it apart from one it cannot vouch for (`CarPlayArtworkObservation`).
 @MainActor
 final class CarPlayNowPlayingBridge {
     private var gate = CarPlayArtworkGate()
     private var fetchTask: Task<Void, Never>?
     private var didCheckKeys = false
-    private let load: @MainActor (URL) async throws -> Data
-
-    init(load: @escaping @MainActor (URL) async throws -> Data = { url in
-        try await URLSession.shared.data(from: url).0
-    }) {
-        self.load = load
-    }
+    /// The image object this bridge last put in the dictionary, and its URL. Nil once cleared.
+    private var written: (artwork: MPMediaItemArtwork, url: URL)?
 
     func apply(_ fields: CarPlayNowPlaying) {
         checkKeys()
-        for command in gate.publish(fields) {
+        let current = currentInfo()[MPMediaItemPropertyArtwork] as? MPMediaItemArtwork
+        let observed = CarPlayArtworkObservation.observe(current: current, written: written?.artwork,
+                                                         writtenURL: written?.url)
+        for command in gate.publish(fields, observed: observed) {
             perform(command)
         }
     }
 
+    /// Disconnect, or no song to show: a fetch already started can no longer set an image.
+    /// The dictionary is left as it is; the next publish reconciles with it.
     func cancel() {
         fetchTask?.cancel()
         fetchTask = nil
-        gate = CarPlayArtworkGate()
+        gate.reset()
+    }
+
+    private func load(_ url: URL) async throws -> Data {
+        try await URLSession.shared.data(from: url).0
     }
 
     private func perform(_ command: CarPlayArtworkGate.Command) {
@@ -41,6 +48,7 @@ final class CarPlayNowPlayingBridge {
         case .clearArtwork:
             fetchTask?.cancel()
             fetchTask = nil
+            written = nil
             var info = currentInfo()
             info.removeValue(forKey: MPMediaItemPropertyArtwork)
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
@@ -63,8 +71,10 @@ final class CarPlayNowPlayingBridge {
                 case .ignore:
                     return
                 case .setArtwork:
+                    let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    self.written = (artwork, token.url)
                     var info = self.currentInfo()
-                    info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    info[MPMediaItemPropertyArtwork] = artwork
                     MPNowPlayingInfoCenter.default().nowPlayingInfo = info
                 }
             }
