@@ -173,16 +173,14 @@ final class DJSessionRouteTests: XCTestCase {
     // MARK: Echo's N1: route re-check before a talk-over
 
     func testTheTalkoverIsDowngradedOnlyOnAirPlayWithTheSwitchOn() {
-        let plan = TalkoverPlan(mode: .outroOnly, introSkip: .noClosingLine, outroOverlap: 4, voiceStartAt: 196,
-                                nextPlayAfterVoice: nil, nextAudibleAfterVoice: nil, unduckAfterVoice: 12,
-                                startLatency: 0.8, voiceSeconds: 12)
-        let decisions: [TalkoverDecision] = [.talkover(plan)] + TalkoverHardBreak.allCases.map { .hardBreak($0) }
+        let decisions: [TalkoverDecision] = [.talkover(Self.plan)] + TalkoverHardBreak.allCases.map { .hardBreak($0) }
         for planned in decisions {
             for route in LongFormRouteKind.allCases {
                 for flag in [false, true] {
-                    let checked = DJTalkoverRouteCheck.decide(planned, route: route, airPlayFlag: flag)
+                    var recheck = DJRouteRecheck()
+                    let checked = recheck.talkoverBoundary(planned, lastProbedRoute: route, sessionRoute: .builtIn, airPlayFlag: flag)
                     if planned.plan != nil, flag, route == .airPlay {
-                        XCTAssertEqual(checked, .hardBreak(.airPlayRoute), "AirPlay mid-song: a gap break")
+                        XCTAssertEqual(checked, .hardBreak(.airPlayRoute), "AirPlay: a gap break")
                     } else {
                         XCTAssertEqual(checked, planned, "unchanged: \(planned) route=\(route) flag=\(flag)")
                     }
@@ -210,25 +208,181 @@ final class DJSessionRouteTests: XCTestCase {
     func testTheCoordinatorRechecksTheRouteBeforeCommittingTheTalkover() throws {
         let take = try body(appSource("TalkoverCoordinator.swift"), "private func take(")
         let planner = try XCTUnwrap(take.range(of: "let planned = TalkoverPlanner.decide("))
-        let probe = try XCTUnwrap(take.range(of: "DJRouteSession.probeBeforeTalkover()"))
-        let check = try XCTUnwrap(take.range(of: "DJTalkoverRouteCheck.decide(planned,"))
+        let check = try XCTUnwrap(take.range(of: "let decision = DJRouteSession.talkoverDecision(planned)"))
         let strip = try XCTUnwrap(take.range(of: "held = (k, DJTalkoverRouteCheck.gapBreak(from: h.prepared))"))
         let decide = try XCTUnwrap(take.range(of: "decide(decision, afterTrack: k)"))
         let run = try XCTUnwrap(take.range(of: "run = TalkoverRun(afterTrack: k, plan: plan)"))
         let duck = try XCTUnwrap(take.range(of: "interlude.duckForTalkover(afterTrack: k)"))
-        XCTAssertLessThan(planner.lowerBound, probe.lowerBound)
-        XCTAssertLessThan(probe.lowerBound, decide.lowerBound)
+        XCTAssertLessThan(planner.lowerBound, check.lowerBound)
         XCTAssertLessThan(check.lowerBound, strip.lowerBound)
+        XCTAssertLessThan(strip.lowerBound, decide.lowerBound)
         XCTAssertLessThan(decide.lowerBound, run.lowerBound, "checked before the run exists")
         XCTAssertLessThan(run.lowerBound, duck.lowerBound, "and before the duck")
-        XCTAssertTrue(take.contains("let decision = planned.plan == nil ? planned"), "a planned hard break is not probed")
+        XCTAssertFalse(take.contains("DJRouteSession.probe"), "no probe while music plays (Fry's bar)")
+        XCTAssertFalse(take.contains("setCategory"), "no category change at the re-check")
         let source = try appSource("DJRouteSession.swift")
-        let before = try body(source, "@MainActor static func probeBeforeTalkover()")
-        XCTAssertTrue(before.hasPrefix("\n        guard DJAirPlayRouteFlag.isEnabled() else { return DJLongFormRouteState.shared.lastRoute }"),
-                      "killed: nothing is touched")
-        XCTAssertFalse(before.contains("fetch"), "a talk-over check never fetches")
+        let talk = try body(source, "@MainActor static func talkoverDecision(")
+        XCTAssertEqual(talk, "\n        core.talkoverDecision(planned, session: session)\n    ", "reads only; Core pins the zero calls")
         XCTAssertTrue(source.contains("transport: DJAirPlayRouteFlag.makeTransport()"), "the ephemeral transport")
         XCTAssertFalse(source.contains("URLSessionTransport()"), "never the shared session")
+    }
+
+    // MARK: Fry's bar: session calls against 4a2537b2 (counting fake)
+
+    /// The calls 4a2537b2 makes, derived from its code (explicit calls only; `AVAudioPlayer.play()`
+    /// activates the session implicitly and is not a call):
+    /// - Gap break: `MusicKitService.completeNarration` -> `releaseSessionAfterBreak` ->
+    ///   `setActive(false, .notifyOthersOnDeactivation)`. Resume: `activateAudioSessionForPlayback`
+    ///   is gated by `AudioSessionActivation.shouldActivate(.playback)`, which is false: no call.
+    /// - Talk-over boundary: `TalkoverSessionSequence.duck` (`setActive(false)`, `setCategory`
+    ///   `.duckOthers`, `setActive(true)`), the talk-over's own `release` (`setActive(false,
+    ///   notify)`, `setCategory` `.mixWithOthers`), then `completeNarration`'s
+    ///   `setActive(false, notify)`.
+    /// - Song start: none (`configureAudioSession` sets the category once at launch; the activation
+    ///   is gated off).
+    static let baselineGap: [CountingSession.Call] = [.setActive(false, notify: true)]
+    static let baselineTalkover: [CountingSession.Call] = [
+        .setActive(false, notify: false), .setCategory(.default, 0x2), .setActive(true, notify: false),
+        .setActive(false, notify: true), .setCategory(.default, 0x1),
+        .setActive(false, notify: true),
+    ]
+    static let probePair: [CountingSession.Call] = [.setCategory(.longFormAudio, 0), .setCategory(.default, 0x1)]
+
+    @MainActor
+    func testTheSessionCallsMatch4a2537b2KilledAndOffAirPlayAndTalkoverNeverProbes() {
+        // Fry's three cases (plus AirPlay killed). Each case: a gap break and a talk-over boundary.
+        let cases: [(name: String, flag: Bool, longForm: [LongFormPortType], local: [LongFormPortType])] = [
+            ("killed headphones", false, [.headphones], [.headphones]),
+            ("killed AirPlay", false, [.airPlay], [.builtInSpeaker]),
+            ("killed speaker", false, [.builtInSpeaker], [.builtInSpeaker]),
+            ("on headphones", true, [.headphones], [.headphones]),
+            ("on speaker", true, [.builtInSpeaker], [.builtInSpeaker]),
+            ("on Bluetooth", true, [.bluetoothA2DP], [.bluetoothA2DP]),
+            ("on CarPlay", true, [.carAudio], [.carAudio]),
+        ]
+        for c in cases {
+            let gapSession = CountingSession(longForm: c.longForm, local: c.local)
+            let gapCore = DJRouteSessionCore(state: DJLongFormRouteState(flag: { c.flag }), flag: { c.flag })
+            Self.gapBreak(gapCore, gapSession)
+            let expectedGap = c.flag ? Self.probePair + Self.baselineGap : Self.baselineGap
+            XCTAssertEqual(gapSession.calls, expectedGap, "\(c.name): gap break")
+            XCTAssertFalse(gapSession.calls.contains { if case .setActive = $0 { return $0 != .setActive(false, notify: true) } else { return false } },
+                           "\(c.name): no setActive of ours")
+
+            let talkSession = CountingSession(longForm: c.longForm, local: c.local)
+            let talkCore = DJRouteSessionCore(state: DJLongFormRouteState(flag: { c.flag }), flag: { c.flag })
+            Self.talkoverBoundary(talkCore, talkSession)
+            XCTAssertEqual(talkSession.calls, Self.baselineTalkover, "\(c.name): talk-over, no probe")
+
+            // Song start: killed none; switch on, one pair at the first song start of a launch only.
+            let songSession = CountingSession(longForm: c.longForm, local: c.local)
+            let songCore = DJRouteSessionCore(state: DJLongFormRouteState(flag: { c.flag }), flag: { c.flag })
+            for _ in 0..<3 { _ = songCore.probeBeforeSong(songSession) }
+            XCTAssertEqual(songSession.calls, c.flag ? Self.probePair : [], "\(c.name): song starts")
+        }
+        // A killed gap break after a launch with a song start: still exactly the baseline.
+        let s = CountingSession(longForm: [.airPlay], local: [.builtInSpeaker])
+        let core = DJRouteSessionCore(state: DJLongFormRouteState(flag: { false }), flag: { false })
+        XCTAssertNil(core.probeBeforeSong(s))
+        Self.gapBreak(core, s)
+        Self.talkoverBoundary(core, s)
+        XCTAssertEqual(s.calls, Self.baselineGap + Self.baselineTalkover, "killed: exactly 4a2537b2")
+    }
+
+    @MainActor
+    func testOnAirPlayWithTheSwitchOnOnlyTheGapBreakTakesTheLongFormSession() {
+        let s = CountingSession(longForm: [.airPlay], local: [.builtInSpeaker])
+        let core = DJRouteSessionCore(state: DJLongFormRouteState(flag: { true }), flag: { true })
+        let gap = Self.gapBreak(core, s)
+        XCTAssertEqual(gap.shape, .longFormAirPlay)
+        XCTAssertTrue(gap.fetch, "the first AirPlay gap break may fetch")
+        XCTAssertEqual(s.calls, [.setCategory(.longFormAudio, 0), .setActive(false, notify: true), .setCategory(.default, 0x1)],
+                       "long-form kept for the clip, today's category back after the release")
+        // The talk-over boundary after it is a gap break (no duck), with one more probe.
+        s.calls = []
+        let decision = Self.talkoverBoundary(core, s)
+        XCTAssertEqual(decision, .hardBreak(.airPlayRoute))
+        XCTAssertEqual(s.calls, [.setCategory(.longFormAudio, 0), .setActive(false, notify: true), .setCategory(.default, 0x1)])
+        XCTAssertFalse(core.beginGapBreak(s).fetch, "at most one fetch per launch")
+    }
+
+    @MainActor
+    func testAKilledGapBreakFetchesOnlyIfTheSessionsOwnRouteShowsAirPlay() {
+        // Killed: no probe, so the route is read as-is. If the app's session shows AirPlay the
+        // first AirPlay gap break can lift a false; if it shows the phone (the documented risk),
+        // it cannot.
+        let shows = CountingSession(longForm: [.airPlay], local: [.airPlay])
+        let a = DJRouteSessionCore(state: DJLongFormRouteState(flag: { false }), flag: { false })
+        XCTAssertTrue(a.beginGapBreak(shows).fetch)
+        let local = CountingSession(longForm: [.airPlay], local: [.builtInSpeaker])
+        let b = DJRouteSessionCore(state: DJLongFormRouteState(flag: { false }), flag: { false })
+        XCTAssertFalse(b.beginGapBreak(local).fetch)
+        XCTAssertEqual(shows.calls + local.calls, [], "no session call while killed")
+    }
+
+    // MARK: Orion's call: routeChangeNotification marks the next boundary
+
+    /// Song starts on headphones, the listener picks AirPlay mid-song, the next boundary is a
+    /// planned talk-over: it becomes a hard break, never a talk-over, with no session call.
+    @MainActor
+    func testARouteChangeToAirPlayMidSongDowngradesTheNextTalkover() {
+        for sessionShowsAirPlay in [false, true] {
+            let s = CountingSession(longForm: [.headphones], local: [.headphones])
+            let state = DJLongFormRouteState(flag: { true })
+            let core = DJRouteSessionCore(state: state, flag: { true })
+            XCTAssertNotNil(core.probeBeforeSong(s), "song start on headphones")
+            XCTAssertEqual(state.lastRoute, .wired)
+            XCTAssertTrue(state.talkoverAllowed)
+            // Mid-song (music playing): AirPlay picked.
+            s.longForm = [.airPlay]
+            s.local = sessionShowsAirPlay ? [.airPlay] : [.builtInSpeaker]
+            XCTAssertTrue(core.routeChanged(.newDeviceAvailable), "marked for the re-check")
+            s.calls = []
+            let decision = core.talkoverDecision(.talkover(Self.plan), session: s)
+            XCTAssertNil(decision.plan, "not a talk-over")
+            XCTAssertEqual(decision, .hardBreak(sessionShowsAirPlay ? .airPlayRoute : .routeChanged))
+            XCTAssertEqual(s.calls, [], "the re-check makes no session call")
+            XCTAssertFalse(core.recheck.pending, "the boundary consumed the mark")
+            // That boundary airs in the gap: its probe reads the real route and takes AirPlay.
+            XCTAssertEqual(core.beginGapBreak(s).shape, .longFormAirPlay)
+            XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .hardBreak(.airPlayRoute))
+        }
+    }
+
+    @MainActor
+    func testTheRouteChangeMarkHasNoEffectKilledIgnoresOurOwnCategoryChangesAndIsClearedByAProbe() {
+        let s = CountingSession(longForm: [.headphones], local: [.headphones])
+        var flag = false
+        let core = DJRouteSessionCore(state: DJLongFormRouteState(flag: { flag }), flag: { flag })
+        for reason in DJRouteChangeReason.allCases { XCTAssertFalse(core.routeChanged(reason), "killed: \(reason)") }
+        XCTAssertFalse(core.recheck.pending)
+        XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .talkover(Self.plan))
+        flag = true
+        XCTAssertFalse(core.routeChanged(.categoryChange), "our own setCategory is not a route change")
+        XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .talkover(Self.plan), "no change: talk-over")
+        XCTAssertTrue(core.routeChanged(.oldDeviceUnavailable))
+        _ = core.beginGapBreak(s)
+        XCTAssertFalse(core.recheck.pending, "a probe reads the real route")
+        XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .talkover(Self.plan), "headphones: talk-over")
+        XCTAssertEqual(s.calls, Self.probePair, "only the gap break's pair")
+    }
+
+    func testTheRouteChangeObserverIsRemovedAndMakesNoSessionOrNetworkCall() throws {
+        let source = try appSource("DJRouteSession.swift")
+        let observer = try XCTUnwrap(source.range(of: "@MainActor final class DJRouteChangeObserver {"))
+        let tail = String(source[observer.lowerBound...])
+        XCTAssertEqual(tail.components(separatedBy: "addObserver(forName: AVAudioSession.routeChangeNotification").count - 1, 1)
+        XCTAssertTrue(tail.contains("guard token == nil else { return }"), "added once")
+        XCTAssertEqual(tail.components(separatedBy: "NotificationCenter.default.removeObserver(token)").count - 1, 2, "stop() and deinit")
+        let handler = try body(source, "@MainActor static func routeChanged(_ reason: DJRouteChangeReason)")
+        for banned in ["setCategory", "setActive", "refresh", "probe", "Task"] {
+            XCTAssertFalse(handler.contains(banned), "handler: \(banned)")
+            XCTAssertFalse(tail.contains(banned), "observer: \(banned)")
+        }
+        let coordinator = try appSource("TalkoverCoordinator.swift")
+        XCTAssertTrue(coordinator.contains("private let routeChanges = DJRouteChangeObserver()"))
+        let start = try body(coordinator, "func start()")
+        XCTAssertTrue(start.contains("routeChanges.start()"))
     }
 
     // MARK: Fetch gate (privacy)
@@ -305,6 +459,8 @@ final class DJSessionRouteTests: XCTestCase {
         for p in LongFormPortType.allCases { XCTAssertNotNil(P0TraceCode(rawValue: p.rawValue), "\(p)") }
         for s in DJSessionShape.allCases { XCTAssertNotNil(P0TraceCode(rawValue: s.rawValue), "\(s)") }
         XCTAssertNotNil(P0TraceCode(rawValue: TalkoverHardBreak.airPlayRoute.rawValue))
+        XCTAssertNotNil(P0TraceCode(rawValue: TalkoverHardBreak.routeChanged.rawValue))
+        for r in DJRouteChangeReason.allCases { XCTAssertNotNil(P0TraceCode(rawValue: r.rawValue), "\(r)") }
     }
 
     func testTheRouteRowsCarryPortTypesAndShapesOnly() {
@@ -317,6 +473,10 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertEqual(shape.detail, "kind=breakShape after=4 shape=longFormAirPlay route=airPlay")
         let skipped = trace.sessionRouteProbeSkipped(flag: true, at: 5)
         XCTAssertEqual(skipped.detail, "kind=probeSkipped flag=1")
+        let change = trace.sessionRouteChange(.newDeviceAvailable, marked: true, flag: true, at: 5)
+        XCTAssertEqual(change.detail, "kind=routeChange reason=newDeviceAvailable changed=1 flag=1")
+        let changed = trace.talkoverDecision(.hardBreak(.routeChanged), afterTrack: 4, at: 6)
+        XCTAssertEqual(changed.detail, "kind=decision after=4 mode=hardBreak reason=routeChanged")
         let fallback = trace.talkoverDecision(.hardBreak(.airPlayRoute), afterTrack: 4, at: 6)
         XCTAssertEqual(fallback.detail, "kind=decision after=4 mode=hardBreak reason=airPlayRoute")
         XCTAssertEqual(TalkoverLog.decision(afterTrack: 4, .hardBreak(.airPlayRoute)),
@@ -344,28 +504,42 @@ final class DJSessionRouteTests: XCTestCase {
 
     func testTheRouteSessionFetchesOnlyFromTheGapBreakGateAndProbesSafely() throws {
         let source = try appSource("DJRouteSession.swift")
-        // The only network call sits behind the gate, which only the gap break calls.
+        // The only network call sits behind Core's gate (`GapBreak.fetch`), in the gap break.
         XCTAssertEqual(source.components(separatedBy: "DJAirPlayRouteFlag.refresh(").count - 1, 1)
-        let fetch = try body(source, "@MainActor private static func fetchFlagIfAllowed(route: LongFormRouteKind)")
-        XCTAssertTrue(fetch.hasPrefix("\n        guard fetchGate.shouldFetch(route: route, at: .gapBreak) else { return }"))
-        XCTAssertTrue(fetch.contains("DJAirPlayRouteFlag.refresh("))
-        XCTAssertEqual(source.components(separatedBy: "fetchFlagIfAllowed(route:").count - 1, 2, "declared once, called once")
         let begin = try body(source, "@MainActor static func beginGapBreak(")
-        XCTAssertTrue(begin.contains("fetchFlagIfAllowed(route: route)"))
+        XCTAssertTrue(begin.contains("if gap.fetch {"))
+        XCTAssertTrue(begin.contains("DJAirPlayRouteFlag.refresh("))
         let song = try body(source, "@MainActor static func probeBeforeSong()")
-        XCTAssertTrue(song.hasPrefix("\n        guard DJAirPlayRouteFlag.isEnabled() else { return }"), "killed: nothing at song start")
-        XCTAssertFalse(song.contains("fetch"), "a song-start probe never fetches")
-        let probing = try body(source, "@MainActor private static func probe(keepLongForm: Bool)")
-        XCTAssertTrue(probing.contains("guard !TalkoverAudioSession.appActivated else {"), "never on an active session")
-        XCTAssertTrue(probing.contains("return (DJLongFormRouteState.shared.lastRoute, false)"), "a skipped probe keeps today's session")
-        XCTAssertTrue(probing.contains("policy: .longFormAudio, options: []"))
-        XCTAssertTrue(source.contains("policy: .default, options: options)"), "the restore names the default policy")
+        XCTAssertTrue(song.hasPrefix("\n        guard let p = core.probeBeforeSong(session) else { return }"))
+        XCTAssertFalse(song.contains("refresh"), "a song-start probe never fetches")
+        // The only setCategory / setActive calls are the adapter's, driven by Core.
+        XCTAssertEqual(source.components(separatedBy: ".setCategory(").count - 1, 1)
+        XCTAssertEqual(source.components(separatedBy: ".setActive(").count - 1, 1)
+        XCTAssertTrue(source.contains("setCategory(.playback, mode: .default, policy: policy, options: options)"),
+                      "every category names its route-sharing policy, so long-form cannot linger")
+        XCTAssertTrue(source.contains("var appActivated: Bool { TalkoverAudioSession.appActivated }"), "never on an active session")
         // Nothing else in the app fetches the switch.
         for file in ["MusicKitService.swift", "TalkoverCoordinator.swift", "InterludePlaybackAdapter.swift", "AppDependencies.swift"] {
             let other = try appSource(file)
             XCTAssertFalse(other.contains("DJAirPlayRouteFlag.refresh"), file)
             XCTAssertFalse(other.contains("fetchFlag"), file)
         }
+    }
+
+    @MainActor
+    func testTheCoreProbeGatesTheFetchAndNeverRunsOnAnActiveSession() {
+        let s = CountingSession(longForm: [.airPlay], local: [.builtInSpeaker])
+        let core = DJRouteSessionCore(state: DJLongFormRouteState(flag: { true }), flag: { true })
+        s.appActivated = true
+        let skipped = core.beginGapBreak(s)
+        XCTAssertTrue(skipped.skipped)
+        XCTAssertEqual(skipped.shape, .mixDefault, "a skipped probe keeps today's session")
+        XCTAssertFalse(skipped.fetch)
+        XCTAssertNil(core.probeBeforeSong(s))
+        XCTAssertEqual(s.calls, [], "nothing on an active session")
+        s.appActivated = false
+        XCTAssertNotNil(core.probeBeforeSong(s))
+        XCTAssertEqual(core.fetchGate.fetched, false, "a song-start probe never fetches")
     }
 
     func testTodaysSessionCallsAreUnchangedOffAirPlay() throws {
@@ -395,6 +569,71 @@ final class DJSessionRouteTests: XCTestCase {
     }
 
     // MARK: Helpers
+
+    static let plan = TalkoverPlan(mode: .outroOnly, introSkip: .noClosingLine, outroOverlap: 4, voiceStartAt: 196,
+                                   nextPlayAfterVoice: nil, nextAudibleAfterVoice: nil, unduckAfterVoice: 12,
+                                   startLatency: 0.8, voiceSeconds: 12)
+
+    /// A gap break as 4a2537b2 runs it, with the #525 hooks around the clip.
+    @MainActor @discardableResult
+    static func gapBreak(_ core: DJRouteSessionCore, _ s: CountingSession) -> DJRouteSessionCore.GapBreak {
+        let gap = core.beginGapBreak(s)
+        s.appActivated = true                       // the clip's play(): implicit activation
+        s.setActive(false, notifyOthers: true)      // completeNarration -> releaseSessionAfterBreak
+        s.appActivated = false
+        core.endGapBreak(s, shape: gap.shape)
+        return gap                                  // resume: activation gated off, no call
+    }
+
+    /// A talk-over boundary as 4a2537b2 runs it, after the #525 pre-duck re-check. A downgraded
+    /// boundary airs as a gap break.
+    @MainActor @discardableResult
+    static func talkoverBoundary(_ core: DJRouteSessionCore, _ s: CountingSession) -> TalkoverDecision {
+        let decision = core.talkoverDecision(.talkover(plan), session: s)
+        guard decision.plan != nil else {
+            gapBreak(core, s)
+            return decision
+        }
+        for step in TalkoverSessionSequence.duck { s.apply(step) }
+        s.appActivated = true
+        for step in TalkoverSessionSequence.release { s.apply(step) }
+        s.appActivated = false
+        s.setActive(false, notifyOthers: true)      // completeNarration (session already inactive)
+        return decision
+    }
+
+    /// Counts every `setCategory` and `setActive`. Under the long-form category the route is the
+    /// long-form one; under any other it is the app session's own (docs: may stay local).
+    @MainActor final class CountingSession: DJAudioSessionPort {
+        enum Call: Equatable { case setCategory(DJSessionConfig.Policy, UInt), setActive(Bool, notify: Bool) }
+        var calls: [Call] = []
+        var longForm: [LongFormPortType]
+        var local: [LongFormPortType]
+        var appActivated = false
+        private var policy: DJSessionConfig.Policy = .default
+
+        init(longForm: [LongFormPortType], local: [LongFormPortType]) {
+            self.longForm = longForm
+            self.local = local
+        }
+
+        var currentOutputs: [LongFormPortType] { policy == .longFormAudio ? longForm : local }
+        func setCategory(_ config: DJSessionConfig) {
+            calls.append(.setCategory(config.policy, config.options.rawValue))
+            policy = config.policy
+        }
+        func setActive(_ active: Bool, notifyOthers: Bool) { calls.append(.setActive(active, notify: notifyOthers)) }
+
+        /// Today's `TalkoverAudioSession` steps (4a2537b2), as calls.
+        func apply(_ step: TalkoverSessionStep) {
+            switch step {
+            case .deactivate(let notify): setActive(false, notifyOthers: notify)
+            case .setDuckCategory: setCategory(.talkoverDuck)
+            case .activate: setActive(true, notifyOthers: false)
+            case .restoreCategory: setCategory(.normal)
+            }
+        }
+    }
 
     private func prepared(talkOverEnabled: @escaping @Sendable () -> Bool) async throws -> PreparedDJBreak {
         let main = NarrationCue(id: UUID(), order: 0, group: -1, kind: .transition, text: "A short main segment.",

@@ -202,18 +202,9 @@ public enum DJAirPlayRouteFlag {
     }
 }
 
-/// Echo's N1 on #527: the route is re-checked right before a talk-over starts (the coordinator's
-/// decision point), so a switch to AirPlay mid-song cannot leave the next talk-over on the phone.
+/// Echo's N1 on #527: a talk-over downgraded at the pre-duck re-check (`DJRouteRecheck`) airs in
+/// the gap, so a switch to AirPlay mid-song cannot leave the next talk-over on the phone.
 public enum DJTalkoverRouteCheck {
-    /// The planner's decision, downgraded to `.hardBreak(.airPlayRoute)` only when the switch is
-    /// on and the route is AirPlay. Every other route returns `planned` unchanged.
-    public static func decide(_ planned: TalkoverDecision, route: LongFormRouteKind, airPlayFlag: Bool) -> TalkoverDecision {
-        guard planned.plan != nil,
-              !DJSessionConfig.resolve(route: route, kind: .talkover, airPlayFlag: airPlayFlag).talkoverAllowed
-        else { return planned }
-        return .hardBreak(.airPlayRoute)
-    }
-
     /// A break taken for a talk-over, as the gap-break path would have prepared it: the same cues
     /// and clips, without the talk-over marker (so no closing line is timed to the next intro).
     public static func gapBreak(from prepared: PreparedDJBreak) -> PreparedDJBreak {

@@ -214,6 +214,10 @@ public enum TalkoverHardBreak: String, Equatable, Sendable, CaseIterable {
     /// #525 (-Atlas): the long-form route is AirPlay and the remote flag is on. A long-form
     /// session cannot duck, so the break airs in the gap, prepared on the gap-break path.
     case airPlayRoute
+    /// #525 (-Atlas): the route changed since the last long-form probe (switch on). The app's own
+    /// session may not show the music's AirPlay route, so the boundary airs in the gap, whose probe
+    /// reads the real one.
+    case routeChanged
 }
 
 /// Why the closing line did not get the intro (the plan is `.outroOnly`).

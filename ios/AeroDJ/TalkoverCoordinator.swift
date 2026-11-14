@@ -237,6 +237,8 @@ final class TalkoverCoordinator {
     private var handedOut: Int?
     /// #388 (-Nova): what each line of the talk-over on air names, for a never while it speaks.
     private var ratingCut = StationRatingTalkoverCut()
+    /// #525: `routeChangeNotification` marks the next talk-over for the route re-check.
+    private let routeChanges = DJRouteChangeObserver()
 
     init(music: MusicKitService, interlude: InterludePlaybackAdapter, djSession: DJBreakSession,
          defaults: UserDefaults = .standard,
@@ -254,6 +256,7 @@ final class TalkoverCoordinator {
     /// Starts the position watch. 1 Hz until the arm window, 10 Hz inside it; nothing when off.
     func start() {
         guard ticker == nil else { return }
+        routeChanges.start()
         ticker = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 let interval = self?.tick() ?? 1.0
@@ -491,13 +494,15 @@ final class TalkoverCoordinator {
         let planned = TalkoverPlanner.decide(flag: isEnabled,
                                              track: TalkoverTrack(duration: song?.duration, position: music.playbackTime),
                                              voice: resolved.voice, nextTrackDuration: next, config: config)
-        // #525, Echo's N1 (-Atlas): the route is re-read right before the talk-over is committed
-        // (synchronous on the main actor, before the duck and long before the next play()). On
-        // AirPlay with the switch on it becomes a gap break: the held break loses its talk-over
-        // marker and airs in the gap like a gap-path break. Any other route: `planned`, unchanged.
-        let decision = planned.plan == nil ? planned
-            : DJTalkoverRouteCheck.decide(planned, route: DJRouteSession.probeBeforeTalkover(),
-                                          airPlayFlag: DJAirPlayRouteFlag.isEnabled())
+        // #525, Echo's N1 and Orion's route-change call (-Atlas): the route is re-checked right
+        // before the talk-over is committed (synchronous on the main actor, before the duck). Music
+        // is playing, so there is no probe and no session call (Fry's bar): the re-check reads the
+        // last probe's route, the route-change mark (`DJRouteChangeObserver`) and the session's
+        // route as it is. AirPlay -> `airPlayRoute`; a route change since the last probe ->
+        // `routeChanged`. Either way the held break loses its talk-over marker and airs in the gap
+        // like a gap-path break, whose probe reads the real route. Killed, or any other route with
+        // no change: `planned`, unchanged.
+        let decision = DJRouteSession.talkoverDecision(planned)
         if decision != planned, let h = held, h.afterTrack == k {
             held = (k, DJTalkoverRouteCheck.gapBreak(from: h.prepared))
         }

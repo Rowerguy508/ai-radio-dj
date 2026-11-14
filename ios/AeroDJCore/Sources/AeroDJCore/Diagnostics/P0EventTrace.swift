@@ -130,6 +130,10 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case bluetoothA2DP, bluetoothLE, bluetoothHFP, carAudio, builtInSpeaker, builtInReceiver, headphones, usbAudio, hdmi, lineOut
     case mixDefault, duckDefault, longFormAirPlay
     case airPlayRoute
+    /// #525 route-change rows: the kind, then `DJRouteChangeReason` (same raw values).
+    case routeChange
+    case newDeviceAvailable, oldDeviceUnavailable, categoryChange, override, wakeFromSleep
+    case noSuitableRouteForCategory, routeConfigurationChange, otherReason
 }
 
 public enum P0TraceValue: Equatable, Sendable {
@@ -796,6 +800,16 @@ extension P0EventTrace {
     @discardableResult
     public mutating func sessionRouteProbeSkipped(flag: Bool, at t: TimeInterval) -> P0TraceRow {
         record(.sessionRoute, at: t, [(.kind, .code(.probeSkipped)), (.flag, .bool(flag))])
+    }
+
+    /// `routeChangeNotification` as the AirPlay path saw it: the reason code, and whether it
+    /// marked the next talk-over for the re-check (false: killed, or our own category change).
+    @discardableResult
+    public mutating func sessionRouteChange(_ reason: DJRouteChangeReason, marked: Bool, flag: Bool,
+                                            at t: TimeInterval) -> P0TraceRow {
+        record(.sessionRoute, at: t, [(.kind, .code(.routeChange)),
+                                      (.reason, .code(P0TraceCode(rawValue: reason.rawValue) ?? .unknown)),
+                                      (.changed, .bool(marked)), (.flag, .bool(flag))])
     }
 
     /// The session a gap break ran with, and the route it was chosen for.

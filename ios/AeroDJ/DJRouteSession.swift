@@ -4,123 +4,84 @@ import Foundation
 import OSLog
 
 /// #525 (-Atlas): the DJ voice follows the music to AirPlay. Decisions are Core's
-/// `DJSessionConfig`; this type only probes the long-form route and applies the AirPlay
-/// gap-break session. Kill switch: `DJAirPlayRouteFlag` (default ON; only a fetched `false` turns
-/// it off). Off AirPlay every route runs exactly today's session.
+/// (`DJSessionConfig`, `DJRouteSessionCore`); this type maps them onto `AVAudioSession` and
+/// carries the route-change observer. Kill switch: `DJAirPlayRouteFlag` (default ON; only a
+/// fetched `false` turns it off). Off AirPlay every route runs exactly today's session.
 ///
 /// NOT device-validated. Only the owner's AirPlay, Bluetooth and CarPlay check can prove routing.
 ///
-/// Route detection: the long-form route is the one a session with `.longFormAudio` reports in
-/// `currentRoute` (Apple: that policy "routes output to the shared long-form audio output", the
-/// one the Music app uses). The probe sets that category on our INACTIVE session (setting a
-/// category activates nothing), reads the output port types, and puts today's category back
-/// unless a gap break is about to use the long-form one. It never runs while the app's session
-/// is active (a talk-over duck or a clip), so it cannot interrupt anything. The probe is local.
+/// Session calls (Fry's bar on #527, pinned with a counting fake in `DJSessionRouteTests`):
+/// - Killed: none, on any route (exactly 4a2537b2).
+/// - Switch on, not AirPlay: one probe-and-restore `setCategory` pair per gap break (music paused),
+///   plus one pair at the first song start of a launch. Never `setActive`.
+/// - Talk-over: no probe. The pre-duck re-check reads the cached route, the route-change mark and
+///   the session's route as it is.
+/// The probe sets the long-form category on our INACTIVE session (setting a category activates
+/// nothing), reads the output port types, and puts today's category back unless an AirPlay gap
+/// break is about to use the long-form one.
 ///
 /// Network (privacy, Orion and Fry): the kill switch is fetched ONLY at the first gap break whose
 /// route is AirPlay, at most once per launch (`DJAirPlayFlagFetchGate`). A listener off AirPlay
 /// never makes the request. The fetch is never awaited: that break runs with the stored value
 /// (on unless a previous fetch said `false`), and the answer applies from the next break.
 enum DJRouteSession {
-    private static let log = Logger(subsystem: "com.aerodj.app", category: "playback")
-    /// One fetch per launch, only from an AirPlay gap break.
-    @MainActor private static var fetchGate = DJAirPlayFlagFetchGate()
+    fileprivate static let log = Logger(subsystem: "com.aerodj.app", category: "playback")
+    @MainActor private static let session = AppAudioSessionPort()
+    @MainActor private static let core = DJRouteSessionCore()
 
-    /// A bare HTTPS GET to the proxy on an ephemeral session (no cookies, no cache, 5 s timeout):
-    /// nothing about the route or the listener is sent. A failure keeps the stored value (fail
-    /// open: on unless a fetched `false`).
-    @MainActor private static func fetchFlagIfAllowed(route: LongFormRouteKind) {
-        guard fetchGate.shouldFetch(route: route, at: .gapBreak) else { return }
-        Task.detached(priority: .utility) {
-            await DJAirPlayRouteFlag.refresh(transport: DJAirPlayRouteFlag.makeTransport(), baseURL: DJAirPlayRouteFlag.proxyBaseURL)
-        }
-    }
-
-    /// Probes the long-form route before a song starts (music not playing yet), so the
-    /// preparer and the talk-over coordinator see the route for the break after it. Killed:
-    /// returns at once and touches nothing. Never fetches.
+    /// Before a song starts (music not playing yet): the launch probe, once per launch, switch on.
+    /// Killed, already probed this launch, or the session active: touches nothing. Never fetches.
     @MainActor static func probeBeforeSong() {
-        guard DJAirPlayRouteFlag.isEnabled() else { return }
-        _ = probe(keepLongForm: false)
+        guard let p = core.probeBeforeSong(session) else { return }
+        trace(.probe(p, flag: true, allowed: DJLongFormRouteState.shared.talkoverAllowed))
     }
 
-    /// Echo's N1 on #527: right before a talk-over is committed (music playing, our session not
-    /// yet active), re-reads the long-form route so a switch to AirPlay mid-song downgrades this
-    /// boundary to a gap break. Killed: touches nothing and returns the last route. Never fetches
-    /// (only the first AirPlay gap break does).
-    @MainActor static func probeBeforeTalkover() -> LongFormRouteKind {
-        guard DJAirPlayRouteFlag.isEnabled() else { return DJLongFormRouteState.shared.lastRoute }
-        return probe(keepLongForm: false).route
+    /// The pre-duck re-check (Echo's N1, Orion's route-change call): music is playing, so no probe
+    /// and no session call. AirPlay (last probe or the session's own route): `airPlayRoute`. A
+    /// route change since the last probe: `routeChanged`. Killed, or any other route: `planned`.
+    @MainActor static func talkoverDecision(_ planned: TalkoverDecision) -> TalkoverDecision {
+        core.talkoverDecision(planned, session: session)
     }
 
-    /// Before a gap break's first clip (music already paused). Not AirPlay, or killed: today's
-    /// session, exactly. AirPlay: the long-form category stays set, and the clip's `play()`
-    /// activates it on the AirPlay route. Returns the shape for `endGapBreak`.
-    /// The probe runs even when killed (local, restored at once) so the first AirPlay gap break
-    /// of a launch can fetch the switch again; otherwise a `false` could never be lifted.
+    /// `AVAudioSession.routeChangeNotification` (`DJRouteChangeObserver`). Marks the next talk-over
+    /// for the re-check. Killed or our own category change: no effect. No session call, no network.
+    @MainActor static func routeChanged(_ reason: DJRouteChangeReason) {
+        let marked = core.routeChanged(reason)
+        trace(.change(reason, marked: marked, flag: DJAirPlayRouteFlag.isEnabled()))
+    }
+
+    /// Before a gap break's first clip (music already paused). Killed: no session call (the route
+    /// is read as-is, only for the fetch gate). Switch on: one probe; AirPlay keeps the long-form
+    /// category and the clip's `play()` activates it on the AirPlay route. Returns the shape for
+    /// `endGapBreak`.
     @MainActor static func beginGapBreak(afterTrack k: Int) -> DJSessionShape {
-        let flag = DJAirPlayRouteFlag.isEnabled()
-        let (route, keptLongForm) = probe(keepLongForm: flag)
-        fetchFlagIfAllowed(route: route)
-        // The probe already put today's category back unless it kept the long-form one (AirPlay,
-        // switch on, session inactive). A skipped probe keeps today's session.
-        let shape: DJSessionShape = keptLongForm ? .longFormAirPlay : .mixDefault
-        trace(.shape(shape, route, k))
-        return shape
+        let gap = core.beginGapBreak(session)
+        if let p = gap.probe {
+            trace(.probe(p, flag: true, allowed: DJLongFormRouteState.shared.talkoverAllowed))
+        } else if gap.skipped {
+            trace(.skipped(flag: true))
+        }
+        if gap.fetch {
+            // A bare HTTPS GET on an ephemeral session (no cookies, no cache, 5 s): nothing about
+            // the route or the listener is sent. A failure keeps the stored value (fail open).
+            Task.detached(priority: .utility) {
+                await DJAirPlayRouteFlag.refresh(transport: DJAirPlayRouteFlag.makeTransport(), baseURL: DJAirPlayRouteFlag.proxyBaseURL)
+            }
+        }
+        trace(.shape(gap.shape, gap.route, k))
+        return gap.shape
     }
 
     /// After `completeNarration` released the session (`.notifyOthersOnDeactivation`): back to
     /// today's category, on the inactive session, before music resumes. Only after a long-form break.
     @MainActor static func endGapBreak(_ shape: DJSessionShape) {
-        guard shape == .longFormAirPlay else { return }
-        restoreNormal()
+        core.endGapBreak(session, shape: shape)
     }
 
     /// Talk-over on AirPlay falls back to the gap break (a long-form session cannot duck).
     static var talkoverAllowed: Bool { DJLongFormRouteState.shared.talkoverAllowed }
 
-    // MARK: Private
-
-    /// Sets the long-form category, reads the output port types, records the route. With
-    /// `keepLongForm` false (or no AirPlay) today's category is put back. Skipped while the app
-    /// has activated its session: the last route stays in effect.
-    @MainActor private static func probe(keepLongForm: Bool) -> (route: LongFormRouteKind, keptLongForm: Bool) {
-        let flag = DJAirPlayRouteFlag.isEnabled()
-        guard !TalkoverAudioSession.appActivated else {
-            trace(.skipped(flag: flag))
-            return (DJLongFormRouteState.shared.lastRoute, false)
-        }
-        let session = AVAudioSession.sharedInstance()
-        let config = DJSessionConfig.airPlayGap
-        var ports: [LongFormPortType] = []
-        do {
-            try session.setCategory(.playback, mode: .default, policy: .longFormAudio, options: [])
-            ports = session.currentRoute.outputs.map { portType($0.portType) }
-        } catch {
-            log.error("route probe failed code=\((error as NSError).code, privacy: .public)")
-        }
-        let route = LongFormRouteKind.classify(ports)
-        let changed = DJLongFormRouteState.shared.record(route)
-        let keep = keepLongForm && DJSessionConfig.resolve(route: route, kind: .gap, airPlayFlag: flag) == config
-        if !keep { restoreNormal() }
-        let allowed = DJLongFormRouteState.shared.talkoverAllowed
-        trace(.probe(route, ports, flag: flag, allowed: allowed, changed: changed))
-        return (route, keep)
-    }
-
-    /// Today's normal category (`DJSessionConfig.normal`), with the default route-sharing policy
-    /// named explicitly so the long-form policy cannot linger.
-    private static func restoreNormal() {
-        let normal = DJSessionConfig.normal
-        let options: AVAudioSession.CategoryOptions = normal.options.contains(.mixWithOthers) ? [.mixWithOthers] : []
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: .default, options: options)
-        } catch {
-            log.error("route restore failed code=\((error as NSError).code, privacy: .public)")
-        }
-    }
-
-    private static func portType(_ port: AVAudioSession.Port) -> LongFormPortType {
+    fileprivate static func portType(_ port: AVAudioSession.Port) -> LongFormPortType {
         switch port {
         case .airPlay: .airPlay
         case .bluetoothA2DP: .bluetoothA2DP
@@ -137,25 +98,99 @@ enum DJRouteSession {
         }
     }
 
+    fileprivate static func reason(_ raw: UInt?) -> DJRouteChangeReason {
+        guard let raw, let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return .otherReason }
+        switch reason {
+        case .newDeviceAvailable: return .newDeviceAvailable
+        case .oldDeviceUnavailable: return .oldDeviceUnavailable
+        case .categoryChange: return .categoryChange
+        case .override: return .override
+        case .wakeFromSleep: return .wakeFromSleep
+        case .noSuitableRouteForCategory: return .noSuitableRouteForCategory
+        case .routeConfigurationChange: return .routeConfigurationChange
+        default: return .otherReason
+        }
+    }
+
     /// DIAG rows. `P0EventTrace` exists only in DEBUG and P0_DIAG builds, so plain values are
     /// passed and the host builds the row (the `TalkoverCoordinator` pattern). Codes only.
     private enum RouteTrace {
-        case probe(LongFormRouteKind, [LongFormPortType], flag: Bool, allowed: Bool, changed: Bool)
+        case probe(DJRouteSessionCore.Probe, flag: Bool, allowed: Bool)
         case skipped(flag: Bool)
         case shape(DJSessionShape, LongFormRouteKind, Int)
+        case change(DJRouteChangeReason, marked: Bool, flag: Bool)
     }
 
     @MainActor private static func trace(_ event: RouteTrace) {
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.talkover { trace, t in
             switch event {
-            case let .probe(route, ports, flag, allowed, changed):
-                _ = trace.sessionRouteProbe(route: route, ports: ports, flag: flag, talkoverAllowed: allowed,
-                                            changed: changed, at: t)
+            case let .probe(p, flag, allowed):
+                _ = trace.sessionRouteProbe(route: p.route, ports: p.ports, flag: flag, talkoverAllowed: allowed,
+                                            changed: p.changed, at: t)
             case let .skipped(flag): _ = trace.sessionRouteProbeSkipped(flag: flag, at: t)
             case let .shape(shape, route, k): _ = trace.sessionBreakShape(shape, route: route, afterTrack: k, at: t)
+            case let .change(reason, marked, flag): _ = trace.sessionRouteChange(reason, marked: marked, flag: flag, at: t)
             }
         }
         #endif
+    }
+}
+
+/// `AVAudioSession.sharedInstance()` as Core's `DJAudioSessionPort`.
+@MainActor private final class AppAudioSessionPort: DJAudioSessionPort {
+    var currentOutputs: [LongFormPortType] {
+        AVAudioSession.sharedInstance().currentRoute.outputs.map { DJRouteSession.portType($0.portType) }
+    }
+
+    var appActivated: Bool { TalkoverAudioSession.appActivated }
+
+    func setCategory(_ config: DJSessionConfig) {
+        let policy: AVAudioSession.RouteSharingPolicy = config.policy == .longFormAudio ? .longFormAudio : .default
+        var options: AVAudioSession.CategoryOptions = []
+        if config.options.contains(.mixWithOthers) { options.insert(.mixWithOthers) }
+        if config.options.contains(.duckOthers) { options.insert(.duckOthers) }
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: policy, options: options)
+        } catch {
+            DJRouteSession.log.error("route setCategory failed code=\((error as NSError).code, privacy: .public)")
+        }
+    }
+
+    func setActive(_ active: Bool, notifyOthers: Bool) {
+        // Never called by the #525 path (Core pins it); kept faithful for completeness.
+        do {
+            try AVAudioSession.sharedInstance().setActive(active, options: notifyOthers ? [.notifyOthersOnDeactivation] : [])
+        } catch {
+            DJRouteSession.log.error("route setActive failed code=\((error as NSError).code, privacy: .public)")
+        }
+    }
+}
+
+/// Orion's call (Nov 14, 3:34 PM): `AVAudioSession.routeChangeNotification` marks the next
+/// talk-over for a route re-check (`DJRouteSession.routeChanged`). Owned by the talk-over
+/// coordinator: `start()` adds the observer once, `stop()` and `deinit` remove it. The handler
+/// reads only the reason code; no session call, no network. Killed: no effect.
+@MainActor final class DJRouteChangeObserver {
+    /// Written only on the main actor; read once more in `deinit` (NotificationCenter's remove is
+    /// thread-safe), hence `nonisolated(unsafe)`.
+    nonisolated(unsafe) private var token: NSObjectProtocol?
+
+    func start() {
+        guard token == nil else { return }
+        token = NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification,
+                                                       object: AVAudioSession.sharedInstance(), queue: .main) { note in
+            let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            MainActor.assumeIsolated { DJRouteSession.routeChanged(DJRouteSession.reason(raw)) }
+        }
+    }
+
+    func stop() {
+        if let token { NotificationCenter.default.removeObserver(token) }
+        token = nil
+    }
+
+    deinit {
+        if let token { NotificationCenter.default.removeObserver(token) }
     }
 }
