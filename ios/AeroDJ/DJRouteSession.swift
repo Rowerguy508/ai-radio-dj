@@ -26,12 +26,13 @@ enum DJRouteSession {
     /// One fetch per launch, only from an AirPlay gap break.
     @MainActor private static var fetchGate = DJAirPlayFlagFetchGate()
 
-    /// A bare GET to the proxy: nothing about the route or the listener is sent. A failure keeps
-    /// the stored value (fail open: on unless a fetched `false`).
+    /// A bare HTTPS GET to the proxy on an ephemeral session (no cookies, no cache, 5 s timeout):
+    /// nothing about the route or the listener is sent. A failure keeps the stored value (fail
+    /// open: on unless a fetched `false`).
     @MainActor private static func fetchFlagIfAllowed(route: LongFormRouteKind) {
         guard fetchGate.shouldFetch(route: route, at: .gapBreak) else { return }
         Task.detached(priority: .utility) {
-            await DJAirPlayRouteFlag.refresh(transport: URLSessionTransport(), baseURL: DJAirPlayRouteFlag.proxyBaseURL)
+            await DJAirPlayRouteFlag.refresh(transport: DJAirPlayRouteFlag.makeTransport(), baseURL: DJAirPlayRouteFlag.proxyBaseURL)
         }
     }
 
@@ -41,6 +42,15 @@ enum DJRouteSession {
     @MainActor static func probeBeforeSong() {
         guard DJAirPlayRouteFlag.isEnabled() else { return }
         _ = probe(keepLongForm: false)
+    }
+
+    /// Echo's N1 on #527: right before a talk-over is committed (music playing, our session not
+    /// yet active), re-reads the long-form route so a switch to AirPlay mid-song downgrades this
+    /// boundary to a gap break. Killed: touches nothing and returns the last route. Never fetches
+    /// (only the first AirPlay gap break does).
+    @MainActor static func probeBeforeTalkover() -> LongFormRouteKind {
+        guard DJAirPlayRouteFlag.isEnabled() else { return DJLongFormRouteState.shared.lastRoute }
+        return probe(keepLongForm: false).route
     }
 
     /// Before a gap break's first clip (music already paused). Not AirPlay, or killed: today's

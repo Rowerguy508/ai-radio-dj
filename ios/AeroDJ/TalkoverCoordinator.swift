@@ -488,9 +488,19 @@ final class TalkoverCoordinator {
             return // a MAIN clip failed: the boundary path skips it, as today
         }
         let next = music.queue.indices.contains(k + 1) ? music.queue[k + 1].duration : nil
-        let decision = TalkoverPlanner.decide(flag: isEnabled,
-                                              track: TalkoverTrack(duration: song?.duration, position: music.playbackTime),
-                                              voice: resolved.voice, nextTrackDuration: next, config: config)
+        let planned = TalkoverPlanner.decide(flag: isEnabled,
+                                             track: TalkoverTrack(duration: song?.duration, position: music.playbackTime),
+                                             voice: resolved.voice, nextTrackDuration: next, config: config)
+        // #525, Echo's N1 (-Atlas): the route is re-read right before the talk-over is committed
+        // (synchronous on the main actor, before the duck and long before the next play()). On
+        // AirPlay with the switch on it becomes a gap break: the held break loses its talk-over
+        // marker and airs in the gap like a gap-path break. Any other route: `planned`, unchanged.
+        let decision = planned.plan == nil ? planned
+            : DJTalkoverRouteCheck.decide(planned, route: DJRouteSession.probeBeforeTalkover(),
+                                          airPlayFlag: DJAirPlayRouteFlag.isEnabled())
+        if decision != planned, let h = held, h.afterTrack == k {
+            held = (k, DJTalkoverRouteCheck.gapBreak(from: h.prepared))
+        }
         decide(decision, afterTrack: k)
         guard let plan = decision.plan else { return }
         run = TalkoverRun(afterTrack: k, plan: plan)

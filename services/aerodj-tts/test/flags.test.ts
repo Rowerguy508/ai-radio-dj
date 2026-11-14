@@ -55,3 +55,65 @@ describe('GET /api/flags (#525)', () => {
     }
   });
 });
+
+describe('GET /api/flags logs nothing (#525 privacy)', () => {
+  const methods = ['log', 'info', 'warn', 'error', 'debug', 'trace', 'dir', 'table'] as const;
+
+  function spyConsole(): { calls: unknown[][]; restore: () => void } {
+    const calls: unknown[][] = [];
+    const originals = methods.map((m) => [m, console[m]] as const);
+    for (const m of methods) {
+      (console as unknown as Record<string, (...args: unknown[]) => void>)[m] = (...args: unknown[]) => {
+        calls.push([m, ...args]);
+      };
+    }
+    return {
+      calls,
+      restore: () => {
+        for (const [m, fn] of originals) (console as unknown as Record<string, unknown>)[m] = fn;
+      },
+    };
+  }
+
+  const IP = '203.0.113.77';
+  const REAL_IP = '198.51.100.23';
+  const UA = 'OnAirly/41 CFNetwork/3826 Darwin/26.0 spy-marker';
+  const headers = { 'x-forwarded-for': `${IP}, 10.0.0.1`, 'x-real-ip': REAL_IP, 'user-agent': UA, 'x-vercel-forwarded-for': IP };
+
+  for (const env of [{}, { AERODJ_DJ_AIRPLAY_LONGFORM: 'false' }, { AERODJ_DJ_AIRPLAY_LONGFORM: 'junk' }]) {
+    test(`no console output at all (env ${JSON.stringify(env)}), GET, HEAD and a refused method`, async () => {
+      const spy = spyConsole();
+      try {
+        for (const method of ['GET', 'HEAD', 'POST']) {
+          const res = handleFlags(new Request('https://proxy.invalid/api/flags', { method, headers }), env);
+          await res.text();
+        }
+        const before = process.env.AERODJ_DJ_AIRPLAY_LONGFORM;
+        try {
+          if ('AERODJ_DJ_AIRPLAY_LONGFORM' in env) process.env.AERODJ_DJ_AIRPLAY_LONGFORM = env.AERODJ_DJ_AIRPLAY_LONGFORM;
+          else delete process.env.AERODJ_DJ_AIRPLAY_LONGFORM;
+          await flagsEndpoint.fetch(new Request('https://proxy.invalid/api/flags', { headers })).text();
+        } finally {
+          if (before === undefined) delete process.env.AERODJ_DJ_AIRPLAY_LONGFORM;
+          else process.env.AERODJ_DJ_AIRPLAY_LONGFORM = before;
+        }
+      } finally {
+        spy.restore();
+      }
+      const logged = JSON.stringify(spy.calls);
+      for (const value of [IP, REAL_IP, UA, 'spy-marker', '10.0.0.1']) {
+        assert.ok(!logged.includes(value), `logged ${value}`);
+      }
+      assert.equal(spy.calls.length, 0, `nothing is logged: ${logged}`);
+    });
+  }
+
+  test('the handler source has no console call and reads no request header', async () => {
+    const { readFileSync } = await import('node:fs');
+    for (const file of ['src/flags-handler.ts', 'api/flags.ts']) {
+      const source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+      assert.ok(!/console\./.test(source), `${file}: console`);
+      assert.ok(!/headers\.get|x-forwarded-for|x-real-ip|user-agent/i.test(source), `${file}: reads a request header`);
+    }
+  });
+});

@@ -144,13 +144,49 @@ public enum DJAirPlayRouteFlag {
 
     private struct Body: Decodable { let djAirPlayLongForm: Bool }
 
-    /// A bare GET: no body, no token, no identifier, no route information.
-    public static func request(baseURL: URL) -> URLRequest {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path),
-                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
+    /// A bare GET: HTTPS only, no body, no query or fragment, no token, no identifier, no cookies,
+    /// no route information. Nil for a base URL that is not HTTPS (nothing is sent).
+    public static func request(baseURL: URL) -> URLRequest? {
+        guard var parts = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false),
+              parts.scheme?.lowercased() == "https", parts.host?.isEmpty == false else { return nil }
+        parts.query = nil
+        parts.fragment = nil
+        parts.user = nil
+        parts.password = nil
+        guard let url = parts.url else { return nil }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = "GET"
+        request.httpBody = nil
         request.httpShouldHandleCookies = false
         return request
+    }
+
+    /// The session the app fetches with: ephemeral (nothing written to disk), no cookie storage,
+    /// no cookies set, no URL cache, and the short `timeout` for the request and the whole load.
+    public static func sessionConfiguration() -> URLSessionConfiguration {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.timeoutIntervalForRequest = timeout
+        config.timeoutIntervalForResource = timeout
+        config.httpAdditionalHeaders = nil
+        return config
+    }
+
+    /// The app's transport for the fetch: one ephemeral `URLSession` per call.
+    public static func makeTransport() -> any HTTPTransport { EphemeralTransport() }
+
+    private struct EphemeralTransport: HTTPTransport {
+        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            let session = URLSession(configuration: DJAirPlayRouteFlag.sessionConfiguration())
+            defer { session.finishTasksAndInvalidate() }
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+            return (data, http)
+        }
     }
 
     /// Fetches the flag and stores a parsed value. A failure, a non-200 or an unreadable body
@@ -158,11 +194,32 @@ public enum DJAirPlayRouteFlag {
     @discardableResult
     public static func refresh(transport: any HTTPTransport, baseURL: URL,
                                defaults: UserDefaults = .standard) async -> Bool {
-        if let (data, response) = try? await transport.send(request(baseURL: baseURL)),
+        if let request = request(baseURL: baseURL), let (data, response) = try? await transport.send(request),
            response.statusCode == 200, let value = parse(data) {
             defaults.set(value, forKey: defaultsKey)
         }
         return isEnabled(defaults: defaults)
+    }
+}
+
+/// Echo's N1 on #527: the route is re-checked right before a talk-over starts (the coordinator's
+/// decision point), so a switch to AirPlay mid-song cannot leave the next talk-over on the phone.
+public enum DJTalkoverRouteCheck {
+    /// The planner's decision, downgraded to `.hardBreak(.airPlayRoute)` only when the switch is
+    /// on and the route is AirPlay. Every other route returns `planned` unchanged.
+    public static func decide(_ planned: TalkoverDecision, route: LongFormRouteKind, airPlayFlag: Bool) -> TalkoverDecision {
+        guard planned.plan != nil,
+              !DJSessionConfig.resolve(route: route, kind: .talkover, airPlayFlag: airPlayFlag).talkoverAllowed
+        else { return planned }
+        return .hardBreak(.airPlayRoute)
+    }
+
+    /// A break taken for a talk-over, as the gap-break path would have prepared it: the same cues
+    /// and clips, without the talk-over marker (so no closing line is timed to the next intro).
+    public static func gapBreak(from prepared: PreparedDJBreak) -> PreparedDJBreak {
+        var gap = prepared
+        gap.talkOverCueID = nil
+        return gap
     }
 }
 

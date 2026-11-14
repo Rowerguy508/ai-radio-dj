@@ -116,7 +116,7 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertNil(request.httpBody, "nothing is sent")
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"), "no token")
         XCTAssertFalse(request.httpShouldHandleCookies)
-        XCTAssertEqual(DJAirPlayRouteFlag.request(baseURL: DJAirPlayRouteFlag.proxyBaseURL).url?.absoluteString,
+        XCTAssertEqual(DJAirPlayRouteFlag.request(baseURL: DJAirPlayRouteFlag.proxyBaseURL)?.url?.absoluteString,
                        "https://aerodj-tts.vercel.app/api/flags")
         // While killed, a failure keeps it killed; a fetched true lifts it.
         let stillKilled = await DJAirPlayRouteFlag.refresh(transport: FlagTransport(error: true), baseURL: base, defaults: fresh)
@@ -124,6 +124,111 @@ final class DJSessionRouteTests: XCTestCase {
         let lifted = await DJAirPlayRouteFlag.refresh(transport: FlagTransport(status: 200, body: #"{"djAirPlayLongForm":true}"#),
                                                       baseURL: base, defaults: fresh)
         XCTAssertTrue(lifted)
+    }
+
+    // MARK: Fetch hygiene (privacy)
+
+    func testTheFetchIsAnHTTPSBareGETWithNoQueryNoBodyNoAuthAndNoCookies() throws {
+        let request = try XCTUnwrap(DJAirPlayRouteFlag.request(baseURL: DJAirPlayRouteFlag.proxyBaseURL))
+        XCTAssertEqual(request.url?.scheme, "https")
+        XCTAssertEqual(request.url?.absoluteString, "https://aerodj-tts.vercel.app/api/flags")
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertNil(request.httpBody)
+        XCTAssertNil(request.url?.query)
+        XCTAssertFalse(request.httpShouldHandleCookies)
+        XCTAssertEqual(request.allHTTPHeaderFields ?? [:], [:], "no auth, install or user header")
+        XCTAssertLessThanOrEqual(request.timeoutInterval, 5)
+        // A query, fragment or user info on the base never reaches the request.
+        let dirty = try XCTUnwrap(DJAirPlayRouteFlag.request(baseURL: URL(string: "https://u:p@proxy.invalid/?install=1#x")!))
+        XCTAssertNil(dirty.url?.query)
+        XCTAssertNil(dirty.url?.fragment)
+        XCTAssertNil(dirty.url?.user)
+        XCTAssertNil(dirty.url?.password)
+        // Not HTTPS: no request at all.
+        for base in ["http://aerodj-tts.vercel.app", "ftp://proxy.invalid", "file:///tmp"] {
+            XCTAssertNil(DJAirPlayRouteFlag.request(baseURL: URL(string: base)!), base)
+        }
+    }
+
+    func testANonHTTPSBaseSendsNothingAndKeepsTheStoredValue() async throws {
+        let defaults = try freshDefaults()
+        let spy = FlagTransport(status: 200, body: #"{"djAirPlayLongForm":false}"#)
+        let value = await DJAirPlayRouteFlag.refresh(transport: spy, baseURL: URL(string: "http://proxy.invalid")!, defaults: defaults)
+        XCTAssertTrue(value, "nothing fetched: fail open")
+        XCTAssertTrue(spy.requests.isEmpty, "no plain-HTTP request is ever sent")
+    }
+
+    func testTheFetchSessionIsEphemeralWithNoCookiesNoCacheAndAShortTimeout() {
+        let config = DJAirPlayRouteFlag.sessionConfiguration()
+        XCTAssertNil(config.httpCookieStorage, "no cookie storage")
+        XCTAssertFalse(config.httpShouldSetCookies)
+        XCTAssertEqual(config.httpCookieAcceptPolicy, .never)
+        XCTAssertNil(config.urlCache)
+        XCTAssertEqual(config.requestCachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertLessThanOrEqual(config.timeoutIntervalForRequest, 5)
+        XCTAssertLessThanOrEqual(config.timeoutIntervalForResource, 5)
+        XCTAssertTrue(config.httpAdditionalHeaders?.isEmpty ?? true, "no extra headers")
+    }
+
+    // MARK: Echo's N1: route re-check before a talk-over
+
+    func testTheTalkoverIsDowngradedOnlyOnAirPlayWithTheSwitchOn() {
+        let plan = TalkoverPlan(mode: .outroOnly, introSkip: .noClosingLine, outroOverlap: 4, voiceStartAt: 196,
+                                nextPlayAfterVoice: nil, nextAudibleAfterVoice: nil, unduckAfterVoice: 12,
+                                startLatency: 0.8, voiceSeconds: 12)
+        let decisions: [TalkoverDecision] = [.talkover(plan)] + TalkoverHardBreak.allCases.map { .hardBreak($0) }
+        for planned in decisions {
+            for route in LongFormRouteKind.allCases {
+                for flag in [false, true] {
+                    let checked = DJTalkoverRouteCheck.decide(planned, route: route, airPlayFlag: flag)
+                    if planned.plan != nil, flag, route == .airPlay {
+                        XCTAssertEqual(checked, .hardBreak(.airPlayRoute), "AirPlay mid-song: a gap break")
+                    } else {
+                        XCTAssertEqual(checked, planned, "unchanged: \(planned) route=\(route) flag=\(flag)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testADowngradedTalkoverAirsTheSameLinesWithoutTheTalkoverMarker() async throws {
+        let taken = try await prepared(talkOverEnabled: { true })
+        XCTAssertNotNil(taken.talkOverCueID, "taken as a talk-over")
+        let gap = DJTalkoverRouteCheck.gapBreak(from: taken)
+        XCTAssertNil(gap.talkOverCueID)
+        XCTAssertNil(gap.talkOverStartSeconds, "nothing timed to the next intro")
+        XCTAssertNil(gap.talkOverSeconds)
+        XCTAssertEqual(gap.cues, taken.cues, "same lines")
+        XCTAssertEqual(gap.clips, taken.clips, "same audio")
+        // The same shape as the preparer's own gap-break path.
+        let gapPath = try await prepared(talkOverEnabled: { false })
+        XCTAssertEqual(gap.talkOverCueID, gapPath.talkOverCueID)
+        XCTAssertEqual(gap.talkOverStartSeconds, gapPath.talkOverStartSeconds)
+        XCTAssertEqual(gap.cues.map(\.text), gapPath.cues.map(\.text))
+    }
+
+    func testTheCoordinatorRechecksTheRouteBeforeCommittingTheTalkover() throws {
+        let take = try body(appSource("TalkoverCoordinator.swift"), "private func take(")
+        let planner = try XCTUnwrap(take.range(of: "let planned = TalkoverPlanner.decide("))
+        let probe = try XCTUnwrap(take.range(of: "DJRouteSession.probeBeforeTalkover()"))
+        let check = try XCTUnwrap(take.range(of: "DJTalkoverRouteCheck.decide(planned,"))
+        let strip = try XCTUnwrap(take.range(of: "held = (k, DJTalkoverRouteCheck.gapBreak(from: h.prepared))"))
+        let decide = try XCTUnwrap(take.range(of: "decide(decision, afterTrack: k)"))
+        let run = try XCTUnwrap(take.range(of: "run = TalkoverRun(afterTrack: k, plan: plan)"))
+        let duck = try XCTUnwrap(take.range(of: "interlude.duckForTalkover(afterTrack: k)"))
+        XCTAssertLessThan(planner.lowerBound, probe.lowerBound)
+        XCTAssertLessThan(probe.lowerBound, decide.lowerBound)
+        XCTAssertLessThan(check.lowerBound, strip.lowerBound)
+        XCTAssertLessThan(decide.lowerBound, run.lowerBound, "checked before the run exists")
+        XCTAssertLessThan(run.lowerBound, duck.lowerBound, "and before the duck")
+        XCTAssertTrue(take.contains("let decision = planned.plan == nil ? planned"), "a planned hard break is not probed")
+        let source = try appSource("DJRouteSession.swift")
+        let before = try body(source, "@MainActor static func probeBeforeTalkover()")
+        XCTAssertTrue(before.hasPrefix("\n        guard DJAirPlayRouteFlag.isEnabled() else { return DJLongFormRouteState.shared.lastRoute }"),
+                      "killed: nothing is touched")
+        XCTAssertFalse(before.contains("fetch"), "a talk-over check never fetches")
+        XCTAssertTrue(source.contains("transport: DJAirPlayRouteFlag.makeTransport()"), "the ephemeral transport")
+        XCTAssertFalse(source.contains("URLSessionTransport()"), "never the shared session")
     }
 
     // MARK: Fetch gate (privacy)
