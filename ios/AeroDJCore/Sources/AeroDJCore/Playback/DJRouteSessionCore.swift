@@ -8,9 +8,11 @@ import Foundation
 // - Talk-over (music playing): no probe at all. The pre-duck re-check reads only the route cached
 //   from the last probe, the route-change mark (`routeChangeNotification`) and the app session's
 //   route as it is, and never changes the category.
-// The one exception outside a gap break is the launch probe: one pair at the FIRST song start of a
-// launch (switch on, music not playing, the app's session inactive), so a listener already on
-// AirPlay at launch is seen before the first talk-over.
+// The one exception outside a gap break is the launch probe (Fry's conditions): one pair at the
+// FIRST song start of a launch, switch on only, never `setActive`, synchronous on the main actor
+// before our first `play()` (so it cannot race MusicKit's start), with a DIAG row of raw port types.
+// A listener already on AirPlay at launch is seen before the first talk-over, and the launch probe
+// is where an AirPlay launch fetches the kill switch (once per launch, memory only).
 //
 // Why a route change downgrades the next talk-over (Apple docs, NOT device evidence): content
 // without the long-form policy "remains local to the playback device even when the system is
@@ -90,12 +92,33 @@ public struct DJRouteRecheck: Equatable, Sendable {
 /// The #525 route logic over a `DJAudioSessionPort`. The app owns one (main actor).
 @MainActor
 public final class DJRouteSessionCore {
+    /// Where a probe ran.
+    public enum ProbeSite: String, Equatable, Sendable { case launch, gapBreak }
+
     /// One long-form probe, for the DIAG row.
     public struct Probe: Equatable, Sendable {
+        public var site: ProbeSite
         public var route: LongFormRouteKind
+        /// The long-form route's output port types, read under the long-form category.
         public var ports: [LongFormPortType]
+        /// The app session's own `currentRoute` port types, read as-is before the probe.
+        public var sessionPorts: [LongFormPortType]
         public var keptLongForm: Bool
         public var changed: Bool
+        /// Fetch the kill switch now (`DJAirPlayFlagFetchGate`).
+        public var fetch: Bool
+    }
+
+    /// The pre-duck re-check, for the DIAG row.
+    public struct Recheck: Equatable, Sendable {
+        public var decision: TalkoverDecision
+        /// The route the last long-form probe saw.
+        public var lastProbedRoute: LongFormRouteKind
+        /// The app session's own `currentRoute` port types, read as-is (no session call).
+        public var sessionPorts: [LongFormPortType]
+        /// A route change was marked before this boundary.
+        public var marked: Bool
+        public var flag: Bool
     }
 
     /// What a gap break did.
@@ -107,6 +130,8 @@ public final class DJRouteSessionCore {
         /// Nil: no probe (killed, or the session was active).
         public var probe: Probe?
         public var skipped: Bool
+        /// The app session's own `currentRoute` port types, read as-is before any probe.
+        public var sessionPorts: [LongFormPortType]
     }
 
     public let state: DJLongFormRouteState
@@ -123,7 +148,7 @@ public final class DJRouteSessionCore {
     /// the app's session inactive. Nil: nothing was touched.
     public func probeBeforeSong(_ session: DJAudioSessionPort) -> Probe? {
         guard flag(), !recheck.probedThisLaunch, !session.appActivated else { return nil }
-        return probe(session, keepLongForm: false)
+        return probe(session, keepLongForm: false, site: .launch)
     }
 
     /// Before a gap break's first clip (music paused).
@@ -133,17 +158,20 @@ public final class DJRouteSessionCore {
     /// - Switch on: one long-form probe. AirPlay keeps the long-form category for the clip; any
     ///   other route puts today's category back at once (one pair).
     public func beginGapBreak(_ session: DJAudioSessionPort) -> GapBreak {
+        let sessionPorts = session.currentOutputs
         guard flag() else {
-            let route = LongFormRouteKind.classify(session.currentOutputs)
+            let route = LongFormRouteKind.classify(sessionPorts)
             return GapBreak(shape: .mixDefault, route: route,
-                            fetch: fetchGate.shouldFetch(route: route, at: .gapBreak), probe: nil, skipped: false)
+                            fetch: fetchGate.shouldFetch(route: route, at: .gapBreak), probe: nil, skipped: false,
+                            sessionPorts: sessionPorts)
         }
         guard !session.appActivated else {
-            return GapBreak(shape: .mixDefault, route: state.lastRoute, fetch: false, probe: nil, skipped: true)
+            return GapBreak(shape: .mixDefault, route: state.lastRoute, fetch: false, probe: nil, skipped: true,
+                            sessionPorts: sessionPorts)
         }
-        let p = probe(session, keepLongForm: true)
+        let p = probe(session, keepLongForm: true, site: .gapBreak)
         return GapBreak(shape: p.keptLongForm ? .longFormAirPlay : .mixDefault, route: p.route,
-                        fetch: fetchGate.shouldFetch(route: p.route, at: .gapBreak), probe: p, skipped: false)
+                        fetch: p.fetch, probe: p, skipped: false, sessionPorts: sessionPorts)
     }
 
     /// After the clip released the session: today's category back, only after a long-form break.
@@ -154,9 +182,18 @@ public final class DJRouteSessionCore {
 
     /// The pre-duck re-check (music playing). Reads only; never a session call.
     public func talkoverDecision(_ planned: TalkoverDecision, session: DJAudioSessionPort) -> TalkoverDecision {
-        recheck.talkoverBoundary(planned, lastProbedRoute: state.lastRoute,
-                                 sessionRoute: LongFormRouteKind.classify(session.currentOutputs),
-                                 airPlayFlag: flag())
+        talkoverRecheck(planned, session: session).decision
+    }
+
+    /// The same re-check with what it read, for the DIAG row. Reads only; never a session call.
+    public func talkoverRecheck(_ planned: TalkoverDecision, session: DJAudioSessionPort) -> Recheck {
+        let sessionPorts = session.currentOutputs
+        let lastProbed = state.lastRoute
+        let marked = recheck.pending
+        let on = flag()
+        let decision = recheck.talkoverBoundary(planned, lastProbedRoute: lastProbed,
+                                                sessionRoute: LongFormRouteKind.classify(sessionPorts), airPlayFlag: on)
+        return Recheck(decision: decision, lastProbedRoute: lastProbed, sessionPorts: sessionPorts, marked: marked, flag: on)
     }
 
     /// `AVAudioSession.routeChangeNotification`. Marks the next talk-over for the re-check.
@@ -166,7 +203,8 @@ public final class DJRouteSessionCore {
         recheck.routeChanged(reason, airPlayFlag: flag())
     }
 
-    private func probe(_ session: DJAudioSessionPort, keepLongForm: Bool) -> Probe {
+    private func probe(_ session: DJAudioSessionPort, keepLongForm: Bool, site: ProbeSite) -> Probe {
+        let sessionPorts = session.currentOutputs
         session.setCategory(.airPlayGap)
         let ports = session.currentOutputs
         let route = LongFormRouteKind.classify(ports)
@@ -174,6 +212,8 @@ public final class DJRouteSessionCore {
         recheck.probed()
         let keep = keepLongForm && DJSessionConfig.resolve(route: route, kind: .gap, airPlayFlag: flag()) == .airPlayGap
         if !keep { session.setCategory(.normal) }
-        return Probe(route: route, ports: ports, keptLongForm: keep, changed: changed)
+        let fetch = fetchGate.shouldFetch(route: route, at: site == .launch ? .songStart : .gapBreak)
+        return Probe(site: site, route: route, ports: ports, sessionPorts: sessionPorts, keptLongForm: keep,
+                     changed: changed, fetch: fetch)
     }
 }

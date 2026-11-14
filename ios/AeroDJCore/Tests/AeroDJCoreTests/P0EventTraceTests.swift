@@ -361,6 +361,18 @@ final class P0EventTraceTests: XCTestCase {
         trace.sessionRouteProbeSkipped(flag: true, at: 9)
         for s in DJSessionShape.allCases { trace.sessionBreakShape(s, route: .airPlay, afterTrack: 0, at: 9) }
         for r in DJRouteChangeReason.allCases { trace.sessionRouteChange(r, marked: r.counts, flag: true, at: 9) }
+        trace.sessionRouteProbe(site: .launch, route: .wired, ports: [.headphones], sessionPorts: LongFormPortType.allCases,
+                                flag: true, talkoverAllowed: true, changed: true, at: 9)
+        for p in LongFormPortType.allCases {
+            trace.sessionBreakShape(.mixDefault, route: .classify([p]), afterTrack: 0, sessionPorts: [p], probePorts: [p, p], at: 9)
+        }
+        let recheckPlan = TalkoverPlan(mode: .outroOnly, introSkip: .noClosingLine, outroOverlap: 4, voiceStartAt: 196,
+                                nextPlayAfterVoice: nil, nextAudibleAfterVoice: nil, unduckAfterVoice: 12,
+                                startLatency: 0.8, voiceSeconds: 12)
+        for d in [TalkoverDecision.talkover(recheckPlan), .hardBreak(.airPlayRoute), .hardBreak(.routeChanged)] {
+            trace.sessionTalkoverRecheck(d, lastProbedRoute: .wired, sessionPorts: [.builtInSpeaker], marked: true,
+                                         flag: true, afterTrack: 0, at: 9)
+        }
         XCTAssertFalse(trace.rows.contains { $0.detail.contains("=unknown") }, "every talk-over code has a trace code")
         shapes += trace.rows
         XCTAssertEqual(Set(shapes.map(\.event)), Set(P0TraceEvent.allCases), "every event kind is checked")
@@ -390,6 +402,50 @@ final class P0EventTraceTests: XCTestCase {
     /// activation, at the settle, at the voice start (end of the duck lead) and at the unduck.
     /// Booleans only; nil renders as "-".
     /// #379 N2 (-Fry): lines a paused break dropped, counted by kind, codes and counts only.
+    /// Echo's #527 ask: every gap break, probe and talk-over re-check row carries the app session's
+    /// own `currentRoute` port TYPES (`cur1`, `cur2`, `curN`) and the probe's long-form port types
+    /// (`port1`, `port2`, `ports`). Types only: no name, UID or device name can appear.
+    func testSessionRouteRowsCarryRawPortTypesOnly() {
+        var trace = P0EventTrace()
+        let launch = trace.sessionRouteProbe(site: .launch, route: .airPlay, ports: [.airPlay],
+                                             sessionPorts: [.builtInSpeaker], flag: true, talkoverAllowed: false,
+                                             changed: true, at: 1)
+        XCTAssertEqual(launch.detail,
+                       "kind=launchProbe route=airPlay port1=airPlay port2=- ports=1 cur1=builtInSpeaker cur2=- curN=1 flag=1 allowed=0 changed=1")
+        let probed = trace.sessionBreakShape(.longFormAirPlay, route: .airPlay, afterTrack: 3,
+                                             sessionPorts: [.builtInSpeaker], probePorts: [.airPlay, .airPlay, .airPlay], at: 2)
+        XCTAssertEqual(probed.detail,
+                       "kind=breakShape after=3 shape=longFormAirPlay route=airPlay cur1=builtInSpeaker cur2=- curN=1 port1=airPlay port2=airPlay ports=3")
+        let killed = trace.sessionBreakShape(.mixDefault, route: .wired, afterTrack: 4, sessionPorts: [.headphones, .other],
+                                             probePorts: [], at: 3)
+        XCTAssertEqual(killed.detail,
+                       "kind=breakShape after=4 shape=mixDefault route=wired cur1=headphones cur2=other curN=2 port1=- port2=- ports=0",
+                       "no probe (killed): session ports only")
+        let plan = TalkoverPlan(mode: .outroOnly, introSkip: .noClosingLine, outroOverlap: 4, voiceStartAt: 196,
+                                nextPlayAfterVoice: nil, nextAudibleAfterVoice: nil, unduckAfterVoice: 12,
+                                startLatency: 0.8, voiceSeconds: 12)
+        let kept = trace.sessionTalkoverRecheck(.talkover(plan), lastProbedRoute: .wired, sessionPorts: [.headphones],
+                                                marked: false, flag: true, afterTrack: 5, at: 4)
+        XCTAssertEqual(kept.detail, "kind=recheck after=5 result=talkover route=wired cur1=headphones cur2=- curN=1 changed=0 flag=1")
+        let changed = trace.sessionTalkoverRecheck(.hardBreak(.routeChanged), lastProbedRoute: .wired,
+                                                   sessionPorts: [.builtInSpeaker], marked: true, flag: true, afterTrack: 6, at: 5)
+        XCTAssertEqual(changed.detail,
+                       "kind=recheck after=6 result=routeChanged route=wired cur1=builtInSpeaker cur2=- curN=1 changed=1 flag=1")
+        let airPlay = trace.sessionTalkoverRecheck(.hardBreak(.airPlayRoute), lastProbedRoute: .airPlay,
+                                                   sessionPorts: [.airPlay, .builtInSpeaker, .usbAudio], marked: false,
+                                                   flag: true, afterTrack: 7, at: 6)
+        XCTAssertEqual(airPlay.detail,
+                       "kind=recheck after=7 result=airPlayRoute route=airPlay cur1=airPlay cur2=builtInSpeaker curN=3 changed=0 flag=1")
+        // Every value is a known code or a count: nothing free-form (no names, UIDs, device names).
+        let codes = Set(P0TraceCode.allCases.map(\.rawValue))
+        for row in trace.rows {
+            for pair in row.detail.split(separator: " ") {
+                let value = String(pair.split(separator: "=", maxSplits: 1)[1])
+                XCTAssertTrue(codes.contains(value) || Int(value) != nil || value == "-", "\(row.detail): \(value)")
+            }
+        }
+    }
+
     func testBreakInterruptionDropRowsCountTheDroppedLinesByKind() {
         var trace = P0EventTrace()
         let skipped = trace.breakInterruptionDrop(BreakResumeDrop(reason: .stale, line: 1, timeChecks: 1, other: 0),

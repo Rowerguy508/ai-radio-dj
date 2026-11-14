@@ -74,6 +74,8 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     // #525 (-Atlas): long-form route kind, first two output port types and the output count,
     // the remote flag, whether talk-over is allowed, whether that changed, the break's session
     case route, port1, port2, ports, flag, allowed, changed, shape
+    // Echo's #527 ask: the app session's own currentRoute port types, read as-is (types only)
+    case cur1, cur2, curN
 }
 
 extension P0TraceCode {
@@ -132,6 +134,8 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case airPlayRoute
     /// #525 route-change rows: the kind, then `DJRouteChangeReason` (same raw values).
     case routeChange
+    /// Fry's launch-probe row, Echo's re-check row and its kept-talk-over result.
+    case launchProbe, recheck, talkover
     case newDeviceAvailable, oldDeviceUnavailable, categoryChange, override, wakeFromSleep
     case noSuitableRouteForCategory, routeConfigurationChange, otherReason
 }
@@ -779,21 +783,49 @@ extension P0EventTrace {
 // MARK: #525 session route (-Atlas)
 
 extension P0EventTrace {
-    /// One long-form route probe: the route kind, the first two output port TYPES (never a
-    /// name) and the output count, the remote flag, whether talk-over is allowed after it, and
-    /// whether that permission changed with this probe (the reported change).
+    /// One long-form probe (`site`: the launch probe or a gap break): the route kind, the first two
+    /// long-form output port TYPES (never a name, UID or device name) and their count, the app
+    /// session's own `currentRoute` port types read before the probe (`cur1`, `cur2`, `curN`), the
+    /// remote flag, whether talk-over is allowed after it, and whether that permission changed.
     @discardableResult
-    public mutating func sessionRouteProbe(route: LongFormRouteKind, ports: [LongFormPortType], flag: Bool,
-                                           talkoverAllowed: Bool, changed: Bool, at t: TimeInterval) -> P0TraceRow {
+    public mutating func sessionRouteProbe(site: DJRouteSessionCore.ProbeSite = .gapBreak, route: LongFormRouteKind,
+                                           ports: [LongFormPortType], sessionPorts: [LongFormPortType] = [],
+                                           flag: Bool, talkoverAllowed: Bool, changed: Bool,
+                                           at t: TimeInterval) -> P0TraceRow {
+        record(.sessionRoute, at: t, [(.kind, .code(site == .launch ? .launchProbe : .probe)),
+                                      (.route, .code(P0TraceCode(rawValue: route.rawValue) ?? .unknown))]
+               + Self.portPairs(ports, first: .port1, second: .port2, count: .ports)
+               + Self.portPairs(sessionPorts, first: .cur1, second: .cur2, count: .curN)
+               + [(.flag, .bool(flag)), (.allowed, .bool(talkoverAllowed)), (.changed, .bool(changed))])
+    }
+
+    /// Port types only: the first two and the count. A missing port is `-`.
+    static func portPairs(_ ports: [LongFormPortType], first: P0TraceKey, second: P0TraceKey,
+                          count: P0TraceKey) -> [(P0TraceKey, P0TraceValue)] {
         func code(_ p: LongFormPortType?) -> P0TraceValue {
             guard let p else { return .missing }
             return .code(P0TraceCode(rawValue: p.rawValue) ?? .unknown)
         }
-        return record(.sessionRoute, at: t, [(.kind, .code(.probe)),
-                                             (.route, .code(P0TraceCode(rawValue: route.rawValue) ?? .unknown)),
-                                             (.port1, code(ports.first)), (.port2, code(ports.dropFirst().first)),
-                                             (.ports, .int(ports.count)), (.flag, .bool(flag)),
-                                             (.allowed, .bool(talkoverAllowed)), (.changed, .bool(changed))])
+        return [(first, code(ports.first)), (second, code(ports.dropFirst().first)), (count, .int(ports.count))]
+    }
+
+    /// Echo's #527 ask: the pre-duck re-check, with what it read and no session call. `result` is
+    /// `talkover` (kept), `airPlayRoute` or `routeChanged`; `route` is the last probe's route;
+    /// `cur1`/`cur2`/`curN` the app session's own `currentRoute` port types; `changed` whether a route
+    /// change was marked before this boundary.
+    @discardableResult
+    public mutating func sessionTalkoverRecheck(_ decision: TalkoverDecision, lastProbedRoute: LongFormRouteKind,
+                                                sessionPorts: [LongFormPortType], marked: Bool, flag: Bool,
+                                                afterTrack: Int, at t: TimeInterval) -> P0TraceRow {
+        let result: P0TraceCode
+        switch decision {
+        case .talkover: result = .talkover
+        case .hardBreak(let r): result = P0TraceCode(rawValue: r.rawValue) ?? .unknown
+        }
+        return record(.sessionRoute, at: t, [(.kind, .code(.recheck)), (.after, .int(afterTrack)), (.result, .code(result)),
+                                             (.route, .code(P0TraceCode(rawValue: lastProbedRoute.rawValue) ?? .unknown))]
+                      + Self.portPairs(sessionPorts, first: .cur1, second: .cur2, count: .curN)
+                      + [(.changed, .bool(marked)), (.flag, .bool(flag))])
     }
 
     /// The probe did not run (the app's session was active): the last route stays in effect.
@@ -812,13 +844,18 @@ extension P0EventTrace {
                                       (.changed, .bool(marked)), (.flag, .bool(flag))])
     }
 
-    /// The session a gap break ran with, and the route it was chosen for.
+    /// The session a gap break ran with and the route it was chosen for, with the app session's own
+    /// `currentRoute` port types read before any probe (`cur*`) and the probe's long-form port types
+    /// (`port*`; `-` and `ports=0` when no probe ran: killed, or the session was active).
     @discardableResult
     public mutating func sessionBreakShape(_ shape: DJSessionShape, route: LongFormRouteKind, afterTrack: Int,
+                                           sessionPorts: [LongFormPortType] = [], probePorts: [LongFormPortType] = [],
                                            at t: TimeInterval) -> P0TraceRow {
         record(.sessionRoute, at: t, [(.kind, .code(.breakShape)), (.after, .int(afterTrack)),
                                       (.shape, .code(P0TraceCode(rawValue: shape.rawValue) ?? .unknown)),
-                                      (.route, .code(P0TraceCode(rawValue: route.rawValue) ?? .unknown))])
+                                      (.route, .code(P0TraceCode(rawValue: route.rawValue) ?? .unknown))]
+               + Self.portPairs(sessionPorts, first: .cur1, second: .cur2, count: .curN)
+               + Self.portPairs(probePorts, first: .port1, second: .port2, count: .ports))
     }
 }
 #endif

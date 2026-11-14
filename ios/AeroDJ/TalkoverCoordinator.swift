@@ -502,7 +502,7 @@ final class TalkoverCoordinator {
         // `routeChanged`. Either way the held break loses its talk-over marker and airs in the gap
         // like a gap-path break, whose probe reads the real route. Killed, or any other route with
         // no change: `planned`, unchanged.
-        let decision = DJRouteSession.talkoverDecision(planned)
+        let decision = DJRouteSession.talkoverDecision(planned, afterTrack: k)
         if decision != planned, let h = held, h.afterTrack == k {
             held = (k, DJTalkoverRouteCheck.gapBreak(from: h.prepared))
         }

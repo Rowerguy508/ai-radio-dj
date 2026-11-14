@@ -85,8 +85,8 @@ final class DJSessionRouteTests: XCTestCase {
 
     func testTheKillSwitchDefaultsOnAndOnlyAJSONFalseTurnsItOff() throws {
         XCTAssertTrue(DJAirPlayRouteFlag.defaultValue, "kill switch: on unless killed (Orion, Nov 14)")
-        let defaults = try freshDefaults()
-        XCTAssertTrue(DJAirPlayRouteFlag.isEnabled(defaults: defaults), "never fetched: on")
+        let store = DJAirPlayFlagStore()
+        XCTAssertTrue(DJAirPlayRouteFlag.isEnabled(store: store), "never fetched: on")
         XCTAssertEqual(DJAirPlayRouteFlag.parse(Data(#"{"djAirPlayLongForm":true}"#.utf8)), true)
         XCTAssertEqual(DJAirPlayRouteFlag.parse(Data(#"{"djAirPlayLongForm":false}"#.utf8)), false)
         for body in [#"{"djAirPlayLongForm":0}"#, #"{"djAirPlayLongForm":"false"}"#, #"{"other":false}"#, "false", "", "not json"] {
@@ -98,18 +98,18 @@ final class DJSessionRouteTests: XCTestCase {
     func testAFailedFetchFailsOpenAndOnlyAFetchedFalseKills() async throws {
         let base = URL(string: "https://proxy.invalid")!
         // Never fetched, then every kind of failure: still on.
-        let fresh = try freshDefaults()
+        let fresh = DJAirPlayFlagStore()
         for t in [FlagTransport(status: 503, body: #"{"djAirPlayLongForm":false}"#),
                   FlagTransport(status: 200, body: "nope"), FlagTransport(error: true)] {
-            let value = await DJAirPlayRouteFlag.refresh(transport: t, baseURL: base, defaults: fresh)
+            let value = await DJAirPlayRouteFlag.refresh(transport: t, baseURL: base, store: fresh)
             XCTAssertTrue(value, "fail open")
         }
-        XCTAssertTrue(DJAirPlayRouteFlag.isEnabled(defaults: fresh))
+        XCTAssertTrue(DJAirPlayRouteFlag.isEnabled(store: fresh))
         // A fetched false kills it, and the request is a bare GET.
         let kill = FlagTransport(status: 200, body: #"{"djAirPlayLongForm":false}"#)
-        let killed = await DJAirPlayRouteFlag.refresh(transport: kill, baseURL: base, defaults: fresh)
+        let killed = await DJAirPlayRouteFlag.refresh(transport: kill, baseURL: base, store: fresh)
         XCTAssertFalse(killed)
-        XCTAssertFalse(DJAirPlayRouteFlag.isEnabled(defaults: fresh))
+        XCTAssertFalse(DJAirPlayRouteFlag.isEnabled(store: fresh))
         let request = try XCTUnwrap(kill.requests.first)
         XCTAssertEqual(request.httpMethod, "GET")
         XCTAssertEqual(request.url?.absoluteString, "https://proxy.invalid/api/flags")
@@ -119,11 +119,39 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertEqual(DJAirPlayRouteFlag.request(baseURL: DJAirPlayRouteFlag.proxyBaseURL)?.url?.absoluteString,
                        "https://aerodj-tts.vercel.app/api/flags")
         // While killed, a failure keeps it killed; a fetched true lifts it.
-        let stillKilled = await DJAirPlayRouteFlag.refresh(transport: FlagTransport(error: true), baseURL: base, defaults: fresh)
+        let stillKilled = await DJAirPlayRouteFlag.refresh(transport: FlagTransport(error: true), baseURL: base, store: fresh)
         XCTAssertFalse(stillKilled)
         let lifted = await DJAirPlayRouteFlag.refresh(transport: FlagTransport(status: 200, body: #"{"djAirPlayLongForm":true}"#),
-                                                      baseURL: base, defaults: fresh)
+                                                      baseURL: base, store: fresh)
         XCTAssertTrue(lifted)
+    }
+
+    /// Orion (Nov 14): the value lives in memory only. A fetched `false` kills it for this launch;
+    /// a new launch (a new store) starts ON, and nothing is written to UserDefaults.
+    @MainActor
+    func testAFetchedFalseDoesNotCarryOverToANewLaunch() async throws {
+        let base = URL(string: "https://proxy.invalid")!
+        let launch1 = DJAirPlayFlagStore()
+        let killed = await DJAirPlayRouteFlag.refresh(transport: FlagTransport(status: 200, body: #"{"djAirPlayLongForm":false}"#),
+                                                      baseURL: base, store: launch1)
+        XCTAssertFalse(killed)
+        XCTAssertFalse(DJAirPlayRouteFlag.isEnabled(store: launch1), "killed for the rest of this launch")
+        let launch2 = DJAirPlayFlagStore()
+        XCTAssertTrue(launch2.value, "a new launch starts ON")
+        XCTAssertTrue(DJAirPlayRouteFlag.isEnabled(store: launch2))
+        // A new launch's core starts on too, and its launch probe on AirPlay refetches once.
+        let s = CountingSession(longForm: [.airPlay], local: [.builtInSpeaker])
+        let core = DJRouteSessionCore(state: DJLongFormRouteState(flag: { launch2.value }), flag: { launch2.value })
+        let probe = core.probeBeforeSong(s)
+        XCTAssertEqual(probe?.fetch, true, "the next launch's first AirPlay detection refetches")
+        // No persistence anywhere in the flag's code.
+        for file in ["Playback/DJSessionRoute.swift", "Playback/DJRouteSessionCore.swift"] {
+            let source = try coreSource(file)
+            XCTAssertFalse(source.contains("UserDefaults."), file)
+            XCTAssertFalse(source.contains("defaults.set"), file)
+            XCTAssertFalse(source.contains("FileManager"), file)
+        }
+        XCTAssertFalse(try appSource("DJRouteSession.swift").contains("UserDefaults"))
     }
 
     // MARK: Fetch hygiene (privacy)
@@ -151,9 +179,9 @@ final class DJSessionRouteTests: XCTestCase {
     }
 
     func testANonHTTPSBaseSendsNothingAndKeepsTheStoredValue() async throws {
-        let defaults = try freshDefaults()
+        let store = DJAirPlayFlagStore()
         let spy = FlagTransport(status: 200, body: #"{"djAirPlayLongForm":false}"#)
-        let value = await DJAirPlayRouteFlag.refresh(transport: spy, baseURL: URL(string: "http://proxy.invalid")!, defaults: defaults)
+        let value = await DJAirPlayRouteFlag.refresh(transport: spy, baseURL: URL(string: "http://proxy.invalid")!, store: store)
         XCTAssertTrue(value, "nothing fetched: fail open")
         XCTAssertTrue(spy.requests.isEmpty, "no plain-HTTP request is ever sent")
     }
@@ -208,7 +236,7 @@ final class DJSessionRouteTests: XCTestCase {
     func testTheCoordinatorRechecksTheRouteBeforeCommittingTheTalkover() throws {
         let take = try body(appSource("TalkoverCoordinator.swift"), "private func take(")
         let planner = try XCTUnwrap(take.range(of: "let planned = TalkoverPlanner.decide("))
-        let check = try XCTUnwrap(take.range(of: "let decision = DJRouteSession.talkoverDecision(planned)"))
+        let check = try XCTUnwrap(take.range(of: "let decision = DJRouteSession.talkoverDecision(planned, afterTrack: k)"))
         let strip = try XCTUnwrap(take.range(of: "held = (k, DJTalkoverRouteCheck.gapBreak(from: h.prepared))"))
         let decide = try XCTUnwrap(take.range(of: "decide(decision, afterTrack: k)"))
         let run = try XCTUnwrap(take.range(of: "run = TalkoverRun(afterTrack: k, plan: plan)"))
@@ -222,7 +250,9 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertFalse(take.contains("setCategory"), "no category change at the re-check")
         let source = try appSource("DJRouteSession.swift")
         let talk = try body(source, "@MainActor static func talkoverDecision(")
-        XCTAssertEqual(talk, "\n        core.talkoverDecision(planned, session: session)\n    ", "reads only; Core pins the zero calls")
+        XCTAssertTrue(talk.hasPrefix("\n        let recheck = core.talkoverRecheck(planned, session: session)"), "reads only; Core pins the zero calls")
+        XCTAssertTrue(talk.contains("trace(.recheck(recheck, k))"), "Echo: the re-check's DIAG row")
+        for banned in ["setCategory", "setActive", "probe", "fetch"] { XCTAssertFalse(talk.contains(banned), banned) }
         XCTAssertTrue(source.contains("transport: DJAirPlayRouteFlag.makeTransport()"), "the ephemeral transport")
         XCTAssertFalse(source.contains("URLSessionTransport()"), "never the shared session")
     }
@@ -320,6 +350,55 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertEqual(shows.calls + local.calls, [], "no session call while killed")
     }
 
+    // MARK: Fry's launch-probe conditions
+
+    /// The launch probe on its own: one probe pair at the first song start of a launch (switch on),
+    /// never `setActive`; then song starts add nothing, and the gap break and talk-over make exactly
+    /// their Fry's-bar calls. Killed: nothing at all.
+    @MainActor
+    func testTheLaunchProbeIsOnePairThenNothingExtra() {
+        let s = CountingSession(longForm: [.headphones], local: [.headphones])
+        let core = DJRouteSessionCore(state: DJLongFormRouteState(flag: { true }), flag: { true })
+        let launch = core.probeBeforeSong(s)
+        XCTAssertEqual(launch?.site, .launch)
+        XCTAssertEqual(launch?.sessionPorts, [.headphones], "raw port types for the DIAG row")
+        XCTAssertEqual(launch?.ports, [.headphones])
+        XCTAssertEqual(s.calls, Self.probePair, "one pair at launch, no setActive")
+        for _ in 0..<5 { XCTAssertNil(core.probeBeforeSong(s), "never a second launch probe") }
+        XCTAssertEqual(s.calls, Self.probePair, "nothing extra at later song starts")
+        s.calls = []
+        Self.talkoverBoundary(core, s)
+        XCTAssertEqual(s.calls, Self.baselineTalkover, "talk-over after the launch probe: exactly 4a2537b2")
+        s.calls = []
+        Self.gapBreak(core, s)
+        XCTAssertEqual(s.calls, Self.probePair + Self.baselineGap, "the gap break's own pair only")
+        XCTAssertNil(core.probeBeforeSong(s))
+        // Killed launch: no launch probe.
+        let k = CountingSession(longForm: [.airPlay], local: [.builtInSpeaker])
+        let killed = DJRouteSessionCore(state: DJLongFormRouteState(flag: { false }), flag: { false })
+        XCTAssertNil(killed.probeBeforeSong(k))
+        XCTAssertEqual(k.calls, [])
+    }
+
+    /// Synchronous on the main actor, before `prepareToPlay()` and our first `play()`: it cannot
+    /// race MusicKit's start.
+    func testTheLaunchProbeRunsSynchronouslyBeforeTheFirstPlay() throws {
+        let service = try appSource("MusicKitService.swift")
+        XCTAssertTrue(service.contains("@MainActor\nfinal class MusicKitService"), "main actor")
+        let play = try body(service, "private func playIfStillAllowed(")
+        let probe = try XCTUnwrap(play.range(of: "DJRouteSession.probeBeforeSong()"))
+        let prepare = try XCTUnwrap(play.range(of: "try await player.prepareToPlay()"))
+        let start = try XCTUnwrap(play.range(of: "try await player.play()"))
+        XCTAssertLessThan(probe.lowerBound, prepare.lowerBound)
+        XCTAssertLessThan(probe.lowerBound, start.lowerBound)
+        XCTAssertFalse(play[..<probe.lowerBound].contains("await"), "no suspension before the probe")
+        let source = try appSource("DJRouteSession.swift")
+        let song = try body(source, "@MainActor static func probeBeforeSong()")
+        XCTAssertFalse(song.contains("await"), "the probe itself never suspends")
+        XCTAssertFalse(song.contains("Task {"), "and never hops queues (only the fetch is detached)")
+        XCTAssertTrue(song.contains("trace(.probe(p,"), "it writes the DIAG row")
+    }
+
     // MARK: Orion's call: routeChangeNotification marks the next boundary
 
     /// Song starts on headphones, the listener picks AirPlay mid-song, the next boundary is a
@@ -387,7 +466,7 @@ final class DJSessionRouteTests: XCTestCase {
 
     // MARK: Fetch gate (privacy)
 
-    func testNoFetchOffAirPlayNoneBeforeTheFirstAirPlayGapBreakAndAtMostOnePerLaunch() {
+    func testNoFetchOffAirPlayAndAtMostOnePerLaunchAtTheFirstAirPlayDetection() {
         // Off AirPlay: never, at any probe, however many breaks.
         var offAirPlay = DJAirPlayFlagFetchGate()
         for route in LongFormRouteKind.allCases where route != .airPlay {
@@ -396,20 +475,35 @@ final class DJSessionRouteTests: XCTestCase {
             }
         }
         XCTAssertFalse(offAirPlay.fetched)
-        // On AirPlay: not at song start (before the first gap break), then once at the first
-        // AirPlay gap break, then never again this launch.
+        // Orion (Nov 14): the launch probe on AirPlay fetches; then never again this launch.
         var launch = DJAirPlayFlagFetchGate()
-        for _ in 0..<3 { XCTAssertFalse(launch.shouldFetch(route: .airPlay, at: .songStart), "no fetch before the first gap break") }
-        XCTAssertFalse(launch.shouldFetch(route: .bluetooth, at: .gapBreak))
-        XCTAssertTrue(launch.shouldFetch(route: .airPlay, at: .gapBreak), "the first AirPlay gap break fetches")
+        XCTAssertFalse(launch.shouldFetch(route: .bluetooth, at: .songStart))
+        XCTAssertTrue(launch.shouldFetch(route: .airPlay, at: .songStart), "the launch probe on AirPlay fetches")
         var later = 0
         for route in LongFormRouteKind.allCases {
             for event in DJAirPlayFlagFetchGate.ProbeEvent.allCases where launch.shouldFetch(route: route, at: event) { later += 1 }
         }
         XCTAssertEqual(later, 0, "at most one fetch per launch")
+        // Not on AirPlay at launch: the first AirPlay gap break fetches.
+        var gap = DJAirPlayFlagFetchGate()
+        XCTAssertFalse(gap.shouldFetch(route: .wired, at: .songStart))
+        XCTAssertTrue(gap.shouldFetch(route: .airPlay, at: .gapBreak))
         // A new launch (a new gate) may fetch once again.
         var next = DJAirPlayFlagFetchGate()
         XCTAssertTrue(next.shouldFetch(route: .airPlay, at: .gapBreak))
+    }
+
+    @MainActor
+    func testTheCoreNeverFetchesOffAirPlayAtAnyProbe() {
+        for ports in [[LongFormPortType.headphones], [.builtInSpeaker], [.bluetoothA2DP], [.carAudio], []] {
+            for flag in [true, false] {
+                let s = CountingSession(longForm: ports, local: ports)
+                let core = DJRouteSessionCore(state: DJLongFormRouteState(flag: { flag }), flag: { flag })
+                XCTAssertNotEqual(core.probeBeforeSong(s)?.fetch, true)
+                for _ in 0..<3 { XCTAssertFalse(core.beginGapBreak(s).fetch, "\(ports) flag=\(flag)") }
+                XCTAssertFalse(core.fetchGate.fetched)
+            }
+        }
     }
 
     // MARK: Route state
@@ -468,9 +562,9 @@ final class DJSessionRouteTests: XCTestCase {
         let probe = trace.sessionRouteProbe(route: .airPlay, ports: [.airPlay, .builtInSpeaker, .bluetoothA2DP], flag: true,
                                             talkoverAllowed: false, changed: true, at: 3)
         XCTAssertEqual(probe.event, .sessionRoute)
-        XCTAssertEqual(probe.detail, "kind=probe route=airPlay port1=airPlay port2=builtInSpeaker ports=3 flag=1 allowed=0 changed=1")
+        XCTAssertEqual(probe.detail, "kind=probe route=airPlay port1=airPlay port2=builtInSpeaker ports=3 cur1=- cur2=- curN=0 flag=1 allowed=0 changed=1")
         let shape = trace.sessionBreakShape(.longFormAirPlay, route: .airPlay, afterTrack: 4, at: 4)
-        XCTAssertEqual(shape.detail, "kind=breakShape after=4 shape=longFormAirPlay route=airPlay")
+        XCTAssertEqual(shape.detail, "kind=breakShape after=4 shape=longFormAirPlay route=airPlay cur1=- cur2=- curN=0 port1=- port2=- ports=0")
         let skipped = trace.sessionRouteProbeSkipped(flag: true, at: 5)
         XCTAssertEqual(skipped.detail, "kind=probeSkipped flag=1")
         let change = trace.sessionRouteChange(.newDeviceAvailable, marked: true, flag: true, at: 5)
@@ -506,12 +600,14 @@ final class DJSessionRouteTests: XCTestCase {
         let source = try appSource("DJRouteSession.swift")
         // The only network call sits behind Core's gate (`GapBreak.fetch`), in the gap break.
         XCTAssertEqual(source.components(separatedBy: "DJAirPlayRouteFlag.refresh(").count - 1, 1)
+        let fetch = try body(source, "@MainActor private static func fetchFlag()")
+        XCTAssertTrue(fetch.contains("DJAirPlayRouteFlag.refresh("))
+        XCTAssertEqual(source.components(separatedBy: "fetchFlag()").count - 1, 3, "declared once, called from Core's two gates")
         let begin = try body(source, "@MainActor static func beginGapBreak(")
-        XCTAssertTrue(begin.contains("if gap.fetch {"))
-        XCTAssertTrue(begin.contains("DJAirPlayRouteFlag.refresh("))
+        XCTAssertTrue(begin.contains("if gap.fetch { fetchFlag() }"))
         let song = try body(source, "@MainActor static func probeBeforeSong()")
         XCTAssertTrue(song.hasPrefix("\n        guard let p = core.probeBeforeSong(session) else { return }"))
-        XCTAssertFalse(song.contains("refresh"), "a song-start probe never fetches")
+        XCTAssertTrue(song.contains("if p.fetch { fetchFlag() }"), "the launch probe's AirPlay detection (Core gates it)")
         // The only setCategory / setActive calls are the adapter's, driven by Core.
         XCTAssertEqual(source.components(separatedBy: ".setCategory(").count - 1, 1)
         XCTAssertEqual(source.components(separatedBy: ".setActive(").count - 1, 1)
@@ -538,8 +634,9 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertNil(core.probeBeforeSong(s))
         XCTAssertEqual(s.calls, [], "nothing on an active session")
         s.appActivated = false
-        XCTAssertNotNil(core.probeBeforeSong(s))
-        XCTAssertEqual(core.fetchGate.fetched, false, "a song-start probe never fetches")
+        XCTAssertEqual(core.probeBeforeSong(s)?.fetch, true, "Orion: the launch probe on AirPlay fetches (once per launch)")
+        XCTAssertTrue(core.fetchGate.fetched)
+        XCTAssertFalse(core.beginGapBreak(s).fetch, "and nothing more this launch")
     }
 
     func testTodaysSessionCallsAreUnchangedOffAirPlay() throws {
@@ -686,11 +783,11 @@ final class DJSessionRouteTests: XCTestCase {
         }
     }
 
-    private func freshDefaults() throws -> UserDefaults {
-        let name = "DJSessionRouteTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        defaults.removePersistentDomain(forName: name)
-        return defaults
+    private func coreSource(_ name: String) throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/AeroDJCore/\(name)")
+        return try String(contentsOf: url, encoding: .utf8)
     }
 
     private func appSource(_ name: String) throws -> String {

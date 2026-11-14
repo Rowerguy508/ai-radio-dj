@@ -428,10 +428,11 @@ More than one of `Authorization`, `X-OnAirly-Install-Token`, `X-OnAirly-Assertio
 One small JSON object the app reads as remote kill switches: `{"djAirPlayLongForm": true}`.
 No auth, no store, no upstream call; nothing from the request is read or logged, and the answer
 depends only on env (`Cache-Control: no-store`). `GET` and `HEAD` only (other methods: 405).
-The app fetches it only at the first DJ gap break on an AirPlay route, at most once per launch,
-with a bare GET (no body, token, cookie or identifier); a listener off AirPlay never calls it.
-The app fails open: never fetched or a failed fetch is on, and only a fetched `false` turns the
-AirPlay path off (until a later fetch says `true`).
+The app fetches it only at its first AirPlay detection of a launch (the launch probe, or the first
+DJ gap break on an AirPlay route), at most once per launch, with a bare HTTPS GET (no body, token,
+cookie or identifier); a listener off AirPlay never calls it. The app keeps the value in memory
+only: every launch starts on, so a kill or un-kill lands on the next launch. A failed fetch keeps
+that launch's value (fail open), and only a fetched `false` turns the AirPlay path off.
 
 ## Logging and privacy
 

@@ -13,17 +13,23 @@ import OSLog
 /// Session calls (Fry's bar on #527, pinned with a counting fake in `DJSessionRouteTests`):
 /// - Killed: none, on any route (exactly 4a2537b2).
 /// - Switch on, not AirPlay: one probe-and-restore `setCategory` pair per gap break (music paused),
-///   plus one pair at the first song start of a launch. Never `setActive`.
+///   plus the launch probe: one pair at the first song start of a launch, switch on only,
+///   synchronous on the main actor before our first `play()`. Never `setActive`.
 /// - Talk-over: no probe. The pre-duck re-check reads the cached route, the route-change mark and
 ///   the session's route as it is.
 /// The probe sets the long-form category on our INACTIVE session (setting a category activates
 /// nothing), reads the output port types, and puts today's category back unless an AirPlay gap
 /// break is about to use the long-form one.
 ///
-/// Network (privacy, Orion and Fry): the kill switch is fetched ONLY at the first gap break whose
-/// route is AirPlay, at most once per launch (`DJAirPlayFlagFetchGate`). A listener off AirPlay
-/// never makes the request. The fetch is never awaited: that break runs with the stored value
-/// (on unless a previous fetch said `false`), and the answer applies from the next break.
+/// Network (privacy, Orion and Fry): the kill switch is fetched ONLY at the first AirPlay detection
+/// of a launch (the launch probe or a gap break), at most once per launch (`DJAirPlayFlagFetchGate`).
+/// A listener off AirPlay never makes the request. The value lives in memory only
+/// (`DJAirPlayFlagStore`): every launch starts ON, so a kill or un-kill lands on the next launch. The
+/// fetch is never awaited, so the first AirPlay break of a launch may run before a kill applies.
+///
+/// DIAG (Echo): every probe, gap break and talk-over re-check logs the app session's own
+/// `currentRoute` port TYPES (and the probe's long-form port types). Never a port name, UID or
+/// device name. Reading `currentRoute` is not a session call.
 enum DJRouteSession {
     fileprivate static let log = Logger(subsystem: "com.aerodj.app", category: "playback")
     @MainActor private static let session = AppAudioSessionPort()
@@ -34,13 +40,16 @@ enum DJRouteSession {
     @MainActor static func probeBeforeSong() {
         guard let p = core.probeBeforeSong(session) else { return }
         trace(.probe(p, flag: true, allowed: DJLongFormRouteState.shared.talkoverAllowed))
+        if p.fetch { fetchFlag() }
     }
 
     /// The pre-duck re-check (Echo's N1, Orion's route-change call): music is playing, so no probe
     /// and no session call. AirPlay (last probe or the session's own route): `airPlayRoute`. A
     /// route change since the last probe: `routeChanged`. Killed, or any other route: `planned`.
-    @MainActor static func talkoverDecision(_ planned: TalkoverDecision) -> TalkoverDecision {
-        core.talkoverDecision(planned, session: session)
+    @MainActor static func talkoverDecision(_ planned: TalkoverDecision, afterTrack k: Int) -> TalkoverDecision {
+        let recheck = core.talkoverRecheck(planned, session: session)
+        if planned.plan != nil { trace(.recheck(recheck, k)) }
+        return recheck.decision
     }
 
     /// `AVAudioSession.routeChangeNotification` (`DJRouteChangeObserver`). Marks the next talk-over
@@ -61,15 +70,18 @@ enum DJRouteSession {
         } else if gap.skipped {
             trace(.skipped(flag: true))
         }
-        if gap.fetch {
-            // A bare HTTPS GET on an ephemeral session (no cookies, no cache, 5 s): nothing about
-            // the route or the listener is sent. A failure keeps the stored value (fail open).
-            Task.detached(priority: .utility) {
-                await DJAirPlayRouteFlag.refresh(transport: DJAirPlayRouteFlag.makeTransport(), baseURL: DJAirPlayRouteFlag.proxyBaseURL)
-            }
-        }
-        trace(.shape(gap.shape, gap.route, k))
+        if gap.fetch { fetchFlag() }
+        trace(.shape(gap, k))
         return gap.shape
+    }
+
+    /// A bare HTTPS GET on an ephemeral session (no cookies, no cache, 5 s): nothing about the
+    /// route or the listener is sent. Kept in memory for this launch; a failure keeps this launch's
+    /// value (fail open). Only Core's gate (`fetch`) calls this.
+    @MainActor private static func fetchFlag() {
+        Task.detached(priority: .utility) {
+            await DJAirPlayRouteFlag.refresh(transport: DJAirPlayRouteFlag.makeTransport(), baseURL: DJAirPlayRouteFlag.proxyBaseURL)
+        }
     }
 
     /// After `completeNarration` released the session (`.notifyOthersOnDeactivation`): back to
@@ -117,8 +129,9 @@ enum DJRouteSession {
     private enum RouteTrace {
         case probe(DJRouteSessionCore.Probe, flag: Bool, allowed: Bool)
         case skipped(flag: Bool)
-        case shape(DJSessionShape, LongFormRouteKind, Int)
+        case shape(DJRouteSessionCore.GapBreak, Int)
         case change(DJRouteChangeReason, marked: Bool, flag: Bool)
+        case recheck(DJRouteSessionCore.Recheck, Int)
     }
 
     @MainActor private static func trace(_ event: RouteTrace) {
@@ -126,11 +139,16 @@ enum DJRouteSession {
         P0EventTraceHost.shared.talkover { trace, t in
             switch event {
             case let .probe(p, flag, allowed):
-                _ = trace.sessionRouteProbe(route: p.route, ports: p.ports, flag: flag, talkoverAllowed: allowed,
-                                            changed: p.changed, at: t)
+                _ = trace.sessionRouteProbe(site: p.site, route: p.route, ports: p.ports, sessionPorts: p.sessionPorts,
+                                            flag: flag, talkoverAllowed: allowed, changed: p.changed, at: t)
             case let .skipped(flag): _ = trace.sessionRouteProbeSkipped(flag: flag, at: t)
-            case let .shape(shape, route, k): _ = trace.sessionBreakShape(shape, route: route, afterTrack: k, at: t)
+            case let .shape(gap, k):
+                _ = trace.sessionBreakShape(gap.shape, route: gap.route, afterTrack: k, sessionPorts: gap.sessionPorts,
+                                            probePorts: gap.probe?.ports ?? [], at: t)
             case let .change(reason, marked, flag): _ = trace.sessionRouteChange(reason, marked: marked, flag: flag, at: t)
+            case let .recheck(r, k):
+                _ = trace.sessionTalkoverRecheck(r.decision, lastProbedRoute: r.lastProbedRoute, sessionPorts: r.sessionPorts,
+                                                 marked: r.marked, flag: r.flag, afterTrack: k, at: t)
             }
         }
         #endif
