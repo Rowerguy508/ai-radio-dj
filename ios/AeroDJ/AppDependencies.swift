@@ -109,7 +109,8 @@ struct AppDependencies {
         // #332: one once-a-day ledger for song taps and station starts, kept across relaunches.
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj,
                                        personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()),
-                                       extraLineSource: localFacts.wiring.source)
+                                       extraLineSource: localFacts.wiring.source,
+                                       lineMemory: FileSpokenLineMemoryStore(fileURL: supportURL("DJLineMemory/recent-templates.json")))
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         interlude.acknowledgementClip = interruptionAcknowledgement(voice: voice, userID: "listener", stationID: "default")
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
