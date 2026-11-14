@@ -24,6 +24,8 @@ What's sent: the text of every DJ line. That includes your personal items (calen
 
 What's never sent: your Apple ID, your contacts, your coordinates or your location itself, or anything you haven't approved for your briefing. Only the words the DJ speaks are sent, and a local news line can name your city or area.
 
+Your coordinates and your location itself are never sent, but a local news line can name your city or area.
+
 How it's stored: our server keeps a short technical log without the text. Model training is turned off for our ElevenLabs account, but ElevenLabs may keep the text and audio it receives under [its own privacy policy](https://elevenlabs.io/privacy-policy).
 
 You can switch back to the on-device voice at any time in Settings. Turning the cloud voice off stops this from the next line and deletes the saved cloud clips. Cloud clips of library songs and station names are kept between launches, for up to 7 days, so the same words aren't sent again. "Delete DJ clips, ratings and location" deletes them, along with the cloud clips made from your calendar, notes and shared items.
