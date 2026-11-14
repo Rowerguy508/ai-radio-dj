@@ -1339,10 +1339,8 @@ final class MusicKitService: ObservableObject {
     /// (before any pause or `isPlaying` change). A newer attempt's queue is never played, paused or
     /// marked by an older one: the stale attempt throws `MusicKitError.superseded`.
     private func playIfStillAllowed(attempt: PlaybackAttemptID) async throws -> Bool {
-        // #525 (-Atlas): the AirPlay kill switch is fetched once per launch (never awaited here),
-        // and with it on, the long-form route is probed before music starts so the break after
-        // this song is prepared and armed for that route. Flag off: the probe touches nothing.
-        DJRouteSession.refreshFlagOnce()
+        // #525 (-Atlas): the long-form route is probed (locally) before music starts, so the break
+        // after this song is prepared and armed for that route. Killed: the probe touches nothing.
         DJRouteSession.probeBeforeSong()
         try activateAudioSessionForPlayback()
         let outcome = try await AttemptPlaySequence.run(

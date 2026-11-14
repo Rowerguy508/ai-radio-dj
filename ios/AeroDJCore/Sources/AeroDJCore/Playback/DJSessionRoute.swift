@@ -116,18 +116,21 @@ public struct DJSessionConfig: Equatable, Sendable {
     }
 }
 
-/// The remote kill switch for the #525 AirPlay path (`djAirPlayLongForm`). Default OFF: with no
-/// fetched value, or a value that is not exactly JSON `true`, the app runs today's session.
-/// Served by the aerodj-tts proxy at `GET /api/flags` from `AERODJ_DJ_AIRPLAY_LONGFORM`
-/// (only the exact string `true` enables, like the proxy's other flags).
+/// The remote kill switch for the #525 AirPlay path (`djAirPlayLongForm`). Default ON (Orion,
+/// Nov 14): only a fetched JSON `false` turns it off. Never fetched, a failed fetch or an
+/// unreadable answer keeps the stored value, and with nothing stored the path is on. Served by the
+/// aerodj-tts proxy at `GET /api/flags` from `AERODJ_DJ_AIRPLAY_LONGFORM` (only the exact string
+/// `false` kills it). Fetched only from an AirPlay route (`DJAirPlayFlagFetchGate`).
 public enum DJAirPlayRouteFlag {
     public static let jsonKey = "djAirPlayLongForm"
     public static let defaultsKey = "dj.remote.airPlayLongForm"
-    public static let defaultValue = false
+    public static let defaultValue = true
     public static let path = "api/flags"
+    /// The aerodj-tts proxy (the same pinned host as the voice routes).
+    public static var proxyBaseURL: URL { TesterVoice.baseURL }
     public static let timeout: TimeInterval = 5
 
-    /// The last fetched value, else `defaultValue`.
+    /// The last fetched value, else `defaultValue` (on).
     public static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
         (defaults.object(forKey: defaultsKey) as? Bool) ?? defaultValue
     }
@@ -160,6 +163,27 @@ public enum DJAirPlayRouteFlag {
             defaults.set(value, forKey: defaultsKey)
         }
         return isEnabled(defaults: defaults)
+    }
+}
+
+/// When the app may fetch the kill switch (privacy, Orion and Fry, Nov 14): only at a gap break
+/// whose probed long-form route is AirPlay, and at most once per launch. A listener off AirPlay
+/// never makes the request; a song-start probe never does either. The probe itself is local.
+public struct DJAirPlayFlagFetchGate: Equatable, Sendable {
+    /// Where the route was probed.
+    public enum ProbeEvent: String, Equatable, Sendable, CaseIterable {
+        case songStart, gapBreak
+    }
+
+    public private(set) var fetched = false
+
+    public init() {}
+
+    /// True exactly once per gate (one gate per launch): the first gap break on AirPlay.
+    public mutating func shouldFetch(route: LongFormRouteKind, at event: ProbeEvent) -> Bool {
+        guard route == .airPlay, event == .gapBreak, !fetched else { return false }
+        fetched = true
+        return true
     }
 }
 

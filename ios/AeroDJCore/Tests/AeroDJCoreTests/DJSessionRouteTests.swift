@@ -83,41 +83,74 @@ final class DJSessionRouteTests: XCTestCase {
 
     // MARK: Remote flag
 
-    func testTheRemoteFlagDefaultsOffAndOnlyAJSONTrueTurnsItOn() throws {
-        XCTAssertFalse(DJAirPlayRouteFlag.defaultValue, "safe default: today's session")
+    func testTheKillSwitchDefaultsOnAndOnlyAJSONFalseTurnsItOff() throws {
+        XCTAssertTrue(DJAirPlayRouteFlag.defaultValue, "kill switch: on unless killed (Orion, Nov 14)")
         let defaults = try freshDefaults()
-        XCTAssertFalse(DJAirPlayRouteFlag.isEnabled(defaults: defaults), "never fetched: off")
+        XCTAssertTrue(DJAirPlayRouteFlag.isEnabled(defaults: defaults), "never fetched: on")
         XCTAssertEqual(DJAirPlayRouteFlag.parse(Data(#"{"djAirPlayLongForm":true}"#.utf8)), true)
         XCTAssertEqual(DJAirPlayRouteFlag.parse(Data(#"{"djAirPlayLongForm":false}"#.utf8)), false)
-        for body in [#"{"djAirPlayLongForm":1}"#, #"{"djAirPlayLongForm":"true"}"#, #"{"other":true}"#, "true", "", "not json"] {
-            XCTAssertNil(DJAirPlayRouteFlag.parse(Data(body.utf8)), body)
+        for body in [#"{"djAirPlayLongForm":0}"#, #"{"djAirPlayLongForm":"false"}"#, #"{"other":false}"#, "false", "", "not json"] {
+            XCTAssertNil(DJAirPlayRouteFlag.parse(Data(body.utf8)), "\(body): unreadable, the stored value stays")
         }
         XCTAssertNil(DJAirPlayRouteFlag.parse(Data(String(repeating: " ", count: 2000).utf8)), "oversized body")
     }
 
-    func testRefreshStoresAParsedValueAndAFailureKeepsTheStoredOne() async throws {
-        let defaults = try freshDefaults()
+    func testAFailedFetchFailsOpenAndOnlyAFetchedFalseKills() async throws {
         let base = URL(string: "https://proxy.invalid")!
-        let on = FlagTransport(status: 200, body: #"{"djAirPlayLongForm":true}"#)
-        let value = await DJAirPlayRouteFlag.refresh(transport: on, baseURL: base, defaults: defaults)
-        XCTAssertTrue(value)
-        XCTAssertTrue(DJAirPlayRouteFlag.isEnabled(defaults: defaults))
-        let request = try XCTUnwrap(on.requests.first)
+        // Never fetched, then every kind of failure: still on.
+        let fresh = try freshDefaults()
+        for t in [FlagTransport(status: 503, body: #"{"djAirPlayLongForm":false}"#),
+                  FlagTransport(status: 200, body: "nope"), FlagTransport(error: true)] {
+            let value = await DJAirPlayRouteFlag.refresh(transport: t, baseURL: base, defaults: fresh)
+            XCTAssertTrue(value, "fail open")
+        }
+        XCTAssertTrue(DJAirPlayRouteFlag.isEnabled(defaults: fresh))
+        // A fetched false kills it, and the request is a bare GET.
+        let kill = FlagTransport(status: 200, body: #"{"djAirPlayLongForm":false}"#)
+        let killed = await DJAirPlayRouteFlag.refresh(transport: kill, baseURL: base, defaults: fresh)
+        XCTAssertFalse(killed)
+        XCTAssertFalse(DJAirPlayRouteFlag.isEnabled(defaults: fresh))
+        let request = try XCTUnwrap(kill.requests.first)
         XCTAssertEqual(request.httpMethod, "GET")
         XCTAssertEqual(request.url?.absoluteString, "https://proxy.invalid/api/flags")
         XCTAssertNil(request.httpBody, "nothing is sent")
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"), "no token")
         XCTAssertFalse(request.httpShouldHandleCookies)
-        // A 503, an unreadable body or a transport error keeps the stored value.
-        for t in [FlagTransport(status: 503, body: #"{"djAirPlayLongForm":false}"#),
-                  FlagTransport(status: 200, body: "nope"), FlagTransport(error: true)] {
-            let kept = await DJAirPlayRouteFlag.refresh(transport: t, baseURL: base, defaults: defaults)
-            XCTAssertTrue(kept)
+        XCTAssertEqual(DJAirPlayRouteFlag.request(baseURL: DJAirPlayRouteFlag.proxyBaseURL).url?.absoluteString,
+                       "https://aerodj-tts.vercel.app/api/flags")
+        // While killed, a failure keeps it killed; a fetched true lifts it.
+        let stillKilled = await DJAirPlayRouteFlag.refresh(transport: FlagTransport(error: true), baseURL: base, defaults: fresh)
+        XCTAssertFalse(stillKilled)
+        let lifted = await DJAirPlayRouteFlag.refresh(transport: FlagTransport(status: 200, body: #"{"djAirPlayLongForm":true}"#),
+                                                      baseURL: base, defaults: fresh)
+        XCTAssertTrue(lifted)
+    }
+
+    // MARK: Fetch gate (privacy)
+
+    func testNoFetchOffAirPlayNoneBeforeTheFirstAirPlayGapBreakAndAtMostOnePerLaunch() {
+        // Off AirPlay: never, at any probe, however many breaks.
+        var offAirPlay = DJAirPlayFlagFetchGate()
+        for route in LongFormRouteKind.allCases where route != .airPlay {
+            for event in DJAirPlayFlagFetchGate.ProbeEvent.allCases {
+                for _ in 0..<3 { XCTAssertFalse(offAirPlay.shouldFetch(route: route, at: event), "\(route) \(event)") }
+            }
         }
-        // The kill switch: a fetched false turns it off.
-        let off = await DJAirPlayRouteFlag.refresh(transport: FlagTransport(status: 200, body: #"{"djAirPlayLongForm":false}"#),
-                                                   baseURL: base, defaults: defaults)
-        XCTAssertFalse(off)
+        XCTAssertFalse(offAirPlay.fetched)
+        // On AirPlay: not at song start (before the first gap break), then once at the first
+        // AirPlay gap break, then never again this launch.
+        var launch = DJAirPlayFlagFetchGate()
+        for _ in 0..<3 { XCTAssertFalse(launch.shouldFetch(route: .airPlay, at: .songStart), "no fetch before the first gap break") }
+        XCTAssertFalse(launch.shouldFetch(route: .bluetooth, at: .gapBreak))
+        XCTAssertTrue(launch.shouldFetch(route: .airPlay, at: .gapBreak), "the first AirPlay gap break fetches")
+        var later = 0
+        for route in LongFormRouteKind.allCases {
+            for event in DJAirPlayFlagFetchGate.ProbeEvent.allCases where launch.shouldFetch(route: route, at: event) { later += 1 }
+        }
+        XCTAssertEqual(later, 0, "at most one fetch per launch")
+        // A new launch (a new gate) may fetch once again.
+        var next = DJAirPlayFlagFetchGate()
+        XCTAssertTrue(next.shouldFetch(route: .airPlay, at: .gapBreak))
     }
 
     // MARK: Route state
@@ -204,17 +237,30 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertFalse(talk.contains("DJRouteSession"))
     }
 
-    func testTheRouteSessionTouchesNothingWithTheFlagOff() throws {
+    func testTheRouteSessionFetchesOnlyFromTheGapBreakGateAndProbesSafely() throws {
         let source = try appSource("DJRouteSession.swift")
+        // The only network call sits behind the gate, which only the gap break calls.
+        XCTAssertEqual(source.components(separatedBy: "DJAirPlayRouteFlag.refresh(").count - 1, 1)
+        let fetch = try body(source, "@MainActor private static func fetchFlagIfAllowed(route: LongFormRouteKind)")
+        XCTAssertTrue(fetch.hasPrefix("\n        guard fetchGate.shouldFetch(route: route, at: .gapBreak) else { return }"))
+        XCTAssertTrue(fetch.contains("DJAirPlayRouteFlag.refresh("))
+        XCTAssertEqual(source.components(separatedBy: "fetchFlagIfAllowed(route:").count - 1, 2, "declared once, called once")
         let begin = try body(source, "@MainActor static func beginGapBreak(")
-        XCTAssertTrue(begin.hasPrefix("\n        guard DJAirPlayRouteFlag.isEnabled() else { return .mixDefault }"),
-                      "flag off: returns before any session call")
-        let probe = try body(source, "@MainActor static func probeBeforeSong()")
-        XCTAssertTrue(probe.hasPrefix("\n        guard DJAirPlayRouteFlag.isEnabled() else { return }"))
+        XCTAssertTrue(begin.contains("fetchFlagIfAllowed(route: route)"))
+        let song = try body(source, "@MainActor static func probeBeforeSong()")
+        XCTAssertTrue(song.hasPrefix("\n        guard DJAirPlayRouteFlag.isEnabled() else { return }"), "killed: nothing at song start")
+        XCTAssertFalse(song.contains("fetch"), "a song-start probe never fetches")
         let probing = try body(source, "@MainActor private static func probe(keepLongForm: Bool)")
         XCTAssertTrue(probing.contains("guard !TalkoverAudioSession.appActivated else {"), "never on an active session")
+        XCTAssertTrue(probing.contains("return (DJLongFormRouteState.shared.lastRoute, false)"), "a skipped probe keeps today's session")
         XCTAssertTrue(probing.contains("policy: .longFormAudio, options: []"))
         XCTAssertTrue(source.contains("policy: .default, options: options)"), "the restore names the default policy")
+        // Nothing else in the app fetches the switch.
+        for file in ["MusicKitService.swift", "TalkoverCoordinator.swift", "InterludePlaybackAdapter.swift", "AppDependencies.swift"] {
+            let other = try appSource(file)
+            XCTAssertFalse(other.contains("DJAirPlayRouteFlag.refresh"), file)
+            XCTAssertFalse(other.contains("fetchFlag"), file)
+        }
     }
 
     func testTodaysSessionCallsAreUnchangedOffAirPlay() throws {
