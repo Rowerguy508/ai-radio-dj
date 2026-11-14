@@ -423,6 +423,15 @@ More than one of `Authorization`, `X-OnAirly-Install-Token`, `X-OnAirly-Assertio
 `npx tsx scripts/revoke-installs.ts production < keyids.txt` (owner's shell; entries live
 90 days, like the key record).
 
+## `GET /api/flags` (public app flags, #525)
+
+One small JSON object the app reads as remote kill switches: `{"djAirPlayLongForm": false}`.
+No auth, no store, no upstream call; nothing from the request is read or logged, and the answer
+depends only on env (`Cache-Control: no-store`). `GET` and `HEAD` only (other methods: 405).
+The app fetches it at most once per launch (first song start) with a bare GET (no body, token,
+cookie or identifier) and keeps the last value it parsed; a failure keeps that value, and a never-
+fetched value is `false`.
+
 ## Logging and privacy
 
 Each request logs exactly one JSON line: `{ requestId, status, chars }`.
@@ -462,6 +471,7 @@ either (`test/install-token.test.ts`); refusals log enum reasons only.
 | `AERODJ_TTS_APP_ATTEST_ENV` | no | Unset or `production`: only the production `aaguid`. `development` also accepts `appattestdevelop` (and validation category 3), **only** on a Preview/Development deployment with no `ELEVENLABS_API_KEY`; anywhere else, or any other value → 500 `misconfig`. |
 | `AERODJ_TTS_ENROLL_DAILY_CAP` | no | Verified enrollments per UTC day overall (default 20, owner decision 2026-10-29). Plain integer 1-100000; anything else uses the default. |
 | `AERODJ_TTS_TESTER_VOICE_ENABLED` | no | Tester voice kill switch (#378). Only exactly `true` (and `AERODJ_TTS_ATTEST_ENABLED=true`) enables `/api/attest/token` and install tokens on `/api/tts`; anything else (`TRUE`, `1`, empty) is off: 503 `disabled`. **Leave unset until the owner OKs it at deploy.** |
+| `AERODJ_DJ_AIRPLAY_LONGFORM` | no | iOS #525 kill switch, served by `GET /api/flags` as `djAirPlayLongForm`. Only exactly `true` turns on the DJ voice's long-form AirPlay gap-break session; anything else (unset, `TRUE`, `1`, empty) is `false` and the app keeps today's session. Set `false` (or unset) to turn it off if the Build 10 hold comes back. |
 | `AERODJ_TTS_INSTALL_TOKEN_HMAC_KEY` | before tester voice is enabled | Server-only. Dedicated key for install tokens, at least 32 bytes, **created by the owner**, pasted directly into Vercel (Production). Must differ from the challenge key; missing, short or equal → 500 `misconfig` on the install paths. Rotating it invalidates every live token (30 min max). |
 | `AERODJ_TTS_TESTER_POOL_DAILY_CHAR_CAP` | no | Spoken chars per UTC day that all TestFlight installs together may use. Default 6000. Always clamped to global − owner cap, so testers can never spend the owner share; nothing left → install requests 500 `misconfig`. |
 | `AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP` | no | Verified enrollments per UTC day per device bucket (keyed hash of the client network; see above) (default 3, owner decision 2026-10-29). Plain integer 1-1000; anything else uses the default. |

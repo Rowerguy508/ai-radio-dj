@@ -346,6 +346,17 @@ final class P0EventTraceTests: XCTestCase {
             trace.breakInterruptionDrop(BreakResumeDrop(reason: r, line: 1, timeChecks: 1, other: 2), afterTrack: 0, at: 9)
         }
         trace.breakInterruptionDrop(BreakResumeDrop(reason: .stale, line: 0, timeChecks: 1, other: 0), afterTrack: nil, at: 9)
+        // #525: every route kind, port type and session shape fits the closed shape.
+        for r in LongFormRouteKind.allCases where r != .unknown {
+            trace.sessionRouteProbe(route: r, ports: LongFormPortType.allCases, flag: true, talkoverAllowed: r != .airPlay,
+                                    changed: false, at: 9)
+        }
+        for p in LongFormPortType.allCases {
+            trace.sessionRouteProbe(route: .classify([p]), ports: [p], flag: false, talkoverAllowed: true, changed: true, at: 9)
+        }
+        trace.sessionRouteProbe(route: .airPlay, ports: [], flag: true, talkoverAllowed: false, changed: true, at: 9)
+        trace.sessionRouteProbeSkipped(flag: true, at: 9)
+        for s in DJSessionShape.allCases { trace.sessionBreakShape(s, route: .airPlay, afterTrack: 0, at: 9) }
         XCTAssertFalse(trace.rows.contains { $0.detail.contains("=unknown") }, "every talk-over code has a trace code")
         shapes += trace.rows
         XCTAssertEqual(Set(shapes.map(\.event)), Set(P0TraceEvent.allCases), "every event kind is checked")

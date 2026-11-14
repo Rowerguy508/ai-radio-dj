@@ -223,6 +223,8 @@ final class TalkoverCoordinator {
     private var book = TalkoverBook()
     /// A break taken early that has not been spoken: played in the gap at the natural end.
     private var held: (afterTrack: Int, prepared: PreparedDJBreak)?
+    /// #525: the boundary whose AirPlay fallback was already reported.
+    private var routeFallbackReported: Int?
     /// The run in flight; `book` retires it on every terminal path.
     private var run: TalkoverRun? {
         get { book.run }
@@ -432,6 +434,17 @@ final class TalkoverCoordinator {
     private func tick() -> Double {
         guard isEnabled, let song, let duration = song.duration, music.isPlaying else { return 1.0 }
         let k = song.index
+        // #525 (-Atlas): on AirPlay (remote flag on) a talk-over cannot duck, so this boundary is
+        // never taken here: the boundary path airs the break in the gap, prepared by
+        // `DJBreakPreparer` on its gap-break path (`DJLongFormRouteState.preparerTalkOverEnabled`).
+        // Reported once per boundary as a hard break with reason `airPlayRoute`.
+        guard DJRouteSession.talkoverAllowed else {
+            if routeFallbackReported != k {
+                routeFallbackReported = k
+                decide(.hardBreak(.airPlayRoute), afterTrack: k)
+            }
+            return 1.0
+        }
         let position = music.playbackTime
         guard let armAt = TalkoverPlanner.armAt(duration: duration, config: config) else { return 1.0 }
         if position < armAt - 1 { return 1.0 }

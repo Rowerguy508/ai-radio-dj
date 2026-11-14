@@ -41,6 +41,8 @@ public enum P0TraceEvent: String, Equatable, Sendable, CaseIterable {
     /// A break paused by a system interruption dropped lines (#379 N2): lines skipped on
     /// resume (`resumeDrop`) or the rest of the break (`breakDropped`), counted by kind.
     case breakInterruption
+    /// #525 (-Atlas): the long-form route probe (port types only) and the session each break used.
+    case sessionRoute
 }
 
 public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
@@ -69,6 +71,9 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     case briefingCues
     // Echo's #396 room N1: cues a narrowed break kept
     case kept
+    // #525 (-Atlas): long-form route kind, first two output port types and the output count,
+    // the remote flag, whether talk-over is allowed, whether that changed, the break's session
+    case route, port1, port2, ports, flag, allowed, changed, shape
 }
 
 extension P0TraceCode {
@@ -117,6 +122,14 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case ratedNever
     /// Echo's #396 room N1: a break lost only the cues that name a song the station now leaves out.
     case cuesDropped, ratingNarrowed
+    /// #525 (-Atlas): row kinds, then the route kinds, port types and session shapes (same raw
+    /// values as `LongFormRouteKind`, `LongFormPortType` and `DJSessionShape`), and the
+    /// talk-over hard-break reason `airPlayRoute`.
+    case probe, probeSkipped, breakShape
+    case airPlay, bluetooth, carPlay, wired, builtIn, other
+    case bluetoothA2DP, bluetoothLE, bluetoothHFP, carAudio, builtInSpeaker, builtInReceiver, headphones, usbAudio, hdmi, lineOut
+    case mixDefault, duckDefault, longFormAirPlay
+    case airPlayRoute
 }
 
 public enum P0TraceValue: Equatable, Sendable {
@@ -757,5 +770,41 @@ extension P0EventTrace {
 
     private static func flag(_ b: Bool?) -> P0TraceValue { b.map { .bool($0) } ?? .missing }
     private static func number(_ i: Int?) -> P0TraceValue { i.map { .int($0) } ?? .missing }
+}
+
+// MARK: #525 session route (-Atlas)
+
+extension P0EventTrace {
+    /// One long-form route probe: the route kind, the first two output port TYPES (never a
+    /// name) and the output count, the remote flag, whether talk-over is allowed after it, and
+    /// whether that permission changed with this probe (the reported change).
+    @discardableResult
+    public mutating func sessionRouteProbe(route: LongFormRouteKind, ports: [LongFormPortType], flag: Bool,
+                                           talkoverAllowed: Bool, changed: Bool, at t: TimeInterval) -> P0TraceRow {
+        func code(_ p: LongFormPortType?) -> P0TraceValue {
+            guard let p else { return .missing }
+            return .code(P0TraceCode(rawValue: p.rawValue) ?? .unknown)
+        }
+        return record(.sessionRoute, at: t, [(.kind, .code(.probe)),
+                                             (.route, .code(P0TraceCode(rawValue: route.rawValue) ?? .unknown)),
+                                             (.port1, code(ports.first)), (.port2, code(ports.dropFirst().first)),
+                                             (.ports, .int(ports.count)), (.flag, .bool(flag)),
+                                             (.allowed, .bool(talkoverAllowed)), (.changed, .bool(changed))])
+    }
+
+    /// The probe did not run (the app's session was active): the last route stays in effect.
+    @discardableResult
+    public mutating func sessionRouteProbeSkipped(flag: Bool, at t: TimeInterval) -> P0TraceRow {
+        record(.sessionRoute, at: t, [(.kind, .code(.probeSkipped)), (.flag, .bool(flag))])
+    }
+
+    /// The session a gap break ran with, and the route it was chosen for.
+    @discardableResult
+    public mutating func sessionBreakShape(_ shape: DJSessionShape, route: LongFormRouteKind, afterTrack: Int,
+                                           at t: TimeInterval) -> P0TraceRow {
+        record(.sessionRoute, at: t, [(.kind, .code(.breakShape)), (.after, .int(afterTrack)),
+                                      (.shape, .code(P0TraceCode(rawValue: shape.rawValue) ?? .unknown)),
+                                      (.route, .code(P0TraceCode(rawValue: route.rawValue) ?? .unknown))])
+    }
 }
 #endif

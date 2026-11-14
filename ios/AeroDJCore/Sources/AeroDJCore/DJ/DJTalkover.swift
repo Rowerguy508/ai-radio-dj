@@ -211,6 +211,9 @@ public enum TalkoverHardBreak: String, Equatable, Sendable, CaseIterable {
     case outroTooShort
     /// The song ended (or was cut) before the voice started.
     case endedBeforeVoice
+    /// #525 (-Atlas): the long-form route is AirPlay and the remote flag is on. A long-form
+    /// session cannot duck, so the break airs in the gap, prepared on the gap-break path.
+    case airPlayRoute
 }
 
 /// Why the closing line did not get the intro (the plan is `.outroOnly`).
