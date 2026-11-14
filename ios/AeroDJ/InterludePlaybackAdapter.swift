@@ -493,7 +493,8 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         music.beginInterlude() // transition -> voice
         outcome = .cancelled
         // #525 (-Atlas): music is paused; on AirPlay (remote flag on) the clip plays in a
-        // long-form session so it follows the music's route. Flag off or any other route: no-op.
+        // long-form session so it follows the music's route. Flag on, any other route: one local
+        // probe-and-restore `setCategory` pair, then today's session. Flag off: no session call.
         let sessionShape = DJRouteSession.beginGapBreak(afterTrack: breakTrack)
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in

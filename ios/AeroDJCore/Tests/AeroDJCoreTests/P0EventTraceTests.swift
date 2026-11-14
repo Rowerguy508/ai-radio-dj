@@ -369,7 +369,12 @@ final class P0EventTraceTests: XCTestCase {
         let recheckPlan = TalkoverPlan(mode: .outroOnly, introSkip: .noClosingLine, outroOverlap: 4, voiceStartAt: 196,
                                 nextPlayAfterVoice: nil, nextAudibleAfterVoice: nil, unduckAfterVoice: 12,
                                 startLatency: 0.8, voiceSeconds: 12)
-        for d in [TalkoverDecision.talkover(recheckPlan), .hardBreak(.airPlayRoute), .hardBreak(.routeChanged)] {
+        for site in DJRouteSessionCore.RestoreSite.allCases {
+            for e in [DJRouteSessionCore.RestoreEvent.failed(site, attempt: 1), .recovered(site, attempt: 2), .latched(site), .cleared(site)] {
+                trace.sessionRestore(e, at: 9)
+            }
+        }
+        for d in [TalkoverDecision.talkover(recheckPlan), .hardBreak(.airPlayRoute), .hardBreak(.routeChanged), .hardBreak(.restoreFailed)] {
             trace.sessionTalkoverRecheck(d, lastProbedRoute: .wired, sessionPorts: [.builtInSpeaker], marked: true,
                                          flag: true, afterTrack: 0, at: 9)
         }
@@ -444,6 +449,19 @@ final class P0EventTraceTests: XCTestCase {
                 XCTAssertTrue(codes.contains(value) || Int(value) != nil || value == "-", "\(row.detail): \(value)")
             }
         }
+    }
+
+    /// Fry's #527 B1: each restore failure and recovery has its own row.
+    func testRestoreRowsReportEachFailureAndRecovery() {
+        var trace = P0EventTrace()
+        XCTAssertEqual(trace.sessionRestore(.failed(.probe, attempt: 1), at: 1).detail, "kind=restore site=probe result=failed attempt=1")
+        XCTAssertEqual(trace.sessionRestore(.recovered(.endGapBreak, attempt: 2), at: 2).detail,
+                       "kind=restore site=endGapBreak result=recovered attempt=2")
+        XCTAssertEqual(trace.sessionRestore(.latched(.beforeClip), at: 3).detail, "kind=restore site=beforeClip result=latched")
+        XCTAssertEqual(trace.sessionRestore(.cleared(.beforePlay), at: 4).detail, "kind=restore site=beforePlay result=cleared")
+        XCTAssertEqual(trace.talkoverDecision(.hardBreak(.restoreFailed), afterTrack: 2, at: 5).detail,
+                       "kind=decision after=2 mode=hardBreak reason=restoreFailed")
+        XCTAssertTrue(trace.rows.allSatisfy { $0.event == .sessionRoute || $0.event == .talkover })
     }
 
     func testBreakInterruptionDropRowsCountTheDroppedLinesByKind() {

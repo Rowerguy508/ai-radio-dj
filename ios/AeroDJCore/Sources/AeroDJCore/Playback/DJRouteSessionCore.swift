@@ -32,8 +32,10 @@ public protocol DJAudioSessionPort: AnyObject {
     var currentOutputs: [LongFormPortType] { get }
     /// The app activated its session (a talk-over duck or a clip): never set a category then.
     var appActivated: Bool { get }
-    /// `setCategory(.playback, mode: .default, policy:, options:)`. Failures are logged by the app.
-    func setCategory(_ config: DJSessionConfig)
+    /// `setCategory(.playback, mode: .default, policy:, options:)`. False: it threw (Fry's #527 B1:
+    /// Core must know, so a failed `.normal` restore is retried and latched). The app logs the code.
+    @discardableResult
+    func setCategory(_ config: DJSessionConfig) -> Bool
     /// `setActive(_:options:)`. This path never calls it; it is here so tests can count it.
     func setActive(_ active: Bool, notifyOthers: Bool)
 }
@@ -67,6 +69,12 @@ public struct DJRouteRecheck: Equatable, Sendable {
     /// A long-form probe ran: its route is the truth, the mark is spent.
     public mutating func probed() {
         pending = false
+        probedThisLaunch = true
+    }
+
+    /// A probe ran but could not read the long-form route (its `.airPlayGap` set failed): the mark
+    /// stays, and the launch probe still counts as done (once per launch).
+    public mutating func probeFailed() {
         probedThisLaunch = true
     }
 
@@ -107,6 +115,35 @@ public final class DJRouteSessionCore {
         public var changed: Bool
         /// Fetch the kill switch now (`DJAirPlayFlagFetchGate`).
         public var fetch: Bool
+        /// The `.airPlayGap` set threw: no route was read, nothing was recorded, long-form is not kept.
+        public var setFailed: Bool = false
+    }
+
+    /// Where `.normal` was (re)applied (Fry's #527 B1).
+    public enum RestoreSite: String, Equatable, Sendable, CaseIterable {
+        /// The probe's restore (launch or gap break).
+        case probe
+        /// `endGapBreak`, after an AirPlay long-form clip.
+        case endGapBreak
+        /// The latch re-applies before the next gap break's clip.
+        case beforeClip
+        /// The latch re-applies before the next `play()`.
+        case beforePlay
+    }
+
+    /// One step of the `.normal` restore, for its DIAG row. Only failures and recoveries are
+    /// reported: a restore that succeeds first time with no latch set is silent (success paths
+    /// unchanged).
+    public enum RestoreEvent: Equatable, Sendable {
+        /// Attempt `attempt` (1 or 2) threw.
+        case failed(RestoreSite, attempt: Int)
+        /// The retry succeeded.
+        case recovered(RestoreSite, attempt: Int)
+        /// Both attempts threw: restore pending (talk-over forced to a gap break, `.normal` re-applied
+        /// before the next clip or `play()`).
+        case latched(RestoreSite)
+        /// A later `.normal` set succeeded: the latch is cleared.
+        case cleared(RestoreSite)
     }
 
     /// The pre-duck re-check, for the DIAG row.
@@ -137,6 +174,12 @@ public final class DJRouteSessionCore {
     public let state: DJLongFormRouteState
     public private(set) var recheck = DJRouteRecheck()
     public private(set) var fetchGate = DJAirPlayFlagFetchGate()
+    /// Fry's #527 B1: a `.normal` restore failed twice, so the session may still be long-form (it
+    /// cannot mix or duck). While set, every talk-over becomes `hardBreak(.restoreFailed)` and
+    /// `.normal` is re-applied before the next clip or `play()`. Cleared by any successful `.normal`.
+    public private(set) var restorePending = false
+    /// DIAG for each restore failure and recovery (the app sets it once).
+    public var onRestore: (@MainActor (RestoreEvent) -> Void)?
     private let flag: () -> Bool
 
     public init(state: DJLongFormRouteState = .shared, flag: @escaping () -> Bool = { DJAirPlayRouteFlag.isEnabled() }) {
@@ -146,7 +189,9 @@ public final class DJRouteSessionCore {
 
     /// Before a song starts (music not playing): the launch probe, once per launch, switch on,
     /// the app's session inactive. Nil: nothing was touched.
+    /// A pending restore is re-applied here first (before `play()`), whatever the switch.
     public func probeBeforeSong(_ session: DJAudioSessionPort) -> Probe? {
+        reapplyIfPending(session, site: .beforePlay)
         guard flag(), !recheck.probedThisLaunch, !session.appActivated else { return nil }
         return probe(session, keepLongForm: false, site: .launch)
     }
@@ -157,7 +202,9 @@ public final class DJRouteSessionCore {
     ///   (it may not: see the file header).
     /// - Switch on: one long-form probe. AirPlay keeps the long-form category for the clip; any
     ///   other route puts today's category back at once (one pair).
+    /// A pending restore is re-applied first (before the clip), whatever the switch.
     public func beginGapBreak(_ session: DJAudioSessionPort) -> GapBreak {
+        reapplyIfPending(session, site: .beforeClip)
         let sessionPorts = session.currentOutputs
         guard flag() else {
             let route = LongFormRouteKind.classify(sessionPorts)
@@ -177,7 +224,7 @@ public final class DJRouteSessionCore {
     /// After the clip released the session: today's category back, only after a long-form break.
     public func endGapBreak(_ session: DJAudioSessionPort, shape: DJSessionShape) {
         guard shape == .longFormAirPlay else { return }
-        session.setCategory(.normal)
+        restoreNormal(session, site: .endGapBreak)
     }
 
     /// The pre-duck re-check (music playing). Reads only; never a session call.
@@ -191,8 +238,10 @@ public final class DJRouteSessionCore {
         let lastProbed = state.lastRoute
         let marked = recheck.pending
         let on = flag()
-        let decision = recheck.talkoverBoundary(planned, lastProbedRoute: lastProbed,
-                                                sessionRoute: LongFormRouteKind.classify(sessionPorts), airPlayFlag: on)
+        // Fry's #527 B1: a session that may still be long-form cannot duck: a gap break instead.
+        let decision: TalkoverDecision = restorePending && planned.plan != nil ? .hardBreak(.restoreFailed)
+            : recheck.talkoverBoundary(planned, lastProbedRoute: lastProbed,
+                                       sessionRoute: LongFormRouteKind.classify(sessionPorts), airPlayFlag: on)
         return Recheck(decision: decision, lastProbedRoute: lastProbed, sessionPorts: sessionPorts, marked: marked, flag: on)
     }
 
@@ -205,15 +254,53 @@ public final class DJRouteSessionCore {
 
     private func probe(_ session: DJAudioSessionPort, keepLongForm: Bool, site: ProbeSite) -> Probe {
         let sessionPorts = session.currentOutputs
-        session.setCategory(.airPlayGap)
+        guard session.setCategory(.airPlayGap) else {
+            // The long-form set threw: no route was read, so nothing is recorded or fetched and
+            // long-form is never kept. The restore still runs (the category state is unknown).
+            recheck.probeFailed()
+            restoreNormal(session, site: .probe)
+            return Probe(site: site, route: state.lastRoute, ports: [], sessionPorts: sessionPorts, keptLongForm: false,
+                         changed: false, fetch: false, setFailed: true)
+        }
         let ports = session.currentOutputs
         let route = LongFormRouteKind.classify(ports)
         let changed = state.record(route)
         recheck.probed()
         let keep = keepLongForm && DJSessionConfig.resolve(route: route, kind: .gap, airPlayFlag: flag()) == .airPlayGap
-        if !keep { session.setCategory(.normal) }
+        if !keep { restoreNormal(session, site: .probe) }
         let fetch = fetchGate.shouldFetch(route: route, at: site == .launch ? .songStart : .gapBreak)
         return Probe(site: site, route: route, ports: ports, sessionPorts: sessionPorts, keptLongForm: keep,
                      changed: changed, fetch: fetch)
+    }
+
+    /// `.normal`, retried once on failure; two failures latch `restorePending`. Success clears it.
+    /// A first-time success with no latch is exactly one call and no DIAG row.
+    private func restoreNormal(_ session: DJAudioSessionPort, site: RestoreSite) {
+        if session.setCategory(.normal) {
+            clearLatch(site)
+            return
+        }
+        onRestore?(.failed(site, attempt: 1))
+        if session.setCategory(.normal) {
+            onRestore?(.recovered(site, attempt: 2))
+            clearLatch(site)
+            return
+        }
+        onRestore?(.failed(site, attempt: 2))
+        restorePending = true
+        onRestore?(.latched(site))
+    }
+
+    /// The latch: `.normal` again before the next clip or `play()` (never on an active session).
+    /// Nothing at all when no restore is pending, so the success paths are unchanged.
+    private func reapplyIfPending(_ session: DJAudioSessionPort, site: RestoreSite) {
+        guard restorePending, !session.appActivated else { return }
+        restoreNormal(session, site: site)
+    }
+
+    private func clearLatch(_ site: RestoreSite) {
+        guard restorePending else { return }
+        restorePending = false
+        onRestore?(.cleared(site))
     }
 }

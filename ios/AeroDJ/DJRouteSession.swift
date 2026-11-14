@@ -33,10 +33,16 @@ import OSLog
 enum DJRouteSession {
     fileprivate static let log = Logger(subsystem: "com.aerodj.app", category: "playback")
     @MainActor private static let session = AppAudioSessionPort()
-    @MainActor private static let core = DJRouteSessionCore()
+    @MainActor private static let core: DJRouteSessionCore = {
+        let core = DJRouteSessionCore()
+        core.onRestore = { DJRouteSession.restoreEvent($0) }   // Fry's B1: each failure and recovery
+        return core
+    }()
 
-    /// Before a song starts (music not playing yet): the launch probe, once per launch, switch on.
-    /// Killed, already probed this launch, or the session active: touches nothing. Never fetches.
+    /// Before a song starts (music not playing yet). A pending `.normal` restore (Fry's B1) is
+    /// re-applied first. Then the launch probe, once per launch, switch on. Killed, already probed
+    /// this launch, or the session active: touches nothing. Fetches only when the launch probe
+    /// sees AirPlay (Core's gate, once per launch).
     @MainActor static func probeBeforeSong() {
         guard let p = core.probeBeforeSong(session) else { return }
         trace(.probe(p, flag: true, allowed: DJLongFormRouteState.shared.talkoverAllowed))
@@ -90,6 +96,19 @@ enum DJRouteSession {
         core.endGapBreak(session, shape: shape)
     }
 
+    /// Fry's B1: a `.normal` restore failed, was retried, recovered, latched or cleared.
+    @MainActor private static func restoreEvent(_ event: DJRouteSessionCore.RestoreEvent) {
+        switch event {
+        case let .failed(site, attempt):
+            log.error("route restore failed site=\(site.rawValue, privacy: .public) attempt=\(attempt, privacy: .public)")
+        case let .latched(site):
+            log.error("route restore pending site=\(site.rawValue, privacy: .public)")
+        case .recovered, .cleared:
+            break
+        }
+        trace(.restore(event))
+    }
+
     /// Talk-over on AirPlay falls back to the gap break (a long-form session cannot duck).
     static var talkoverAllowed: Bool { DJLongFormRouteState.shared.talkoverAllowed }
 
@@ -132,6 +151,7 @@ enum DJRouteSession {
         case shape(DJRouteSessionCore.GapBreak, Int)
         case change(DJRouteChangeReason, marked: Bool, flag: Bool)
         case recheck(DJRouteSessionCore.Recheck, Int)
+        case restore(DJRouteSessionCore.RestoreEvent)
     }
 
     @MainActor private static func trace(_ event: RouteTrace) {
@@ -149,6 +169,7 @@ enum DJRouteSession {
             case let .recheck(r, k):
                 _ = trace.sessionTalkoverRecheck(r.decision, lastProbedRoute: r.lastProbedRoute, sessionPorts: r.sessionPorts,
                                                  marked: r.marked, flag: r.flag, afterTrack: k, at: t)
+            case let .restore(event): _ = trace.sessionRestore(event, at: t)
             }
         }
         #endif
@@ -163,15 +184,19 @@ enum DJRouteSession {
 
     var appActivated: Bool { TalkoverAudioSession.appActivated }
 
-    func setCategory(_ config: DJSessionConfig) {
+    /// False when it threw (Fry's B1): Core retries a failed `.normal` once, then latches.
+    @discardableResult
+    func setCategory(_ config: DJSessionConfig) -> Bool {
         let policy: AVAudioSession.RouteSharingPolicy = config.policy == .longFormAudio ? .longFormAudio : .default
         var options: AVAudioSession.CategoryOptions = []
         if config.options.contains(.mixWithOthers) { options.insert(.mixWithOthers) }
         if config.options.contains(.duckOthers) { options.insert(.duckOthers) }
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: policy, options: options)
+            return true
         } catch {
             DJRouteSession.log.error("route setCategory failed code=\((error as NSError).code, privacy: .public)")
+            return false
         }
     }
 

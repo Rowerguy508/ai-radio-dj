@@ -76,6 +76,8 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     case route, port1, port2, ports, flag, allowed, changed, shape
     // Echo's #527 ask: the app session's own currentRoute port types, read as-is (types only)
     case cur1, cur2, curN
+    // Fry's #527 B1: where `.normal` was (re)applied and which attempt
+    case site, attempt
 }
 
 extension P0TraceCode {
@@ -136,6 +138,11 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case routeChange
     /// Fry's launch-probe row, Echo's re-check row and its kept-talk-over result.
     case launchProbe, recheck, talkover
+    /// Fry's #527 B1 restore rows: the kind, the hard-break reason, `RestoreSite` values (`probe`
+    /// is shared) and the results.
+    case restore, restoreFailed
+    case endGapBreak, beforeClip, beforePlay
+    case failed, recovered, latched, cleared
     case newDeviceAvailable, oldDeviceUnavailable, categoryChange, override, wakeFromSleep
     case noSuitableRouteForCategory, routeConfigurationChange, otherReason
 }
@@ -842,6 +849,21 @@ extension P0EventTrace {
         record(.sessionRoute, at: t, [(.kind, .code(.routeChange)),
                                       (.reason, .code(P0TraceCode(rawValue: reason.rawValue) ?? .unknown)),
                                       (.changed, .bool(marked)), (.flag, .bool(flag))])
+    }
+
+    /// Fry's #527 B1: one step of the `.normal` restore: `result=failed attempt=1|2`,
+    /// `result=recovered attempt=2`, `result=latched` (restore pending) or `result=cleared`.
+    @discardableResult
+    public mutating func sessionRestore(_ event: DJRouteSessionCore.RestoreEvent, at t: TimeInterval) -> P0TraceRow {
+        func site(_ s: DJRouteSessionCore.RestoreSite) -> P0TraceValue { .code(P0TraceCode(rawValue: s.rawValue) ?? .unknown) }
+        let pairs: [(P0TraceKey, P0TraceValue)]
+        switch event {
+        case let .failed(s, n): pairs = [(.site, site(s)), (.result, .code(.failed)), (.attempt, .int(n))]
+        case let .recovered(s, n): pairs = [(.site, site(s)), (.result, .code(.recovered)), (.attempt, .int(n))]
+        case let .latched(s): pairs = [(.site, site(s)), (.result, .code(.latched))]
+        case let .cleared(s): pairs = [(.site, site(s)), (.result, .code(.cleared))]
+        }
+        return record(.sessionRoute, at: t, [(.kind, .code(.restore))] + pairs)
     }
 
     /// The session a gap break ran with and the route it was chosen for, with the app session's own

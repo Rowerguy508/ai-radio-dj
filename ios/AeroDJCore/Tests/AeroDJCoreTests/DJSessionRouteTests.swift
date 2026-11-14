@@ -399,6 +399,147 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertTrue(song.contains("trace(.probe(p,"), "it writes the DIAG row")
     }
 
+    // MARK: Fry's #527 B1: a failed `.normal` restore is retried, then latched
+
+    static let normalCall: CountingSession.Call = .setCategory(.default, 0x1)
+    static let longFormCall: CountingSession.Call = .setCategory(.longFormAudio, 0)
+
+    @MainActor
+    private func core(_ flag: Bool, _ events: @escaping @MainActor (DJRouteSessionCore.RestoreEvent) -> Void) -> DJRouteSessionCore {
+        let core = DJRouteSessionCore(state: DJLongFormRouteState(flag: { flag }), flag: { flag })
+        core.onRestore = events
+        return core
+    }
+
+    @MainActor
+    func testAFailedProbeRestoreSucceedsOnRetry() {
+        var events: [DJRouteSessionCore.RestoreEvent] = []
+        let s = CountingSession(longForm: [.headphones], local: [.headphones])
+        let core = core(true) { events.append($0) }
+        s.failNormal = 1
+        Self.gapBreak(core, s)
+        XCTAssertEqual(s.calls, [Self.longFormCall, Self.normalCall, Self.normalCall] + Self.baselineGap,
+                       "one retry, only on failure")
+        XCTAssertEqual(events, [.failed(.probe, attempt: 1), .recovered(.probe, attempt: 2)])
+        XCTAssertFalse(core.restorePending)
+        s.calls = []
+        Self.talkoverBoundary(core, s)
+        XCTAssertEqual(s.calls, Self.baselineTalkover, "recovered: the talk-over is exactly 4a2537b2 again")
+    }
+
+    @MainActor
+    func testARestoreThatFailsTwiceLatchesForcesAGapBreakAndReappliesBeforeTheNextPlay() {
+        var events: [DJRouteSessionCore.RestoreEvent] = []
+        let s = CountingSession(longForm: [.headphones], local: [.headphones])
+        let core = core(true) { events.append($0) }
+        s.failNormal = 2
+        _ = core.beginGapBreak(s)
+        XCTAssertEqual(s.calls, [Self.longFormCall, Self.normalCall, Self.normalCall])
+        XCTAssertEqual(events, [.failed(.probe, attempt: 1), .failed(.probe, attempt: 2), .latched(.probe)])
+        XCTAssertTrue(core.restorePending)
+        // Every talk-over is forced to a gap break while the restore is pending, with no session call.
+        s.calls = []
+        XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .hardBreak(.restoreFailed))
+        let recheck = core.talkoverRecheck(.talkover(Self.plan), session: s)
+        XCTAssertEqual(recheck.decision, .hardBreak(.restoreFailed), "the re-check row reports it")
+        XCTAssertEqual(core.talkoverDecision(.hardBreak(.tooLateToArm), session: s), .hardBreak(.tooLateToArm), "a planned hard break stays")
+        XCTAssertEqual(s.calls, [])
+        // Before the next play(): `.normal` is re-applied (the launch probe is already done).
+        events = []
+        XCTAssertNil(core.probeBeforeSong(s))
+        XCTAssertEqual(s.calls, [Self.normalCall], "re-applied before play()")
+        XCTAssertEqual(events, [.cleared(.beforePlay)])
+        XCTAssertFalse(core.restorePending)
+        XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .talkover(Self.plan), "talk-over again")
+        // The endGapBreak restore: AirPlay long-form clip, restore fails twice, re-applied before the
+        // next clip, ahead of that break's own probe.
+        var airEvents: [DJRouteSessionCore.RestoreEvent] = []
+        let a = CountingSession(longForm: [.airPlay], local: [.builtInSpeaker])
+        let air = self.core(true) { airEvents.append($0) }
+        let gap = air.beginGapBreak(a)
+        XCTAssertEqual(gap.shape, .longFormAirPlay)
+        a.failNormal = 2
+        air.endGapBreak(a, shape: gap.shape)
+        XCTAssertEqual(airEvents, [.failed(.endGapBreak, attempt: 1), .failed(.endGapBreak, attempt: 2), .latched(.endGapBreak)])
+        a.calls = []
+        _ = air.beginGapBreak(a)
+        XCTAssertEqual(a.calls.first, Self.normalCall, "re-applied before the next clip")
+        XCTAssertEqual(airEvents.last, .cleared(.beforeClip))
+        XCTAssertFalse(air.restorePending)
+    }
+
+    @MainActor
+    func testTheLatchStaysWhileTheReapplyFailsAndClearsAfterSuccess() {
+        var events: [DJRouteSessionCore.RestoreEvent] = []
+        let s = CountingSession(longForm: [.headphones], local: [.headphones])
+        let core = core(true) { events.append($0) }
+        s.failNormal = 2
+        _ = core.beginGapBreak(s)
+        XCTAssertTrue(core.restorePending)
+        // The re-apply before play() fails twice too: still pending, and reported.
+        s.failNormal = 2
+        events = []
+        _ = core.probeBeforeSong(s)
+        XCTAssertEqual(events, [.failed(.beforePlay, attempt: 1), .failed(.beforePlay, attempt: 2), .latched(.beforePlay)])
+        XCTAssertTrue(core.restorePending)
+        XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .hardBreak(.restoreFailed))
+        // Never on an active session.
+        s.appActivated = true
+        s.calls = []
+        _ = core.probeBeforeSong(s)
+        XCTAssertEqual(s.calls, [], "no category change while our session is active")
+        s.appActivated = false
+        // Succeeds: cleared, and the talk-over is back.
+        events = []
+        _ = core.probeBeforeSong(s)
+        XCTAssertEqual(events, [.cleared(.beforePlay)])
+        XCTAssertFalse(core.restorePending)
+        XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .talkover(Self.plan))
+        // A recovered retry also clears a latch.
+        s.failNormal = 2
+        _ = core.beginGapBreak(s)
+        XCTAssertTrue(core.restorePending)
+        s.failNormal = 1
+        events = []
+        _ = core.probeBeforeSong(s)
+        XCTAssertEqual(events, [.failed(.beforePlay, attempt: 1), .recovered(.beforePlay, attempt: 2), .cleared(.beforePlay)])
+        XCTAssertFalse(core.restorePending)
+    }
+
+    @MainActor
+    func testAFailedLongFormSetNeverKeepsLongFormAndStillRestores() {
+        var events: [DJRouteSessionCore.RestoreEvent] = []
+        let s = CountingSession(longForm: [.airPlay], local: [.builtInSpeaker])
+        let state = DJLongFormRouteState(flag: { true })
+        let core = DJRouteSessionCore(state: state, flag: { true })
+        core.onRestore = { events.append($0) }
+        state.record(.wired)
+        s.failLongForm = 1
+        let gap = core.beginGapBreak(s)
+        XCTAssertEqual(gap.shape, .mixDefault, "long-form is never kept when its set failed")
+        XCTAssertEqual(gap.probe?.setFailed, true)
+        XCTAssertEqual(gap.probe?.ports, [], "nothing read under the wrong category")
+        XCTAssertFalse(gap.fetch)
+        XCTAssertEqual(state.lastRoute, .wired, "nothing recorded")
+        XCTAssertEqual(s.calls, [Self.longFormCall, Self.normalCall], "the restore still runs")
+        XCTAssertEqual(events, [])
+        XCTAssertFalse(core.restorePending)
+    }
+
+    @MainActor
+    func testKilledPathsStayZeroTouchEvenWithAThrowingSession() {
+        let s = CountingSession(longForm: [.airPlay], local: [.builtInSpeaker])
+        s.failNormal = 5
+        s.failLongForm = 5
+        let core = DJRouteSessionCore(state: DJLongFormRouteState(flag: { false }), flag: { false })
+        XCTAssertNil(core.probeBeforeSong(s))
+        _ = core.beginGapBreak(s)
+        core.endGapBreak(s, shape: .mixDefault)
+        XCTAssertEqual(core.talkoverDecision(.talkover(Self.plan), session: s), .talkover(Self.plan))
+        XCTAssertEqual(s.calls, [], "killed: zero session calls")
+        XCTAssertFalse(core.restorePending)
+    }
+
     // MARK: Orion's call: routeChangeNotification marks the next boundary
 
     /// Song starts on headphones, the listener picks AirPlay mid-song, the next boundary is a
@@ -546,14 +687,18 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertNotNil(onSpeaker.talkOverStartSeconds)
     }
 
-    // MARK: DIAG rows
+    // MARK: DIAG rows (the trace exists only in DEBUG or AERODJ_P0_DIAG builds; the release
+    // test build in check-release-disables-paid-voice.sh compiles without it)
 
+    #if DEBUG || AERODJ_P0_DIAG
     func testEveryRouteKindPortTypeAndShapeHasATraceCode() {
         for r in LongFormRouteKind.allCases { XCTAssertNotNil(P0TraceCode(rawValue: r.rawValue), "\(r)") }
         for p in LongFormPortType.allCases { XCTAssertNotNil(P0TraceCode(rawValue: p.rawValue), "\(p)") }
         for s in DJSessionShape.allCases { XCTAssertNotNil(P0TraceCode(rawValue: s.rawValue), "\(s)") }
         XCTAssertNotNil(P0TraceCode(rawValue: TalkoverHardBreak.airPlayRoute.rawValue))
         XCTAssertNotNil(P0TraceCode(rawValue: TalkoverHardBreak.routeChanged.rawValue))
+        XCTAssertNotNil(P0TraceCode(rawValue: TalkoverHardBreak.restoreFailed.rawValue))
+        for s in DJRouteSessionCore.RestoreSite.allCases { XCTAssertNotNil(P0TraceCode(rawValue: s.rawValue), "\(s)") }
         for r in DJRouteChangeReason.allCases { XCTAssertNotNil(P0TraceCode(rawValue: r.rawValue), "\(r)") }
     }
 
@@ -576,6 +721,7 @@ final class DJSessionRouteTests: XCTestCase {
         XCTAssertEqual(TalkoverLog.decision(afterTrack: 4, .hardBreak(.airPlayRoute)),
                        "talkover plan after=4 result=hardBreak reason=airPlayRoute")
     }
+    #endif
 
     // MARK: App wiring (source pins; the app target does not build on Linux)
 
@@ -714,10 +860,19 @@ final class DJSessionRouteTests: XCTestCase {
             self.local = local
         }
 
+        /// Fry's B1: the next `failNormal` `.normal` sets and `failLongForm` `.airPlayGap` sets throw
+        /// (still counted as calls; the category does not change).
+        var failNormal = 0
+        var failLongForm = 0
+
         var currentOutputs: [LongFormPortType] { policy == .longFormAudio ? longForm : local }
-        func setCategory(_ config: DJSessionConfig) {
+        @discardableResult
+        func setCategory(_ config: DJSessionConfig) -> Bool {
             calls.append(.setCategory(config.policy, config.options.rawValue))
+            if config.policy == .longFormAudio, failLongForm > 0 { failLongForm -= 1; return false }
+            if config.policy == .default, config.options.contains(.mixWithOthers), failNormal > 0 { failNormal -= 1; return false }
             policy = config.policy
+            return true
         }
         func setActive(_ active: Bool, notifyOthers: Bool) { calls.append(.setActive(active, notify: notifyOthers)) }
 
