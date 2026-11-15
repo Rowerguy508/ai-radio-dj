@@ -136,8 +136,8 @@ final class AppWideLayoutTests: XCTestCase {
         XCTAssertTrue(toggle.waitForExistence(timeout: 10), "talk-over row missing\n\(app.debugDescription)")
         let cell = app.cells.containing(.switch, identifier: "settings.talkoverToggle").firstMatch
         let row = cell.exists ? cell.frame : toggle.frame
-        XCTAssertGreaterThanOrEqual(row.minX, box.minX + 55, "the row is inset to the readable width: \(row)")
-        XCTAssertLessThanOrEqual(row.maxX, box.maxX - 55, "the row is inset to the readable width: \(row)")
+        XCTAssertGreaterThanOrEqual(row.minX, box.minX + 59, "the row is inset to the readable width: \(row)")
+        XCTAssertLessThanOrEqual(row.maxX, box.maxX - 59, "the row is inset to the readable width: \(row)")
         let done = app.buttons["settings.done"]
         XCTAssertTrue(done.exists)
         // System toolbar button; XCUITest reports the label frame, not the 44pt bar hit area.
