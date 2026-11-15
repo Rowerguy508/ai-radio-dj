@@ -593,10 +593,14 @@ private struct SplitViewCapture: View {
                 } label: {
                     Text(item.title)
                         .font(.caption.weight(.semibold))
-                        .frame(minWidth: 44, minHeight: 44)
                         .padding(.horizontal, 6)
                 }
                 .buttonStyle(.plain)
+                // The 44 pt floor has to be on the button. On the iOS 26.5 plain
+                // style, a minHeight on the label alone left the control's
+                // accessibility frame at the caption height (42 pt).
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
                 .accessibilityIdentifier("split.show.\(item.rawValue)")
             }
         }
