@@ -1339,6 +1339,11 @@ final class MusicKitService: ObservableObject {
     /// (before any pause or `isPlaying` change). A newer attempt's queue is never played, paused or
     /// marked by an older one: the stale attempt throws `MusicKitError.superseded`.
     private func playIfStillAllowed(attempt: PlaybackAttemptID) async throws -> Bool {
+        // #525 (-Atlas), Fry's launch-probe conditions: once per launch, switch on only, never
+        // `setActive`, and synchronous on the main actor here, before `prepareToPlay()` and our first
+        // `play()`, so it cannot race MusicKit's start. Writes a DIAG row of raw port types. Killed or
+        // already probed this launch: touches nothing.
+        DJRouteSession.probeBeforeSong()
         try activateAudioSessionForPlayback()
         let outcome = try await AttemptPlaySequence.run(
             attempt: attempt,
