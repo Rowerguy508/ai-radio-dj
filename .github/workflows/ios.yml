@@ -13,7 +13,10 @@ permissions:
   pull-requests: read # paths-filter lists PR files via the API
 
 # macOS jobs: the owner's self-hosted Mac (labels self-hosted, macOS, aerodj) runs only
-# same-repo pull_request events, and only once the repo variable AERODJ_SELF_HOSTED is '1'.
+# same-repo pull_request events.
+# - AERODJ_SELF_HOSTED == '1': every gated macOS job on the mini (existing behavior).
+# - AERODJ_MINI_STUDIO == '1': only the "Studio UI tests and screenshots (closed + open)"
+#   job on the mini; the other gated macOS jobs stay on macos-latest.
 # The repo is public, so fork PRs (head repo != this repo), pushes and every other event
 # always use GitHub-hosted macos-latest. testflight.yml stays GitHub-hosted. -Atlas
 # Exception: "iOS simulator build" (StoreKit tests) is always GitHub-hosted until the Mac's
@@ -444,8 +447,10 @@ jobs:
     name: Studio UI tests and screenshots (closed + open)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
-    runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
-    timeout-minutes: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
+    # Mini when AERODJ_SELF_HOSTED=1 (all-mini) or AERODJ_MINI_STUDIO=1 (this job only),
+    # and only on a same-repo pull_request. Otherwise macos-latest.
+    runs-on: ${{ ((vars.AERODJ_SELF_HOSTED == '1' || vars.AERODJ_MINI_STUDIO == '1') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
+    timeout-minutes: ${{ ((vars.AERODJ_SELF_HOSTED == '1' || vars.AERODJ_MINI_STUDIO == '1') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
     env:
       XCODEGEN_VERSION: 2.46.0
       DERIVED_DATA: ios/build/DerivedData-ui
