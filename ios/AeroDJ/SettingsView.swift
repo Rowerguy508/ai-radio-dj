@@ -21,6 +21,10 @@ struct SettingsView: View {
                     if let songRating { StationRatingsSettingsSection(controller: songRating) }
                     if let personalDataReset { PersonalDataResetSection(purger: personalDataReset) }
                 }
+                // A Form keeps a 16 pt row margin and lays that out from its own
+                // bounds, ignoring the host's safeAreaInset. Same as the split
+                // library list. Nil insets is the phone sheet, with no padding.
+                .modifier(SplitFormPadding(insets: insets))
                 .navigationTitle("Settings")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -33,6 +37,23 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Pads a split Form by the host's extra insets. A nil inset is the phone sheet,
+/// returned unchanged.
+private struct SplitFormPadding: ViewModifier {
+    var insets: SplitInsets?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let insets {
+            content
+                .padding(.leading, CGFloat(insets.padding.leading))
+                .padding(.trailing, CGFloat(insets.padding.trailing))
+        } else {
+            content
         }
     }
 }
