@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ios: ${{ steps.filter.outputs.ios }}
+      core: ${{ steps.filter.outputs.core }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -32,11 +33,21 @@ jobs:
             ios:
               - 'ios/**'
               - '.github/workflows/ios.yml'
+            # AeroDJCore tests also read these docs (repoFile in CloudVoiceAllLinesTests and
+            # friends), so a copy edit must run both core-test jobs. #509 skipped them and
+            # broke integration (X1). Only the two core jobs use this output. -Sentinel
+            core:
+              - 'ios/**'
+              - '.github/workflows/ios.yml'
+              - 'docs/site/privacy.md'
+              - 'docs/site/HOLD-pro.md'
+              - 'docs/site/DRAFT-privacy-tester-voice.md'
+              - 'docs/PRIVACY_MATRIX.md'
 
   core-tests:
     name: AeroDJCore tests
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    if: needs.changes.outputs.core == 'true'
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +70,7 @@ jobs:
   linux-core-tests:
     name: AeroDJCore tests (Linux)
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    if: needs.changes.outputs.core == 'true'
     runs-on: ubuntu-latest
     container: swift:6.2
     steps:
