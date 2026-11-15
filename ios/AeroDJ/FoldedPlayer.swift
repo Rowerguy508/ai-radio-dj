@@ -552,12 +552,12 @@ private struct FoldedArtCard: View {
         }
         .frame(width: side, height: side)
         .animation(.easeInOut(duration: FoldedArtCardLayers.crossfadeSeconds), value: isOnAir)
-        .accessibilityHidden(true)
-        // Test-only. VoiceOver never sees the card. XCUITest can still query a hidden
-        // identifier (same pattern as `folded.fold`). The id follows the visible layers
-        // so a default-size on-air capture can assert orb-only (`folded.artCard.orb`)
-        // versus art (`folded.artCard.artwork`).
-        .accessibilityIdentifier(Self.testIdentifier(layers: layers))
+        // VoiceOver never sees the card. XCUITest can't query a hidden element either
+        // (iOS 43658288607: no folded.artCard.* in the tree), so only the Debug on-air
+        // capture exposes it, as a label-less element. The id follows the visible layers
+        // so the capture can assert orb-only (`folded.artCard.orb`) versus art
+        // (`folded.artCard.artwork`). Accessibility only; no pixel changes.
+        .modifier(ArtCardTestExposure(identifier: Self.testIdentifier(layers: layers)))
     }
 
     /// `folded.artCard.orb` when only the orb is showing; `folded.artCard.artwork` when
@@ -1241,3 +1241,24 @@ private struct LegacyToolbarGlass: ViewModifier {
     }
 }
 #endif
+
+/// Hidden from VoiceOver everywhere. In Debug, while the `onAir` capture has frozen the
+/// ON AIR timer, the art card is exposed to XCUITest under its layer id. Release and every
+/// other run keep it hidden.
+private struct ArtCardTestExposure: ViewModifier {
+    let identifier: String
+
+    func body(content: Content) -> some View {
+        #if DEBUG
+        if StudioCaptureOnAir.frozenElapsed != nil {
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier(identifier)
+        } else {
+            content.accessibilityHidden(true).accessibilityIdentifier(identifier)
+        }
+        #else
+        content.accessibilityHidden(true).accessibilityIdentifier(identifier)
+        #endif
+    }
+}
