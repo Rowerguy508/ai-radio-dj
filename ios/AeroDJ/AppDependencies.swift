@@ -97,7 +97,10 @@ struct AppDependencies {
         // The 4 s closing cap applies only while talk-over is on: the same flag the coordinator
         // reads (the Settings toggle, else ON on a live station). P0 build 26, -Fry.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
-                                       talkOverEnabled: { DJTalkoverFlag.isEnabled() },
+                                       talkOverEnabled: {
+                                           // #525: on AirPlay (remote flag on) breaks are prepared on the gap-break path.
+                                           DJLongFormRouteState.shared.preparerTalkOverEnabled(talkoverFlag: DJTalkoverFlag.isEnabled())
+                                       },
                                        cloudVoiceConsent: TesterCloudVoiceConsentHooks.preparerConsent,
                                        bundledClips: bundledClips)
         // Tester and owner A/B builds (Echo's N2 on #395, #433): a decline drops prepared cloud breaks and cached cloud clips.
@@ -225,7 +228,8 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,
                                        cadence: TestStation.cadence,
                                        talkOverEnabled: {
-                                           DJTalkoverFlag.isEnabled(unsetDefault: DJTalkoverFlag.unsetDefault(isTestStation: true))
+                                           DJLongFormRouteState.shared.preparerTalkOverEnabled(
+                                               talkoverFlag: DJTalkoverFlag.isEnabled(unsetDefault: DJTalkoverFlag.unsetDefault(isTestStation: true)))
                                        })
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
