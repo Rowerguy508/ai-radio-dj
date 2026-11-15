@@ -57,7 +57,10 @@ extension PremiumVoiceRoutes {
                                                             backoff: backoff),
                                voice: VoiceProfile(id: option.id, name: option.displayName),
                                microdollarsPerThousandCharacters: 0, timeout: timeout, acceptsSSML: false,
-                               leavesDevice: true)
+                               leavesDevice: true,
+                               // Same stitching context as the owner ElevenLabs route. The per-cue
+                               // check still decides which lines may be context (#365).
+                               sendsSpeechContext: true, supportsAudioTags: false)
         return AttestedComposition(routes: [route] + onDevice, decision: .included(catalogIndex: index))
     }
 }

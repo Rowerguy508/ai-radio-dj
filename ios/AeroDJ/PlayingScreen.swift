@@ -108,6 +108,8 @@ struct PlayingScreen: View {
         .environment(\.artStation, currentStation)
         // #454: Try again on a failed station start (the placeholder reads it).
         .environment(\.stationStart, studio.stationStart)
+        // #465 item 3: the hinge-detected tent pose swaps in the radio face. No hinge: unchanged.
+        .modifier(TentPoseGate(player: tentPlayer))
         .sheet(isPresented: $showWorkspace) {
             NavigationStack {
                 workspace
@@ -227,6 +229,15 @@ struct PlayingScreen: View {
         WorkspaceView(studio: studio, content: content, snapshot: snapshot, actions: actions,
                       search: access == .authorized ? search : nil,
                       studioSearch: studioSearch, segment: $segment)
+    }
+
+    /// The tent face (#465 item 3). Same values and sheet actions as the folded player.
+    private var tentPlayer: TentPosePlayer {
+        TentPosePlayer(station: currentStation, heading: heading, content: content, snapshot: snapshot,
+                       actions: actions, dj: dj, speechLevel: studio.dj,
+                       stationStops: stationStops, onOpenStation: onOpenStation,
+                       onQueue: { segment = .queue; showWorkspace = true },
+                       onTune: { segment = .tune; showWorkspace = true })
     }
 }
 
