@@ -336,8 +336,11 @@ final class MusicKitService: ObservableObject {
             // The user's explicit Play takes the Next they already pressed: the skip path, so the
             // skipped song's break is dropped and the next song loads. No hold is active (userPlay
             // above). The transport leaves the surfaced pause for `.preparing`; the load confirms it.
-            // `onUserResumed` stays in `.played` only: the new song's start plans its breaks.
             send(.userResumed)
+            // #445: this Play also ends a pause, which may have lasted hours. The day part is
+            // re-read before the next song starts: the new song's start re-plans in the new day
+            // part but does not greet, so after it a morning pause would never say "Good afternoon".
+            onUserResumed?()
             installSkipGate()
             await startSkip(skipCoordinator.requestAdvance())
             return
@@ -1336,6 +1339,11 @@ final class MusicKitService: ObservableObject {
     /// (before any pause or `isPlaying` change). A newer attempt's queue is never played, paused or
     /// marked by an older one: the stale attempt throws `MusicKitError.superseded`.
     private func playIfStillAllowed(attempt: PlaybackAttemptID) async throws -> Bool {
+        // #525 (-Atlas), Fry's launch-probe conditions: once per launch, switch on only, never
+        // `setActive`, and synchronous on the main actor here, before `prepareToPlay()` and our first
+        // `play()`, so it cannot race MusicKit's start. Writes a DIAG row of raw port types. Killed or
+        // already probed this launch: touches nothing.
+        DJRouteSession.probeBeforeSong()
         try activateAudioSessionForPlayback()
         let outcome = try await AttemptPlaySequence.run(
             attempt: attempt,

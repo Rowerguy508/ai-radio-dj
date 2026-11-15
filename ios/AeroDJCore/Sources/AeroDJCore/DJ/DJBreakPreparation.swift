@@ -54,6 +54,9 @@ public enum DJTimeCheckDropReason: String, Equatable, Sendable, CaseIterable {
     case taken
     /// At the take the clock no longer reads the rendered time (pause, seek back).
     case stale
+    /// The rounded local time is not on the listener's clock: a daylight-saving gap, or a fold
+    /// inside the rounding window (#360). Only this line is omitted. No clock time was spoken.
+    case notOnTheClock
 }
 
 /// A dropped time-check line: its cue ID and the reason code. No text.
@@ -399,6 +402,10 @@ public actor DJBreakPreparer {
         // The time it will be on air (Echo, #347): now plus what is left before the boundary.
         let toAir = end - ContinuousClock.now + boundaryMargin
         let airTime = now().addingTimeInterval(seconds(toAir))
+        // No truthful wall clock at the air time (DST). Drop before any voice call, paid or free.
+        guard DJTimeCheck.roundedInstant(at: airTime, calendar: timeCheck.calendar) != nil else {
+            return .dropped(.notOnTheClock)
+        }
         guard let text = timeCheck.text(at: airTime) else { return .dropped(.renderFailed) }
         let line = cue(plannedLine, saying: text)
         let attribution = djBreak.attributions[line.id]
@@ -675,8 +682,10 @@ public actor DJBreakPreparer {
     ///   - "Almost / Coming up on T": −210 s ≤ now − T < 0 (never at or after T);
     ///   - "Just after T": 0 ≤ now − T ≤ 210 s (never before T);
     ///   - "It's T": |now − T| < 120 s.
-    /// T is an instant, so midnight and the 12 h/24 h wrap need no special case. The words must be
-    /// the line rendered for `airTime`; anything else, or no air time, fails closed.
+    /// T is an instant, so midnight and the 12 h/24 h wrap need no special case. A daylight-saving
+    /// gap or fold has no T (`roundedTime` is nil): the line is not true, including a cue whose
+    /// words name the hour the paper rounding would have invented. The words must be the line
+    /// rendered for `airTime`; anything else, or no air time, fails closed.
     nonisolated static func timeCheckStillTrue(_ timeCheck: DJPlannedTimeCheck, saying text: String,
                                                airTime: Date?, now: Date) -> Bool {
         guard let airTime, abs(now.timeIntervalSince(airTime)) <= timeCheckTolerance,
