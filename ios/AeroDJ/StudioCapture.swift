@@ -683,6 +683,12 @@ private struct SplitLibraryPane: View {
                         .accessibilityIdentifier("library.row.\(index)")
                     }
                 }
+                // A List keeps a 16 pt row margin and lays that out from its own
+                // bounds, ignoring the host's safeAreaInset. On the 340 pt split
+                // the row then starts 16 pt in, 12 pt inside the 28 pt leading.
+                // This pane is the capture only. The phone lists are not this view.
+                .padding(.leading, CGFloat(insets?.padding.leading ?? 0))
+                .padding(.trailing, CGFloat(insets?.padding.trailing ?? 0))
                 .navigationTitle("Library")
                 .toolbar {
                     ToolbarItem(placement: SplitToolbar.placement(
