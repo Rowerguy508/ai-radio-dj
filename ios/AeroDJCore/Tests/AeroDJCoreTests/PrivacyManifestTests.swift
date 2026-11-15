@@ -22,6 +22,7 @@ final class PrivacyManifestTests: XCTestCase {
         let script = ios.appendingPathComponent("scripts/check-privacy-manifests.py")
         XCTAssertTrue(FileManager.default.fileExists(atPath: script.path), script.path)
 
+        #if os(macOS) || os(Linux)
         let process = Process()
         process.executableURL = try Self.python3()
         process.arguments = [script.path] + arguments
@@ -34,11 +35,16 @@ final class PrivacyManifestTests: XCTestCase {
         process.waitUntilExit()
         let output = String(data: data, encoding: .utf8) ?? ""
         return (process.terminationStatus, output)
+        #else
+        // `Process` doesn't exist on iOS; the check runs in macOS core tests. -Sentinel
+        throw XCTSkip("privacy manifest check needs Process (macOS or Linux only)")
+        #endif
     }
 
     /// `python3` from `PATH`. The Linux swift container has no Python, so the check is
     /// skipped there; it still runs for real in macOS core tests.
     /// On macOS a missing interpreter fails instead of skipping, so it can't go quiet.
+    #if os(macOS) || os(Linux)
     private static func python3() throws -> URL {
         let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
         for dir in path.split(separator: ":") where !dir.isEmpty {
@@ -52,4 +58,5 @@ final class PrivacyManifestTests: XCTestCase {
         throw XCTSkip("python3 not on PATH in this container; check-privacy-manifests.py runs in macOS core tests")
         #endif
     }
+    #endif
 }
