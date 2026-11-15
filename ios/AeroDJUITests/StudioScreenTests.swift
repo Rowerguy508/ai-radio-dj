@@ -1287,19 +1287,14 @@ final class StudioScreenTests: XCTestCase {
             let row = any["library.row.0"]
             XCTAssertTrue(edit.waitForExistence(timeout: 8), app.debugDescription)
             XCTAssertTrue(row.waitForExistence(timeout: 8))
-            // System toolbar item. XCUITest reports the label frame (36 pt on
-            // iOS 26.5), not the 44 pt hit area of the bar. Same as settings.done
-            // in #512. The row is ours, so it still has to be 44 pt.
-            XCTAssertTrue(edit.exists)
-            XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(edit.frame),
-                          "library edit left the container \(edit.frame) \(box)")
+            assertSystemToolbar(edit, box: box, name: "library edit")
             try assertInside(row, box: box, leading: leading, trailing: trailing, name: "library row")
             try assertOuterEdge(edit, box: box, edge: edge, name: "library edit")
         case "stations":
             let gear = app.buttons["stations.settings"]
             XCTAssertTrue(gear.waitForExistence(timeout: 8), app.debugDescription)
             XCTAssertTrue(any["split.sidebar"].waitForExistence(timeout: 5))
-            try assertInside(gear, box: box, leading: leading, trailing: trailing, name: "settings gear")
+            assertSystemToolbar(gear, box: box, name: "settings gear")
             try assertOuterEdge(gear, box: box, edge: edge, name: "settings gear")
             let identifier = sideBar
                 ? "stations.row.7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
@@ -1312,12 +1307,22 @@ final class StudioScreenTests: XCTestCase {
             let toggle = app.switches["settings.talkoverToggle"]
             XCTAssertTrue(done.waitForExistence(timeout: 8), app.debugDescription)
             XCTAssertTrue(toggle.waitForExistence(timeout: 8))
-            try assertInside(done, box: box, leading: leading, trailing: trailing, name: "done")
+            assertSystemToolbar(done, box: box, name: "done")
             try assertInside(toggle, box: box, leading: leading, trailing: trailing, name: "talk-over")
             try assertOuterEdge(done, box: box, edge: edge, name: "done")
         default:
             XCTFail(screen)
         }
+    }
+
+    /// A `Button` inside a `ToolbarItem` (or `EditButton`). XCUITest reports the
+    /// label frame (36 pt on iOS 26.5), not the 44 pt hit area of the bar. Same
+    /// check as settings.done in #512. Controls the app lays out stay on `assertInside`.
+    @MainActor
+    private func assertSystemToolbar(_ element: XCUIElement, box: CGRect, name: String) {
+        XCTAssertTrue(element.exists)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(element.frame),
+                      "\(name) left the container \(element.frame) \(box)")
     }
 
     @MainActor
