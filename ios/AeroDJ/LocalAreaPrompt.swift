@@ -58,6 +58,7 @@ struct LocalAreaPrompt: View {
             }
             .accessibilityIdentifier("localArea.notNow")
         }
+        .modifier(WideTargets(isOn: appWide != nil))
         .padding(24)
         .padding(.horizontal, CGFloat(appWide?.sideInset ?? 0))
         .interactiveDismissDisabled(false)
@@ -65,5 +66,31 @@ struct LocalAreaPrompt: View {
 
     private func saveTyped() {
         if store.chooseManual(place) { onDone() } else { rejected = true }
+    }
+}
+
+/// #515 N1 (Fry): 44 pt targets on the wide path only. Phones and narrow split get the view
+/// unchanged, so their snapshots stay byte-identical. Wide: the prominent buttons go to the
+/// large control size and the plain text buttons get a 44 pt tall, fully tappable row. Same
+/// labels, same actions; layout only.
+private struct WideTargets: ViewModifier {
+    let isOn: Bool
+
+    func body(content: Content) -> some View {
+        if isOn {
+            content.buttonStyle(WideTextButtonStyle()).controlSize(.large)
+        } else {
+            content
+        }
+    }
+}
+
+private struct WideTextButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.tint)
+            .frame(minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.5 : 1)
     }
 }
