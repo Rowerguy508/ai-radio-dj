@@ -140,7 +140,8 @@ final class AppWideLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(row.maxX, box.maxX - 55, "the row is inset to the readable width: \(row)")
         let done = app.buttons["settings.done"]
         XCTAssertTrue(done.exists)
-        assertTarget(done, in: box, "Done")
+        // System toolbar button; XCUITest reports the label frame, not the 44pt bar hit area.
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(done.frame), "Done left the container")
         XCTAssertGreaterThan(done.frame.midX, box.midX, "Done stays on the bar's trailing side")
         save(app, "duo-wide-settings")
     }
@@ -204,7 +205,10 @@ final class AppWideLayoutTests: XCTestCase {
         let toggle = app.switches["settings.talkoverToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10), app.debugDescription)
         XCTAssertLessThan(toggle.frame.minX, box.minX + 40, "no extra inset on the phone path")
-        assertTarget(app.buttons["settings.done"], in: box, "Done")
+        let done = app.buttons["settings.done"]
+        XCTAssertTrue(done.exists)
+        // System toolbar button; XCUITest reports the label frame, not the 44pt bar hit area.
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(done.frame), "Done left the container")
         save(app, "split-narrow-settings")
     }
 
