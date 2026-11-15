@@ -13,7 +13,10 @@ permissions:
   pull-requests: read # paths-filter lists PR files via the API
 
 # macOS jobs: the owner's self-hosted Mac (labels self-hosted, macOS, aerodj) runs only
-# same-repo pull_request events, and only once the repo variable AERODJ_SELF_HOSTED is '1'.
+# same-repo pull_request events.
+# - AERODJ_SELF_HOSTED == '1': every gated macOS job on the mini (existing behavior).
+# - AERODJ_MINI_STUDIO == '1': only the "Studio UI tests and screenshots (closed + open)"
+#   job on the mini; the other gated macOS jobs stay on macos-latest.
 # The repo is public, so fork PRs (head repo != this repo), pushes and every other event
 # always use GitHub-hosted macos-latest. testflight.yml stays GitHub-hosted. -Atlas
 # Exception: "iOS simulator build" (StoreKit tests) is always GitHub-hosted until the Mac's
@@ -23,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ios: ${{ steps.filter.outputs.ios }}
+      core: ${{ steps.filter.outputs.core }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -32,11 +36,21 @@ jobs:
             ios:
               - 'ios/**'
               - '.github/workflows/ios.yml'
+            # AeroDJCore tests also read these docs (repoFile in CloudVoiceAllLinesTests and
+            # friends), so a copy edit must run both core-test jobs. #509 skipped them and
+            # broke integration (X1). Only the two core jobs use this output. -Sentinel
+            core:
+              - 'ios/**'
+              - '.github/workflows/ios.yml'
+              - 'docs/site/privacy.md'
+              - 'docs/site/HOLD-pro.md'
+              - 'docs/site/DRAFT-privacy-tester-voice.md'
+              - 'docs/PRIVACY_MATRIX.md'
 
   core-tests:
     name: AeroDJCore tests
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    if: needs.changes.outputs.core == 'true'
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +73,7 @@ jobs:
   linux-core-tests:
     name: AeroDJCore tests (Linux)
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    if: needs.changes.outputs.core == 'true'
     runs-on: ubuntu-latest
     container: swift:6.2
     steps:
@@ -444,8 +458,10 @@ jobs:
     name: Studio UI tests and screenshots (closed + open)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
-    runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
-    timeout-minutes: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
+    # Mini when AERODJ_SELF_HOSTED=1 (all-mini) or AERODJ_MINI_STUDIO=1 (this job only),
+    # and only on a same-repo pull_request. Otherwise macos-latest.
+    runs-on: ${{ ((vars.AERODJ_SELF_HOSTED == '1' || vars.AERODJ_MINI_STUDIO == '1') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
+    timeout-minutes: ${{ ((vars.AERODJ_SELF_HOSTED == '1' || vars.AERODJ_MINI_STUDIO == '1') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
     env:
       XCODEGEN_VERSION: 2.46.0
       DERIVED_DATA: ios/build/DerivedData-ui
@@ -601,6 +617,8 @@ jobs:
                       duo-wide-ready split-narrow split-half split-wide; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
+          # #465 item 3: the tent pose, required like duo-wide-ready (TentPoseTests). -Nova
+          ls "$SHOTS" | grep -q '^duo-tent_' || { echo "missing duo-tent screenshot"; exit 1; }
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
       - name: Upload screenshots
         if: always()
