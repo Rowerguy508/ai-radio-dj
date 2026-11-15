@@ -82,6 +82,10 @@ final class MusicKitService: ObservableObject {
     /// #204: a failed start already raised its banner and the feed staged the songs again, so the
     /// next Play retries; nothing else to do here.
     var stationQueueForIdlePlay: (@MainActor () -> (@MainActor () async -> StationHandOffResult)?)?
+    /// #367 (-Atlas): a Skip is leaving song `fromIndex`. `StationQueuePlayer` appends the station's
+    /// next songs (`appendStationSongs`) when the Skip lands on the queue's last song or past it,
+    /// so the Skip after it still has a next song. Nil, or nothing appended: today's path.
+    var stationSongsBeforeSkip: (@MainActor (_ fromIndex: Int) -> Void)?
     /// Station queue (-Atlas; flagged for Claude): a new queue replaced the old one (a tap or a station
     /// hand-off), so `StationQueuePlayer` knows which station the playing queue belongs to.
     var onQueueReplaced: (@MainActor () -> Void)?
@@ -528,6 +532,8 @@ final class MusicKitService: ObservableObject {
             // The skipped song's break, speaking or prepared, belongs to that song and must not play.
             onBreakMustStop?(nil)
             onSongSkipped?(queueIndex)
+            // #367: before the end check, so a Skip from the last song continues the station.
+            stationSongsBeforeSkip?(queueIndex)
             let next = queueIndex + 1
             guard queue.indices.contains(next) else {
                 boundaries.setSkipLoadInFlight(false)
