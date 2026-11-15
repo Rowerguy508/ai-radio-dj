@@ -34,12 +34,15 @@ struct StationGrid: View {
                 .padding(.horizontal, CGFloat(AppWideLayout.screenGutter(.stations) + layout.sideInset))
                 .padding(.top, 8)
                 .padding(.bottom, 24)
+                // The id sits on the grid, not the scroll view: in the wide capture the
+                // column's scroll view is exposed as `split.sidebar`, which drops an id here.
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("stations.grid")
             }
             .scrollContentBackground(.hidden)
             .background(FoldedStyle.background.ignoresSafeArea())
             .environment(\.colorScheme, .dark)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .accessibilityIdentifier("stations.grid")
             .onAppear {
                 // A restored or carried-over selection is brought into view; no animation,
                 // so Reduce Motion needs no branch. Scrolling never selects.
