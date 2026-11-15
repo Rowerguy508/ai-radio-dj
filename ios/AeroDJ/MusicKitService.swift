@@ -722,6 +722,9 @@ final class MusicKitService: ObservableObject {
                 applyStartFailure(.refused(pausedBySystem: sessionPolicy.pausedBySystem), attempt: attempt)
                 return
             }
+            // #444 (-Atlas): our own play() returned for this song. If a lock-screen Next clears it
+            // before the 1 s poll has seen it, the detector reports that clear as a skip-load cut.
+            boundaries.noteOwnPlayReturned()
         } catch MusicKitError.superseded {
             throw MusicKitError.superseded
         } catch {
