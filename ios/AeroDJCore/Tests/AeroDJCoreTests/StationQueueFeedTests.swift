@@ -1607,3 +1607,131 @@ final class StationStartInstantTests: XCTestCase {
                        BuiltInStations.lateNight.configuration.seeds)
     }
 }
+
+// #367 (-Atlas): the refill runs only at the natural boundary before the queue's last song, and a
+// Skip never passes that boundary. A Skip onto the last song left nothing after it: the next Skip
+// (lock screen or in app) found no next song and `MusicKitService.skip()` stopped playback. A Skip
+// that lands on the last song or past it now appends the station's staged songs behind the queue.
+@MainActor
+private final class SkipFillBias {
+    var value = StationRatingBias.none
+}
+
+@MainActor
+final class StationSkipFillTests: XCTestCase {
+    private let queue = ["a", "b", "c"]
+
+    private func skip(_ feed: StationQueueFeed<String>, from index: Int, in queue: [String],
+                      active: StationConfiguration = refillStation) -> [String]? {
+        feed.takeForSkip(from: index, in: queue, active: active, sameSong: ==)
+    }
+
+    func testWithoutAFillASkipOntoTheLastSongLeavesNoNextSong() async {
+        // The shape the fix closes: the Skip from "b" never ran `queueForNextSong(after: 1)`, so no
+        // refill was handed out, and once "c" plays there is none (`testOnceTheLastSong...`).
+        let feed = await refillFeed()
+        XCTAssertNil(next(feed, after: 2, in: queue), "after the last song: today's stop path")
+        XCTAssertEqual(RemoteNextCommand.decide(queueIndex: 2, queueCount: queue.count), .noNextSong,
+                       "so the Skip on the last song stops the music")
+    }
+
+    func testASkipOntoTheLastSongAppendsTheStationsNextSongs() async throws {
+        let recorder = QueueEventRecorder()
+        let feed = await refillFeed(recorder: recorder)
+        let fill = try XCTUnwrap(skip(feed, from: 1, in: queue), "the Skip lands on the last song")
+        XCTAssertFalse(fill.isEmpty)
+        XCTAssertTrue(Set(fill).isDisjoint(with: queue), "only songs not already queued")
+        XCTAssertNil(feed.stagedCount, "used up")
+        XCTAssertEqual(recorder.events.last, .handedOff(.skipFill, songs: fill.count))
+        XCTAssertEqual(RemoteNextCommand.decide(queueIndex: 2, queueCount: queue.count + fill.count), .skip,
+                       "the Skip after it has a next song")
+        XCTAssertTrue(RemoteNextCommand.isEnabled(queueIndex: 2, queueCount: queue.count + fill.count))
+    }
+
+    func testASkipFromTheLastSongContinuesTheStation() async throws {
+        let feed = await refillFeed()
+        let fill = try XCTUnwrap(skip(feed, from: 2, in: queue), "a Skip past the end, when no fill ran before")
+        XCTAssertTrue(Set(fill).isDisjoint(with: queue))
+        XCTAssertEqual(RemoteNextCommand.decide(queueIndex: 2, queueCount: queue.count + fill.count), .skip)
+    }
+
+    func testASkipWithAnotherSongAfterItTakesNothing() async {
+        let recorder = QueueEventRecorder()
+        let feed = await refillFeed(recorder: recorder)
+        let staged = feed.stagedCount
+        XCTAssertNil(skip(feed, from: 0, in: queue), "the Skip lands on b; c still follows")
+        XCTAssertEqual(feed.stagedCount, staged, "nothing used up early: the boundary refill still has it")
+        XCTAssertFalse(recorder.events.contains { if case .handedOff(.skipFill, _) = $0 { true } else { false } })
+        XCTAssertNotNil(next(feed, after: 1, in: queue), "the natural refill before the last song is unchanged")
+    }
+
+    func testNotBuiltYetKeepsTodaysPathAndStartsTheBuild() async {
+        let recorder = QueueEventRecorder()
+        let feed = makeFeed(QueueFakeCatalog(), recorder: recorder)
+        feed.queueStarted(for: refillStation)
+        XCTAssertNil(skip(feed, from: 1, in: queue))
+        XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.skipFill, .notReady))
+        await until({ feed.stagedKey == StationQueueKey(refillStation) }, "a later Skip can continue")
+        XCTAssertNotNil(skip(feed, from: 2, in: queue))
+    }
+
+    func testAQueueOfAnotherStationTakesNothing() async {
+        let recorder = QueueEventRecorder()
+        let feed = await refillFeed(recorder: recorder)
+        let staged = feed.stagedCount
+        XCTAssertNil(skip(feed, from: 1, in: queue, active: station([seed(.artist, "other")])))
+        XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.skipFill, .noStation))
+        XCTAssertEqual(feed.stagedCount, staged)
+    }
+
+    func testATagsOnlyStationTakesNothing() async {
+        let recorder = QueueEventRecorder()
+        let feed = makeFeed(QueueFakeCatalog(), recorder: recorder)
+        feed.queueStarted(for: .default)
+        XCTAssertNil(skip(feed, from: 1, in: queue, active: .default))
+        XCTAssertEqual(recorder.events.last, .keptCurrentQueue(.skipFill, .noStation))
+    }
+
+    func testSongsAlreadyQueuedAreLeftOut() async throws {
+        let feed = await refillFeed()
+        let twin = await refillFeed()
+        let built = try XCTUnwrap(skip(twin, from: 1, in: queue), "the same build, from a twin feed")
+        let playing = ["a", built[0], built[1]]
+        let fill = try XCTUnwrap(skip(feed, from: 1, in: playing))
+        XCTAssertFalse(fill.contains(built[0]))
+        XCTAssertFalse(fill.contains(built[1]))
+        XCTAssertEqual(fill, Array(built.dropFirst(2)))
+    }
+
+    func testANeverRatedSongIsNotAppended() async throws {
+        let key = try XCTUnwrap(StationQueueKey(refillStation))
+        let bias = SkipFillBias()
+        let feed = StationQueueFeed<String>(
+            resolver: CatalogStationSeedResolver(catalog: QueueFakeCatalog()),
+            materialize: { picks in picks.map(\.id) },
+            options: .init(limit: 10, seedSource: .perDay),
+            day: { 42 },
+            ratings: { bias.value })
+        feed.queueStarted(for: refillStation)
+        _ = await feed.prepare(refillStation)
+        let twin = await refillFeed()
+        let never = try XCTUnwrap(skip(twin, from: 1, in: queue)?.first, "the first song this build appends")
+        // Rated after the build: the staged songs are screened as they are handed over.
+        bias.value = StationRatingBias(revision: StationRatingRevision(changes: 1, day: 42, scope: nil),
+                                 seedsFingerprint: key.seedsFingerprint, excludedSongIDs: [never])
+        let fill = try XCTUnwrap(skip(feed, from: 1, in: queue))
+        XCTAssertFalse(fill.isEmpty)
+        XCTAssertFalse(fill.contains(never), "screened like every hand-off")
+    }
+
+    func testASkipNearTheEndStartsTheNextBuildAfterAFill() async throws {
+        let feed = await refillFeed()
+        let fill = try XCTUnwrap(skip(feed, from: 1, in: queue))
+        XCTAssertNil(feed.stagedKey)
+        let grown = queue + fill
+        XCTAssertNil(skip(feed, from: grown.count - 5, in: grown), "four left to load: nothing to append")
+        XCTAssertNil(feed.buildingKey, "and no build yet")
+        XCTAssertNil(skip(feed, from: grown.count - 4, in: grown), "three left to load: still nothing to append")
+        await until({ feed.stagedKey == StationQueueKey(refillStation) }, "but the build for the next fill starts")
+    }
+}

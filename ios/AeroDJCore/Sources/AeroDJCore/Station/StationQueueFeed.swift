@@ -118,6 +118,9 @@ public enum StationQueueTrigger: String, Equatable, Sendable, CaseIterable {
     case refill
     /// #454: a station started on one song; the rest of its queue is appended behind it.
     case backgroundFill
+    /// #367: a Skip landed on (or past) the queue's last song, so the natural-boundary refill
+    /// before that song never ran. Station songs are appended behind the playing queue.
+    case skipFill
 }
 
 /// Diagnostics. Enums and counts only.
@@ -477,6 +480,38 @@ public final class StationQueueFeed<Item: Sendable> {
         let songs = spaced(unspaced, after: first)
         log(.handedOff(.backgroundFill, songs: songs.count))
         return songs
+    }
+
+    /// #367 (-Atlas): a Skip is about to leave song `currentIndex` of the playing `queue`. The
+    /// refill runs only at the natural boundary before the queue's last song
+    /// (`queueForNextSong`), and a Skip never passes that boundary. So a Skip onto the last song
+    /// left the station with nothing after it, and the next Skip (lock screen or in app) found no
+    /// next song and stopped playback. Returns the staged station songs to append behind the queue
+    /// when the Skip lands on the last song or past it, screened, with songs already in `queue`
+    /// left out. Nil, with nothing taken, otherwise: a next song still follows the Skip's song,
+    /// or the playing queue is not `active`'s station, or its songs are not built yet. Any nil
+    /// keeps today's path unchanged. A Skip with three songs or fewer left starts the build.
+    /// A Skip is the listener's own command, so there is no playback-hold check here.
+    public func takeForSkip(from currentIndex: Int, in queue: [Item], active: StationConfiguration,
+                            sameSong: (Item, Item) -> Bool) -> [Item]? {
+        let target = currentIndex + 1
+        guard target >= 0 else { return nil }
+        if queue.count - target <= refillLead { prefetch(active) }
+        guard target >= queue.count - 1 else { return nil }
+        guard let key = StationQueueKey(active), key == playingKey else { return keep(.skipFill, .noStation) }
+        guard let ready = staged, ready.key == key else {
+            prefetch(active)
+            return keep(.skipFill, .notReady)
+        }
+        if ready.revision != currentRatings(for: key).revision { prefetch(active) }
+        let fresh = screened(ready.items, for: key).filter { item in !queue.contains { sameSong($0, item) } }
+        staged = nil
+        guard !fresh.isEmpty else {
+            prefetch(active)
+            return keep(.skipFill, .notReady)
+        }
+        log(.handedOff(.skipFill, songs: fresh.count))
+        return fresh
     }
 
     // MARK: Playback hooks
