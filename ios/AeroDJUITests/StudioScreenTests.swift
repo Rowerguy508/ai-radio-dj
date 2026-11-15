@@ -1287,7 +1287,12 @@ final class StudioScreenTests: XCTestCase {
             let row = any["library.row.0"]
             XCTAssertTrue(edit.waitForExistence(timeout: 8), app.debugDescription)
             XCTAssertTrue(row.waitForExistence(timeout: 8))
-            try assertInside(edit, box: box, leading: leading, trailing: trailing, name: "library edit")
+            // System toolbar item. XCUITest reports the label frame (36 pt on
+            // iOS 26.5), not the 44 pt hit area of the bar. Same as settings.done
+            // in #512. The row is ours, so it still has to be 44 pt.
+            XCTAssertTrue(edit.exists)
+            XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(edit.frame),
+                          "library edit left the container \(edit.frame) \(box)")
             try assertInside(row, box: box, leading: leading, trailing: trailing, name: "library row")
             try assertOuterEdge(edit, box: box, edge: edge, name: "library edit")
         case "stations":

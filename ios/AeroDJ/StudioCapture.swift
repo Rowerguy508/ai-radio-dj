@@ -630,7 +630,6 @@ private struct SplitLibraryPane: View {
                         preferred: .trailing, edge: insets?.barEdge,
                         leading: .topBarLeading, trailing: .topBarTrailing)) {
                         Button("Edit") {}
-                            .modifier(SplitMinimumTarget(enabled: true))
                             .accessibilityIdentifier("library.edit")
                     }
                 }
