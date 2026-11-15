@@ -213,7 +213,7 @@ struct StationSplitRoot<Detail: View>: View {
     /// `insets` nil keeps the sidebar on the leading edge and the gear where it is.
     private func columns(_ insets: SplitInsets?) -> some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: preferredCompactColumn) {
-            stationPicker
+            stationPicker(insets)
             .navigationTitle(AppName.display)
             // Contain first, so this identifier stays on the list and does not replace the rows.
             .accessibilityElement(children: .contain)
@@ -340,7 +340,7 @@ struct StationSplitRoot<Detail: View>: View {
     /// Compact width (the folded phone) gets the arc carousel; regular width keeps the
     /// sidebar list. Both write the same `selection`, so a pick only selects and opens.
     @ViewBuilder
-    private var stationPicker: some View {
+    private func stationPicker(_ insets: SplitInsets?) -> some View {
         if isCompact {
             // A card tap goes through the list's own setter: same push, same one-time
             // authorization request, same stored id. Scrolling the carousel selects nothing.
@@ -348,11 +348,11 @@ struct StationSplitRoot<Detail: View>: View {
                 selection.wrappedValue = id
             }
         } else {
-            stationList
+            stationList(insets)
         }
     }
 
-    private var stationList: some View {
+    private func stationList(_ insets: SplitInsets?) -> some View {
         List(selection: selection) {
             ForEach(stations) { station in
                 // The link is the row. Its value is the station ID, so the tap selects
@@ -375,6 +375,10 @@ struct StationSplitRoot<Detail: View>: View {
                 .accessibilityIdentifier("stations.row.\(station.id.uuidString)")
             }
         }
+        // A List keeps its own row margin and ignores the host's safeAreaInset,
+        // so on the 540 pt split the row starts 20 pt in, inside the 28 pt leading.
+        // Nil insets is the phone, and the list is returned with no padding.
+        .modifier(SplitStationListPadding(insets: insets))
     }
 
     /// The row the list selects. Nil is not stored: the split clears the binding while it
@@ -419,6 +423,23 @@ struct StationSplitRoot<Detail: View>: View {
         if !seeded.isEmpty { return seeded }
         #endif
         return storedStationID
+    }
+}
+
+/// Pads a split station list by the host's extra insets. A nil inset is the phone
+/// list, returned unchanged. Full width does not adapt, so it is unchanged too.
+private struct SplitStationListPadding: ViewModifier {
+    var insets: SplitInsets?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let insets {
+            content
+                .padding(.leading, CGFloat(insets.padding.leading))
+                .padding(.trailing, CGFloat(insets.padding.trailing))
+        } else {
+            content
+        }
     }
 }
 
