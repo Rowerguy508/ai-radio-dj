@@ -1115,7 +1115,10 @@ extension View {
                     ToolbarItem(placement: SplitToolbar.placement(
                         preferred: .trailing, edge: barEdge,
                         leading: .topBarLeading, trailing: .topBarTrailing)) {
-                        FoldedMoreMenu(reviewCount: reviewCount, onConnections: onConnections)
+                        // A split bar copies an identifier on the menu onto the bar item
+                        // and the button. The button keeps it. Nil edge is the phone menu.
+                        FoldedMoreMenu(reviewCount: reviewCount, onConnections: onConnections,
+                                       identifierOnButton: barEdge != nil)
                             .modifier(SplitMinimumTarget(enabled: barEdge != nil))
                     }
                 }
@@ -1132,8 +1135,27 @@ struct FoldedMoreMenuItems {
 private struct FoldedMoreMenu: View {
     let reviewCount: Int?
     let onConnections: () -> Void
+    /// The phone menu and the symbol-bar menu leave this false, so the identifier
+    /// stays on the menu. A split navigation bar sets it: the system bar item was
+    /// copying the menu's identifier onto an Other and the Button.
+    var identifierOnButton = false
+
+    private var moreLabel: String {
+        reviewCount.map { $0 > 0 ? "More, \($0) to review" : "More" } ?? "More"
+    }
 
     var body: some View {
+        if identifierOnButton {
+            menu(identifierOnLabel: true)
+                .accessibilityLabel(moreLabel)
+        } else {
+            menu(identifierOnLabel: false)
+                .accessibilityLabel(moreLabel)
+                .accessibilityIdentifier("folded.more")
+        }
+    }
+
+    private func menu(identifierOnLabel: Bool) -> some View {
         Menu {
             Button(action: onConnections) {
                 Label("Connections", systemImage: "link")
@@ -1159,9 +1181,23 @@ private struct FoldedMoreMenu: View {
                     }
                 }
                 .contentShape(Circle())
+                .modifier(FoldedMoreButtonIdentifier(enabled: identifierOnLabel))
         }
-        .accessibilityLabel(reviewCount.map { $0 > 0 ? "More, \($0) to review" : "More" } ?? "More")
-        .accessibilityIdentifier("folded.more")
+    }
+}
+
+/// Puts `folded.more` on the menu label. Disabled is the label unchanged, which
+/// is the phone menu and the symbol bar.
+private struct FoldedMoreButtonIdentifier: ViewModifier {
+    var enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.accessibilityIdentifier("folded.more")
+        } else {
+            content
+        }
     }
 }
 

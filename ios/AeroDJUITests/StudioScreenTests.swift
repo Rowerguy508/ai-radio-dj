@@ -1277,9 +1277,11 @@ final class StudioScreenTests: XCTestCase {
                 try assertInside(more, box: box, leading: leading, trailing: trailing, name: "more")
             } else {
                 XCTAssertFalse(any["folded.systemBar"].exists, "a narrow split keeps the phone column")
-                let more = any["folded.more"]
+                // More is a Menu inside the navigation bar. Same label-frame check as
+                // the other system toolbar buttons. The symbol-bar More stays on assertInside.
+                let more = app.buttons["folded.more"]
                 XCTAssertTrue(more.waitForExistence(timeout: 5), "narrow split keeps More")
-                try assertInside(more, box: box, leading: leading, trailing: trailing, name: "more")
+                assertSystemToolbar(more, box: box, name: "more")
                 try assertOuterEdge(more, box: box, edge: edge, name: "more")
             }
         case "library":
