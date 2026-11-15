@@ -118,6 +118,9 @@ public enum StationQueueTrigger: String, Equatable, Sendable, CaseIterable {
     case refill
     /// #454: a station started on one song; the rest of its queue is appended behind it.
     case backgroundFill
+    /// #367: a Skip landed on (or past) the queue's last song, so the natural-boundary refill
+    /// before that song never ran. Station songs are appended behind the playing queue.
+    case skipFill
 }
 
 /// Diagnostics. Enums and counts only.
@@ -211,6 +214,11 @@ public final class StationQueueFeed<Item: Sendable> {
     private var lookedUpOpenerSeed: [StationQueueKey: (songID: String, seed: Int)] = [:]
     /// #418: a station does not open with any of its last `openerMemory` openers while it has another.
     static var openerMemory: Int { 3 }
+    /// #442: song ID -> artist key (`StationCandidate.artistKey`) from recent builds and first-song
+    /// lookups, so the background fill can keep `artistGap` from the song a fast start played.
+    /// Bounded; in memory only, never logged or saved.
+    private var spacingArtists: [String: String] = [:]
+    private static var maxSpacingArtists: Int { 2048 }
     private var generation = 0
     /// The station the playing queue belongs to. `nil` before the first queue start, and for a
     /// queue started on a station with no seeds (see `queueStartReported`).
@@ -348,6 +356,7 @@ public final class StationQueueFeed<Item: Sendable> {
         building = nil
         staged = (key, bias.revision, items)
         rememberOpeners(Array(items.prefix(Self.openersPerStation)), for: key)
+        rememberArtists(of: picks)
         lastBuildArtistIDs = Dictionary(picks.compactMap { c in c.artistID.map { (c.id, $0) } },
                                         uniquingKeysWith: { first, _ in first })
         log(.built(songs: items.count, poolSongs: pool.count, failedLookups: pool.failedLookups,
@@ -376,6 +385,35 @@ public final class StationQueueFeed<Item: Sendable> {
         while cachedOpenerOrder.count > Self.maxCachedStations {
             cachedOpeners[cachedOpenerOrder.removeFirst()] = nil
         }
+    }
+
+    private func rememberArtists(of picks: [StationCandidate]) {
+        if spacingArtists.count + picks.count > Self.maxSpacingArtists { spacingArtists = [:] }
+        for pick in picks { spacingArtists[pick.id] = pick.artistKey }
+    }
+
+    private func artistKey(of item: Item) -> String? { songID(item).flatMap { spacingArtists[$0] } }
+
+    /// #442: `songs` re-spaced to follow `first` (the song a fast start is playing) as one run, with
+    /// the builder's own rule (`StationPoolBuilder.spaced`): the earliest song whose artist is not
+    /// among the last `artistGap` played; if every remaining song breaks the gap, the earliest.
+    /// The build was spaced without `first` at its head and with `first` still inside it, so both the
+    /// seam and the hole `first` left can put one artist too close. Only moves songs; drops none.
+    private func spaced(_ songs: [Item], after first: Item) -> [Item] {
+        let gap = max(options.artistGap, 0)
+        guard gap > 0 else { return songs }
+        var remaining = songs.map { (item: $0, artist: artistKey(of: $0)) }
+        var recent: [String?] = [artistKey(of: first)]
+        var result: [Item] = []
+        result.reserveCapacity(songs.count)
+        while !remaining.isEmpty {
+            let blocked = Set(recent.suffix(gap).compactMap { $0 })
+            let pick = remaining.firstIndex { $0.artist.map { !blocked.contains($0) } ?? true } ?? 0
+            let next = remaining.remove(at: pick)
+            result.append(next.item)
+            recent.append(next.artist)
+        }
+        return result
     }
 
     /// True when the current ratings and the recently played songs still allow `item`.
@@ -412,6 +450,7 @@ public final class StationQueueFeed<Item: Sendable> {
         opts.ratings = bias
         let picks = StationPoolBuilder.build(pool, configuration: one, options: opts)
         guard !picks.isEmpty else { return nil }
+        rememberArtists(of: picks)
         let items = await materialize(picks)
         return pickOpener(screened(items, for: key), key: key, seedIndex: seedIndex)
     }
@@ -488,17 +527,51 @@ public final class StationQueueFeed<Item: Sendable> {
     }
 
     /// #454: the staged songs to append behind `first` once the full build is ready, screened, with
-    /// `first` itself left out. Nil (and nothing taken) unless the playing queue is `active`'s
+    /// `first` itself left out, and spaced as one run after `first` (#442: `artistGap` holds across the
+    /// seam). Nil (and nothing taken) unless the playing queue is `active`'s
     /// station and its queue is staged.
     public func takeForFill(active: StationConfiguration, after first: Item) -> [Item]? {
         guard let key = StationQueueKey(active), key == playingKey else { return keep(.backgroundFill, .noStation) }
         guard let ready = staged, ready.key == key else { return keep(.backgroundFill, .notReady) }
         let firstID = songID(first)
-        let songs = screened(ready.items, for: key).filter { item in firstID == nil || songID(item) != firstID }
+        let unspaced = screened(ready.items, for: key).filter { item in firstID == nil || songID(item) != firstID }
         staged = nil
-        guard !songs.isEmpty else { return keep(.backgroundFill, .notReady) }
+        guard !unspaced.isEmpty else { return keep(.backgroundFill, .notReady) }
+        let songs = spaced(unspaced, after: first)
         log(.handedOff(.backgroundFill, songs: songs.count))
         return songs
+    }
+
+    /// #367 (-Atlas): a Skip is about to leave song `currentIndex` of the playing `queue`. The
+    /// refill runs only at the natural boundary before the queue's last song
+    /// (`queueForNextSong`), and a Skip never passes that boundary. So a Skip onto the last song
+    /// left the station with nothing after it, and the next Skip (lock screen or in app) found no
+    /// next song and stopped playback. Returns the staged station songs to append behind the queue
+    /// when the Skip lands on the last song or past it, screened, with songs already in `queue`
+    /// left out. Nil, with nothing taken, otherwise: a next song still follows the Skip's song,
+    /// or the playing queue is not `active`'s station, or its songs are not built yet. Any nil
+    /// keeps today's path unchanged. A Skip with three songs or fewer left starts the build.
+    /// A Skip is the listener's own command, so there is no playback-hold check here.
+    public func takeForSkip(from currentIndex: Int, in queue: [Item], active: StationConfiguration,
+                            sameSong: (Item, Item) -> Bool) -> [Item]? {
+        let target = currentIndex + 1
+        guard target >= 0 else { return nil }
+        if queue.count - target <= refillLead { prefetch(active) }
+        guard target >= queue.count - 1 else { return nil }
+        guard let key = StationQueueKey(active), key == playingKey else { return keep(.skipFill, .noStation) }
+        guard let ready = staged, ready.key == key else {
+            prefetch(active)
+            return keep(.skipFill, .notReady)
+        }
+        if ready.revision != currentRatings(for: key).revision { prefetch(active) }
+        let fresh = screened(ready.items, for: key).filter { item in !queue.contains { sameSong($0, item) } }
+        staged = nil
+        guard !fresh.isEmpty else {
+            prefetch(active)
+            return keep(.skipFill, .notReady)
+        }
+        log(.handedOff(.skipFill, songs: fresh.count))
+        return fresh
     }
 
     // MARK: Playback hooks
