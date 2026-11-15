@@ -582,19 +582,22 @@ jobs:
             # REC is the simctl client (xcrun execs it). It logs "Wrote video to" and
             # exits while the mp4 is still 0 bytes; CoreSimulator finishes the file
             # afterwards. Run 43678829149 copied that empty file (both attempts).
-            # Hosted runners record straight into $SHOTS and do not take this branch.
+            # Two checks, 3 seconds apart, inside 30s. Each size is logged so a mini
+            # run shows whether the source fills in. Hosted runners record straight
+            # into $SHOTS and do not take this branch.
             size=0
             last=-1
             stable=0
             deadline=$((SECONDS + 30))
             while [ "$SECONDS" -lt "$deadline" ]; do
               size=$(stat -f%z "$OUT" 2>/dev/null || echo 0)
+              echo "Walkthrough source $OUT size: ${size} bytes"
               if [ "$size" -gt 0 ] && [ "$size" = "$last" ]; then
                 stable=1
                 break
               fi
               last=$size
-              sleep 1
+              sleep 3
             done
             if [ "$stable" -ne 1 ]; then
               echo "::error::Walkthrough recording at $OUT never became a stable non-empty file within 30s (source size: ${size} bytes)"
