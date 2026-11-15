@@ -1243,6 +1243,9 @@ final class StudioScreenTests: XCTestCase {
                 predicate: NSPredicate(format: "label == %@", expected), object: decision)
             XCTAssertEqual(XCTWaiter().wait(for: [matched], timeout: 8), .completed,
                            "\(screen) decision \(decision.label), expected \(expected)")
+            if sample.name == "half", screen == "stations" {
+                save(app, "split-half-stations")
+            }
             try assertSplitScreen(screen, app: app, box: box, leading: sample.leading,
                                   trailing: sample.trailing, edge: edge,
                                   sideBar: sample.name != "narrow")
