@@ -444,6 +444,30 @@ final class FoldedColumnLayoutTests: XCTestCase {
         }
     }
 
+    /// The More menu's box stays inside the safe area on the wide Duo, the narrow split,
+    /// and a short window. It ends before the rail.
+    func testMoreMenuStaysInsideTheSafeBox() {
+        let boxes = [
+            CGRect(x: 0, y: 0, width: 640, height: 820),
+            CGRect(x: 0, y: 0, width: 500, height: 820),
+            CGRect(x: 0, y: 0, width: 640, height: 320),
+            CGRect(x: 20, y: 47, width: 600, height: 700),
+        ]
+        for safe in boxes {
+            let menu = DuoMoreMenuLayout.resolve(safeWidth: safe.width, safeHeight: safe.height)
+            let rect = menu.rect(in: safe)
+            XCTAssertTrue(safe.contains(rect), "\(rect) left \(safe)")
+            XCTAssertGreaterThanOrEqual(rect.width, 44, "\(safe)")
+            XCTAssertGreaterThanOrEqual(rect.height, 44, "\(safe)")
+            let column = FoldedColumnLayout.duoHorizontal(containerWidth: safe.width, containerHeight: safe.height,
+                                                          artMin: 140, artMax: 420)
+            if column.contentWidth >= 52 {
+                let railMinX = safe.maxX - column.edgeInset - column.barWidth
+                XCTAssertLessThanOrEqual(rect.maxX, railMinX - 7, "menu overlaps the rail in \(safe)")
+            }
+        }
+    }
+
     func testSleepTimerChoicesDoNotClaimOnAir() {
         XCTAssertEqual(DuoSleepTimer.minuteChoices, [15, 30, 45, 60])
         XCTAssertEqual(DuoSleepTimer.accessibilityValue(minutes: nil), "Off")

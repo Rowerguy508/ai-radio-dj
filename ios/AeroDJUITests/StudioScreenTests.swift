@@ -424,7 +424,8 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(tune.waitForExistence(timeout: 5), "Tune stays in More\n\(app.debugDescription)")
         XCTAssertTrue(tune.isHittable, "Tune in More is not hittable")
         XCTAssertGreaterThanOrEqual(tune.frame.height, 44, "Tune in More is under 44 pt")
-        // The popover covers the rail. A tap on the artwork column closes it without tuning.
+        assertMoreMenuInsideWindow(app)
+        // A tap on the artwork column closes it without tuning.
         track.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
         let tuneClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: tune)
         XCTAssertEqual(XCTWaiter().wait(for: [tuneClosed], timeout: 5), .completed, "More did not close")
@@ -475,14 +476,20 @@ final class StudioScreenTests: XCTestCase {
         let more = app.buttons["folded.more"]
         XCTAssertTrue(more.waitForExistence(timeout: 5), "More missing\n\(app.debugDescription)")
         more.tap()
-        let popover = app.popovers.firstMatch
-        XCTAssertTrue(popover.waitForExistence(timeout: 5), "More popover did not open\n\(app.debugDescription)")
-        let rows = popover.buttons.allElementsBoundByIndex
-        XCTAssertFalse(rows.isEmpty, "More popover has no rows\n\(app.debugDescription)")
-        for row in rows {
-            XCTAssertGreaterThanOrEqual(row.frame.height, 44, "\(row.identifier) is under 44 pt")
-        }
+        assertMoreMenuInsideWindow(app)
         save(app, "duo-wide-more-popover")
+    }
+
+    /// Accessibility text makes each row taller. The menu still stays inside the window.
+    @MainActor
+    func testDuoMoreMenuStaysInsideTheWindowAtLargeText() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoWideSpeaking", largeText: true)
+        let more = app.buttons["folded.more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 15), "More missing at large text\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(more.frame.height, 44)
+        more.tap()
+        assertMoreMenuInsideWindow(app)
     }
 
     /// Collapse leaves the unfolded rail and shows the centred column. Playback stays up.
@@ -546,6 +553,28 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(any["folded.visualizer"].waitForExistence(timeout: 5),
                       "the content-column orb is missing\n\(app.debugDescription)")
         save(app, "duo-wide-onair")
+    }
+
+    /// Every visible More row is at least 44 pt and fully inside the window.
+    @MainActor
+    private func assertMoreMenuInsideWindow(_ app: XCUIApplication, file: StaticString = #filePath,
+                                            line: UInt = #line) {
+        let menu = app.descendants(matching: .any)["folded.moreMenu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5),
+                      "More menu did not open\n\(app.debugDescription)", file: file, line: line)
+        let window = app.windows.firstMatch.frame.insetBy(dx: -1, dy: -1)
+        XCTAssertTrue(window.contains(menu.frame),
+                      "More menu left the window \(menu.frame) vs \(window)", file: file, line: line)
+        let rows = menu.buttons.allElementsBoundByIndex.filter { $0.exists && $0.isHittable }
+        XCTAssertFalse(rows.isEmpty, "More menu has no visible rows\n\(app.debugDescription)",
+                       file: file, line: line)
+        for row in rows {
+            XCTAssertGreaterThanOrEqual(row.frame.height, 44, "\(row.identifier) is under 44 pt",
+                                        file: file, line: line)
+            XCTAssertTrue(window.contains(row.frame),
+                          "\(row.identifier) left the window \(row.frame) vs \(window)",
+                          file: file, line: line)
+        }
     }
 
     /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and

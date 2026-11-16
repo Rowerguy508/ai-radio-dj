@@ -132,6 +132,42 @@ public enum FoldedColumnLayout {
     }
 }
 
+/// Where the unfolded rail's More menu sits. The box is the safe-area size: the menu
+/// stays inward of the rail, inside that box, on the wide Duo and on the narrow split.
+public struct DuoMoreMenuLayout: Equatable, Sendable {
+    public var width: Double
+    public var maxHeight: Double
+    /// From the trailing edge of the safe box to the menu's trailing edge.
+    public var trailingGap: Double
+    public var topGap: Double
+
+    public init(width: Double, maxHeight: Double, trailingGap: Double, topGap: Double) {
+        self.width = width
+        self.maxHeight = maxHeight
+        self.trailingGap = trailingGap
+        self.topGap = topGap
+    }
+
+    public static func resolve(safeWidth: Double, safeHeight: Double) -> DuoMoreMenuLayout {
+        let column = FoldedColumnLayout.duoHorizontal(containerWidth: max(0, safeWidth),
+                                                      containerHeight: max(safeHeight, 1),
+                                                      artMin: 140, artMax: 420)
+        let trailingGap = min(max(0, safeWidth - 44), column.edgeInset + column.barWidth + 8)
+        let available = max(44, safeWidth - trailingGap)
+        let width = min(220, available, max(44, column.contentWidth - 8))
+        let topGap = min(column.topClearance, max(0, safeHeight - 44))
+        let maxHeight = max(44, safeHeight - topGap - 8)
+        return DuoMoreMenuLayout(width: width, maxHeight: maxHeight, trailingGap: trailingGap, topGap: topGap)
+    }
+
+    /// The menu's frame inside `safe`. It never crosses `safe`.
+    public func rect(in safe: CGRect) -> CGRect {
+        let height = min(maxHeight, max(44, safe.height - topGap - 8))
+        let x = safe.maxX - trailingGap - width
+        return CGRect(x: x, y: safe.minY + topGap, width: width, height: height)
+    }
+}
+
 /// Presentational Duo rules (#460). They read flags the UI already has. They do not
 /// touch playback or the DJ session.
 public enum DuoPresentation {
