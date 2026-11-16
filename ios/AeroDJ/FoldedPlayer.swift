@@ -103,6 +103,7 @@ struct FoldedPlayer: View {
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @State private var moreOpen = false
 
     var body: some View {
         GeometryReader { geo in
@@ -117,6 +118,7 @@ struct FoldedPlayer: View {
                     wideBody(in: geo.size)
                 } else {
                     centredColumnBody(in: geo.size)
+                        .onAppear { moreOpen = false }
                 }
             }
         }
@@ -268,7 +270,8 @@ struct FoldedPlayer: View {
                                 showsTransport: content.showsTransport,
                                 cancelStart: { actions.cancelStart() },
                                 resume: { await actions.resume() },
-                                skip: { await actions.skip() })
+                                skip: { await actions.skip() },
+                                moreOpen: $moreOpen)
                     .padding(.top, CGFloat(layout.topClearance))
                     .padding(.bottom, 8)
                     .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
@@ -279,6 +282,26 @@ struct FoldedPlayer: View {
         }
         .padding(.horizontal, CGFloat(layout.edgeInset))
         .frame(width: size.width, height: size.height)
+        .overlay {
+            if moreOpen, !systemBar {
+                let menu = DuoMoreMenuLayout.resolve(safeWidth: Double(size.width), safeHeight: Double(size.height))
+                ZStack(alignment: .topTrailing) {
+                    Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .onTapGesture { moreOpen = false }
+                        .accessibilityHidden(true)
+                    DuoRailMorePanel(reviewCount: moreMenu?.reviewCount,
+                                     width: CGFloat(menu.width),
+                                     maxHeight: CGFloat(menu.maxHeight),
+                                     onConnections: moreMenu?.onConnections ?? {},
+                                     onTune: onTune,
+                                     dismiss: { moreOpen = false })
+                        .padding(.top, CGFloat(menu.topGap))
+                        .padding(.trailing, CGFloat(menu.trailingGap))
+                }
+            }
+        }
     }
 
     /// Horizontal scrubber, station, and the DJ chip. Play/pause and skip live on the

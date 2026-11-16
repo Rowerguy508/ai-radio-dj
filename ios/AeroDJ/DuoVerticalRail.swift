@@ -49,6 +49,7 @@ struct DuoVerticalRail: View {
     var cancelStart: () -> Void = {}
     var resume: () async -> Void = {}
     var skip: () async -> Void = {}
+    @Binding var moreOpen: Bool
 
     /// True only in a binary built with the iOS 27.1 SDK, running on iOS 27.1+.
     /// The 26.5 CI build always takes the custom rail.
@@ -64,7 +65,7 @@ struct DuoVerticalRail: View {
             DuoRailIconButton(systemImage: "chevron.down", label: "Collapse",
                               hint: "Shows the folded player. Music continues.",
                               identifier: "folded.collapse", action: onCollapse)
-            DuoRailMoreMenu(reviewCount: reviewCount, onConnections: onConnections, onTune: onTune)
+            DuoRailMoreButton(open: $moreOpen, reviewCount: reviewCount)
             if showsTransport {
                 DuoRailPlayPauseButton(transport: transport, startTimedOut: startTimedOut,
                                        pause: pause, cancelStart: cancelStart, resume: resume)
@@ -211,15 +212,12 @@ private struct DuoRailPlayPauseButton: View {
 }
 
 /// ⋯ for the rail only. The navigation-bar menu is untouched.
-/// A system menu row measured 38 pt, under the 44 pt target, so this popover owns the row height.
-private struct DuoRailMoreMenu: View {
-    let reviewCount: Int?
-    let onConnections: () -> Void
-    let onTune: () -> Void
-    @State private var open = false
+struct DuoRailMoreButton: View {
+    @Binding var open: Bool
+    var reviewCount: Int? = nil
 
     var body: some View {
-        Button { open = true } label: {
+        Button { open.toggle() } label: {
             Image(systemName: "ellipsis")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.white)
@@ -229,31 +227,59 @@ private struct DuoRailMoreMenu: View {
         .buttonStyle(.plain)
         .accessibilityLabel(reviewCount.map { $0 > 0 ? "More, \($0) to review" : "More" } ?? "More")
         .accessibilityIdentifier("folded.more")
-        .popover(isPresented: $open, arrowEdge: .leading) {
-            VStack(alignment: .leading, spacing: 0) {
-                row("Connections", systemImage: "link", identifier: "more.connections", action: onConnections)
-                if let reviewCount, reviewCount > 0 {
-                    row("Review \(reviewCount) shared \(reviewCount == 1 ? "item" : "items")",
-                        systemImage: "exclamationmark.bubble", identifier: "more.review", action: onConnections)
-                }
-                row("Tune station", systemImage: "slider.horizontal.3", identifier: "transport.tune",
-                    hint: "Opens the tuner. Music continues.", action: onTune)
-            }
-            .padding(.vertical, 4)
-            .frame(minWidth: 220)
-            .presentationCompactAdaptation(.popover)
+    }
+}
+
+/// Inward of the rail, inside the safe box. Rows stay 44 pt and scroll at large text
+/// instead of leaving the window. Not a system popover: that one opened off the trailing edge.
+struct DuoRailMorePanel: View {
+    let reviewCount: Int?
+    let width: CGFloat
+    let maxHeight: CGFloat
+    let onConnections: () -> Void
+    let onTune: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            menuRows.frame(width: width)
+            ScrollView { menuRows }
+                .frame(width: width, height: maxHeight)
         }
+        .background(FoldedStyle.opaqueGlass, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.35), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("folded.moreMenu")
+    }
+
+    private var menuRows: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            row("Connections", systemImage: "link", identifier: "more.connections", action: onConnections)
+            if let reviewCount, reviewCount > 0 {
+                row("Review \(reviewCount) shared \(reviewCount == 1 ? "item" : "items")",
+                    systemImage: "exclamationmark.bubble", identifier: "more.review", action: onConnections)
+            }
+            row("Tune station", systemImage: "slider.horizontal.3", identifier: "transport.tune",
+                hint: "Opens the tuner. Music continues.", action: onTune)
+        }
+        .padding(.vertical, 4)
     }
 
     private func row(_ title: String, systemImage: String, identifier: String, hint: String? = nil,
                      action: @escaping () -> Void) -> some View {
         Button {
-            open = false
+            dismiss()
             action()
         } label: {
             Label(title, systemImage: systemImage)
+                .labelStyle(.titleAndIcon)
+                .lineLimit(3)
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 12)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -381,6 +407,26 @@ private struct DuoSystemRailAttacher: ViewModifier {
 }
 
 #if compiler(>=6.4)
+/// iOS 27.1 toolbar item. The arrow sits on the trailing edge so the menu opens inward.
+@available(iOS 27.1, *)
+private struct DuoRailSystemMore: View {
+    let reviewCount: Int?
+    let onConnections: () -> Void
+    let onTune: () -> Void
+    @State private var open = false
+
+    var body: some View {
+        let menu = DuoMoreMenuLayout.resolve(safeWidth: 640, safeHeight: 820)
+        DuoRailMoreButton(open: $open, reviewCount: reviewCount)
+            .popover(isPresented: $open, arrowEdge: .trailing) {
+                DuoRailMorePanel(reviewCount: reviewCount, width: CGFloat(menu.width),
+                                 maxHeight: CGFloat(min(menu.maxHeight, 360)),
+                                 onConnections: onConnections, onTune: onTune, dismiss: { open = false })
+                    .presentationCompactAdaptation(.popover)
+            }
+    }
+}
+
 @available(iOS 27.1, *)
 private struct DuoSystemVerticalToolbar: ViewModifier {
     var hooks: DuoRailHooks?
@@ -397,8 +443,8 @@ private struct DuoSystemVerticalToolbar: ViewModifier {
                     }
                     .axisBehavior(.verticalPreferred)
                     ToolbarItem(placement: .primaryAction) {
-                        DuoRailMoreMenu(reviewCount: hooks.reviewCount,
-                                        onConnections: hooks.onConnections, onTune: hooks.onTune)
+                        DuoRailSystemMore(reviewCount: hooks.reviewCount,
+                                          onConnections: hooks.onConnections, onTune: hooks.onTune)
                     }
                     .axisBehavior(.verticalPreferred)
                     if hooks.showsTransport {
