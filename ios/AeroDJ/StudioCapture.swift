@@ -73,6 +73,9 @@ enum StudioCaptureScenario: String {
     /// Folded phone container, then the unfolded Duo, in one launch. Playback, the
     /// scroll anchor and the selected station must survive the size-class change.
     case duoContinuity
+    /// The unfolded rail with the DJ speaking, so the live dot is lit. Same container as
+    /// `duoWideReady`. The ON AIR pill's timer is frozen, as in `onAir`.
+    case duoWideSpeaking
     /// Regular width at the same 640 × 820 pt: artwork and controls in one pane, the
     /// up-next timeline in the other. The compact-class `duoWideReady` container is unchanged.
     case duoArrangement
@@ -119,7 +122,7 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.stopped
         case .error:
             return PlaybackFixtures.recoverableError
-        case .duoWideReady, .duoArrangement, .duoWideOnAir:
+        case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
             // which draws the scrubber as a non-interactive element.
             var playing = PlaybackFixtures.playing
@@ -186,7 +189,7 @@ struct StudioCaptureView: View {
                 CaptureStationSplit(dependencies: dependencies)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("capture.shell")
-            } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideOnAir {
+            } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideSpeaking || scenario == .duoWideOnAir {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .duoContinuity {
                 DuoContinuityCapture(studio: dependencies.studio, loads: continuityLoads)
@@ -262,7 +265,7 @@ struct StudioCaptureView: View {
                 studio.dj.send(.playbackFailed(afterTrack: 0))
             case .breakReady, .duoWideReady, .duoArrangement:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
-            case .onAir, .duoWideOnAir:
+            case .duoWideSpeaking, .onAir, .duoWideOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
                 StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
@@ -705,9 +708,9 @@ enum StudioCaptureSegment {
     static var initial: WorkspaceSegment?
 }
 
-/// The `onAir` capture's frozen ON AIR timer. `FoldedOnAirPill` shows `frozenElapsed` when it
-/// is set; only the `onAir` scenario sets it, so every other run (and Release, which does not
-/// compile this) counts from when the pill appeared.
+/// The `onAir`, `duoWideSpeaking`, and `duoWideOnAir` captures' frozen ON AIR timer.
+/// `FoldedOnAirPill` shows `frozenElapsed` when it is set; only those scenarios set it, so
+/// every other run (and Release, which does not compile this) counts from when the pill appeared.
 @MainActor
 enum StudioCaptureOnAir {
     /// What `closed-ax5-onair` shows: "0:12". Same width as a live "0:0x".

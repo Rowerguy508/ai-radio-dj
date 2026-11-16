@@ -39,6 +39,9 @@ struct PlayingScreen: View {
     @SceneStorage("aerodj.continuity.playback") private var continuityPlayback = ""
     #endif
     @State private var showWorkspace = false
+    /// Collapse on the unfolded rail shows the centred column. The container size stays,
+    /// and nothing starts or stops. A real fold clears it.
+    @State private var duoCollapsed = false
     /// One search session above the compact/Studio switch so a fold cannot wipe results.
     @StateObject private var studioSearch = StudioSearchModel()
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -200,8 +203,11 @@ struct PlayingScreen: View {
             // never height), so the bar and the body cannot disagree.
             let showsTrack: Bool = { if case .track = content { return true } else { return false } }()
             let usesOuterReskin = FoldedOuterLayout.usesOuterReskin(containerWidth: width, showsTrack: showsTrack)
+            let showsRail = placement == .duoHorizontal && !duoCollapsed
             let movesMoreIntoThePlayer = placement != .phoneBottom || usesOuterReskin
             let openConnections = { segment = .connections; showWorkspace = true }
+            let openQueue = { segment = .queue; showWorkspace = true }
+            let openTune = { segment = .tune; showWorkspace = true }
             // Two panes only at regular width, and only for the tall listen layout.
             // Compact width keeps FoldedPlayer, including the phone path, unchanged.
             let arrangement = ArrangementPaneLayout.resolve(
@@ -217,9 +223,11 @@ struct PlayingScreen: View {
                              moreMenu: movesMoreIntoThePlayer
                                 ? FoldedMoreMenuItems(reviewCount: dj.reviewCount, onConnections: openConnections)
                                 : nil,
-                             onQueue: { segment = .queue; showWorkspace = true },
-                             onTune: { segment = .tune; showWorkspace = true },
+                             onQueue: openQueue,
+                             onTune: openTune,
                              onReview: { segment = .connections; showWorkspace = true },
+                             showsUnfoldedRail: showsRail,
+                             onCollapseRail: { duoCollapsed = true },
                              stationStops: stationStops,
                              onOpenStation: onOpenStation,
                              scrollAnchor: scrollAnchor)
@@ -227,8 +235,21 @@ struct PlayingScreen: View {
                     .accessibilityIdentifier("layout.compact")
                     .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
                                    showsMore: !movesMoreIntoThePlayer,
-                                   hidesSystemBack: placement == .duoHorizontal || usesOuterReskin,
-                                   onConnections: openConnections)
+                                   hidesSystemBack: showsRail || usesOuterReskin,
+                                   onConnections: openConnections,
+                                   systemRail: showsRail ? DuoRailHooks(
+                                        dj: dj, reviewCount: dj.reviewCount, upNext: snapshot.upNext,
+                                        onConnections: openConnections, onQueue: openQueue, onTune: openTune,
+                                        onCollapse: { duoCollapsed = true }, pause: { actions.pause() },
+                                        transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                                        showsTransport: content.showsTransport,
+                                        cancelStart: { actions.cancelStart() },
+                                        resume: { await actions.resume() },
+                                        skip: { await actions.skip() }) : nil,
+                                   keepSystemVerticalBar: placement == .duoHorizontal)
+                    .onChange(of: placement) { _, new in
+                        if new != .duoHorizontal { duoCollapsed = false }
+                    }
             } else {
                 ArrangementListenPlayer(station: currentStation, heading: heading,
                                         isTestStation: isTestStation, content: content,
