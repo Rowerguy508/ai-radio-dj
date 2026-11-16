@@ -431,6 +431,46 @@ final class StudioScreenTests: XCTestCase {
         save(app, "duo-wide-ready")
     }
 
+    /// #502: the unfolded Duo (640 × 820 pt) with the DJ on air, so the owner can see that
+    /// layout first. Same container and fixtures as `duoWideReady`; the DJ is `.speaking`
+    /// with the timer frozen at 0:12. The track column keeps the art (`keepArtVisible`);
+    /// the orb is the content-column visualizer, not an orb-only art card.
+    @MainActor
+    func testDuoWideOnAirKeepsArtAndShowsTheContentColumnOrb() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoWideOnAir")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertFalse(any["layout.studio"].exists, "the Duo split stays the compact player")
+
+        let container = any["capture.duoContainer"]
+        XCTAssertTrue(container.waitForExistence(timeout: 5), "Duo container missing\n\(app.debugDescription)")
+        XCTAssertNotNil(settledFrame(of: container, "Duo container") {
+            abs($0.width - 640) <= 1 && abs($0.height - 820) <= 1
+        }, "container never settled at 640 × 820 pt: \(container.frame)")
+
+        XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10),
+                      "track column missing\n\(app.debugDescription)")
+        XCTAssertTrue(any["folded.contentColumn"].waitForExistence(timeout: 10),
+                      "content column missing\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+
+        let onAir = any["dj.onAir"]
+        XCTAssertTrue(onAir.waitForExistence(timeout: 5), "dj.onAir missing\n\(app.debugDescription)")
+        XCTAssertFalse(any["dj.ready"].exists, "On Air replaces the ready line")
+        let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
+        XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
+
+        XCTAssertTrue(any["folded.artCard.artwork"].waitForExistence(timeout: 5),
+                      "the Duo track column keeps the art while on air\n\(app.debugDescription)")
+        XCTAssertFalse(any["folded.artCard.orb"].exists,
+                       "keepArtVisible leaves the art card as art, not the orb-only card")
+        XCTAssertTrue(any["folded.visualizer"].waitForExistence(timeout: 5),
+                      "the content-column orb is missing\n\(app.debugDescription)")
+        save(app, "duo-wide-onair")
+    }
+
     /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and
     /// accepted by `isFinal`; nil after `timeout`. Polls on the run loop, never a fixed sleep
     /// before a screenshot.
@@ -622,6 +662,38 @@ final class StudioScreenTests: XCTestCase {
         let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
         XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
         save(app, "closed-ax5-onair")
+    }
+
+    /// #435 n1 (#434): default-size on-air stills, so the orb-only art card is visible.
+    /// `closed-ax5-onair` often hides the card (`includesArt: false` at AX5). The existing
+    /// `onAir` scenario is unchanged (frozen ON AIR timer at 0:12). Closed (phone) is the
+    /// folded player, where `FoldedArtCard` swaps art for the orb. Open (iPad) is the
+    /// two-zone Studio, which has no folded art card; the shot still records the Studio
+    /// while the DJ is on air.
+    @MainActor
+    func testDefaultOnAirShowsOrbOnlyArtCard() throws {
+        let app = launch(scenario: "onAir")
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "\(layout) expected at default size:\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        let any = app.descendants(matching: .any)
+        if isOpenLayout {
+            XCTAssertFalse(any["folded.artCard.orb"].exists,
+                           "the two-zone Studio has no folded art card")
+        } else {
+            let onAir = any["dj.onAir"]
+            XCTAssertTrue(onAir.waitForExistence(timeout: 5), "dj.onAir missing\n\(app.debugDescription)")
+            XCTAssertFalse(any["dj.ready"].exists, "On Air replaces the ready line")
+            let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
+            XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
+            XCTAssertTrue(any["folded.artCard.orb"].waitForExistence(timeout: 5),
+                          "the art card shows the orb while on air\n\(app.debugDescription)")
+            XCTAssertFalse(any["folded.artCard.artwork"].exists,
+                           "the art is hidden while on air")
+        }
+        save(app, isOpenLayout ? "open-onair" : "closed-onair")
     }
 
     // MARK: Duo shell, fold, and rotation
