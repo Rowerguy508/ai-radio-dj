@@ -195,7 +195,12 @@ struct PlayingScreen: View {
                 containerHeight: Double(height),
                 accessibilityTextSize: typeSize.isAccessibilitySize
             ).controlPlacement ?? .phoneBottom
-            let movesMoreIntoThePlayer = placement != .phoneBottom
+            // The 01-folded reskin draws back and ⋯ itself. FoldedPlayer.body picks its body
+            // with the same rule (FoldedOuterLayout.usesOuterReskin: phone width and a track,
+            // never height), so the bar and the body cannot disagree.
+            let showsTrack: Bool = { if case .track = content { return true } else { return false } }()
+            let usesOuterReskin = FoldedOuterLayout.usesOuterReskin(containerWidth: width, showsTrack: showsTrack)
+            let movesMoreIntoThePlayer = placement != .phoneBottom || usesOuterReskin
             let openConnections = { segment = .connections; showWorkspace = true }
             // Two panes only at regular width, and only for the tall listen layout.
             // Compact width keeps FoldedPlayer, including the phone path, unchanged.
@@ -222,7 +227,7 @@ struct PlayingScreen: View {
                     .accessibilityIdentifier("layout.compact")
                     .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
                                    showsMore: !movesMoreIntoThePlayer,
-                                   hidesSystemBack: placement == .duoHorizontal,
+                                   hidesSystemBack: placement == .duoHorizontal || usesOuterReskin,
                                    onConnections: openConnections)
             } else {
                 ArrangementListenPlayer(station: currentStation, heading: heading,
