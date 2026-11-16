@@ -160,27 +160,53 @@ struct PlayingScreen: View {
                                                                 containerHeight: Double(height))
             let movesMoreIntoThePlayer = placement != .phoneBottom
             let openConnections = { segment = .connections; showWorkspace = true }
-            FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
-                         content: content, snapshot: snapshot, actions: actions, dj: dj,
-                         search: search, studioSearch: studioSearch, timeSource: timeSource,
-                         artworkNamespace: morphNamespace, speechLevel: studio.dj,
-                         moreMenu: movesMoreIntoThePlayer
-                            ? FoldedMoreMenuItems(reviewCount: dj.reviewCount, onConnections: openConnections)
-                            : nil,
-                         onQueue: { segment = .queue; showWorkspace = true },
-                         onTune: { segment = .tune; showWorkspace = true },
-                         onReview: { segment = .connections; showWorkspace = true },
-                         stationStops: stationStops,
-                         onOpenStation: onOpenStation,
-                         splitBarEdge: barEdge,
-                         layoutSize: splitCanvas)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("layout.compact")
-                .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
-                               showsMore: !movesMoreIntoThePlayer,
-                               hidesSystemBack: placement == .duoHorizontal,
-                               onConnections: openConnections,
-                               barEdge: barEdge)
+            // Two panes only at regular width, and only for the tall listen layout.
+            // Compact width keeps FoldedPlayer, including the phone path, unchanged.
+            // An adapting split keeps FoldedPlayer too: the container size is the rail,
+            // not the arrangement panes.
+            let arrangement = ArrangementPaneLayout.resolve(
+                hasRegularWidth: horizontalSizeClass == .regular,
+                containerWidth: width,
+                containerHeight: Double(height),
+                accessibilityTextSize: typeSize.isAccessibilitySize)
+            if splitCanvas != nil || arrangement == .unchanged {
+                FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
+                             content: content, snapshot: snapshot, actions: actions, dj: dj,
+                             search: search, studioSearch: studioSearch, timeSource: timeSource,
+                             artworkNamespace: morphNamespace, speechLevel: studio.dj,
+                             moreMenu: movesMoreIntoThePlayer
+                                ? FoldedMoreMenuItems(reviewCount: dj.reviewCount, onConnections: openConnections)
+                                : nil,
+                             onQueue: { segment = .queue; showWorkspace = true },
+                             onTune: { segment = .tune; showWorkspace = true },
+                             onReview: { segment = .connections; showWorkspace = true },
+                             stationStops: stationStops,
+                             onOpenStation: onOpenStation,
+                             splitBarEdge: barEdge,
+                             layoutSize: splitCanvas)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("layout.compact")
+                    .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
+                                   showsMore: !movesMoreIntoThePlayer,
+                                   hidesSystemBack: placement == .duoHorizontal,
+                                   onConnections: openConnections,
+                                   barEdge: barEdge)
+            } else {
+                ArrangementListenPlayer(station: currentStation, heading: heading,
+                                        isTestStation: isTestStation, content: content,
+                                        snapshot: snapshot, actions: actions, dj: dj,
+                                        search: search, timeSource: timeSource,
+                                        decision: arrangement,
+                                        onQueue: { segment = .queue; showWorkspace = true },
+                                        onTune: { segment = .tune; showWorkspace = true },
+                                        onConnections: openConnections)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("layout.compact")
+                    .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
+                                   showsMore: false,
+                                   hidesSystemBack: true,
+                                   onConnections: openConnections)
+            }
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,
