@@ -259,6 +259,195 @@ final class LockScreenDoubleSkipTests: XCTestCase {
         XCTAssertEqual(show.lastCutShape, .rewind)
     }
 
+    // MARK: - #444 after #459: a Next that clears the skip's song before the poll has seen it
+
+    /// The 1 s poll has not run since B was installed and started (no sample of B), and the second
+    /// lock-screen Next clears B. Before this fix the detector still held A's facts (or none), so the
+    /// clear reported nothing: no cut, no remote skip, no failed start. The chain had already ended
+    /// on `.playing`, so the app showed B playing on an empty MusicKit queue: the freeze.
+    func testSecondNextClearingTheSkipsSongBeforeAnyPollSawItAdvancesToTheNextSong() async {
+        let show = Show()
+        show.pollSeesLoadedEntry = false
+        show.primePlaying()
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        show.finishLoad()
+        await show.untilIdle()
+        show.assertPlaying(index: 1)
+        show.markHistory()
+        show.feed(show.cleared())
+        await show.untilIdle()
+        show.assertOwnerOutcome(index: 2)
+        XCTAssertEqual(show.loadCuts, 1, "the clear of B is reported as a cut of B")
+        XCTAssertEqual(show.lastCutAwaitingPlay, false)
+        XCTAssertEqual(show.lastCutShape, .clear)
+        XCTAssertEqual(show.advances, 2)
+        XCTAssertEqual(show.noProgressEnds, 0)
+    }
+
+    /// The same when the first Next was the app's own (in-app Skip or the command target), so the
+    /// detector still holds A's entry with the app's change pending when B is cleared.
+    func testClearOfAnUnseenSkipSongAfterAnInAppNextAdvancesToTheNextSong() async {
+        let show = Show()
+        show.pollSeesLoadedEntry = false
+        show.primePlaying()
+        let running = Task { await show.skip() }
+        await show.untilLoadSuspended()
+        show.finishLoad()
+        await running.value
+        await show.untilIdle()
+        show.assertPlaying(index: 1)
+        show.markHistory()
+        show.feed(show.cleared())
+        await show.untilIdle()
+        show.assertOwnerOutcome(index: 2)
+        XCTAssertEqual(show.loadCuts, 1)
+        XCTAssertNil(show.unexpectedBoundary, "A's entry going away is not a natural end")
+        XCTAssertEqual(show.noProgressEnds, 0)
+    }
+
+    /// Three lock-screen Nexts, each clearing the song the previous one loaded before a poll saw it.
+    func testThreeNextsThatEachClearAnUnseenSkipSongLandThreeSongsOn() async {
+        let show = Show()
+        show.pollSeesLoadedEntry = false
+        show.primePlaying()
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        show.finishLoad()
+        await show.untilIdle()
+        show.feed(show.cleared())
+        await show.untilIdle()
+        show.assertPlaying(index: 2)
+        show.feed(show.cleared())
+        await show.untilIdle()
+        show.assertPlaying(index: 3)
+        XCTAssertEqual(show.reloads, 0)
+        XCTAssertEqual(show.surfaces, 0)
+    }
+
+    /// The clear is first seen while our `play()` for B is still awaiting, with no sample of B. That
+    /// poll reports nothing (the route cannot tell yet). Once `play()` returns, the next poll still
+    /// sees the empty queue and that is routed as the user's Next, the trade-off #459 accepted for a
+    /// cut only seen after our `play()` returned. It never pauses and never reloads B.
+    func testAnUnseenClearFirstPolledWhilePlayAwaitsIsRoutedOnceOurPlayReturned() async {
+        let show = Show()
+        show.pollSeesLoadedEntry = false
+        show.suspendAt = .play
+        show.primePlaying()
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        XCTAssertTrue(show.playAwaiting)
+        show.feed(show.cleared())
+        XCTAssertEqual(show.loadCuts, 0, "nothing is decided while our play() is awaiting")
+        show.finishLoad()
+        await show.untilIdle()
+        show.markHistory()
+        show.feed(show.cleared())
+        await show.untilIdle()
+        show.assertOwnerOutcome(index: 2)
+        XCTAssertEqual(show.loadCuts, 1)
+    }
+
+    /// Detector controls for the unseen clear.
+    func testUnseenClearIsACutOnlyForAStartedSkipLoadWithNoHold() {
+        func primed() -> (BoundaryInterpreter, TimeInterval) {
+            var b = BoundaryInterpreter()
+            var t: TimeInterval = 100
+            for position in stride(from: 0.0, through: 30.0, by: 1.0) {
+                _ = b.interpret(PlaybackObservation(entryID: "song-0", isPlaying: true, position: position,
+                                                    duration: 200, uptime: t), queueIndex: 0, queueCount: 4)
+                t += 1
+            }
+            return (b, t)
+        }
+        func clear(_ b: inout BoundaryInterpreter, _ t: TimeInterval) -> BoundaryStep? {
+            b.interpret(PlaybackObservation(entryID: nil, isPlaying: false, position: nil, duration: nil, uptime: t),
+                        queueIndex: 1, queueCount: 4)
+        }
+        // The fix: a skip load, our play() returned, no sample of the new entry, then a clear.
+        do {
+            var (b, t) = primed()
+            b.setSkipLoadInFlight(true)
+            b.userRequestedChange()
+            b.noteOwnPlayReturned()
+            XCTAssertNil(clear(&b, t))
+            XCTAssertEqual(b.pendingSkipLoadCut, SkipLoadCut(shape: .clear, targetSeenPlaying: false))
+            XCTAssertTrue(b.takeSkipLoadCut())
+            XCTAssertFalse(b.takeRemoteSkip())
+            XCTAssertFalse(b.takeNoProgressEnd())
+            t += 1
+            XCTAssertNil(clear(&b, t))
+            XCTAssertFalse(b.takeSkipLoadCut(), "reported once")
+        }
+        // Our play() has not returned: nothing is reported (unchanged).
+        do {
+            var (b, t) = primed()
+            b.setSkipLoadInFlight(true)
+            b.userRequestedChange()
+            XCTAssertNil(clear(&b, t))
+            XCTAssertFalse(b.takeSkipLoadCut())
+            XCTAssertFalse(b.takeRemoteSkip())
+            XCTAssertFalse(b.takeNoProgressEnd())
+        }
+        // Not a skip load (a natural next song or a tap): nothing is reported (unchanged).
+        do {
+            var (b, t) = primed()
+            b.userRequestedChange()
+            b.noteOwnPlayReturned()
+            XCTAssertNil(clear(&b, t))
+            XCTAssertFalse(b.takeSkipLoadCut())
+        }
+        // A poll saw the new entry: the existing skip-load path decides, not this one.
+        do {
+            var (b, t) = primed()
+            b.setSkipLoadInFlight(true)
+            b.userRequestedChange()
+            b.noteOwnPlayReturned()
+            XCTAssertNil(b.interpret(PlaybackObservation(entryID: "song-1", isPlaying: true, position: 0.5,
+                                                         duration: 200, uptime: t), queueIndex: 1, queueCount: 4))
+            t += 1
+            XCTAssertNil(clear(&b, t))
+            XCTAssertEqual(b.pendingSkipLoadCut, SkipLoadCut(shape: .clear, targetSeenPlaying: true))
+        }
+        // A user pause or route loss after the load: the hold wins, no cut.
+        for cause in [PlaybackBoundaryDetector.HoldCause.userPause, .routeLoss] {
+            var (b, t) = primed()
+            b.setSkipLoadInFlight(true)
+            b.userRequestedChange()
+            b.noteOwnPlayReturned()
+            b.pausedByApp(cause)
+            XCTAssertNil(clear(&b, t))
+            XCTAssertFalse(b.takeSkipLoadCut(), "\(cause)")
+        }
+        // An interruption after the load: no cut.
+        do {
+            var (b, t) = primed()
+            b.setSkipLoadInFlight(true)
+            b.userRequestedChange()
+            b.noteOwnPlayReturned()
+            b.pausedByApp(.systemInterruption)
+            XCTAssertNil(clear(&b, t))
+            XCTAssertFalse(b.takeSkipLoadCut())
+        }
+    }
+
+    /// The app reports its own returned `play()` to the detector in `startTrack`.
+    func testMusicKitServiceReportsItsReturnedPlayToTheDetector() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("AeroDJ/MusicKitService.swift"), encoding: .utf8)
+        let startTrack = source.split(separator: "func startTrack(at index: Int").dropFirst().first.map(String.init) ?? ""
+        let body = startTrack.split(separator: "func startNextTrack(").first.map(String.init) ?? ""
+        let played = try XCTUnwrap(body.range(of: "playIfStillAllowed(attempt: attempt)"))
+        let noted = try XCTUnwrap(body.range(of: "boundaries.noteOwnPlayReturned()"))
+        let refused = try XCTUnwrap(body.range(of: "guard started else"))
+        XCTAssertLessThan(played.lowerBound, noted.lowerBound)
+        XCTAssertLessThan(refused.lowerBound, noted.lowerBound, "only a play() that started the song")
+    }
+
     /// Echo's gate (#446): a real MusicKit cut while our own `play()` for B is awaiting is the
     /// ambiguous load cut. One Next reloads B and never advances to C.
     func testOneNextWithACutWhileOurPlayIsAwaitingStaysOnTheSelectedSong() async {
@@ -611,6 +800,9 @@ private final class Show {
     private let gate = LoadGate()
     /// Where a load waits for `finishLoad()` / `releaseOne()`.
     var suspendAt: LoadPhase = .play
+    /// #444 (-Atlas): false models the 1 s poll not having run between a skip installing its
+    /// song and the next observation. The detector then never sees the new entry before a clear.
+    var pollSeesLoadedEntry = true
     /// One entry per load, in order: that load throws at this phase. Taken when the load starts.
     var throwOnLoad: [LoadPhase?] = []
     private(set) var index = 0
@@ -1117,6 +1309,8 @@ private final class Show {
         startGate.playReturned(attempt, at: clock)
         guard attempts.isCurrent(attempt) else { return .cancelled }
         if !policy.userWantsPlayback || policy.pausedBySystem { return .cancelled }
+        // `startTrack` after `playIfStillAllowed` started the song.
+        boundaries.noteOwnPlayReturned()
         return .playing
     }
 
@@ -1143,6 +1337,7 @@ private final class Show {
     }
 
     private func adoptLoadedEntry() {
+        guard pollSeesLoadedEntry else { return }
         let step = boundaries.interpret(sample(entry: "song-\(index)", playing: false, position: 0),
                                         queueIndex: index, queueCount: songs)
         if let step { unexpectedBoundary = step }

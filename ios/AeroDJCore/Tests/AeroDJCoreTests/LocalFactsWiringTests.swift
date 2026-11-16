@@ -62,6 +62,72 @@ private final class CachingNews: NewsProvider, PurgeableFactProvider, @unchecked
     }
 }
 
+/// Weather stand-in whose result is a headline, so the summarizer's paraphraser runs after gather
+/// (#487). `onCall` is the withdrawal, before the gatherer decides on the next provider.
+private final class HeadlineOnCallWeather: WeatherProvider, @unchecked Sendable {
+    let kind = BroadcastFactKind.weather
+    private let lock = NSLock()
+    private var n = 0
+    var onCall: (@Sendable () -> Void)?
+    var calls: Int { lock.withLock { n } }
+    func facts(for request: FactRequest) async -> FactProviderResult {
+        lock.withLock { n += 1 }
+        onCall?()
+        return .facts([BroadcastFact(kind: .weather,
+                                     payload: .headline(HeadlineFact(headline: "Council backs a bike plan", outlet: "NPR")),
+                                     observedAt: request.now, expiresAt: request.now.addingTimeInterval(1800),
+                                     attribution: .appleWeather(legalURL: nil))])
+    }
+}
+
+/// Opens once. A signal that lands before `wait` does not drop, and a second `open` does not resume twice.
+private final class OnceGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+
+    func wait() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let resumeNow: Bool = lock.withLock {
+                if opened { return true }
+                continuation = c
+                return false
+            }
+            if resumeNow { c.resume() }
+        }
+    }
+
+    func open() {
+        let c: CheckedContinuation<Void, Never>? = lock.withLock {
+            opened = true
+            defer { continuation = nil }
+            return continuation
+        }
+        c?.resume()
+    }
+}
+
+/// Paraphraser that opens `gate` when gather has returned and summarize starts. That is after the
+/// next-provider decision, and before the test allows the refresh task to be registered.
+private struct GateParaphraser: HeadlineParaphraser {
+    let gate: OnceGate
+    func paraphrase(_ headline: String) async -> String? {
+        gate.open()
+        return nil
+    }
+}
+
+/// The purge task `turnOff` / `setNews(false)` returns, so the test can wait until the cache clear finishes.
+private final class PurgeBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    func store(_ task: Task<Void, Never>) { lock.withLock { self.task = task } }
+    func value() async {
+        let task = lock.withLock { self.task }
+        await task?.value
+    }
+}
+
 /// National-news fixture: counts calls and records whether an area reached it.
 private final class CountingNationalNews: NewsProvider, @unchecked Sendable {
     let kind = BroadcastFactKind.news
@@ -694,6 +760,48 @@ final class LocalFactsWiringTests: XCTestCase {
         XCTAssertEqual(outcome, .superseded)
         XCTAssertEqual(news.calls, 0, "withdrawn mid-refresh: no news request")
         XCTAssertTrue(news.cacheIsEmpty)
+    }
+
+    /// #487: the refresh task is running a provider, but it is not in `inflight` yet, so
+    /// `turnOff` has nothing to cancel. `Task.isCancelled` stays false. The ticket check before
+    /// the next provider is what stops news. The paraphrase gate opens only after gather returns,
+    /// so registration (and its late cancel) cannot land between weather and news.
+    func testWithdrawingBeforeTheRefreshRegistersAsksNoFurtherProvider() async {
+        let (outcome, news, weatherCalls) = await refreshActingBeforeRegister { $0.turnOff() }
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(weatherCalls, 1, "weather was already asked")
+        XCTAssertEqual(news.calls, 0, "withdrawn before the task was registered: no news request")
+        XCTAssertTrue(news.cacheIsEmpty)
+    }
+
+    /// Same gap as the withdrawal test: news switched off before the task is registered.
+    func testSwitchingNewsOffBeforeTheRefreshRegistersAsksNoFurtherProvider() async {
+        let (outcome, news, weatherCalls) = await refreshActingBeforeRegister { $0.setNews(false) }
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertEqual(weatherCalls, 1, "weather was already asked")
+        XCTAssertEqual(news.calls, 0, "news switched off before the task was registered: no news request")
+        XCTAssertTrue(news.cacheIsEmpty)
+    }
+
+    /// Holds registration until gather has decided the next provider. `act` runs inside the first
+    /// provider, before that decision, while `inflight` is still empty.
+    private func refreshActingBeforeRegister(
+        _ act: @escaping @Sendable (LocalFactsWiring) -> Task<Void, Never>
+    ) async -> (LocalFactsWiring.RefreshOutcome, CachingNews, Int) {
+        let clock = WiringClock(w0), news = CachingNews(), gate = OnceGate(), weather = HeadlineOnCallWeather()
+        let purge = PurgeBox()
+        let store = LocalAreaStore.inMemory()
+        store.chooseApproximate()
+        let w = LocalFactsWiring(store: store, toggles: .inMemory(weather: true, news: true),
+                                 source: FactExtraLineSource(airLead: 60, now: { clock.now }),
+                                 providers: [weather, news],
+                                 summarizer: HeadlineSummarizer(paraphraser: GateParaphraser(gate: gate)),
+                                 device: FakeDeviceLocation(minneapolis), manual: nil, now: { clock.now })
+        weather.onCall = { [w] in purge.store(act(w)) }
+        w.testBeforeRegister = { await gate.wait() }
+        let outcome = await w.refreshIfDue()
+        await purge.value()
+        return (outcome, news, weather.calls)
     }
 
     func testAnOffSwitchCancelsARefreshBeforeItsProvidersAreAsked() async {
