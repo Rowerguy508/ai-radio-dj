@@ -603,7 +603,12 @@ final class StudioScreenTests: XCTestCase {
         let panel = menu.frame.insetBy(dx: -0.5, dy: -0.5)
         XCTAssertTrue(window.contains(menu.frame),
                       "More menu left the window \(menu.frame) vs \(window)", file: file, line: line)
-        let rows = menu.buttons.allElementsBoundByIndex.filter { $0.exists && $0.isHittable }
+        // Rows only. Under the capture launch a `.contain` row also exposes its label
+        // container as a nested Button carrying the title's `<row>.label` identifier; that
+        // is the title checked below, not another row.
+        let rows = menu.buttons
+            .matching(NSPredicate(format: "NOT (identifier ENDSWITH %@)", ".label"))
+            .allElementsBoundByIndex.filter { $0.exists && $0.isHittable }
         XCTAssertFalse(rows.isEmpty, "More menu has no visible rows\n\(app.debugDescription)",
                        file: file, line: line)
         for row in rows {
