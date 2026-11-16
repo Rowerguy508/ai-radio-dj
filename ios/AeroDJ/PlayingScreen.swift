@@ -141,8 +141,10 @@ struct PlayingScreen: View {
             // (the unfolded Duo) moves the controls to the right.
             let placement = FoldedColumnLayout.controlPlacement(containerWidth: width,
                                                                 containerHeight: Double(height))
-            // The 01-folded reskin draws back and ⋯ itself. Only when the DEBUG flag is on.
-            let usesOuterReskin = FoldedOuterLayout.isEnabled() && placement == .phoneBottom
+            // The 01-folded reskin draws back and ⋯ itself. Same rule as FoldedPlayer.body:
+            // phone width with a track. Other phone states keep compactBody and the system bar.
+            let showsTrack: Bool = { if case .track = content { return true } else { return false } }()
+            let usesOuterReskin = placement == .phoneBottom && showsTrack
             let movesMoreIntoThePlayer = placement != .phoneBottom || usesOuterReskin
             let openConnections = { segment = .connections; showWorkspace = true }
             FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,

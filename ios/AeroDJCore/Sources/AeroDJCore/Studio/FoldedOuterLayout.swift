@@ -2,11 +2,11 @@ import Foundation
 
 /// #465 01-folded: metrics and DJ-status rules for the Duo outer-screen compact reskin.
 ///
-/// Pure and UI-free so Linux can test them. This is not the iPhone compact path:
-/// `FoldedStyle` and `FoldedPlayer.compactBody` stay as they are, and this layout is
-/// off unless a DEBUG flag turns it on (see `isEnabled`). The folded outer size is
-/// still assumed (390 × 844 pt in the mockup), so the shared compact path is not
-/// switched in production.
+/// Pure and UI-free so Linux can test them. Ships ungated (owner, 9:53 PM, logged on
+/// #300 and #491): the iPhone and the folded Duo draw this reskin whenever the folded
+/// player is at phone width with a track showing. `FoldedStyle` and
+/// `FoldedPlayer.compactBody` stay for every other phone-width state (nothing playing,
+/// starting, failed). The mockup's outer size is 390 × 844 pt.
 ///
 /// The tinted ring around play was deferred from item 9. These tokens do not depend
 /// on `GlassTreatment` or the item 9 branch, which is not on integration yet.
@@ -34,29 +34,9 @@ public enum FoldedOuterLayout {
     public static let upNextHeight: Double = 44
     public static let upNextRadius: Double = 22
     public static let statusPillHeight: Double = 28
-    /// DEBUG launch argument or defaults key that reveals the reskin. Release is always off.
-    public static let enableArgument = "-AeroDJFoldedOuterReskin"
-    public static let enableDefaultsKey = "AeroDJFoldedOuterReskin"
 
     /// Outer diameter of play plus its ring (64 + 6 + 6). Fits in the 80 pt capsule.
     public static var playOuterSide: Double { playSide + playRingWidth * 2 }
-
-    public static func isEnabled(
-        arguments: [String] = ProcessInfo.processInfo.arguments,
-        defaultsFlag: Bool = UserDefaults.standard.bool(forKey: enableDefaultsKey)
-    ) -> Bool {
-        #if DEBUG
-        enabled(arguments: arguments, defaultsFlag: defaultsFlag, isDebug: true)
-        #else
-        enabled(arguments: arguments, defaultsFlag: defaultsFlag, isDebug: false)
-        #endif
-    }
-
-    /// Testable form of the gate. Release (`isDebug: false`) is always off.
-    public static func enabled(arguments: [String], defaultsFlag: Bool, isDebug: Bool) -> Bool {
-        guard isDebug else { return false }
-        return defaultsFlag || arguments.contains(enableArgument)
-    }
 
     /// On Air comes only from `DJStudioState.onAirLabel`. Ready and failed never light as
     /// On Air. A failed break stays a quiet skip (mic down, no break error).

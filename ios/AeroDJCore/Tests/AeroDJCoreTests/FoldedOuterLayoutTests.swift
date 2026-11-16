@@ -65,18 +65,23 @@ final class FoldedOuterLayoutTests: XCTestCase {
         XCTAssertEqual(FoldedOuterLayout.status(onAirLabel: "On Air"), .onAir("On Air"))
     }
 
-    func testTheReskinIsOffInReleaseAndOffWithoutTheFlag() {
-        XCTAssertFalse(FoldedOuterLayout.enabled(arguments: [], defaultsFlag: false, isDebug: false))
-        XCTAssertFalse(FoldedOuterLayout.enabled(arguments: [FoldedOuterLayout.enableArgument],
-                                                defaultsFlag: true, isDebug: false),
-                       "release never turns the reskin on")
-        XCTAssertFalse(FoldedOuterLayout.enabled(arguments: [], defaultsFlag: false, isDebug: true))
-        XCTAssertTrue(FoldedOuterLayout.enabled(arguments: [FoldedOuterLayout.enableArgument],
-                                               defaultsFlag: false, isDebug: true))
-        XCTAssertTrue(FoldedOuterLayout.enabled(arguments: [], defaultsFlag: true, isDebug: true))
+    /// The reskin ships ungated: no DEBUG flag, launch argument or defaults key is left.
+    func testTheReskinHasNoFlag() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let helper = try String(contentsOf: iosRoot.appendingPathComponent(
+            "AeroDJCore/Sources/AeroDJCore/Studio/FoldedOuterLayout.swift"), encoding: .utf8)
+        for path in ["AeroDJ/FoldedPlayer.swift", "AeroDJ/PlayingScreen.swift"] {
+            let source = try String(contentsOf: iosRoot.appendingPathComponent(path), encoding: .utf8)
+            XCTAssertFalse(source.contains("FoldedOuterLayout.isEnabled"), path)
+            XCTAssertFalse(source.contains("AeroDJFoldedOuterReskin"), path)
+            XCTAssertFalse(source.contains("enableDefaultsKey"), path)
+        }
+        XCTAssertFalse(helper.contains("isEnabled"))
+        XCTAssertFalse(helper.contains("AeroDJFoldedOuterReskin"))
     }
 
-    /// compactBody and FoldedStyle stay the iPhone path: this file must not rewrite their tokens.
+    /// compactBody and FoldedStyle stay for the non-track phone states: this file must not rewrite their tokens.
     func testFoldedStyleTokensOnTheCompactPathAreUnchanged() throws {
         let iosRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -85,9 +90,9 @@ final class FoldedOuterLayoutTests: XCTestCase {
         XCTAssertTrue(source.contains("static let contentInset: CGFloat = 32"))
         XCTAssertTrue(source.contains("static let toolbarHeight: CGFloat = 52"))
         XCTAssertTrue(source.contains("private func compactBody(in size: CGSize)"))
-        // The reskin is gated; the default phone branch still calls compactBody.
+        // A track at phone width takes the reskin; every other phone state keeps compactBody.
         XCTAssertTrue(source.contains("compactBody(in: geo.size)"))
-        XCTAssertTrue(source.contains("FoldedOuterLayout.isEnabled"))
+        XCTAssertTrue(source.contains("foldedOuterBody(in: geo.size)"))
         // On Air in the new status helper is only ever taken from onAirLabel.
         let helper = try String(contentsOf: iosRoot.appendingPathComponent(
             "AeroDJCore/Sources/AeroDJCore/Studio/FoldedOuterLayout.swift"), encoding: .utf8)

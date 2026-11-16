@@ -106,9 +106,10 @@ struct FoldedPlayer: View {
             switch FoldedColumnLayout.controlPlacement(containerWidth: Double(geo.size.width),
                                                        containerHeight: Double(geo.size.height)) {
             case .phoneBottom:
-                // 01-folded reskin is DEBUG-flag only. Off (CI, release, iPhone) keeps
-                // compactBody, so the iPhone compact path stays byte-identical.
-                if FoldedOuterLayout.isEnabled(), case .track = content {
+                // 01-folded reskin (iPhone and folded Duo) whenever a track is showing.
+                // PlayingScreen.layout(mode:) uses the same rule to hide the system back
+                // and move ⋯ in. Other states keep compactBody.
+                if case .track = content {
                     foldedOuterBody(in: geo.size)
                 } else {
                     compactBody(in: geo.size)
@@ -491,8 +492,7 @@ struct FoldedPlayer: View {
 
 
 extension FoldedPlayer {
-    /// 01-folded outer-screen reskin. Only called when `FoldedOuterLayout.isEnabled` is
-    /// on and a track is showing. Transport still goes through `TransportTapPolicy`.
+    /// 01-folded outer-screen reskin. Called at phone width whenever a track is showing. Transport still goes through `TransportTapPolicy`.
     /// There is no Previous: `PlaybackActions` has none. The mockup's tab bar is not
     /// drawn; the existing Queue / Tune toolbar stays, restyled as a glass capsule.
     private func foldedOuterBody(in size: CGSize) -> some View {
@@ -560,9 +560,9 @@ private extension View {
 }
 
 
-// MARK: - 01-folded outer reskin (flag-gated)
+// MARK: - 01-folded outer reskin
 
-/// Back, the opened station, and ⋯. Replaces the system navigation bar while the reskin is on.
+/// Back, the opened station, and ⋯. Replaces the system navigation bar while the reskin shows.
 private struct FoldedOuterHeader: View {
     let heading: StationHeading
     let moreMenu: FoldedMoreMenuItems?
@@ -1601,7 +1601,7 @@ private struct LegacyToolbarGlass: ViewModifier {
     }
 }
 
-#Preview("01-folded reskin (flag on)") {
+#Preview("01-folded reskin") {
     NavigationStack {
         FoldedPlayer(station: PlaybackFixtures.station,
                      heading: StationHeading(opened: PlaybackFixtures.station, playing: PlaybackFixtures.station),
@@ -1612,8 +1612,6 @@ private struct LegacyToolbarGlass: ViewModifier {
                      studioSearch: StudioSearchModel(query: ""), timeSource: .fixture,
                      moreMenu: FoldedMoreMenuItems(reviewCount: nil, onConnections: {}),
                      onQueue: {}, onTune: {}, onReview: {})
-            .onAppear { UserDefaults.standard.set(true, forKey: FoldedOuterLayout.enableDefaultsKey) }
-            .onDisappear { UserDefaults.standard.set(false, forKey: FoldedOuterLayout.enableDefaultsKey) }
     }
 }
 
