@@ -70,10 +70,21 @@ enum StudioCaptureScenario: String {
     /// The same 640 × 820 pt container with nothing playing, so Search Apple Music is the
     /// content column's first control.
     case duoWideEmpty
+    /// Folded phone container, then the unfolded Duo, in one launch. Playback, the
+    /// scroll anchor and the selected station must survive the size-class change.
+    case duoContinuity
+    /// Regular width at the same 640 × 820 pt: artwork and controls in one pane, the
+    /// up-next timeline in the other. The compact-class `duoWideReady` container is unchanged.
+    case duoArrangement
+    /// The same 640 × 820 pt container with the DJ on air: `breakReady` then `playbackStarted`,
+    /// the same events as `onAir`, with the ON AIR timer frozen at 0:12. The track column
+    /// keeps the art (`keepArtVisible`); the orb sits in the content column (`folded.visualizer`).
+    case duoWideOnAir
     /// The DJ is on air: a break became ready and the player reported it started
     /// (`breakReady` then `playbackStarted`, the same events the audio player sends), so the
-    /// folded player draws the ON AIR pill. At AX5 on a phone it is pinned above the
-    /// scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
+    /// folded player draws the ON AIR pill. At default size, `testDefaultOnAirShowsOrbOnlyArtCard`
+    /// captures `closed-onair` / `open-onair` (#435 n1). At AX5 on a phone the pill is pinned
+    /// above the scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
     case onAir
     /// Station ratings (-Nova, PR B): `playing` with the rating button, unrated, with its
     /// first-time "Rate" label. The other scenarios get no rating controller, so they are unchanged.
@@ -108,7 +119,7 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.stopped
         case .error:
             return PlaybackFixtures.recoverableError
-        case .duoWideReady:
+        case .duoWideReady, .duoArrangement, .duoWideOnAir:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
             // which draws the scrubber as a non-interactive element.
             var playing = PlaybackFixtures.playing
@@ -143,6 +154,7 @@ struct StudioCaptureView: View {
     @State private var failure: String?
     /// Only the rating scenarios set one; nil keeps every other capture as it was (-Nova, PR B).
     @State private var captureRating: SongRatingController?
+    @StateObject private var continuityLoads = DisplayContinuityLoadCounter()
 
     private var showsProbe: Bool {
         loaded && (scenario == .resize || scenario == .resizeTune)
@@ -174,8 +186,12 @@ struct StudioCaptureView: View {
                 CaptureStationSplit(dependencies: dependencies)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("capture.shell")
-            } else if scenario == .duoWideReady || scenario == .duoWideEmpty {
+            } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideOnAir {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario == .duoContinuity {
+                DuoContinuityCapture(studio: dependencies.studio, loads: continuityLoads)
+            } else if scenario == .duoArrangement {
+                ArrangementCaptureContainer(studio: dependencies.studio)
             } else {
                 NavigationStack {
                     if showsProbe {
@@ -214,6 +230,7 @@ struct StudioCaptureView: View {
             // than loading again: a second load would overwrite the scenario's edits below.
             let studio = dependencies.studio
             let defaults = UserDefaults.standard
+            defaults.set(false, forKey: DisplayContinuityLaunch.probeKey)
             let name = defaults.string(forKey: StudioCapture.scenarioKey) ?? "playing"
             var settled = false
             for _ in 0..<200 {
@@ -232,15 +249,20 @@ struct StudioCaptureView: View {
                 return
             }
             scenario = chosen
+            if chosen == .duoContinuity {
+                defaults.set(true, forKey: DisplayContinuityLaunch.probeKey)
+                // The station model finished loading above. One load, not one per layout.
+                continuityLoads.noteLoad()
+            }
             switch scenario {
             case .revoked:
                 await studio.connections.refresh()
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady, .duoWideReady:
+            case .breakReady, .duoWideReady, .duoArrangement:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
-            case .onAir:
+            case .onAir, .duoWideOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
                 StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
@@ -481,6 +503,140 @@ private struct CaptureStationSplit: View {
             .padding(6)
             .allowsHitTesting(false)
         }
+    }
+}
+
+/// Folded phone (390×844, compact) then the unfolded Duo (640×820, regular) around one
+/// `PlayingScreen`. The size-class change is the simulator's stand-in for opening the
+/// phone. The scroll anchor, station and playback token live in scene storage above
+/// the player's placement switch. The load counter increments once, when this capture
+/// finishes loading the station, and the unfold button does not touch it.
+private struct DuoContinuityCapture: View {
+    let studio: StudioPresentationModel
+    @ObservedObject var loads: DisplayContinuityLoadCounter
+    @State private var unfolded = false
+    @SceneStorage("aerodj.player.scrollAnchor") private var storedScrollAnchor = ""
+    @SceneStorage("aerodj.continuity.station") private var continuityStation = ""
+    @SceneStorage("aerodj.continuity.playback") private var continuityPlayback = ""
+    @ObservedObject private var calls = PlaybackCallLog.shared
+
+    private var containerSize: CGSize {
+        unfolded ? StudioCapture.duoWideContainerSize : CGSize(width: 390, height: 844)
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack {
+            Color(white: 0.14).ignoresSafeArea().accessibilityHidden(true)
+            NavigationStack {
+                PlayingScreen(station: PlaybackFixtures.station, access: .authorized,
+                              snapshot: duoSnapshot, actions: .counting, search: .counting,
+                              studio: studio, isTestStation: true, timeSource: .fixture,
+                              stationStops: [
+                                  DuoStationSwitch.Stop(id: PlaybackFixtures.station.id,
+                                                        name: PlaybackFixtures.station.name),
+                                  DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
+                              ],
+                              onOpenStation: { _ in })
+            }
+            .environment(\.horizontalSizeClass, unfolded ? .regular : .compact)
+            .frame(width: containerSize.width, height: containerSize.height)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("continuity.container")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .overlay(alignment: .topTrailing) { chrome }
+    }
+
+    /// The fixture song, seekable, so the scrubber is the same control the Duo tests use.
+    private var duoSnapshot: PlaybackSnapshot {
+        var playing = PlaybackFixtures.playing
+        playing.canSeek = true
+        return playing
+    }
+
+    private var chrome: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            HStack(spacing: 8) {
+                Button {
+                    storedScrollAnchor = DisplayContinuity.rowAnchor(4)
+                } label: {
+                    Text("Row 4")
+                        .font(.caption.weight(.semibold))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(.horizontal, 8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("continuity.scrollToRow")
+                Button {
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { unfolded.toggle() }
+                } label: {
+                    Text(unfolded ? "Fold" : "Unfold")
+                        .font(.caption.weight(.semibold))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(.horizontal, 8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("continuity.unfold")
+            }
+            readout("continuity.anchor", storedScrollAnchor.isEmpty ? "none" : storedScrollAnchor)
+            readout("continuity.station", continuityStation)
+            readout("continuity.playback", continuityPlayback)
+            readout("continuity.loads", "\(loads.count)")
+            readout("continuity.sizeClass", unfolded ? "regular" : "compact")
+            readout("continuity.pose", unfolded ? "unfolded" : "folded")
+            Text(verbatim: calls.label)
+                .font(.caption.monospacedDigit())
+                .padding(.horizontal, 8)
+                .frame(minHeight: 44)
+                .background(.regularMaterial, in: Capsule())
+                .accessibilityIdentifier("playback.calls")
+        }
+        .padding(.top, 8)
+        .padding(.trailing, 8)
+    }
+
+    private func readout(_ identifier: String, _ value: String) -> some View {
+        Text(value)
+            .font(.system(size: 1))
+            .accessibilityIdentifier(identifier)
+            .accessibilityLabel(value)
+            .allowsHitTesting(false)
+    }
+}
+
+/// Counts real loads for the continuity capture. A size-class change does not call `noteLoad`.
+@MainActor
+final class DisplayContinuityLoadCounter: ObservableObject {
+    @Published private(set) var count = 0
+
+    func noteLoad() {
+        count = DisplayContinuity.Session(
+            selectedStationID: nil, scrollAnchor: nil, playbackToken: "", loadCount: count
+        ).loaded().loadCount
+    }
+}
+
+/// UI tests pass `-AeroDJResetContinuity YES` so a scroll anchor stored by an earlier
+/// test cannot move the next screenshot. The first appear of each view clears; a later
+/// appear in the same launch (the unfold) does not.
+@MainActor
+enum DisplayContinuityLaunch {
+    static let resetKey = "AeroDJResetContinuity"
+    static let probeKey = "AeroDJContinuityProbe"
+    private static var resetViews: Set<String> = []
+
+    static func shouldReset(_ view: String) -> Bool {
+        guard UserDefaults.standard.bool(forKey: resetKey) else { return false }
+        if resetViews.contains(view) { return false }
+        resetViews.insert(view)
+        return true
     }
 }
 

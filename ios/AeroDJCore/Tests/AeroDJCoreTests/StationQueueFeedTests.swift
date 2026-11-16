@@ -729,12 +729,20 @@ final class CreatedStationStartTests: XCTestCase {
         let feed = makeFeed(catalog)
         feed.follow(model)
         let player = FakePlayer()
-        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1))
+        // Count the starter's polls so the release lands after open() is waiting in its loop.
+        // Without this, open() could reach its first check after the release and start unwaited.
+        let polls = PollCounter()
+        let starter = CreatedStationStarter(feed: feed, readyTimeout: .seconds(5), pollInterval: .milliseconds(1),
+                                            sleep: { polls.count += 1; try? await Task.sleep(for: $0) })
 
         let tap = Task { await open(.userTap, starter, model, player) }
-        for _ in 0..<500 { if await catalog.isHolding { break }; try await Task.sleep(nanoseconds: 1_000_000) }
+        for _ in 0..<500 {
+            if await catalog.isHolding, polls.count >= 1 { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
         let holding = await catalog.isHolding
         XCTAssertTrue(holding, "the catalog is held")
+        XCTAssertGreaterThanOrEqual(polls.count, 1, "open() is waiting in its loop")
         XCTAssertEqual(player.starts, [], "nothing starts before any song exists")
         await catalog.release()
 
@@ -1734,4 +1742,10 @@ final class StationSkipFillTests: XCTestCase {
         XCTAssertNil(skip(feed, from: grown.count - 4, in: grown), "three left to load: still nothing to append")
         await until({ feed.stagedKey == StationQueueKey(refillStation) }, "but the build for the next fill starts")
     }
+}
+
+/// Counts a starter's poll sleeps (CreatedStationStartTests).
+@MainActor
+private final class PollCounter {
+    var count = 0
 }
