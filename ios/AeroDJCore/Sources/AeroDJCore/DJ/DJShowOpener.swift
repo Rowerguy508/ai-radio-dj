@@ -139,4 +139,7 @@ public enum DJOpenerTimeCheckOmission: String, Equatable, Sendable, CaseIterable
     case noPhrasing
     /// The line would not fit the opener cap or the cue limit.
     case overCap
+    /// The rounded time is not a real wall-clock reading (a daylight-saving gap or fold, #360).
+    /// Nothing is invented in its place.
+    case notOnTheClock
 }

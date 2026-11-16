@@ -36,11 +36,11 @@ on:
         default: false
         type: boolean
       tester_voice:
-        # #378: ElevenLabs voice for internal testers via App Attest (AERODJ_TESTER_VOICE),
-        # after a one-time consent sheet. Internal TestFlight only. Only these builds sign with
-        # the tester entitlements file (App Attest), so only they need App Attest enabled on
-        # the App ID and a regenerated PROFILE_APP (owner, Apple portal). Other builds keep the
-        # shared AeroDJ.entitlements and the current profile.
+        # #378 / #436: ElevenLabs voice for TestFlight testers (not only the internal group) via
+        # App Attest (AERODJ_TESTER_VOICE), after a one-time consent sheet. Not for App Store.
+        # Only these builds sign with the tester entitlements file (App Attest), so only they
+        # need App Attest enabled on the App ID and a regenerated PROFILE_APP (owner, Apple
+        # portal). Other builds keep the shared AeroDJ.entitlements and the current profile.
         description: Tester cloud voice build (AERODJ_TESTER_VOICE, App Attest). Not for App Store.
         required: false
         default: false
@@ -392,7 +392,7 @@ jobs:
           case " $CONDS " in *" AERODJ_OWNER_AB "*) EXPECT=present
             echo "::warning::Owner A/B build (AERODJ_OWNER_AB). Internal TestFlight only, not for App Store." ;; esac
           case " $CONDS " in *" AERODJ_TESTER_VOICE "*)
-            echo "::warning::Tester voice build (AERODJ_TESTER_VOICE, App Attest). Internal TestFlight only, not for App Store." ;; esac
+            echo "::warning::Tester voice build (AERODJ_TESTER_VOICE, App Attest). For TestFlight testers, not for App Store." ;; esac
           if [ -n "$CONDS" ]; then EXTRA+=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited)$CONDS"); fi
           "$RUNNER_TEMP/owner-ab/check-owner-ab-build-settings.sh" "$EXPECT" "${EXTRA[@]}"
           xcodebuild archive \
@@ -418,6 +418,67 @@ jobs:
           if [ "$ATTEST" != "$WANT_ATTEST" ]; then
             echo "::error::App Attest entitlement is $ATTEST in the signed app, expected $WANT_ATTEST (APP_ENTITLEMENTS=$APP_ENTITLEMENTS)"; exit 1
           fi
+          # CarPlay audio (#438). Skip when this archive's entitlements file does not
+          # request the key, so an older ref still passes. When it does, the installed
+          # PROFILE_APP and the signed app must carry it, and the share extension must not.
+          # set +x: do not trace decoded profiles, entitlement plists, or profile identifiers.
+          set +x
+          carplay_key=com.apple.developer.carplay-audio
+          carplay_src="ios/${APP_ENTITLEMENTS}"
+          carplay_prof="$RUNNER_TEMP/carplay-profile.plist"
+          carplay_app="$RUNNER_TEMP/carplay-app-ents.plist"
+          carplay_share="$RUNNER_TEMP/carplay-share-ents.plist"
+          rm -f "$carplay_prof" "$carplay_app" "$carplay_share"
+          if [ ! -f "$carplay_src" ] || ! grep -q -F "$carplay_key" "$carplay_src"; then
+            echo "PASS com.apple.developer.carplay-audio skipped"
+          else
+            carplay_fail() {
+              echo "::error::FAIL com.apple.developer.carplay-audio $1"
+              rm -f "$carplay_prof" "$carplay_app" "$carplay_share"
+              exit 1
+            }
+            [ -n "${PROFILE_APP_UUID:-}" ] || carplay_fail "PROFILE_APP"
+            security cms -D -i "${HOME}/Library/MobileDevice/Provisioning Profiles/${PROFILE_APP_UUID}.mobileprovision" > "$carplay_prof" \
+              || carplay_fail "PROFILE_APP"
+            codesign -d --entitlements - --xml "$APP_BUNDLE" > "$carplay_app" 2>/dev/null \
+              || carplay_fail "AeroDJ.app"
+            carplay_appex="$(find "$APP_BUNDLE/PlugIns" -maxdepth 1 -name 'AeroDJShare.appex' -print -quit)"
+            [ -n "$carplay_appex" ] || carplay_fail "AeroDJShare.appex"
+            codesign -d --entitlements - --xml "$carplay_appex" > "$carplay_share" 2>/dev/null \
+              || carplay_fail "AeroDJShare.appex"
+            carplay_states="$(python3 - "$carplay_prof" "$carplay_app" "$carplay_share" "$carplay_key" <<'PY'
+          import plistlib, sys
+          prof_path, app_path, share_path, key = sys.argv[1:]
+
+          def state(path, profile):
+              try:
+                  with open(path, "rb") as handle:
+                      data = plistlib.load(handle)
+              except Exception:
+                  return "error"
+              if profile:
+                  data = data.get("Entitlements") if isinstance(data, dict) else None
+              if not isinstance(data, dict):
+                  return "error"
+              val = data.get(key)
+              if val is True:
+                  return "true"
+              if val is None:
+                  return "absent"
+              return "other"
+
+          sys.stdout.write(state(prof_path, True) + "\n" + state(app_path, False) + "\n" + state(share_path, False))
+          PY
+          )"
+            carplay_profile="$(printf '%s\n' "$carplay_states" | sed -n '1p')"
+            carplay_signed="$(printf '%s\n' "$carplay_states" | sed -n '2p')"
+            carplay_ext="$(printf '%s\n' "$carplay_states" | sed -n '3p')"
+            rm -f "$carplay_prof" "$carplay_app" "$carplay_share"
+            [ "$carplay_profile" = true ] || carplay_fail "PROFILE_APP"
+            [ "$carplay_signed" = true ] || carplay_fail "AeroDJ.app"
+            [ "$carplay_ext" = absent ] || carplay_fail "AeroDJShare.appex"
+            echo "PASS com.apple.developer.carplay-audio"
+          fi
 
       - name: Export signed IPA (manual, local)
         run: |
@@ -437,10 +498,10 @@ jobs:
               "manageAppVersionAndBuildNumber": False,
               "provisioningProfiles": {app: app_uuid, share: share_uuid},
           }
-          if (os.environ.get("P0_DIAG") == "true" or os.environ.get("OWNER_AB") == "true"
-                  or os.environ.get("TESTER_VOICE") == "true"):
+          if (os.environ.get("P0_DIAG") == "true" or os.environ.get("OWNER_AB") == "true"):
               # App Store Connect then refuses this build for App Store review and for
-              # external testers. TEMPORARY P0 (#121 / #133). -Atlas
+              # external testers. Kept for OWNER_AB and P0_DIAG (#436). TESTER_VOICE
+              # builds must reach every TestFlight tester; still not an App Store build.
               data["testFlightInternalTestingOnly"] = True
           with open(path, "wb") as f:
               plistlib.dump(data, f)

@@ -69,7 +69,11 @@ export function voiceSettingsFor(modelId: string): Readonly<Record<string, numbe
   return family === 'v4' ? V4_VOICE_SETTINGS : family === 'v3' ? V3_VOICE_SETTINGS : VOICE_SETTINGS;
 }
 
-/** v3 and v4 read square-bracket audio tags; the v2 family would speak them aloud. */
+/**
+ * Whether this model family would read square-bracket audio tags (v3/v4) or speak the brackets
+ * aloud (v2). The request path does not consult this. Spoken text always uses `stripAllBrackets`,
+ * so audio tags stay off for every model. iOS `VoiceRoute.supportsAudioTags` defaults off to match.
+ */
 export function supportsAudioTags(modelId: string): boolean {
   return modelFamily(modelId) !== 'v2';
 }
@@ -80,19 +84,14 @@ export function supportsStitching(modelId: string): boolean {
 }
 
 /**
- * The only audio tags the proxy lets through, and only to a model that reads tags. Any other
- * bracket (a song title like "Song [Live]", or text a caller put in brackets) loses its
- * brackets, so nothing a title or user text contains can become an audio tag.
+ * Tags `sanitizeBrackets` recognises when `keepAllowedTags` is true. That flag is unused and
+ * off: no request path passes true, so these never leave the proxy as `[tag]`. Spoken text uses
+ * `stripAllBrackets` (words kept, every bracket removed). Context passes false, which drops an
+ * allowlisted tag entirely.
  */
 export const ALLOWED_AUDIO_TAGS: readonly string[] = Object.freeze(['warmly', 'relaxed', 'chuckles', 'softly', 'excited']);
 const ALLOWED_TAG = new RegExp(`\\[\\s*(${ALLOWED_AUDIO_TAGS.join('|')})\\s*\\]`, 'gi');
 
-/**
- * Removes every `[` and `]`. With `keepAllowedTags` (v3/v4 main text only) an exact allowlisted
- * tag survives as `[tag]`; otherwise allowlisted tags are dropped entirely (a v2 model would read
- * "warmly" aloud). The text between tags is cleaned piece by piece, so a stray bracket can never
- * pair with a kept tag. Whitespace is collapsed.
- */
 /**
  * Spoken-text sanitiser for every model: removes every `[` and `]` (allowlisted tag words
  * included) and keeps the words, so "Kiss Me [Softly] Tonight" is spoken as "Kiss Me Softly
@@ -103,6 +102,18 @@ export function stripAllBrackets(text: string): string {
   return text.replace(/[[\]]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Removes every `[` and `]`. `keepAllowedTags: true` would leave an exact allowlisted tag as
+ * `[tag]`. That path is unused and off: spoken text does not call this (it uses
+ * `stripAllBrackets` on every model, including v3/v4/v4_turbo), and no request field passes
+ * true. The true branch stays so the allowlist unit tests remain pinned; do not wire it into
+ * the request path. Audio tags stay off.
+ *
+ * The live caller is stitching context, always with `keepAllowedTags: false`, which drops an
+ * allowlisted tag entirely (a v2 model would read "warmly" aloud) and keeps the words inside
+ * every other bracket. The text between tags is cleaned piece by piece, so a stray bracket can
+ * never pair with a kept tag. Whitespace is collapsed.
+ */
 export function sanitizeBrackets(text: string, keepAllowedTags: boolean): string {
   const out: string[] = [];
   let last = 0;
@@ -129,12 +140,14 @@ const REQUEST_ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * Reads an optional context field: absent/null = none, a string = sanitised context (brackets
- * removed, whitespace collapsed, trimmed to MAX_CONTEXT_CHARS), anything else = invalid (400).
+ * removed, an allowlisted tag dropped entirely, whitespace collapsed, trimmed to
+ * MAX_CONTEXT_CHARS), anything else = invalid (400).
  */
 function contextField(value: unknown, format: 'text' | 'ssml', keep: 'start' | 'end'): string | null | undefined {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'string') return undefined;
   if (value.length > MAX_CONTEXT_CHARS * 8) return undefined;
+  // keepAllowedTags stays false: context never carries audio tags. The true branch is unused/off.
   const plain = sanitizeBrackets(format === 'ssml' ? ssmlToPlainText(value) : value, false);
   if (plain.length <= MAX_CONTEXT_CHARS) return plain;
   return (keep === 'end' ? plain.slice(-MAX_CONTEXT_CHARS) : plain.slice(0, MAX_CONTEXT_CHARS)).trim();
@@ -671,8 +684,9 @@ export async function handleTts(req: TtsRequest, deps: Deps): Promise<TtsRespons
   // SSML markup is allowed some headroom before stripping; the spoken text is capped below.
   if (body.text.length > (format === 'ssml' ? maxChars * 4 : maxChars)) return fail(400);
   const modelId = deps.env.ELEVENLABS_MODEL_ID?.trim() || DEFAULT_MODEL_ID;
-  // Square brackets never reach any model, allowlisted tags included: a title like "Song [Live]"
-  // is spoken as "Song Live", and "Kiss Me [Softly] Tonight" can't become a v4 delivery tag.
+  // Square brackets never reach any model, allowlisted tags included. Spoken text uses
+  // stripAllBrackets, not sanitizeBrackets / keepAllowedTags (that flag stays off): a title like
+  // "Song [Live]" is spoken as "Song Live", and "Kiss Me [Softly] Tonight" can't become a v4 tag.
   const text = stripAllBrackets(format === 'ssml' ? ssmlToPlainText(body.text) : body.text.trim());
   if (text.length === 0 || text.length > maxChars) return fail(400);
   // Optional stitching context (older app builds send none; the request is then unchanged).

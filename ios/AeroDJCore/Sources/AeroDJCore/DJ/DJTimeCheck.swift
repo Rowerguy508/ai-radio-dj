@@ -7,6 +7,8 @@ import Foundation
 //
 // Rendering, all tested in `DJTimeCheckTests`:
 //   - Rounded to the nearest 5 minutes (x:58 is the next hour, 11:58 is noon, 23:58 is midnight).
+//   - The hour spoken is the wall clock at that instant. A daylight-saving gap or a fold inside
+//     the rounding window has no truthful reading (`roundedInstant` is nil) and the line is omitted.
 //   - The phrasing says which way it rounded: "It's 7:40." on the mark, "Coming up on 8 o'clock."
 //     just before, "Just after 7:45." just after. Never "minutes past" a rounded hour.
 //   - 12-hour locales: no am/pm (a live clock read is never ambiguous to the listener); the hour
@@ -115,11 +117,16 @@ public enum DJTimeCheck {
 
     /// The rounded time T a reading at `date` names, as an instant (the start of T's minute), with
     /// T's hour and minute and which way it rounded. Same rounding as `rounded(hour:minute:)`.
-    /// Nil when `calendar` can't read `date`, or when the clock at that instant does not read
-    /// T: a DST change lies between `date` and T. On a fall-back night (America/New_York, Nov 1,
-    /// 2026) 1:58 EDT rounds to 2:00, but two minutes on the clock reads 1:00 EST, so "Almost 2
-    /// o'clock." would be wrong (Echo, #357); on a spring-forward night 1:58 EST rounds to a 2:00
-    /// that never shows. Nil means no time check (the line drops; the rest of the break airs).
+    ///
+    /// T is the wall clock the listener will see at that instant, not the digits of `date` plus
+    /// a few minutes on paper. Nil when `calendar` can't read `date`, when the clock at T does
+    /// not show the rounded hour and minute, or when the zone's offset changes between `date`
+    /// and T. On a fall-back night (America/New_York, Nov 1, 2026) 1:58 EDT rounds toward 2:00,
+    /// but two minutes on the clock reads 1:00 EST, so "Almost 2 o'clock." would be wrong
+    /// (Echo, #360). On a spring-forward night 1:58 EST rounds to a 2:00 that never shows.
+    /// A repeated hour is still spoken when this instant's own clock shows it and the offset
+    /// does not change inside the window: both 1:30s on that night really are 1:30.
+    /// Nil means no time check (the line drops; the rest of the break airs).
     public static func roundedInstant(at date: Date, calendar: Calendar)
         -> (time: Date, hour: Int, minute: Int, relation: DJTimeCheckRelation)? {
         guard let minuteStart = calendar.dateInterval(of: .minute, for: date)?.start else { return nil }
@@ -131,14 +138,16 @@ public enum DJTimeCheck {
         let time = minuteStart.addingTimeInterval(TimeInterval(delta * 60))
         let shown = calendar.dateComponents([.hour, .minute], from: time)
         guard shown.hour == r.hour, shown.minute == r.minute else { return nil }
+        let zone = calendar.timeZone
+        guard zone.secondsFromGMT(for: minuteStart) == zone.secondsFromGMT(for: time) else { return nil }
         return (time, r.hour, r.minute, r.relation)
     }
 
     /// The rounded `{time}` text and its relation for `date` in `calendar`'s time zone.
-    public static func reading(_ date: Date, calendar: Calendar, style: DJClockStyle) -> (time: String, relation: DJTimeCheckRelation) {
-        let parts = calendar.dateComponents([.hour, .minute], from: date)
-        let r = rounded(hour: parts.hour ?? 0, minute: parts.minute ?? 0)
-        return (spokenTime(hour: r.hour, minute: r.minute, style: style), r.relation)
+    /// Nil when that rounded time is not the wall clock the listener will see (`roundedInstant`).
+    public static func reading(_ date: Date, calendar: Calendar, style: DJClockStyle) -> (time: String, relation: DJTimeCheckRelation)? {
+        guard let t = roundedInstant(at: date, calendar: calendar) else { return nil }
+        return (spokenTime(hour: t.hour, minute: t.minute, style: style), t.relation)
     }
 }
 

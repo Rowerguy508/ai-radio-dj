@@ -97,10 +97,13 @@ struct AppDependencies {
         // The 4 s closing cap applies only while talk-over is on: the same flag the coordinator
         // reads (the Settings toggle, else ON on a live station). P0 build 26, -Fry.
         let preparer = DJBreakPreparer(renderer: voice, userID: "listener", stationID: "default", cadence: DJCadence(),
-                                       talkOverEnabled: { DJTalkoverFlag.isEnabled() },
+                                       talkOverEnabled: {
+                                           // #525: on AirPlay (remote flag on) breaks are prepared on the gap-break path.
+                                           DJLongFormRouteState.shared.preparerTalkOverEnabled(talkoverFlag: DJTalkoverFlag.isEnabled())
+                                       },
                                        cloudVoiceConsent: TesterCloudVoiceConsentHooks.preparerConsent,
                                        bundledClips: bundledClips)
-        // Tester build only (Echo's N2 on #395): a decline drops prepared cloud breaks and cached cloud clips.
+        // Tester and owner A/B builds (Echo's N2 on #395, #433): a decline drops prepared cloud breaks and cached cloud clips.
         TesterCloudVoiceConsentHooks.attach(preparer: preparer, renderer: voice)
         // #401 (-Fry): local weather (WeatherKit) and, in the tester build only, local news
         // (GDELT), each fact one on-device line. Nothing is gathered and no location is read
@@ -109,7 +112,8 @@ struct AppDependencies {
         // #332: one once-a-day ledger for song taps and station starts, kept across relaunches.
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj,
                                        personalUpdates: PersonalUpdateLedger(store: UserDefaultsPersonalUpdatePlayStore()),
-                                       extraLineSource: localFacts.wiring.source)
+                                       extraLineSource: localFacts.wiring.source,
+                                       lineMemory: FileSpokenLineMemoryStore(fileURL: supportURL("DJLineMemory/recent-templates.json")))
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)
         interlude.acknowledgementClip = interruptionAcknowledgement(voice: voice, userID: "listener", stationID: "default")
         let talkover = TalkoverCoordinator(music: MusicKitService.shared, interlude: interlude, djSession: djSession)
@@ -218,7 +222,8 @@ struct AppDependencies {
         let preparer = DJBreakPreparer(renderer: voice, userID: TestStation.userID, stationID: TestStation.stationID,
                                        cadence: TestStation.cadence,
                                        talkOverEnabled: {
-                                           DJTalkoverFlag.isEnabled(unsetDefault: DJTalkoverFlag.unsetDefault(isTestStation: true))
+                                           DJLongFormRouteState.shared.preparerTalkOverEnabled(
+                                               talkoverFlag: DJTalkoverFlag.isEnabled(unsetDefault: DJTalkoverFlag.unsetDefault(isTestStation: true)))
                                        })
         let djSession = DJBreakSession(preparer: preparer, station: station, dj: dj, base: TestStation.cadence)
         let interlude = makeInterlude(session: djSession, playback: MusicKitService.shared, dj: dj)

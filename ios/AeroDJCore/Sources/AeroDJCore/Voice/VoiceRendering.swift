@@ -42,14 +42,28 @@ public struct VoiceRoute: Sendable {
     /// priced at 0 like the owner A/B ElevenLabs route. Such a route never speaks private text.
     public let leavesDevice: Bool
 
+    /// The route forwards the neighbouring lines of the same break as stitching context
+    /// (ElevenLabs `previous_text` / `next_text`, through the proxy). Off unless the route leaves
+    /// the device: an on-device route cannot be given this, and a cue still sends context only
+    /// when `mayLeaveDevice` already allows that cue off the device.
+    public let sendsSpeechContext: Bool
+
+    /// The voice reads square-bracket audio tags (ElevenLabs v3/v4), so an allowlisted tag such
+    /// as `[warmly]` is kept for it. Off by default on every route. With it off, every `[` and `]`
+    /// is stripped before off-device text leaves the device.
+    public let supportsAudioTags: Bool
+
     public var isPaid: Bool { microdollarsPerThousandCharacters > 0 }
     /// On-device and free: safe for private text and for the over-cap fallback.
     public var isLocalAndFree: Bool { !leavesDevice && !isPaid }
 
     public init(providerID: String, provider: any VoiceProvider, voice: VoiceProfile,
                 microdollarsPerThousandCharacters: Int = 0, timeout: Duration = .seconds(8), acceptsSSML: Bool = false,
-                leavesDevice: Bool = false) {
+                leavesDevice: Bool = false, sendsSpeechContext: Bool = false, supportsAudioTags: Bool = false) {
         self.leavesDevice = leavesDevice
+        // On-device routes never carry stitching context, whatever the caller asked.
+        self.sendsSpeechContext = sendsSpeechContext && leavesDevice
+        self.supportsAudioTags = supportsAudioTags
         self.providerID = providerID
         self.provider = provider
         self.voice = voice
@@ -210,6 +224,11 @@ public protocol AudioCache: Sendable {
     /// Removes every clip derived from any personal item, whatever its id. For when consent
     /// cannot be checked per item (live mode does not persist consent across launches).
     func purgeAllPersonal() async
+    /// The launch purge (owner, Nov 9 2026): every clip derived from a personal item, like
+    /// `purgeAllPersonal`, but a clip tagged only `VoiceRenderer.allLinesClipTag` (a library song
+    /// or a typed station name in the cloud voice, no item id) is kept between launches, so it is
+    /// not paid for again. "Delete my DJ data" (`purgeAllPersonal`) still removes it.
+    func purgePersonalItems() async
     /// Removes every clip not rendered by one of `providerIDs` (cloud-voice consent withdrawn,
     /// Echo's N2 on #395: cloud and paid clips go, on-device clips stay). Unattributable entries
     /// are removed too. Same shape as #258's, so the two converge when it lands. -Nova
@@ -219,6 +238,14 @@ public protocol AudioCache: Sendable {
 extension AudioCache {
     /// Test doubles that never hold cloud audio. Both shipping caches implement this.
     public func purgeClips(keepingProviders providerIDs: Set<String>) async {}
+    /// Fail-safe default for test doubles: everything personal goes. Both shipping caches and
+    /// `CloudVoiceConsentCache` implement it.
+    public func purgePersonalItems() async { await purgeAllPersonal() }
+}
+
+extension CachedAudio {
+    /// Derived from a real personal item: any source id other than `VoiceRenderer.allLinesClipTag`.
+    var hasPersonalItem: Bool { sourceItemIDs.contains { $0 != VoiceRenderer.allLinesClipTag } }
 }
 
 /// Enforces the 7-day cap on a schedule, not only when a clip is read: an expired clip that
@@ -248,10 +275,12 @@ public struct AudioCacheSweeper: Sendable {
 
     /// The launch step, finished before the first tick: personal clips from an earlier launch
     /// (when asked), expired clips and unattributable files are deleted, then the count of what
-    /// is left is logged. Returns the log line (nil if the cache can't count).
+    /// is left is logged. Returns the log line (nil if the cache can't count). Cloud clips of
+    /// library songs and typed station names (`allLinesClipTag` only) are kept (owner, Nov 9
+    /// 2026); "Delete my DJ data" removes them.
     @discardableResult
     public func prepareForLaunch(purgingPersonalFirst: Bool) async -> String? {
-        if purgingPersonalFirst { await cache.purgeAllPersonal() }
+        if purgingPersonalFirst { await cache.purgePersonalItems() }
         await cache.purgeExpired()
         return await AudioCacheFileLog.record(cache, after: .launch)
     }
@@ -311,6 +340,8 @@ public actor InMemoryAudioCache: AudioCache {
         clips = clips.filter { t.timeIntervalSince($0.value.createdAt) <= maxAge }
     }
     public func purgeAllPersonal() { clips = clips.filter { $0.value.sourceItemIDs.isEmpty } }
+    /// `async`, matching the protocol requirement exactly (see `purgeClips`).
+    public func purgePersonalItems() async { clips = clips.filter { !$0.value.hasPersonalItem } }
     /// `async`, matching the protocol requirement exactly: a synchronous overload here let a
     /// direct `await` call from outside resolve to the no-op `AudioCache` extension default.
     public func purgeClips(keepingProviders providerIDs: Set<String>) async {
@@ -452,6 +483,12 @@ public struct FileAudioCache: AudioCache {
     public func purgeAllPersonal() async {
         await memoryFallback.purgeAllPersonal()
         removePersonalGroups()
+    }
+
+    /// The launch purge: personal-item and unattributable files go; `allLinesClipTag`-only clips stay.
+    public func purgePersonalItems() async {
+        await memoryFallback.purgePersonalItems()
+        removeGroups { clip in clip.map(\.hasPersonalItem) ?? true }
     }
 
     /// Personal and unattributable files (the same rule as `purgeAllPersonal`), synchronously.
@@ -633,20 +670,52 @@ extension SpokenAttribution {
     }
 }
 
+/// Which DJ lines a route that leaves the device or is paid may hear (`VoiceRenderer.mayLeaveDevice`).
+/// Owner, Nov 9 2026: "I want it all elevenlabs." The wider scope needs cloud-voice consent to
+/// the copy that says so (`CloudVoiceConsentCopy.version` 2, `CloudVoiceConsentStore.scope`). -Fry
+public enum CloudVoiceScope: Equatable, Sendable {
+    /// Nothing leaves the device: no consent to the current copy, or the cloud voice is off.
+    case noLines
+    /// #176: only an attributed, non-personal DJ transition with no source or provenance. The
+    /// default for a renderer with no consent check (owner A/B build, on-device default, tests).
+    case transitionsOnly
+    /// Copy v2 accepted: every attributed line, including personal items (calendar, shared
+    /// email digest, notes), news and weather, library tracks and typed station names. A cue
+    /// with no attribution still stays on the device.
+    case allLines
+}
+
 public struct VoiceRenderer: Sendable {
     public static let cacheFormatVersion = "v1"
     public let routes: [VoiceRoute]
     public let budget: VoiceBudget
     public let cache: any AudioCache
     public let revocations: NarrationRevocations
+    /// Read once per cue, before any cache key, reservation or provider call, so a consent
+    /// change applies to the very next line. Every narrowed view of this renderer shares it.
+    public let cloudScope: @Sendable () -> CloudVoiceScope
 
     public init(routes: [VoiceRoute], budget: VoiceBudget, cache: any AudioCache,
-                revocations: NarrationRevocations = .shared) {
+                revocations: NarrationRevocations = .shared,
+                cloudScope: @escaping @Sendable () -> CloudVoiceScope = { .transitionsOnly }) {
         self.routes = routes
         self.budget = budget
         self.cache = cache
         self.revocations = revocations
+        self.cloudScope = cloudScope
     }
+
+    /// This renderer's budget, cache, revocations and scope over `routes`.
+    func narrowed(to routes: [VoiceRoute]) -> VoiceRenderer {
+        VoiceRenderer(routes: routes, budget: budget, cache: cache, revocations: revocations, cloudScope: cloudScope)
+    }
+
+    /// Tag on every clip of a line that only the wider scope (`.allLines`) lets leave the device,
+    /// so "Delete my DJ data" (`purgeAllPersonal`) and a purge-all in flight find it even when the
+    /// line has no `sourceItemID` (a library track, a typed station name). The launch purge
+    /// (`purgePersonalItems`) keeps a clip with only this tag, so it isn't paid for again.
+    /// Not a real item id; never logged. -Fry
+    public static let allLinesClipTag = UUID(uuidString: "A11C10D0-0000-4000-8000-00000000F2A1")!
 
     /// The last route alone (the on-device standard voice), sharing this renderer's budget,
     /// cache and revocations. Nil when there is only one route, or when the last route is paid
@@ -654,7 +723,7 @@ public struct VoiceRenderer: Sendable {
     /// that ran over its cap; it is a narrowed view, not a second renderer.
     public var lastRouteOnly: VoiceRenderer? {
         guard routes.count > 1, let last = routes.last, last.isLocalAndFree else { return nil }
-        return VoiceRenderer(routes: [last], budget: budget, cache: cache, revocations: revocations)
+        return narrowed(to: [last])
     }
 
     /// Only the on-device, free routes, in order, sharing this renderer's budget, cache and
@@ -664,7 +733,7 @@ public struct VoiceRenderer: Sendable {
     public var onDeviceOnly: VoiceRenderer? {
         let local = routes.filter(\.isLocalAndFree)
         guard !local.isEmpty else { return nil }
-        return VoiceRenderer(routes: local, budget: budget, cache: cache, revocations: revocations)
+        return narrowed(to: local)
     }
 
     /// Cloud-voice consent withdrawn (Echo's N2 on #395): deletes every cached clip that was not
@@ -681,6 +750,50 @@ public struct VoiceRenderer: Sendable {
     public static func cacheKey(text: String, route: VoiceRoute) -> String {
         SHA256Digest.hex([cacheFormatVersion, route.providerID, route.voice.id, route.acceptsSSML ? "ssml" : "text", text]
             .joined(separator: "\u{1F}"))
+    }
+
+    /// The cache key with stitching context. A line voiced after one line and before another is
+    /// a different take from the same words in another break, so the context is part of the key.
+    /// With no context it is exactly `cacheKey(text:route:)`, so existing clips keep their keys.
+    public static func cacheKey(text: String, route: VoiceRoute, context: SpeechNeighbours) -> String {
+        guard !context.isEmpty else { return cacheKey(text: text, route: route) }
+        return SHA256Digest.hex([cacheFormatVersion, route.providerID, route.voice.id, route.acceptsSSML ? "ssml" : "text", text,
+                                 "prev", context.previous ?? "", "next", context.next ?? ""]
+            .joined(separator: "\u{1F}"))
+    }
+
+    /// The neighbouring lines of `cue` in `cues` (one break, in air order) that may be sent as
+    /// stitching context. Each side is included only when that neighbour itself passes
+    /// `mayLeaveDevice` with its own attribution and `scope` — the same per-cue rule that decides
+    /// whether the neighbour's own render may leave the device (#176). An ineligible neighbour is
+    /// omitted; the other side is still sent. This does not widen that rule: `.noLines` and
+    /// `.transitionsOnly` stay as they are, and `.allLines` is the only scope that lets more cues
+    /// through, by the same check. Included neighbours carry their item ids, and
+    /// `needsAllLinesTag` when one of them may leave only under `.allLines`, so a purge of that
+    /// item (or a purge-all) covers the clip that quoted it. Empty when `cue` is not in `cues`.
+    public static func neighbours(of cue: NarrationCue, in cues: [NarrationCue],
+                                  attributions: [UUID: SpokenAttribution],
+                                  scope: CloudVoiceScope = .transitionsOnly) -> SpeechNeighbours {
+        guard let index = cues.firstIndex(where: { $0.id == cue.id }) else { return .none }
+        struct Side {
+            let text: String
+            let itemID: UUID?
+            let needsAllLines: Bool
+        }
+        func side(at i: Int) -> Side? {
+            guard cues.indices.contains(i) else { return nil }
+            let neighbour = cues[i]
+            let attribution = attributions[neighbour.id]
+            guard mayLeaveDevice(neighbour, attribution: attribution, scope: scope) else { return nil }
+            let text = neighbour.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            let widened = !mayLeaveDevice(neighbour, attribution: attribution, scope: .transitionsOnly)
+            return Side(text: text, itemID: neighbour.sourceItemID, needsAllLines: widened)
+        }
+        let previous = side(at: index - 1), next = side(at: index + 1)
+        return SpeechNeighbours(previous: previous?.text, next: next?.text,
+                                sourceItemIDs: [previous?.itemID, next?.itemID].compactMap { $0 },
+                                needsAllLinesTag: (previous?.needsAllLines ?? false) || (next?.needsAllLines ?? false))
     }
 
     public func render(_ handoff: NarrationHandoff, userID: String, stationID: String) async -> RenderedNarration {
@@ -731,8 +844,17 @@ public struct VoiceRenderer: Sendable {
         return cue.expiresAt == nil || cue.sourceItemID != nil
     }
 
-    public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?) -> Bool {
+    /// `scope` (owner, Nov 9 2026): `.transitionsOnly` is the rule above; `.noLines` keeps every
+    /// cue local; `.allLines` (consent to copy v2) lets every attributed cue go. A cue with no
+    /// attribution is local-only whatever the scope.
+    public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?,
+                                      scope: CloudVoiceScope = .transitionsOnly) -> Bool {
         guard let attribution else { return false }
+        switch scope {
+        case .noLines: return false
+        case .allLines: return true
+        case .transitionsOnly: break
+        }
         switch attribution {
         case .personalContext, .stationName: return false
         case .trackMetadata(_, let origin): guard origin == .catalog else { return false }
@@ -746,18 +868,38 @@ public struct VoiceRenderer: Sendable {
     /// (even one built without `leavesDevice`) is skipped, never looked up in the cache, reserved
     /// against or called. With no attribution the cue is local-only, and if no local, free route
     /// exists it fails closed with `.renderFailed`; it never falls back to cloud or a paid voice.
+    ///
+    /// `breakCues` / `breakAttributions` are the cue's break, in air order. A route with
+    /// `sendsSpeechContext` receives each neighbouring line as stitching context only when this
+    /// cue and that neighbour both pass `mayLeaveDevice` under this renderer's `cloudScope`.
+    /// Empty `breakCues` (every caller that is not a break) sends no context, and the request
+    /// body and cache key stay as they were.
     public func render(_ cue: NarrationCue, userID: String, stationID: String,
-                       attribution: SpokenAttribution? = nil) async -> Result<RenderedClip, Failure> {
+                       attribution: SpokenAttribution? = nil,
+                       breakCues: [NarrationCue] = [],
+                       breakAttributions: [UUID: SpokenAttribution] = [:]) async -> Result<RenderedClip, Failure> {
         var attempts: [VoiceAttempt] = []
-        let sources = cue.sourceItemID.map { [$0] } ?? []
+        // Decided once, before any cache key, reservation or provider call (#176). Ineligible
+        // cues use `isLocalAndFree` routes only.
+        let scope = cloudScope()
+        let offDeviceAllowed = Self.mayLeaveDevice(cue, attribution: attribution, scope: scope)
+        let widened = offDeviceAllowed && !Self.mayLeaveDevice(cue, attribution: attribution, scope: .transitionsOnly)
+        // Neighbours are decided with the same scope, before the purge check. A context-sending
+        // route quotes their text, so their item ids (and `allLinesClipTag` when one of them may
+        // leave only under `.allLines`) have to be in `sources` or a purge of that item, including
+        // a purge-all still in flight, cannot see the clip. -Echo
+        let mates = Self.neighbours(of: cue, in: breakCues, attributions: breakAttributions, scope: scope)
+        var sourceList = (cue.sourceItemID.map { [$0] } ?? []) + (widened ? [Self.allLinesClipTag] : [])
+        if offDeviceAllowed, routes.contains(where: \.sendsSpeechContext), !mates.isEmpty {
+            for id in mates.sourceItemIDs where !sourceList.contains(id) { sourceList.append(id) }
+            if mates.needsAllLinesTag, !sourceList.contains(Self.allLinesClipTag) { sourceList.append(Self.allLinesClipTag) }
+        }
+        let sources = sourceList
         let token = revocations.token()  // before any synthesis: a later purge of `sources` wins
         if revocations.purgePending(sources) {
             // A purge of this item is still running: render nothing that it could miss.
             return .failure(Failure(reason: .renderFailed, attempts: [VoiceAttempt(providerID: routes.first?.providerID ?? "", result: .cancelled)]))
         }
-        // Decided once, before any cache key, reservation or provider call (#176). Ineligible
-        // cues use `isLocalAndFree` routes only.
-        let offDeviceAllowed = Self.mayLeaveDevice(cue, attribution: attribution)
         let useCache = Self.mayUseCache(cue)
         for route in routes {
             if !route.isLocalAndFree && !offDeviceAllowed {
@@ -767,8 +909,11 @@ public struct VoiceRenderer: Sendable {
                 continue
             }
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
-            let text = route.acceptsSSML ? SpeechDelivery.ssml(cue.text) : SpeechDelivery.speakable(cue.text)
-            let key = Self.cacheKey(text: text, route: route)
+            let text = Self.spokenText(cue.text, for: route)
+            // Same `mates` as the purge check above. A local-only cue sends nothing, and a
+            // neighbour is included only when it may leave the device itself.
+            let speech = route.sendsSpeechContext && offDeviceAllowed ? mates.spoken() : .none
+            let key = Self.cacheKey(text: text, route: route, context: speech)
             if useCache, let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
                 // Keys are text + voice, so the clip may carry other items' ids: check both.
                 let hitSources = Array(Set(sources).union(cached.sourceItemIDs))
@@ -789,10 +934,11 @@ public struct VoiceRenderer: Sendable {
                 }
                 reservation = r
             }
-            let context = RequestContext(stationID: stationID, isReusableGeneric: false)
+            let request = RequestContext(stationID: stationID, isReusableGeneric: false,
+                                         previousText: speech.previous, nextText: speech.next)
             do {
                 let artifact = try await Self.withTimeout(route.timeout) {
-                    try await route.provider.synthesize(text, voice: route.voice, context: context)
+                    try await route.provider.synthesize(text, voice: route.voice, context: request)
                 }
                 if let r = reservation { await budget.commit(r, microdollars: route.cost(characters: artifact.billableUnits)) }
                 guard !artifact.data.isEmpty, artifact.durationSeconds.isFinite, artifact.durationSeconds > 0 else {
@@ -805,7 +951,7 @@ public struct VoiceRenderer: Sendable {
                 }
                 let audio = CachedAudio(data: artifact.data, seconds: artifact.durationSeconds,
                                         providerID: route.providerID, voiceID: route.voice.id,
-                                        sourceItemIDs: cue.sourceItemID.map { [$0] } ?? [])
+                                        sourceItemIDs: sources)
                 if Task.isCancelled || revocations.revoked(sources, since: token) {
                     // The caller gave up, or the source was purged mid-render: nothing is cached or returned.
                     attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
@@ -837,6 +983,18 @@ public struct VoiceRenderer: Sendable {
         }
         let overDuration = attempts.contains { if case .overDuration = $0.result { true } else { false } }
         return .failure(Failure(reason: overDuration ? .overDuration : .renderFailed, attempts: attempts))
+    }
+
+    /// The text a route receives. A route that leaves the device gets plain text with every `[`
+    /// and `]` stripped (an allowlisted audio tag kept only when `supportsAudioTags` is on), or
+    /// SSML of that text when the route accepts SSML. Any other route gets the same SSML or
+    /// `speakable` text as before. Bracket-free text is unchanged, so its cache key is too.
+    public static func spokenText(_ text: String, for route: VoiceRoute) -> String {
+        if route.leavesDevice {
+            let plain = SpeechDelivery.speakable(text, keepingAudioTags: route.supportsAudioTags)
+            return route.acceptsSSML ? SpeechDelivery.ssml(plain) : plain
+        }
+        return route.acceptsSSML ? SpeechDelivery.ssml(text) : SpeechDelivery.speakable(text)
     }
 
     /// Returns at the deadline even if the provider ignores cancellation
@@ -898,5 +1056,38 @@ public struct DessaVoiceProvider: VoiceProvider {
     public init() {}
     public func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
         throw VoiceRenderError.notImplemented("Dessa adapter is not implemented yet")
+    }
+}
+
+/// The spoken neighbours of one line in its break: stitching context for a voice that uses it.
+public struct SpeechNeighbours: Equatable, Sendable {
+    public let previous: String?
+    public let next: String?
+    /// Item ids of the neighbours whose text is included. A purge of one of these finds the clip.
+    public let sourceItemIDs: [UUID]
+    /// An included neighbour may leave the device only under `.allLines`, so the clip also carries
+    /// `VoiceRenderer.allLinesClipTag` and a purge-all can find it.
+    public let needsAllLinesTag: Bool
+    public static let none = SpeechNeighbours(previous: nil, next: nil)
+
+    public init(previous: String?, next: String?, sourceItemIDs: [UUID] = [], needsAllLinesTag: Bool = false) {
+        self.previous = previous
+        self.next = next
+        self.sourceItemIDs = sourceItemIDs
+        self.needsAllLinesTag = needsAllLinesTag
+    }
+
+    public var isEmpty: Bool { (previous ?? "").isEmpty && (next ?? "").isEmpty }
+
+    /// Plain text with brackets removed. Context never carries audio tags, even on a route that
+    /// would keep an allowlisted tag in the line it speaks. Purge tags are kept.
+    func spoken() -> SpeechNeighbours {
+        func plain(_ t: String?) -> String? {
+            guard let t else { return nil }
+            let s = SpeechDelivery.speakable(t, keepingAudioTags: false)
+            return s.isEmpty ? nil : s
+        }
+        return SpeechNeighbours(previous: plain(previous), next: plain(next),
+                                sourceItemIDs: sourceItemIDs, needsAllLinesTag: needsAllLinesTag)
     }
 }

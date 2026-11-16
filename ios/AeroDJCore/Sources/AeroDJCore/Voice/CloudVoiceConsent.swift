@@ -88,6 +88,18 @@ public struct CloudVoiceConsentStore: @unchecked Sendable {
     /// True only for an accepted answer to the current copy version.
     public var isGranted: Bool { state == .accepted }
 
+    /// The first copy version that discloses that every DJ line is sent (owner, Nov 9 2026:
+    /// "I want it all elevenlabs."). Version 1 said personal items never leave the device.
+    public static let allLinesVersion = 2
+
+    /// What `VoiceRenderer` may send off the device (`VoiceRenderer.cloudScope`): every attributed
+    /// line once copy v2 or later is accepted, nothing otherwise. An acceptance of v1 reads
+    /// `.undecided` (asked again) and so sends nothing, not even the v1 transitions, until the
+    /// listener accepts the new copy. Read straight from the store on every call. -Fry
+    public var scope: CloudVoiceScope {
+        isGranted && Self.currentVersion >= Self.allLinesVersion ? .allLines : .noLines
+    }
+
     /// Same shape as `PaidVoiceConsentProviding.hasPaidVoiceConsent()` in Fry's #244, so the
     /// stacked paywall PR adds only `extension CloudVoiceConsentStore: PaidVoiceConsentProviding {}`.
     /// Reads the store on every call (no caching), so a decline is seen by the very next check.
@@ -98,6 +110,16 @@ public struct CloudVoiceConsentStore: @unchecked Sendable {
 
     /// "Keep on-device voice", or the toggle turned off. Takes effect on the next render.
     public func decline() { write(.declined) }
+}
+
+extension VoiceRenderer {
+    /// This renderer with its cloud scope read from `store` on every cue (`CloudVoiceConsentStore.scope`):
+    /// `.allLines` after copy v2 is accepted, `.noLines` for v1 only, undecided, declined or off.
+    /// The tester and owner A/B builds both build their live renderer this way (#433). -Fry
+    public func gated(by store: CloudVoiceConsentStore) -> VoiceRenderer {
+        VoiceRenderer(routes: routes, budget: budget, cache: cache, revocations: revocations,
+                      cloudScope: { store.scope })
+    }
 }
 
 /// When the sheet must be shown. A cloud voice is offered only when the build allows paid
@@ -134,22 +156,24 @@ public enum CloudVoiceConsentPrompt {
     }
 }
 
-/// Sheet copy, verbatim from docs/privacy/disclosure-copy.md §1 (#174, draft), with the app
-/// name from `AppName.display`. Owner-pending items are left out, not invented: the
-/// briefing clause (briefing cues never leave the device, `VoiceRenderer.mayLeaveDevice`),
-/// ElevenLabs retention/training wording, and the app's own Privacy Policy URL.
+/// Sheet copy, from docs/privacy/disclosure-copy.md §1 (#174, draft), with the app name from
+/// `AppName.display`. Version 2 (owner, Nov 9 2026: "I want it all elevenlabs."): every DJ line,
+/// personal items and news/weather included, is sent (`CloudVoiceScope.allLines`). Owner-pending
+/// items are left out, not invented: ElevenLabs retention/training wording, and the app's own
+/// Privacy Policy URL.
 public enum CloudVoiceConsentCopy {
     /// Version of the copy below. A material change must bump it (asks everyone again).
-    public static let version = 1
+    /// 1: transitions only (#176). 2: every DJ line (`CloudVoiceConsentStore.allLinesVersion`).
+    public static let version = 2
 
     public static let title = "Use a cloud voice?"
     public static var intro: String {
         "This voice is generated online, not on your iPhone. To speak each DJ break, \(AppName.display) sends the words of that break to our voice server, and on to ElevenLabs, which turns them into audio."
     }
     public static let sentHeading = "What's sent:"
-    public static let sent = "only the text the DJ is about to say, such as song and artist names, your station's name, and time-of-day lines."
+    public static let sent = "the text of everything the DJ says. That includes your personal items: calendar events, your shared email digest and other shared items, notes, songs from your music library and the station names you type. It also includes the news and weather lines."
     public static let neverSentHeading = "What's never sent:"
-    public static let neverSent = "your Apple ID, your contacts, your location, your music library when a station is built from your library (those stations always use the on-device voice), or anything you haven't approved for your briefing."
+    public static let neverSent = "your Apple ID, your contacts, your coordinates or your location itself, or anything you haven't approved for your briefing. Only the words the DJ speaks are sent, and a local news line can name your city or area."
     public static let storedHeading = "How it's stored:"
     public static let stored = "our server keeps a short technical log without the text. ElevenLabs may keep the text and audio under its own privacy policy."
     public static let switchBack = "You can switch back to the on-device voice at any time in Settings."
@@ -161,6 +185,6 @@ public enum CloudVoiceConsentCopy {
     public static let elevenLabsPolicyLabel = "ElevenLabs Privacy Policy"
     public static let elevenLabsPolicyURL = URL(string: "https://elevenlabs.io/privacy-policy")!
     /// Short footer under the Cloud voice toggle (§1 "Short footer").
-    public static let footer = "Cloud voice: the DJ's words are sent to ElevenLabs to make audio. On-device voices never leave your iPhone."
+    public static let footer = "Cloud voice: everything the DJ says, including your calendar, shared items, notes, library songs, news and weather, is sent to ElevenLabs to make audio. On-device voices never leave your iPhone."
     public static let toggleTitle = "Cloud voice"
 }
