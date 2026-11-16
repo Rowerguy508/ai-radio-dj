@@ -274,6 +274,7 @@ enum SearchText {
 #if DEBUG
 /// One line from the split capture: the reader size that was choosing the centred
 /// column, and the container size the player uses instead.
+@MainActor
 enum SplitPlayerGeoLog {
     private static var logged = false
 
