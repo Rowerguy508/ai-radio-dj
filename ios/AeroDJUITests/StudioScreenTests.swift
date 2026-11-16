@@ -433,9 +433,9 @@ final class StudioScreenTests: XCTestCase {
     }
 
     /// #492 (#465 item 5): opening the phone. The capture starts at the folded phone
-    /// container (compact) and unfolds to the 640×820 Duo (regular). Playback, the
-    /// selected station, the scroll anchor and the load count stay. The size class
-    /// is the change; the layout still comes from `DisplayContinuity`.
+    /// container (compact) and unfolds to the 640×820 Duo (regular), which shows #514's
+    /// two-pane arrangement. Playback, the selected station, the stored scroll anchor and
+    /// the load count stay. Row 4 on screen is checked while folded only.
     @MainActor
     func testOpeningThePhoneKeepsPlaybackScrollAndStation() throws {
         try XCTSkipUnless(isOpenLayout, "The unfolded 640 × 820 pt container needs an iPad-size simulator window")
@@ -495,16 +495,16 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 10),
                       "640 pt stays the compact player at either size class\n\(app.debugDescription)")
         XCTAssertFalse(any["layout.studio"].exists)
-        XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10),
-                      "the unfolded Duo is the horizontal player\n\(app.debugDescription)")
+        // #514: regular width at 640 × 820 resolves to the two-pane arrangement.
+        XCTAssertTrue(any["arrangement.split"].waitForExistence(timeout: 10),
+                      "the unfolded Duo is the two-pane arrangement\n\(app.debugDescription)")
+        XCTAssertFalse(any["folded.trackColumn"].exists, "the folded horizontal player is gone")
         let held = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "continuity.row.4"),
                                              object: anchor)
+        // The arrangement panes have no continuity rows, so row 4 is checked only while
+        // folded. The stored anchor must survive the switch so folding back restores it.
         XCTAssertEqual(XCTWaiter().wait(for: [held], timeout: 5), .completed,
-                       "the scroll anchor jumped: \(anchor.label)")
-        XCTAssertTrue(row.waitForExistence(timeout: 5))
-        let rowStillOnScreen = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: row)
-        XCTAssertEqual(XCTWaiter().wait(for: [rowStillOnScreen], timeout: 5), .completed,
-                       "row 4 left the screen when the phone opened: \(row.frame)")
+                       "the stored scroll anchor was lost: \(anchor.label)")
         XCTAssertEqual(readout(app, "continuity.station"), "morning-calm")
         XCTAssertTrue(any["station.title"].label.contains("Morning Calm"))
         XCTAssertEqual(readout(app, "continuity.playback"), playback)
