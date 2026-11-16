@@ -98,22 +98,16 @@ struct FoldedPlayer: View {
     var onOpenStation: ((String) async -> Void)? = nil
     /// Outer edge while the window is a split. Nil keeps the symbol bar on the trailing side.
     var splitBarEdge: SplitViewLayout.BarEdge? = nil
+    /// The split container, when the host is adapting. Nil uses the reader, which is the phone.
+    var layoutSize: CGSize? = nil
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        GeometryReader { geo in
-            switch FoldedColumnLayout.controlPlacement(containerWidth: Double(geo.size.width),
-                                                       containerHeight: Double(geo.size.height)) {
-            case .phoneBottom:
-                compactBody(in: geo.size)
-            case .centredColumn:
-                centredColumnBody(in: geo.size)
-            case .duoHorizontal:
-                wideBody(in: geo.size)
-            }
+        let reader = GeometryReader { geo in
+            laidOut(in: layoutSize ?? geo.size)
         }
         .background {
             FoldedBackdrop(track: heroTrack, station: station)
@@ -122,6 +116,24 @@ struct FoldedPlayer: View {
         }
         .environment(\.colorScheme, .dark)
         .environment(\.onSlab, true)
+        if layoutSize != nil {
+            reader.ignoresSafeArea(edges: .top)
+        } else {
+            reader
+        }
+    }
+
+    @ViewBuilder
+    private func laidOut(in size: CGSize) -> some View {
+        switch FoldedColumnLayout.controlPlacement(containerWidth: Double(size.width),
+                                                   containerHeight: Double(size.height)) {
+        case .phoneBottom:
+            compactBody(in: size)
+        case .centredColumn:
+            centredColumnBody(in: size)
+        case .duoHorizontal:
+            wideBody(in: size)
+        }
     }
 
     /// Phone width: unchanged from wireframe 08 (scrolling upper, pinned controls).

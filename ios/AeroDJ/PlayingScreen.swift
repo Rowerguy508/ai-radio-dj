@@ -45,6 +45,8 @@ struct PlayingScreen: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     /// Set by the split host. Nil keeps the phone and the centred column as they are.
     @Environment(\.splitBarEdge) private var splitBarEdge
+    /// The split container, set by the capture. Nil on a phone, so the reader is unchanged.
+    @Environment(\.splitMeasure) private var splitMeasure
     @Namespace private var bleedArt
 
     private var morphNamespace: Namespace.ID? {
@@ -54,14 +56,26 @@ struct PlayingScreen: View {
         return bleedArt
     }
 
+    /// Container the split host measured. Nil unless that host is adapting, so a phone
+    /// keeps the GeometryReader's own size.
+    private var splitCanvas: CGSize? {
+        guard splitBarEdge != nil, let splitMeasure else { return nil }
+        return CGSize(width: splitMeasure.containerWidth, height: splitMeasure.containerHeight)
+    }
+
     var body: some View {
         GeometryReader { geo in
-            let width = Double(geo.size.width)
+            let canvas = splitCanvas
+            let width = canvas.map { Double($0.width) } ?? Double(geo.size.width)
+            let height = canvas?.height ?? geo.size.height
             let mode = resolvedMode(containerWidth: width)
-            layout(mode: mode, width: width, height: geo.size.height, barEdge: splitBarEdge)
+            layout(mode: mode, width: width, height: height, barEdge: splitBarEdge)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: mode)
             #if DEBUG
             .onAppear {
+                if splitCanvas != nil {
+                    SplitPlayerGeoLog.once(proposed: geo.size, container: splitCanvas!)
+                }
                 if let initial = StudioCaptureSegment.initial {
                     segment = initial
                     StudioCaptureSegment.initial = nil
@@ -158,7 +172,8 @@ struct PlayingScreen: View {
                          onReview: { segment = .connections; showWorkspace = true },
                          stationStops: stationStops,
                          onOpenStation: onOpenStation,
-                         splitBarEdge: barEdge)
+                         splitBarEdge: barEdge,
+                         layoutSize: splitCanvas)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
                 .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
@@ -257,6 +272,19 @@ enum SearchText {
 }
 
 #if DEBUG
+/// One line from the split capture: the reader size that was choosing the centred
+/// column, and the container size the player uses instead.
+enum SplitPlayerGeoLog {
+    private static var logged = false
+
+    static func once(proposed: CGSize, container: CGSize) {
+        guard !logged else { return }
+        logged = true
+        print(String(format: "split-player geo.size %.1f x %.1f container %.1f x %.1f",
+                     proposed.width, proposed.height, container.width, container.height))
+    }
+}
+
 #Preview("Playing screen") {
     PlayingScreenPreviewLoader()
 }
