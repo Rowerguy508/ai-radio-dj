@@ -22,7 +22,9 @@ public enum PersonalDataReset {
     /// personal item (`NarrationPurger.purgeAllPersonalNarration`), cloud-voice clips of library
     /// songs and typed station names (`VoiceRenderer.allLinesClipTag`, owner's call on #433), song ratings
     /// (`StationRatingsModel.listen`), the saved location or typed place (`LocalAreaStore.listen`)
-    /// saved GDELT news headlines and the queued fact lines (`LocalFactsWiring.listen`). Whether a
+    /// saved GDELT news headlines and the queued fact lines (`LocalFactsWiring.listen`). The same
+    /// purge also drops the on-device DJ template-id memory (`SpokenLineMemory`, #318); it holds no
+    /// listener content, so the row does not name it. Whether a
     /// weather provider's own cache is cleared is unconfirmed, so the copy does not say so. It does NOT delete shared-inbox
     /// items, review decisions (`SharedReviewStore`, including any `.unreadable` copy),
     /// `PersonalUpdateLedger`, played song IDs, search text, stations, recipes or settings.

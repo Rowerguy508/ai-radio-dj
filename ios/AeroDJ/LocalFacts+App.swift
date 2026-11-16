@@ -208,6 +208,8 @@ private struct LocalFactsToggleCardBody: View {
         .onAppear { host.syncStatus() }
         .sheet(isPresented: $asking, onDismiss: { host.promptClosed() }) {
             LocalAreaPrompt(store: host.wiring.store, location: host.location.location) { asking = false }
+                // #465 item 10: the 560 pt onboarding column when wide; untouched on phones.
+                .appWideScreen(.onboarding)
                 .presentationDetents([.medium, .large])
         }
     }

@@ -44,9 +44,10 @@ as part of one thought (request stitching):
 
 - `previousText` / `nextText`: strings, forwarded as `previous_text` /
   `next_text`. Not spoken and not charged to our caps. Each is reduced to
-  plain text with brackets removed, then trimmed to 300 characters (previous
-  keeps its end, next keeps its start). A non-string, or one over 2,400
-  characters, is 400.
+  plain text with brackets removed (an allowlisted tag such as `[warmly]` is
+  dropped entirely, so `[warmly] Hi.` becomes `Hi.`), then trimmed to 300
+  characters (previous keeps its end, next keeps its start). A non-string,
+  or one over 2,400 characters, is 400.
 - `previousRequestIds`: at most 3 ElevenLabs request ids
   (`^[A-Za-z0-9_-]{1,64}$`), forwarded as `previous_request_ids`. Anything
   else is 400. A 200 returns ElevenLabs' own id as `X-Upstream-Request-Id`
@@ -54,12 +55,15 @@ as part of one thought (request stitching):
 - None of the three are sent to `eleven_v3` (request stitching is not
   available on v3).
 
-Square brackets never reach a model as text: they are removed from the
-spoken text and the context (a title like "Song [Live]" is spoken as "Song
-Live"). Only on a model that reads audio tags (`eleven_v3`, `eleven_v4`,
-`eleven_v4_turbo`) does an exact allowlisted tag survive in the spoken text:
-`[warmly]`, `[relaxed]`, `[chuckles]`, `[softly]`, `[excited]`. On every other
-model those tags are dropped. Characters are counted after this step.
+Square brackets never reach a model as an audio tag. Spoken text goes
+through `stripAllBrackets` for every model, including `eleven_v3`,
+`eleven_v4` and `eleven_v4_turbo`: every `[` and `]` is removed and the
+words are kept, so "Song [Live]" is spoken as "Song Live" and `[warmly]`
+is spoken as the word "warmly". Allowlisted tags (`warmly`, `relaxed`,
+`chuckles`, `softly`, `excited`) do not survive as `[tag]` on any model.
+Audio tags stay off; no request field opts into them (iOS
+`VoiceRoute.supportsAudioTags` defaults off). Characters are counted after
+this step.
 
 Success: `200`, `Content-Type: audio/wav` (16-bit mono 22,050 Hz PCM in a RIFF
 header), body non-empty and at most 5 MB, plus
@@ -419,6 +423,17 @@ More than one of `Authorization`, `X-OnAirly-Install-Token`, `X-OnAirly-Assertio
 `npx tsx scripts/revoke-installs.ts production < keyids.txt` (owner's shell; entries live
 90 days, like the key record).
 
+## `GET /api/flags` (public app flags, #525)
+
+One small JSON object the app reads as remote kill switches: `{"djAirPlayLongForm": true}`.
+No auth, no store, no upstream call; nothing from the request is read or logged, and the answer
+depends only on env (`Cache-Control: no-store`). `GET` and `HEAD` only (other methods: 405).
+The app fetches it only at its first AirPlay detection of a launch (the launch probe, or the first
+DJ gap break on an AirPlay route), at most once per launch, with a bare HTTPS GET (no body, token,
+cookie or identifier); a listener off AirPlay never calls it. The app keeps the value in memory
+only: every launch starts on, so a kill or un-kill lands on the next launch. A failed fetch keeps
+that launch's value (fail open), and only a fetched `false` turns the AirPlay path off.
+
 ## Logging and privacy
 
 Each request logs exactly one JSON line: `{ requestId, status, chars }`.
@@ -437,7 +452,7 @@ either (`test/install-token.test.ts`); refusals log enum reasons only.
 | `ELEVENLABS_API_KEY` | yes | Server-only. Restricted key, Text to Speech only. Production scope only. |
 | `AERODJ_TTS_TOKEN_SHA256` | yes | 64-char hex SHA-256 of the owner token. Never the token itself. |
 | `AERODJ_TTS_VOICE_IDS` | yes | Comma-separated ElevenLabs voice ID allowlist. |
-| `ELEVENLABS_MODEL_ID` | no | Default `eleven_flash_v2_5`. Picks the `voice_settings` family above and whether audio tags and stitching are sent. |
+| `ELEVENLABS_MODEL_ID` | no | Default `eleven_flash_v2_5`. Picks the `voice_settings` family above and whether stitching is sent. Audio tags are never sent, on any model. |
 | `AERODJ_TTS_MAX_TEXT_CHARS` | no | Default 600. |
 | `AERODJ_TTS_GLOBAL_DAILY_CHAR_CAP` | no | Global daily ceiling. Default: `AERODJ_TTS_DAILY_CHAR_CAP`, else 9000. |
 | `AERODJ_TTS_DAILY_CHAR_CAP` | no | Legacy name, used for the global ceiling when the new name is unset. |
@@ -458,6 +473,7 @@ either (`test/install-token.test.ts`); refusals log enum reasons only.
 | `AERODJ_TTS_APP_ATTEST_ENV` | no | Unset or `production`: only the production `aaguid`. `development` also accepts `appattestdevelop` (and validation category 3), **only** on a Preview/Development deployment with no `ELEVENLABS_API_KEY`; anywhere else, or any other value → 500 `misconfig`. |
 | `AERODJ_TTS_ENROLL_DAILY_CAP` | no | Verified enrollments per UTC day overall (default 20, owner decision 2026-10-29). Plain integer 1-100000; anything else uses the default. |
 | `AERODJ_TTS_TESTER_VOICE_ENABLED` | no | Tester voice kill switch (#378). Only exactly `true` (and `AERODJ_TTS_ATTEST_ENABLED=true`) enables `/api/attest/token` and install tokens on `/api/tts`; anything else (`TRUE`, `1`, empty) is off: 503 `disabled`. **Leave unset until the owner OKs it at deploy.** |
+| `AERODJ_DJ_AIRPLAY_LONGFORM` | no | iOS #525 **kill switch**, served by `GET /api/flags` as `djAirPlayLongForm`. **On by default:** unset or any value except exactly `false` (including `FALSE`, `0`, empty) answers `true`. Set exactly `false` to turn off the DJ voice's long-form AirPlay gap-break session if the Build 10 hold comes back; unset (or any other value) turns it back on. |
 | `AERODJ_TTS_INSTALL_TOKEN_HMAC_KEY` | before tester voice is enabled | Server-only. Dedicated key for install tokens, at least 32 bytes, **created by the owner**, pasted directly into Vercel (Production). Must differ from the challenge key; missing, short or equal → 500 `misconfig` on the install paths. Rotating it invalidates every live token (30 min max). |
 | `AERODJ_TTS_TESTER_POOL_DAILY_CHAR_CAP` | no | Spoken chars per UTC day that all TestFlight installs together may use. Default 6000. Always clamped to global − owner cap, so testers can never spend the owner share; nothing left → install requests 500 `misconfig`. |
 | `AERODJ_TTS_ENROLL_DEVICE_DAILY_CAP` | no | Verified enrollments per UTC day per device bucket (keyed hash of the client network; see above) (default 3, owner decision 2026-10-29). Plain integer 1-1000; anything else uses the default. |
