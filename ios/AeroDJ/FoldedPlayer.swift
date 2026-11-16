@@ -100,6 +100,9 @@ struct FoldedPlayer: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    /// Book pose only. Empty on this SDK, so `wideBody` keeps the centred gutter.
+    @State private var foldHinge: FoldAwareness.HingeSample?
+    @State private var foldDivisions: [FoldAwareness.Division] = []
 
     var body: some View {
         GeometryReader { geo in
@@ -210,52 +213,66 @@ struct FoldedPlayer: View {
     }
 
     /// Full-width Duo. The centre gutter is the fold: no control sits in it.
+    /// In book pose the gutter is the division region instead of that centred band,
+    /// and the player stays on its leading side. A column with no width is omitted
+    /// so a 44 pt button is not laid out on the crease.
     private func wideBody(in size: CGSize) -> some View {
-        let layout = FoldedColumnLayout.duoHorizontal(containerWidth: Double(size.width),
-                                                      containerHeight: Double(size.height),
-                                                      artMin: Double(FoldedStyle.artMinSide),
-                                                      artMax: Double(FoldedStyle.artMaxSide))
+        let layout = FoldAwareness.resolve(containerWidth: Double(size.width),
+                                           containerHeight: Double(size.height),
+                                           hinge: foldHinge,
+                                           divisions: foldDivisions,
+                                           artMin: Double(FoldedStyle.artMinSide),
+                                           artMax: Double(FoldedStyle.artMaxSide)).metrics
         let gap = CGFloat(FoldedColumnLayout.Spacing.betweenControls)
         return HStack(alignment: .top, spacing: 0) {
-            ScrollView(.vertical, showsIndicators: false) {
-                // An explicit column width. A vertical scroll view otherwise offers an
-                // unbounded width, the placeholder lays out on one line, and a centred
-                // overflow puts the leading edge off the column.
-                upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
-                      includesStatus: false, keepArtVisible: true, includesSearch: false)
-                    .frame(width: CGFloat(layout.leftWidth), alignment: .leading)
+            if layout.leftWidth > 0 {
+                ScrollView(.vertical, showsIndicators: false) {
+                    // An explicit column width. A vertical scroll view otherwise offers an
+                    // unbounded width, the placeholder lays out on one line, and a centred
+                    // overflow puts the leading edge off the column.
+                    upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
+                          includesStatus: false, keepArtVisible: true, includesSearch: false)
+                        .frame(width: CGFloat(layout.leftWidth), alignment: .leading)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollContentBackground(.hidden)
+                .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
+                .background { dayWash.accessibilityHidden(true) }
+                // .contain first, then the identifier. An identifier on a container without
+                // .contain is copied onto every control inside it. The element is the column,
+                // not a clear layer over the rating button. The ScrollView is not the element:
+                // that also exposes the scroll view.
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("folded.trackColumn")
+                .accessibilitySortPriority(2)
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .scrollContentBackground(.hidden)
-            .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
-            .background { dayWash.accessibilityHidden(true) }
-            // .contain first, then the identifier. An identifier on a container without
-            // .contain is copied onto every control inside it. The element is the column,
-            // not a clear layer over the rating button. The ScrollView is not the element:
-            // that also exposes the scroll view.
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("folded.trackColumn")
-            .accessibilitySortPriority(2)
 
             Color.clear
                 .frame(width: CGFloat(layout.foldGutter), height: size.height)
                 .accessibilityHidden(true)
                 .accessibilityIdentifier("folded.fold")
 
-            wideContent(gap: gap, top: CGFloat(layout.topClearance))
-                .frame(width: CGFloat(layout.contentWidth), height: size.height, alignment: .top)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("folded.contentColumn")
-                .accessibilitySortPriority(1)
+            if layout.contentWidth > 0 {
+                wideContent(gap: gap, top: CGFloat(layout.topClearance))
+                    .frame(width: CGFloat(layout.contentWidth), height: size.height, alignment: .top)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("folded.contentColumn")
+                    .accessibilitySortPriority(1)
+            }
 
-            wideSystemBar(top: CGFloat(layout.topClearance))
-                .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("folded.systemBar")
-                .accessibilitySortPriority(0)
+            if layout.barWidth > 0 {
+                wideSystemBar(top: CGFloat(layout.topClearance))
+                    .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("folded.systemBar")
+                    .accessibilitySortPriority(0)
+            }
         }
         .padding(.horizontal, CGFloat(layout.edgeInset))
         .frame(width: size.width, height: size.height)
+        .background {
+            FoldDivisionProbe(hinge: $foldHinge, divisions: $foldDivisions)
+        }
     }
 
     /// Horizontal scrubber, transport, station, and the DJ chip. Nothing playing puts
