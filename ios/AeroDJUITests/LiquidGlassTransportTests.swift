@@ -69,9 +69,17 @@ final class LiquidGlassTransportTests: XCTestCase {
         if tune.exists {
             XCTAssertTrue(tune.isHittable, "Tune not hittable (\(mode.rawValue))")
         }
-        // The glass circles must not grow the 52 pt / 68 pt targets.
-        XCTAssertEqual(play.frame.width, 68, accuracy: 1, "Play/Pause size (\(mode.rawValue))")
-        XCTAssertEqual(app.buttons["transport.skip"].frame.width, 52, accuracy: 1, "Skip size (\(mode.rawValue))")
+        let rail = app.descendants(matching: .any)["folded.systemBar"]
+        if rail.exists, rail.frame.contains(CGPoint(x: play.frame.midX, y: play.frame.midY)) {
+            // #542: the unfolded rail (iPad / open Duo) draws its transport on the rail's
+            // 44 pt plate (DuoVerticalRail). The glass must not grow it.
+            XCTAssertEqual(play.frame.width, 44, accuracy: 1, "Play/Pause size on the rail (\(mode.rawValue))")
+            XCTAssertEqual(app.buttons["transport.skip"].frame.width, 44, accuracy: 1, "Skip size on the rail (\(mode.rawValue))")
+        } else {
+            // The glass circles must not grow the 52 pt / 68 pt targets.
+            XCTAssertEqual(play.frame.width, 68, accuracy: 1, "Play/Pause size (\(mode.rawValue))")
+            XCTAssertEqual(app.buttons["transport.skip"].frame.width, 52, accuracy: 1, "Skip size (\(mode.rawValue))")
+        }
         save(app, "glass-\(mode.rawValue)")
     }
 

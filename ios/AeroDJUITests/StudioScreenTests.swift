@@ -1474,12 +1474,26 @@ final class StudioScreenTests: XCTestCase {
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(titleEl.exists, title)
         XCTAssertTrue(play.exists)
-        XCTAssertLessThan(titleEl.frame.minY, play.frame.minY, "\(title) is read before the transport")
+        // #542: on the unfolded rail the transport sits in the trailing `folded.systemBar`
+        // column (accessibilitySortPriority 0, after the track and content columns at 2 and 1),
+        // level with the title, so top-to-bottom order does not apply. There the check is that
+        // Play/Pause is inside the rail and the text is in a column leading of it.
+        let rail = app.descendants(matching: .any)["folded.systemBar"]
+        let onRail = rail.exists && rail.frame.contains(CGPoint(x: play.frame.midX, y: play.frame.midY))
+        if onRail {
+            XCTAssertLessThanOrEqual(titleEl.frame.maxX, rail.frame.minX + 1, "\(title) is in a column read before the rail transport")
+        } else {
+            XCTAssertLessThan(titleEl.frame.minY, play.frame.minY, "\(title) is read before the transport")
+        }
         if let status {
             let statusEl = tightest(app, status)
             XCTAssertTrue(statusEl.exists, status)
             XCTAssertLessThanOrEqual(titleEl.frame.minY, statusEl.frame.minY, "\(title) is read before \(status)")
-            XCTAssertLessThanOrEqual(statusEl.frame.minY, play.frame.minY, "\(status) is read before the transport")
+            if onRail {
+                XCTAssertLessThanOrEqual(statusEl.frame.maxX, rail.frame.minX + 1, "\(status) is in a column read before the rail transport")
+            } else {
+                XCTAssertLessThanOrEqual(statusEl.frame.minY, play.frame.minY, "\(status) is read before the transport")
+            }
         }
     }
 
