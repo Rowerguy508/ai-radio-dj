@@ -51,6 +51,8 @@ private struct AppWideHost: ViewModifier {
                                         containerWidth: size.width, containerHeight: size.height,
                                         accessibilityTextSize: typeSize.isAccessibilitySize,
                                         hasRegularHeight: verticalSizeClass.map { $0 == .regular },
+                                        // Onboarding is a content-sized sheet; see `heightIsContent`.
+                                        heightIsContent: screen == .onboarding,
                                         arrangement: arrangement)
         let decision = AppWideLayout.decide(input, for: screen)
         return decision.adapts ? decision : nil
