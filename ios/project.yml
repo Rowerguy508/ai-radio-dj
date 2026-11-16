@@ -104,6 +104,32 @@ targets:
         INFOPLIST_FILE: AeroDJShare/Info.plist
         CODE_SIGN_ENTITLEMENTS: AeroDJShare/AeroDJShare.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
+  AeroDJWidgets:
+    # #465 item 7 (-Nova): the Now Playing / StandBy widget and the on-air Live Activity.
+    # Built by the AeroDJ scheme (run and test) so CI compiles it, but NOT embedded in
+    # AeroDJ.app and not archived yet: shipping it needs an App Store profile for
+    # com.aerodj.app.widgets with the existing App Group (owner's Apple account) and the
+    # TestFlight workflow's profile/export changes. To ship: add `- target: AeroDJWidgets` to
+    # AeroDJ's dependencies and `archive` to the scheme entry below. NowPlayingSurfaces stays
+    # inert until the .appex is in PlugIns.
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: AeroDJWidgets
+        excludes: [Info.plist]
+    dependencies:
+      - package: AeroDJCore
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerodj.app.widgets
+        INFOPLIST_FILE: AeroDJWidgets/Info.plist
+        CODE_SIGN_ENTITLEMENTS: AeroDJWidgets/AeroDJWidgets.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
   AeroDJStoreKitTests:
     # StoreKitTest (SKTestSession) coverage for the Pro subscription: purchase, restore, expiry,
     # refund. Hosted in the app so it can see ProEntitlementObserver. The .storekit file is a
@@ -137,6 +163,8 @@ schemes:
     build:
       targets:
         AeroDJ: all
+        # #465 item 7: compiled in CI, not archived until its signing exists (see the target).
+        AeroDJWidgets: [run, test]
     run:
       # Local StoreKit testing in Xcode (Run only). TestFlight and App Store builds use the
       # real App Store products, which the owner creates in App Store Connect.

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The existing App Group (same as the app and the share extension). The widget reads one
+	     display-only value from it (NowPlayingDisplayStore). No other capability. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.aerodj</string>
+	</array>
+</dict>
+</plist>
