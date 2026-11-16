@@ -15,8 +15,8 @@ import UIKit
 /// - Never on the playback path. The `$snapshot` and DJ observers only enqueue a value; one
 ///   background task writes the App Group and talks to ActivityKit. Nothing awaits it, nothing
 ///   in playback reads it, and every failure is swallowed and logged without identifiers.
-/// - Live only, and only when the widget extension is embedded in the app (it isn't until its
-///   signing is set up; see the PR). Until then this does nothing at all.
+/// - Live only, and only when the widget extension is embedded in the app (PlugIns/AeroDJWidgets.appex,
+///   signed for TestFlight with PROFILE_WIDGETS). Without it this does nothing at all.
 @MainActor
 final class NowPlayingSurfaces {
     static let shared = NowPlayingSurfaces()
