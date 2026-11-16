@@ -21,8 +21,9 @@ public enum FoldedOuterLayout {
     public static let artistPointSize: Double = 15
     public static let transportHeight: Double = 80
     public static let transportRadius: Double = 40
-    /// Play/Pause disc in the mockup (item 9's shared row stays 68 pt).
-    public static let playSide: Double = 64
+    /// Play/Pause disc. The mockup drew 64 pt; this uses the shipped 68 pt transport target
+    /// (#484 LiquidGlassTransportTests) so the iPhone keeps the same Play/Pause size.
+    public static let playSide: Double = 68
     /// Outset ring around play, deferred from item 9: a 6 pt teal halo.
     public static let playRingWidth: Double = 6
     public static let playRingOpacity: Double = 0.25
@@ -38,7 +39,7 @@ public enum FoldedOuterLayout {
     /// default text sizes (accessibility sizes use `FoldedStyle.artReserveAccessibility`).
     public static let artReserveBelow: Double = 470
 
-    /// Outer diameter of play plus its ring (64 + 6 + 6). Fits in the 80 pt capsule.
+    /// Outer diameter of play plus its ring (68 + 6 + 6). Fits in the 80 pt capsule.
     public static var playOuterSide: Double { playSide + playRingWidth * 2 }
 
     /// A measured container that overrides a view's own geometry, e.g. the split host's

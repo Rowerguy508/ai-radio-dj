@@ -4,9 +4,10 @@ import XCTest
 final class FoldedOuterLayoutTests: XCTestCase {
 
     func testPlayRingFitsInsideTheTransportCapsule() {
-        XCTAssertEqual(FoldedOuterLayout.playSide, 64)
+        // 68, not the mockup's 64: the reskin is the iPhone player, and #484 fixes Play/Pause at 68.
+        XCTAssertEqual(FoldedOuterLayout.playSide, 68)
         XCTAssertEqual(FoldedOuterLayout.playRingWidth, 6)
-        XCTAssertEqual(FoldedOuterLayout.playOuterSide, 76)
+        XCTAssertEqual(FoldedOuterLayout.playOuterSide, 80)
         XCTAssertLessThanOrEqual(FoldedOuterLayout.playOuterSide, FoldedOuterLayout.transportHeight)
         XCTAssertEqual(FoldedOuterLayout.transportHeight, 80)
         XCTAssertEqual(FoldedOuterLayout.transportRadius, 40)

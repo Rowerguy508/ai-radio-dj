@@ -128,6 +128,8 @@ struct FoldedPlayer: View {
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The 01-folded reskin header draws its own back button (#491).
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var moreOpen = false
     /// Book pose only. Empty on this SDK, so `wideBody` keeps the centred gutter.
@@ -691,7 +693,10 @@ extension FoldedPlayer {
             } else {
                 outerUpperScroll(artSide: art, showsIndicators: false, pinsStatus: false)
             }
+            // At accessibility sizes the controls keep their full height, so the pinned
+            // ON AIR pill stays above the scrubber. The upper area shrinks or scrolls.
             outerControls(pinsStatus: accessibilityText)
+                .fixedSize(horizontal: false, vertical: accessibilityText)
         }
         .frame(width: size.width, height: size.height)
         .accessibilityElement(children: .contain)
