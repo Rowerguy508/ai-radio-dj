@@ -919,6 +919,9 @@ private struct FoldedOuterTransport: View {
         .clipShape(Capsule())
         .buttonStyle(.plain)
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
+        // .contain first: an identifier on a plain stack is copied onto every child,
+        // which replaced transport.playPause and transport.skip with this id.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folded.outer.transport")
     }
 }
