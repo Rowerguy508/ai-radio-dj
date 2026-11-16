@@ -17,7 +17,7 @@ struct FoldDivisionProbe: View {
             Color.clear
                 .modifier(HingeObserver(hinge: $hinge))
                 .onChange(of: FoldDivisionReading.regions(in: proxy), initial: true) { _, next in
-                    divisions = next
+                    if next != divisions { divisions = next }
                 }
         }
         .allowsHitTesting(false)
@@ -32,10 +32,10 @@ private enum FoldDivisionReading {
         if #available(iOS 27.1, *) {
             return proxy.reservedRegions(kind: .division).map { region in
                 FoldAwareness.Division(
-                    minX: Double(region.frame.minX),
-                    minY: Double(region.frame.minY),
-                    width: Double(region.frame.width),
-                    height: Double(region.frame.height),
+                    minX: half(region.frame.minX),
+                    minY: half(region.frame.minY),
+                    width: half(region.frame.width),
+                    height: half(region.frame.height),
                     isActive: region.isActive)
             }
             .sorted { lhs, rhs in
@@ -46,6 +46,12 @@ private enum FoldDivisionReading {
         }
         #endif
         return []
+    }
+
+    /// #538: rounds to 0.5pt so sub-point jitter in the reported frames cannot
+    /// rewrite `divisions` on every layout pass.
+    private static func half(_ value: CGFloat) -> Double {
+        (Double(value) * 2).rounded() / 2
     }
 }
 
