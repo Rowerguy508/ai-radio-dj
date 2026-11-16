@@ -460,6 +460,8 @@ final class FoldedColumnLayoutTests: XCTestCase {
             XCTAssertTrue(safe.contains(rect), "\(rect) left \(safe)")
             XCTAssertGreaterThanOrEqual(rect.width, 44, "\(safe)")
             XCTAssertGreaterThanOrEqual(rect.height, 44, "\(safe)")
+            // The cap is the space before the rail, not a 220 pt slice that clips large type.
+            XCTAssertEqual(menu.width, max(44, safe.width - menu.trailingGap), accuracy: 0.001, "\(safe)")
             let column = FoldedColumnLayout.duoHorizontal(containerWidth: safe.width, containerHeight: safe.height,
                                                           artMin: 140, artMax: 420)
             if column.contentWidth >= 52 {

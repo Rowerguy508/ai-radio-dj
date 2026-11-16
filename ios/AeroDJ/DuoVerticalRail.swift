@@ -230,10 +230,14 @@ struct DuoRailMoreButton: View {
     }
 }
 
-/// Inward of the rail, inside the safe box. Rows stay 44 pt and scroll at large text
-/// instead of leaving the window. Not a system popover: that one opened off the trailing edge.
+/// Inward of the rail, inside the safe box. The panel hugs its labels up to `width`
+/// (the space that ends before the rail) so the title is not clipped at the trailing
+/// edge, including at the largest Dynamic Type the UI tests launch. Rows stay 44 pt
+/// and scroll when the stack is taller than the window. Not a system popover: that
+/// one opened off the trailing edge.
 struct DuoRailMorePanel: View {
     let reviewCount: Int?
+    /// Widest the panel may be. The trailing edge stays put; extra room grows inward.
     let width: CGFloat
     let maxHeight: CGFloat
     let onConnections: () -> Void
@@ -241,10 +245,12 @@ struct DuoRailMorePanel: View {
     let dismiss: () -> Void
 
     var body: some View {
-        ViewThatFits(in: .vertical) {
-            menuRows.frame(width: width)
-            ScrollView { menuRows }
-                .frame(width: width, height: maxHeight)
+        RailMenuWidth(maxWidth: width) {
+            ViewThatFits(in: .vertical) {
+                horizontalFit
+                ScrollView { horizontalFit }
+                    .frame(maxHeight: maxHeight)
+            }
         }
         .background(FoldedStyle.opaqueGlass, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
@@ -254,6 +260,14 @@ struct DuoRailMorePanel: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folded.moreMenu")
+    }
+
+    /// One line when the titles fit before the rail; otherwise wrap inside `width`.
+    private var horizontalFit: some View {
+        ViewThatFits(in: .horizontal) {
+            menuRows.fixedSize(horizontal: true, vertical: true)
+            menuRows.frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var menuRows: some View {
@@ -271,20 +285,53 @@ struct DuoRailMorePanel: View {
 
     private func row(_ title: String, systemImage: String, identifier: String, hint: String? = nil,
                      action: @escaping () -> Void) -> some View {
+        // Contain keeps the button hittable and exposes the title as its own element.
+        // The title's frame is the text, so a label clipped on the trailing edge fails
+        // even when the 44 pt row is still inside the window.
         Button {
             dismiss()
             action()
         } label: {
-            Label(title, systemImage: systemImage)
-                .labelStyle(.titleAndIcon)
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .padding(.horizontal, 12)
-                .contentShape(Rectangle())
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.body)
+                    .accessibilityHidden(true)
+                Text(title)
+                    .font(.body)
+                    .lineLimit(6)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("\(identifier).label")
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .modifier(RailHint(hint: hint))
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(title)
         .accessibilityIdentifier(identifier)
+        .modifier(RailHint(hint: hint))
+    }
+}
+
+/// Proposes at most `maxWidth` and reports the child's size, so the menu hugs its
+/// labels and still stops before the rail. A plain `frame(maxWidth:)` fills the
+/// proposal instead of shrinking to the text.
+private struct RailMenuWidth: Layout {
+    var maxWidth: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return CGSize(width: 44, height: 44) }
+        let limit = min(proposal.width ?? maxWidth, maxWidth)
+        let size = child.sizeThatFits(ProposedViewSize(width: limit, height: proposal.height))
+        return CGSize(width: min(max(size.width, 44), limit), height: max(size.height, 44))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        child.place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
 

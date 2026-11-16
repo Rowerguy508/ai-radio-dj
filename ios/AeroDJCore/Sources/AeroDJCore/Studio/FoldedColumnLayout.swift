@@ -134,7 +134,10 @@ public enum FoldedColumnLayout {
 
 /// Where the unfolded rail's More menu sits. The box is the safe-area size: the menu
 /// stays inward of the rail, inside that box, on the wide Duo and on the narrow split.
+/// `width` is the widest the panel may be. The view hugs its labels up to that, so a
+/// long row at the tests' largest Dynamic Type is not clipped on the trailing edge.
 public struct DuoMoreMenuLayout: Equatable, Sendable {
+    /// Widest the panel may be and still end `trailingGap` before the trailing edge.
     public var width: Double
     public var maxHeight: Double
     /// From the trailing edge of the safe box to the menu's trailing edge.
@@ -152,9 +155,10 @@ public struct DuoMoreMenuLayout: Equatable, Sendable {
         let column = FoldedColumnLayout.duoHorizontal(containerWidth: max(0, safeWidth),
                                                       containerHeight: max(safeHeight, 1),
                                                       artMin: 140, artMax: 420)
+        // 8 pt before the rail, then the rest of the safe box. A 220 pt cap clipped
+        // "Tune station" once Dynamic Type reached the size the UI tests launch with.
         let trailingGap = min(max(0, safeWidth - 44), column.edgeInset + column.barWidth + 8)
-        let available = max(44, safeWidth - trailingGap)
-        let width = min(220, available, max(44, column.contentWidth - 8))
+        let width = max(44, safeWidth - trailingGap)
         let topGap = min(column.topClearance, max(0, safeHeight - 44))
         let maxHeight = max(44, safeHeight - topGap - 8)
         return DuoMoreMenuLayout(width: width, maxHeight: maxHeight, trailingGap: trailingGap, topGap: topGap)
