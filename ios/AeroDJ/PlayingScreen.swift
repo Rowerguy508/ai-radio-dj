@@ -39,6 +39,9 @@ struct PlayingScreen: View {
     @SceneStorage("aerodj.continuity.playback") private var continuityPlayback = ""
     #endif
     @State private var showWorkspace = false
+    /// Collapse on the unfolded rail shows the centred column. The container size stays,
+    /// and nothing starts or stops. A real fold clears it.
+    @State private var duoCollapsed = false
     /// One search session above the compact/Studio switch so a fold cannot wipe results.
     @StateObject private var studioSearch = StudioSearchModel()
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -54,6 +57,10 @@ struct PlayingScreen: View {
         #endif
     }
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Set by the split host. Nil keeps the phone and the centred column as they are.
+    @Environment(\.splitBarEdge) private var splitBarEdge
+    /// The split container, set by the capture. Nil on a phone, so the reader is unchanged.
+    @Environment(\.splitMeasure) private var splitMeasure
     @Namespace private var bleedArt
 
     private var morphNamespace: Namespace.ID? {
@@ -61,6 +68,13 @@ struct PlayingScreen: View {
         // query from settling, so capture runs skip the morph. The app still animates it.
         if reduceMotion || ProcessInfo.processInfo.environment["STUDIO_SCREENSHOT_DIR"] != nil { return nil }
         return bleedArt
+    }
+
+    /// Container the split host measured. Nil unless that host is adapting, so a phone
+    /// keeps the GeometryReader's own size.
+    private var splitCanvas: CGSize? {
+        guard splitBarEdge != nil, let splitMeasure else { return nil }
+        return CGSize(width: splitMeasure.containerWidth, height: splitMeasure.containerHeight)
     }
 
     private var scrollAnchor: Binding<String?> {
@@ -90,12 +104,17 @@ struct PlayingScreen: View {
 
     var body: some View {
         GeometryReader { geo in
-            let width = Double(geo.size.width)
+            let canvas = splitCanvas
+            let width = canvas.map { Double($0.width) } ?? Double(geo.size.width)
+            let height = canvas?.height ?? geo.size.height
             let mode = resolvedMode(containerWidth: width)
-            layout(mode: mode, width: width, height: geo.size.height)
+            layout(mode: mode, width: width, height: height, barEdge: splitBarEdge)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: mode)
             #if DEBUG
             .onAppear {
+                if splitCanvas != nil {
+                    SplitPlayerGeoLog.once(proposed: geo.size, container: splitCanvas!)
+                }
                 // A UI test launch clears a scroll anchor left by the previous test.
                 // Later appears of this screen (a fold that rebuilds it) do not clear.
                 if DisplayContinuityLaunch.shouldReset("player-scroll") {
@@ -183,7 +202,8 @@ struct PlayingScreen: View {
     /// Late Night, so the next song tap looked like a station jump. Folded uses `foldedToolbar`
     /// (back + ⋯) and names the same opened station in its bottom chip.
     @ViewBuilder
-    private func layout(mode: StudioLayoutMode, width: Double, height: CGFloat) -> some View {
+    private func layout(mode: StudioLayoutMode, width: Double, height: CGFloat,
+                        barEdge: SplitViewLayout.BarEdge?) -> some View {
         switch mode {
         case .compact:
             // Folded redesign (wireframe 08): back + ⋯ in the bar, the station chip below.
@@ -195,16 +215,28 @@ struct PlayingScreen: View {
                 containerHeight: Double(height),
                 accessibilityTextSize: typeSize.isAccessibilitySize
             ).controlPlacement ?? .phoneBottom
-            let movesMoreIntoThePlayer = placement != .phoneBottom
+            // The 01-folded reskin draws back and ⋯ itself. FoldedPlayer.body picks its body
+            // with the same rule (FoldedOuterLayout.usesOuterReskin: phone width and a track,
+            // never height), so the bar and the body cannot disagree.
+            let showsTrack: Bool = { if case .track = content { return true } else { return false } }()
+            // A split host draws FoldedPlayer.splitMeasured, which has no reskin, so it keeps the bar.
+            let usesOuterReskin = splitCanvas == nil
+                && FoldedOuterLayout.usesOuterReskin(containerWidth: width, showsTrack: showsTrack)
+            let showsRail = placement == .duoHorizontal && !duoCollapsed
+            let movesMoreIntoThePlayer = placement != .phoneBottom || usesOuterReskin
             let openConnections = { segment = .connections; showWorkspace = true }
+            let openQueue = { segment = .queue; showWorkspace = true }
+            let openTune = { segment = .tune; showWorkspace = true }
             // Two panes only at regular width, and only for the tall listen layout.
             // Compact width keeps FoldedPlayer, including the phone path, unchanged.
+            // An adapting split keeps FoldedPlayer too: the container size is the rail,
+            // not the arrangement panes.
             let arrangement = ArrangementPaneLayout.resolve(
                 hasRegularWidth: horizontalSizeClass == .regular,
                 containerWidth: width,
                 containerHeight: Double(height),
                 accessibilityTextSize: typeSize.isAccessibilitySize)
-            if case .unchanged = arrangement {
+            if splitCanvas != nil || arrangement == .unchanged {
                 FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
                              content: content, snapshot: snapshot, actions: actions, dj: dj,
                              search: search, studioSearch: studioSearch, timeSource: timeSource,
@@ -212,18 +244,37 @@ struct PlayingScreen: View {
                              moreMenu: movesMoreIntoThePlayer
                                 ? FoldedMoreMenuItems(reviewCount: dj.reviewCount, onConnections: openConnections)
                                 : nil,
-                             onQueue: { segment = .queue; showWorkspace = true },
-                             onTune: { segment = .tune; showWorkspace = true },
+                             onQueue: openQueue,
+                             onTune: openTune,
                              onReview: { segment = .connections; showWorkspace = true },
+                             showsUnfoldedRail: showsRail,
+                             onCollapseRail: { duoCollapsed = true },
                              stationStops: stationStops,
                              onOpenStation: onOpenStation,
+                             splitBarEdge: barEdge,
+                             layoutSize: splitCanvas,
+                             splitHost: splitCanvas == nil ? nil : splitMeasure,
                              scrollAnchor: scrollAnchor)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("layout.compact")
                     .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
                                    showsMore: !movesMoreIntoThePlayer,
-                                   hidesSystemBack: placement == .duoHorizontal,
-                                   onConnections: openConnections)
+                                   hidesSystemBack: showsRail || usesOuterReskin,
+                                   onConnections: openConnections,
+                                   systemRail: showsRail ? DuoRailHooks(
+                                        dj: dj, reviewCount: dj.reviewCount, upNext: snapshot.upNext,
+                                        onConnections: openConnections, onQueue: openQueue, onTune: openTune,
+                                        onCollapse: { duoCollapsed = true }, pause: { actions.pause() },
+                                        transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                                        showsTransport: content.showsTransport,
+                                        cancelStart: { actions.cancelStart() },
+                                        resume: { await actions.resume() },
+                                        skip: { await actions.skip() }) : nil,
+                                   keepSystemVerticalBar: placement == .duoHorizontal,
+                                   barEdge: barEdge)
+                    .onChange(of: placement) { _, new in
+                        if new != .duoHorizontal { duoCollapsed = false }
+                    }
             } else {
                 ArrangementListenPlayer(station: currentStation, heading: heading,
                                         isTestStation: isTestStation, content: content,
@@ -337,6 +388,20 @@ enum SearchText {
 }
 
 #if DEBUG
+/// One line from the split capture: the reader size that was choosing the centred
+/// column, and the container size the player uses instead.
+@MainActor
+enum SplitPlayerGeoLog {
+    private static var logged = false
+
+    static func once(proposed: CGSize, container: CGSize) {
+        guard !logged else { return }
+        logged = true
+        print(String(format: "split-player geo.size %.1f x %.1f container %.1f x %.1f",
+                     proposed.width, proposed.height, container.width, container.height))
+    }
+}
+
 #Preview("Playing screen") {
     PlayingScreenPreviewLoader()
 }

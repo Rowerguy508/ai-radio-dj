@@ -1,0 +1,92 @@
+import Foundation
+
+/// #465 01-folded: metrics and DJ-status rules for the Duo outer-screen compact reskin.
+///
+/// Pure and UI-free so Linux can test them. Ships ungated (owner, 9:53 PM, logged on
+/// #300 and #491): the iPhone and the folded Duo draw this reskin whenever the folded
+/// player is at phone width with a track showing. `FoldedStyle` and
+/// `FoldedPlayer.compactBody` stay for every other phone-width state (nothing playing,
+/// starting, failed). The mockup's outer size is 390 × 844 pt.
+///
+/// The tinted ring around play was deferred from item 9. These tokens do not depend
+/// on `GlassTreatment` or the item 9 branch, which is not on integration yet.
+public enum FoldedOuterLayout {
+    /// Mockup content gutter (`left: 24`).
+    public static let contentInset: Double = 24
+    /// Art inset in the mockup (`left: 30`).
+    public static let artInset: Double = 30
+    /// Art corner radius in the 01-folded mockup.
+    public static let artRadius: Double = 28
+    public static let titlePointSize: Double = 34
+    public static let artistPointSize: Double = 15
+    public static let transportHeight: Double = 80
+    public static let transportRadius: Double = 40
+    /// Play/Pause disc. The mockup drew 64 pt; this uses the shipped 68 pt transport target
+    /// (#484 LiquidGlassTransportTests) so the iPhone keeps the same Play/Pause size.
+    public static let playSide: Double = 68
+    /// Outset ring around play, deferred from item 9: a 6 pt teal halo.
+    public static let playRingWidth: Double = 6
+    public static let playRingOpacity: Double = 0.25
+    /// sRGB 47, 212, 190 — the mockup's Morning Calm tint. Not yet hooked to the opened station.
+    public static let playRingRed: Double = 47 / 255
+    public static let playRingGreen: Double = 212 / 255
+    public static let playRingBlue: Double = 190 / 255
+    /// 52, the shipped Skip target (#484 LiquidGlassTransportTests), not the mockup's 44.
+    public static let skipSide: Double = 52
+    public static let upNextHeight: Double = 44
+    public static let upNextRadius: Double = 22
+    public static let statusPillHeight: Double = 28
+    /// Height kept for the header, title, DJ line and pinned controls under the art at
+    /// default text sizes (accessibility sizes use `FoldedStyle.artReserveAccessibility`).
+    public static let artReserveBelow: Double = 470
+
+    /// Outer diameter of play plus its ring (68 + 6 + 6). Fits in the 80 pt capsule.
+    public static var playOuterSide: Double { playSide + playRingWidth * 2 }
+
+    /// A measured container that overrides a view's own geometry, e.g. the split host's
+    /// container (#501 `splitMeasure`). Nil means the caller's own geometry.
+    public struct ContainerSize: Equatable, Sendable {
+        public var width: Double
+        public var height: Double
+        public init(width: Double, height: Double) {
+            self.width = width
+            self.height = height
+        }
+    }
+
+    /// The one rule both `PlayingScreen` (system back hidden, ⋯ moved in) and
+    /// `FoldedPlayer.body` (which body draws) use for the reskin: phone width and a track.
+    ///
+    /// Width only, on purpose. PlayingScreen measures above the navigation bar and
+    /// FoldedPlayer below it, so their heights differ, but their widths are the same. Phone
+    /// width (`!FoldedColumnLayout.isWide`) is exactly `controlPlacement == .phoneBottom` at
+    /// any height, so the two callers cannot disagree. `override` (when given) wins over
+    /// `containerWidth`, so a host that measures the container can pass it to both.
+    public static func usesOuterReskin(containerWidth: Double, override: ContainerSize? = nil,
+                                       showsTrack: Bool) -> Bool {
+        guard showsTrack else { return false }
+        let width = override?.width ?? containerWidth
+        return !FoldedColumnLayout.isWide(containerWidth: width)
+    }
+
+    /// On Air comes only from `DJStudioState.onAirLabel`. Ready and failed never light as
+    /// On Air. A failed break stays a quiet skip (mic down, no break error).
+    public enum Status: Equatable, Sendable {
+        /// Confirmed speaking. The string is exactly `onAirLabel`.
+        case onAir(String)
+        /// Idle, preparing, ready, or a failed break. Never labelled On Air.
+        case micDown
+    }
+
+    public static func status(onAirLabel: String?) -> Status {
+        if let onAirLabel, !onAirLabel.isEmpty {
+            return .onAir(onAirLabel)
+        }
+        return .micDown
+    }
+
+    /// Convenience: reads the label from the state, never from a second flag.
+    public static func status(of state: DJStudioState) -> Status {
+        status(onAirLabel: state.onAirLabel)
+    }
+}

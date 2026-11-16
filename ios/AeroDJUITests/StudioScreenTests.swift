@@ -19,14 +19,15 @@ final class StudioScreenTests: XCTestCase {
                         dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                         restoreStationID: String? = nil,
                         musicAuthStatus: String? = nil,
-                        orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
+                        orientation: UIDeviceOrientation = .portrait,
+                        splitExample: String? = nil) -> XCUIApplication {
         // Probe the layout before this test's own launch: the probe launches and terminates
         // its own app, so it must never run while the test's app is up.
         _ = isOpenLayout
         return startApp(segment: segment, scenario: scenario, largeText: largeText, dark: dark,
                         contentSize: contentSize, reduceMotion: reduceMotion,
                         restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus,
-                        orientation: orientation)
+                        orientation: orientation, splitExample: splitExample)
     }
 
     @MainActor
@@ -34,7 +35,8 @@ final class StudioScreenTests: XCTestCase {
                           dark: Bool = false, contentSize: String? = nil, reduceMotion: Bool = false,
                           restoreStationID: String? = nil,
                           musicAuthStatus: String? = nil,
-                          orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
+                          orientation: UIDeviceOrientation = .portrait,
+                          splitExample: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
                                "-AeroDJResetContinuity", "YES"]
@@ -53,6 +55,9 @@ final class StudioScreenTests: XCTestCase {
         // DEBUG capture override for MusicAuthorization.currentStatus (default notDetermined).
         if let musicAuthStatus {
             app.launchArguments += ["-AeroDJMusicAuthStatus", musicAuthStatus]
+        }
+        if let splitExample {
+            app.launchArguments += ["-AeroDJSplitExample", splitExample]
         }
         XCUIDevice.shared.orientation = orientation
         app.launch()
@@ -333,8 +338,8 @@ final class StudioScreenTests: XCTestCase {
 
     /// Owner, build 44 (#460): the unfolded Duo (640 pt, compact class) is fully horizontal.
     /// Artwork and the title stay left of the fold. The content column holds the horizontal
-    /// scrubber, play/pause, skip, the station pill and the DJ chip. The thin bar holds
-    /// back, more, queue and tune.
+    /// scrubber, play/pause, skip, the station pill and the DJ chip. The rail holds
+    /// collapse, more, queue and the sleep timer. Tune stays in More.
     @MainActor
     func testDuoWideControlsSitInTheRightRail() throws {
         try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
@@ -381,32 +386,42 @@ final class StudioScreenTests: XCTestCase {
         let scrubber = any["playback.progress"]
         let chip = any["station.title"]
         let more = any["folded.more"]
-        let tune = app.buttons["transport.tune"]
+        let collapse = app.buttons["folded.collapse"]
+        let sleep = app.buttons["folded.sleepTimer"]
         let queue = app.buttons["queue.affordance"]
-        let back = app.buttons["folded.back"]
+        let dot = any["folded.liveDot"]
         // The up-next line also labels the current song "Morning Light". The title under test is the one in the track column.
         let title = track.staticTexts["Morning Light"]
         for (name, element) in [("play", play), ("skip", skip), ("ready", ready), ("scrubber", scrubber),
-                                ("chip", chip), ("more", more), ("tune", tune), ("queue", queue),
-                                ("back", back), ("title", title)] {
+                                ("chip", chip), ("more", more), ("sleep", sleep), ("queue", queue),
+                                ("collapse", collapse), ("dot", dot), ("title", title)] {
             XCTAssertTrue(element.waitForExistence(timeout: 5), "\(name) missing\n\(app.debugDescription)")
         }
         let frames = "track \(trackFrame) content \(contentFrame) bar \(barFrame) fold \(foldFrame) "
-            + "title \(title.frame) play \(play.frame) scrubber \(scrubber.frame) ready \(ready.frame)"
+            + "title \(title.frame) play \(play.frame) skip \(skip.frame) scrubber \(scrubber.frame) ready \(ready.frame)"
         XCTAssertLessThan(trackFrame.maxX, foldFrame.minX + 2, "artwork stays left of the fold: \(frames)")
         XCTAssertLessThan(title.frame.maxX, contentFrame.minX, "title stays left of the controls: \(frames)")
         XCTAssertGreaterThanOrEqual(contentFrame.minX, foldFrame.maxX - 2, "controls start right of the fold: \(frames)")
         XCTAssertLessThan(contentFrame.maxX, barFrame.minX + 8, "content column is left of the symbol bar: \(frames)")
-        for (name, element) in [("play", play), ("skip", skip), ("scrubber", scrubber), ("chip", chip), ("ready", ready)] {
+        for (name, element) in [("scrubber", scrubber), ("chip", chip), ("ready", ready)] {
             XCTAssertGreaterThanOrEqual(element.frame.midX, contentFrame.minX - 4, "\(name) left the content column: \(frames)")
             XCTAssertLessThanOrEqual(element.frame.midX, contentFrame.maxX + 4, "\(name) left the content column: \(frames)")
         }
-        for (name, element) in [("back", back), ("more", more), ("queue", queue), ("tune", tune)] {
+        for (name, element) in [("collapse", collapse), ("more", more), ("play", play), ("skip", skip),
+                                ("queue", queue), ("sleep", sleep), ("dot", dot)] {
             XCTAssertGreaterThanOrEqual(element.frame.midX, barFrame.minX - 4, "\(name) left the symbol bar: \(frames)")
+            XCTAssertLessThanOrEqual(element.frame.midX, barFrame.maxX + 4, "\(name) left the symbol bar: \(frames)")
+            XCTAssertGreaterThanOrEqual(element.frame.width, 44, "\(name) is under 44 pt wide: \(frames)")
+            XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(name) is under 44 pt tall: \(frames)")
+            XCTAssertFalse(contentFrame.insetBy(dx: -1, dy: -1).contains(element.frame),
+                           "\(name) is still in the content column: \(frames)")
         }
+        XCTAssertGreaterThan(dot.frame.minY, sleep.frame.maxY, "the live dot sits below the rail controls: \(frames)")
+        XCTAssertEqual(dot.value as? String, "Off", "ready is not On Air: \(dot.label) \(String(describing: dot.value))")
+        XCTAssertFalse(dot.label.localizedCaseInsensitiveContains("on air"), dot.label)
         XCTAssertGreaterThan(scrubber.frame.width, scrubber.frame.height, "the scrubber stays horizontal: \(frames)")
         XCTAssertGreaterThanOrEqual(play.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(back.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(collapse.frame.height, 44)
         XCTAssertGreaterThanOrEqual(more.frame.minY, barFrame.minY + 40, "chrome starts below the status clearance")
         let dial = any["duo.stationDial"]
         let late = app.buttons["duo.station.late-night"]
@@ -414,6 +429,16 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(late.waitForExistence(timeout: 5), "Late Night stop missing")
         XCTAssertGreaterThanOrEqual(dial.frame.midX, contentFrame.minX - 4, "the dial stays in the content column")
         XCTAssertLessThanOrEqual(dial.frame.midX, contentFrame.maxX + 4, "the dial stays in the content column")
+        more.tap()
+        let tune = app.buttons["transport.tune"]
+        XCTAssertTrue(tune.waitForExistence(timeout: 5), "Tune stays in More\n\(app.debugDescription)")
+        XCTAssertTrue(tune.isHittable, "Tune in More is not hittable")
+        XCTAssertGreaterThanOrEqual(tune.frame.height, 44, "Tune in More is under 44 pt")
+        assertMoreMenuInsideWindow(app)
+        // A tap on the artwork column closes it without tuning.
+        track.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        let tuneClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: tune)
+        XCTAssertEqual(XCTWaiter().wait(for: [tuneClosed], timeout: 5), .completed, "More did not close")
         let timeline = app.buttons["duo.upNext"]
         XCTAssertTrue(timeline.waitForExistence(timeout: 5), "up-next timeline missing\n\(app.debugDescription)")
         XCTAssertGreaterThanOrEqual(timeline.frame.midX, contentFrame.minX - 4, "timeline stays in the content column")
@@ -530,6 +555,90 @@ final class StudioScreenTests: XCTestCase {
                        "\(identifier) was \(element.exists ? element.label : "missing"), expected \(expected)\n\(app.debugDescription)")
     }
 
+    /// The live dot follows the published DJ state on the unfolded rail. Idle and ready stay off.
+    /// Speaking lights it, and that frame is the screenshot next to mockup 02.
+    @MainActor
+    func testDuoRailLiveDotFollowsSpeaking() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        for scenario in ["duoWideEmpty", "duoWideReady"] {
+            let app = launch(scenario: scenario)
+            let dot = app.descendants(matching: .any)["folded.liveDot"]
+            XCTAssertTrue(dot.waitForExistence(timeout: 15), "\(scenario) live dot missing\n\(app.debugDescription)")
+            XCTAssertEqual(dot.value as? String, "Off", "\(scenario) lit the dot: \(dot.label)")
+            XCTAssertFalse(dot.label.localizedCaseInsensitiveContains("on air"), "\(scenario) \(dot.label)")
+            app.terminate()
+        }
+        let app = launch(scenario: "duoWideSpeaking")
+        let any = app.descendants(matching: .any)
+        let dot = any["folded.liveDot"]
+        let bar = any["folded.systemBar"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(dot.waitForExistence(timeout: 5), "speaking live dot missing\n\(app.debugDescription)")
+        XCTAssertEqual(dot.value as? String, "On Air", "speaking did not light the dot: \(dot.label) \(String(describing: dot.value))")
+        guard let barFrame = settledFrame(of: bar, "system bar"), let dotFrame = settledFrame(of: dot, "live dot") else { return }
+        XCTAssertGreaterThanOrEqual(dotFrame.midX, barFrame.minX - 4, "lit dot left the rail")
+        XCTAssertTrue(app.buttons["folded.collapse"].isHittable)
+        XCTAssertTrue(app.buttons["folded.sleepTimer"].isHittable)
+        XCTAssertTrue(app.buttons["queue.affordance"].isHittable)
+        let play = app.buttons["transport.playPause"]
+        let skip = app.buttons["transport.skip"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5), "play missing from the speaking rail")
+        XCTAssertTrue(skip.waitForExistence(timeout: 5), "skip missing from the speaking rail")
+        XCTAssertGreaterThanOrEqual(play.frame.midX, barFrame.minX - 4, "play left the rail")
+        XCTAssertGreaterThanOrEqual(skip.frame.midX, barFrame.minX - 4, "skip left the rail")
+        XCTAssertGreaterThanOrEqual(play.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(play.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(skip.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(skip.frame.height, 44)
+        if let content = settledFrame(of: any["folded.contentColumn"], "content column") {
+            XCTAssertFalse(content.insetBy(dx: -1, dy: -1).contains(play.frame),
+                           "play is still in the content column")
+            XCTAssertFalse(content.insetBy(dx: -1, dy: -1).contains(skip.frame),
+                           "skip is still in the content column")
+        }
+        save(app, "duo-wide-speaking")
+        let more = app.buttons["folded.more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5), "More missing\n\(app.debugDescription)")
+        more.tap()
+        assertMoreMenuInsideWindow(app)
+        save(app, "duo-wide-more-popover")
+    }
+
+    /// Accessibility text makes each row taller. The menu still stays inside the window.
+    @MainActor
+    func testDuoMoreMenuStaysInsideTheWindowAtLargeText() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoWideSpeaking", largeText: true)
+        let more = app.buttons["folded.more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 15), "More missing at large text\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(more.frame.height, 44)
+        more.tap()
+        assertMoreMenuInsideWindow(app)
+    }
+
+    /// Collapse leaves the unfolded rail and shows the centred column. Playback stays up.
+    @MainActor
+    func testCollapseUnfoldedRailShowsTheFoldedColumn() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoWideReady")
+        let bar = app.descendants(matching: .any)["folded.systemBar"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 15), app.debugDescription)
+        let collapse = app.buttons["folded.collapse"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(collapse.isHittable)
+        XCTAssertGreaterThanOrEqual(collapse.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(collapse.frame.height, 44)
+        collapse.tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed,
+                       "collapse left the unfolded rail up\n\(app.debugDescription)")
+        XCTAssertTrue(app.descendants(matching: .any)["folded.wideColumn"].waitForExistence(timeout: 5),
+                      "folded column missing\n\(app.debugDescription)")
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["folded.systemBar"].exists)
+        XCTAssertTrue(app.buttons["transport.playPause"].exists, "playback stays on screen")
+    }
+
     /// #502: the unfolded Duo (640 × 820 pt) with the DJ on air, so the owner can see that
     /// layout first. Same container and fixtures as `duoWideReady`; the DJ is `.speaking`
     /// with the timer frozen at 0:12. The track column keeps the art (`keepArtVisible`);
@@ -553,7 +662,21 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(any["folded.contentColumn"].waitForExistence(timeout: 10),
                       "content column missing\n\(app.debugDescription)")
         XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
-        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        let bar = any["folded.systemBar"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 5), "system bar missing\n\(app.debugDescription)")
+        let play = app.buttons["transport.playPause"]
+        let skip = app.buttons["transport.skip"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5), "play missing from the on-air rail")
+        XCTAssertTrue(skip.waitForExistence(timeout: 5), "skip missing from the on-air rail")
+        if let barFrame = settledFrame(of: bar, "system bar"),
+           let contentFrame = settledFrame(of: any["folded.contentColumn"], "content column") {
+            XCTAssertGreaterThanOrEqual(play.frame.midX, barFrame.minX - 4, "play left the rail")
+            XCTAssertGreaterThanOrEqual(skip.frame.midX, barFrame.minX - 4, "skip left the rail")
+            XCTAssertFalse(contentFrame.insetBy(dx: -1, dy: -1).contains(play.frame),
+                           "play is still in the content column")
+            XCTAssertFalse(contentFrame.insetBy(dx: -1, dy: -1).contains(skip.frame),
+                           "skip is still in the content column")
+        }
 
         let onAir = any["dj.onAir"]
         XCTAssertTrue(onAir.waitForExistence(timeout: 5), "dj.onAir missing\n\(app.debugDescription)")
@@ -568,6 +691,50 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(any["folded.visualizer"].waitForExistence(timeout: 5),
                       "the content-column orb is missing\n\(app.debugDescription)")
         save(app, "duo-wide-onair")
+    }
+
+    /// Every visible More row is at least 44 pt and fully inside the window, and each
+    /// row's label frame lies inside the panel. The row's own frame can sit inside the
+    /// window while the title runs past the panel's trailing edge. The label child exists
+    /// because `startApp` launches with `-AeroDJStudioCapture YES`.
+    @MainActor
+    private func assertMoreMenuInsideWindow(_ app: XCUIApplication, file: StaticString = #filePath,
+                                            line: UInt = #line) {
+        let menu = app.descendants(matching: .any)["folded.moreMenu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5),
+                      "More menu did not open\n\(app.debugDescription)", file: file, line: line)
+        let window = app.windows.firstMatch.frame.insetBy(dx: -1, dy: -1)
+        let panel = menu.frame.insetBy(dx: -0.5, dy: -0.5)
+        XCTAssertTrue(window.contains(menu.frame),
+                      "More menu left the window \(menu.frame) vs \(window)", file: file, line: line)
+        // Rows only. Under the capture launch a `.contain` row also exposes its label
+        // container as a nested Button carrying the title's `<row>.label` identifier; that
+        // is the title checked below, not another row.
+        let rows = menu.buttons
+            .matching(NSPredicate(format: "NOT (identifier ENDSWITH %@)", ".label"))
+            .allElementsBoundByIndex.filter { $0.exists && $0.isHittable }
+        XCTAssertFalse(rows.isEmpty, "More menu has no visible rows\n\(app.debugDescription)",
+                       file: file, line: line)
+        for row in rows {
+            XCTAssertGreaterThanOrEqual(row.frame.height, 44, "\(row.identifier) is under 44 pt",
+                                        file: file, line: line)
+            XCTAssertTrue(window.contains(row.frame),
+                          "\(row.identifier) left the window \(row.frame) vs \(window)",
+                          file: file, line: line)
+            let labelID = "\(row.identifier).label"
+            let labels = menu.descendants(matching: .staticText)
+                .matching(NSPredicate(format: "identifier == %@", labelID))
+                .allElementsBoundByIndex
+                .filter { $0.exists && !$0.frame.isEmpty }
+            XCTAssertFalse(labels.isEmpty,
+                           "\(row.identifier) has no label frame\n\(app.debugDescription)",
+                           file: file, line: line)
+            for label in labels {
+                XCTAssertTrue(panel.contains(label.frame),
+                              "\(row.identifier) label \(label.label) frame \(label.frame) left the panel \(menu.frame)",
+                              file: file, line: line)
+            }
+        }
     }
 
     /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and
@@ -602,16 +769,17 @@ final class StudioScreenTests: XCTestCase {
         try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
         assertDuoColumnControls(scenario: "duoWideEmpty", names: ["search": "playback.searchAppleMusic",
                                                                    "station": "station.title"])
-        assertDuoColumnControls(scenario: "duoWideReady", names: ["play": "transport.playPause",
-                                                                  "skip": "transport.skip",
-                                                                  "station": "station.title",
+        assertDuoColumnControls(scenario: "duoWideReady", names: ["station": "station.title",
                                                                   "dj": "dj.ready",
-                                                                  "scrubber": "playback.progress"])
+                                                                  "scrubber": "playback.progress"],
+                                 transportInRail: true)
     }
 
     /// `names` maps a short label to an accessibility identifier in the content column.
+    /// `transportInRail` is for a playing Duo: play and skip must sit in the rail, not in the column.
     @MainActor
-    private func assertDuoColumnControls(scenario: String, names: [String: String]) {
+    private func assertDuoColumnControls(scenario: String, names: [String: String],
+                                         transportInRail: Bool = false) {
         let app = launch(scenario: scenario)
         let any = app.descendants(matching: .any)
         XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
@@ -641,6 +809,24 @@ final class StudioScreenTests: XCTestCase {
                           "\(name) is outside the window: \(detail)")
             XCTAssertTrue(columnFrame.insetBy(dx: -1, dy: -1).contains(frame),
                           "\(name) is outside the content column: \(detail)")
+        }
+        if transportInRail {
+            let bar = any["folded.systemBar"]
+            XCTAssertTrue(bar.waitForExistence(timeout: 5), "system bar missing in \(scenario)")
+            guard let barFrame = settledFrame(of: bar, "system bar") else { return }
+            for (name, identifier) in [("play", "transport.playPause"), ("skip", "transport.skip")] {
+                let element = app.buttons[identifier]
+                XCTAssertTrue(element.waitForExistence(timeout: 5),
+                              "\(name) missing from the rail in \(scenario)\n\(app.debugDescription)")
+                guard let frame = settledFrame(of: element, name) else { continue }
+                XCTAssertTrue(element.isHittable, "\(name) is not hittable in the rail: \(scenario) \(frame)")
+                XCTAssertGreaterThanOrEqual(frame.midX, barFrame.minX - 4, "\(name) left the rail in \(scenario)")
+                XCTAssertLessThanOrEqual(frame.midX, barFrame.maxX + 4, "\(name) left the rail in \(scenario)")
+                XCTAssertGreaterThanOrEqual(frame.width, 44, "\(name) is under 44 pt wide in \(scenario)")
+                XCTAssertGreaterThanOrEqual(frame.height, 44, "\(name) is under 44 pt tall in \(scenario)")
+                XCTAssertFalse(columnFrame.insetBy(dx: -1, dy: -1).contains(frame),
+                               "\(name) is still in the content column in \(scenario)")
+            }
         }
         app.terminate()
     }
@@ -1371,6 +1557,164 @@ final class StudioScreenTests: XCTestCase {
     private func shows(_ app: XCUIApplication, _ text: String) -> Bool {
         app.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS[c] %@", text)).firstMatch.exists
+    }
+
+    /// Compact narrow, half and two-thirds. Full is covered by `SplitViewLayoutTests`.
+    /// Widths match `SplitViewLayout.narrow`, `.half` and `.wide`.
+    @MainActor
+    func testSplitViewKeepsEveryScreenInsideTheWindow() throws {
+        try XCTSkipUnless(isOpenLayout, "Split widths need an iPad-size simulator window")
+        let widths: [(name: String, width: CGFloat, height: CGFloat, leading: CGFloat, trailing: CGFloat,
+                      span: String, shot: String)] = [
+            ("narrow", 340, 760, 28, 0, "compactNarrow", "split-narrow"),
+            ("half", 540, 760, 28, 0, "half", "split-half"),
+            ("wide", 680, 760, 0, 28, "twoThirds", "split-wide"),
+        ]
+        for width in widths {
+            try assertSplit(width)
+        }
+    }
+
+    @MainActor
+    private func assertSplit(_ sample: (name: String, width: CGFloat, height: CGFloat, leading: CGFloat,
+                                       trailing: CGFloat, span: String, shot: String)) throws {
+        let app = launch(scenario: "splitView", splitExample: sample.name)
+        let any = app.descendants(matching: .any)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window")
+        guard let windowFrame = settledFrame(of: window, "window") else { return }
+        if windowFrame.width + 8 < sample.width || windowFrame.height + 8 < sample.height {
+            throw XCTSkip("window \(windowFrame) cannot hold \(sample.width) × \(sample.height)")
+        }
+        let container = any["split.container"]
+        XCTAssertTrue(container.waitForExistence(timeout: 15), app.debugDescription)
+        guard let box = settledFrame(of: container, sample.name, isFinal: {
+            abs($0.width - sample.width) <= 1 && abs($0.height - sample.height) <= 1
+        }) else { return }
+        XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box),
+                      "container \(box) outside window \(windowFrame)")
+        let edge = sample.leading > sample.trailing ? "leading" : "trailing"
+        let screens = ["library", "stations", "settings", "nowPlaying"]
+        for screen in screens {
+            let show = app.buttons["split.show.\(screen)"]
+            XCTAssertTrue(show.waitForExistence(timeout: 5), screen)
+            XCTAssertGreaterThanOrEqual(show.frame.width, 44, screen)
+            XCTAssertGreaterThanOrEqual(show.frame.height, 44, screen)
+            show.tap()
+            let decision = any["split.decision"]
+            XCTAssertTrue(decision.waitForExistence(timeout: 8), "\(screen) never resolved\n\(app.debugDescription)")
+            let expected = "\(sample.span) \(edge)"
+            let matched = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label == %@", expected), object: decision)
+            XCTAssertEqual(XCTWaiter().wait(for: [matched], timeout: 8), .completed,
+                           "\(screen) decision \(decision.label), expected \(expected)")
+            if sample.name == "half", screen == "stations" {
+                save(app, "split-half-stations")
+            }
+            try assertSplitScreen(screen, app: app, box: box, leading: sample.leading,
+                                  trailing: sample.trailing, edge: edge,
+                                  sideBar: sample.name != "narrow")
+        }
+        save(app, sample.shot)
+        app.terminate()
+    }
+
+    @MainActor
+    private func assertSplitScreen(_ screen: String, app: XCUIApplication, box: CGRect,
+                                   leading: CGFloat, trailing: CGFloat, edge: String,
+                                   sideBar: Bool) throws {
+        let any = app.descendants(matching: .any)
+        switch screen {
+        case "nowPlaying":
+            XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertFalse(any["layout.studio"].exists)
+            let play = app.buttons["transport.playPause"]
+            let skip = app.buttons["transport.skip"]
+            XCTAssertTrue(play.waitForExistence(timeout: 8))
+            XCTAssertTrue(skip.waitForExistence(timeout: 8))
+            try assertInside(play, box: box, leading: leading, trailing: trailing, name: "play")
+            try assertInside(skip, box: box, leading: leading, trailing: trailing, name: "skip")
+            XCTAssertTrue(play.isHittable, "play is not hittable")
+            if sideBar {
+                let bar = any["folded.systemBar"]
+                XCTAssertTrue(bar.waitForExistence(timeout: 5), "the symbol bar is the outer edge")
+                try assertInside(bar, box: box, leading: leading, trailing: trailing, name: "bar")
+                try assertOuterEdge(bar, box: box, edge: edge, name: "bar")
+                let more = any["folded.more"]
+                XCTAssertTrue(more.waitForExistence(timeout: 5), "More stays on the bar")
+                try assertInside(more, box: box, leading: leading, trailing: trailing, name: "more")
+            } else {
+                XCTAssertFalse(any["folded.systemBar"].exists, "a narrow split keeps the phone column")
+                // More is a Menu inside the navigation bar. Same label-frame check as
+                // the other system toolbar buttons. The symbol-bar More stays on assertInside.
+                let more = app.buttons["folded.more"]
+                XCTAssertTrue(more.waitForExistence(timeout: 5), "narrow split keeps More")
+                assertSystemToolbar(more, box: box, name: "more")
+                try assertOuterEdge(more, box: box, edge: edge, name: "more")
+            }
+        case "library":
+            let edit = app.buttons["library.edit"]
+            let row = any["library.row.0"]
+            XCTAssertTrue(edit.waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertTrue(row.waitForExistence(timeout: 8))
+            assertSystemToolbar(edit, box: box, name: "library edit")
+            try assertInside(row, box: box, leading: leading, trailing: trailing, name: "library row")
+            try assertOuterEdge(edit, box: box, edge: edge, name: "library edit")
+        case "stations":
+            let gear = app.buttons["stations.settings"]
+            XCTAssertTrue(gear.waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertTrue(any["split.sidebar"].waitForExistence(timeout: 5))
+            assertSystemToolbar(gear, box: box, name: "settings gear")
+            try assertOuterEdge(gear, box: box, edge: edge, name: "settings gear")
+            let identifier = sideBar
+                ? "stations.row.7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+                : "stations.card.7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+            let row = any[identifier]
+            XCTAssertTrue(row.waitForExistence(timeout: 5), "station row \(identifier)")
+            try assertInside(row, box: box, leading: leading, trailing: trailing, name: "station row")
+        case "settings":
+            let done = app.buttons["settings.done"]
+            let toggle = app.switches["settings.talkoverToggle"]
+            XCTAssertTrue(done.waitForExistence(timeout: 8), app.debugDescription)
+            XCTAssertTrue(toggle.waitForExistence(timeout: 8))
+            assertSystemToolbar(done, box: box, name: "done")
+            try assertInside(toggle, box: box, leading: leading, trailing: trailing, name: "talk-over")
+            try assertOuterEdge(done, box: box, edge: edge, name: "done")
+        default:
+            XCTFail(screen)
+        }
+    }
+
+    /// A `Button` inside a `ToolbarItem` (or `EditButton`). XCUITest reports the
+    /// label frame (36 pt on iOS 26.5), not the 44 pt hit area of the bar. Same
+    /// check as settings.done in #512. Controls the app lays out stay on `assertInside`.
+    @MainActor
+    private func assertSystemToolbar(_ element: XCUIElement, box: CGRect, name: String) {
+        XCTAssertTrue(element.exists)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(element.frame),
+                      "\(name) left the container \(element.frame) \(box)")
+    }
+
+    @MainActor
+    private func assertInside(_ element: XCUIElement, box: CGRect, leading: CGFloat, trailing: CGFloat,
+                              name: String) throws {
+        guard let frame = settledFrame(of: element, name) else { return }
+        let detail = "\(name) \(frame) container \(box) insets \(leading),\(trailing)"
+        XCTAssertGreaterThanOrEqual(frame.width, 44, detail)
+        XCTAssertGreaterThanOrEqual(frame.height, 44, detail)
+        XCTAssertGreaterThanOrEqual(frame.minX, box.minX + leading - 2, detail)
+        XCTAssertLessThanOrEqual(frame.maxX, box.maxX - trailing + 2, detail)
+        XCTAssertTrue(box.insetBy(dx: -2, dy: -2).contains(frame), "\(name) is clipped: \(detail)")
+    }
+
+    @MainActor
+    private func assertOuterEdge(_ element: XCUIElement, box: CGRect, edge: String, name: String) throws {
+        guard let frame = settledFrame(of: element, name) else { return }
+        if edge == "leading" {
+            XCTAssertLessThan(frame.midX, box.midX, "\(name) \(frame) is not on the leading outer edge of \(box)")
+        } else {
+            XCTAssertGreaterThan(frame.midX, box.midX, "\(name) \(frame) is not on the trailing outer edge of \(box)")
+        }
     }
 
     @MainActor
