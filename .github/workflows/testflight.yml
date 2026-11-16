@@ -11,6 +11,7 @@ name: TestFlight upload
 #                                            round-trips, otherwise plain text
 #   PROFILE_APP                              App Store profile for com.aerodj.app, base64
 #   PROFILE_SHARE                            App Store profile for com.aerodj.app.share, base64
+#   PROFILE_WIDGETS                          App Store profile for com.aerodj.app.widgets, base64
 #
 # The Apple Developer Team ID is not a secret: vars.APPLE_TEAM_ID, else S85APB73YV.
 on:
@@ -77,6 +78,7 @@ jobs:
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || 'S85APB73YV' }}
       BUNDLE_APP: com.aerodj.app
       BUNDLE_SHARE: com.aerodj.app.share
+      BUNDLE_WIDGETS: com.aerodj.app.widgets
     steps:
       - name: Set working paths
         run: |
@@ -153,9 +155,10 @@ jobs:
           DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
           PROFILE_APP: ${{ secrets.PROFILE_APP }}
           PROFILE_SHARE: ${{ secrets.PROFILE_SHARE }}
+          PROFILE_WIDGETS: ${{ secrets.PROFILE_WIDGETS }}
         run: |
           missing=0
-          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 DIST_CERT_P12 DIST_CERT_PASSWORD PROFILE_APP PROFILE_SHARE; do
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 DIST_CERT_P12 DIST_CERT_PASSWORD PROFILE_APP PROFILE_SHARE PROFILE_WIDGETS; do
             if [ -z "${!name}" ]; then
               echo "::error::Environment secret $name is empty or not set."
               missing=1
@@ -224,6 +227,7 @@ jobs:
           DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
           PROFILE_APP: ${{ secrets.PROFILE_APP }}
           PROFILE_SHARE: ${{ secrets.PROFILE_SHARE }}
+          PROFILE_WIDGETS: ${{ secrets.PROFILE_WIDGETS }}
         run: |
           set -euo pipefail
           # DIST_CERT_PASSWORD: treat as base64 when it round-trips as valid
@@ -297,13 +301,16 @@ jobs:
 
           install_profile "$PROFILE_APP" "$BUNDLE_APP" PROFILE_APP_UUID PROFILE_APP_NAME
           install_profile "$PROFILE_SHARE" "$BUNDLE_SHARE" PROFILE_SHARE_UUID PROFILE_SHARE_NAME
+          install_profile "$PROFILE_WIDGETS" "$BUNDLE_WIDGETS" PROFILE_WIDGETS_UUID PROFILE_WIDGETS_NAME
           {
             echo "PROFILE_APP_UUID=$PROFILE_APP_UUID"
             echo "PROFILE_SHARE_UUID=$PROFILE_SHARE_UUID"
+            echo "PROFILE_WIDGETS_UUID=$PROFILE_WIDGETS_UUID"
             echo "PROFILE_APP_NAME=$PROFILE_APP_NAME"
             echo "PROFILE_SHARE_NAME=$PROFILE_SHARE_NAME"
+            echo "PROFILE_WIDGETS_NAME=$PROFILE_WIDGETS_NAME"
           } >> "$GITHUB_ENV"
-          unset PROFILE_APP PROFILE_SHARE
+          unset PROFILE_APP PROFILE_SHARE PROFILE_WIDGETS
 
       - name: Patch project.yml for per-target manual signing
         # CI-workspace only: never committed. A single command-line
@@ -326,6 +333,7 @@ jobs:
           team = os.environ["APPLE_TEAM_ID"]
           app_uuid = os.environ["PROFILE_APP_UUID"]
           share_uuid = os.environ["PROFILE_SHARE_UUID"]
+          widgets_uuid = os.environ["PROFILE_WIDGETS_UUID"]
 
           def inject(target: str, uuid: str, src: str) -> str:
               # Find "  <target>:" then its "    settings:" / "      base:" block and
@@ -357,9 +365,17 @@ jobs:
               print(f"AeroDJ entitlements -> {app_ents} (tester_voice)")
           text = inject("AeroDJ", app_uuid, text)
           text = inject("AeroDJShare", share_uuid, text)
+          # #465 item 7: refs from before the widget extension have no AeroDJWidgets target.
+          has_widgets = re.search(r"^  AeroDJWidgets:\n", text, re.M) is not None
+          if has_widgets:
+              text = inject("AeroDJWidgets", widgets_uuid, text)
           p.write_text(text)
           print(f"Patched AeroDJ -> {app_uuid}")
           print(f"Patched AeroDJShare -> {share_uuid}")
+          if has_widgets:
+              print(f"Patched AeroDJWidgets -> {widgets_uuid}")
+          else:
+              print("No AeroDJWidgets target at this ref; skipped")
           # Signing.xcconfig sets CODE_SIGN_STYLE=Automatic at project level.
           # Flip it in this workspace so it cannot fight the per-target Manual.
           xc = Path("ios/Config/Signing.xcconfig")
@@ -479,6 +495,43 @@ jobs:
             [ "$carplay_ext" = absent ] || carplay_fail "AeroDJShare.appex"
             echo "PASS com.apple.developer.carplay-audio"
           fi
+          # #465 item 7: when this ref has the AeroDJWidgets target, the archive must embed the
+          # signed widget appex, and it carries only the App Group: no CarPlay audio, App Attest
+          # or WeatherKit (those stay on the app). Older refs without the target skip this.
+          if grep -q '^  AeroDJWidgets:$' ios/project.yml; then
+            widgets_appex="$APP_BUNDLE/PlugIns/AeroDJWidgets.appex"
+            [ -d "$widgets_appex" ] || { echo "::error::FAIL AeroDJWidgets.appex is not embedded in the archived app"; exit 1; }
+            widgets_ents="$RUNNER_TEMP/widgets-ents.plist"
+            codesign -d --entitlements - --xml "$widgets_appex" > "$widgets_ents" 2>/dev/null \
+              || { rm -f "$widgets_ents"; echo "::error::FAIL AeroDJWidgets.appex is not signed"; exit 1; }
+            widgets_state="$(python3 - "$widgets_ents" <<'PY'
+          import plistlib, sys
+          try:
+              with open(sys.argv[1], "rb") as handle:
+                  ents = plistlib.load(handle)
+          except Exception:
+              ents = None
+          if not isinstance(ents, dict):
+              sys.stdout.write("error: unreadable entitlements")
+              raise SystemExit(0)
+          bad = [k for k in ents if k in (
+              "com.apple.developer.carplay-audio",
+              "com.apple.developer.devicecheck.appattest-environment",
+              "com.apple.developer.weatherkit",
+          )]
+          groups = ents.get("com.apple.security.application-groups")
+          if bad:
+              sys.stdout.write("error: unexpected " + " ".join(sorted(bad)))
+          elif groups != ["group.com.aerodj"]:
+              sys.stdout.write("error: application-groups is not [group.com.aerodj]")
+          else:
+              sys.stdout.write("ok")
+          PY
+          )"
+            rm -f "$widgets_ents"
+            [ "$widgets_state" = ok ] || { echo "::error::FAIL AeroDJWidgets.appex entitlements: $widgets_state"; exit 1; }
+            echo "PASS AeroDJWidgets.appex embedded, App Group only"
+          fi
 
       - name: Export signed IPA (manual, local)
         run: |
@@ -486,9 +539,9 @@ jobs:
           # PlistBuddy treats '.' as a path separator, so bundle-ID keys are
           # written with a short Python snippet instead.
           PLIST="$RUNNER_TEMP/ExportOptions.plist"
-          python3 - "$PLIST" "$APPLE_TEAM_ID" "$BUNDLE_APP" "$PROFILE_APP_UUID" "$BUNDLE_SHARE" "$PROFILE_SHARE_UUID" <<'PY'
+          python3 - "$PLIST" "$APPLE_TEAM_ID" "$BUNDLE_APP" "$PROFILE_APP_UUID" "$BUNDLE_SHARE" "$PROFILE_SHARE_UUID" "$BUNDLE_WIDGETS" "$PROFILE_WIDGETS_UUID" <<'PY'
           import os, plistlib, sys
-          path, team, app, app_uuid, share, share_uuid = sys.argv[1:]
+          path, team, app, app_uuid, share, share_uuid, widgets, widgets_uuid = sys.argv[1:]
           data = {
               "method": "app-store-connect",
               "destination": "export",
@@ -496,7 +549,7 @@ jobs:
               "signingStyle": "manual",
               "signingCertificate": "Apple Distribution",
               "manageAppVersionAndBuildNumber": False,
-              "provisioningProfiles": {app: app_uuid, share: share_uuid},
+              "provisioningProfiles": {app: app_uuid, share: share_uuid, widgets: widgets_uuid},
           }
           if (os.environ.get("P0_DIAG") == "true" or os.environ.get("OWNER_AB") == "true"):
               # App Store Connect then refuses this build for App Store review and for
@@ -585,6 +638,9 @@ jobs:
           fi
           if [ -n "${PROFILE_SHARE_UUID:-}" ]; then
             rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_SHARE_UUID}.mobileprovision"
+          fi
+          if [ -n "${PROFILE_WIDGETS_UUID:-}" ]; then
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_WIDGETS_UUID}.mobileprovision"
           fi
           # Temp keychain and search-list restore.
           if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "${KEYCHAIN_PATH:-}" ]; then
