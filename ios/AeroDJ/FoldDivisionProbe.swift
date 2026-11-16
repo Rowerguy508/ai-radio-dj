@@ -72,7 +72,7 @@ private struct HingeObserver: ViewModifier {
                 case .closed: status = .closed
                 case .partiallyOpen: status = .partiallyOpen
                 case .fullyOpen: status = .fullyOpen
-                @unknown default: status = .unknown
+                default: status = .unknown // Xcode 27.2 SDK adds hinge states; plain default keeps Release archive exhaustive
                 }
                 hinge = FoldAwareness.HingeSample(status: status, angleDegrees: device.angle.degrees)
             }
