@@ -161,7 +161,10 @@ struct StationSplitRoot<Detail: View>: View {
     @SceneStorage("aerodj.selectedStationID") private var storedStationID = ""
     /// Regular width shows both columns. Compact uses `preferredCompactColumn`.
     @State private var columnVisibility = NavigationSplitViewVisibility.automatic
+    @State private var containerWidth: Double = 0
+    @State private var containerHeight: Double = 0
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.splitMeasure) private var splitMeasure
     /// The scheme around the split. Regular width keeps it; compact forces dark (see `body`).
     @Environment(\.colorScheme) private var systemColorScheme
     /// #465 item 10: nil on every phone and narrow split, so compact keeps the carousel.
@@ -185,6 +188,26 @@ struct StationSplitRoot<Detail: View>: View {
 
     private var selectedStationID: Station.ID? { navigation.selectedID }
 
+    /// Sidebar + detail. A three-column split would open with `.doubleColumn`.
+    private static var openListVisibility: NavigationSplitViewVisibility { .all }
+
+    private var layoutWidth: Double {
+        containerWidth > 0 ? containerWidth : (splitMeasure?.containerWidth ?? 0)
+    }
+
+    private var layoutHeight: Double {
+        containerHeight > 0 ? containerHeight : (splitMeasure?.containerHeight ?? 0)
+    }
+
+    /// Half is the adapting width where sidebar and detail cannot sit side by side.
+    /// SwiftUI then keeps the detail. The compact column, held on the sidebar, is the
+    /// one it shows. Full width and two-thirds are not this span.
+    private var isHalfSpan: Bool {
+        guard layoutWidth > 0 else { return false }
+        return SplitViewLayout.span(hasRegularWidth: true, containerWidth: layoutWidth,
+                                     containerHeight: layoutHeight) == .half
+    }
+
     /// Derived from `navigation`: the open station whenever one is selected, unless the
     /// listener went back in compact width. Writes made in regular width are ignored there.
     private var preferredCompactColumn: Binding<NavigationSplitViewColumn> {
@@ -195,8 +218,15 @@ struct StationSplitRoot<Detail: View>: View {
     }
 
     var body: some View {
+        SplitBarHost(preferred: .leading) { insets in
+            columns(insets)
+        }
+    }
+
+    /// `insets` nil keeps the sidebar on the leading edge and the gear where it is.
+    private func columns(_ insets: SplitInsets?) -> some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: preferredCompactColumn) {
-            stationPicker
+            stationPicker(insets)
             .navigationTitle(AppName.display)
             // Contain first, so this identifier stays on the list and does not replace the rows.
             .accessibilityElement(children: .contain)
@@ -206,10 +236,13 @@ struct StationSplitRoot<Detail: View>: View {
             .morphingLargeTitle("Stations", subtitle: "Your AI-hosted radio, on Apple Music")
             .toolbar {
                 if let onOpenSettings {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItem(placement: SplitToolbar.placement(
+                        preferred: .leading, edge: insets?.barEdge,
+                        leading: .topBarLeading, trailing: .topBarTrailing)) {
                         Button(action: onOpenSettings) {
                             Label("Settings", systemImage: "gearshape")
                         }
+                        .modifier(SplitMinimumTarget(enabled: insets != nil))
                         .accessibilityIdentifier("stations.settings")
                     }
                 }
@@ -236,6 +269,7 @@ struct StationSplitRoot<Detail: View>: View {
             // an `if`, so folding or unfolding keeps the column's identity and scroll state.
             .environment(\.colorScheme, isCompact ? .dark : systemColorScheme)
             .toolbarColorScheme(isCompact ? .dark : nil, for: .navigationBar)
+            .modifier(SplitColumnText(enabled: insets?.barEdge == .trailing))
         } detail: {
             if let station = stations.first(where: { $0.id == selectedStationID }) {
                 NavigationStack {
@@ -244,19 +278,26 @@ struct StationSplitRoot<Detail: View>: View {
                     detail(station)
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("split.detail")
+                        .modifier(SplitColumnText(enabled: insets?.barEdge == .trailing))
                 }
             } else {
                 Text("Choose a station")
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("split.placeholder")
+                    .modifier(SplitColumnText(enabled: insets?.barEdge == .trailing))
             }
         }
         // Balanced keeps the sidebar beside the detail. The prominent style lays the
         // detail over the sidebar, which is why portrait showed only Show Sidebar.
         .navigationSplitViewStyle(.balanced)
+        .background { if insets != nil { splitSizeReader } }
+        .modifier(HalfSplitSidebarColumn(enabled: insets != nil && selectedStationID == nil && isHalfSpan))
         // After the list exists. An earlier copy loses to the list resetting selection,
         // and a stored id can arrive after the first render.
-        .task { restoreSelection() }
+        .task {
+            restoreSelection()
+            showStationListIfUnselected(insets)
+        }
         .onChange(of: storedStationID) { _, _ in restoreSelection() }
         // Created stations arrive when the recipes load, after the first render.
         .onChange(of: stations.map(\.id)) { _, _ in restoreSelection() }
@@ -265,14 +306,54 @@ struct StationSplitRoot<Detail: View>: View {
         // rotation or Split View change shows the same open station. Never writes the selection.
         .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
             navigation.setRegularWidth(sizeClass == .regular)
-            columnVisibility = navigation.showsBothColumns ? .all : .automatic
+            // Nil insets is the phone: both columns or the compact column, unchanged.
+            // An adapting split with nothing selected opens `.all` (this split is two
+            // columns). A chosen station leaves visibility alone so the sidebar can collapse.
+            if insets == nil || selectedStationID != nil {
+                columnVisibility = navigation.showsBothColumns ? .all : .automatic
+            } else {
+                showStationListIfUnselected(insets)
+            }
         }
+        .onChange(of: selectedStationID) { _, _ in
+            showStationListIfUnselected(insets)
+        }
+        .modifier(SplitLeadingBar(enabled: insets?.barEdge == .trailing))
+        .environment(\.splitBarEdge, insets?.barEdge)
+    }
+
+    /// Adapting split, nothing selected: sidebar + detail (`.all`). Does nothing on the
+    /// phone, and nothing after a station is picked. Compact width (the narrow split)
+    /// keeps `.automatic`, which is already the sidebar column.
+    private func showStationListIfUnselected(_ insets: SplitInsets?) {
+        guard insets != nil, selectedStationID == nil, horizontalSizeClass == .regular else { return }
+        if columnVisibility != Self.openListVisibility {
+            columnVisibility = Self.openListVisibility
+        }
+    }
+
+    /// The split's laid-out size. Hidden, and it does not take taps.
+    private var splitSizeReader: some View {
+        GeometryReader { geo in
+            Color.clear
+                .onAppear { publishSize(geo.size) }
+                .onChange(of: geo.size) { _, size in publishSize(size) }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func publishSize(_ size: CGSize) {
+        let width = Double(size.width)
+        let height = Double(size.height)
+        if width != containerWidth { containerWidth = width }
+        if height != containerHeight { containerHeight = height }
     }
 
     /// Compact width (the folded phone) gets the arc carousel; regular width keeps the
     /// sidebar list. Both write the same `selection`, so a pick only selects and opens.
     @ViewBuilder
-    private var stationPicker: some View {
+    private func stationPicker(_ insets: SplitInsets?) -> some View {
         if isCompact {
             // A card tap goes through the list's own setter: same push, same one-time
             // authorization request, same stored id. Scrolling the carousel selects nothing.
@@ -288,11 +369,11 @@ struct StationSplitRoot<Detail: View>: View {
                 }
             }
         } else {
-            stationList
+            stationList(insets)
         }
     }
 
-    private var stationList: some View {
+    private func stationList(_ insets: SplitInsets?) -> some View {
         List(selection: selection) {
             ForEach(stations) { station in
                 // The link is the row. Its value is the station ID, so the tap selects
@@ -315,6 +396,10 @@ struct StationSplitRoot<Detail: View>: View {
                 .accessibilityIdentifier("stations.row.\(station.id.uuidString)")
             }
         }
+        // A List keeps its own row margin and ignores the host's safeAreaInset,
+        // so on the 540 pt split the row starts 20 pt in, inside the 28 pt leading.
+        // Nil insets is the phone, and the list is returned with no padding.
+        .modifier(SplitStationListPadding(insets: insets))
     }
 
     /// The row the list selects. Nil is not stored: the split clears the binding while it
@@ -359,6 +444,38 @@ struct StationSplitRoot<Detail: View>: View {
         if !seeded.isEmpty { return seeded }
         #endif
         return storedStationID
+    }
+}
+
+/// Pads a split station list by the host's extra insets. A nil inset is the phone
+/// list, returned unchanged. Full width does not adapt, so it is unchanged too.
+private struct SplitStationListPadding: ViewModifier {
+    var insets: SplitInsets?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let insets {
+            content
+                .padding(.leading, CGFloat(insets.padding.leading))
+                .padding(.trailing, CGFloat(insets.padding.trailing))
+        } else {
+            content
+        }
+    }
+}
+
+/// Half split, nothing selected: the width class the split actually honors, so the
+/// sidebar column is the one on screen. Off is the view unchanged.
+private struct HalfSplitSidebarColumn: ViewModifier {
+    var enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.environment(\.horizontalSizeClass, .compact)
+        } else {
+            content
+        }
     }
 }
 

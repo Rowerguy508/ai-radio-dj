@@ -818,7 +818,8 @@ jobs:
                       closed-ax5-dark open-ax5-dark \
                       closed-onair open-onair \
                       iphone-landscape iphone-landscape-dark ipad-landscape ipad-landscape-dark \
-                      duo-wide-ready duo-wide-speaking duo-wide-onair duo-continuity-folded duo-continuity-unfolded; do
+                      duo-wide-ready duo-wide-speaking duo-wide-onair split-narrow split-half split-half-stations split-wide \
+                      duo-continuity-folded duo-continuity-unfolded; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
           ls "$SHOTS" | grep -q '^duo-arrangement_' || { echo "missing duo-arrangement screenshot"; exit 1; }

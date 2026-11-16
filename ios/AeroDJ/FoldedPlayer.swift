@@ -115,6 +115,13 @@ struct FoldedPlayer: View {
     var stationStops: [DuoStationSwitch.Stop] = []
     /// The station-row open path. Nil hides the dial.
     var onOpenStation: ((String) async -> Void)? = nil
+    /// Outer edge while the window is a split. Nil keeps the symbol bar on the trailing side.
+    var splitBarEdge: SplitViewLayout.BarEdge? = nil
+    /// The split container, when the host is adapting. Nil uses the reader, which is the phone.
+    var layoutSize: CGSize? = nil
+    /// Insets the split host reported. Nil on the phone and the full-screen Duo, so those
+    /// readers never see a split measurement.
+    var splitHost: SplitMeasure? = nil
     /// Owned by `PlayingScreen`, above the layout switch. A placement change
     /// rebuilds the scroll view and reads this same anchor back.
     var scrollAnchor: Binding<String?> = .constant(Optional<String>.none)
@@ -151,6 +158,17 @@ struct FoldedPlayer: View {
     }
 
     var body: some View {
+        if let layoutSize {
+            // The container is split.container. The reader under the bar is shorter
+            // than duoMinHeight, and ignoresSafeArea on this view inflates the frame.
+            splitMeasured(layoutSize)
+        } else {
+            phoneBody
+        }
+    }
+
+    /// Phone and every non-split window. The reader decides the layout.
+    private var phoneBody: some View {
         GeometryReader { geo in
             switch playerPlacement(in: geo.size) {
             case .phoneBottom:
@@ -180,6 +198,69 @@ struct FoldedPlayer: View {
         }
         .environment(\.colorScheme, .dark)
         .environment(\.onSlab, true)
+    }
+
+    /// Split host. Placement uses the full container, so 540×760 stays the Duo rail.
+    /// The reader under the navigation bar is shorter, and that is the height that
+    /// is drawn, so the bottom controls stay inside the container. The backdrop's
+    /// safe-area ignore is only the background layer.
+    ///
+    /// The rail is framed to that raw container, so the host's safe-area inset does
+    /// not move it. The symbol bar was then the 16 pt design gutter in from the
+    /// edge (18 pt once the 52 pt buttons sit centred in the 56 pt column), inside
+    /// the leading inset the host reported. The Duo rail shifts in by those insets.
+    /// The phone column and the centred column stay on the raw width: a narrow
+    /// split has no symbol bar, and the phone reader never calls this.
+    private func splitMeasured(_ container: CGSize) -> some View {
+        GeometryReader { geo in
+            let shortfall = max(0, container.height - geo.size.height)
+            let height = max(0, container.height - shortfall)
+            let placement = FoldedColumnLayout.controlPlacement(
+                containerWidth: Double(container.width),
+                containerHeight: Double(container.height))
+            if placement == .duoHorizontal, let measure = splitHost {
+                let rail = SplitViewLayout.railFrame(containerWidth: Double(container.width),
+                                                     leadingInset: measure.leading,
+                                                     trailingInset: measure.trailing)
+                let fitted = CGSize(width: CGFloat(rail.width), height: height)
+                laidOut(in: fitted, placement: container)
+                    .frame(width: fitted.width, height: fitted.height, alignment: .top)
+                    .padding(.leading, CGFloat(rail.leading))
+                    .padding(.trailing, CGFloat(rail.trailing))
+                    .frame(width: container.width, height: height, alignment: .topLeading)
+            } else {
+                let fitted = CGSize(width: container.width, height: height)
+                laidOut(in: fitted, placement: container)
+                    .frame(width: fitted.width, height: fitted.height, alignment: .top)
+            }
+        }
+        .background {
+            FoldedBackdrop(track: heroTrack, station: station)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+        }
+        .environment(\.colorScheme, .dark)
+        .environment(\.onSlab, true)
+    }
+
+    @ViewBuilder
+    private func laidOut(in size: CGSize, placement: CGSize? = nil) -> some View {
+        let decision = placement ?? size
+        switch FoldedColumnLayout.controlPlacement(containerWidth: Double(decision.width),
+                                                   containerHeight: Double(decision.height)) {
+        case .phoneBottom:
+            compactBody(in: size)
+        case .centredColumn:
+            centredColumnBody(in: size)
+        case .duoHorizontal:
+            // Same collapse rule as phoneBody (#479): a collapsed rail shows the centred column.
+            if showsUnfoldedRail {
+                wideBody(in: size)
+            } else {
+                centredColumnBody(in: size)
+                    .onAppear { moreOpen = false }
+            }
+        }
     }
 
     /// Phone width: unchanged from wireframe 08 (scrolling upper, pinned controls).
@@ -314,12 +395,14 @@ struct FoldedPlayer: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("folded.trackColumn")
                 .accessibilitySortPriority(2)
+                .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
             }
 
             Color.clear
                 .frame(width: CGFloat(layout.foldGutter), height: size.height)
                 .accessibilityHidden(true)
                 .accessibilityIdentifier("folded.fold")
+                .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
 
             if contentWidth > 0 {
                 wideContent(gap: gap, top: CGFloat(layout.topClearance))
@@ -327,6 +410,7 @@ struct FoldedPlayer: View {
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("folded.contentColumn")
                     .accessibilitySortPriority(1)
+                    .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
             }
 
             if !systemBar, layout.barWidth > 0 {
@@ -346,6 +430,7 @@ struct FoldedPlayer: View {
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("folded.systemBar")
                     .accessibilitySortPriority(0)
+                    .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
             }
         }
         .padding(.horizontal, CGFloat(layout.edgeInset))
@@ -365,11 +450,13 @@ struct FoldedPlayer: View {
                                      onConnections: moreMenu?.onConnections ?? {},
                                      onTune: onTune,
                                      dismiss: { moreOpen = false })
+                        .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
                         .padding(.top, CGFloat(menu.topGap))
                         .padding(.trailing, CGFloat(menu.trailingGap))
                 }
             }
         }
+        .modifier(SplitLeadingBar(enabled: splitBarEdge == .leading))
         .background {
             FoldDivisionProbe(hinge: $foldHinge, divisions: $foldDivisions)
         }
@@ -1695,7 +1782,8 @@ extension View {
                        hidesSystemBack: Bool = false,
                        onConnections: @escaping () -> Void,
                        systemRail: DuoRailHooks? = nil,
-                       keepSystemVerticalBar: Bool = false) -> some View {
+                       keepSystemVerticalBar: Bool = false,
+                       barEdge: SplitViewLayout.BarEdge? = nil) -> some View {
         navigationTitle(station.name)
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden(hidesSystemBack)
@@ -1706,8 +1794,14 @@ extension View {
                     Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
                 }
                 if showsMore {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        FoldedMoreMenu(reviewCount: reviewCount, onConnections: onConnections)
+                    ToolbarItem(placement: SplitToolbar.placement(
+                        preferred: .trailing, edge: barEdge,
+                        leading: .topBarLeading, trailing: .topBarTrailing)) {
+                        // A split bar copies an identifier on the menu onto the bar item
+                        // and the button. The button keeps it. Nil edge is the phone menu.
+                        FoldedMoreMenu(reviewCount: reviewCount, onConnections: onConnections,
+                                       identifierOnButton: barEdge != nil)
+                            .modifier(SplitMinimumTarget(enabled: barEdge != nil))
                     }
                 }
             }
@@ -1724,8 +1818,27 @@ struct FoldedMoreMenuItems {
 private struct FoldedMoreMenu: View {
     let reviewCount: Int?
     let onConnections: () -> Void
+    /// The phone menu and the symbol-bar menu leave this false, so the identifier
+    /// stays on the menu. A split navigation bar sets it: the system bar item was
+    /// copying the menu's identifier onto an Other and the Button.
+    var identifierOnButton = false
+
+    private var moreLabel: String {
+        reviewCount.map { $0 > 0 ? "More, \($0) to review" : "More" } ?? "More"
+    }
 
     var body: some View {
+        if identifierOnButton {
+            menu(identifierOnLabel: true)
+                .accessibilityLabel(moreLabel)
+        } else {
+            menu(identifierOnLabel: false)
+                .accessibilityLabel(moreLabel)
+                .accessibilityIdentifier("folded.more")
+        }
+    }
+
+    private func menu(identifierOnLabel: Bool) -> some View {
         Menu {
             Button(action: onConnections) {
                 Label("Connections", systemImage: "link")
@@ -1751,9 +1864,23 @@ private struct FoldedMoreMenu: View {
                     }
                 }
                 .contentShape(Circle())
+                .modifier(FoldedMoreButtonIdentifier(enabled: identifierOnLabel))
         }
-        .accessibilityLabel(reviewCount.map { $0 > 0 ? "More, \($0) to review" : "More" } ?? "More")
-        .accessibilityIdentifier("folded.more")
+    }
+}
+
+/// Puts `folded.more` on the menu label. Disabled is the label unchanged, which
+/// is the phone menu and the symbol bar.
+private struct FoldedMoreButtonIdentifier: ViewModifier {
+    var enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.accessibilityIdentifier("folded.more")
+        } else {
+            content
+        }
     }
 }
 
