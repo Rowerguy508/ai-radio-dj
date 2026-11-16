@@ -328,11 +328,13 @@ final class LocalFactsWiringTests: XCTestCase {
         for _ in 0..<50 { await Task.yield() }
         XCTAssertEqual(w.store.consent, .manual, "an item purge is not a location withdrawal")
         feed.publish(.all)
-        for _ in 0..<500 where w.store.consent != .declined { await Task.yield() }
+        // Wait on the withdrawal itself, not a yield count (flaky on loaded runners).
+        let deadline = ContinuousClock.now + .seconds(10)
+        while w.store.consent != .declined, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(1)) }
         // The clearing listener may run just after the store's.
         var offered = w.source.extraLine(after: a, before: b, shape: .comingUpOnly)
-        for _ in 0..<500 where offered != nil {
-            await Task.yield()
+        while offered != nil, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
             offered = w.source.extraLine(after: a, before: b, shape: .comingUpOnly)
         }
         XCTAssertEqual(w.store.consent, .declined)
@@ -431,7 +433,8 @@ final class LocalFactsWiringTests: XCTestCase {
         _ = await w.refreshIfDue()
         XCTAssertFalse(news.cacheIsEmpty)
         feed.publish(.all)
-        for _ in 0..<500 where !news.cacheIsEmpty { await Task.yield() }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !news.cacheIsEmpty, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(1)) }
         XCTAssertTrue(news.cacheIsEmpty, "purge-all empties the news cache")
     }
 
