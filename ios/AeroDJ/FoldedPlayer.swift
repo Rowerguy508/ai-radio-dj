@@ -766,6 +766,14 @@ extension FoldedPlayer {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, inset)
                         .padding(.top, 12)
+                    // #545: the voice-unavailable caption stays with the DJ line, above the
+                    // rail's Play/Pause, so VoiceOver reads it before the transport.
+                    if showsCaptionInUpper(pinsStatus: pinsStatus) {
+                        PlaybackErrorBanner(error: snapshot.error, actions: actions)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, inset)
+                            .padding(.top, 8)
+                    }
                 }
             }
         }
@@ -803,6 +811,14 @@ extension FoldedPlayer {
         .modifier(ContinuityScrollerID(enabled: continuityProbe))
     }
 
+    /// #545: at default sizes a caption-style error (speechFailed) is drawn under the DJ line
+    /// in the upper part, not in the pinned controls, which now sit level with the rail's
+    /// Play/Pause. Banners (with Retry / Dismiss) stay above the scrubber.
+    private func showsCaptionInUpper(pinsStatus: Bool) -> Bool {
+        guard !pinsStatus, heroTrack != nil, let p = PlaybackErrorPresentation(snapshot.error) else { return false }
+        return p.style == .caption
+    }
+
     /// Pinned under the upper part. `pinsStatus` (accessibility sizes): the status pill and the
     /// quiet DJ line sit here, above the scrubber, so ON AIR is on screen without scrolling.
     private func outerControls(pinsStatus: Bool) -> some View {
@@ -822,8 +838,10 @@ extension FoldedPlayer {
                 // 16, as compactBody's pinned status: the scrubber's frame starts above its track.
                 .padding(.bottom, 16)
             }
-            PlaybackErrorBanner(error: snapshot.error, actions: actions)
-                .padding(.horizontal, inset)
+            if !showsCaptionInUpper(pinsStatus: pinsStatus) {
+                PlaybackErrorBanner(error: snapshot.error, actions: actions)
+                    .padding(.horizontal, inset)
+            }
             if showsProgress, let timeSource {
                 PlaybackScrubber(time: timeSource, transport: snapshot.transport,
                                  trackID: snapshot.nowPlaying?.id,
