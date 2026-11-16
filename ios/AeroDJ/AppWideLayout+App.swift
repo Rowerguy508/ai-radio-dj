@@ -28,8 +28,6 @@ extension EnvironmentValues {
 /// TODO(#465 item 2): on forward-merge of #510, attach `FoldDivisionProbe` here and pass the
 /// active vertical division it reports as `AppWideLayout.Input.foldDivision` (the types are
 /// the same once `FoldDivision` is a typealias for `FoldAwareness.Division`).
-/// TODO(#465 item 4): read the `ArrangementView` arrangement here and pass it as
-/// `AppWideLayout.Input.arrangement`.
 /// When #501 lands, `SplitBarHost` owns the bar edge; this host owns widths and columns.
 private struct AppWideHost: ViewModifier {
     let screen: AppWideLayout.Screen
@@ -43,12 +41,19 @@ private struct AppWideHost: ViewModifier {
     @State private var size: CGSize = .zero
 
     private var decision: AppWideLayout.Decision? {
+        // #465 item 4: the arrangement `ArrangementPaneLayout` resolves for this container,
+        // mapped onto #512's seam. `decide` does not read it yet, so nothing changes.
+        let arrangement = ArrangementPaneLayout.resolve(
+            hasRegularWidth: horizontalSizeClass == .regular,
+            containerWidth: size.width, containerHeight: size.height,
+            accessibilityTextSize: typeSize.isAccessibilitySize).appWideArrangement
         let input = AppWideLayout.Input(hasRegularWidth: horizontalSizeClass == .regular,
                                         containerWidth: size.width, containerHeight: size.height,
                                         accessibilityTextSize: typeSize.isAccessibilitySize,
                                         hasRegularHeight: verticalSizeClass.map { $0 == .regular },
                                         // Onboarding is a content-sized sheet; see `heightIsContent`.
-                                        heightIsContent: screen == .onboarding)
+                                        heightIsContent: screen == .onboarding,
+                                        arrangement: arrangement)
         let decision = AppWideLayout.decide(input, for: screen)
         return decision.adapts ? decision : nil
     }
