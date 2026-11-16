@@ -285,9 +285,6 @@ struct DuoRailMorePanel: View {
 
     private func row(_ title: String, systemImage: String, identifier: String, hint: String? = nil,
                      action: @escaping () -> Void) -> some View {
-        // Contain keeps the button hittable and exposes the title as its own element.
-        // The title's frame is the text, so a label clipped on the trailing edge fails
-        // even when the 44 pt row is still inside the window.
         Button {
             dismiss()
             action()
@@ -301,18 +298,73 @@ struct DuoRailMorePanel: View {
                     .lineLimit(6)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("\(identifier).label")
+                    .modifier(MoreMenuLabelID(identifier: "\(identifier).label"))
             }
             .padding(.horizontal, 12)
             .frame(minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .contain)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(title)
-        .accessibilityIdentifier(identifier)
-        .modifier(RailHint(hint: hint))
+        .modifier(MoreMenuRowAccessibility(title: title, identifier: identifier, hint: hint))
+    }
+}
+
+/// The capture launch (`-AeroDJStudioCapture YES`) exposes the title as its own element
+/// so a UI test can read that frame. Same gate as #493's `ContinuityScrollerID`:
+/// Debug, and only when that launch argument is set. Release, and Debug outside the
+/// capture, keep one element: the button trait and the hint stay on the row.
+private struct MoreMenuRowAccessibility: ViewModifier {
+    var title: String
+    var identifier: String
+    var hint: String?
+
+    private var exposesLabel: Bool {
+        #if DEBUG
+        UserDefaults.standard.bool(forKey: StudioCapture.defaultsKey)
+        #else
+        false
+        #endif
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if exposesLabel {
+            content
+                .accessibilityElement(children: .contain)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(title)
+                .accessibilityIdentifier(identifier)
+                .modifier(RailHint(hint: hint))
+        } else {
+            content
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(title)
+                .accessibilityIdentifier(identifier)
+                .modifier(RailHint(hint: hint))
+        }
+    }
+}
+
+/// Title identifier for the capture launch only. A combined row does not publish it.
+private struct MoreMenuLabelID: ViewModifier {
+    var identifier: String
+
+    private var enabled: Bool {
+        #if DEBUG
+        UserDefaults.standard.bool(forKey: StudioCapture.defaultsKey)
+        #else
+        false
+        #endif
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.accessibilityIdentifier(identifier)
+        } else {
+            content
+        }
     }
 }
 

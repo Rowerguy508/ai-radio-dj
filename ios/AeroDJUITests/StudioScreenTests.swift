@@ -590,8 +590,9 @@ final class StudioScreenTests: XCTestCase {
     }
 
     /// Every visible More row is at least 44 pt and fully inside the window, and each
-    /// row's label frame lies fully inside the window or the panel. The row's own frame
-    /// can sit inside the window while the title is clipped on the trailing edge.
+    /// row's label frame lies inside the panel. The row's own frame can sit inside the
+    /// window while the title runs past the panel's trailing edge. The label child exists
+    /// because `startApp` launches with `-AeroDJStudioCapture YES`.
     @MainActor
     private func assertMoreMenuInsideWindow(_ app: XCUIApplication, file: StaticString = #filePath,
                                             line: UInt = #line) {
@@ -599,7 +600,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(menu.waitForExistence(timeout: 5),
                       "More menu did not open\n\(app.debugDescription)", file: file, line: line)
         let window = app.windows.firstMatch.frame.insetBy(dx: -1, dy: -1)
-        let panel = menu.frame.insetBy(dx: -1, dy: -1)
+        let panel = menu.frame.insetBy(dx: -0.5, dy: -0.5)
         XCTAssertTrue(window.contains(menu.frame),
                       "More menu left the window \(menu.frame) vs \(window)", file: file, line: line)
         let rows = menu.buttons.allElementsBoundByIndex.filter { $0.exists && $0.isHittable }
@@ -620,8 +621,8 @@ final class StudioScreenTests: XCTestCase {
                            "\(row.identifier) has no label frame\n\(app.debugDescription)",
                            file: file, line: line)
             for label in labels {
-                XCTAssertTrue(window.contains(label.frame) || panel.contains(label.frame),
-                              "\(row.identifier) label \(label.label) frame \(label.frame) left the window \(window) and the panel \(menu.frame)",
+                XCTAssertTrue(panel.contains(label.frame),
+                              "\(row.identifier) label \(label.label) frame \(label.frame) left the panel \(menu.frame)",
                               file: file, line: line)
             }
         }
