@@ -12,8 +12,18 @@ permissions:
   contents: read
   pull-requests: read # paths-filter lists PR files via the API
 
+# A new push to a PR branch cancels that branch's stale run. Pushes to main
+# are not cancelled mid-run. workflow_dispatch and schedule (none here) would
+# keep their own group via github.ref and would not be cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # macOS jobs: the owner's self-hosted Mac (labels self-hosted, macOS, aerodj) runs only
-# same-repo pull_request events, and only once the repo variable AERODJ_SELF_HOSTED is '1'.
+# same-repo pull_request events.
+# - AERODJ_SELF_HOSTED == '1': every gated macOS job on the mini (existing behavior).
+# - AERODJ_MINI_STUDIO == '1': only the "Studio UI tests and screenshots (closed + open)"
+#   job on the mini; the other gated macOS jobs stay on macos-latest.
 # The repo is public, so fork PRs (head repo != this repo), pushes and every other event
 # always use GitHub-hosted macos-latest. testflight.yml stays GitHub-hosted. -Atlas
 # Exception: "iOS simulator build" (StoreKit tests) is always GitHub-hosted until the Mac's
@@ -23,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ios: ${{ steps.filter.outputs.ios }}
+      core: ${{ steps.filter.outputs.core }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -32,14 +43,58 @@ jobs:
             ios:
               - 'ios/**'
               - '.github/workflows/ios.yml'
+            # AeroDJCore tests also read these docs (repoFile in CloudVoiceAllLinesTests and
+            # friends), so a copy edit must run both core-test jobs. #509 skipped them and
+            # broke integration (X1). Only the two core jobs use this output. -Sentinel
+            core:
+              - 'ios/**'
+              - '.github/workflows/ios.yml'
+              - 'docs/site/privacy.md'
+              - 'docs/site/HOLD-pro.md'
+              - 'docs/site/DRAFT-privacy-tester-voice.md'
+              - 'docs/PRIVACY_MATRIX.md'
 
   core-tests:
     name: AeroDJCore tests
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    if: needs.changes.outputs.core == 'true'
     runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Check Xcode 26.6 and Swift 6.3
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          echo "xcode-select -p:"
+          sel="$(xcode-select -p)"
+          printf '%s\n' "$sel"
+          if [ ! -d "$sel" ]; then
+            echo "::error::Selected Xcode path does not exist: $sel"
+            exit 1
+          fi
+          echo "xcodebuild -version:"
+          xcode_out="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_out"
+          echo "swift --version:"
+          swift_out="$(swift --version)"
+          printf '%s\n' "$swift_out"
+          xcode_ver="$(printf '%s\n' "$xcode_out" | awk 'NR==1 { print $2 }')"
+          swift_ver="$(printf '%s\n' "$swift_out" | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p')"
+          swift_ver="${swift_ver%%$'\n'*}"
+          case "$xcode_ver" in
+            26.6|26.6.*) ;;
+            *)
+              echo "::error::Xcode is ${xcode_ver:-unknown} at $sel; this job requires Xcode 26.6"
+              exit 1
+              ;;
+          esac
+          case "$swift_ver" in
+            6.3|6.3.*) ;;
+            *)
+              echo "::error::Swift is ${swift_ver:-unknown}; this job requires Swift 6.3"
+              exit 1
+              ;;
+          esac
       - name: Run core tests
         run: swift test
         working-directory: ios/AeroDJCore
@@ -59,7 +114,7 @@ jobs:
   linux-core-tests:
     name: AeroDJCore tests (Linux)
     needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    if: needs.changes.outputs.core == 'true'
     runs-on: ubuntu-latest
     container: swift:6.2
     steps:
@@ -231,6 +286,40 @@ jobs:
       DERIVED_DATA: ios/build/DerivedData-device
     steps:
       - uses: actions/checkout@v4
+      - name: Check Xcode 26.6 and Swift 6.3
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          echo "xcode-select -p:"
+          sel="$(xcode-select -p)"
+          printf '%s\n' "$sel"
+          if [ ! -d "$sel" ]; then
+            echo "::error::Selected Xcode path does not exist: $sel"
+            exit 1
+          fi
+          echo "xcodebuild -version:"
+          xcode_out="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_out"
+          echo "swift --version:"
+          swift_out="$(swift --version)"
+          printf '%s\n' "$swift_out"
+          xcode_ver="$(printf '%s\n' "$xcode_out" | awk 'NR==1 { print $2 }')"
+          swift_ver="$(printf '%s\n' "$swift_out" | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p')"
+          swift_ver="${swift_ver%%$'\n'*}"
+          case "$xcode_ver" in
+            26.6|26.6.*) ;;
+            *)
+              echo "::error::Xcode is ${xcode_ver:-unknown} at $sel; this job requires Xcode 26.6"
+              exit 1
+              ;;
+          esac
+          case "$swift_ver" in
+            6.3|6.3.*) ;;
+            *)
+              echo "::error::Swift is ${swift_ver:-unknown}; this job requires Swift 6.3"
+              exit 1
+              ;;
+          esac
       - name: Install pinned XcodeGen
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
@@ -364,6 +453,40 @@ jobs:
       DERIVED_DATA: ios/build/DerivedData-runtime
     steps:
       - uses: actions/checkout@v4
+      - name: Check Xcode 26.6 and Swift 6.3
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          echo "xcode-select -p:"
+          sel="$(xcode-select -p)"
+          printf '%s\n' "$sel"
+          if [ ! -d "$sel" ]; then
+            echo "::error::Selected Xcode path does not exist: $sel"
+            exit 1
+          fi
+          echo "xcodebuild -version:"
+          xcode_out="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_out"
+          echo "swift --version:"
+          swift_out="$(swift --version)"
+          printf '%s\n' "$swift_out"
+          xcode_ver="$(printf '%s\n' "$xcode_out" | awk 'NR==1 { print $2 }')"
+          swift_ver="$(printf '%s\n' "$swift_out" | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p')"
+          swift_ver="${swift_ver%%$'\n'*}"
+          case "$xcode_ver" in
+            26.6|26.6.*) ;;
+            *)
+              echo "::error::Xcode is ${xcode_ver:-unknown} at $sel; this job requires Xcode 26.6"
+              exit 1
+              ;;
+          esac
+          case "$swift_ver" in
+            6.3|6.3.*) ;;
+            *)
+              echo "::error::Swift is ${swift_ver:-unknown}; this job requires Swift 6.3"
+              exit 1
+              ;;
+          esac
       - name: Self-hosted prep (volume check, DerivedData on the internal disk)
         # See the script: simulator services stall or are denied on the removable work volume. -Orion
         if: runner.environment == 'self-hosted'
@@ -444,14 +567,59 @@ jobs:
     name: Studio UI tests and screenshots (closed + open)
     needs: changes
     if: needs.changes.outputs.ios == 'true'
-    runs-on: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
-    timeout-minutes: ${{ (vars.AERODJ_SELF_HOSTED == '1' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
+    # Mini when AERODJ_SELF_HOSTED=1 (all-mini) or AERODJ_MINI_STUDIO=1 (this job only),
+    # and only on a same-repo pull_request. Otherwise macos-latest.
+    runs-on: ${{ ((vars.AERODJ_SELF_HOSTED == '1' || vars.AERODJ_MINI_STUDIO == '1') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","aerodj"]') || 'macos-latest' }}
+    timeout-minutes: ${{ ((vars.AERODJ_SELF_HOSTED == '1' || vars.AERODJ_MINI_STUDIO == '1') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 40 || 360 }}
     env:
       XCODEGEN_VERSION: 2.46.0
       DERIVED_DATA: ios/build/DerivedData-ui
       SHOTS: ${{ github.workspace }}/studio-screenshots
     steps:
       - uses: actions/checkout@v4
+      - name: Check Xcode 26.6 and Swift 6.3
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          echo "xcode-select -p:"
+          sel="$(xcode-select -p)"
+          printf '%s\n' "$sel"
+          if [ ! -d "$sel" ]; then
+            echo "::error::Selected Xcode path does not exist: $sel"
+            exit 1
+          fi
+          echo "xcodebuild -version:"
+          xcode_out="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_out"
+          echo "swift --version:"
+          swift_out="$(swift --version)"
+          printf '%s\n' "$swift_out"
+          xcode_ver="$(printf '%s\n' "$xcode_out" | awk 'NR==1 { print $2 }')"
+          swift_ver="$(printf '%s\n' "$swift_out" | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p')"
+          swift_ver="${swift_ver%%$'\n'*}"
+          case "$xcode_ver" in
+            26.6|26.6.*) ;;
+            *)
+              echo "::error::Xcode is ${xcode_ver:-unknown} at $sel; this job requires Xcode 26.6"
+              exit 1
+              ;;
+          esac
+          case "$swift_ver" in
+            6.3|6.3.*) ;;
+            *)
+              echo "::error::Swift is ${swift_ver:-unknown}; this job requires Swift 6.3"
+              exit 1
+              ;;
+          esac
+          # The screenshot dir is a fixed workspace path on this Mac. Remove it
+          # before any step can treat a previous run's PNGs as this run's shots.
+          case "$SHOTS" in
+            "$GITHUB_WORKSPACE"/studio-screenshots) rm -rf "$SHOTS" ;;
+            *)
+              echo "::error::Refusing to remove unexpected screenshot dir: ${SHOTS:-unset}"
+              exit 1
+              ;;
+          esac
       - name: Self-hosted prep (volume check, DerivedData on the internal disk)
         # See the script: simulator services stall or are denied on the removable work volume. -Orion
         if: runner.environment == 'self-hosted'
@@ -556,6 +724,32 @@ jobs:
           kill -INT "$REC" 2>/dev/null || true
           wait "$REC" || true
           if [ "$OUT" != "$SHOTS/walkthrough-closed.mp4" ]; then
+            # REC is the simctl client (xcrun execs it). It logs "Wrote video to" and
+            # exits while the mp4 is still 0 bytes; CoreSimulator finishes the file
+            # afterwards. Run 43678829149 copied that empty file (both attempts).
+            # Two checks, 3 seconds apart, inside 30s. Each size is logged so a mini
+            # run shows whether the source fills in. Hosted runners record straight
+            # into $SHOTS and do not take this branch.
+            size=0
+            last=-1
+            stable=0
+            deadline=$((SECONDS + 30))
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              size=$(stat -f%z "$OUT" 2>/dev/null || echo 0)
+              echo "Walkthrough source $OUT size: ${size} bytes"
+              if [ "$size" -gt 0 ] && [ "$size" = "$last" ]; then
+                stable=1
+                break
+              fi
+              last=$size
+              sleep 3
+            done
+            if [ "$stable" -ne 1 ]; then
+              echo "::error::Walkthrough recording at $OUT never became a stable non-empty file within 30s (source size: ${size} bytes)"
+              exit 1
+            fi
+            echo "Walkthrough recording stable at ${size} bytes: $OUT"
+            ls -la "$OUT"
             cp "$OUT" "$SHOTS/walkthrough-closed.mp4" || {
               echo "::error::Could not copy the walkthrough video into \$SHOTS (walkthrough test exit status: ${STATUS:-0})"
               exit 1
@@ -586,6 +780,11 @@ jobs:
           ls -la "$SHOTS"
           ls "$SHOTS" | grep -q '^closed-compact_' || { echo "missing closed screenshot"; exit 1; }
           ls "$SHOTS" | grep -q '^open-studio-queue_' || { echo "missing open screenshot"; exit 1; }
+          # #465 item 10: Library, Stations and Settings at Duo width, required like
+          # duo-wide-ready (AppWideLayoutTests). -Nova
+          for shot in duo-wide-library duo-wide-stations duo-wide-settings duo-wide-localarea; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
           for shot in closed-dark closed-state-empty closed-state-loading closed-state-error closed-state-denied \
                       closed-connections-revoked closed-tune-config-change closed-large-text \
                       open-studio-tune-dark open-large-text open-connections-revoked open-tune-config-change \
@@ -601,6 +800,8 @@ jobs:
                       duo-wide-ready duo-continuity-folded duo-continuity-unfolded; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
+          # #465 item 3: the tent pose, required like duo-wide-ready (TentPoseTests). -Nova
+          ls "$SHOTS" | grep -q '^duo-tent_' || { echo "missing duo-tent screenshot"; exit 1; }
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
       - name: Upload screenshots
         if: always()

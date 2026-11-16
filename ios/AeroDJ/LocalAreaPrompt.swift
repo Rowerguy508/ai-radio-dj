@@ -16,6 +16,10 @@ struct LocalAreaPrompt: View {
     @State private var typing = false
     @State private var place = ""
     @State private var rejected = false
+    /// #465 item 10 (onboarding): nil on every phone and narrow split, which adds 0 pt and
+    /// keeps this prompt exactly as it was. Wide: holds the column at 560 pt. Layout only;
+    /// the copy, the consent version and every action are unchanged (Sentinel, #509).
+    @Environment(\.appWideLayout) private var appWide
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -54,11 +58,39 @@ struct LocalAreaPrompt: View {
             }
             .accessibilityIdentifier("localArea.notNow")
         }
+        .modifier(WideTargets(isOn: appWide != nil))
         .padding(24)
+        .padding(.horizontal, CGFloat(appWide?.sideInset ?? 0))
         .interactiveDismissDisabled(false)
     }
 
     private func saveTyped() {
         if store.chooseManual(place) { onDone() } else { rejected = true }
+    }
+}
+
+/// #515 N1 (Fry): 44 pt targets on the wide path only. Phones and narrow split get the view
+/// unchanged, so their snapshots stay byte-identical. Wide: the prominent buttons go to the
+/// large control size and the plain text buttons get a 44 pt tall, fully tappable row. Same
+/// labels, same actions; layout only.
+private struct WideTargets: ViewModifier {
+    let isOn: Bool
+
+    func body(content: Content) -> some View {
+        if isOn {
+            content.buttonStyle(WideTextButtonStyle()).controlSize(.large)
+        } else {
+            content
+        }
+    }
+}
+
+private struct WideTextButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.tint)
+            .frame(minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.5 : 1)
     }
 }
