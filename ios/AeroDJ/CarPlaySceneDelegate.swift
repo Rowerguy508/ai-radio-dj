@@ -48,6 +48,10 @@ final class CarPlaySession {
     private var listIdentity: CarPlayListIdentity?
     private var lastPublication: CarPlayNowPlayingPublication?
     private let bridge = CarPlayNowPlayingBridge()
+    /// #438: only the latest pick may push Now Playing or show a start notice.
+    private var picks = CarPlayPickTracker()
+    /// #438: the start notice on screen, if any.
+    private var startNotice: CPAlertTemplate?
 
     private var isConnected: Bool { interfaceController != nil }
 
@@ -75,6 +79,7 @@ final class CarPlaySession {
         listTemplate = nil
         listIdentity = nil
         lastPublication = nil
+        startNotice = nil
         bridge.cancel()
     }
 
@@ -133,13 +138,16 @@ final class CarPlaySession {
     }
 
     fileprivate func pick(_ row: CarPlayStationRow) async {
+        let pick = picks.begin()
+        dismissStartNotice()
         opened = StationRef(id: row.id, name: row.name)
         let dependencies = AppRuntime.dependencies
         let music = dependencies.playback
+        var outcome: CreatedStationOpenOutcome?
         switch CarPlayScreen.effect(for: row.pick, transport: music.snapshot.transport) {
         case .openCreatedStation(let id):
             if let queue = dependencies.stationQueue {
-                _ = await queue.openCreatedStation(.userTap, recipeID: id, studio: dependencies.studio)
+                outcome = await queue.openCreatedStation(.userTap, recipeID: id, studio: dependencies.studio)
             } else {
                 await music.authorize()
                 _ = await dependencies.studio.applyRecipe(id)
@@ -148,13 +156,53 @@ final class CarPlaySession {
             // #454: the phone's built-in tap, the same start path as a created station. It plays
             // the station's own seeds (`BuiltInStations`, #442), a re-tap on the paused active station resumes it (Fry N4).
             if let queue = dependencies.stationQueue, let id = UUID(uuidString: row.id) {
-                _ = await queue.openBuiltInStation(.userTap, stationID: id, studio: dependencies.studio)
+                outcome = await queue.openBuiltInStation(.userTap, stationID: id, studio: dependencies.studio)
             } else {
                 await music.authorize()
             }
         }
         render()
-        showNowPlaying()
+        // #438: a start that failed says so on the car (fixed copy plus the row's name) instead of
+        // pushing an empty Now Playing. A pick a newer one replaced does nothing.
+        switch picks.finish(pick, outcome: outcome, stationName: row.name, access: access(music.authState)) {
+        case .stale:
+            break
+        case .showNowPlaying:
+            showNowPlaying()
+        case .notice(let notice):
+            showStartNotice(notice, retrying: row)
+        }
+    }
+
+    /// #438: a CarPlay alert with the fixed start-failure copy. Try Again re-runs the same pick.
+    private func showStartNotice(_ notice: CarPlayStartNotice, retrying row: CarPlayStationRow) {
+        guard let interfaceController else { return }
+        dismissStartNotice()
+        var actions: [CPAlertAction] = []
+        if notice.offersRetry {
+            actions.append(CPAlertAction(title: CarPlayStartNotice.retryTitle, style: .default) { _ in
+                let picked = row
+                Task { @MainActor in
+                    await CarPlaySession.shared.pick(picked)
+                }
+            })
+        }
+        actions.append(CPAlertAction(title: CarPlayStartNotice.dismissTitle, style: .cancel) { _ in
+            Task { @MainActor in
+                CarPlaySession.shared.dismissStartNotice()
+            }
+        })
+        let alert = CPAlertTemplate(titleVariants: notice.titleVariants, actions: actions)
+        startNotice = alert
+        interfaceController.presentTemplate(alert, animated: true, completion: nil)
+    }
+
+    /// Takes down the start notice if it is still the one presented.
+    private func dismissStartNotice() {
+        guard let alert = startNotice else { return }
+        startNotice = nil
+        guard let interfaceController, interfaceController.presentedTemplate === alert else { return }
+        interfaceController.dismissTemplate(animated: false, completion: nil)
     }
 
     private func showNowPlaying() {

@@ -74,6 +74,12 @@ public struct BoundaryInterpreter: Sendable {
         detector.setSkipLoadInFlight(inFlight)
     }
 
+    /// #444 (-Atlas): our own `play()` for the loaded song returned. See
+    /// `PlaybackBoundaryDetector.noteOwnPlayReturned()`.
+    public mutating func noteOwnPlayReturned() {
+        detector.noteOwnPlayReturned()
+    }
+
     /// #444: true once when that load was cleared or rewound before it played. Not a failed start.
     public mutating func takeSkipLoadCut() -> Bool {
         detector.takeSkipLoadCut()
