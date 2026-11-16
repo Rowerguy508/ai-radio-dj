@@ -18,8 +18,6 @@ final class FoldedOuterLayoutTests: XCTestCase {
         XCTAssertEqual(FoldedOuterLayout.contentInset, 24)
         XCTAssertEqual(FoldedOuterLayout.artInset, 30)
         XCTAssertEqual(FoldedOuterLayout.artRadius, 28)
-        XCTAssertEqual(FoldedOuterLayout.upNextHeight, 44)
-        XCTAssertEqual(FoldedOuterLayout.upNextRadius, 22)
         XCTAssertEqual(FoldedOuterLayout.playRingOpacity, 0.25, accuracy: 0.0001)
     }
 
@@ -136,5 +134,126 @@ final class FoldedOuterLayoutTests: XCTestCase {
         XCTAssertTrue(helper.contains("status(onAirLabel:"))
         XCTAssertFalse(helper.contains("isOnAir ?"),
                        "do not derive the pill from isOnAir; use onAirLabel only")
+    }
+
+    // MARK: #537 declutter (closed reskin only)
+
+    func testTitleAndArtistAreOneLineEach() {
+        XCTAssertEqual(FoldedOuterLayout.titleLineLimit, 1)
+        XCTAssertEqual(FoldedOuterLayout.artistLineLimit, 1)
+    }
+
+    func testFreedSpaceGoesToTheArt() {
+        // The NEXT row (44 + 12) and the Playing-from toolbar (52 + 12 + 8) are gone.
+        XCTAssertEqual(FoldedOuterLayout.artReserveBelowBefore537 - FoldedOuterLayout.artReserveBelow, 128)
+        // Phone and closed-Duo heights that were height-capped: the art never shrinks and
+        // grows wherever the height was the limit.
+        for (width, height) in [(390.0, 763.0), (375.0, 600.0), (390.0, 700.0), (430.0, 840.0), (320.0, 480.0)] {
+            let before = FoldedOuterLayout.artSide(containerWidth: width, containerHeight: height,
+                                                   minSide: 140, maxSide: 420,
+                                                   reserveBelow: FoldedOuterLayout.artReserveBelowBefore537)
+            let after = FoldedOuterLayout.artSide(containerWidth: width, containerHeight: height,
+                                                  minSide: 140, maxSide: 420)
+            XCTAssertGreaterThanOrEqual(after, before, "\(width)x\(height)")
+            XCTAssertLessThanOrEqual(after, width - FoldedOuterLayout.artInset * 2, "art stays inside its insets")
+        }
+        // 390 x 763 (an iPhone under the status bar): 293 pt before, width-capped 330 now.
+        XCTAssertEqual(FoldedOuterLayout.artSide(containerWidth: 390, containerHeight: 763, minSide: 140, maxSide: 420), 330)
+        XCTAssertEqual(FoldedOuterLayout.artSide(containerWidth: 390, containerHeight: 763, minSide: 140, maxSide: 420,
+                                                 reserveBelow: FoldedOuterLayout.artReserveBelowBefore537), 293)
+        // The floor still wins on a tiny container.
+        XCTAssertEqual(FoldedOuterLayout.artSide(containerWidth: 200, containerHeight: 300, minSide: 140, maxSide: 420), 140)
+    }
+
+    func testMicChipIsAnArtBadgeOnlyWhileLive() {
+        XCTAssertEqual(FoldedOuterLayout.artBadge(for: .onAir("On Air"), statusPinned: false), .onAir("On Air"))
+        XCTAssertNil(FoldedOuterLayout.artBadge(for: .micDown, statusPinned: false), "mic down draws no chip")
+        // AX sizes pin ON AIR above the scrubber (testAX5OnAirPinnedAboveScrubber), so no badge too.
+        XCTAssertNil(FoldedOuterLayout.artBadge(for: .onAir("On Air"), statusPinned: true))
+        XCTAssertNil(FoldedOuterLayout.artBadge(for: .micDown, statusPinned: true))
+        XCTAssertEqual(FoldedOuterLayout.pinnedPill(for: .onAir("On Air")), .onAir("On Air"))
+        XCTAssertNil(FoldedOuterLayout.pinnedPill(for: .micDown))
+        for state in [DJStudioState.idle, .ready(includesBriefing: false, seconds: 3)] {
+            XCTAssertNil(FoldedOuterLayout.artBadge(for: FoldedOuterLayout.status(of: state), statusPinned: false), "\(state)")
+        }
+    }
+
+    func testClosedMoreMenuTakesQueueTuneAndTheStar() {
+        XCTAssertEqual(FoldedOuterLayout.closedMoreItems(showsWorkspaceButtons: true, canRate: true), [.queue, .tune, .rating])
+        XCTAssertEqual(FoldedOuterLayout.closedMoreItems(showsWorkspaceButtons: true, canRate: false), [.queue, .tune])
+        XCTAssertEqual(FoldedOuterLayout.closedMoreItems(showsWorkspaceButtons: false, canRate: false), [.queue],
+                       "the Playing-from chip always opened the queue")
+    }
+
+    /// The closed reskin no longer draws the NEXT row, the Playing-from toolbar, the star or the
+    /// Mic down pill; compactBody and the wide bodies keep FoldedToolbar and the rating button.
+    func testClosedReskinSourceDropsTheCutRows() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: iosRoot.appendingPathComponent("AeroDJ/FoldedPlayer.swift"), encoding: .utf8)
+        func slice(from start: String, to end: String) throws -> Substring {
+            let a = try XCTUnwrap(source.range(of: start), start)
+            let b = try XCTUnwrap(source.range(of: end, range: a.upperBound..<source.endIndex), end)
+            return source[a.lowerBound..<b.lowerBound]
+        }
+        let controls = try slice(from: "private func outerControls(pinsStatus: Bool)", to: "private extension View")
+        XCTAssertFalse(controls.contains("FoldedToolbar("), "no Playing-from row when closed")
+        XCTAssertFalse(controls.contains("FoldedOuterUpNext"), "no NEXT row when closed")
+        XCTAssertFalse(source.contains("struct FoldedOuterUpNext"))
+        let titleRow = try slice(from: "private struct FoldedOuterTitleRow", to: "private struct FoldedOuterDJLine")
+        XCTAssertFalse(titleRow.contains("SongRatingButton"), "the star lives in the ⋯ menu")
+        XCTAssertFalse(titleRow.contains("FoldedOuterStatusPill"), "no Mic down chip in the title row")
+        XCTAssertTrue(titleRow.contains("FoldedOuterLayout.titleLineLimit"))
+        // The other bodies are untouched: compactBody's controls still draw the toolbar.
+        let compact = try slice(from: "private func controls(contentInset:", to: "extension FoldedPlayer {")
+        XCTAssertTrue(compact.contains("FoldedToolbar("))
+    }
+
+    // MARK: #537 closed trailing rail
+
+    func testClosedRailHoldsTheRailPlates() {
+        XCTAssertEqual(FoldedOuterLayout.closedRailWidth, 56)
+        // The #479 rail's play/pause and skip plates are 44 pt and must fit with room to spare.
+        XCTAssertGreaterThanOrEqual(DuoRailLayout.controlSize, 44)
+        XCTAssertGreaterThanOrEqual(FoldedOuterLayout.closedRailWidth, DuoRailLayout.controlSize + 12)
+        XCTAssertEqual(FoldedOuterLayout.artReserveBelowWithRail, 254, "342 less the 80 pt transport and its 8 pt gap")
+    }
+
+    func testArtBesideTheRailFitsItsColumn() {
+        for (width, height) in [(390.0, 763.0), (375.0, 600.0), (430.0, 840.0), (320.0, 480.0), (390.0, 520.0)] {
+            let side = FoldedOuterLayout.artSideBesideRail(containerWidth: width, containerHeight: height,
+                                                           minSide: 140, maxSide: 420)
+            let column = FoldedOuterLayout.columnWidthBesideRail(containerWidth: width)
+            XCTAssertLessThanOrEqual(side, max(140, column - FoldedOuterLayout.artInsetBesideRail * 2), "\(width)x\(height)")
+            XCTAssertGreaterThanOrEqual(side, 140)
+        }
+        // 390 x 763: width-limited, 390 - 56 - 8 - 48 = 278 (the transport row's height is freed,
+        // but the phone is width-limited, so the art is 52 pt narrower than without the rail).
+        XCTAssertEqual(FoldedOuterLayout.artSideBesideRail(containerWidth: 390, containerHeight: 763,
+                                                           minSide: 140, maxSide: 420), 278)
+        // A short container is height-limited, and there the freed 88 pt goes to the art.
+        let short = FoldedOuterLayout.artSideBesideRail(containerWidth: 390, containerHeight: 520, minSide: 140, maxSide: 420)
+        let shortNoRail = FoldedOuterLayout.artSide(containerWidth: 390, containerHeight: 520, minSide: 140, maxSide: 420)
+        XCTAssertGreaterThan(short, shortNoRail)
+    }
+
+    /// Transport is on the closed rail now; the bottom controls keep only the scrubber.
+    func testClosedReskinTransportIsOnTheRail() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let player = try String(contentsOf: iosRoot.appendingPathComponent("AeroDJ/FoldedPlayer.swift"), encoding: .utf8)
+        let a = try XCTUnwrap(player.range(of: "private func outerControls(pinsStatus: Bool)"))
+        let b = try XCTUnwrap(player.range(of: "private extension View", range: a.upperBound..<player.endIndex))
+        let controls = player[a.lowerBound..<b.lowerBound]
+        XCTAssertFalse(controls.contains("FoldedOuterTransport"), "play/skip moved to the rail")
+        XCTAssertTrue(controls.contains("PlaybackScrubber("), "the scrubber stays in the bottom controls")
+        XCTAssertTrue(player.contains("ClosedVerticalRail("))
+        let rail = try String(contentsOf: iosRoot.appendingPathComponent("AeroDJ/DuoVerticalRail.swift"), encoding: .utf8)
+        let r = try XCTUnwrap(rail.range(of: "struct ClosedVerticalRail"))
+        let end = try XCTUnwrap(rail.range(of: "// MARK: - Glass", range: r.upperBound..<rail.endIndex))
+        let closed = rail[r.lowerBound..<end.lowerBound]
+        XCTAssertTrue(closed.contains("DuoRailPlayPauseButton("), "the #479 play/pause (transport.playPause)")
+        XCTAssertTrue(closed.contains("identifier: \"transport.skip\""))
+        XCTAssertFalse(closed.contains("folded.more"), "one ⋯ on the closed screen: the header's")
     }
 }

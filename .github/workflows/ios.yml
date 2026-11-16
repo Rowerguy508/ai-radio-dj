@@ -893,6 +893,8 @@ jobs:
         run: |
           ls -la "$SHOTS"
           ls "$SHOTS" | grep -q '^closed-compact_' || { echo "missing closed screenshot"; exit 1; }
+          # #537: the decluttered closed player's ⋯ with Queue and Tune (and the star when rated). -Nova
+          ls "$SHOTS" | grep -q '^closed-more-menu_' || { echo "missing closed-more-menu screenshot"; exit 1; }
           ls "$SHOTS" | grep -q '^open-studio-queue_' || { echo "missing open screenshot"; exit 1; }
           # #465 item 10: Library, Stations and Settings at Duo width, required like
           # duo-wide-ready (AppWideLayoutTests). -Nova
