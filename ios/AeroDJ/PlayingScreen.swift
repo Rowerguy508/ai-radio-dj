@@ -149,39 +149,63 @@ struct PlayingScreen: View {
             let openConnections = { segment = .connections; showWorkspace = true }
             let openQueue = { segment = .queue; showWorkspace = true }
             let openTune = { segment = .tune; showWorkspace = true }
-            FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
-                         content: content, snapshot: snapshot, actions: actions, dj: dj,
-                         search: search, studioSearch: studioSearch, timeSource: timeSource,
-                         artworkNamespace: morphNamespace, speechLevel: studio.dj,
-                         moreMenu: movesMoreIntoThePlayer
-                            ? FoldedMoreMenuItems(reviewCount: dj.reviewCount, onConnections: openConnections)
-                            : nil,
-                         onQueue: openQueue,
-                         onTune: openTune,
-                         onReview: { segment = .connections; showWorkspace = true },
-                         showsUnfoldedRail: showsRail,
-                         onCollapseRail: { duoCollapsed = true },
-                         stationStops: stationStops,
-                         onOpenStation: onOpenStation)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("layout.compact")
-                .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
-                               showsMore: !movesMoreIntoThePlayer,
-                               hidesSystemBack: showsRail,
-                               onConnections: openConnections,
-                               systemRail: showsRail ? DuoRailHooks(
-                                    dj: dj, reviewCount: dj.reviewCount, upNext: snapshot.upNext,
-                                    onConnections: openConnections, onQueue: openQueue, onTune: openTune,
-                                    onCollapse: { duoCollapsed = true }, pause: { actions.pause() },
-                                    transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
-                                    showsTransport: content.showsTransport,
-                                    cancelStart: { actions.cancelStart() },
-                                    resume: { await actions.resume() },
-                                    skip: { await actions.skip() }) : nil,
-                               keepSystemVerticalBar: placement == .duoHorizontal)
-                .onChange(of: placement) { _, new in
-                    if new != .duoHorizontal { duoCollapsed = false }
-                }
+            // Two panes only at regular width, and only for the tall listen layout.
+            // Compact width keeps FoldedPlayer, including the phone path, unchanged.
+            let arrangement = ArrangementPaneLayout.resolve(
+                hasRegularWidth: horizontalSizeClass == .regular,
+                containerWidth: width,
+                containerHeight: Double(height),
+                accessibilityTextSize: typeSize.isAccessibilitySize)
+            if case .unchanged = arrangement {
+                FoldedPlayer(station: currentStation, heading: heading, isTestStation: isTestStation,
+                             content: content, snapshot: snapshot, actions: actions, dj: dj,
+                             search: search, studioSearch: studioSearch, timeSource: timeSource,
+                             artworkNamespace: morphNamespace, speechLevel: studio.dj,
+                             moreMenu: movesMoreIntoThePlayer
+                                ? FoldedMoreMenuItems(reviewCount: dj.reviewCount, onConnections: openConnections)
+                                : nil,
+                             onQueue: openQueue,
+                             onTune: openTune,
+                             onReview: { segment = .connections; showWorkspace = true },
+                             showsUnfoldedRail: showsRail,
+                             onCollapseRail: { duoCollapsed = true },
+                             stationStops: stationStops,
+                             onOpenStation: onOpenStation)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("layout.compact")
+                    .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
+                                   showsMore: !movesMoreIntoThePlayer,
+                                   hidesSystemBack: showsRail,
+                                   onConnections: openConnections,
+                                   systemRail: showsRail ? DuoRailHooks(
+                                        dj: dj, reviewCount: dj.reviewCount, upNext: snapshot.upNext,
+                                        onConnections: openConnections, onQueue: openQueue, onTune: openTune,
+                                        onCollapse: { duoCollapsed = true }, pause: { actions.pause() },
+                                        transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                                        showsTransport: content.showsTransport,
+                                        cancelStart: { actions.cancelStart() },
+                                        resume: { await actions.resume() },
+                                        skip: { await actions.skip() }) : nil,
+                                   keepSystemVerticalBar: placement == .duoHorizontal)
+                    .onChange(of: placement) { _, new in
+                        if new != .duoHorizontal { duoCollapsed = false }
+                    }
+            } else {
+                ArrangementListenPlayer(station: currentStation, heading: heading,
+                                        isTestStation: isTestStation, content: content,
+                                        snapshot: snapshot, actions: actions, dj: dj,
+                                        search: search, timeSource: timeSource,
+                                        decision: arrangement,
+                                        onQueue: { segment = .queue; showWorkspace = true },
+                                        onTune: { segment = .tune; showWorkspace = true },
+                                        onConnections: openConnections)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("layout.compact")
+                    .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
+                                   showsMore: false,
+                                   hidesSystemBack: true,
+                                   onConnections: openConnections)
+            }
         case .studio:
             if let widths = StudioZoneWidths.allocatePanes(containerWidth: width) {
                 StudioLayout(widths: widths, containerHeight: height,
