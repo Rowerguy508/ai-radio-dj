@@ -139,6 +139,17 @@ final class StationQueuePlayer {
             let kind = StationHandOffKind(boundaryHandOff: self.feed.pendingHandOffTrigger)
             return { await self.play(tracks, kind) }
         }
+        // #367 (-Atlas): a Skip never passes the boundary before the last song, where the refill
+        // runs, so a Skip onto the last song left nothing after it and the next Skip stopped the
+        // music. Only a queue this type started (its station's songs, planned by the DJ session)
+        // grows here; a tapped queue keeps today's path.
+        music.stationSongsBeforeSkip = { [weak self] fromIndex in
+            guard let self, self.stationOwnsQueue, let first = self.music.queue.first,
+                  let tracks = self.feed.takeForSkip(from: fromIndex, in: self.music.queue,
+                                                     active: self.station.active,
+                                                     sameSong: { $0.id == $1.id }) else { return }
+            _ = self.appendStationSongs(tracks, after: first)
+        }
         music.stationQueueForIdlePlay = { [weak self] in
             guard let self, let tracks = self.feed.takeForIdleStart(active: self.station.active) else { return nil }
             return { await self.play(tracks, .idlePlayStart) }
