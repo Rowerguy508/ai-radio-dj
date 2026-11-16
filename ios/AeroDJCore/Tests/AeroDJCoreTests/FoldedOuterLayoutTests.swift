@@ -11,7 +11,7 @@ final class FoldedOuterLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(FoldedOuterLayout.playOuterSide, FoldedOuterLayout.transportHeight)
         XCTAssertEqual(FoldedOuterLayout.transportHeight, 80)
         XCTAssertEqual(FoldedOuterLayout.transportRadius, 40)
-        XCTAssertEqual(FoldedOuterLayout.skipSide, 44)
+        XCTAssertEqual(FoldedOuterLayout.skipSide, 52)
     }
 
     func testMockupGuttersAndRadii() {

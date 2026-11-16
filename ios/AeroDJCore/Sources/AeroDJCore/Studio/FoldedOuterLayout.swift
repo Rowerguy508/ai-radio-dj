@@ -31,7 +31,8 @@ public enum FoldedOuterLayout {
     public static let playRingRed: Double = 47 / 255
     public static let playRingGreen: Double = 212 / 255
     public static let playRingBlue: Double = 190 / 255
-    public static let skipSide: Double = 44
+    /// 52, the shipped Skip target (#484 LiquidGlassTransportTests), not the mockup's 44.
+    public static let skipSide: Double = 52
     public static let upNextHeight: Double = 44
     public static let upNextRadius: Double = 22
     public static let statusPillHeight: Double = 28

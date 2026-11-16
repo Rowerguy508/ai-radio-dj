@@ -768,7 +768,8 @@ extension FoldedPlayer {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, inset)
                 .padding(.top, 8)
-                .padding(.bottom, 8)
+                // 16, as compactBody's pinned status: the scrubber's frame starts above its track.
+                .padding(.bottom, 16)
             }
             PlaybackErrorBanner(error: snapshot.error, actions: actions)
                 .padding(.horizontal, inset)
