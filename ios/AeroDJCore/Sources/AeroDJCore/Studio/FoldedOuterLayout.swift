@@ -33,12 +33,64 @@ public enum FoldedOuterLayout {
     public static let playRingBlue: Double = 190 / 255
     /// 52, the shipped Skip target (#484 LiquidGlassTransportTests), not the mockup's 44.
     public static let skipSide: Double = 52
-    public static let upNextHeight: Double = 44
-    public static let upNextRadius: Double = 22
     public static let statusPillHeight: Double = 28
+    /// #537 (owner, build 49: "Too cluttered when closed"): the title and the artist are one
+    /// line each, truncated at the tail. VoiceOver still reads both in full.
+    public static let titleLineLimit = 1
+    public static let artistLineLimit = 1
     /// Height kept for the header, title, DJ line and pinned controls under the art at
     /// default text sizes (accessibility sizes use `FoldedStyle.artReserveAccessibility`).
-    public static let artReserveBelow: Double = 470
+    /// #537 gives the art what the NEXT row (44 + 12) and the Playing-from toolbar
+    /// (52 + 12 + 8) used to take: 470 - 128.
+    public static let artReserveBelow: Double = 342
+    /// The reserve before #537, kept so the tests can show the art only ever grew.
+    public static let artReserveBelowBefore537: Double = 470
+
+    /// Art side at default text sizes: the width less the art insets, capped by the height
+    /// less `artReserveBelow`, then clamped to `minSide...maxSide` (min wins).
+    public static func artSide(containerWidth: Double, containerHeight: Double,
+                               minSide: Double, maxSide: Double,
+                               reserveBelow: Double = artReserveBelow) -> Double {
+        let byWidth = containerWidth - artInset * 2
+        let byHeight = containerHeight - reserveBelow
+        return max(minSide, min(byWidth, byHeight, maxSide))
+    }
+
+    /// What the closed (phone-width) reskin's ⋯ menu adds above Connections (#537): the
+    /// Playing-from row's Queue and Tune, and the rating star from the title row.
+    public enum ClosedMoreItem: String, Equatable, Sendable, CaseIterable {
+        case queue
+        case tune
+        case rating
+    }
+
+    /// Queue always (the Playing-from chip always opened it). Tune only where the toolbar
+    /// showed it (`showsWorkspaceButtons`). Rating only where the star was drawn (a rating
+    /// controller that can rate).
+    public static func closedMoreItems(showsWorkspaceButtons: Bool, canRate: Bool) -> [ClosedMoreItem] {
+        var items: [ClosedMoreItem] = [.queue]
+        if showsWorkspaceButtons { items.append(.tune) }
+        if canRate { items.append(.rating) }
+        return items
+    }
+
+    /// The MIC chip as a badge on the art corner (#537): only while the DJ is live.
+    /// Mic down draws nothing. Accessibility sizes pin ON AIR above the scrubber instead.
+    public static func artBadge(for status: Status, statusPinned: Bool) -> Status? {
+        guard !statusPinned else { return nil }
+        switch status {
+        case .onAir: return status
+        case .micDown: return nil
+        }
+    }
+
+    /// The pinned status pill at accessibility sizes (#537): ON AIR only, never Mic down.
+    public static func pinnedPill(for status: Status) -> Status? {
+        switch status {
+        case .onAir: return status
+        case .micDown: return nil
+        }
+    }
 
     /// Outer diameter of play plus its ring (68 + 6 + 6). Fits in the 80 pt capsule.
     public static var playOuterSide: Double { playSide + playRingWidth * 2 }

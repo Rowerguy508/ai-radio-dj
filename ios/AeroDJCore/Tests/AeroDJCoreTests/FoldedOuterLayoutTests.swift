@@ -18,8 +18,6 @@ final class FoldedOuterLayoutTests: XCTestCase {
         XCTAssertEqual(FoldedOuterLayout.contentInset, 24)
         XCTAssertEqual(FoldedOuterLayout.artInset, 30)
         XCTAssertEqual(FoldedOuterLayout.artRadius, 28)
-        XCTAssertEqual(FoldedOuterLayout.upNextHeight, 44)
-        XCTAssertEqual(FoldedOuterLayout.upNextRadius, 22)
         XCTAssertEqual(FoldedOuterLayout.playRingOpacity, 0.25, accuracy: 0.0001)
     }
 
@@ -136,5 +134,78 @@ final class FoldedOuterLayoutTests: XCTestCase {
         XCTAssertTrue(helper.contains("status(onAirLabel:"))
         XCTAssertFalse(helper.contains("isOnAir ?"),
                        "do not derive the pill from isOnAir; use onAirLabel only")
+    }
+
+    // MARK: #537 declutter (closed reskin only)
+
+    func testTitleAndArtistAreOneLineEach() {
+        XCTAssertEqual(FoldedOuterLayout.titleLineLimit, 1)
+        XCTAssertEqual(FoldedOuterLayout.artistLineLimit, 1)
+    }
+
+    func testFreedSpaceGoesToTheArt() {
+        // The NEXT row (44 + 12) and the Playing-from toolbar (52 + 12 + 8) are gone.
+        XCTAssertEqual(FoldedOuterLayout.artReserveBelowBefore537 - FoldedOuterLayout.artReserveBelow, 128)
+        // Phone and closed-Duo heights that were height-capped: the art never shrinks and
+        // grows wherever the height was the limit.
+        for (width, height) in [(390.0, 763.0), (375.0, 600.0), (390.0, 700.0), (430.0, 840.0), (320.0, 480.0)] {
+            let before = FoldedOuterLayout.artSide(containerWidth: width, containerHeight: height,
+                                                   minSide: 140, maxSide: 420,
+                                                   reserveBelow: FoldedOuterLayout.artReserveBelowBefore537)
+            let after = FoldedOuterLayout.artSide(containerWidth: width, containerHeight: height,
+                                                  minSide: 140, maxSide: 420)
+            XCTAssertGreaterThanOrEqual(after, before, "\(width)x\(height)")
+            XCTAssertLessThanOrEqual(after, width - FoldedOuterLayout.artInset * 2, "art stays inside its insets")
+        }
+        // 390 x 763 (an iPhone under the status bar): 293 pt before, width-capped 330 now.
+        XCTAssertEqual(FoldedOuterLayout.artSide(containerWidth: 390, containerHeight: 763, minSide: 140, maxSide: 420), 330)
+        XCTAssertEqual(FoldedOuterLayout.artSide(containerWidth: 390, containerHeight: 763, minSide: 140, maxSide: 420,
+                                                 reserveBelow: FoldedOuterLayout.artReserveBelowBefore537), 293)
+        // The floor still wins on a tiny container.
+        XCTAssertEqual(FoldedOuterLayout.artSide(containerWidth: 200, containerHeight: 300, minSide: 140, maxSide: 420), 140)
+    }
+
+    func testMicChipIsAnArtBadgeOnlyWhileLive() {
+        XCTAssertEqual(FoldedOuterLayout.artBadge(for: .onAir("On Air"), statusPinned: false), .onAir("On Air"))
+        XCTAssertNil(FoldedOuterLayout.artBadge(for: .micDown, statusPinned: false), "mic down draws no chip")
+        // AX sizes pin ON AIR above the scrubber (testAX5OnAirPinnedAboveScrubber), so no badge too.
+        XCTAssertNil(FoldedOuterLayout.artBadge(for: .onAir("On Air"), statusPinned: true))
+        XCTAssertNil(FoldedOuterLayout.artBadge(for: .micDown, statusPinned: true))
+        XCTAssertEqual(FoldedOuterLayout.pinnedPill(for: .onAir("On Air")), .onAir("On Air"))
+        XCTAssertNil(FoldedOuterLayout.pinnedPill(for: .micDown))
+        for state in [DJStudioState.idle, .ready(includesBriefing: false, seconds: 3)] {
+            XCTAssertNil(FoldedOuterLayout.artBadge(for: FoldedOuterLayout.status(of: state), statusPinned: false), "\(state)")
+        }
+    }
+
+    func testClosedMoreMenuTakesQueueTuneAndTheStar() {
+        XCTAssertEqual(FoldedOuterLayout.closedMoreItems(showsWorkspaceButtons: true, canRate: true), [.queue, .tune, .rating])
+        XCTAssertEqual(FoldedOuterLayout.closedMoreItems(showsWorkspaceButtons: true, canRate: false), [.queue, .tune])
+        XCTAssertEqual(FoldedOuterLayout.closedMoreItems(showsWorkspaceButtons: false, canRate: false), [.queue],
+                       "the Playing-from chip always opened the queue")
+    }
+
+    /// The closed reskin no longer draws the NEXT row, the Playing-from toolbar, the star or the
+    /// Mic down pill; compactBody and the wide bodies keep FoldedToolbar and the rating button.
+    func testClosedReskinSourceDropsTheCutRows() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: iosRoot.appendingPathComponent("AeroDJ/FoldedPlayer.swift"), encoding: .utf8)
+        func slice(from start: String, to end: String) throws -> Substring {
+            let a = try XCTUnwrap(source.range(of: start), start)
+            let b = try XCTUnwrap(source.range(of: end, range: a.upperBound..<source.endIndex), end)
+            return source[a.lowerBound..<b.lowerBound]
+        }
+        let controls = try slice(from: "private func outerControls(pinsStatus: Bool)", to: "private extension View")
+        XCTAssertFalse(controls.contains("FoldedToolbar("), "no Playing-from row when closed")
+        XCTAssertFalse(controls.contains("FoldedOuterUpNext"), "no NEXT row when closed")
+        XCTAssertFalse(source.contains("struct FoldedOuterUpNext"))
+        let titleRow = try slice(from: "private struct FoldedOuterTitleRow", to: "private struct FoldedOuterDJLine")
+        XCTAssertFalse(titleRow.contains("SongRatingButton"), "the star lives in the ⋯ menu")
+        XCTAssertFalse(titleRow.contains("FoldedOuterStatusPill"), "no Mic down chip in the title row")
+        XCTAssertTrue(titleRow.contains("FoldedOuterLayout.titleLineLimit"))
+        // The other bodies are untouched: compactBody's controls still draw the toolbar.
+        let compact = try slice(from: "private func controls(contentInset:", to: "extension FoldedPlayer {")
+        XCTAssertTrue(compact.contains("FoldedToolbar("))
     }
 }
