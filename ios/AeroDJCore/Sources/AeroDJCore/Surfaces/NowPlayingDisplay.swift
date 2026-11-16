@@ -129,6 +129,16 @@ public struct NowPlayingDisplay: Codable, Equatable, Hashable, Sendable {
                                  state: .playing, onAirLabel: onAirLabel, readyLabel: readyLabel)
     }
 
+    /// The one line the stripped lock screen draws. On Air, then the ready line, then the app
+    /// name when the DJ is quiet. Most songs have no break, and an empty card would be a blank
+    /// tinted box on the lock screen and in StandBy. The name is `AppName.display`, already
+    /// published, and it is not stored on the payload.
+    public var lockScreenLine: String {
+        if let onAirLabel { return onAirLabel }
+        if let readyLabel { return readyLabel }
+        return AppName.display
+    }
+
     /// The surfaces' view of the playback snapshot and the DJ state. Reads only the station
     /// name, the current song's title and artist, the transport and `dj.onAirLabel`. The
     /// snapshot's `dj` line, queue, error and artwork URL are deliberately not read.

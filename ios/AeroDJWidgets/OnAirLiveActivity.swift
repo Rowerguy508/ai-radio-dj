@@ -96,15 +96,20 @@ struct LockScreenActivityView: View {
         }
     }
 
-    /// On Air and the ready line only. No title, artist, artwork, station or transport.
+    /// On Air, the ready line, or the app name when the DJ is quiet. No title, artist,
+    /// artwork, station or transport. The name is `lockScreenLine` (`AppName.display`).
     private func djState(_ shown: NowPlayingDisplay) -> some View {
         VStack(alignment: .leading, spacing: CGFloat(LiveActivityLayout.rowSpacing)) {
             if let label = shown.onAirLabel {
                 OnAirTally(label: label)
-            }
-            if let ready = shown.readyLabel {
+            } else if let ready = shown.readyLabel {
                 ReadyCaption(label: ready)
                     .frame(height: CGFloat(LiveActivityLayout.readyLineHeight), alignment: .leading)
+            } else {
+                Text(shown.lockScreenLine)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(height: CGFloat(LiveActivityLayout.headerHeight), alignment: .leading)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

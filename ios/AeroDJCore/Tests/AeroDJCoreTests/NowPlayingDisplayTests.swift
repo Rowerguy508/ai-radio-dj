@@ -291,6 +291,40 @@ final class NowPlayingDisplayTests: XCTestCase {
         XCTAssertFalse(stopped.systemNowPlayingOwnsLockScreen)
     }
 
+    /// Most songs have no break. The stripped card still has a line, the app name, and still
+    /// carries no track. On Air and Ready keep their own copy.
+    func testQuietDJShowsTheAppNameOnTheStrippedLockScreen() throws {
+        let quiet: [DJStudioState] = [
+            .idle, .preparing(includesBriefing: true),
+            .failed(.voiceFailed), .failed(.budgetReached),
+            .failed(.consentReviewRequired(pendingCount: 2)),
+        ]
+        for dj in quiet {
+            for transport in [TransportState.playing, .paused] {
+                let display = NowPlayingDisplay.make(snapshot: snapshot(transport), dj: dj)
+                let card = display.lockScreenPresentation
+                XCTAssertTrue(display.systemNowPlayingOwnsLockScreen, "\(dj) \(transport)")
+                XCTAssertNil(card.onAirLabel, "\(dj) \(transport)")
+                XCTAssertNil(card.readyLabel, "\(dj) \(transport)")
+                XCTAssertNil(card.track, "\(dj) \(transport)")
+                XCTAssertNil(card.artist, "\(dj) \(transport)")
+                XCTAssertNil(card.art, "\(dj) \(transport)")
+                XCTAssertNil(card.station, "\(dj) \(transport)")
+                XCTAssertNil(card.state.caption, "\(dj) \(transport)")
+                XCTAssertEqual(card.lockScreenLine, AppName.display, "\(dj) \(transport)")
+                XCTAssertEqual(display.lockScreenLine, AppName.display, "\(dj) \(transport)")
+                let text = String(decoding: try JSONEncoder().encode(card), as: UTF8.self)
+                XCTAssertFalse(text.contains("Tidewater"), "\(dj) \(transport)")
+                XCTAssertFalse(text.contains("Lumen Harbor"), "\(dj) \(transport)")
+                XCTAssertEqual(Set(try jsonObject(card).keys).subtracting(["state"]), [])
+            }
+        }
+        let speaking = NowPlayingDisplay.make(snapshot: snapshot(), dj: .speaking(includesBriefing: false))
+        XCTAssertEqual(speaking.lockScreenPresentation.lockScreenLine, "On Air")
+        let ready = NowPlayingDisplay.make(snapshot: snapshot(), dj: .ready(includesBriefing: false, seconds: 30))
+        XCTAssertEqual(ready.lockScreenPresentation.lockScreenLine, NowPlayingDisplay.readyLineCopy)
+    }
+
     func testReconcilerUpdatesEveryActivityOnTrackChange() {
         let first = song("Tidewater")
         let next = song("Paper Satellites")
