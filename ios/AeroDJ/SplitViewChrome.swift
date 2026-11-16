@@ -57,12 +57,14 @@ struct SplitBarHost<Content: View>: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.splitMeasure) private var measure
     @State private var insets: SplitInsets?
+    @State private var publishedMeasure: SplitMeasure?
     @State private var reading = SplitReading(width: 0, height: 0, leading: 0, trailing: 0)
 
     var body: some View {
         Group {
             if let insets {
                 padded(content(insets), insets)
+                    .environment(\.splitMeasure, publishedMeasure ?? measure)
                     .overlay(alignment: .top) {
                         SplitDecisionMark(text: SplitViewLayout.Chrome(
                             span: insets.span, barEdge: insets.barEdge,
@@ -126,7 +128,10 @@ struct SplitBarHost<Content: View>: View {
             measuredLeading: lead, measuredTrailing: trail,
             appliedLeading: appliedLeading, appliedTrailing: appliedTrailing,
             barEdge: chrome.barEdge, span: chrome.span) : nil
+        let published: SplitMeasure? = next == nil ? nil : SplitMeasure(
+            containerWidth: width, containerHeight: height, leading: lead, trailing: trail)
         if next != insets { insets = next }
+        if publishedMeasure != published { publishedMeasure = published }
     }
 }
 

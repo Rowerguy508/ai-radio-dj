@@ -129,25 +129,31 @@ struct FoldedPlayer: View {
         .environment(\.onSlab, true)
     }
 
-    /// Split host: placement and the measured frame are the container. The backdrop
-    /// may ignore the safe area, and the frame after it is what gets measured.
-    private func splitMeasured(_ size: CGSize) -> some View {
-        laidOut(in: size)
-            .frame(width: size.width, height: size.height)
-            .background {
-                FoldedBackdrop(track: heroTrack, station: station)
-                    .ignoresSafeArea()
-                    .accessibilityHidden(true)
-            }
-            .frame(width: size.width, height: size.height)
-            .environment(\.colorScheme, .dark)
-            .environment(\.onSlab, true)
+    /// Split host. Placement uses the full container, so 540×760 stays the Duo rail.
+    /// The reader under the navigation bar is shorter, and that is the height that
+    /// is drawn, so the bottom controls stay inside the container. The backdrop's
+    /// safe-area ignore is only the background layer.
+    private func splitMeasured(_ container: CGSize) -> some View {
+        GeometryReader { geo in
+            let shortfall = max(0, container.height - geo.size.height)
+            let fitted = CGSize(width: container.width, height: max(0, container.height - shortfall))
+            laidOut(in: fitted, placement: container)
+                .frame(width: fitted.width, height: fitted.height, alignment: .top)
+        }
+        .background {
+            FoldedBackdrop(track: heroTrack, station: station)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+        }
+        .environment(\.colorScheme, .dark)
+        .environment(\.onSlab, true)
     }
 
     @ViewBuilder
-    private func laidOut(in size: CGSize) -> some View {
-        switch FoldedColumnLayout.controlPlacement(containerWidth: Double(size.width),
-                                                   containerHeight: Double(size.height)) {
+    private func laidOut(in size: CGSize, placement: CGSize? = nil) -> some View {
+        let decision = placement ?? size
+        switch FoldedColumnLayout.controlPlacement(containerWidth: Double(decision.width),
+                                                   containerHeight: Double(decision.height)) {
         case .phoneBottom:
             compactBody(in: size)
         case .centredColumn:
