@@ -92,24 +92,29 @@ struct SurfaceChange: Sendable {
     let appInForeground: Bool
 }
 
-/// The background side. Runs in one detached task, so App Group writes and ActivityKit calls
-/// happen in order and never on the main actor. Activities are looked up by type each time
-/// rather than stored, so no ActivityKit object crosses an isolation boundary.
+/// The background side. Runs in one detached task, so App Group writes happen in order and
+/// never on the playback path. ActivityKit is read and updated on the main actor, by id,
+/// for every running activity. Activity objects are not stored across that hop.
 enum NowPlayingSurfaceWorker {
     /// Messages are fixed strings plus an error's type name: never an activity ID, push token,
     /// station or song, and never a transaction ID, JWS or appAccountToken.
     private static let log = Logger(subsystem: "com.aerodj.app", category: "surfaces")
 
     static func run(_ changes: AsyncStream<SurfaceChange>) async {
-        await endAll()
+        // #539: a previous launch can leave an activity on the old song. End those before
+        // the first display is applied, then let the stream start or update one.
+        await perform(LiveActivityReconciler.startupCommands(running: await currentRecords()))
         var widgetShown: NowPlayingDisplay?
-        var activityShown: NowPlayingDisplay?
         for await change in changes {
             if NowPlayingDisplayStore.needsWidgetReload(from: widgetShown, to: change.display) {
                 writeWidget(change.display)
                 widgetShown = change.display
             }
-            activityShown = await applyLiveActivity(change, previous: activityShown)
+            let running = await currentRecords()
+            let commands = LiveActivityReconciler.commands(display: change.display, running: running,
+                                                           appInForeground: change.appInForeground,
+                                                           activitiesEnabled: await activitiesEnabled())
+            await perform(commands)
         }
     }
 
@@ -123,41 +128,42 @@ enum NowPlayingSurfaceWorker {
         WidgetCenter.shared.reloadTimelines(ofKind: NowPlayingDisplayStore.widgetKind)
     }
 
-    /// Returns what the running activity now shows (nil when none is running).
-    private static func applyLiveActivity(_ change: SurfaceChange,
-                                          previous: NowPlayingDisplay?) async -> NowPlayingDisplay? {
-        let current = Activity<OnAirlyActivityAttributes>.activities.first
-        let action = LiveActivityPlan.action(for: change.display, previous: current == nil ? nil : previous,
-                                             isActive: current != nil,
-                                             appInForeground: change.appInForeground,
-                                             activitiesEnabled: ActivityAuthorizationInfo().areActivitiesEnabled)
-        switch action {
-        case .none:
-            return current == nil ? nil : previous
-        case .start(let display):
-            do {
-                _ = try Activity<OnAirlyActivityAttributes>.request(
-                    attributes: OnAirlyActivityAttributes(),
-                    content: ActivityContent(state: display, staleDate: nil),
-                    pushType: nil)
-                return display
-            } catch {
-                log.notice("live activity not started: \(String(describing: type(of: error)), privacy: .public)")
-                return nil
-            }
-        case .update(let display):
-            await current?.update(ActivityContent(state: display, staleDate: nil))
-            return display
-        case .end:
-            await endAll()
-            return nil
+    @MainActor
+    private static func currentRecords() -> [LiveActivityRecord] {
+        Activity<OnAirlyActivityAttributes>.activities.map { activity in
+            LiveActivityRecord(id: activity.id, content: activity.content.state)
         }
     }
 
-    /// Ends every OnAirly activity, including one left over from an earlier launch.
-    private static func endAll() async {
-        for activity in Activity<OnAirlyActivityAttributes>.activities {
-            await activity.end(nil, dismissalPolicy: .immediate)
+    @MainActor
+    private static func activitiesEnabled() -> Bool {
+        ActivityAuthorizationInfo().areActivitiesEnabled
+    }
+
+    /// Applies every command. Updates run before ends, matching `LiveActivityReconciler`,
+    /// so a duplicate still drops the old song if its end does not land.
+    @MainActor
+    private static func perform(_ commands: [LiveActivityCommand]) async {
+        for command in commands {
+            switch command {
+            case .start(let display):
+                do {
+                    _ = try Activity<OnAirlyActivityAttributes>.request(
+                        attributes: OnAirlyActivityAttributes(),
+                        content: ActivityContent(state: display, staleDate: nil),
+                        pushType: nil)
+                } catch {
+                    log.notice("live activity not started: \(String(describing: type(of: error)), privacy: .public)")
+                }
+            case .update(let id, let display):
+                for activity in Activity<OnAirlyActivityAttributes>.activities where activity.id == id {
+                    await activity.update(ActivityContent(state: display, staleDate: nil))
+                }
+            case .end(let id):
+                for activity in Activity<OnAirlyActivityAttributes>.activities where activity.id == id {
+                    await activity.end(nil, dismissalPolicy: .immediate)
+                }
+            }
         }
     }
 }
