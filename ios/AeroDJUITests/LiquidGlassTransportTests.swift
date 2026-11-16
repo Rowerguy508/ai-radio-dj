@@ -69,9 +69,16 @@ final class LiquidGlassTransportTests: XCTestCase {
         if tune.exists {
             XCTAssertTrue(tune.isHittable, "Tune not hittable (\(mode.rawValue))")
         }
-        // The glass circles must not grow the 52 pt / 68 pt targets.
-        XCTAssertEqual(play.frame.width, 68, accuracy: 1, "Play/Pause size (\(mode.rawValue))")
-        XCTAssertEqual(app.buttons["transport.skip"].frame.width, 52, accuracy: 1, "Skip size (\(mode.rawValue))")
+        let skipWidth = app.buttons["transport.skip"].frame.width
+        if app.descendants(matching: .any)["folded.closedRail"].exists {
+            // Closed rail: compact 44 pt targets; never below the 44 pt minimum.
+            XCTAssertGreaterThanOrEqual(play.frame.width, 44 - 0.01, "Play/Pause size on rail (\(mode.rawValue))")
+            XCTAssertGreaterThanOrEqual(skipWidth, 44 - 0.01, "Skip size on rail (\(mode.rawValue))")
+        } else {
+            // The glass circles must not grow the 52 pt / 68 pt targets.
+            XCTAssertEqual(play.frame.width, 68, accuracy: 1, "Play/Pause size (\(mode.rawValue))")
+            XCTAssertEqual(skipWidth, 52, accuracy: 1, "Skip size (\(mode.rawValue))")
+        }
         save(app, "glass-\(mode.rawValue)")
     }
 

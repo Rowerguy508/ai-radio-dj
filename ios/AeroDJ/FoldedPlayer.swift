@@ -672,40 +672,67 @@ extension FoldedPlayer {
         let accessibilityText = typeSize.isAccessibilitySize
         let art = outerArtSide(in: size)
         return VStack(spacing: 0) {
-            FoldedOuterHeader(heading: heading, moreMenu: moreMenu, dismiss: { dismiss() })
+            FoldedOuterHeader(heading: heading, moreMenu: moreMenu, closedItems: closedMoreItems,
+                              dismiss: { dismiss() })
                 .padding(.horizontal, inset)
                 .padding(.top, 8)
-            if accessibilityText {
-                ViewThatFits(in: .vertical) {
-                    outerUpper(artSide: art, includesArt: true, pinsStatus: true)
-                    outerUpper(artSide: art, includesArt: false, pinsStatus: true)
-                    outerUpperScroll(artSide: art, showsIndicators: true, pinsStatus: true)
+            // #537: the column on the leading side, the transport rail on the trailing side.
+            HStack(alignment: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    if accessibilityText {
+                        ViewThatFits(in: .vertical) {
+                            outerUpper(artSide: art, includesArt: true, pinsStatus: true)
+                            outerUpper(artSide: art, includesArt: false, pinsStatus: true)
+                            outerUpperScroll(artSide: art, showsIndicators: true, pinsStatus: true)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    } else {
+                        outerUpperScroll(artSide: art, showsIndicators: false, pinsStatus: false)
+                    }
+                    // At accessibility sizes the controls keep their full height, so the pinned
+                    // ON AIR pill stays above the scrubber. The upper area shrinks or scrolls.
+                    outerControls(pinsStatus: accessibilityText)
+                        .fixedSize(horizontal: false, vertical: accessibilityText)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            } else {
-                outerUpperScroll(artSide: art, showsIndicators: false, pinsStatus: false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ClosedVerticalRail(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                                   showsTransport: content.showsTransport,
+                                   pause: { actions.pause() },
+                                   cancelStart: { actions.cancelStart() },
+                                   resume: { await actions.resume() },
+                                   skip: { await actions.skip() })
+                    .padding(.trailing, CGFloat(FoldedOuterLayout.closedRailEdgeInset))
+                    .padding(.bottom, 16)
             }
-            // At accessibility sizes the controls keep their full height, so the pinned
-            // ON AIR pill stays above the scrubber. The upper area shrinks or scrolls.
-            outerControls(pinsStatus: accessibilityText)
-                .fixedSize(horizontal: false, vertical: accessibilityText)
         }
         .frame(width: size.width, height: size.height)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folded.outer")
     }
 
-    /// Art for the reskin: the width less its 30 pt insets, capped by height like `artSide(in:)`
-    /// so the title, the DJ line and the pinned controls fit. At accessibility sizes it uses
-    /// compactBody's #310 floor and reserve.
+    /// Art for the reskin: the column beside the closed rail less its insets, capped by height
+    /// like `artSide(in:)` so the title, the DJ line and the pinned controls fit. At
+    /// accessibility sizes it uses compactBody's #310 floor and reserve.
     private func outerArtSide(in size: CGSize) -> CGFloat {
-        let byWidth = size.width - CGFloat(FoldedOuterLayout.artInset) * 2
+        let byWidth = CGFloat(FoldedOuterLayout.columnWidthBesideRail(containerWidth: Double(size.width))
+                              - FoldedOuterLayout.artInsetBesideRail * 2)
         if typeSize.isAccessibilitySize {
             let byHeight = size.height - FoldedStyle.artReserveAccessibility
             return max(FoldedStyle.artMinSideAccessibility, min(byWidth, byHeight, FoldedStyle.artMaxSide))
         }
-        let byHeight = size.height - CGFloat(FoldedOuterLayout.artReserveBelow)
-        return max(FoldedStyle.artMinSide, min(byWidth, byHeight, FoldedStyle.artMaxSide))
+        // #537: the freed rows go to the art; the trailing rail takes its width.
+        return CGFloat(FoldedOuterLayout.artSideBesideRail(containerWidth: Double(size.width),
+                                                 containerHeight: Double(size.height),
+                                                 minSide: Double(FoldedStyle.artMinSide),
+                                                 maxSide: Double(FoldedStyle.artMaxSide)))
+    }
+
+    /// #537: what the closed ⋯ menu adds (Queue, Tune, the star). Queue and Tune keep their
+    /// ids and actions; the star is the same rating controller the title row used.
+    private var closedMoreItems: FoldedClosedMoreItems {
+        FoldedClosedMoreItems(track: heroTrack, upNext: snapshot.upNext,
+                              showsWorkspaceButtons: showsWorkspaceButtons,
+                              onQueue: onQueue, onTune: onTune)
     }
 
     /// Art, title row and (default sizes) the quiet DJ line. `pinsStatus`: the status pill and
@@ -719,12 +746,19 @@ extension FoldedPlayer {
                                   isOnAir: dj.state.onAirLabel != nil,
                                   side: artSide, namespace: artworkNamespace, speechLevel: speechLevel,
                                   cornerRadius: CGFloat(FoldedOuterLayout.artRadius))
+                        // #537: the MIC chip is a badge on the art corner, only while live.
+                        .overlay(alignment: .topLeading) {
+                            if let badge = FoldedOuterLayout.artBadge(for: FoldedOuterLayout.status(of: dj.state),
+                                                                      statusPinned: pinsStatus) {
+                                FoldedOuterStatusPill(status: badge)
+                                    .padding(12)
+                            }
+                        }
                         .padding(.top, 12)
-                        .padding(.horizontal, CGFloat(FoldedOuterLayout.artInset))
+                        .padding(.horizontal, CGFloat(FoldedOuterLayout.artInsetBesideRail))
                 }
                 FoldedOuterTitleRow(track: track, isTestStation: isTestStation,
-                                    status: FoldedOuterLayout.status(of: dj.state),
-                                    showsPill: !pinsStatus)
+                                    statusPinned: pinsStatus)
                     .padding(.horizontal, inset)
                     .padding(.top, includesArt ? 16 : 8)
                 if !pinsStatus {
@@ -732,6 +766,14 @@ extension FoldedPlayer {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, inset)
                         .padding(.top, 12)
+                    // #545: the voice-unavailable caption stays with the DJ line, above the
+                    // rail's Play/Pause, so VoiceOver reads it before the transport.
+                    if showsCaptionInUpper(pinsStatus: pinsStatus) {
+                        PlaybackErrorBanner(error: snapshot.error, actions: actions)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, inset)
+                            .padding(.top, 8)
+                    }
                 }
             }
         }
@@ -769,6 +811,14 @@ extension FoldedPlayer {
         .modifier(ContinuityScrollerID(enabled: continuityProbe))
     }
 
+    /// #545: at default sizes a caption-style error (speechFailed) is drawn under the DJ line
+    /// in the upper part, not in the pinned controls, which now sit level with the rail's
+    /// Play/Pause. Banners (with Retry / Dismiss) stay above the scrubber.
+    private func showsCaptionInUpper(pinsStatus: Bool) -> Bool {
+        guard !pinsStatus, heroTrack != nil, let p = PlaybackErrorPresentation(snapshot.error) else { return false }
+        return p.style == .caption
+    }
+
     /// Pinned under the upper part. `pinsStatus` (accessibility sizes): the status pill and the
     /// quiet DJ line sit here, above the scrubber, so ON AIR is on screen without scrolling.
     private func outerControls(pinsStatus: Bool) -> some View {
@@ -776,7 +826,10 @@ extension FoldedPlayer {
         return VStack(spacing: 0) {
             if pinsStatus {
                 VStack(alignment: .leading, spacing: 8) {
-                    FoldedOuterStatusPill(status: FoldedOuterLayout.status(of: dj.state))
+                    // #537: ON AIR only; Mic down draws no chip.
+                    if let pill = FoldedOuterLayout.pinnedPill(for: FoldedOuterLayout.status(of: dj.state)) {
+                        FoldedOuterStatusPill(status: pill)
+                    }
                     FoldedOuterDJLine(dj: dj)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -785,8 +838,10 @@ extension FoldedPlayer {
                 // 16, as compactBody's pinned status: the scrubber's frame starts above its track.
                 .padding(.bottom, 16)
             }
-            PlaybackErrorBanner(error: snapshot.error, actions: actions)
-                .padding(.horizontal, inset)
+            if !showsCaptionInUpper(pinsStatus: pinsStatus) {
+                PlaybackErrorBanner(error: snapshot.error, actions: actions)
+                    .padding(.horizontal, inset)
+            }
             if showsProgress, let timeSource {
                 PlaybackScrubber(time: timeSource, transport: snapshot.transport,
                                  trackID: snapshot.nowPlaying?.id,
@@ -795,25 +850,11 @@ extension FoldedPlayer {
                                  isDJSpeaking: dj.state.onAirLabel != nil)
                     .padding(.horizontal, inset)
             }
-            if content.showsTransport {
-                FoldedOuterTransport(transport: snapshot.transport,
-                                     startTimedOut: snapshot.startTimedOut,
-                                     actions: actions)
-                    .padding(.horizontal, inset)
-                    .padding(.top, 8)
-            }
-            if let next = snapshot.upNext.first {
-                FoldedOuterUpNext(track: next, onOpen: onQueue)
-                    .padding(.horizontal, inset)
-                    .padding(.top, 12)
-            }
-            FoldedToolbar(heading: heading, upNext: snapshot.upNext,
-                          showsWorkspaceButtons: showsWorkspaceButtons,
-                          onQueue: onQueue, onTune: onTune)
-                .padding(.horizontal, inset)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+            // #537: Play/Pause and Skip are on the trailing rail (`ClosedVerticalRail`).
+            // #537: no NEXT row and no Playing-from row when closed. Their Queue and Tune
+            // actions are in the header's ⋯ menu (`FoldedClosedMoreItems`).
         }
+        .padding(.bottom, 16)
     }
 }
 
@@ -833,6 +874,8 @@ private extension View {
 private struct FoldedOuterHeader: View {
     let heading: StationHeading
     let moreMenu: FoldedMoreMenuItems?
+    /// #537: Queue, Tune and the star, moved here from the removed rows.
+    let closedItems: FoldedClosedMoreItems
     let dismiss: () -> Void
     @ScaledMetric(relativeTo: .headline) private var stationNameSize: CGFloat = 17
 
@@ -865,9 +908,12 @@ private struct FoldedOuterHeader: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Station, \(heading.header.name)")
             .accessibilityAddTraits(.isHeader)
+            // #537: the header names the station now that the Playing-from chip is gone.
+            .accessibilityIdentifier("station.title")
             Spacer(minLength: 0)
             if let moreMenu {
-                FoldedMoreMenu(reviewCount: moreMenu.reviewCount, onConnections: moreMenu.onConnections)
+                FoldedMoreMenu(reviewCount: moreMenu.reviewCount, onConnections: moreMenu.onConnections,
+                               closedItems: closedItems)
             } else {
                 Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
             }
@@ -876,51 +922,42 @@ private struct FoldedOuterHeader: View {
     }
 }
 
-/// Large title, artist, and the On Air / Mic down pill. On Air uses the state's label only.
+/// #537: one-line title and one-line artist. The On Air chip is an art badge and the star
+/// is in the ⋯ menu, so neither is drawn here.
 private struct FoldedOuterTitleRow: View {
     let track: TrackInfo
     let isTestStation: Bool
-    let status: FoldedOuterLayout.Status
-    /// False at accessibility sizes: the pill is pinned above the scrubber instead.
-    var showsPill = true
-    @Environment(\.songRating) private var songRating
+    /// True at accessibility sizes: ON AIR is pinned above the scrubber, so the tag leads.
+    var statusPinned = false
     @ScaledMetric(relativeTo: .largeTitle) private var titleSize = CGFloat(FoldedOuterLayout.titlePointSize)
     @ScaledMetric(relativeTo: .subheadline) private var artistSize = CGFloat(FoldedOuterLayout.artistPointSize)
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 6) {
-                // Accessibility sizes (pill pinned in the controls): the tag leads the row, so it
-                // stays on screen above ON AIR when a long AX5 title pushes the rest out of view.
-                if isTestStation, !showsPill {
-                    FoldedTestStationTag().padding(.bottom, 2)
-                }
-                Text(track.title)
-                    .font(.system(size: titleSize, weight: .heavy))
-                    .tracking(-0.6)
-                    .foregroundStyle(.white)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(track.artistName)
-                    .font(.system(size: artistSize, weight: .semibold))
-                    .foregroundStyle(FoldedStyle.secondaryInk)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                if isTestStation, showsPill {
-                    FoldedTestStationTag().padding(.top, 2)
-                }
+        VStack(alignment: .leading, spacing: 6) {
+            // Accessibility sizes (pill pinned in the controls): the tag leads the row, so it
+            // stays on screen above ON AIR when a long AX5 title pushes the rest out of view.
+            if isTestStation, statusPinned {
+                FoldedTestStationTag().padding(.bottom, 2)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(track.title), \(track.artistName)")
-            .accessibilityAddTraits(.isHeader)
-            if showsPill {
-                FoldedOuterStatusPill(status: status)
-            }
-            if let songRating, songRating.isAvailable {
-                SongRatingButton(controller: songRating, track: track, ink: FoldedStyle.secondaryInk)
+            Text(track.title)
+                .font(.system(size: titleSize, weight: .heavy))
+                .tracking(-0.6)
+                .foregroundStyle(.white)
+                .lineLimit(FoldedOuterLayout.titleLineLimit)
+                .truncationMode(.tail)
+            Text(track.artistName)
+                .font(.system(size: artistSize, weight: .semibold))
+                .foregroundStyle(FoldedStyle.secondaryInk)
+                .lineLimit(FoldedOuterLayout.artistLineLimit)
+                .truncationMode(.tail)
+            if isTestStation, !statusPinned {
+                FoldedTestStationTag().padding(.top, 2)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(track.title), \(track.artistName)")
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -1024,146 +1061,6 @@ private struct FoldedOuterStatusPill: View {
                 ], center: .center, startRadius: 0, endRadius: 6))
                 .frame(width: 12, height: 12)
         }
-    }
-}
-
-/// Glass transport capsule: Skip on the right, Play in the centre with the deferred tinted
-/// ring. No Previous (`PlaybackActions` has none). Tap policy is the shared one.
-private struct FoldedOuterTransport: View {
-    let transport: TransportState
-    var startTimedOut: Bool = false
-    let actions: PlaybackActions
-    @State private var taps = 0
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-
-    private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
-    /// Skip's opaque circle with Reduce Transparency or Increase Contrast. The capsule sits on
-    /// the slab, so this is the slab fill #484's transport uses under light ink.
-    private var solidControlFill: Color { AeroDJPalette.slab }
-    private var face: TransportButtonFace {
-        TransportTapPolicy.face(transport: transport, startTimedOut: startTimedOut)
-    }
-    private var ring: Color {
-        Color(red: FoldedOuterLayout.playRingRed,
-              green: FoldedOuterLayout.playRingGreen,
-              blue: FoldedOuterLayout.playRingBlue)
-        .opacity(FoldedOuterLayout.playRingOpacity)
-    }
-
-    var body: some View {
-        // #484 item 9: play and skip share one glass family, like the iPhone transport row.
-        AeroGlassGroup(spacing: 0) { row }
-            .frame(height: CGFloat(FoldedOuterLayout.transportHeight))
-            .foldedGlass(Capsule(), role: .control)
-            .clipShape(Capsule())
-            .buttonStyle(.plain)
-            .sensoryFeedback(.impact(weight: .light), trigger: taps)
-            // .contain first: an identifier on a plain stack is copied onto every child,
-            // which replaced transport.playPause and transport.skip with this id.
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("folded.outer.transport")
-    }
-
-    private var row: some View {
-        HStack(spacing: 0) {
-            Color.clear
-                .frame(width: CGFloat(FoldedOuterLayout.skipSide),
-                       height: CGFloat(FoldedOuterLayout.skipSide))
-                .frame(maxWidth: .infinity)
-                .accessibilityHidden(true)
-            Button {
-                switch TransportTapPolicy.decide(transport: transport, startTimedOut: startTimedOut) {
-                case .ignore: break
-                case .cancelStart:
-                    taps += 1
-                    actions.cancelStart()
-                case .pause:
-                    taps += 1
-                    actions.pause()
-                case .play:
-                    taps += 1
-                    Task { await actions.resume() }
-                }
-            } label: {
-                Group {
-                    if let systemImage = face.systemImage {
-                        Label(face.accessibilityLabel, systemImage: systemImage)
-                            .labelStyle(.iconOnly)
-                    } else {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .tint(AeroDJPalette.onMediaInk)
-                            .accessibilityLabel(face.accessibilityLabel)
-                    }
-                }
-                .font(.system(size: 28, weight: .bold))
-                .foregroundStyle(AeroDJPalette.onMediaInk)
-                .frame(width: CGFloat(FoldedOuterLayout.playSide),
-                       height: CGFloat(FoldedOuterLayout.playSide))
-                .aeroGlassControl(.primary, tint: AeroDJPalette.onMediaLight)
-                .overlay {
-                    Circle()
-                        .strokeBorder(ring, lineWidth: CGFloat(FoldedOuterLayout.playRingWidth))
-                        .frame(width: CGFloat(FoldedOuterLayout.playOuterSide),
-                               height: CGFloat(FoldedOuterLayout.playOuterSide))
-                }
-                .contentShape(Circle())
-                .modifier(SymbolReplace(enabled: !reduceMotion))
-            }
-            .accessibilityLabel(face.accessibilityLabel)
-            .accessibilityRemoveTraits(face.isActionable ? [] : .isButton)
-            .accessibilityIdentifier("transport.playPause")
-            Button {
-                taps += 1
-                Task { await actions.skip() }
-            } label: {
-                Label("Skip", systemImage: "forward.fill")
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: CGFloat(FoldedOuterLayout.skipSide),
-                           height: CGFloat(FoldedOuterLayout.skipSide))
-                    .aeroGlassControl(.secondary, solidFill: solidControlFill)
-                    .contentShape(Circle())
-            }
-            .frame(maxWidth: .infinity)
-            .accessibilityIdentifier("transport.skip")
-        }
-    }
-}
-
-/// Solid up-next pill. Opens the queue, same as the current chip.
-private struct FoldedOuterUpNext: View {
-    let track: TrackInfo
-    let onOpen: () -> Void
-
-    var body: some View {
-        Button(action: onOpen) {
-            HStack(spacing: 10) {
-                ArtworkView(track: track, size: 30)
-                Text("Next")
-                    .font(.system(size: 9, weight: .bold))
-                    .tracking(0.8)
-                    .textCase(.uppercase)
-                    .foregroundStyle(FoldedStyle.tertiaryInk)
-                Text(track.title)
-                    .font(.system(size: 13, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(track.artistName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(FoldedStyle.secondaryInk)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: CGFloat(FoldedOuterLayout.upNextHeight))
-            .background(Color(red: 17 / 255, green: 21 / 255, blue: 28 / 255),
-                        in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Up next: \(track.title) by \(track.artistName)")
-        .accessibilityIdentifier("folded.outer.upNext")
     }
 }
 
@@ -1840,6 +1737,15 @@ struct FoldedMoreMenuItems {
     let onConnections: () -> Void
 }
 
+/// #537: the closed reskin's extra ⋯ rows. Every other ⋯ passes nil and is unchanged.
+struct FoldedClosedMoreItems {
+    let track: TrackInfo?
+    let upNext: [TrackInfo]
+    let showsWorkspaceButtons: Bool
+    let onQueue: () -> Void
+    let onTune: () -> Void
+}
+
 private struct FoldedMoreMenu: View {
     let reviewCount: Int?
     let onConnections: () -> Void
@@ -1847,6 +1753,10 @@ private struct FoldedMoreMenu: View {
     /// stays on the menu. A split navigation bar sets it: the system bar item was
     /// copying the menu's identifier onto an Other and the Button.
     var identifierOnButton = false
+    /// #537: Queue, Tune and the star from the closed reskin's removed rows. Nil elsewhere.
+    var closedItems: FoldedClosedMoreItems? = nil
+    @Environment(\.songRating) private var songRating
+    @State private var confirmingClearStation = false
 
     private var moreLabel: String {
         reviewCount.map { $0 > 0 ? "More, \($0) to review" : "More" } ?? "More"
@@ -1865,6 +1775,10 @@ private struct FoldedMoreMenu: View {
 
     private func menu(identifierOnLabel: Bool) -> some View {
         Menu {
+            if let closedItems {
+                closedRows(closedItems)
+                Divider()
+            }
             Button(action: onConnections) {
                 Label("Connections", systemImage: "link")
             }
@@ -1891,6 +1805,73 @@ private struct FoldedMoreMenu: View {
                 .contentShape(Circle())
                 .modifier(FoldedMoreButtonIdentifier(enabled: identifierOnLabel))
         }
+        .confirmationDialog(SongRatingPresentation.clearStationTitle, isPresented: $confirmingClearStation,
+                            titleVisibility: .visible) {
+            if let songRating {
+                Button(SongRatingPresentation.clearStationTitle, role: .destructive) {
+                    Task { await songRating.clearStation() }
+                }
+            }
+        }
+    }
+
+    /// Same ids and actions the removed rows had: `queue.affordance` (the Playing-from chip and
+    /// the Queue button both opened the queue), `transport.tune`, and `nowPlaying.rating`.
+    @ViewBuilder
+    private func closedRows(_ items: FoldedClosedMoreItems) -> some View {
+        let rating = items.track.flatMap { track in songRating.map { (track, $0) } }
+        let available = FoldedOuterLayout.closedMoreItems(
+            showsWorkspaceButtons: items.showsWorkspaceButtons,
+            canRate: rating.map { $0.1.isAvailable } ?? false)
+        ForEach(available, id: \.self) { item in
+            switch item {
+            case .queue:
+                Button(action: items.onQueue) {
+                    Label("Queue", systemImage: "list.bullet")
+                }
+                .accessibilityLabel(items.upNext.first.map { "Queue. Up next: \($0.title) by \($0.artistName)" }
+                                    ?? "Queue. Up next: nothing queued")
+                .accessibilityIdentifier("queue.affordance")
+            case .tune:
+                Button(action: items.onTune) {
+                    Label("Tune station", systemImage: "slider.horizontal.3")
+                }
+                .accessibilityIdentifier("transport.tune")
+            case .rating:
+                if case let (track, controller)? = rating {
+                    ratingMenu(track: track, controller: controller)
+                }
+            }
+        }
+    }
+
+    /// The star's menu, nested in ⋯ (#537). Same rows as `SongRatingButton`.
+    private func ratingMenu(track: TrackInfo, controller: SongRatingController) -> some View {
+        let current = controller.rating(for: track.id)
+        return Menu {
+            ForEach(SongRatingPresentation.menuOrder, id: \.self) { level in
+                Button(role: level == .never ? .destructive : nil) {
+                    Task { await controller.rate(level, songID: track.id, artistName: track.artistName) }
+                } label: {
+                    Label(SongRatingPresentation.title(level), systemImage: SongRatingPresentation.symbol(level))
+                }
+                .accessibilityAddTraits(current == level ? .isSelected : [])
+            }
+            if current != nil {
+                Button {
+                    Task { await controller.clearRating(songID: track.id) }
+                } label: {
+                    Label(SongRatingPresentation.clearTitle, systemImage: SongRatingPresentation.clearSymbol)
+                }
+            }
+            Divider()
+            Button(SongRatingPresentation.clearStationTitle, role: .destructive) { confirmingClearStation = true }
+        } label: {
+            // The visible row is the VoiceOver label ("Rate song, current: …"), so the
+            // current rating reads the same with and without VoiceOver.
+            Label(SongRatingPresentation.accessibilityLabel(current), systemImage: SongRatingPresentation.symbol(current))
+        }
+        .accessibilityIdentifier("nowPlaying.rating")
     }
 }
 

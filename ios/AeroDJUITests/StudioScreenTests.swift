@@ -114,12 +114,55 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(app.buttons["transport.skip"].isHittable)
         // Nothing is speaking, so nothing may say On Air.
         XCTAssertFalse(shows(app, "On Air"))
+        // #537 declutter: the closed player has no NEXT row, no Playing-from row (its Queue and
+        // Tune moved into ⋯), and no Mic down chip (the MIC chip shows only while the DJ is live).
+        let any = app.descendants(matching: .any)
+        XCTAssertFalse(any["folded.outer.upNext"].exists, "#537: no NEXT row when closed")
+        XCTAssertFalse(shows(app, "Playing from"), "#537: no Playing-from row when closed")
+        XCTAssertFalse(app.buttons["queue.affordance"].exists, "#537: Queue is in ⋯, not on the closed screen")
+        XCTAssertFalse(app.buttons["transport.tune"].exists, "#537: Tune is in ⋯, not on the closed screen")
+        XCTAssertFalse(any["dj.micDown"].exists, "#537: no Mic down chip")
+        XCTAssertTrue(any["station.title"].exists, "the header still names the station")
         save(app, "closed-compact")
 
-        app.buttons["queue.affordance"].tap()
+        // #537: the removed rows' actions are reachable in ⋯.
+        openClosedMore(app)
+        XCTAssertTrue(closedMenuItem(app, "queue.affordance", labelPrefix: "Queue").waitForExistence(timeout: 5),
+                      "Queue in ⋯\n\(app.debugDescription)")
+        XCTAssertTrue(closedMenuItem(app, "transport.tune", labelPrefix: "Tune station").exists,
+                      "Tune in ⋯\n\(app.debugDescription)")
+        save(app, "closed-more-menu")
+        closedMenuItem(app, "queue.affordance", labelPrefix: "Queue").tap()
         XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
         XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
         save(app, "closed-queue-sheet")
+    }
+
+    /// #537: ⋯ on the closed reskin. Opens the menu; the caller checks its rows.
+    @MainActor
+    private func openClosedMore(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let more = app.buttons["folded.more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5), "closed ⋯ missing\n\(app.debugDescription)", file: file, line: line)
+        more.tap()
+    }
+
+    /// A ⋯ row by its identifier, or by its visible title where the system menu drops the identifier.
+    @MainActor
+    private func closedMenuItem(_ app: XCUIApplication, _ identifier: String, labelPrefix: String) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "identifier == %@ OR label BEGINSWITH %@", identifier, labelPrefix)).firstMatch
+    }
+
+    /// Opens the queue from a closed layout: ⋯ → Queue on the reskin (#537). Phone layouts that
+    /// still draw the toolbar (landscape centred column) keep their Queue button.
+    @MainActor
+    private func openClosedQueue(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let direct = app.buttons["queue.affordance"]
+        if !(direct.exists && direct.isHittable) {
+            openClosedMore(app, file: file, line: line)
+        }
+        let queue = closedMenuItem(app, "queue.affordance", labelPrefix: "Queue")
+        XCTAssertTrue(queue.waitForExistence(timeout: 5), "Queue missing\n\(app.debugDescription)", file: file, line: line)
+        queue.tap()
     }
 
     @MainActor
@@ -259,7 +302,7 @@ final class StudioScreenTests: XCTestCase {
         try XCTSkipIf(isOpenLayout, "Closed layout is checked on an iPhone-width simulator")
         let app = launch(dark: true)
         XCTAssertTrue(app.otherElements["layout.compact"].waitForExistence(timeout: 15))
-        app.buttons["queue.affordance"].tap()
+        openClosedQueue(app)  // #537: Queue is in ⋯ on the closed reskin
         XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
         XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
         save(app, "closed-queue-sheet-dark")
@@ -1201,7 +1244,7 @@ final class StudioScreenTests: XCTestCase {
         let layout = isOpenLayout ? "layout.studio" : "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
         if !isOpenLayout {
-            app.buttons["queue.affordance"].tap()
+            openClosedQueue(app)  // #537: Queue is in ⋯ on the closed reskin
         }
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
@@ -1212,7 +1255,7 @@ final class StudioScreenTests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         // A compact sheet can close when the window rotates. The text lives above that sheet.
         if !isOpenLayout, !app.textFields["search.field"].waitForExistence(timeout: 3) {
-            app.buttons["queue.affordance"].tap()
+            openClosedQueue(app)
         }
         let rotated = app.textFields["search.field"]
         XCTAssertTrue(rotated.waitForExistence(timeout: 10))
@@ -1255,10 +1298,24 @@ final class StudioScreenTests: XCTestCase {
         let plain = launch(scenario: "playing")
         XCTAssertTrue(shows(plain, "Morning Light"))
         XCTAssertFalse(plain.buttons["nowPlaying.rating"].exists, "no rating controller, no button")
+        if !isOpenLayout {
+            // #537: the closed star lives in ⋯; with no controller ⋯ has no rating row either.
+            openClosedMore(plain)
+            XCTAssertTrue(closedMenuItem(plain, "queue.affordance", labelPrefix: "Queue").waitForExistence(timeout: 5))
+            XCTAssertFalse(closedMenuItem(plain, "nowPlaying.rating", labelPrefix: "Rate song").exists,
+                           "no rating controller, no ⋯ rating row")
+        }
         plain.terminate()
 
         let app = launch(scenario: "ratingFirstTime")
-        let button = app.buttons["nowPlaying.rating"]
+        if !isOpenLayout {
+            // #537: the star is not in the closed title row; it is reachable in ⋯.
+            XCTAssertTrue(shows(app, "Morning Light"))
+            XCTAssertFalse(app.buttons["nowPlaying.rating"].exists, "#537: no star in the closed title row")
+            openClosedMore(app)
+        }
+        let button = isOpenLayout ? app.buttons["nowPlaying.rating"]
+                                  : closedMenuItem(app, "nowPlaying.rating", labelPrefix: "Rate song")
         XCTAssertTrue(button.waitForExistence(timeout: 10), "rating button:\n\(app.debugDescription)")
         XCTAssertTrue(button.label.contains("not rated"), button.label)
         XCTAssertTrue(button.isHittable)
@@ -1278,7 +1335,13 @@ final class StudioScreenTests: XCTestCase {
     @MainActor
     func testRatedSongAndNeverToast() throws {
         let liked = launch(scenario: "ratingLiked")
-        let button = liked.buttons["nowPlaying.rating"]
+        if !isOpenLayout {
+            XCTAssertTrue(shows(liked, "Morning Light"))
+            XCTAssertFalse(liked.buttons["nowPlaying.rating"].exists, "#537: no star in the closed title row")
+            openClosedMore(liked)  // #537: the star is in ⋯
+        }
+        let button = isOpenLayout ? liked.buttons["nowPlaying.rating"]
+                                  : closedMenuItem(liked, "nowPlaying.rating", labelPrefix: "Rate song")
         XCTAssertTrue(button.waitForExistence(timeout: 10))
         XCTAssertTrue(button.label.contains("Like it"), button.label)
         save(liked, "rating-liked")
@@ -1417,7 +1480,7 @@ final class StudioScreenTests: XCTestCase {
         app.buttons["transport.playPause"].tap(); pause()
         app.buttons["transport.playPause"].tap(); pause()
         if !isOpenLayout {
-            app.buttons["queue.affordance"].tap()
+            openClosedQueue(app)  // #537: Queue is in ⋯ on the closed reskin
             XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
         }
         pause()
