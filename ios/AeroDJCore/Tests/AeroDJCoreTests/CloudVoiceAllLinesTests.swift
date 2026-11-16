@@ -70,8 +70,8 @@ final class CloudVoiceAllLinesTests: XCTestCase {
         return (try XCTUnwrap(UserDefaults(suiteName: suite)), suite)
     }
 
-    func testCopyVersionTwoIsTheAllLinesCopyAndSaysWhatIsSent() {
-        XCTAssertEqual(CloudVoiceConsentCopy.version, 2)
+    func testCopyVersionThreeIsTheAllLinesCopyAndSaysWhatIsSent() {
+        XCTAssertEqual(CloudVoiceConsentCopy.version, 3, "#432: v3 asks everyone again")
         XCTAssertEqual(CloudVoiceConsentStore.currentVersion, CloudVoiceConsentStore.allLinesVersion)
         let sent = CloudVoiceConsentCopy.sent
         for word in ["calendar", "email digest", "notes", "music library", "station names", "news", "weather"] {
