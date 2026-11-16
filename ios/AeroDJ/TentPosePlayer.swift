@@ -122,7 +122,7 @@ private struct TentHingeObserver: ViewModifier {
         case .closed: .closed
         case .partiallyOpen: .partiallyOpen
         case .fullyOpen: .fullyOpen
-        @unknown default: .unknown
+        default: .unknown // Xcode 27.2 SDK adds hinge states; plain default keeps Release archive exhaustive
         }
     }
     #endif
