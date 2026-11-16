@@ -456,6 +456,100 @@ jobs:
           test -n "$CONTROL" || { echo "::error::pinned libptts_ffi.a (ios-arm64) not found for the positive control"; exit 1; }
           ios/scripts/check-no-private-amx.sh "$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app" "$CONTROL"
 
+  release-archive:
+    # Release-only compile errors (TestFlight build 49, #536: a non-exhaustive switch that only
+    # Xcode 27.2's Release archive rejects) must fail at PR time, not at the TestFlight cut.
+    # Same image, Xcode, SDK, XcodeGen pin and `xcodebuild archive` invocation as testflight.yml's
+    # "Archive (Release, manual signing)" step, with the same owner A/B compilation-condition
+    # rule. No signing material, no secrets, no export and no upload. Always GitHub-hosted. -Echo
+    name: Release archive (Xcode 27.2, unsigned)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      # sha256 of XcodeGen 2.46.0 xcodegen.zip (same pin as testflight.yml).
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Select Xcode 27.2
+        # Same pin as testflight.yml: fails fast, with no fallback.
+        env:
+          XCODE_PATH: /Applications/Xcode_27.2.app
+          REQUIRED_SDK: "27.2"
+        run: |
+          set -euo pipefail
+          if [ ! -d "$XCODE_PATH" ]; then
+            echo "::error::$XCODE_PATH not found on this runner. Installed: $(ls -d /Applications/Xcode*.app | tr '\n' ' ')"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_PATH"
+          xcodebuild -version
+          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          if [ "$SDK_VERSION" != "$REQUIRED_SDK" ]; then
+            echo "::error::iOS SDK is $SDK_VERSION; this job requires $REQUIRED_SDK"
+            exit 1
+          fi
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading component"
+            xcodebuild -downloadComponent MetalToolchain
+            if ! xcrun metal --version; then
+              echo "::error::Metal toolchain still unavailable after xcodebuild -downloadComponent MetalToolchain"
+              exit 1
+            fi
+          fi
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Archive (Release, unsigned)
+        # testflight.yml's archive command with signing switched off. The conditions script runs
+        # as for a plain TestFlight build (no p0_diag, owner_ab or tester_voice), so this compiles
+        # exactly what a default 2.0 upload compiles.
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/release-archive-logs"
+          EXTRA=()
+          CONDS="$(EVENT_NAME=workflow_dispatch OWNER_AB=false P0_DIAG=false TESTER_VOICE=false ios/scripts/testflight-swift-conditions.sh)"
+          if [ -n "$CONDS" ]; then EXTRA+=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited)$CONDS"); fi
+          ios/scripts/check-owner-ab-build-settings.sh absent "${EXTRA[@]}"
+          xcodebuild archive \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/AeroDJ.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            "${EXTRA[@]}" \
+            2>&1 | tee "$RUNNER_TEMP/release-archive-logs/archive.log"
+          APP_BUNDLE="$(find "$RUNNER_TEMP/AeroDJ.xcarchive/Products/Applications" -maxdepth 1 -name '*.app' | head -n 1)"
+          [ -n "$APP_BUNDLE" ] || { echo "::error::no app in the archive"; exit 1; }
+          test -f "$APP_BUNDLE/AeroDJ" || { echo "::error::$APP_BUNDLE/AeroDJ missing"; exit 1; }
+      - name: Upload archive log on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-archive-log
+          path: ${{ runner.temp }}/release-archive-logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   runtime-mode:
     name: Runtime mode on simulator (Debug vs Release)
     needs: changes
