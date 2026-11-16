@@ -18,7 +18,8 @@ import Foundation
 ///
 /// Pure and UI-free so it is unit tested on Linux. Points of the container, never a device.
 public enum AppWideLayout {
-    /// The screens item 10 covers. Onboarding is listed so its follow-up has a slot.
+    /// The screens item 10 covers. Onboarding is the first-run prompts that are ours
+    /// (`LocalAreaPrompt`; the cloud-voice consent sheet after #478). The Allow screen is #479's.
     public enum Screen: String, CaseIterable, Equatable, Sendable {
         case library
         case stations
@@ -76,6 +77,12 @@ public enum AppWideLayout {
         /// compact, and stay the phone path; the iPad (any orientation, form sheets, Split
         /// View) is vertically regular. Nil falls back to `containerHeight >= duoMinHeight`.
         public var hasRegularHeight: Bool?
+        /// Only for a screen whose measured height is its own content, not the window
+        /// (`LocalAreaPrompt`, a medium-detent sheet). The height test can't tell the Duo
+        /// from a phone then, so `hasRegularHeight` alone decides for both width classes
+        /// (missing counts as compact). Every iPhone in landscape, Plus and Max included, is
+        /// vertically compact and stays the phone path (#515 B1).
+        public var heightIsContent: Bool
         /// TODO(#465 item 2): nil until fold awareness supplies it. Ignored today.
         public var foldDivision: FoldDivision?
         /// TODO(#465 item 4): nil until `ArrangementView` supplies it. Ignored today.
@@ -83,12 +90,14 @@ public enum AppWideLayout {
 
         public init(hasRegularWidth: Bool, containerWidth: Double, containerHeight: Double,
                     accessibilityTextSize: Bool = false, hasRegularHeight: Bool? = nil,
+                    heightIsContent: Bool = false,
                     foldDivision: FoldDivision? = nil, arrangement: Arrangement? = nil) {
             self.hasRegularWidth = hasRegularWidth
             self.containerWidth = containerWidth
             self.containerHeight = containerHeight
             self.accessibilityTextSize = accessibilityTextSize
             self.hasRegularHeight = hasRegularHeight
+            self.heightIsContent = heightIsContent
             self.foldDivision = foldDivision
             self.arrangement = arrangement
         }
@@ -143,7 +152,7 @@ public enum AppWideLayout {
         switch screen {
         case .library: 560
         case .settings: 560
-        case .onboarding: 520
+        case .onboarding: 560
         case .stations: 960
         }
     }
@@ -152,7 +161,9 @@ public enum AppWideLayout {
     /// inset group is 20; the station grid uses 16). Columns are counted inside it.
     public static func screenGutter(_ screen: Screen) -> Double {
         switch screen {
-        case .library, .settings, .onboarding: 20
+        case .library, .settings: 20
+        // `LocalAreaPrompt` pads 24.
+        case .onboarding: 24
         case .stations: 16
         }
     }
@@ -176,6 +187,10 @@ public enum AppWideLayout {
     public static func isWide(_ input: Input) -> Bool {
         let width = finite(input.containerWidth)
         let height = finite(input.containerHeight)
+        if input.heightIsContent {
+            guard FoldedColumnLayout.isWide(containerWidth: width) else { return false }
+            return input.hasRegularHeight ?? false
+        }
         guard FoldedColumnLayout.isWide(containerWidth: width), height > 0 else { return false }
         let tall = height >= FoldedColumnLayout.duoMinHeight
         // Regular width (#512 B1): wide only when the height is regular too. The vertical
