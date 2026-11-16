@@ -659,13 +659,21 @@ private struct LayoutResizeProbe: View {
         return CGFloat(wide ? minimum + 64 : minimum - 64)
     }
 
+    /// Narrow stays 680 pt (the centred column). Wide is shorter than the landscape rail
+    /// (`FoldedColumnLayout.landscapeDuoMinHeight`, #542), so the widened probe still opens
+    /// the two-zone Studio this probe exists to check. At 780 × 680 it would now be the rail,
+    /// whose trailing controls sit past a 390 pt iPhone window in this top-leading frame.
+    private var columnHeight: CGFloat {
+        CGFloat(wide ? FoldedColumnLayout.landscapeDuoMinHeight - 80 : 680)
+    }
+
     var body: some View {
         PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
                       snapshot: scenario.snapshot, actions: .counting, search: .counting,
                       studio: studio, isTestStation: true,
                       timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
             .environment(\.horizontalSizeClass, wide ? .regular : .compact)
-            .frame(width: columnWidth, height: 680, alignment: .topLeading)
+            .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

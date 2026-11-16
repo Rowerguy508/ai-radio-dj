@@ -378,6 +378,8 @@ final class FoldedColumnLayoutTests: XCTestCase {
         XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: probeWidth, containerHeight: 680),
                        .centredColumn)
         XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 652, containerHeight: 680), .centredColumn)
+        // #542: the open Duo turned sideways (820 × 640) is the horizontal rail, not the column.
+        XCTAssertEqual(FoldedColumnLayout.controlPlacement(containerWidth: 820, containerHeight: 640), .duoHorizontal)
         let layout = FoldedColumnLayout.duoHorizontal(containerWidth: 640, containerHeight: 820,
                                                       artMin: 140, artMax: 420)
         XCTAssertEqual(layout.leftWidth + layout.foldGutter + layout.contentWidth + layout.barWidth + layout.edgeInset * 2,

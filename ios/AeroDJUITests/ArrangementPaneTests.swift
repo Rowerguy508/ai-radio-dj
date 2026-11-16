@@ -1,8 +1,9 @@
 import XCTest
 import UIKit
 
-/// Regular width: artwork and controls in one pane, the up-next timeline in the other.
-/// The compact phone capture is a separate launch and must not show those panes.
+/// Regular width used to draw artwork and controls in one pane and the up-next timeline in
+/// the other (#514). Since #542 the 2.0 rail layout is drawn there instead, and no capture
+/// shows the arrangement panes.
 final class ArrangementPaneTests: XCTestCase {
     private static let ax = "UICTContentSizeCategoryAccessibilityXXXL"
 
@@ -22,65 +23,46 @@ final class ArrangementPaneTests: XCTestCase {
         XCTAssertFalse(any["arrangement.column"].exists)
     }
 
+    /// #542 (2.0 design, after build 49): regular width at 640 × 820 is the rail layout
+    /// (`FoldedPlayer` + `DuoVerticalRail`), not the two panes. `ArrangementListenPlayer`
+    /// is no longer routed by `PlayingScreen`.
     @MainActor
-    func testRegularWidthSplitsArtworkAndControlsFromTheTimeline() throws {
+    func testRegularWidthDuoIsTheRailNotTwoPanes() throws {
         try XCTSkipUnless(windowIsWide(), "The 640 × 820 pt container needs an iPad-size simulator window")
         let app = launch(scenario: "duoArrangement")
         let any = app.descendants(matching: .any)
         XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
         let container = any["capture.duoContainer"]
-        XCTAssertTrue(container.waitForExistence(timeout: 5), "arrangement container missing\n\(app.debugDescription)")
-        let primary = any["arrangement.primary"]
-        let secondary = any["arrangement.secondary"]
-        let timeline = app.buttons["arrangement.upNext"]
+        XCTAssertTrue(container.waitForExistence(timeout: 5), "Duo container missing\n\(app.debugDescription)")
         let play = app.buttons["transport.playPause"]
         let skip = app.buttons["transport.skip"]
-        let back = app.buttons["folded.back"]
-        for (name, element) in [("primary", primary), ("secondary", secondary), ("timeline", timeline),
-                                ("play", play), ("skip", skip), ("back", back)] {
+        for (name, element) in [("track column", any["folded.trackColumn"]),
+                                ("content column", any["folded.contentColumn"]),
+                                ("rail", any["folded.systemBar"]), ("play", play), ("skip", skip)] {
             XCTAssertTrue(element.waitForExistence(timeout: 8), "\(name) missing\n\(app.debugDescription)")
         }
-        XCTAssertFalse(any["arrangement.onAir"].exists, "a ready break is not On Air")
-        XCTAssertFalse(any["folded.contentColumn"].exists, "regular width uses the two panes, not the compact-class columns")
+        XCTAssertFalse(any["arrangement.split"].exists, "regular width no longer uses the two panes")
+        XCTAssertFalse(any["arrangement.primary"].exists)
+        XCTAssertFalse(any["arrangement.secondary"].exists)
+        XCTAssertFalse(any["layout.studio"].exists)
         XCTAssertGreaterThanOrEqual(play.frame.width, 44)
         XCTAssertGreaterThanOrEqual(play.frame.height, 44)
         XCTAssertGreaterThanOrEqual(skip.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(back.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(back.frame.height, 44)
-        XCTAssertGreaterThanOrEqual(timeline.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(timeline.frame.height, 44)
-        XCTAssertTrue(primary.frame.insetBy(dx: -1, dy: -1).contains(play.frame),
-                      "play stays in the artwork and controls pane")
-        XCTAssertTrue(secondary.frame.insetBy(dx: -1, dy: -1).contains(timeline.frame),
-                      "the timeline stays in its own pane")
-        XCTAssertFalse(primary.frame.insetBy(dx: 1, dy: 1).intersects(secondary.frame.insetBy(dx: 1, dy: 1)),
-                       "the panes do not overlap")
-        XCTAssertTrue(timeline.label.contains("Morning Light"))
-        XCTAssertTrue(timeline.label.contains("DJ break after this song"))
-        XCTAssertTrue(timeline.label.contains("Slow Burn"))
-        save(app, "duo-arrangement")
-        timeline.tap()
-        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5), "tapping the timeline opens the queue")
+        save(app, "duo-regular-rail")
     }
 
+    /// Accessibility text at 640 × 820 regular: still the rail (the Studio gate needs
+    /// 716 pt), never the arrangement's single column.
     @MainActor
-    func testAccessibilitySizeUsesOneColumn() throws {
+    func testAccessibilitySizeAtTheDuoIsNotTheArrangement() throws {
         try XCTSkipUnless(windowIsWide(), "The 640 × 820 pt container needs an iPad-size simulator window")
         let app = launch(scenario: "duoArrangement", contentSize: Self.ax)
         let any = app.descendants(matching: .any)
-        XCTAssertTrue(any["arrangement.column"].waitForExistence(timeout: 15),
-                      "accessibility text uses one column\n\(app.debugDescription)")
-        XCTAssertFalse(any["arrangement.split"].exists, "accessibility text does not keep the two-pane split")
-        let play = app.buttons["transport.playPause"]
-        let timeline = app.buttons["arrangement.upNext"]
-        XCTAssertTrue(play.waitForExistence(timeout: 8))
-        XCTAssertTrue(timeline.waitForExistence(timeout: 8))
-        XCTAssertGreaterThanOrEqual(play.frame.height, 44)
-        XCTAssertGreaterThanOrEqual(timeline.frame.height, 44)
-        XCTAssertGreaterThan(timeline.frame.minY, play.frame.maxY - 4,
-                             "the timeline follows the controls in one column")
-        XCTAssertFalse(any["arrangement.onAir"].exists)
-        save(app, "duo-arrangement-ax")
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(app.buttons["transport.playPause"].waitForExistence(timeout: 8))
+        XCTAssertFalse(any["arrangement.column"].exists, "the arrangement is not routed")
+        XCTAssertFalse(any["arrangement.split"].exists)
+        save(app, "duo-regular-rail-ax")
     }
 
     // MARK: - Launch
@@ -95,7 +77,8 @@ final class ArrangementPaneTests: XCTestCase {
         let any = app.descendants(matching: .any)
         let either = any.matching(NSPredicate(format: "identifier IN %@", ["layout.studio", "layout.compact"])).firstMatch
         XCTAssertTrue(either.waitForExistence(timeout: 15), app.debugDescription)
-        let wide = any["layout.studio"].exists
+        // #542: a wide iPad window is the rail layout (`folded.systemBar`), or the Studio.
+        let wide = any["layout.studio"].exists || any["folded.systemBar"].waitForExistence(timeout: 5)
         app.terminate()
         Self.probedWide = wide
         return wide

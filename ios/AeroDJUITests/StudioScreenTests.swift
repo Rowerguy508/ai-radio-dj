@@ -6,7 +6,9 @@ import UIKit
 /// station's `StudioPresentationModel` and the shared `PlaybackFixtures` snapshot.
 ///
 /// The layout under test follows the device: an iPhone in portrait is the closed (compact)
-/// player; an iPad's width is the open, two-zone Studio. Every test also saves a PNG
+/// player; an iPad's full window is the open layout, which since #542 is the 2.0 rail
+/// (`FoldedPlayer` + `DuoVerticalRail`, `folded.systemBar`) rather than the two-zone Studio.
+/// Accessibility text sizes on iPad keep the stacked Studio. Every test also saves a PNG
 /// screenshot: as an XCTest attachment, and to `$STUDIO_SCREENSHOT_DIR` when CI sets it
 /// (`TEST_RUNNER_STUDIO_SCREENSHOT_DIR`).
 final class StudioScreenTests: XCTestCase {
@@ -82,9 +84,10 @@ final class StudioScreenTests: XCTestCase {
     }
 
     /// Which layout this simulator's window gets, read from the app itself rather than the
-    /// device idiom: one probe launch of the default capture, then whichever of
-    /// `layout.studio` / `layout.compact` the real `PlayingScreen` shows. A narrow iPad
-    /// window or a wide iPhone window then picks the matching assertions.
+    /// device idiom: one probe launch of the default capture. Open is `layout.studio`, or
+    /// (#542) the compact player drawing the unfolded rail (`folded.systemBar`), which is
+    /// what a wide-and-tall iPad window gets now. A narrow iPad window or a wide iPhone
+    /// window then picks the matching assertions.
     @MainActor
     private static var probedOpenLayout: Bool?
 
@@ -96,7 +99,7 @@ final class StudioScreenTests: XCTestCase {
         let either = any.matching(NSPredicate(format: "identifier IN %@", ["layout.studio", "layout.compact"])).firstMatch
         XCTAssertTrue(either.waitForExistence(timeout: 15),
                       "Neither layout.studio nor layout.compact appeared\n\(visibleIdentifiers(app))")
-        let open = any["layout.studio"].exists
+        let open = any["layout.studio"].exists || any["folded.systemBar"].waitForExistence(timeout: 5)
         app.terminate()
         Self.probedOpenLayout = open
         return open
@@ -122,44 +125,62 @@ final class StudioScreenTests: XCTestCase {
         save(app, "closed-queue-sheet")
     }
 
+    /// #542 (2.0 design, after build 49): the open window is the rail layout, not the
+    /// two-zone Studio. Art and title left of the fold, the content column, then the rail
+    /// with play/pause and skip. The queue opens as the workspace sheet.
     @MainActor
-    func testOpenDuoIsTwoZoneControlRoom() throws {
+    func testOpenDuoIsTheRailLayout() throws {
         try XCTSkipUnless(isOpenLayout, "Open layout is checked on an iPad-width simulator")
         let app = launch(segment: "queue")
-        XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
-        let zoneA = app.otherElements["studio.zoneA"], zoneB = app.otherElements["studio.zoneB"]
-        XCTAssertTrue(zoneA.exists && zoneB.exists)
-        XCTAssertLessThanOrEqual(
-            zoneA.frame.maxX, zoneB.frame.minX,
-            "Zones do not overlap (zoneA.maxX=\(zoneA.frame.maxX) zoneB.minX=\(zoneB.frame.minX))\n\(app.debugDescription)")
-        XCTAssertGreaterThanOrEqual(zoneA.frame.width, 320)
-        XCTAssertGreaterThanOrEqual(zoneB.frame.width, 340)
-        XCTAssertTrue(app.buttons["transport.playPause"].isHittable, "Now Playing stays in Zone A")
-        XCTAssertTrue(shows(app, "Slow Burn"))
-        save(app, "open-studio-queue")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertFalse(any["layout.studio"].exists, "the open window is the rail, not the two zones")
+        XCTAssertFalse(any["arrangement.split"].exists, "the two-pane arrangement is not routed")
+        XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(any["folded.contentColumn"].waitForExistence(timeout: 10), app.debugDescription)
+        let bar = any["folded.systemBar"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 10), "the custom rail is missing\n\(app.debugDescription)")
+        assertOneMatch(any, "folded.trackColumn", "open rail")
+        assertOneMatch(any, "folded.contentColumn", "open rail")
+        let track = any["folded.trackColumn"], content = any["folded.contentColumn"]
+        XCTAssertLessThanOrEqual(track.frame.maxX, content.frame.minX + 1,
+                                 "track \(track.frame) overlaps content \(content.frame)")
+        XCTAssertLessThanOrEqual(content.frame.maxX, bar.frame.minX + 1,
+                                 "content \(content.frame) overlaps the rail \(bar.frame)")
+        XCTAssertTrue(shows(app, "Morning Light"), "Now Playing shows the fixture song")
+        XCTAssertTrue(app.buttons["transport.playPause"].isHittable, "play/pause is on the rail")
+        XCTAssertTrue(app.buttons["transport.skip"].isHittable, "skip is on the rail")
+        XCTAssertTrue(app.buttons["folded.collapse"].isHittable)
+        save(app, "open-rail")
+
+        app.buttons["queue.affordance"].tap()
+        XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
+        XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
+        save(app, "open-rail-queue-sheet")
     }
 
     @MainActor
     func testOpenDuoTunerKeepsNowPlaying() throws {
         try XCTSkipUnless(isOpenLayout, "Open layout is checked on an iPad-width simulator")
         let app = launch(segment: "tune")
-        XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
+        // #542: the rail layout opens Tune as the workspace sheet over the player.
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.scrollViews["tune.form"].waitForExistence(timeout: 10))
         XCTAssertGreaterThanOrEqual(app.sliders.count, 2, "Energy and discovery are real sliders")
-        XCTAssertTrue(app.buttons["transport.playPause"].isHittable, "Now Playing persists while tuning")
-        save(app, "open-studio-tune")
+        XCTAssertTrue(app.buttons["transport.playPause"].exists, "Now Playing persists while tuning")
+        save(app, "open-rail-tune")
     }
 
     @MainActor
     func testOpenDuoConnectionsAreTruthful() throws {
         try XCTSkipUnless(isOpenLayout, "Open layout is checked on an iPad-width simulator")
         let app = launch(segment: "connections")
-        XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.scrollViews["connections.list"].waitForExistence(timeout: 10))
         XCTAssertTrue(shows(app, "Calendar"))
         // No placeholder "manage" control.
         XCTAssertFalse(shows(app, "Tap to manage"))
-        save(app, "open-studio-connections")
+        save(app, "open-rail-connections")
     }
 
     // MARK: Appearance and text size (closed)
@@ -193,9 +214,9 @@ final class StudioScreenTests: XCTestCase {
     func testOpenDarkAppearance() throws {
         try XCTSkipUnless(isOpenLayout, "Open layout is checked on an iPad-width simulator")
         let app = launch(segment: "tune", dark: true)
-        XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.scrollViews["tune.form"].waitForExistence(timeout: 10))
-        save(app, "open-studio-tune-dark")
+        save(app, "open-rail-tune-dark")
     }
 
     // MARK: States
@@ -269,9 +290,12 @@ final class StudioScreenTests: XCTestCase {
     func testOpenQueueDark() throws {
         try XCTSkipUnless(isOpenLayout, "Open layout is checked on an iPad-width simulator")
         let app = launch(segment: "queue", dark: true)
-        XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["folded.systemBar"].waitForExistence(timeout: 10))
+        app.buttons["queue.affordance"].tap()
+        XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
         XCTAssertTrue(shows(app, "Slow Burn"))
-        save(app, "open-studio-queue-dark")
+        save(app, "open-rail-queue-dark")
     }
 
     @MainActor
@@ -287,10 +311,10 @@ final class StudioScreenTests: XCTestCase {
     func testOpenConnectionsDark() throws {
         try XCTSkipUnless(isOpenLayout, "Open layout is checked on an iPad-width simulator")
         let app = launch(segment: "connections", dark: true)
-        XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["layout.compact"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.scrollViews["connections.list"].waitForExistence(timeout: 10))
         XCTAssertTrue(shows(app, "Calendar"))
-        save(app, "open-studio-connections-dark")
+        save(app, "open-rail-connections-dark")
     }
 
     @MainActor
@@ -326,8 +350,10 @@ final class StudioScreenTests: XCTestCase {
         ]
         for c in cases {
             let app = launch(scenario: c.scenario, dark: true)
-            let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+            // #542: open and closed are both the compact player now (rail when open).
+            let layout = "layout.compact"
             XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15), c.scenario)
+            if isOpenLayout { XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists, c.scenario) }
             XCTAssertTrue(shows(app, c.expect), "\(c.scenario) shows \(c.expect)")
             XCTAssertEqual(app.buttons["transport.playPause"].exists, c.transport, c.scenario)
             if c.scenario == "denied" { XCTAssertTrue(app.buttons["Open Settings"].exists) }
@@ -458,9 +484,9 @@ final class StudioScreenTests: XCTestCase {
     }
 
     /// #492 (#465 item 5): opening the phone. The capture starts at the folded phone
-    /// container (compact) and unfolds to the 640×820 Duo (regular), which shows #514's
-    /// two-pane arrangement. Playback, the selected station, the stored scroll anchor and
-    /// the load count stay. Row 4 on screen is checked while folded only.
+    /// container (compact) and unfolds to the 640×820 Duo (regular), which since #542 is the
+    /// 2.0 rail layout. Playback, the selected station, the stored scroll anchor and the load
+    /// count stay. Row 4 on screen is checked while folded; unfolded, row 4 must exist.
     @MainActor
     func testOpeningThePhoneKeepsPlaybackScrollAndStation() throws {
         try XCTSkipUnless(isOpenLayout, "The unfolded 640 × 820 pt container needs an iPad-size simulator window")
@@ -520,16 +546,22 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 10),
                       "640 pt stays the compact player at either size class\n\(app.debugDescription)")
         XCTAssertFalse(any["layout.studio"].exists)
-        // #514: regular width at 640 × 820 resolves to the two-pane arrangement.
-        XCTAssertTrue(any["arrangement.split"].waitForExistence(timeout: 10),
-                      "the unfolded Duo is the two-pane arrangement\n\(app.debugDescription)")
-        XCTAssertFalse(any["folded.trackColumn"].exists, "the folded horizontal player is gone")
+        // #542: regular width at 640 × 820 is the 2.0 rail layout at either size class.
+        // The two-pane arrangement is no longer routed.
+        XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10),
+                      "the unfolded Duo is the rail layout\n\(app.debugDescription)")
+        XCTAssertTrue(any["folded.systemBar"].waitForExistence(timeout: 10),
+                      "the unfolded Duo draws the custom rail\n\(app.debugDescription)")
+        XCTAssertFalse(any["arrangement.split"].exists, "the two-pane arrangement is not routed")
         let held = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "continuity.row.4"),
                                              object: anchor)
-        // The arrangement panes have no continuity rows, so row 4 is checked only while
-        // folded. The stored anchor must survive the switch so folding back restores it.
+        // The stored anchor survives the switch. The rail's track column is the player
+        // scroll and carries the continuity rows, so row 4 exists there too.
         XCTAssertEqual(XCTWaiter().wait(for: [held], timeout: 5), .completed,
                        "the stored scroll anchor was lost: \(anchor.label)")
+        XCTAssertTrue(any["continuity.scroller"].waitForExistence(timeout: 5),
+                      "the rail layout has no continuity scroller\n\(app.debugDescription)")
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "row 4 is missing from the rail layout")
         XCTAssertEqual(readout(app, "continuity.station"), "morning-calm")
         XCTAssertTrue(any["station.title"].label.contains("Morning Calm"))
         XCTAssertEqual(readout(app, "continuity.playback"), playback)
@@ -840,19 +872,24 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertEqual(matches.count, 1, "\(identifier) matched \(matches.count) elements in \(context)")
     }
 
-    /// Open (Studio): `.ready` must not print the break headline or its VoiceOver detail.
-    /// Folded: a quiet, static "DJ break after this song" line shows instead (Fry, #161).
+    /// Open (since #542 the rail layout) and folded: a quiet, static "DJ break after this
+    /// song" line shows (Fry, #161), and nothing says On Air.
     @MainActor
     func testReadyStateShowsNoBreakText() throws {
         let app = launch(scenario: "breakReady")
-        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        let layout = "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
                       "ready capture did not show \(layout):\n\(app.debugDescription)")
         XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
         // `shows` reads XCUIElement.label, which is the visible text and the accessibility label.
         if isOpenLayout {
-            XCTAssertFalse(shows(app, "break"), ".ready must not expose break text in visible text or the accessibility label")
-            XCTAssertFalse(shows(app, "after this song"), ".ready must not expose after-this-song text in visible text or the accessibility label")
+            // #542: the open window is the rail layout, which shows the same quiet ready line
+            // as the folded player in its content column, and never On Air.
+            XCTAssertTrue(app.descendants(matching: .any)["folded.contentColumn"].waitForExistence(timeout: 10),
+                          "the open window is the rail layout\n\(app.debugDescription)")
+            XCTAssertFalse(app.descendants(matching: .any)["layout.studio"].exists)
+            XCTAssertTrue(app.descendants(matching: .any)["dj.ready"].exists, "the rail's .ready shows its quiet line")
+            XCTAssertFalse(shows(app, "On Air"), ".ready never claims the DJ is speaking")
         } else {
             XCTAssertTrue(app.descendants(matching: .any)["dj.ready"].exists, "folded .ready shows its quiet line")
             XCTAssertFalse(shows(app, "On Air"), ".ready never claims the DJ is speaking")
@@ -952,21 +989,27 @@ final class StudioScreenTests: XCTestCase {
     /// #435 n1 (#434): default-size on-air stills, so the orb-only art card is visible.
     /// `closed-ax5-onair` often hides the card (`includesArt: false` at AX5). The existing
     /// `onAir` scenario is unchanged (frozen ON AIR timer at 0:12). Closed (phone) is the
-    /// folded player, where `FoldedArtCard` swaps art for the orb. Open (iPad) is the
-    /// two-zone Studio, which has no folded art card; the shot still records the Studio
-    /// while the DJ is on air.
+    /// folded player, where `FoldedArtCard` swaps art for the orb. Open (iPad) is the rail
+    /// layout since #542, which keeps the art (`keepArtVisible`) and shows On Air.
     @MainActor
     func testDefaultOnAirShowsOrbOnlyArtCard() throws {
         let app = launch(scenario: "onAir")
-        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        let layout = "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
                       "\(layout) expected at default size:\n\(app.debugDescription)")
         XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
         XCTAssertTrue(app.buttons["transport.playPause"].exists)
         let any = app.descendants(matching: .any)
         if isOpenLayout {
-            XCTAssertFalse(any["folded.artCard.orb"].exists,
-                           "the two-zone Studio has no folded art card")
+            // #542: the rail layout keeps the art in the track column and shows On Air,
+            // the same as the 640 × 820 Duo on air (testDuoWideOnAir…).
+            XCTAssertFalse(any["layout.studio"].exists)
+            XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10), app.debugDescription)
+            let onAir = any["dj.onAir"]
+            XCTAssertTrue(onAir.waitForExistence(timeout: 5), "dj.onAir missing\n\(app.debugDescription)")
+            XCTAssertFalse(any["dj.ready"].exists, "On Air replaces the ready line")
+            XCTAssertTrue(any["folded.artCard.artwork"].waitForExistence(timeout: 5),
+                          "the rail's track column keeps the art while on air\n\(app.debugDescription)")
         } else {
             let onAir = any["dj.onAir"]
             XCTAssertTrue(onAir.waitForExistence(timeout: 5), "dj.onAir missing\n\(app.debugDescription)")
@@ -1198,11 +1241,10 @@ final class StudioScreenTests: XCTestCase {
     func testRotationKeepsSegmentSearchAndPlayback() {
         let app = launch()
         defer { XCUIDevice.shared.orientation = .portrait }
-        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        // #542: open is the rail layout, so the queue (and search) is the sheet there too.
+        let layout = "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
-        if !isOpenLayout {
-            app.buttons["queue.affordance"].tap()
-        }
+        app.buttons["queue.affordance"].tap()
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         replaceText(field, with: "violet")
@@ -1211,7 +1253,7 @@ final class StudioScreenTests: XCTestCase {
                        "Search text must land in the field before rotation")
         XCUIDevice.shared.orientation = .landscapeLeft
         // A compact sheet can close when the window rotates. The text lives above that sheet.
-        if !isOpenLayout, !app.textFields["search.field"].waitForExistence(timeout: 3) {
+        if !app.textFields["search.field"].waitForExistence(timeout: 3) {
             app.buttons["queue.affordance"].tap()
         }
         let rotated = app.textFields["search.field"]
@@ -1230,7 +1272,7 @@ final class StudioScreenTests: XCTestCase {
     func testLandscapeDark() {
         let app = launch(dark: true)
         defer { XCUIDevice.shared.orientation = .portrait }
-        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        let layout = "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
         XCUIDevice.shared.orientation = .landscapeLeft
         XCTAssertTrue(shows(app, "Morning Light"))
@@ -1241,7 +1283,7 @@ final class StudioScreenTests: XCTestCase {
     @MainActor
     func testReduceMotionIsRespected() {
         let app = launch(reduceMotion: true)
-        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        let layout = "layout.compact"  // #542: open is the rail layout (compact player) too
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
         XCTAssertTrue(app.descendants(matching: .any)["motion.reduced"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["transport.playPause"].exists)
@@ -1408,25 +1450,20 @@ final class StudioScreenTests: XCTestCase {
                           "Runs only in the CI recording step")
         let app = launch()
         let pause = { Thread.sleep(forTimeInterval: 1.2) }
-        if isOpenLayout {
-            XCTAssertTrue(app.otherElements["layout.studio"].waitForExistence(timeout: 15))
-        } else {
-            XCTAssertTrue(app.otherElements["layout.compact"].waitForExistence(timeout: 15))
-        }
+        // #542: open is the rail layout, so both layouts open the workspace as the sheet.
+        XCTAssertTrue(app.otherElements["layout.compact"].waitForExistence(timeout: 15))
         pause()
         app.buttons["transport.playPause"].tap(); pause()
         app.buttons["transport.playPause"].tap(); pause()
-        if !isOpenLayout {
-            app.buttons["queue.affordance"].tap()
-            XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
-        }
+        app.buttons["queue.affordance"].tap()
+        XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
         pause()
         let segments = app.segmentedControls["workspace.segment"]
         for name in ["Tune", "Connections", "Queue"] where segments.buttons[name].exists {
             segments.buttons[name].tap(); pause()
             if name == "Tune" { app.scrollViews["tune.form"].swipeUp(); pause(); app.scrollViews["tune.form"].swipeDown(); pause() }
         }
-        if !isOpenLayout, app.buttons["Done"].exists { app.buttons["Done"].tap(); pause() }
+        if app.buttons["Done"].exists { app.buttons["Done"].tap(); pause() }
     }
 
     /// Title, then status, then transport. The smallest matching element is the spoken node,

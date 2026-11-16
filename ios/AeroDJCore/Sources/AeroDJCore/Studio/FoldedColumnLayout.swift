@@ -64,6 +64,8 @@ public enum FoldedColumnLayout {
     /// - Phone portrait, and anything under `wideMinWidth`: controls pinned at the bottom.
     /// - Wide but shorter than `duoMinHeight` (iPhone landscape, and the compact resize probe): the previous centred column.
     /// - Wide and at least `duoMinHeight` (unfolded Duo): the horizontal right side.
+    /// - Landscape at least `landscapeDuoMinWidth` × `landscapeDuoMinHeight` (the open Duo
+    ///   turned sideways, 820 × 640): the horizontal right side too (#542).
     public enum ControlPlacement: Equatable, Sendable {
         case phoneBottom
         case centredColumn
@@ -107,10 +109,23 @@ public enum FoldedColumnLayout {
     /// Clear of the status cluster and Live Activity before the first control.
     public static let duoStatusClearance: Double = 56
 
+    /// 2.0 (#542): a landscape container at least this wide gets the wide Duo layout once it
+    /// is also `landscapeDuoMinHeight` tall. Same value as `studioMinWidth` (716), so the
+    /// 652 × 680 compact resize probe, which is narrower, keeps the centred column.
+    public static var landscapeDuoMinWidth: Double { StudioLayoutMetrics.studioMinWidth }
+    /// Shortest landscape container (at `landscapeDuoMinWidth` or wider) that gets the wide
+    /// Duo layout. Above every phone held sideways (440 pt tall at most), and at or below the
+    /// Duo's open landscape window (820 × 640), which build 49 left on the centred column.
+    public static let landscapeDuoMinHeight: Double = 600
+
     public static func controlPlacement(containerWidth: Double, containerHeight: Double) -> ControlPlacement {
         guard isWide(containerWidth: containerWidth) else { return .phoneBottom }
-        guard containerHeight.isFinite, containerHeight >= duoMinHeight else { return .centredColumn }
-        return .duoHorizontal
+        guard containerHeight.isFinite else { return .centredColumn }
+        if containerHeight >= duoMinHeight { return .duoHorizontal }
+        if containerWidth >= landscapeDuoMinWidth, containerHeight >= landscapeDuoMinHeight {
+            return .duoHorizontal
+        }
+        return .centredColumn
     }
 
     /// Horizontal Duo metrics. Phone widths do not call this.
