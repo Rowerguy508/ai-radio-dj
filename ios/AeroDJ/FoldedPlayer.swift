@@ -857,6 +857,9 @@ private struct FoldedOuterTransport: View {
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
     private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
+    /// Skip's opaque circle with Reduce Transparency or Increase Contrast. The capsule sits on
+    /// the slab, so this is the slab fill #484's transport uses under light ink.
+    private var solidControlFill: Color { AeroDJPalette.slab }
     private var face: TransportButtonFace {
         TransportTapPolicy.face(transport: transport, startTimedOut: startTimedOut)
     }
@@ -868,6 +871,17 @@ private struct FoldedOuterTransport: View {
     }
 
     var body: some View {
+        // #484 item 9: play and skip share one glass family, like the iPhone transport row.
+        AeroGlassGroup(spacing: 0) { row }
+            .frame(height: CGFloat(FoldedOuterLayout.transportHeight))
+            .foldedGlass(Capsule(), role: .control)
+            .clipShape(Capsule())
+            .buttonStyle(.plain)
+            .sensoryFeedback(.impact(weight: .light), trigger: taps)
+            .accessibilityIdentifier("folded.outer.transport")
+    }
+
+    private var row: some View {
         HStack(spacing: 0) {
             Color.clear
                 .frame(width: CGFloat(FoldedOuterLayout.skipSide),
@@ -903,7 +917,7 @@ private struct FoldedOuterTransport: View {
                 .foregroundStyle(AeroDJPalette.onMediaInk)
                 .frame(width: CGFloat(FoldedOuterLayout.playSide),
                        height: CGFloat(FoldedOuterLayout.playSide))
-                .background(Circle().fill(AeroDJPalette.onMediaLight))
+                .aeroGlassControl(.primary, tint: AeroDJPalette.onMediaLight)
                 .overlay {
                     Circle()
                         .strokeBorder(ring, lineWidth: CGFloat(FoldedOuterLayout.playRingWidth))
@@ -926,17 +940,12 @@ private struct FoldedOuterTransport: View {
                     .foregroundStyle(.white)
                     .frame(width: CGFloat(FoldedOuterLayout.skipSide),
                            height: CGFloat(FoldedOuterLayout.skipSide))
+                    .aeroGlassControl(.secondary, solidFill: solidControlFill)
                     .contentShape(Circle())
             }
             .frame(maxWidth: .infinity)
             .accessibilityIdentifier("transport.skip")
         }
-        .frame(height: CGFloat(FoldedOuterLayout.transportHeight))
-        .foldedGlass(Capsule(), role: .control)
-        .clipShape(Capsule())
-        .buttonStyle(.plain)
-        .sensoryFeedback(.impact(weight: .light), trigger: taps)
-        .accessibilityIdentifier("folded.outer.transport")
     }
 }
 
