@@ -25,7 +25,12 @@ struct StationListView: View {
     var body: some View {
         #if DEBUG
         if StudioCapture.isRequested(mode: dependencies.mode) {
-            StudioCaptureView(dependencies: dependencies)
+            // #465 item 10: the app-wide captures have their own scenario names.
+            if let appWide = AppWideCaptureScenario.requested() {
+                AppWideCaptureView(scenario: appWide, dependencies: dependencies)
+            } else {
+                StudioCaptureView(dependencies: dependencies)
+            }
         } else {
             split
         }
@@ -54,11 +59,15 @@ struct StationListView: View {
             // so it never covers Back or the title. A tap always opens this column. Never takes a tap.
             .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
         }
+        // #465 item 10: measures the window for the Duo's station grid. Nil on every phone.
+        .appWideScreen(.stations)
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
         .sheet(isPresented: $showSettings) {
             SettingsView(isPresented: $showSettings, isTestStation: dependencies.mode == .testStation,
                          // Sentinel's #410 n4: the app's one purge-all.
                          personalDataReset: dependencies.purger)
+                // #465 item 10: readable rows on the Duo and wide windows; untouched on phones.
+                .appWideScreen(.settings, formMargins: true)
         }
         .sheet(isPresented: $showSharedInbox) {
             // Always a NavigationStack with Done. An empty `if` body left an undismissable sheet.
@@ -82,6 +91,8 @@ struct StationListView: View {
                 AddStationWalkthroughView(studio: dependencies.studio, creation: stationCreation) {
                     self.stationCreation = nil
                 }
+                // #465 item 10: readable width and two library columns when wide.
+                .appWideScreen(.library)
             }
         }
         // Live only: lets Connections offer the .md file picker (nil in the test station).
@@ -153,6 +164,8 @@ struct StationSplitRoot<Detail: View>: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     /// The scheme around the split. Regular width keeps it; compact forces dark (see `body`).
     @Environment(\.colorScheme) private var systemColorScheme
+    /// #465 item 10: nil on every phone and narrow split, so compact keeps the carousel.
+    @Environment(\.appWideLayout) private var appWide
 
     init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
          onUserOpenedStation: ((Station.ID) async -> Void)? = nil,
@@ -263,8 +276,16 @@ struct StationSplitRoot<Detail: View>: View {
         if isCompact {
             // A card tap goes through the list's own setter: same push, same one-time
             // authorization request, same stored id. Scrolling the carousel selects nothing.
-            StationCarousel(stations: stations, selectedID: selectedStationID) { id in
-                selection.wrappedValue = id
+            if let appWide, appWide.columns > 1 {
+                // #465 item 10: the unfolded Duo (compact class, 640 pt) shows every station
+                // as a grid. Same cards and the same selection path as the carousel.
+                StationGrid(stations: stations, selectedID: selectedStationID, layout: appWide) { id in
+                    selection.wrappedValue = id
+                }
+            } else {
+                StationCarousel(stations: stations, selectedID: selectedStationID) { id in
+                    selection.wrappedValue = id
+                }
             }
         } else {
             stationList

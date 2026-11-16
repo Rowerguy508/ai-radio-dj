@@ -411,8 +411,20 @@ public actor DJBreakPreparer {
         let attribution = djBreak.attributions[line.id]
         let left = end - ContinuousClock.now
         guard left > .zero else { return .dropped(.late) }
+        // Still rendered alone and late (#347). Stitching context is the lines that will air
+        // (`main`), with this line in its planned slot: a held-back reading and any line the cap
+        // trimmed are not in that break, so they are not sent as neighbours (#365). The other
+        // lines were rendered from `rest`, which does not contain this cue, so their cache keys
+        // do not include this minute's reading.
+        let before = Set(djBreak.cues.prefix { $0.id != line.id }.map(\.id))
+        let slot = main.cues.filter { before.contains($0.id) }.count
+        var aired = main.cues
+        aired.insert(line, at: min(slot, aired.count))
+        let cues = aired
+        let attributions = djBreak.attributions
         let work: @Sendable () async -> Result<RenderedClip, VoiceRenderer.Failure> = {
-            await voice.render(line, userID: userID, stationID: stationID, attribution: attribution)
+            await voice.render(line, userID: userID, stationID: stationID, attribution: attribution,
+                               breakCues: cues, breakAttributions: attributions)
         }
         guard let rendered = try? await VoiceRenderer.withTimeout(left, work) else {
             return Task.isCancelled ? .cancelled : .dropped(.late)
@@ -1005,6 +1017,21 @@ public actor DJBreakPreparer {
                                       trimmedCueIDs: fitted.trimmed))
     }
 
+    /// Cues whose text may be sent as stitching context while `cue` renders. Routes that do not
+    /// send context keep the plan (the request never carries it). A context-sending route omits
+    /// a held-back time check and every optional line: the measured cap can still drop an
+    /// optional, and that drop happens after this request, so a dropped line must not already
+    /// have left as a neighbour. The cue itself stays, so its required neighbours resolve. The
+    /// late time check is rendered after the fit and uses the lines that remain.
+    private static func contextCues(for cue: NarrationCue, in djBreak: DJBreak, sendingContext: Bool) -> [NarrationCue] {
+        guard sendingContext else { return djBreak.cues }
+        let optional = Set(djBreak.optionalCueIDs)
+        let heldBack = djBreak.timeCheck?.cueID
+        let stable = Set(djBreak.cues.map(\.id).filter { !optional.contains($0) && $0 != heldBack })
+        let included = stable.union([cue.id])
+        return djBreak.cues.filter { included.contains($0.id) }
+    }
+
     private static func renderCues(_ djBreak: DJBreak, renderer: VoiceRenderer, userID: String, stationID: String,
                                    bundled: BundledClipResolver?) async
         -> Result<(cues: [NarrationCue], clips: [RenderedClip]), Skip> {
@@ -1021,8 +1048,15 @@ public actor DJBreakPreparer {
             let resolved = await bundled?.gatedClip(for: cue, attribution: djBreak.attributions[cue.id], renderer: renderer)
             let result: Result<RenderedClip, VoiceRenderer.Failure>
             if let resolved { result = .success(resolved) }
-            else { result = await renderer.render(cue, userID: userID, stationID: stationID,
-                                                  attribution: djBreak.attributions[cue.id]) }
+            else {
+                // Context is the lines that will air, not the whole plan. A held-back time check
+                // and every optional line (the cap may trim it after this request) stay out. -Echo
+                let breakCues = contextCues(for: cue, in: djBreak,
+                                            sendingContext: renderer.routes.contains(where: \.sendsSpeechContext))
+                result = await renderer.render(cue, userID: userID, stationID: stationID,
+                                               attribution: djBreak.attributions[cue.id],
+                                               breakCues: breakCues, breakAttributions: djBreak.attributions)
+            }
             switch result {
             case .success(let clip):
                 cue.renderedSeconds = clip.audio.seconds
