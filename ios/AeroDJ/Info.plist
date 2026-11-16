@@ -30,6 +30,10 @@
 			</array>
 		</dict>
 	</dict>
+	<!-- #465 item 7: the on-air Live Activity (AeroDJWidgets). Inert until that extension is
+	     embedded: NowPlayingSurfaces checks for it before requesting anything. -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
