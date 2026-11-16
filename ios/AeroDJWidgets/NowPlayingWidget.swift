@@ -2,10 +2,11 @@ import AeroDJCore
 import SwiftUI
 import WidgetKit
 
-/// #465 item 7: the Now Playing widget. `systemSmall` is the StandBy clock-radio face (04, 04b);
-/// `systemMedium` is the Home Screen version. It reads the one display-only value the app writes
-/// to the existing App Group (`NowPlayingDisplayStore`), and never shows On Air: its timeline
-/// can't follow a 30-second break, so the live tally is the Live Activity's job.
+/// #465 item 7 / #486: the Now Playing widget. `systemSmall` is the StandBy clock-radio face
+/// (04, 04b); `systemMedium` is the Home Screen version. It reads the one display-only value
+/// the app writes to the existing App Group (`NowPlayingDisplayStore`), and never shows On Air
+/// or Ready: its timeline can't follow a 30-second break or a quiet skip, so those lines stay
+/// on the Live Activity.
 struct NowPlayingWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: NowPlayingDisplayStore.widgetKind, provider: NowPlayingProvider()) { entry in
@@ -49,7 +50,7 @@ struct NowPlayingProvider: TimelineProvider {
         let data = UserDefaults(suiteName: NowPlayingDisplayStore.appGroupID)?
             .data(forKey: NowPlayingDisplayStore.defaultsKey)
         // `decode` drops anything that isn't exactly a display value; the widget copy never has
-        // an on-air label, and the view ignores one anyway.
+        // an on-air or ready label, and the view ignores either one anyway.
         return NowPlayingEntry(date: Date(), display: NowPlayingDisplayStore.decode(data)?.widgetCopy)
     }
 }
@@ -59,7 +60,7 @@ extension NowPlayingDisplay {
     static let widgetPlaceholder = NowPlayingDisplay(
         station: "Morning Calm", track: "Tidewater", artist: "Lumen Harbor",
         art: Art(hues: [0.47, 0.55, 0.05], saturation: 0.6, brightness: 0.75, monogram: "T", angle: 135),
-        state: .playing, onAirLabel: nil)
+        state: .playing, onAirLabel: nil, readyLabel: nil)
 }
 
 struct NowPlayingWidgetView: View {
