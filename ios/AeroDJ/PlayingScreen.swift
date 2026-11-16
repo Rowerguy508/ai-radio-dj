@@ -32,8 +32,12 @@ struct PlayingScreen: View {
     @SceneStorage("aerodj.studio.segment") private var segment: WorkspaceSegment = .queue
     /// Survives the compact / Studio switch and a scene restore. Not `.id`'d on the size class.
     @SceneStorage("aerodj.player.scrollAnchor") private var storedScrollAnchor = ""
+    /// Capture readouts only. Debug: the only reader is `StudioCapture`, so Release
+    /// must not write the opened station or `transport|track` into scene storage.
+    #if DEBUG
     @SceneStorage("aerodj.continuity.station") private var continuityStation = ""
     @SceneStorage("aerodj.continuity.playback") private var continuityPlayback = ""
+    #endif
     @State private var showWorkspace = false
     /// One search session above the compact/Studio switch so a fold cannot wipe results.
     @StateObject private var studioSearch = StudioSearchModel()
@@ -77,9 +81,12 @@ struct PlayingScreen: View {
         )
     }
 
+    #if DEBUG
+    /// `transport|track`. Only the debug capture reads this; Release does not store it.
     private var playbackToken: String {
         DisplayContinuity.playbackToken(transport: snapshot.transport, trackID: snapshot.nowPlaying?.id)
     }
+    #endif
 
     var body: some View {
         GeometryReader { geo in
@@ -111,12 +118,14 @@ struct PlayingScreen: View {
                 // folding only changes which column is visible.
                 if newMode != .compact { showWorkspace = false }
             }
+            #if DEBUG
             .onChange(of: station.id, initial: true) { _, id in
                 continuityStation = id
             }
             .onChange(of: playbackToken, initial: true) { _, token in
                 continuityPlayback = token
             }
+            #endif
         }
         .overlay(alignment: .topLeading) {
             // In front of the player, not in a background layer a pushed column can drop.
