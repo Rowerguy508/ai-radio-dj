@@ -203,9 +203,14 @@ Unfolded Studio corners (`StudioCornerRadius`, continuous): panes 30, workspace 
 fields 14, segmented control capsule. Only Zone B's workspace reads them (`\.studioPanes`),
 so the compact layout and its sheet keep their radii.
 
-- **Switch rule:** `GeometryReader` on the root of the playing screen. If
-  `width >= studioMinWidth` → Studio; else → compact. The switch is the only
-  layout decision. Nothing else reads size class to pick a layout.
+- **Switch rule:** `GeometryReader` on the root of the playing screen calls
+  `DisplayContinuity.layout`, and the folded player calls that same function
+  with its own container. Size class gates the Studio (`horizontalSizeClass == .regular`);
+  a missing size class stays compact. Below `studioMinWidth` the compact arm
+  chooses the phone column, the centred column, or the horizontal Duo. No other
+  view reads size class to pick a player layout, and no layout is keyed with `.id`
+  on the size class. Opening the phone keeps the scroll anchor, the selected
+  station and playback; it does not load again.
 - **Wide listen layout:** below the Studio switch the compact player is used.
   iPhone landscape, and any wide container shorter than `FoldedColumnLayout.duoMinHeight`
   (`studioMinWidth`, 716 pt — including the 680 pt compact-to-regular probe), keeps the
@@ -217,6 +222,14 @@ so the compact layout and its sheet keep their radii.
   Music when nothing is playing, fitted to the column width) plus a thin symbol
   bar (back, more, queue, tune). Controls start below `duoStatusClearance`. Below 500 pt
   wide (every iPhone in portrait) the compact player is unchanged.
+- **Regular-width arrangement:** when the width class is regular and the container is
+  the tall listen layout (`controlPlacement` is `.duoHorizontal`), artwork and the
+  controls are one pane and the up-next timeline is the other (`ArrangementPaneLayout`).
+  A wider-than-tall container splits left and right; otherwise the timeline is below.
+  Accessibility text sizes stack both in one scrolling column. Compact width, phone
+  portrait, and the short landscape column keep the player above, unchanged. On Air and
+  its dot use `DJStudioState.onAirLabel` only. iOS 27.1 draws the split with
+  `ArrangementView`; older SDKs draw the same frames.
 - **No `ViewThatFits` at the top level.** Use it inside a zone, for example to pick
   between icon+label and icon-only transport buttons at large text sizes.
 - **Height:** if the container height is below 480 pt in Studio, Zone A keeps the

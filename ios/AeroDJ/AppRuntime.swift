@@ -26,6 +26,9 @@ enum AppRuntime {
         let task = Task { @MainActor in
             await dependencies.start()
             await PlaybackSessionBinder.bind(dependencies)
+            // #465 item 7: widget and Live Activity feed. Observes only; does nothing until
+            // the widget extension is embedded, and never sits on the playback path.
+            NowPlayingSurfaces.shared.start(dependencies)
         }
         startup = task
         await task.value

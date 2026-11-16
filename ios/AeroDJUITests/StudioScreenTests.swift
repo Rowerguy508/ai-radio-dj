@@ -36,7 +36,8 @@ final class StudioScreenTests: XCTestCase {
                           musicAuthStatus: String? = nil,
                           orientation: UIDeviceOrientation = .portrait) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
+        app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
+                               "-AeroDJResetContinuity", "YES"]
         if let segment { app.launchArguments += ["-AeroDJStudioCaptureSegment", segment] }
         if let scenario { app.launchArguments += ["-AeroDJStudioCaptureScenario", scenario] }
         if let contentSize {
@@ -431,6 +432,144 @@ final class StudioScreenTests: XCTestCase {
         save(app, "duo-wide-ready")
     }
 
+    /// #492 (#465 item 5): opening the phone. The capture starts at the folded phone
+    /// container (compact) and unfolds to the 640×820 Duo (regular), which shows #514's
+    /// two-pane arrangement. Playback, the selected station, the stored scroll anchor and
+    /// the load count stay. Row 4 on screen is checked while folded only.
+    @MainActor
+    func testOpeningThePhoneKeepsPlaybackScrollAndStation() throws {
+        try XCTSkipUnless(isOpenLayout, "The unfolded 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoContinuity")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertFalse(any["layout.studio"].exists, "the folded phone stays the compact player")
+        XCTAssertEqual(readout(app, "continuity.pose"), "folded")
+        XCTAssertEqual(readout(app, "continuity.sizeClass"), "compact")
+        waitReadout(app, "continuity.station", "morning-calm")
+        waitReadout(app, "continuity.playback", "playing|1")
+        waitReadout(app, "continuity.loads", "1")
+        XCTAssertEqual(callLabel(app), "0/0")
+        let title = any["station.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(title.label.contains("Morning Calm"), title.label)
+        let play = app.buttons["transport.playPause"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
+        let playLabel = play.label
+        let unfold = app.buttons["continuity.unfold"]
+        let scrollTo = app.buttons["continuity.scrollToRow"]
+        XCTAssertTrue(unfold.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(scrollTo.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(unfold.frame.width, 44 - 0.01)
+        XCTAssertGreaterThanOrEqual(unfold.frame.height, 44 - 0.01)
+        XCTAssertGreaterThanOrEqual(scrollTo.frame.height, 44 - 0.01)
+
+        let container = any["continuity.container"]
+        XCTAssertTrue(container.waitForExistence(timeout: 5))
+        _ = settledFrame(of: container, "folded container") {
+            abs($0.width - 390) <= 1 && abs($0.height - 844) <= 1
+        }
+        scrollTo.tap()
+        let anchor = any["continuity.anchor"]
+        // Identifier only: the anchor readout's label is also "continuity.row.4", so the
+        // subscript (identifier or label) matched two elements.
+        let row = any.matching(NSPredicate(format: "identifier == %@", "continuity.row.4")).element
+        let scrolled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "continuity.row.4"),
+                                                 object: anchor)
+        XCTAssertEqual(XCTWaiter().wait(for: [scrolled], timeout: 5), .completed,
+                       "the scroll anchor did not move to row 4: \(anchor.label)\n\(app.debugDescription)")
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let rowOnScreen = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: row)
+        XCTAssertEqual(XCTWaiter().wait(for: [rowOnScreen], timeout: 5), .completed,
+                       "row 4 is not on screen after scrolling: \(row.frame)")
+        save(app, "duo-continuity-folded")
+
+        let loads = readout(app, "continuity.loads")
+        let playback = readout(app, "continuity.playback")
+        unfold.tap()
+        XCTAssertEqual(readout(app, "continuity.pose"), "unfolded")
+        XCTAssertEqual(readout(app, "continuity.sizeClass"), "regular",
+                       "opening the phone changes the size class")
+        _ = settledFrame(of: container, "unfolded container") {
+            abs($0.width - 640) <= 1 && abs($0.height - 820) <= 1
+        }
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 10),
+                      "640 pt stays the compact player at either size class\n\(app.debugDescription)")
+        XCTAssertFalse(any["layout.studio"].exists)
+        // #514: regular width at 640 × 820 resolves to the two-pane arrangement.
+        XCTAssertTrue(any["arrangement.split"].waitForExistence(timeout: 10),
+                      "the unfolded Duo is the two-pane arrangement\n\(app.debugDescription)")
+        XCTAssertFalse(any["folded.trackColumn"].exists, "the folded horizontal player is gone")
+        let held = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "continuity.row.4"),
+                                             object: anchor)
+        // The arrangement panes have no continuity rows, so row 4 is checked only while
+        // folded. The stored anchor must survive the switch so folding back restores it.
+        XCTAssertEqual(XCTWaiter().wait(for: [held], timeout: 5), .completed,
+                       "the stored scroll anchor was lost: \(anchor.label)")
+        XCTAssertEqual(readout(app, "continuity.station"), "morning-calm")
+        XCTAssertTrue(any["station.title"].label.contains("Morning Calm"))
+        XCTAssertEqual(readout(app, "continuity.playback"), playback)
+        XCTAssertEqual(play.label, playLabel, "playback was restarted")
+        XCTAssertEqual(readout(app, "continuity.loads"), loads, "opening the phone reloaded")
+        assertCallsStayZero(app, "opening the phone must not search or play")
+        save(app, "duo-continuity-unfolded")
+    }
+
+    @MainActor
+    private func readout(_ app: XCUIApplication, _ identifier: String) -> String {
+        let element = app.descendants(matching: .any)[identifier]
+        XCTAssertTrue(element.waitForExistence(timeout: 5), "\(identifier) missing\n\(app.debugDescription)")
+        return element.label
+    }
+
+    /// Scene storage written by the player can land a frame after the chrome exists.
+    @MainActor
+    private func waitReadout(_ app: XCUIApplication, _ identifier: String, _ expected: String) {
+        let element = app.descendants(matching: .any)[identifier]
+        let match = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", expected), object: element)
+        XCTAssertEqual(XCTWaiter().wait(for: [match], timeout: 5), .completed,
+                       "\(identifier) was \(element.exists ? element.label : "missing"), expected \(expected)\n\(app.debugDescription)")
+    }
+
+    /// #502: the unfolded Duo (640 × 820 pt) with the DJ on air, so the owner can see that
+    /// layout first. Same container and fixtures as `duoWideReady`; the DJ is `.speaking`
+    /// with the timer frozen at 0:12. The track column keeps the art (`keepArtVisible`);
+    /// the orb is the content-column visualizer, not an orb-only art card.
+    @MainActor
+    func testDuoWideOnAirKeepsArtAndShowsTheContentColumnOrb() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoWideOnAir")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertFalse(any["layout.studio"].exists, "the Duo split stays the compact player")
+
+        let container = any["capture.duoContainer"]
+        XCTAssertTrue(container.waitForExistence(timeout: 5), "Duo container missing\n\(app.debugDescription)")
+        XCTAssertNotNil(settledFrame(of: container, "Duo container") {
+            abs($0.width - 640) <= 1 && abs($0.height - 820) <= 1
+        }, "container never settled at 640 × 820 pt: \(container.frame)")
+
+        XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10),
+                      "track column missing\n\(app.debugDescription)")
+        XCTAssertTrue(any["folded.contentColumn"].waitForExistence(timeout: 10),
+                      "content column missing\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+
+        let onAir = any["dj.onAir"]
+        XCTAssertTrue(onAir.waitForExistence(timeout: 5), "dj.onAir missing\n\(app.debugDescription)")
+        XCTAssertFalse(any["dj.ready"].exists, "On Air replaces the ready line")
+        let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
+        XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
+
+        XCTAssertTrue(any["folded.artCard.artwork"].waitForExistence(timeout: 5),
+                      "the Duo track column keeps the art while on air\n\(app.debugDescription)")
+        XCTAssertFalse(any["folded.artCard.orb"].exists,
+                       "keepArtVisible leaves the art card as art, not the orb-only card")
+        XCTAssertTrue(any["folded.visualizer"].waitForExistence(timeout: 5),
+                      "the content-column orb is missing\n\(app.debugDescription)")
+        save(app, "duo-wide-onair")
+    }
+
     /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and
     /// accepted by `isFinal`; nil after `timeout`. Polls on the run loop, never a fixed sleep
     /// before a screenshot.
@@ -622,6 +761,38 @@ final class StudioScreenTests: XCTestCase {
         let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
         XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
         save(app, "closed-ax5-onair")
+    }
+
+    /// #435 n1 (#434): default-size on-air stills, so the orb-only art card is visible.
+    /// `closed-ax5-onair` often hides the card (`includesArt: false` at AX5). The existing
+    /// `onAir` scenario is unchanged (frozen ON AIR timer at 0:12). Closed (phone) is the
+    /// folded player, where `FoldedArtCard` swaps art for the orb. Open (iPad) is the
+    /// two-zone Studio, which has no folded art card; the shot still records the Studio
+    /// while the DJ is on air.
+    @MainActor
+    func testDefaultOnAirShowsOrbOnlyArtCard() throws {
+        let app = launch(scenario: "onAir")
+        let layout = isOpenLayout ? "layout.studio" : "layout.compact"
+        XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15),
+                      "\(layout) expected at default size:\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Morning Light"), "The song stays on screen")
+        XCTAssertTrue(app.buttons["transport.playPause"].exists)
+        let any = app.descendants(matching: .any)
+        if isOpenLayout {
+            XCTAssertFalse(any["folded.artCard.orb"].exists,
+                           "the two-zone Studio has no folded art card")
+        } else {
+            let onAir = any["dj.onAir"]
+            XCTAssertTrue(onAir.waitForExistence(timeout: 5), "dj.onAir missing\n\(app.debugDescription)")
+            XCTAssertFalse(any["dj.ready"].exists, "On Air replaces the ready line")
+            let frozen = any.matching(NSPredicate(format: "label == %@", "On Air, 0:12")).firstMatch
+            XCTAssertTrue(frozen.exists, "The capture freezes the ON AIR timer at 0:12: \(onAir.label)")
+            XCTAssertTrue(any["folded.artCard.orb"].waitForExistence(timeout: 5),
+                          "the art card shows the orb while on air\n\(app.debugDescription)")
+            XCTAssertFalse(any["folded.artCard.artwork"].exists,
+                           "the art is hidden while on air")
+        }
+        save(app, isOpenLayout ? "open-onair" : "closed-onair")
     }
 
     // MARK: Duo shell, fold, and rotation
@@ -929,12 +1100,25 @@ final class StudioScreenTests: XCTestCase {
 
         let app = launch(scenario: "ratingNever")
         let toast = app.descendants(matching: .any)["nowPlaying.ratingToast"]
+        let undo = app.buttons["nowPlaying.rating.undo"]
         XCTAssertTrue(toast.waitForExistence(timeout: 5), "never toast:\n\(app.debugDescription)")
         XCTAssertTrue(shows(app, "Won't play on this station again."))
-        XCTAssertTrue(app.buttons["nowPlaying.rating.undo"].isHittable)
-        save(app, "rating-never-toast")
-        app.buttons["nowPlaying.rating.undo"].tap()
+        XCTAssertTrue(undo.isHittable)
+        // Dismiss is 6s. Wait for Undo again and tap it before another query or the screenshot. -Fry
+        XCTAssertTrue(undo.waitForExistence(timeout: 5))
+        undo.tap()
         XCTAssertTrue(toast.waitForNonExistence(timeout: 3), "undo hides the toast")
+        save(app, "rating-never-undone")
+    }
+
+    /// The never toast while it is still on screen. No Undo tap, so the 6s dismissal is not in this shot.
+    @MainActor
+    func testRatingNeverToastScreenshot() throws {
+        let app = launch(scenario: "ratingNever")
+        let toast = app.descendants(matching: .any)["nowPlaying.ratingToast"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 5), "never toast:\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Won't play on this station again."))
+        save(app, "rating-never-toast")
     }
 
     /// Compact empty state: submit search shows fixture results and does not play.

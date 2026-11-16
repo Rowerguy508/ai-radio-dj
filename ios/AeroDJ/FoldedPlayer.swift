@@ -49,6 +49,21 @@ extension View {
     }
 }
 
+/// The continuity capture names the player scroll so a test can swipe it.
+/// Other launches leave the accessibility tree as it was.
+private struct ContinuityScrollerID: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.accessibilityIdentifier("continuity.scroller")
+        } else {
+            content
+        }
+    }
+}
+
 /// Reduce Motion, including the capture launch flag the UI tests use.
 private struct FoldedReduceMotion {
     static func resolve(_ system: Bool) -> Bool {
@@ -96,15 +111,44 @@ struct FoldedPlayer: View {
     var stationStops: [DuoStationSwitch.Stop] = []
     /// The station-row open path. Nil hides the dial.
     var onOpenStation: ((String) async -> Void)? = nil
+    /// Owned by `PlayingScreen`, above the layout switch. A placement change
+    /// rebuilds the scroll view and reads this same anchor back.
+    var scrollAnchor: Binding<String?> = .constant(Optional<String>.none)
 
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    /// Book pose only. Empty on this SDK, so `wideBody` keeps the centred gutter.
+    @State private var foldHinge: FoldAwareness.HingeSample?
+    @State private var foldDivisions: [FoldAwareness.Division] = []
+
+    /// `DisplayContinuity.layout` with this container and the width class. Studio
+    /// results are not drawn here (the screen embeds this player only for a
+    /// compact decision); those fall through to the geometry-only column, which
+    /// is the phone path this view had before the size class was an input.
+    private func playerPlacement(in size: CGSize) -> FoldedColumnLayout.ControlPlacement {
+        let decision = DisplayContinuity.layout(
+            hasRegularWidth: horizontalSizeClass == .regular,
+            containerWidth: Double(size.width),
+            containerHeight: Double(size.height),
+            accessibilityTextSize: typeSize.isAccessibilitySize)
+        if let placement = decision.controlPlacement { return placement }
+        return FoldedColumnLayout.controlPlacement(containerWidth: Double(size.width),
+                                                   containerHeight: Double(size.height))
+    }
+
+    private var continuityProbe: Bool {
+        #if DEBUG
+        UserDefaults.standard.bool(forKey: DisplayContinuityLaunch.probeKey)
+        #else
+        false
+        #endif
+    }
 
     var body: some View {
         GeometryReader { geo in
-            switch FoldedColumnLayout.controlPlacement(containerWidth: Double(geo.size.width),
-                                                       containerHeight: Double(geo.size.height)) {
+            switch playerPlacement(in: geo.size) {
             case .phoneBottom:
                 compactBody(in: geo.size)
             case .centredColumn:
@@ -167,9 +211,12 @@ struct FoldedPlayer: View {
                                     includesStatus: Bool) -> some View {
         ScrollView(.vertical, showsIndicators: showsIndicators) {
             compactUpper(artSide: artSide, includesArt: true, includesStatus: includesStatus)
+                .scrollTargetLayout()
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
+        .scrollPosition(id: scrollAnchor)
+        .modifier(ContinuityScrollerID(enabled: continuityProbe))
     }
 
     /// iPhone landscape: one centred column, the layout this width had before the Duo rail.
@@ -203,59 +250,78 @@ struct FoldedPlayer: View {
             .accessibilityIdentifier("folded.wideColumn")
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, minHeight: size.height, alignment: .center)
+            .scrollTargetLayout()
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
+        .scrollPosition(id: scrollAnchor)
         .frame(width: size.width, height: size.height)
     }
 
     /// Full-width Duo. The centre gutter is the fold: no control sits in it.
+    /// In book pose the gutter is the division region instead of that centred band,
+    /// and the player stays on its leading side. A column with no width is omitted
+    /// so a 44 pt button is not laid out on the crease.
     private func wideBody(in size: CGSize) -> some View {
-        let layout = FoldedColumnLayout.duoHorizontal(containerWidth: Double(size.width),
-                                                      containerHeight: Double(size.height),
-                                                      artMin: Double(FoldedStyle.artMinSide),
-                                                      artMax: Double(FoldedStyle.artMaxSide))
+        let layout = FoldAwareness.resolve(containerWidth: Double(size.width),
+                                           containerHeight: Double(size.height),
+                                           hinge: foldHinge,
+                                           divisions: foldDivisions,
+                                           artMin: Double(FoldedStyle.artMinSide),
+                                           artMax: Double(FoldedStyle.artMaxSide)).metrics
         let gap = CGFloat(FoldedColumnLayout.Spacing.betweenControls)
         return HStack(alignment: .top, spacing: 0) {
-            ScrollView(.vertical, showsIndicators: false) {
-                // An explicit column width. A vertical scroll view otherwise offers an
-                // unbounded width, the placeholder lays out on one line, and a centred
-                // overflow puts the leading edge off the column.
-                upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
-                      includesStatus: false, keepArtVisible: true, includesSearch: false)
-                    .frame(width: CGFloat(layout.leftWidth), alignment: .leading)
+            if layout.leftWidth > 0 {
+                ScrollView(.vertical, showsIndicators: false) {
+                    // An explicit column width. A vertical scroll view otherwise offers an
+                    // unbounded width, the placeholder lays out on one line, and a centred
+                    // overflow puts the leading edge off the column.
+                    upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
+                          includesStatus: false, keepArtVisible: true, includesSearch: false)
+                        .frame(width: CGFloat(layout.leftWidth), alignment: .leading)
+                        .scrollTargetLayout()
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollContentBackground(.hidden)
+                .scrollPosition(id: scrollAnchor)
+                .modifier(ContinuityScrollerID(enabled: continuityProbe))
+                .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
+                .background { dayWash.accessibilityHidden(true) }
+                // .contain first, then the identifier. An identifier on a container without
+                // .contain is copied onto every control inside it. The element is the column,
+                // not a clear layer over the rating button. The ScrollView is not the element:
+                // that also exposes the scroll view.
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("folded.trackColumn")
+                .accessibilitySortPriority(2)
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .scrollContentBackground(.hidden)
-            .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
-            .background { dayWash.accessibilityHidden(true) }
-            // .contain first, then the identifier. An identifier on a container without
-            // .contain is copied onto every control inside it. The element is the column,
-            // not a clear layer over the rating button. The ScrollView is not the element:
-            // that also exposes the scroll view.
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("folded.trackColumn")
-            .accessibilitySortPriority(2)
 
             Color.clear
                 .frame(width: CGFloat(layout.foldGutter), height: size.height)
                 .accessibilityHidden(true)
                 .accessibilityIdentifier("folded.fold")
 
-            wideContent(gap: gap, top: CGFloat(layout.topClearance))
-                .frame(width: CGFloat(layout.contentWidth), height: size.height, alignment: .top)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("folded.contentColumn")
-                .accessibilitySortPriority(1)
+            if layout.contentWidth > 0 {
+                wideContent(gap: gap, top: CGFloat(layout.topClearance))
+                    .frame(width: CGFloat(layout.contentWidth), height: size.height, alignment: .top)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("folded.contentColumn")
+                    .accessibilitySortPriority(1)
+            }
 
-            wideSystemBar(top: CGFloat(layout.topClearance))
-                .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("folded.systemBar")
-                .accessibilitySortPriority(0)
+            if layout.barWidth > 0 {
+                wideSystemBar(top: CGFloat(layout.topClearance))
+                    .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("folded.systemBar")
+                    .accessibilitySortPriority(0)
+            }
         }
         .padding(.horizontal, CGFloat(layout.edgeInset))
         .frame(width: size.width, height: size.height)
+        .background {
+            FoldDivisionProbe(hinge: $foldHinge, divisions: $foldDivisions)
+        }
     }
 
     /// Horizontal scrubber, transport, station, and the DJ chip. Nothing playing puts
@@ -393,10 +459,12 @@ struct FoldedPlayer: View {
                                   isOnAir: keepArtVisible ? false : dj.state.isOnAir,
                                   side: artSide, namespace: artworkNamespace, speechLevel: speechLevel)
                         .frame(maxWidth: .infinity)
+                        .id(DisplayContinuity.artAnchor)
                 }
                 FoldedTitleBlock(track: track, isTestStation: isTestStation, centered: centered)
                     .padding(.top, includesArt
                              ? (centered ? CGFloat(FoldedColumnLayout.Spacing.artToTitle) : 24) : 0)
+                    .id(DisplayContinuity.titleAnchor)
                 if includesStatus {
                     FoldedDJStatus(dj: dj)
                         .padding(.top, centered ? CGFloat(FoldedColumnLayout.Spacing.titleToStatus) : 16)
@@ -416,7 +484,17 @@ struct FoldedPlayer: View {
                 NowPlayingPlaceholder(content: content, actions: actions)
                     .padding(.top, 24)
             }
+            if continuityProbe {
+                ForEach(0..<8, id: \.self) { index in
+                    Text("Continuity row \(index)")
+                        .font(.body)
+                        .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
+                        .id(DisplayContinuity.rowAnchor(index))
+                        .accessibilityIdentifier(DisplayContinuity.rowAnchor(index))
+                }
+            }
         }
+        .scrollTargetLayout()
     }
 
     @ViewBuilder
@@ -558,7 +636,20 @@ private struct FoldedArtCard: View {
         }
         .frame(width: side, height: side)
         .animation(.easeInOut(duration: FoldedArtCardLayers.crossfadeSeconds), value: isOnAir)
-        .accessibilityHidden(true)
+        // VoiceOver never sees the card. XCUITest can't query a hidden element either
+        // (iOS 43658288607: no folded.artCard.* in the tree), so only the Debug on-air
+        // capture exposes it, as a label-less element. The id follows the visible layers
+        // so the capture can assert orb-only (`folded.artCard.orb`) versus art
+        // (`folded.artCard.artwork`). Accessibility only; no pixel changes.
+        .modifier(ArtCardTestExposure(identifier: Self.testIdentifier(layers: layers)))
+    }
+
+    /// `folded.artCard.orb` when only the orb is showing; `folded.artCard.artwork` when
+    /// only the art is showing. Mixed opacity during the cross-fade uses `folded.artCard`.
+    private static func testIdentifier(layers: FoldedArtCardLayers) -> String {
+        if layers.showsOrb && layers.artworkOpacity == 0 { return "folded.artCard.orb" }
+        if !layers.showsOrb && layers.artworkOpacity > 0 { return "folded.artCard.artwork" }
+        return "folded.artCard"
     }
 
     /// The art and the orb in one fixed frame, so the swap never changes the card's size.
@@ -834,12 +925,22 @@ private struct DuoStationDial: View {
     let onOpen: (String) async -> Void
 
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    @State private var snapped: String?
+    /// Survives the dial being created again when the horizontal layout appears.
+    /// `onAppear` must not write the opened station over a stored anchor.
+    @SceneStorage("aerodj.duo.dialAnchor") private var storedSnap = ""
     @State private var flight = DuoStationSwitch.Flight(highlightID: "")
     @State private var openTask: Task<Void, Never>?
 
     private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
+    private var snapped: String? { storedSnap.isEmpty ? nil : storedSnap }
     private var highlightedID: String { snapped ?? openedID }
+
+    private var snapBinding: Binding<String?> {
+        Binding(
+            get: { storedSnap.isEmpty ? nil : storedSnap },
+            set: { storedSnap = $0 ?? "" }
+        )
+    }
     private var highlightedName: String {
         stops.first { $0.id == highlightedID }?.name ?? ""
     }
@@ -872,7 +973,7 @@ private struct DuoStationDial: View {
                 .scrollTargetLayout()
             }
             .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $snapped)
+            .scrollPosition(id: snapBinding)
             .scrollBounceBehavior(.basedOnSize)
 
             Button {
@@ -904,16 +1005,28 @@ private struct DuoStationDial: View {
             case .decrement: next = max(0, index - 1)
             @unknown default: return
             }
-            snapped = stops[next].id
+            storedSnap = stops[next].id
         }
         .accessibilityAction(.default) { open(highlightedID) }
         .onAppear {
-            snapped = openedID
-            flight = DuoStationSwitch.Flight(highlightID: openedID)
+            #if DEBUG
+            if DisplayContinuityLaunch.shouldReset("dial") { storedSnap = "" }
+            #endif
+            // A stored highlight wins. The opened station is only the default
+            // when the dial has never been scrolled, including the first time
+            // the horizontal layout creates this view.
+            let session = DisplayContinuity.Session(
+                selectedStationID: openedID,
+                scrollAnchor: storedSnap.isEmpty ? nil : storedSnap,
+                playbackToken: "",
+                loadCount: 0
+            ).appeared(defaultAnchor: openedID)
+            if let anchor = session.scrollAnchor, anchor != storedSnap { storedSnap = anchor }
+            flight = DuoStationSwitch.Flight(highlightID: storedSnap.isEmpty ? openedID : storedSnap)
         }
-        .onChange(of: openedID) { _, id in snapped = id }
-        .onChange(of: snapped) { _, id in
-            guard let id else { return }
+        .onChange(of: openedID) { _, id in storedSnap = id }
+        .onChange(of: storedSnap) { _, id in
+            guard !id.isEmpty else { return }
             _ = flight.receive(.snap(id), playingID: openedID)
         }
         .transaction { if reduceMotion { $0.disablesAnimations = true } }
@@ -921,7 +1034,7 @@ private struct DuoStationDial: View {
 
     /// Tap or Tune. A swipe never reaches this. A newer tap cancels a pending open.
     private func open(_ id: String) {
-        snapped = id
+        storedSnap = id
         guard let token = flight.receive(.tap(id), playingID: openedID) else { return }
         openTask?.cancel()
         openTask = Task {
@@ -1241,3 +1354,24 @@ private struct LegacyToolbarGlass: ViewModifier {
     }
 }
 #endif
+
+/// Hidden from VoiceOver everywhere. In Debug, while the `onAir` capture has frozen the
+/// ON AIR timer, the art card is exposed to XCUITest under its layer id. Release and every
+/// other run keep it hidden.
+private struct ArtCardTestExposure: ViewModifier {
+    let identifier: String
+
+    func body(content: Content) -> some View {
+        #if DEBUG
+        if StudioCaptureOnAir.frozenElapsed != nil {
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier(identifier)
+        } else {
+            content.accessibilityHidden(true).accessibilityIdentifier(identifier)
+        }
+        #else
+        content.accessibilityHidden(true).accessibilityIdentifier(identifier)
+        #endif
+    }
+}
