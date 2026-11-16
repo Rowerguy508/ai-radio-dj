@@ -107,7 +107,9 @@ final class DJTimeCheckTests: XCTestCase {
         let phrases = DJTimeCheckPhrases()
         for style in DJClockStyle.allCases {
             for raw in 0..<(24 * 60) {
-                let reading = DJTimeCheck.reading(date(raw / 60, raw % 60), calendar: eastern, style: style)
+                guard let reading = DJTimeCheck.reading(date(raw / 60, raw % 60), calendar: eastern, style: style) else {
+                    return XCTFail("\(style) \(raw / 60):\(raw % 60): a normal day has a wall-clock reading")
+                }
                 for template in phrases.templates(for: reading.relation) {
                     guard let line = TemplatePool.fill(template, ["time": reading.time]) else { return XCTFail(template) }
                     XCTAssertFalse(line.contains("{") || line.contains("}") || line.contains("\n"), line)
@@ -137,9 +139,9 @@ final class DJTimeCheckTests: XCTestCase {
         var utc = Calendar(identifier: .gregorian)
         utc.timeZone = TimeZone(identifier: "UTC")!
         let at = date(19, 40)                         // 23:40 UTC on Oct 31 (EDT is UTC-4)
-        XCTAssertEqual(DJTimeCheck.reading(at, calendar: eastern, style: .twelveHour).time, "7:40")
-        XCTAssertEqual(DJTimeCheck.reading(at, calendar: utc, style: .twentyFourHour).time, "23:40")
-        XCTAssertEqual(DJTimeCheck.reading(date(7, 57, second: 59), calendar: eastern, style: .twelveHour).time, "7:55",
+        XCTAssertEqual(DJTimeCheck.reading(at, calendar: eastern, style: .twelveHour)?.time, "7:40" as String?)
+        XCTAssertEqual(DJTimeCheck.reading(at, calendar: utc, style: .twentyFourHour)?.time, "23:40" as String?)
+        XCTAssertEqual(DJTimeCheck.reading(date(7, 57, second: 59), calendar: eastern, style: .twelveHour)?.time, "7:55" as String?,
                        "seconds are ignored")
     }
 

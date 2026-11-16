@@ -99,6 +99,13 @@ public struct PlaybackBoundaryDetector: Sendable {
     private var skipLoadCutPending: SkipLoadCut?
     /// Set when the load played past the failed-start window. Read with `takeSkipLoadProgress()`.
     private var skipLoadProgressPending = false
+    /// #444 (-Atlas): no sample with an entry has been seen since the app's last change
+    /// (`userRequestedChange`). The poll runs once a second, so a song a skip just loaded can be
+    /// cleared by the next lock-screen Next before any poll has seen it.
+    private var changeUnobserved = false
+    /// #444 (-Atlas): our own `play()` for the skip's song returned (`noteOwnPlayReturned`), and no
+    /// poll has seen that song yet. An empty queue now is MusicKit's Next cutting that song.
+    private var ownPlayReturnedUnobserved = false
 
     // Build 18 P0 (-Fry): sticky per-entry facts that a system interruption cannot clear.
     /// Share of the catalog duration that counts as "this entry played through".
@@ -192,6 +199,8 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// Call before the app itself changes what plays (skip, new queue).
     public mutating func userRequestedChange() {
         userChangePending = true
+        changeUnobserved = true
+        ownPlayReturnedUnobserved = false
         endedEntryID = nil
         interruptionBeganNearEnd = false
         queueFinishedSinceInterruption = false
@@ -208,6 +217,15 @@ public struct PlaybackBoundaryDetector: Sendable {
 
     /// True while `setSkipLoadInFlight(true)` has not been cleared by progress or the caller.
     public var isSkipLoadInFlight: Bool { skipLoadOpen }
+
+    /// #444 (-Atlas): the app's own `play()` for the song it just loaded returned and the song
+    /// started. Call it after that `play()` returns. While a skip load is open and no poll has
+    /// seen the new entry yet, a later empty queue is a cut of that song (`takeSkipLoadCut()`):
+    /// before this, the detector still held the previous song (or nothing), so that clear
+    /// reported no cut, no remote skip and no failed start, and the player sat empty.
+    public mutating func noteOwnPlayReturned() {
+        ownPlayReturnedUnobserved = skipLoadOpen && changeUnobserved
+    }
 
     /// Why playback stopped. A natural end has no cause.
     public enum HoldCause: Equatable, Sendable {
@@ -408,6 +426,21 @@ public struct PlaybackBoundaryDetector: Sendable {
         var settlingStop = false
         defer { if !settlingStop { wasPlaying = observation.isPlaying } }
         guard let current = observation.entryID else {
+            // #444 (-Atlas): the song our skip loaded and started was cleared before any poll saw
+            // it. The detector's entry is still the song before it (or none), so none of the
+            // checks below can see this cut. Report it as a clear of a song not seen playing.
+            if ownPlayReturnedUnobserved, skipLoadOpen, !observation.isPlaying,
+               !heldByUserOrRoute, !interruptionSinceLastPlayingSample {
+                ownPlayReturnedUnobserved = false
+                entryID = nil
+                lastPosition = nil
+                lastSampleWasPlaying = false
+                observedPlaying = false
+                seekBaseline = nil
+                userChangePending = false
+                skipLoadCutPending = SkipLoadCut(shape: .clear, targetSeenPlaying: false)
+                return nil
+            }
             // Queue emptied. A natural finish of the last item is a boundary.
             let finished = entryID
             if finished != nil, interruptedEntryPlayedThrough { queueFinishedSinceInterruption = true }
@@ -441,6 +474,8 @@ public struct PlaybackBoundaryDetector: Sendable {
             if loadCut { skipLoadCutPending = cut }
             return nil
         }
+        changeUnobserved = false
+        ownPlayReturnedUnobserved = false
         guard let previous = entryID else {
             // First entry of a queue: nothing finished yet.
             entryID = current
