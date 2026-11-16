@@ -263,7 +263,12 @@ struct FoldedPlayer: View {
                 DuoVerticalRail(dj: dj, reviewCount: moreMenu?.reviewCount, upNext: snapshot.upNext,
                                 onCollapse: onCollapseRail,
                                 onConnections: moreMenu?.onConnections ?? {},
-                                onQueue: onQueue, onTune: onTune, pause: { actions.pause() })
+                                onQueue: onQueue, onTune: onTune, pause: { actions.pause() },
+                                transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                                showsTransport: content.showsTransport,
+                                cancelStart: { actions.cancelStart() },
+                                resume: { await actions.resume() },
+                                skip: { await actions.skip() })
                     .padding(.top, CGFloat(layout.topClearance))
                     .padding(.bottom, 8)
                     .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
@@ -276,10 +281,11 @@ struct FoldedPlayer: View {
         .frame(width: size.width, height: size.height)
     }
 
-    /// Horizontal scrubber, transport, station, and the DJ chip. Nothing playing puts
-    /// Search Apple Music here too: the left column is artwork and the title, and this
-    /// column is the only place a control is allowed. Each control takes the column
-    /// width and may grow downward, so an ideal width cannot centre itself off the column.
+    /// Horizontal scrubber, station, and the DJ chip. Play/pause and skip live on the
+    /// rail, not in this column. Nothing playing puts Search Apple Music here too: the
+    /// left column is artwork and the title, and this column is the only place a
+    /// non-rail control is allowed. Each control takes the column width and may grow
+    /// downward, so an ideal width cannot centre itself off the column.
     /// The orb appears here only while the DJ is actually on air, and it does not cover the artwork.
     private func wideContent(gap: CGFloat, top: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: gap) {
@@ -316,11 +322,6 @@ struct FoldedPlayer: View {
             }
             DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
             Spacer(minLength: gap)
-            if content.showsTransport {
-                TransportRow(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
-                             actions: actions, onTune: nil, balancesSides: false)
-                    .duoColumnWidth()
-            }
         }
         .padding(.top, top)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

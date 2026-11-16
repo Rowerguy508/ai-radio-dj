@@ -17,6 +17,12 @@ struct DuoRailHooks {
     var onTune: () -> Void
     var onCollapse: () -> Void
     var pause: () -> Void
+    var transport: TransportState = .stopped
+    var startTimedOut: Bool = false
+    var showsTransport: Bool = false
+    var cancelStart: () -> Void = {}
+    var resume: () async -> Void = {}
+    var skip: () async -> Void = {}
 }
 
 extension View {
@@ -37,6 +43,12 @@ struct DuoVerticalRail: View {
     let onQueue: () -> Void
     let onTune: () -> Void
     let pause: () -> Void
+    var transport: TransportState = .stopped
+    var startTimedOut: Bool = false
+    var showsTransport: Bool = false
+    var cancelStart: () -> Void = {}
+    var resume: () async -> Void = {}
+    var skip: () async -> Void = {}
 
     /// True only in a binary built with the iOS 27.1 SDK, running on iOS 27.1+.
     /// The 26.5 CI build always takes the custom rail.
@@ -48,19 +60,27 @@ struct DuoVerticalRail: View {
     }
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: CGFloat(DuoRailLayout.spacing)) {
             DuoRailIconButton(systemImage: "chevron.down", label: "Collapse",
                               hint: "Shows the folded player. Music continues.",
                               identifier: "folded.collapse", action: onCollapse)
             DuoRailMoreMenu(reviewCount: reviewCount, onConnections: onConnections, onTune: onTune)
+            if showsTransport {
+                DuoRailPlayPauseButton(transport: transport, startTimedOut: startTimedOut,
+                                       pause: pause, cancelStart: cancelStart, resume: resume)
+                DuoRailIconButton(systemImage: "forward.fill", label: "Skip",
+                                  hint: "Skips this song.",
+                                  identifier: "transport.skip",
+                                  action: { Task { await skip() } })
+            }
             DuoRailIconButton(systemImage: "list.bullet", label: Self.queueLabel(upNext),
                               hint: "Opens the queue",
                               identifier: "queue.affordance", action: onQueue)
             DuoSleepTimerButton(pause: pause)
-            Spacer(minLength: 8)
+            Spacer(minLength: CGFloat(DuoRailLayout.spacerMinLength))
             DuoLiveDot(state: dj.state)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, CGFloat(DuoRailLayout.verticalPadding))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Identifiers stay on the buttons. The glass modifier must not become the element.
         .accessibilityElement(children: .contain)
@@ -138,6 +158,55 @@ private struct DuoRailIconButton: View {
         .accessibilityLabel(label)
         .accessibilityHint(hint)
         .accessibilityIdentifier(identifier)
+    }
+}
+
+
+/// The same tap policy as `TransportRow`, sized to the rail's 44 pt plate so it fits
+/// in `duoBarWidth`. Identifiers stay `transport.playPause` / `transport.skip`.
+private struct DuoRailPlayPauseButton: View {
+    let transport: TransportState
+    let startTimedOut: Bool
+    let pause: () -> Void
+    let cancelStart: () -> Void
+    let resume: () async -> Void
+
+    private var face: TransportButtonFace {
+        TransportTapPolicy.face(transport: transport, startTimedOut: startTimedOut)
+    }
+
+    var body: some View {
+        Button {
+            switch TransportTapPolicy.decide(transport: transport, startTimedOut: startTimedOut) {
+            case .ignore:
+                break
+            case .cancelStart:
+                cancelStart()
+            case .pause:
+                pause()
+            case .play:
+                Task { await resume() }
+            }
+        } label: {
+            Group {
+                if let systemImage = face.systemImage {
+                    Image(systemName: systemImage)
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.white)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                        .accessibilityLabel(face.accessibilityLabel)
+                }
+            }
+            .frame(width: CGFloat(DuoRailLayout.controlSize), height: CGFloat(DuoRailLayout.controlSize))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(face.accessibilityLabel)
+        .accessibilityRemoveTraits(face.isActionable ? [] : .isButton)
+        .accessibilityIdentifier("transport.playPause")
     }
 }
 
@@ -332,6 +401,22 @@ private struct DuoSystemVerticalToolbar: ViewModifier {
                                         onConnections: hooks.onConnections, onTune: hooks.onTune)
                     }
                     .axisBehavior(.verticalPreferred)
+                    if hooks.showsTransport {
+                        ToolbarItem(placement: .primaryAction) {
+                            DuoRailPlayPauseButton(transport: hooks.transport,
+                                                   startTimedOut: hooks.startTimedOut,
+                                                   pause: hooks.pause, cancelStart: hooks.cancelStart,
+                                                   resume: hooks.resume)
+                        }
+                        .axisBehavior(.verticalPreferred)
+                        ToolbarItem(placement: .primaryAction) {
+                            DuoRailIconButton(systemImage: "forward.fill", label: "Skip",
+                                              hint: "Skips this song.",
+                                              identifier: "transport.skip",
+                                              action: { Task { await hooks.skip() } })
+                        }
+                        .axisBehavior(.verticalPreferred)
+                    }
                     ToolbarItem(placement: .primaryAction) {
                         DuoRailIconButton(systemImage: "list.bullet",
                                           label: DuoVerticalRail.queueLabel(hooks.upNext),

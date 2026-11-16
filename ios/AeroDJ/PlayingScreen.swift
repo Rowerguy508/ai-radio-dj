@@ -172,7 +172,12 @@ struct PlayingScreen: View {
                                systemRail: showsRail ? DuoRailHooks(
                                     dj: dj, reviewCount: dj.reviewCount, upNext: snapshot.upNext,
                                     onConnections: openConnections, onQueue: openQueue, onTune: openTune,
-                                    onCollapse: { duoCollapsed = true }, pause: { actions.pause() }) : nil,
+                                    onCollapse: { duoCollapsed = true }, pause: { actions.pause() },
+                                    transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                                    showsTransport: content.showsTransport,
+                                    cancelStart: { actions.cancelStart() },
+                                    resume: { await actions.resume() },
+                                    skip: { await actions.skip() }) : nil,
                                keepSystemVerticalBar: placement == .duoHorizontal)
                 .onChange(of: placement) { _, new in
                     if new != .duoHorizontal { duoCollapsed = false }

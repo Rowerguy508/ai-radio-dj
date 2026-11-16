@@ -213,9 +213,10 @@ so the compact layout and its sheet keep their radii.
   art, Play/Pause on the centre line. The unfolded Duo is wide and at least that tall
   (`controlPlacement` is `.duoHorizontal`): artwork and the title stay in the
   left half, an empty gutter sits on the centre fold, and the right half is a content
-  column (horizontal scrubber, play/pause, skip, station, DJ chip, and Search Apple
+  column (horizontal scrubber, station, DJ chip, and Search Apple
   Music when nothing is playing, fitted to the column width) plus a glass rail
-  (collapse, more, queue, sleep timer, and a live dot). The dot is lit only while
+  (collapse, more, play/pause, skip, queue, sleep timer, and a live dot). The
+  content column has no transport row. The dot is lit only while
   the DJ state is `.speaking`. Collapse shows this centred column and does not
   change playback. Controls start below `duoStatusClearance`. Below 500 pt
   wide (every iPhone in portrait) the compact player is unchanged.

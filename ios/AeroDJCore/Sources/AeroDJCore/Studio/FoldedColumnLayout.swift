@@ -95,7 +95,7 @@ public enum FoldedColumnLayout {
 
         /// The content column begins strictly to the right of the centre fold.
         public var contentMinX: Double { edgeInset + leftWidth + foldGutter }
-        /// The symbol bar is the trailing edge of the content column.
+        /// The rail is the trailing edge of the content column.
         public var barMinX: Double { contentMinX + contentWidth }
     }
 
@@ -167,5 +167,66 @@ public enum DuoSleepTimer {
     public static func accessibilityValue(minutes: Int?) -> String {
         guard let minutes else { return "Off" }
         return "\(minutes) minutes"
+    }
+}
+
+
+/// The unfolded Duo's right rail (#465). Play/pause and skip sit on the rail, not in the
+/// content column's transport row. Phone portrait and the centred column are unchanged.
+///
+/// Layout only: sizes and the control order. The views live in `DuoVerticalRail`.
+public enum DuoRailLayout {
+    /// App-owned hit target, the same 44 pt plate as the other rail controls.
+    public static let controlSize: Double = 44
+    /// Spacing between rail items (`VStack` spacing in `DuoVerticalRail`).
+    public static let spacing: Double = 10
+    /// Vertical padding inside the rail's glass column.
+    public static let verticalPadding: Double = 6
+    /// Flexible gap that holds the live dot at the bottom of the rail.
+    public static let spacerMinLength: Double = 8
+    /// The rail's frame starts below the status cluster, same as `duoStatusClearance`.
+    public static var frameTopClearance: Double { FoldedColumnLayout.duoStatusClearance }
+    /// Bottom inset of the custom rail inside the container.
+    public static let frameBottomPadding: Double = 8
+
+    /// Rail slots, top to bottom. `playPause` and `skip` are omitted when there is no track.
+    public enum Slot: String, Equatable, Sendable {
+        case collapse
+        case more
+        case playPause
+        case skip
+        case queue
+        case sleepTimer
+        case liveDot
+    }
+
+    /// Collapse and More stay at the top, then play/pause and skip, then queue and the
+    /// sleep timer, with the live dot at the bottom. Chrome and transport stay grouped.
+    public static func slots(showsTransport: Bool) -> [Slot] {
+        if showsTransport {
+            return [.collapse, .more, .playPause, .skip, .queue, .sleepTimer, .liveDot]
+        }
+        return [.collapse, .more, .queue, .sleepTimer, .liveDot]
+    }
+
+    /// Height of the rail's stacked content, including inner padding and the bottom spacer.
+    public static func stackHeight(showsTransport: Bool) -> Double {
+        let slots = slots(showsTransport: showsTransport)
+        let items = Double(slots.count + 1) // spacer before the live dot
+        return Double(slots.count) * controlSize
+            + spacing * (items - 1)
+            + spacerMinLength
+            + verticalPadding * 2
+    }
+
+    /// Inner height left for that stack in a container of `containerHeight`.
+    public static func availableStackHeight(containerHeight: Double) -> Double {
+        max(0, containerHeight - frameTopClearance - frameBottomPadding)
+    }
+
+    /// True when every rail control fits without clipping or dropping a control.
+    public static func fits(containerHeight: Double, showsTransport: Bool) -> Bool {
+        guard containerHeight.isFinite, containerHeight > 0 else { return false }
+        return availableStackHeight(containerHeight: containerHeight) >= stackHeight(showsTransport: showsTransport)
     }
 }
