@@ -587,15 +587,7 @@ struct FoldedPlayer: View {
                 NowPlayingPlaceholder(content: content, actions: actions)
                     .padding(.top, 24)
             }
-            if continuityProbe {
-                ForEach(0..<8, id: \.self) { index in
-                    Text("Continuity row \(index)")
-                        .font(.body)
-                        .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
-                        .id(DisplayContinuity.rowAnchor(index))
-                        .accessibilityIdentifier(DisplayContinuity.rowAnchor(index))
-                }
-            }
+            if continuityProbe { continuityRows }
         }
         .scrollTargetLayout()
     }
@@ -747,12 +739,34 @@ extension FoldedPlayer {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// The continuity capture's scroll rows (probe launches only). Shared by compactBody and
+    /// the outer reskin, so the folded phone keeps the scroll anchor whichever body draws it.
+    private var continuityRows: some View {
+        ForEach(0..<8, id: \.self) { index in
+            Text("Continuity row \(index)")
+                .font(.body)
+                .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
+                .id(DisplayContinuity.rowAnchor(index))
+                .accessibilityIdentifier(DisplayContinuity.rowAnchor(index))
+        }
+    }
+
+    /// Scrolls like compactUpperScroll: the same anchor binding and probe id, so #501's
+    /// scroll continuity holds on the reskinned folded phone too (#535).
     private func outerUpperScroll(artSide: CGFloat, showsIndicators: Bool, pinsStatus: Bool) -> some View {
         ScrollView(.vertical, showsIndicators: showsIndicators) {
-            outerUpper(artSide: artSide, includesArt: true, pinsStatus: pinsStatus)
+            VStack(spacing: 0) {
+                outerUpper(artSide: artSide, includesArt: true, pinsStatus: pinsStatus)
+                if continuityProbe {
+                    continuityRows.padding(.horizontal, CGFloat(FoldedOuterLayout.contentInset))
+                }
+            }
+            .scrollTargetLayout()
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
+        .scrollPosition(id: scrollAnchor)
+        .modifier(ContinuityScrollerID(enabled: continuityProbe))
     }
 
     /// Pinned under the upper part. `pinsStatus` (accessibility sizes): the status pill and the
