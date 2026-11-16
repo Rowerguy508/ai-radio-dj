@@ -81,6 +81,42 @@ final class FoldedOuterLayoutTests: XCTestCase {
         XCTAssertFalse(helper.contains("AeroDJFoldedOuterReskin"))
     }
 
+    /// PlayingScreen and FoldedPlayer share one reskin rule; it never depends on height, so
+    /// the screen's height (above the nav bar) and the player's (below it) cannot disagree.
+    func testReskinRuleMatchesPhoneBottomAtEveryHeight() {
+        for width in stride(from: 280.0, through: 1400, by: 10) {
+            for height in [0.0, 400, 600, 715, 716, 717, 760, 844, 1180, .infinity] {
+                let phone = FoldedColumnLayout.controlPlacement(containerWidth: width,
+                                                                containerHeight: height) == .phoneBottom
+                XCTAssertEqual(FoldedOuterLayout.usesOuterReskin(containerWidth: width, showsTrack: true),
+                               phone, "w \(width) h \(height)")
+                XCTAssertFalse(FoldedOuterLayout.usesOuterReskin(containerWidth: width, showsTrack: false),
+                               "no track never takes the reskin (w \(width))")
+            }
+        }
+        XCTAssertTrue(FoldedOuterLayout.usesOuterReskin(containerWidth: 390, showsTrack: true))
+        XCTAssertFalse(FoldedOuterLayout.usesOuterReskin(containerWidth: 640, showsTrack: true))
+    }
+
+    func testAContainerOverrideWinsOverTheCallersWidth() {
+        let wide = FoldedOuterLayout.ContainerSize(width: 540, height: 760)
+        let phone = FoldedOuterLayout.ContainerSize(width: 390, height: 844)
+        XCTAssertFalse(FoldedOuterLayout.usesOuterReskin(containerWidth: 390, override: wide, showsTrack: true))
+        XCTAssertTrue(FoldedOuterLayout.usesOuterReskin(containerWidth: 820, override: phone, showsTrack: true))
+        XCTAssertEqual(FoldedOuterLayout.usesOuterReskin(containerWidth: 390, override: nil, showsTrack: true),
+                       FoldedOuterLayout.usesOuterReskin(containerWidth: 390, showsTrack: true))
+    }
+
+    /// Both callers go through the shared rule, so neither can drift to its own condition.
+    func testPlayingScreenAndFoldedPlayerUseTheSharedRule() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        for path in ["AeroDJ/FoldedPlayer.swift", "AeroDJ/PlayingScreen.swift"] {
+            let source = try String(contentsOf: iosRoot.appendingPathComponent(path), encoding: .utf8)
+            XCTAssertTrue(source.contains("FoldedOuterLayout.usesOuterReskin("), path)
+        }
+    }
+
     /// compactBody and FoldedStyle stay for the non-track phone states: this file must not rewrite their tokens.
     func testFoldedStyleTokensOnTheCompactPathAreUnchanged() throws {
         let iosRoot = URL(fileURLWithPath: #filePath)

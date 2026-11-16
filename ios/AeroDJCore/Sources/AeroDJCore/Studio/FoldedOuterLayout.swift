@@ -34,9 +34,38 @@ public enum FoldedOuterLayout {
     public static let upNextHeight: Double = 44
     public static let upNextRadius: Double = 22
     public static let statusPillHeight: Double = 28
+    /// Height kept for the header, title, DJ line and pinned controls under the art at
+    /// default text sizes (accessibility sizes use `FoldedStyle.artReserveAccessibility`).
+    public static let artReserveBelow: Double = 470
 
     /// Outer diameter of play plus its ring (64 + 6 + 6). Fits in the 80 pt capsule.
     public static var playOuterSide: Double { playSide + playRingWidth * 2 }
+
+    /// A measured container that overrides a view's own geometry, e.g. the split host's
+    /// container (#501 `splitMeasure`). Nil means the caller's own geometry.
+    public struct ContainerSize: Equatable, Sendable {
+        public var width: Double
+        public var height: Double
+        public init(width: Double, height: Double) {
+            self.width = width
+            self.height = height
+        }
+    }
+
+    /// The one rule both `PlayingScreen` (system back hidden, ⋯ moved in) and
+    /// `FoldedPlayer.body` (which body draws) use for the reskin: phone width and a track.
+    ///
+    /// Width only, on purpose. PlayingScreen measures above the navigation bar and
+    /// FoldedPlayer below it, so their heights differ, but their widths are the same. Phone
+    /// width (`!FoldedColumnLayout.isWide`) is exactly `controlPlacement == .phoneBottom` at
+    /// any height, so the two callers cannot disagree. `override` (when given) wins over
+    /// `containerWidth`, so a host that measures the container can pass it to both.
+    public static func usesOuterReskin(containerWidth: Double, override: ContainerSize? = nil,
+                                       showsTrack: Bool) -> Bool {
+        guard showsTrack else { return false }
+        let width = override?.width ?? containerWidth
+        return !FoldedColumnLayout.isWide(containerWidth: width)
+    }
 
     /// On Air comes only from `DJStudioState.onAirLabel`. Ready and failed never light as
     /// On Air. A failed break stays a quiet skip (mic down, no break error).

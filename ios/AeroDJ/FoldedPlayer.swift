@@ -109,7 +109,7 @@ struct FoldedPlayer: View {
                 // 01-folded reskin (iPhone and folded Duo) whenever a track is showing.
                 // PlayingScreen.layout(mode:) uses the same rule to hide the system back
                 // and move ⋯ in. Other states keep compactBody.
-                if case .track = content {
+                if FoldedOuterLayout.usesOuterReskin(containerWidth: Double(geo.size.width), showsTrack: heroTrack != nil) {
                     foldedOuterBody(in: geo.size)
                 } else {
                     compactBody(in: geo.size)
@@ -492,30 +492,107 @@ struct FoldedPlayer: View {
 
 
 extension FoldedPlayer {
-    /// 01-folded outer-screen reskin. Called at phone width whenever a track is showing. Transport still goes through `TransportTapPolicy`.
+    /// 01-folded outer-screen reskin. Called at phone width whenever a track is showing
+    /// (`FoldedOuterLayout.usesOuterReskin`). Transport still goes through `TransportTapPolicy`.
     /// There is no Previous: `PlaybackActions` has none. The mockup's tab bar is not
     /// drawn; the existing Queue / Tune toolbar stays, restyled as a glass capsule.
+    ///
+    /// Same structure as `compactBody`: a scrolling upper part over pinned controls. At
+    /// accessibility sizes (#310 / #345) the DJ status moves into the pinned controls above
+    /// the scrubber, and the upper part drops the art, then scrolls, so the title, the
+    /// TEST STATION tag and Play/Pause all stay on screen.
     private func foldedOuterBody(in size: CGSize) -> some View {
         let inset = CGFloat(FoldedOuterLayout.contentInset)
-        let artInset = CGFloat(FoldedOuterLayout.artInset)
-        let art = min(size.width - artInset * 2, FoldedStyle.artMaxSide)
+        let accessibilityText = typeSize.isAccessibilitySize
+        let art = outerArtSide(in: size)
         return VStack(spacing: 0) {
             FoldedOuterHeader(heading: heading, moreMenu: moreMenu, dismiss: { dismiss() })
                 .padding(.horizontal, inset)
                 .padding(.top, 8)
-            if let track = heroTrack {
-                FoldedArtCard(track: track, station: station,
-                              isOnAir: dj.state.onAirLabel != nil,
-                              side: art, namespace: artworkNamespace, speechLevel: speechLevel,
-                              cornerRadius: CGFloat(FoldedOuterLayout.artRadius))
-                    .padding(.top, 12)
-                    .padding(.horizontal, artInset)
-                FoldedOuterTitleRow(track: track, isTestStation: isTestStation,
-                                    status: FoldedOuterLayout.status(of: dj.state))
-                    .padding(.horizontal, inset)
-                    .padding(.top, 16)
+            if accessibilityText {
+                ViewThatFits(in: .vertical) {
+                    outerUpper(artSide: art, includesArt: true, pinsStatus: true)
+                    outerUpper(artSide: art, includesArt: false, pinsStatus: true)
+                    outerUpperScroll(artSide: art, showsIndicators: true, pinsStatus: true)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            } else {
+                outerUpperScroll(artSide: art, showsIndicators: false, pinsStatus: false)
             }
-            Spacer(minLength: 8)
+            outerControls(pinsStatus: accessibilityText)
+        }
+        .frame(width: size.width, height: size.height)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("folded.outer")
+    }
+
+    /// Art for the reskin: the width less its 30 pt insets, capped by height like `artSide(in:)`
+    /// so the title, the DJ line and the pinned controls fit. At accessibility sizes it uses
+    /// compactBody's #310 floor and reserve.
+    private func outerArtSide(in size: CGSize) -> CGFloat {
+        let byWidth = size.width - CGFloat(FoldedOuterLayout.artInset) * 2
+        if typeSize.isAccessibilitySize {
+            let byHeight = size.height - FoldedStyle.artReserveAccessibility
+            return max(FoldedStyle.artMinSideAccessibility, min(byWidth, byHeight, FoldedStyle.artMaxSide))
+        }
+        let byHeight = size.height - CGFloat(FoldedOuterLayout.artReserveBelow)
+        return max(FoldedStyle.artMinSide, min(byWidth, byHeight, FoldedStyle.artMaxSide))
+    }
+
+    /// Art, title row and (default sizes) the quiet DJ line. `pinsStatus`: the status pill and
+    /// the DJ line are drawn in `outerControls` instead.
+    private func outerUpper(artSide: CGFloat, includesArt: Bool, pinsStatus: Bool) -> some View {
+        let inset = CGFloat(FoldedOuterLayout.contentInset)
+        return VStack(spacing: 0) {
+            if let track = heroTrack {
+                if includesArt {
+                    FoldedArtCard(track: track, station: station,
+                                  isOnAir: dj.state.onAirLabel != nil,
+                                  side: artSide, namespace: artworkNamespace, speechLevel: speechLevel,
+                                  cornerRadius: CGFloat(FoldedOuterLayout.artRadius))
+                        .padding(.top, 12)
+                        .padding(.horizontal, CGFloat(FoldedOuterLayout.artInset))
+                }
+                FoldedOuterTitleRow(track: track, isTestStation: isTestStation,
+                                    status: FoldedOuterLayout.status(of: dj.state),
+                                    showsPill: !pinsStatus)
+                    .padding(.horizontal, inset)
+                    .padding(.top, includesArt ? 16 : 8)
+                if !pinsStatus {
+                    FoldedOuterDJLine(dj: dj)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, inset)
+                        .padding(.top, 12)
+                }
+            }
+        }
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func outerUpperScroll(artSide: CGFloat, showsIndicators: Bool, pinsStatus: Bool) -> some View {
+        ScrollView(.vertical, showsIndicators: showsIndicators) {
+            outerUpper(artSide: artSide, includesArt: true, pinsStatus: pinsStatus)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollContentBackground(.hidden)
+    }
+
+    /// Pinned under the upper part. `pinsStatus` (accessibility sizes): the status pill and the
+    /// quiet DJ line sit here, above the scrubber, so ON AIR is on screen without scrolling.
+    private func outerControls(pinsStatus: Bool) -> some View {
+        let inset = CGFloat(FoldedOuterLayout.contentInset)
+        return VStack(spacing: 0) {
+            if pinsStatus {
+                VStack(alignment: .leading, spacing: 8) {
+                    FoldedOuterStatusPill(status: FoldedOuterLayout.status(of: dj.state))
+                    FoldedOuterDJLine(dj: dj)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, inset)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
+            }
             PlaybackErrorBanner(error: snapshot.error, actions: actions)
                 .padding(.horizontal, inset)
             if showsProgress, let timeSource {
@@ -545,8 +622,6 @@ extension FoldedPlayer {
                 .padding(.top, 12)
                 .padding(.bottom, 8)
         }
-        .frame(width: size.width, height: size.height)
-        .accessibilityIdentifier("folded.outer")
     }
 }
 
@@ -567,6 +642,7 @@ private struct FoldedOuterHeader: View {
     let heading: StationHeading
     let moreMenu: FoldedMoreMenuItems?
     let dismiss: () -> Void
+    @ScaledMetric(relativeTo: .headline) private var stationNameSize: CGFloat = 17
 
     var body: some View {
         HStack(spacing: 8) {
@@ -590,7 +666,7 @@ private struct FoldedOuterHeader: View {
                                            green: FoldedOuterLayout.playRingGreen,
                                            blue: FoldedOuterLayout.playRingBlue))
                 Text(heading.header.name)
-                    .font(.system(size: 17, weight: .heavy))
+                    .font(.system(size: stationNameSize, weight: .heavy))
                     .foregroundStyle(.white)
                     .lineLimit(1)
             }
@@ -613,19 +689,23 @@ private struct FoldedOuterTitleRow: View {
     let track: TrackInfo
     let isTestStation: Bool
     let status: FoldedOuterLayout.Status
+    /// False at accessibility sizes: the pill is pinned above the scrubber instead.
+    var showsPill = true
     @Environment(\.songRating) private var songRating
+    @ScaledMetric(relativeTo: .largeTitle) private var titleSize = CGFloat(FoldedOuterLayout.titlePointSize)
+    @ScaledMetric(relativeTo: .subheadline) private var artistSize = CGFloat(FoldedOuterLayout.artistPointSize)
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(track.title)
-                    .font(.system(size: CGFloat(FoldedOuterLayout.titlePointSize), weight: .heavy))
+                    .font(.system(size: titleSize, weight: .heavy))
                     .tracking(-0.6)
                     .foregroundStyle(.white)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(track.artistName)
-                    .font(.system(size: CGFloat(FoldedOuterLayout.artistPointSize), weight: .semibold))
+                    .font(.system(size: artistSize, weight: .semibold))
                     .foregroundStyle(FoldedStyle.secondaryInk)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -637,7 +717,9 @@ private struct FoldedOuterTitleRow: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(track.title), \(track.artistName)")
             .accessibilityAddTraits(.isHeader)
-            FoldedOuterStatusPill(status: status)
+            if showsPill {
+                FoldedOuterStatusPill(status: status)
+            }
             if let songRating, songRating.isAvailable {
                 SongRatingButton(controller: songRating, track: track, ink: FoldedStyle.secondaryInk)
             }
@@ -645,24 +727,63 @@ private struct FoldedOuterTitleRow: View {
     }
 }
 
-private struct FoldedOuterStatusPill: View {
-    let status: FoldedOuterLayout.Status
+/// The quiet DJ line under the title: ready ("DJ break after this song", Fry #161), preparing,
+/// or a voice/budget failure, exactly as `compactBody` draws it (`FoldedDJStatus`, same ids).
+/// Speaking draws nothing here: the status pill carries ON AIR and its timer.
+private struct FoldedOuterDJLine: View {
+    let dj: DJStatusPresentation
 
     var body: some View {
+        if case .speaking = dj.state {
+            EmptyView()
+        } else {
+            FoldedDJStatus(dj: dj)
+        }
+    }
+}
+
+/// On Air (with the same timer and VoiceOver value as `FoldedOnAirPill`: "On Air, 0:12") or
+/// Mic down. Text scales with Dynamic Type; the 28 pt height is a floor.
+private struct FoldedOuterStatusPill: View {
+    let status: FoldedOuterLayout.Status
+    @State private var startedAt = Date()
+    @ScaledMetric(relativeTo: .caption2) private var labelSize: CGFloat = 9
+
+    var body: some View {
+        switch status {
+        case .onAir(let text):
+            TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                let time = PlaybackTimeFormat.label(FoldedOnAirPill.elapsed(at: context.date, since: startedAt))
+                pill(text: text, time: time)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(text), \(time)")
+            }
+            .accessibilityIdentifier("dj.onAir")
+        case .micDown:
+            pill(text: label, time: nil)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibility)
+                .accessibilityIdentifier(identifier)
+        }
+    }
+
+    private func pill(text: String, time: String?) -> some View {
         HStack(spacing: 8) {
             ember
-            Text(label)
-                .font(.system(size: 9, weight: .bold))
+            Text(text)
+                .font(.system(size: labelSize, weight: .bold))
                 .tracking(0.8)
                 .textCase(.uppercase)
+            if let time {
+                Text(time)
+                    .font(.system(size: labelSize, weight: .bold).monospacedDigit())
+                    .foregroundStyle(FoldedStyle.onAirTimer)
+            }
         }
         .foregroundStyle(ink)
         .padding(.horizontal, 10)
-        .frame(height: CGFloat(FoldedOuterLayout.statusPillHeight))
+        .frame(minHeight: CGFloat(FoldedOuterLayout.statusPillHeight))
         .background(Color(red: 17 / 255, green: 21 / 255, blue: 28 / 255), in: Capsule())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibility)
-        .accessibilityIdentifier(identifier)
     }
 
     private var label: String {
@@ -1148,7 +1269,7 @@ private struct FoldedOnAirPill: View {
     /// Seconds on air. Debug only: the `onAir` Studio capture freezes it
     /// (`StudioCaptureOnAir.frozenElapsed`) so `closed-ax5-onair` is the same every run.
     @MainActor
-    private static func elapsed(at now: Date, since startedAt: Date) -> TimeInterval {
+    fileprivate static func elapsed(at now: Date, since startedAt: Date) -> TimeInterval {
         #if DEBUG
         if let frozen = StudioCaptureOnAir.frozenElapsed { return frozen }
         #endif
