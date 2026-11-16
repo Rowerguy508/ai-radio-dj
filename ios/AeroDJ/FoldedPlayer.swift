@@ -676,37 +676,52 @@ extension FoldedPlayer {
                               dismiss: { dismiss() })
                 .padding(.horizontal, inset)
                 .padding(.top, 8)
-            if accessibilityText {
-                ViewThatFits(in: .vertical) {
-                    outerUpper(artSide: art, includesArt: true, pinsStatus: true)
-                    outerUpper(artSide: art, includesArt: false, pinsStatus: true)
-                    outerUpperScroll(artSide: art, showsIndicators: true, pinsStatus: true)
+            // #537: the column on the leading side, the transport rail on the trailing side.
+            HStack(alignment: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    if accessibilityText {
+                        ViewThatFits(in: .vertical) {
+                            outerUpper(artSide: art, includesArt: true, pinsStatus: true)
+                            outerUpper(artSide: art, includesArt: false, pinsStatus: true)
+                            outerUpperScroll(artSide: art, showsIndicators: true, pinsStatus: true)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    } else {
+                        outerUpperScroll(artSide: art, showsIndicators: false, pinsStatus: false)
+                    }
+                    // At accessibility sizes the controls keep their full height, so the pinned
+                    // ON AIR pill stays above the scrubber. The upper area shrinks or scrolls.
+                    outerControls(pinsStatus: accessibilityText)
+                        .fixedSize(horizontal: false, vertical: accessibilityText)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            } else {
-                outerUpperScroll(artSide: art, showsIndicators: false, pinsStatus: false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ClosedVerticalRail(transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                                   showsTransport: content.showsTransport,
+                                   pause: { actions.pause() },
+                                   cancelStart: { actions.cancelStart() },
+                                   resume: { await actions.resume() },
+                                   skip: { await actions.skip() })
+                    .padding(.trailing, CGFloat(FoldedOuterLayout.closedRailEdgeInset))
+                    .padding(.bottom, 16)
             }
-            // At accessibility sizes the controls keep their full height, so the pinned
-            // ON AIR pill stays above the scrubber. The upper area shrinks or scrolls.
-            outerControls(pinsStatus: accessibilityText)
-                .fixedSize(horizontal: false, vertical: accessibilityText)
         }
         .frame(width: size.width, height: size.height)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folded.outer")
     }
 
-    /// Art for the reskin: the width less its 30 pt insets, capped by height like `artSide(in:)`
-    /// so the title, the DJ line and the pinned controls fit. At accessibility sizes it uses
-    /// compactBody's #310 floor and reserve.
+    /// Art for the reskin: the column beside the closed rail less its insets, capped by height
+    /// like `artSide(in:)` so the title, the DJ line and the pinned controls fit. At
+    /// accessibility sizes it uses compactBody's #310 floor and reserve.
     private func outerArtSide(in size: CGSize) -> CGFloat {
-        let byWidth = size.width - CGFloat(FoldedOuterLayout.artInset) * 2
+        let byWidth = CGFloat(FoldedOuterLayout.columnWidthBesideRail(containerWidth: Double(size.width))
+                              - FoldedOuterLayout.artInsetBesideRail * 2)
         if typeSize.isAccessibilitySize {
             let byHeight = size.height - FoldedStyle.artReserveAccessibility
             return max(FoldedStyle.artMinSideAccessibility, min(byWidth, byHeight, FoldedStyle.artMaxSide))
         }
-        // #537: the freed NEXT and Playing-from rows go to the art (`artReserveBelow`).
-        return CGFloat(FoldedOuterLayout.artSide(containerWidth: Double(size.width),
+        // #537: the freed rows go to the art; the trailing rail takes its width.
+        return CGFloat(FoldedOuterLayout.artSideBesideRail(containerWidth: Double(size.width),
                                                  containerHeight: Double(size.height),
                                                  minSide: Double(FoldedStyle.artMinSide),
                                                  maxSide: Double(FoldedStyle.artMaxSide)))
@@ -740,7 +755,7 @@ extension FoldedPlayer {
                             }
                         }
                         .padding(.top, 12)
-                        .padding(.horizontal, CGFloat(FoldedOuterLayout.artInset))
+                        .padding(.horizontal, CGFloat(FoldedOuterLayout.artInsetBesideRail))
                 }
                 FoldedOuterTitleRow(track: track, isTestStation: isTestStation,
                                     statusPinned: pinsStatus)
@@ -817,13 +832,7 @@ extension FoldedPlayer {
                                  isDJSpeaking: dj.state.onAirLabel != nil)
                     .padding(.horizontal, inset)
             }
-            if content.showsTransport {
-                FoldedOuterTransport(transport: snapshot.transport,
-                                     startTimedOut: snapshot.startTimedOut,
-                                     actions: actions)
-                    .padding(.horizontal, inset)
-                    .padding(.top, 8)
-            }
+            // #537: Play/Pause and Skip are on the trailing rail (`ClosedVerticalRail`).
             // #537: no NEXT row and no Playing-from row when closed. Their Queue and Tune
             // actions are in the header's ⋯ menu (`FoldedClosedMoreItems`).
         }
@@ -1033,111 +1042,6 @@ private struct FoldedOuterStatusPill: View {
                     Color(red: 0.29, green: 0.13, blue: 0.09),
                 ], center: .center, startRadius: 0, endRadius: 6))
                 .frame(width: 12, height: 12)
-        }
-    }
-}
-
-/// Glass transport capsule: Skip on the right, Play in the centre with the deferred tinted
-/// ring. No Previous (`PlaybackActions` has none). Tap policy is the shared one.
-private struct FoldedOuterTransport: View {
-    let transport: TransportState
-    var startTimedOut: Bool = false
-    let actions: PlaybackActions
-    @State private var taps = 0
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-
-    private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
-    /// Skip's opaque circle with Reduce Transparency or Increase Contrast. The capsule sits on
-    /// the slab, so this is the slab fill #484's transport uses under light ink.
-    private var solidControlFill: Color { AeroDJPalette.slab }
-    private var face: TransportButtonFace {
-        TransportTapPolicy.face(transport: transport, startTimedOut: startTimedOut)
-    }
-    private var ring: Color {
-        Color(red: FoldedOuterLayout.playRingRed,
-              green: FoldedOuterLayout.playRingGreen,
-              blue: FoldedOuterLayout.playRingBlue)
-        .opacity(FoldedOuterLayout.playRingOpacity)
-    }
-
-    var body: some View {
-        // #484 item 9: play and skip share one glass family, like the iPhone transport row.
-        AeroGlassGroup(spacing: 0) { row }
-            .frame(height: CGFloat(FoldedOuterLayout.transportHeight))
-            .foldedGlass(Capsule(), role: .control)
-            .clipShape(Capsule())
-            .buttonStyle(.plain)
-            .sensoryFeedback(.impact(weight: .light), trigger: taps)
-            // .contain first: an identifier on a plain stack is copied onto every child,
-            // which replaced transport.playPause and transport.skip with this id.
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("folded.outer.transport")
-    }
-
-    private var row: some View {
-        HStack(spacing: 0) {
-            Color.clear
-                .frame(width: CGFloat(FoldedOuterLayout.skipSide),
-                       height: CGFloat(FoldedOuterLayout.skipSide))
-                .frame(maxWidth: .infinity)
-                .accessibilityHidden(true)
-            Button {
-                switch TransportTapPolicy.decide(transport: transport, startTimedOut: startTimedOut) {
-                case .ignore: break
-                case .cancelStart:
-                    taps += 1
-                    actions.cancelStart()
-                case .pause:
-                    taps += 1
-                    actions.pause()
-                case .play:
-                    taps += 1
-                    Task { await actions.resume() }
-                }
-            } label: {
-                Group {
-                    if let systemImage = face.systemImage {
-                        Label(face.accessibilityLabel, systemImage: systemImage)
-                            .labelStyle(.iconOnly)
-                    } else {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .tint(AeroDJPalette.onMediaInk)
-                            .accessibilityLabel(face.accessibilityLabel)
-                    }
-                }
-                .font(.system(size: 28, weight: .bold))
-                .foregroundStyle(AeroDJPalette.onMediaInk)
-                .frame(width: CGFloat(FoldedOuterLayout.playSide),
-                       height: CGFloat(FoldedOuterLayout.playSide))
-                .aeroGlassControl(.primary, tint: AeroDJPalette.onMediaLight)
-                .overlay {
-                    Circle()
-                        .strokeBorder(ring, lineWidth: CGFloat(FoldedOuterLayout.playRingWidth))
-                        .frame(width: CGFloat(FoldedOuterLayout.playOuterSide),
-                               height: CGFloat(FoldedOuterLayout.playOuterSide))
-                }
-                .contentShape(Circle())
-                .modifier(SymbolReplace(enabled: !reduceMotion))
-            }
-            .accessibilityLabel(face.accessibilityLabel)
-            .accessibilityRemoveTraits(face.isActionable ? [] : .isButton)
-            .accessibilityIdentifier("transport.playPause")
-            Button {
-                taps += 1
-                Task { await actions.skip() }
-            } label: {
-                Label("Skip", systemImage: "forward.fill")
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: CGFloat(FoldedOuterLayout.skipSide),
-                           height: CGFloat(FoldedOuterLayout.skipSide))
-                    .aeroGlassControl(.secondary, solidFill: solidControlFill)
-                    .contentShape(Circle())
-            }
-            .frame(maxWidth: .infinity)
-            .accessibilityIdentifier("transport.skip")
         }
     }
 }

@@ -56,6 +56,32 @@ public enum FoldedOuterLayout {
         return max(minSide, min(byWidth, byHeight, maxSide))
     }
 
+    // MARK: Closed trailing rail (#537 scope addition)
+
+    /// Width of the closed reskin's trailing rail: the #479 rail's 44 pt plates plus 6 pt each side.
+    public static let closedRailWidth: Double = 56
+    /// Gap between the rail and the container's trailing edge.
+    public static let closedRailEdgeInset: Double = 8
+    /// Art inset beside the rail (the content gutter, not the mockup's 30, so the art keeps width).
+    public static let artInsetBesideRail: Double = contentInset
+    /// Height under the art with the transport row gone from the bottom controls: the
+    /// 80 pt capsule and its 8 pt gap moved to the rail. 342 - 88.
+    public static let artReserveBelowWithRail: Double = artReserveBelow - (transportHeight + 8)
+
+    /// Width left for the art column, header excluded, once the rail is drawn.
+    public static func columnWidthBesideRail(containerWidth: Double) -> Double {
+        max(0, containerWidth - closedRailWidth - closedRailEdgeInset)
+    }
+
+    /// Art side with the rail: the column less its insets, capped by the height less
+    /// `artReserveBelowWithRail`, clamped to `minSide...maxSide` (min wins).
+    public static func artSideBesideRail(containerWidth: Double, containerHeight: Double,
+                                         minSide: Double, maxSide: Double) -> Double {
+        let byWidth = columnWidthBesideRail(containerWidth: containerWidth) - artInsetBesideRail * 2
+        let byHeight = containerHeight - artReserveBelowWithRail
+        return max(minSide, min(byWidth, byHeight, maxSide))
+    }
+
     /// What the closed (phone-width) reskin's ⋯ menu adds above Connections (#537): the
     /// Playing-from row's Queue and Tune, and the rating star from the title row.
     public enum ClosedMoreItem: String, Equatable, Sendable, CaseIterable {

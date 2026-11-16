@@ -208,4 +208,52 @@ final class FoldedOuterLayoutTests: XCTestCase {
         let compact = try slice(from: "private func controls(contentInset:", to: "extension FoldedPlayer {")
         XCTAssertTrue(compact.contains("FoldedToolbar("))
     }
+
+    // MARK: #537 closed trailing rail
+
+    func testClosedRailHoldsTheRailPlates() {
+        XCTAssertEqual(FoldedOuterLayout.closedRailWidth, 56)
+        // The #479 rail's play/pause and skip plates are 44 pt and must fit with room to spare.
+        XCTAssertGreaterThanOrEqual(DuoRailLayout.controlSize, 44)
+        XCTAssertGreaterThanOrEqual(FoldedOuterLayout.closedRailWidth, DuoRailLayout.controlSize + 12)
+        XCTAssertEqual(FoldedOuterLayout.artReserveBelowWithRail, 254, "342 less the 80 pt transport and its 8 pt gap")
+    }
+
+    func testArtBesideTheRailFitsItsColumn() {
+        for (width, height) in [(390.0, 763.0), (375.0, 600.0), (430.0, 840.0), (320.0, 480.0), (390.0, 520.0)] {
+            let side = FoldedOuterLayout.artSideBesideRail(containerWidth: width, containerHeight: height,
+                                                           minSide: 140, maxSide: 420)
+            let column = FoldedOuterLayout.columnWidthBesideRail(containerWidth: width)
+            XCTAssertLessThanOrEqual(side, max(140, column - FoldedOuterLayout.artInsetBesideRail * 2), "\(width)x\(height)")
+            XCTAssertGreaterThanOrEqual(side, 140)
+        }
+        // 390 x 763: width-limited, 390 - 56 - 8 - 48 = 278 (the transport row's height is freed,
+        // but the phone is width-limited, so the art is 52 pt narrower than without the rail).
+        XCTAssertEqual(FoldedOuterLayout.artSideBesideRail(containerWidth: 390, containerHeight: 763,
+                                                           minSide: 140, maxSide: 420), 278)
+        // A short container is height-limited, and there the freed 88 pt goes to the art.
+        let short = FoldedOuterLayout.artSideBesideRail(containerWidth: 390, containerHeight: 520, minSide: 140, maxSide: 420)
+        let shortNoRail = FoldedOuterLayout.artSide(containerWidth: 390, containerHeight: 520, minSide: 140, maxSide: 420)
+        XCTAssertGreaterThan(short, shortNoRail)
+    }
+
+    /// Transport is on the closed rail now; the bottom controls keep only the scrubber.
+    func testClosedReskinTransportIsOnTheRail() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let player = try String(contentsOf: iosRoot.appendingPathComponent("AeroDJ/FoldedPlayer.swift"), encoding: .utf8)
+        let a = try XCTUnwrap(player.range(of: "private func outerControls(pinsStatus: Bool)"))
+        let b = try XCTUnwrap(player.range(of: "private extension View", range: a.upperBound..<player.endIndex))
+        let controls = player[a.lowerBound..<b.lowerBound]
+        XCTAssertFalse(controls.contains("FoldedOuterTransport"), "play/skip moved to the rail")
+        XCTAssertTrue(controls.contains("PlaybackScrubber("), "the scrubber stays in the bottom controls")
+        XCTAssertTrue(player.contains("ClosedVerticalRail("))
+        let rail = try String(contentsOf: iosRoot.appendingPathComponent("AeroDJ/DuoVerticalRail.swift"), encoding: .utf8)
+        let r = try XCTUnwrap(rail.range(of: "struct ClosedVerticalRail"))
+        let end = try XCTUnwrap(rail.range(of: "// MARK: - Glass", range: r.upperBound..<rail.endIndex))
+        let closed = rail[r.lowerBound..<end.lowerBound]
+        XCTAssertTrue(closed.contains("DuoRailPlayPauseButton("), "the #479 play/pause (transport.playPause)")
+        XCTAssertTrue(closed.contains("identifier: \"transport.skip\""))
+        XCTAssertFalse(closed.contains("folded.more"), "one ⋯ on the closed screen: the header's")
+    }
 }

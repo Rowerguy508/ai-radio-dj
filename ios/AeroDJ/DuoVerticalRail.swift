@@ -93,6 +93,45 @@ struct DuoVerticalRail: View {
     }
 }
 
+/// #537: the closed (phone-width) reskin's trailing rail. The #479 rail's own play/pause and
+/// skip plates (44 pt, `transport.playPause` / `transport.skip`) and its glass. Collapse, ⋯,
+/// Queue, the sleep timer and the live dot stay on the unfolded rail only: the closed header
+/// already has ⋯ (Queue and Tune are in it), and there is nothing to collapse.
+/// The plates sit at the bottom of the rail, in thumb reach and level with the scrubber.
+struct ClosedVerticalRail: View {
+    let transport: TransportState
+    let startTimedOut: Bool
+    let showsTransport: Bool
+    let pause: () -> Void
+    let cancelStart: () -> Void
+    let resume: () async -> Void
+    let skip: () async -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            if showsTransport {
+                VStack(spacing: CGFloat(DuoRailLayout.spacing)) {
+                    DuoRailPlayPauseButton(transport: transport, startTimedOut: startTimedOut,
+                                           pause: pause, cancelStart: cancelStart, resume: resume)
+                    DuoRailIconButton(systemImage: "forward.fill", label: "Skip",
+                                      hint: "Skips this song.",
+                                      identifier: "transport.skip",
+                                      action: { Task { await skip() } })
+                }
+                .padding(.vertical, CGFloat(DuoRailLayout.verticalPadding))
+                .frame(width: CGFloat(FoldedOuterLayout.closedRailWidth))
+                .accessibilityElement(children: .contain)
+                .modifier(DuoRailGlass())
+            }
+        }
+        .frame(width: CGFloat(FoldedOuterLayout.closedRailWidth))
+        .frame(maxHeight: .infinity, alignment: .bottom)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("folded.closedRail")
+    }
+}
+
 // MARK: - Glass (local to this rail)
 
 /// One glass column. Reduce Transparency and Increase Contrast use an opaque fill.
