@@ -42,6 +42,8 @@ For local weather, a coarse coordinate is sent only to Apple WeatherKit. Apple h
 
 Playback, search, charts and your library go through Apple's MusicKit under your Apple ID. Apple handles that data under [Apple's Privacy Policy](https://www.apple.com/legal/privacy/). We don't receive your Apple ID.
 
+**AirPlay.** When you play OnAirly to an AirPlay speaker, it asks our server once per launch for a setting that controls how the DJ voice plays there. The request sends no account, ID, token or content from your device. Like any web request, it carries your IP address and the app and iOS version, and our server code doesn't store your IP. When you're not using AirPlay, this request is never made.
+
 ## Data we collect
 
 We use the data below only to run the features you turn on. We don't use it for tracking, advertising or analytics, and we don't sell it.

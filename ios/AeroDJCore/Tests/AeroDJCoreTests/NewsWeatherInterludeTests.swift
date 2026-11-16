@@ -159,9 +159,9 @@ final class NewsWeatherInterludeTests: XCTestCase {
         defer { task.cancel() }
         feed.publish(.items([UUID()]))
         feed.publish(.all)
-        // Wait on the withdrawal itself, not a yield count (flaky on loaded runners).
-        let deadline = ContinuousClock.now + .seconds(10)
-        while store.consent != .declined, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(1)) }
+        // Wait on a monotonic deadline, not a yield count: 200 yields lost the race on a busy CI runner (#484).
+        let deadline = ContinuousClock.now + .seconds(5)
+        while store.consent != .declined, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(store.consent, .declined)
         XCTAssertNil(store.manualPlace)
         XCTAssertNil(store.area)
