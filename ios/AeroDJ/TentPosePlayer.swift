@@ -102,9 +102,16 @@ private struct TentHingeObserver: ViewModifier {
         if #available(iOS 27.1, *) {
             // Apple's iOS 27.1 signature:
             // nonisolated func onHingeChange(isEnabled: Bool = true, _ action: @escaping (DeviceHingeContext, DeviceHingeContext) -> Void) -> some View
-            content.onHingeChange(isEnabled: true) { _, context in
-                sample = context.hinge.map { hinge in
+            // #538: the SDK may call this off the main thread. A plain closure here is
+            // inferred @MainActor and Swift 6 traps on that executor check, so the
+            // closure is @Sendable (not isolated), maps the context to our value
+            // sample, and hops to the main actor to write state.
+            content.onHingeChange(isEnabled: true) { @Sendable [binding = $sample] _, context in
+                let next = context.hinge.map { hinge in
                     DuoHingeSample(status: Self.status(hinge.status), angleDegrees: hinge.angle.degrees)
+                }
+                Task { @MainActor in
+                    if binding.wrappedValue != next { binding.wrappedValue = next }
                 }
             }
         } else {
@@ -117,7 +124,7 @@ private struct TentHingeObserver: ViewModifier {
 
     #if compiler(>=6.4.2)
     @available(iOS 27.1, *)
-    private static func status(_ status: DeviceHinge.Status) -> DuoHingeSample.Status {
+    nonisolated private static func status(_ status: DeviceHinge.Status) -> DuoHingeSample.Status {
         switch status {
         case .closed: .closed
         case .partiallyOpen: .partiallyOpen

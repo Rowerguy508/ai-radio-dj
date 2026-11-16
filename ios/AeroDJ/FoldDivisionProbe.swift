@@ -62,19 +62,24 @@ private struct HingeObserver: ViewModifier {
     private func hingeBody(_ content: Content) -> some View {
         #if compiler(>=6.4.2)
         if #available(iOS 27.1, *) {
-            content.onHingeChange(isEnabled: true) { _, newContext in
-                guard let device = newContext.hinge else {
-                    hinge = nil
-                    return
+            // #538: the SDK may call this off the main thread. A plain closure here is
+            // inferred @MainActor and Swift 6 traps on that executor check, so the
+            // closure is @Sendable (not isolated), maps the context to our value
+            // sample, and hops to the main actor to write state.
+            content.onHingeChange(isEnabled: true) { @Sendable [binding = $hinge] _, newContext in
+                let next: FoldAwareness.HingeSample? = newContext.hinge.map { device in
+                    let status: FoldAwareness.HingeStatus
+                    switch device.status {
+                    case .closed: status = .closed
+                    case .partiallyOpen: status = .partiallyOpen
+                    case .fullyOpen: status = .fullyOpen
+                    default: status = .unknown // Xcode 27.2 SDK adds hinge states; plain default keeps Release archive exhaustive
+                    }
+                    return FoldAwareness.HingeSample(status: status, angleDegrees: device.angle.degrees)
                 }
-                let status: FoldAwareness.HingeStatus
-                switch device.status {
-                case .closed: status = .closed
-                case .partiallyOpen: status = .partiallyOpen
-                case .fullyOpen: status = .fullyOpen
-                default: status = .unknown // Xcode 27.2 SDK adds hinge states; plain default keeps Release archive exhaustive
+                Task { @MainActor in
+                    if binding.wrappedValue != next { binding.wrappedValue = next }
                 }
-                hinge = FoldAwareness.HingeSample(status: status, angleDegrees: device.angle.degrees)
             }
         } else {
             content
