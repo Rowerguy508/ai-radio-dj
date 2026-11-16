@@ -241,6 +241,53 @@ final class CuePrivacyGateTests: XCTestCase {
         XCTAssertTrue(clip.attempts.contains { $0.providerID == "cloud" && $0.result == .failed(VoiceRenderer.privacyGateSkip) })
     }
 
+    /// A neighbour quoted as stitching context (#473) is re-checked at gate 2 too: consent narrowed
+    /// from all lines to transitions only after the cue started must keep a personal neighbour's
+    /// text from leaving, even though the cue itself (a public transition) is still allowed.
+    func testTTSGateSendsNoNeighbourTextWhenItsConsentIsWithdrawnMidRender() async {
+        final class Spy: VoiceProvider, @unchecked Sendable {
+            private let lock = NSLock()
+            private var seen: [RequestContext] = []
+            var contexts: [RequestContext] { lock.withLock { seen } }
+            func synthesize(_ text: String, voice: VoiceProfile, context: RequestContext) async throws -> VoiceArtifact {
+                lock.withLock { seen.append(context) }
+                return VoiceArtifact(data: Data("cloud".utf8), durationSeconds: 1, billableUnits: text.count,
+                                     provider: "cloud", cacheKey: nil)
+            }
+        }
+        final class Narrowing: @unchecked Sendable {
+            private let lock = NSLock()
+            private var reads = 0
+            let narrowAtRead: Int
+            init(narrowAtRead: Int) { self.narrowAtRead = narrowAtRead }
+            func read() -> CloudVoiceScope {
+                lock.withLock { reads += 1; return reads >= narrowAtRead ? .transitionsOnly : .allLines }
+            }
+        }
+        func run(narrowAtRead: Int) async -> (Spy, Result<RenderedClip, VoiceRenderer.Failure>) {
+            let spy = Spy(), scope = Narrowing(narrowAtRead: narrowAtRead)
+            let r = VoiceRenderer(routes: [VoiceRoute(providerID: "cloud", provider: spy, voice: djVoice, leavesDevice: true,
+                                                      sendsSpeechContext: true),
+                                           VoiceRoute(providerID: "device", provider: DJFakeVoice(), voice: djVoice)],
+                                  budget: VoiceBudget(dailyCapMicrodollars: 0), cache: InMemoryAudioCache(),
+                                  revocations: NarrationRevocations(), cloudScope: { scope.read() })
+            let neighbour = calendarCue, line = transition("That was Holocene.")
+            let result = await r.render(line, userID: "u", stationID: "s", attribution: .presenter,
+                                        breakCues: [neighbour, line],
+                                        breakAttributions: [neighbour.id: calendarAttribution, line.id: .presenter])
+            return (spy, result)
+        }
+        // Steady all-lines consent: the neighbour is quoted.
+        let (steady, _) = await run(narrowAtRead: .max)
+        XCTAssertEqual(steady.contexts.first?.previousText, "From your calendar: dentist at 3.")
+        // 1: start; 2: lookup gate; 3: gate 2 for the cue (still public); 4: gate 2 for the neighbour.
+        let (spy, result) = await run(narrowAtRead: 4)
+        XCTAssertTrue(spy.contexts.isEmpty, "the withdrawn neighbour's text must not reach the cloud voice")
+        guard case .success(let clip) = result else { return XCTFail("falls through to the on-device voice") }
+        XCTAssertEqual(clip.audio.providerID, "device")
+        XCTAssertTrue(clip.attempts.contains { $0.providerID == "cloud" && $0.result == .failed(VoiceRenderer.privacyGateSkip) })
+    }
+
     func testTTSGateReleasesAPaidReservation() async {
         let cloud = RecordingCloud()
         let scope = ScopeSwitch(.allLines)

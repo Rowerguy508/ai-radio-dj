@@ -100,10 +100,8 @@ public struct ProxyVoiceProvider: VoiceProvider {
         } else {
             request.setValue("Bearer \(try await configuration.sessionToken())", forHTTPHeaderField: "Authorization")
         }
-        request.httpBody = try JSONEncoder().encode([
-            "upstream": configuration.upstream.rawValue, "voiceId": voice.id, "text": text,
-            "format": text.hasPrefix("<speak>") ? "ssml" : "text", "stationId": context.stationID,
-        ])
+        request.httpBody = try JSONEncoder().encode(Self.requestBody(text: text, voice: voice, context: context,
+                                                                     upstream: configuration.upstream))
         var (data, response) = try await send(request)
         let tokenExpired = response.statusCode == 401 && installToken != nil
             && PaidVoiceBackoff.ProxyErrorReason.parse(data) == .tokenExpired
@@ -170,6 +168,37 @@ public struct ProxyVoiceProvider: VoiceProvider {
         case 503: backoff?.recordServiceUnavailable(retryAfter: retryAfter, reason: reason)
         default: backoff?.recordServerFailure()
         }
+    }
+
+    /// The proxy keeps at most this many characters of each context side (`MAX_CONTEXT_CHARS`).
+    public static let maxContextCharacters = 300
+
+    enum ContextSide { case start, end }
+
+    /// JSON body of one proxy request. With no stitching context the keys are exactly the
+    /// pre-#365 contract (`upstream`, `voiceId`, `text`, `format`, `stationId`), so the encoded
+    /// body is unchanged. `previousText` / `nextText` are added only for ElevenLabs, and only
+    /// when present: each is trimmed to `maxContextCharacters`, keeping the side nearest the
+    /// spoken line (the end of the previous line, the start of the next).
+    static func requestBody(text: String, voice: VoiceProfile, context: RequestContext, upstream: Upstream) -> [String: String] {
+        var body = [
+            "upstream": upstream.rawValue, "voiceId": voice.id, "text": text,
+            "format": text.hasPrefix("<speak>") ? "ssml" : "text", "stationId": context.stationID,
+        ]
+        guard upstream == .elevenlabs else { return body }
+        if let previous = contextField(context.previousText, keep: .end) { body["previousText"] = previous }
+        if let next = contextField(context.nextText, keep: .start) { body["nextText"] = next }
+        return body
+    }
+
+    /// Trimmed context: nil when empty; at most `maxContextCharacters`, keeping the side nearest
+    /// the spoken line.
+    static func contextField(_ text: String?, keep: ContextSide) -> String? {
+        guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        guard trimmed.count > maxContextCharacters else { return trimmed }
+        let cut = keep == .end ? String(trimmed.suffix(maxContextCharacters)) : String(trimmed.prefix(maxContextCharacters))
+        let nearest = cut.trimmingCharacters(in: .whitespacesAndNewlines)
+        return nearest.isEmpty ? nil : nearest
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
