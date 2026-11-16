@@ -470,7 +470,9 @@ final class StudioScreenTests: XCTestCase {
         }
         scrollTo.tap()
         let anchor = any["continuity.anchor"]
-        let row = any["continuity.row.4"]
+        // Identifier only: the anchor readout's label is also "continuity.row.4", so the
+        // subscript (identifier or label) matched two elements.
+        let row = any.matching(NSPredicate(format: "identifier == %@", "continuity.row.4")).element
         let scrolled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "continuity.row.4"),
                                                  object: anchor)
         XCTAssertEqual(XCTWaiter().wait(for: [scrolled], timeout: 5), .completed,
