@@ -70,6 +70,9 @@ enum StudioCaptureScenario: String {
     /// The same 640 × 820 pt container with nothing playing, so Search Apple Music is the
     /// content column's first control.
     case duoWideEmpty
+    /// Regular width at the same 640 × 820 pt: artwork and controls in one pane, the
+    /// up-next timeline in the other. The compact-class `duoWideReady` container is unchanged.
+    case duoArrangement
     /// The same 640 × 820 pt container with the DJ on air: `breakReady` then `playbackStarted`,
     /// the same events as `onAir`, with the ON AIR timer frozen at 0:12. The track column
     /// keeps the art (`keepArtVisible`); the orb sits in the content column (`folded.visualizer`).
@@ -113,7 +116,7 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.stopped
         case .error:
             return PlaybackFixtures.recoverableError
-        case .duoWideReady, .duoWideOnAir:
+        case .duoWideReady, .duoArrangement, .duoWideOnAir:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
             // which draws the scrubber as a non-interactive element.
             var playing = PlaybackFixtures.playing
@@ -181,6 +184,8 @@ struct StudioCaptureView: View {
                     .accessibilityIdentifier("capture.shell")
             } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideOnAir {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario == .duoArrangement {
+                ArrangementCaptureContainer(studio: dependencies.studio)
             } else {
                 NavigationStack {
                     if showsProbe {
@@ -243,7 +248,7 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady, .duoWideReady:
+            case .breakReady, .duoWideReady, .duoArrangement:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .onAir, .duoWideOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
