@@ -198,6 +198,14 @@ jobs:
           # Share sheet shows the app's display name (AppName.display).
           /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APPEX/Info.plist" | grep -qx 'OnAirly' \
             || { echo "share extension display name is not OnAirly"; exit 1; }
+      - name: Verify widget extension is embedded
+        # #465 item 7: the StandBy widget and Live Activity ship in AeroDJ.app/PlugIns.
+        run: |
+          APPEX="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/AeroDJ.app/PlugIns/AeroDJWidgets.appex"
+          test -d "$APPEX" || { echo "AeroDJWidgets.appex not embedded in AeroDJ.app"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" \
+            | grep -qx 'com.apple.widgetkit-extension'
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" | grep -qx 'com.aerodj.app.widgets'
       - name: Verify single-window scene manifest
         # app-resizability: the app declares UIApplicationSceneManifest, and one window only
         # (one app-scoped DJ session). No UIRequiresFullScreen opt-out.
