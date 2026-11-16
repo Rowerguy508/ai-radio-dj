@@ -107,14 +107,3 @@ struct ReadyCaption: View {
     }
 }
 
-extension NowPlayingDisplay.State {
-    /// Short state caption; nil while playing (the art and title say enough).
-    var caption: String? {
-        switch self {
-        case .playing: nil
-        case .paused: "Paused"
-        case .starting: "Starting"
-        case .stopped: "Not playing"
-        }
-    }
-}
