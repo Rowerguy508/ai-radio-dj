@@ -4,7 +4,7 @@ import SwiftUI
 extension View {
     /// The cloud-voice consent sheet for an internal TestFlight tester build (#378 §4,
     /// `AERODJ_TESTER_VOICE`) and, since the owner's call on #433 (Nov 9 2026), the owner A/B
-    /// build (`AERODJ_OWNER_AB`, the same v2 sheet). A no-op in every other build, so no other
+    /// build (`AERODJ_OWNER_AB`, the same sheet, copy v3 since #432). A no-op in every other build, so no other
     /// screen or snapshot changes. -Atlas, -Fry
     @ViewBuilder func testerCloudVoiceConsent() -> some View {
         #if AERODJ_OWNER_AB
@@ -42,8 +42,8 @@ enum CloudVoiceConsentApp {
 
 #if AERODJ_OWNER_AB
 /// Owner A/B build (owner, Nov 9 2026, #433): asks once per launch, while the stored answer is
-/// undecided (never answered, or only copy v1 accepted) and a cloud voice is selected. Until
-/// "Use cloud voice" on the v2 copy, the renderer's scope is `.noLines`: the owner route hears
+/// undecided (never answered, or only copy v1 or v2 accepted) and a cloud voice is selected. Until
+/// "Use cloud voice" on the v3 copy (#432), the renderer's scope is `.noLines`: the owner route hears
 /// nothing. After it, `.allLines`. -Fry
 private struct OwnerCloudVoiceConsentGate: ViewModifier {
     @MainActor private static var askedThisLaunch = false

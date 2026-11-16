@@ -203,6 +203,8 @@ public struct BundledClipResolver: Sendable {
         guard !byHash.isEmpty else { return nil }
         guard case .presenter? = attribution, VoiceRenderer.mayLeaveDevice(cue, attribution: attribution) else { return nil }
         guard let route = renderer.routes.first, route.providerID == PremiumVoiceRoutes.providerID, route.leavesDevice,
+              // #400: the same per-cue choke point as a rendered clip, with the live consent scope.
+              renderer.mayUse(route, for: CuePrivacy.classify(cue, attribution: attribution)),
               let voiceID = manifest.voiceID, route.voice.id == voiceID else { return nil }
         guard manifest.renderSettingsVersion == activeRenderSettingsVersion else { return nil }
         let normalized = SpeechDelivery.speakable(cue.text)

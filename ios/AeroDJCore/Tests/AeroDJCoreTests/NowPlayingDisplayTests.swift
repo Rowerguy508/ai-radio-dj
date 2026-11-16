@@ -30,11 +30,16 @@ final class NowPlayingDisplayTests: XCTestCase {
     // MARK: Display fields only
 
     func testEncodedKeysAreExactlyTheDisplayFields() throws {
-        let display = NowPlayingDisplay.make(snapshot: snapshot(), dj: .speaking(includesBriefing: true))
-        let object = try jsonObject(display)
-        XCTAssertEqual(Set(object.keys), NowPlayingDisplay.allowedKeys)
-        XCTAssertEqual(NowPlayingDisplay.allowedKeys, ["station", "track", "artist", "art", "state", "onAirLabel"])
-        let art = try XCTUnwrap(object["art"] as? [String: Any])
+        let speaking = NowPlayingDisplay.make(snapshot: snapshot(), dj: .speaking(includesBriefing: true))
+        let ready = NowPlayingDisplay.make(snapshot: snapshot(), dj: .ready(includesBriefing: false, seconds: 30))
+        let speakingKeys = Set(try jsonObject(speaking).keys)
+        let readyKeys = Set(try jsonObject(ready).keys)
+        // Nil optional labels are omitted, so one payload never has both keys.
+        XCTAssertEqual(speakingKeys.union(readyKeys), NowPlayingDisplay.allowedKeys)
+        XCTAssertEqual(speakingKeys, NowPlayingDisplay.allowedKeys.subtracting(["readyLabel"]))
+        XCTAssertEqual(readyKeys, NowPlayingDisplay.allowedKeys.subtracting(["onAirLabel"]))
+        XCTAssertEqual(NowPlayingDisplay.allowedKeys, ["station", "track", "artist", "art", "state", "onAirLabel", "readyLabel"])
+        let art = try XCTUnwrap(try jsonObject(speaking)["art"] as? [String: Any])
         XCTAssertEqual(Set(art.keys), NowPlayingDisplay.allowedArtKeys)
     }
 
@@ -118,12 +123,72 @@ final class NowPlayingDisplayTests: XCTestCase {
         XCTAssertEqual(stored.track, "Tidewater")
     }
 
+    // MARK: Ready line, Live Activity only
+
+    func testReadyGivesTheLineAndIsNeverOnAir() {
+        let display = NowPlayingDisplay.make(snapshot: snapshot(), dj: .ready(includesBriefing: true, seconds: 30))
+        XCTAssertEqual(display.readyLabel, "DJ break after this song")
+        XCTAssertEqual(display.readyLabel, NowPlayingDisplay.readyLineCopy)
+        XCTAssertNil(display.onAirLabel)
+        XCTAssertFalse(display.isOnAir)
+        // Briefing must not change the copy or leak into the payload.
+        let noBriefing = NowPlayingDisplay.make(snapshot: snapshot(), dj: .ready(includesBriefing: false, seconds: 12))
+        XCTAssertEqual(noBriefing.readyLabel, NowPlayingDisplay.readyLineCopy)
+    }
+
+    func testSpeakingGivesOnAirWithoutTheReadyLine() {
+        let display = NowPlayingDisplay.make(snapshot: snapshot(), dj: .speaking(includesBriefing: true))
+        XCTAssertEqual(display.onAirLabel, "On Air")
+        XCTAssertTrue(display.isOnAir)
+        XCTAssertNil(display.readyLabel)
+    }
+
+    func testFailedAndIdleGiveNoReadyLine() {
+        for dj in [DJStudioState.idle, .preparing(includesBriefing: true),
+                   .failed(.voiceFailed), .failed(.budgetReached),
+                   .failed(.consentReviewRequired(pendingCount: 2))] {
+            let display = NowPlayingDisplay.make(snapshot: snapshot(), dj: dj)
+            XCTAssertNil(display.readyLabel, "\(dj)")
+            XCTAssertNil(display.onAirLabel, "\(dj)")
+        }
+        let stopped = NowPlayingDisplay.make(snapshot: snapshot(.stopped),
+                                             dj: .ready(includesBriefing: false, seconds: 20))
+        XCTAssertNil(stopped.readyLabel)
+        XCTAssertNil(stopped.onAirLabel)
+    }
+
+    func testWidgetCopyNeverCarriesTheReadyLine() throws {
+        let display = NowPlayingDisplay.make(snapshot: snapshot(), dj: .ready(includesBriefing: false, seconds: 30))
+        XCTAssertEqual(display.readyLabel, NowPlayingDisplay.readyLineCopy)
+        XCTAssertNil(display.widgetCopy.readyLabel)
+        XCTAssertNil(display.widgetCopy.onAirLabel)
+        let stored = try XCTUnwrap(NowPlayingDisplayStore.decode(NowPlayingDisplayStore.encode(display)))
+        XCTAssertNil(stored.readyLabel)
+        XCTAssertEqual(stored.track, "Tidewater")
+        let playing = NowPlayingDisplay.make(snapshot: snapshot(), dj: .idle)
+        XCTAssertFalse(NowPlayingDisplayStore.needsWidgetReload(from: playing, to: display),
+                       "Ready alone must not reload the widget")
+    }
+
+    /// An #485 payload, written before `readyLabel` existed, decodes as not-ready.
+    func testOldPayloadDecodesAsNotReady() throws {
+        let old = Data("""
+            {"artist":"Lumen Harbor","onAirLabel":null,"state":"playing","station":"Morning Calm","track":"Tidewater"}
+            """.utf8)
+        let decoded = try JSONDecoder().decode(NowPlayingDisplay.self, from: old)
+        XCTAssertNil(decoded.readyLabel)
+        XCTAssertNil(decoded.onAirLabel)
+        XCTAssertEqual(decoded.track, "Tidewater")
+        XCTAssertEqual(decoded.state, .playing)
+    }
+
     // MARK: Redaction
 
     func testStationTrackArtistAndArtArePrivacySensitive() {
         XCTAssertEqual(NowPlayingDisplay.privacySensitiveFields, ["station", "track", "artist", "art"])
         XCTAssertTrue(NowPlayingDisplay.privacySensitiveFields.isSubset(of: NowPlayingDisplay.allowedKeys))
         XCTAssertFalse(NowPlayingDisplay.privacySensitiveFields.contains("onAirLabel"), "the dot stays visible (04b)")
+        XCTAssertFalse(NowPlayingDisplay.privacySensitiveFields.contains("readyLabel"), "the ready line stays visible")
     }
 
     // MARK: Store
@@ -165,6 +230,9 @@ final class NowPlayingDisplayTests: XCTestCase {
         let onAir = NowPlayingDisplay.make(snapshot: snapshot(), dj: .speaking(includesBriefing: false))
         XCTAssertEqual(LiveActivityPlan.action(for: onAir, previous: idle, isActive: true,
                                                appInForeground: false, activitiesEnabled: true), .update(onAir))
+        let ready = NowPlayingDisplay.make(snapshot: snapshot(), dj: .ready(includesBriefing: false, seconds: 30))
+        XCTAssertEqual(LiveActivityPlan.action(for: ready, previous: idle, isActive: true,
+                                               appInForeground: false, activitiesEnabled: true), .update(ready))
         XCTAssertEqual(LiveActivityPlan.action(for: onAir, previous: onAir, isActive: true,
                                                appInForeground: false, activitiesEnabled: true), .none)
         let stopped = NowPlayingDisplay.make(snapshot: snapshot(.stopped), dj: .idle)
@@ -177,5 +245,7 @@ final class NowPlayingDisplayTests: XCTestCase {
     func testLiveActivityFitsUnder160Points() {
         XCTAssertLessThanOrEqual(LiveActivityLayout.contentHeight, LiveActivityLayout.maxHeight)
         XCTAssertEqual(LiveActivityLayout.maxHeight, 160)
+        // 14*2 + 20 + 10 + 56 + 10 + 16 = 140, including the Ready line budget.
+        XCTAssertEqual(LiveActivityLayout.contentHeight, 140)
     }
 }

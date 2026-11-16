@@ -13,6 +13,13 @@ public struct BriefingStyle: Equatable, Sendable {
 /// any networked implementation must keep secrets server-side.
 public protocol BriefingRewriter: Sendable {
     func rewrite(_ segment: BriefingScriptSegment, style: BriefingStyle) async throws -> String
+    /// True when `rewrite` sends the segment off the device (a cloud LLM). Defaults to true
+    /// (fail-closed, #400): only a rewriter that declares itself on-device skips the consent gate.
+    var leavesDevice: Bool { get }
+}
+
+extension BriefingRewriter {
+    public var leavesDevice: Bool { true }
 }
 
 /// Applies a rewriter but keeps the templated text whenever the rewrite fails,
@@ -32,12 +39,21 @@ public struct BriefingRewriteGuard: Sendable {
         self.maxSpokenSeconds = maxSpokenSeconds
     }
 
+    /// #400 (-Sentinel), the generation gate: a rewriter that leaves the device gets a segment
+    /// only while that segment's privacy class (`CuePrivacy.classify`) may leave under the consent
+    /// scope read right before the call (`cloudScope`, live). Default `.noLines`: with no consent
+    /// check wired, nothing goes to an off-device rewriter. A refused segment keeps its template.
     public func restyle(_ script: BriefingScript, with rewriter: any BriefingRewriter,
-                        style: BriefingStyle = .calmDJ) async -> (script: BriefingScript, fallbacks: Int) {
+                        style: BriefingStyle = .calmDJ,
+                        cloudScope: @Sendable () -> CloudVoiceScope = { .noLines }) async -> (script: BriefingScript, fallbacks: Int) {
         var segments = script.segments
         var fallbacks = 0
         for index in segments.indices {
             let original = segments[index]
+            if rewriter.leavesDevice, !CuePrivacy.classify(original).mayLeaveDevice(scope: cloudScope()) {
+                fallbacks += 1
+                continue
+            }
             guard let text = try? await rewriter.rewrite(original, style: style), accepts(text, for: original) else {
                 fallbacks += 1
                 continue
