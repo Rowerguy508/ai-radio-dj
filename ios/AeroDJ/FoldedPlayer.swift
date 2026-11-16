@@ -876,6 +876,11 @@ private struct FoldedOuterTitleRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 6) {
+                // Accessibility sizes (pill pinned in the controls): the tag leads the row, so it
+                // stays on screen above ON AIR when a long AX5 title pushes the rest out of view.
+                if isTestStation, !showsPill {
+                    FoldedTestStationTag().padding(.bottom, 2)
+                }
                 Text(track.title)
                     .font(.system(size: titleSize, weight: .heavy))
                     .tracking(-0.6)
@@ -887,7 +892,7 @@ private struct FoldedOuterTitleRow: View {
                     .foregroundStyle(FoldedStyle.secondaryInk)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                if isTestStation {
+                if isTestStation, showsPill {
                     FoldedTestStationTag().padding(.top, 2)
                 }
             }
