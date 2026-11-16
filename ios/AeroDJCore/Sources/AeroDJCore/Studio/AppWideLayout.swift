@@ -55,10 +55,10 @@ public enum AppWideLayout {
         public var isVertical: Bool { height > width }
     }
 
-    /// TODO(#465 item 4): what `ArrangementView` gives the screen. Generic on purpose: item 4
-    /// has no PR yet, so this names only "one pane" or "two panes" and leaves the API to it.
-    /// Carried, never read: until item 4 lands every screen ignores it, and nil (the default)
-    /// is today's behaviour.
+    /// What `ArrangementView` gives the screen (#465 item 4): `ArrangementPaneLayout.Decision`
+    /// maps onto it with `appWideArrangement` (`.split` is `.twoPane`, `.singleColumn` is
+    /// `.single`, `.unchanged` is nil). Carried, not read yet: every screen ignores it, and
+    /// nil (the default) is today's behaviour.
     public enum Arrangement: Equatable, Sendable {
         case single
         case twoPane
@@ -78,7 +78,7 @@ public enum AppWideLayout {
         public var hasRegularHeight: Bool?
         /// TODO(#465 item 2): nil until fold awareness supplies it. Ignored today.
         public var foldDivision: FoldDivision?
-        /// TODO(#465 item 4): nil until `ArrangementView` supplies it. Ignored today.
+        /// `ArrangementPaneLayout.Decision.appWideArrangement` for this container. Ignored today.
         public var arrangement: Arrangement?
 
         public init(hasRegularWidth: Bool, containerWidth: Double, containerHeight: Double,

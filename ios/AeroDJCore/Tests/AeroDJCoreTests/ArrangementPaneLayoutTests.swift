@@ -158,4 +158,38 @@ final class ArrangementPaneLayoutTests: XCTestCase {
     }
 
     private enum SplitError: Error { case notSplit }
+
+    /// #512's seam: the agreed mapping onto `AppWideLayout.Input.arrangement`, and passing
+    /// it changes no `AppWideLayout` decision yet. -Nova
+    func testDecisionMapsOntoTheAppWideArrangementSeam() {
+        XCTAssertNil(ArrangementPaneLayout.Decision.unchanged.appWideArrangement)
+        let regular = ArrangementPaneLayout.resolve(
+            hasRegularWidth: true, containerWidth: 820, containerHeight: 1180,
+            accessibilityTextSize: false)
+        guard case .split = regular else { return XCTFail("expected .split, got \(regular)") }
+        XCTAssertEqual(regular.appWideArrangement, .twoPane)
+        let accessible = ArrangementPaneLayout.resolve(
+            hasRegularWidth: true, containerWidth: 820, containerHeight: 1180,
+            accessibilityTextSize: true)
+        guard case .singleColumn = accessible else { return XCTFail("expected .singleColumn, got \(accessible)") }
+        XCTAssertEqual(accessible.appWideArrangement, .single)
+        let phone = ArrangementPaneLayout.resolve(
+            hasRegularWidth: false, containerWidth: 390, containerHeight: 844,
+            accessibilityTextSize: false)
+        XCTAssertNil(phone.appWideArrangement)
+
+        for (width, height, regularWidth) in [(390.0, 844.0, false), (640.0, 820.0, false),
+                                              (820.0, 1180.0, true), (540.0, 1180.0, true)] {
+            for decision in [regular, accessible, phone] {
+                let base = AppWideLayout.Input(hasRegularWidth: regularWidth, containerWidth: width,
+                                               containerHeight: height)
+                var seamed = base
+                seamed.arrangement = decision.appWideArrangement
+                for screen in AppWideLayout.Screen.allCases {
+                    XCTAssertEqual(AppWideLayout.decide(seamed, for: screen),
+                                   AppWideLayout.decide(base, for: screen), "\(screen) \(width)x\(height)")
+                }
+            }
+        }
+    }
 }
