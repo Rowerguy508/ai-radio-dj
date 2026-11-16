@@ -12,7 +12,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "2.0"
     CURRENT_PROJECT_VERSION: "1"
     # PhononCore.xcframework is arm64 only (xn-ptts v0.5.0). Simulator builds stay arm64.
     "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
