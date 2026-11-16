@@ -672,14 +672,14 @@ extension SpokenAttribution {
 
 /// Which DJ lines a route that leaves the device or is paid may hear (`VoiceRenderer.mayLeaveDevice`).
 /// Owner, Nov 9 2026: "I want it all elevenlabs." The wider scope needs cloud-voice consent to
-/// the copy that says so (`CloudVoiceConsentCopy.version` 2, `CloudVoiceConsentStore.scope`). -Fry
+/// the copy that says so (`CloudVoiceConsentCopy.version` 3 since #432, `CloudVoiceConsentStore.scope`). -Fry
 public enum CloudVoiceScope: Equatable, Sendable {
     /// Nothing leaves the device: no consent to the current copy, or the cloud voice is off.
     case noLines
     /// #176: only an attributed, non-personal DJ transition with no source or provenance. The
     /// default for a renderer with no consent check (owner A/B build, on-device default, tests).
     case transitionsOnly
-    /// Copy v2 accepted: every attributed line, including personal items (calendar, shared
+    /// Copy v3 accepted (#432; v2 before OnAirly 2.0): every attributed line, including personal items (calendar, shared
     /// email digest, notes), news and weather, library tracks and typed station names. A cue
     /// with no attribution still stays on the device.
     case allLines
@@ -691,8 +691,10 @@ public struct VoiceRenderer: Sendable {
     public let budget: VoiceBudget
     public let cache: any AudioCache
     public let revocations: NarrationRevocations
-    /// Read once per cue, before any cache key, reservation or provider call, so a consent
-    /// change applies to the very next line. Every narrowed view of this renderer shares it.
+    /// Read live: once when the cue starts (before any cache key, reservation or provider call),
+    /// then again by `mayUse` at each #400 gate (before and after an off-device route's cache
+    /// read, inside the timed provider task, before and after its cache write), so a consent
+    /// change applies mid-cue, not only from the next line. Every narrowed view shares it.
     public let cloudScope: @Sendable () -> CloudVoiceScope
 
     public init(routes: [VoiceRoute], budget: VoiceBudget, cache: any AudioCache,
@@ -774,26 +776,37 @@ public struct VoiceRenderer: Sendable {
     public static func neighbours(of cue: NarrationCue, in cues: [NarrationCue],
                                   attributions: [UUID: SpokenAttribution],
                                   scope: CloudVoiceScope = .transitionsOnly) -> SpeechNeighbours {
-        guard let index = cues.firstIndex(where: { $0.id == cue.id }) else { return .none }
+        contextNeighbours(of: cue, in: cues, attributions: attributions, scope: scope).context
+    }
+
+    /// `neighbours(of:in:attributions:scope:)` plus the privacy class of each included neighbour
+    /// (`CuePrivacy.classify`, the same rule as the cue's own), so #400 gate 2 can re-check them
+    /// against the live scope right before their text is sent.
+    static func contextNeighbours(of cue: NarrationCue, in cues: [NarrationCue],
+                                  attributions: [UUID: SpokenAttribution],
+                                  scope: CloudVoiceScope) -> (context: SpeechNeighbours, privacy: [CuePrivacyClass]) {
+        guard let index = cues.firstIndex(where: { $0.id == cue.id }) else { return (.none, []) }
         struct Side {
             let text: String
             let itemID: UUID?
             let needsAllLines: Bool
+            let privacy: CuePrivacyClass
         }
         func side(at i: Int) -> Side? {
             guard cues.indices.contains(i) else { return nil }
             let neighbour = cues[i]
-            let attribution = attributions[neighbour.id]
-            guard mayLeaveDevice(neighbour, attribution: attribution, scope: scope) else { return nil }
+            let privacy = CuePrivacy.classify(neighbour, attribution: attributions[neighbour.id])
+            guard privacy.mayLeaveDevice(scope: scope) else { return nil }
             let text = neighbour.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
-            let widened = !mayLeaveDevice(neighbour, attribution: attribution, scope: .transitionsOnly)
-            return Side(text: text, itemID: neighbour.sourceItemID, needsAllLines: widened)
+            let widened = !privacy.mayLeaveDevice(scope: .transitionsOnly)
+            return Side(text: text, itemID: neighbour.sourceItemID, needsAllLines: widened, privacy: privacy)
         }
         let previous = side(at: index - 1), next = side(at: index + 1)
-        return SpeechNeighbours(previous: previous?.text, next: next?.text,
-                                sourceItemIDs: [previous?.itemID, next?.itemID].compactMap { $0 },
-                                needsAllLinesTag: (previous?.needsAllLines ?? false) || (next?.needsAllLines ?? false))
+        let context = SpeechNeighbours(previous: previous?.text, next: next?.text,
+                                       sourceItemIDs: [previous?.itemID, next?.itemID].compactMap { $0 },
+                                       needsAllLinesTag: (previous?.needsAllLines ?? false) || (next?.needsAllLines ?? false))
+        return (context, [previous?.privacy, next?.privacy].compactMap { $0 })
     }
 
     public func render(_ handoff: NarrationHandoff, userID: String, stationID: String) async -> RenderedNarration {
@@ -845,23 +858,38 @@ public struct VoiceRenderer: Sendable {
     }
 
     /// `scope` (owner, Nov 9 2026): `.transitionsOnly` is the rule above; `.noLines` keeps every
-    /// cue local; `.allLines` (consent to copy v2) lets every attributed cue go. A cue with no
+    /// cue local; `.allLines` (consent to copy v3, #432) lets every attributed cue go. A cue with no
     /// attribution is local-only whatever the scope.
+    /// #400: the same rule, now read from the cue's one privacy class (`CuePrivacy.classify`).
     public static func mayLeaveDevice(_ cue: NarrationCue, attribution: SpokenAttribution?,
                                       scope: CloudVoiceScope = .transitionsOnly) -> Bool {
-        guard let attribution else { return false }
-        switch scope {
-        case .noLines: return false
-        case .allLines: return true
-        case .transitionsOnly: break
-        }
-        switch attribution {
-        case .personalContext, .stationName: return false
-        case .trackMetadata(_, let origin): guard origin == .catalog else { return false }
-        case .presenter: break
-        }
-        return cue.kind == .transition && !cue.isContent && cue.source == nil && cue.provenance == nil
+        CuePrivacy.classify(cue, attribution: attribution).mayLeaveDevice(scope: scope)
     }
+
+    /// #400 (-Sentinel): the one per-cue choke point. An on-device, free route is always usable.
+    /// Any other route is usable only while a cue of class `privacy` may leave the device under
+    /// the consent scope read now (`cloudScope()`, live). `render` asks it immediately before
+    /// and after that route's cache lookup, immediately before its provider call (inside the timed task),
+    /// and immediately before and after its cache write, so a decline that lands mid-render stops
+    /// the next step: no text is sent, no clip is cached or served, and the cue falls through to
+    /// the on-device route.
+    public func mayUse(_ route: VoiceRoute, for privacy: CuePrivacyClass) -> Bool {
+        route.isLocalAndFree || privacy.mayLeaveDevice(scope: cloudScope())
+    }
+
+    /// #400 gate 2 for stitching context: every quoted neighbour may still leave the device under
+    /// the consent scope read now. A neighbour that became local-only mid-render (e.g. all lines
+    /// narrowed to transitions only) refuses the route, so its text is never sent. -Sentinel
+    func mayQuote(_ neighbours: [CuePrivacyClass]) -> Bool {
+        let live = cloudScope()
+        return neighbours.allSatisfy { $0.mayLeaveDevice(scope: live) }
+    }
+
+    /// Attempt detail when the choke point refused a route mid-render. Fixed text, no cue text.
+    public static let privacyGateSkip = "cue no longer eligible: off-device route skipped"
+
+    /// Thrown inside the timed provider task when the choke point refuses just before the call.
+    struct PrivacyGateRefusal: Error {}
 
     /// Renders `cue` on the first route that succeeds. Unless `mayLeaveDevice(cue, attribution:)`
     /// holds, only `isLocalAndFree` routes are used: any route that leaves the device or is paid
@@ -881,14 +909,15 @@ public struct VoiceRenderer: Sendable {
         var attempts: [VoiceAttempt] = []
         // Decided once, before any cache key, reservation or provider call (#176). Ineligible
         // cues use `isLocalAndFree` routes only.
+        let privacy = CuePrivacy.classify(cue, attribution: attribution)
         let scope = cloudScope()
-        let offDeviceAllowed = Self.mayLeaveDevice(cue, attribution: attribution, scope: scope)
-        let widened = offDeviceAllowed && !Self.mayLeaveDevice(cue, attribution: attribution, scope: .transitionsOnly)
+        let offDeviceAllowed = privacy.mayLeaveDevice(scope: scope)
+        let widened = offDeviceAllowed && !privacy.mayLeaveDevice(scope: .transitionsOnly)
         // Neighbours are decided with the same scope, before the purge check. A context-sending
         // route quotes their text, so their item ids (and `allLinesClipTag` when one of them may
         // leave only under `.allLines`) have to be in `sources` or a purge of that item, including
         // a purge-all still in flight, cannot see the clip. -Echo
-        let mates = Self.neighbours(of: cue, in: breakCues, attributions: breakAttributions, scope: scope)
+        let (mates, matePrivacy) = Self.contextNeighbours(of: cue, in: breakCues, attributions: breakAttributions, scope: scope)
         var sourceList = (cue.sourceItemID.map { [$0] } ?? []) + (widened ? [Self.allLinesClipTag] : [])
         if offDeviceAllowed, routes.contains(where: \.sendsSpeechContext), !mates.isEmpty {
             for id in mates.sourceItemIDs where !sourceList.contains(id) { sourceList.append(id) }
@@ -908,6 +937,12 @@ public struct VoiceRenderer: Sendable {
                 attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.localOnlySkip)))
                 continue
             }
+            if !mayUse(route, for: privacy) {
+                // #400 gate 1 (lookup): consent changed since the cue started. Neither this route's
+                // cache nor its provider is touched.
+                attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
+                continue
+            }
             if Task.isCancelled { return .failure(Failure(reason: .renderFailed, attempts: attempts + [VoiceAttempt(providerID: route.providerID, result: .cancelled)])) }
             let text = Self.spokenText(cue.text, for: route)
             // Same `mates` as the purge check above. A local-only cue sends nothing, and a
@@ -916,6 +951,13 @@ public struct VoiceRenderer: Sendable {
             let key = Self.cacheKey(text: text, route: route, context: speech)
             if useCache, let cached = await cache.audio(for: key), cached.seconds <= Double(cue.maxSeconds) {
                 // Keys are text + voice, so the clip may carry other items' ids: check both.
+                guard mayUse(route, for: privacy) else {
+                    // #400 gate 1b (after the read; Atlas's B1 on #498): consent was withdrawn while the
+                    // read was in flight. A plain decline revokes no item id, so the revocation check
+                    // below would pass: never hand back this cloud clip; fall through to the on-device route.
+                    attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
+                    continue
+                }
                 let hitSources = Array(Set(sources).union(cached.sourceItemIDs))
                 if revocations.revoked(hitSources, since: token) || revocations.purgePending(hitSources) {
                     // Revoked while the read was in flight: never hand back, and remove, that clip.
@@ -937,8 +979,14 @@ public struct VoiceRenderer: Sendable {
             let request = RequestContext(stationID: stationID, isReusableGeneric: false,
                                          previousText: speech.previous, nextText: speech.next)
             do {
+                let renderer = self
                 let artifact = try await Self.withTimeout(route.timeout) {
-                    try await route.provider.synthesize(text, voice: route.voice, context: request)
+                    // #400 gate 2 (TTS): checked last, right before the text is handed to the provider.
+                    // When neighbour text rides along as context, every quoted neighbour must still
+                    // be allowed off the device under the live scope too, or nothing is sent.
+                    guard renderer.mayUse(route, for: privacy),
+                          speech.isEmpty || renderer.mayQuote(matePrivacy) else { throw PrivacyGateRefusal() }
+                    return try await route.provider.synthesize(text, voice: route.voice, context: request)
                 }
                 if let r = reservation { await budget.commit(r, microdollars: route.cost(characters: artifact.billableUnits)) }
                 guard !artifact.data.isEmpty, artifact.durationSeconds.isFinite, artifact.durationSeconds > 0 else {
@@ -957,7 +1005,25 @@ public struct VoiceRenderer: Sendable {
                     attempts.append(VoiceAttempt(providerID: route.providerID, result: .cancelled))
                     return .failure(Failure(reason: .renderFailed, attempts: attempts))
                 }
-                if useCache { await cache.store(audio, for: key) }
+                guard mayUse(route, for: privacy) else {
+                    // #400 gate 3 (cache write): consent withdrawn while the provider ran. The clip
+                    // is neither cached nor returned; the cue falls through to the on-device route.
+                    attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
+                    continue
+                }
+                if useCache {
+                    await cache.store(audio, for: key)
+                    if !mayUse(route, for: privacy) {
+                        // Withdrawn while the write was in flight; the decline's own purge may have
+                        // run before it. Remove off-device clips again and do not return this one.
+                        // Deliberately fail-closed (Echo's nit on #498): this drops every off-device
+                        // clip, including transition clips still allowed when the scope only narrows
+                        // from all lines to transitions only; those just render again.
+                        await purgeCloudClips()
+                        attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
+                        continue
+                    }
+                }
                 if revocations.revoked(sources, since: token) {
                     // A purge landed while the write was in flight and may have run before it:
                     // remove what we just wrote. (A purge after the write removes it itself.)
@@ -967,6 +1033,10 @@ public struct VoiceRenderer: Sendable {
                 }
                 attempts.append(VoiceAttempt(providerID: route.providerID, result: .rendered))
                 return .success(RenderedClip(cueID: cue.id, audio: audio, cacheKey: key, attempts: attempts))
+            } catch is PrivacyGateRefusal {
+                // Refused before the call: nothing was sent or billed.
+                if let r = reservation { await budget.release(r) }
+                attempts.append(VoiceAttempt(providerID: route.providerID, result: .failed(Self.privacyGateSkip)))
             } catch is CancellationError {
                 // Cancelled by the caller (skip, stop, consent revoked): release the hold and stop trying routes.
                 if let r = reservation { await budget.release(r) }

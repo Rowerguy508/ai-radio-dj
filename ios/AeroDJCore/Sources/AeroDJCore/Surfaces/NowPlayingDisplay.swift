@@ -5,11 +5,16 @@ import Foundation
 // Everything that leaves the app process for those surfaces (the App Group file the widget
 // reads, and the ActivityKit content state) is one `NowPlayingDisplay` value and nothing else.
 // Echo's and Sentinel's rules, enforced here and in NowPlayingDisplayTests:
-// - Display fields only: station, track, artist, art, playback state, on-air label.
-// - No script or briefing text, ever (`DJActivity.speaking(line:)` is never read).
+// - Display fields only: station, track, artist, art, playback state, on-air label, ready label.
+// - No script or briefing text, ever (`DJActivity.speaking(line:)` is never read). The ready
+//   line is fixed copy, never `dj.detail` (which mentions briefing and duration).
 // - No tokens, user ID, consent state or tester_voice data (there is no field for them, and a
 //   test pins the exact encoded key set).
 // - "On Air" comes only from `DJStudioState.onAirLabel` (confirmed `.speaking`); no new flag.
+// - Ready ("DJ break after this song") is set only for `DJStudioState.ready`. It never uses
+//   the On Air label, and `widgetCopy` always drops it (a widget timeline can't take it back
+//   if the break becomes a quiet skip). Failed and idle carry no line.
+// - An older payload without `readyLabel` decodes as not-ready.
 // - Station, track, artist and art are privacy-sensitive: redacted while locked by default.
 
 /// The only payload the widget and the Live Activity ever see.
@@ -52,14 +57,29 @@ public struct NowPlayingDisplay: Codable, Equatable, Hashable, Sendable {
     public let state: State
     /// `DJStudioState.onAirLabel`: "On Air" only while the player confirms the DJ is speaking.
     public let onAirLabel: String?
+    /// "DJ break after this song" only while `DJStudioState` is `.ready`. Nil for speaking
+    /// (On Air is enough), failed (quiet skip), idle, preparing, and a stopped player.
+    /// Optional so an older payload without this key decodes as not-ready.
+    public let readyLabel: String?
 
-    public init(station: String?, track: String?, artist: String?, art: Art?, state: State, onAirLabel: String?) {
+    /// Fixed Live Activity copy for a prepared break. Not taken from `DJStudioState.detail`.
+    public static let readyLineCopy = "DJ break after this song"
+
+    public init(station: String?, track: String?, artist: String?, art: Art?, state: State,
+                onAirLabel: String?, readyLabel: String? = nil) {
         self.station = station
         self.track = track
         self.artist = artist
         self.art = art
         self.state = state
         self.onAirLabel = onAirLabel
+        self.readyLabel = readyLabel
+    }
+
+    /// The ready line for a studio state. Only `.ready` returns copy; failed stays a quiet skip.
+    public static func readyLabel(for dj: DJStudioState) -> String? {
+        if case .ready = dj { return readyLineCopy }
+        return nil
     }
 
     /// The tally light. Derived from the label, never stored separately.
@@ -81,25 +101,28 @@ public struct NowPlayingDisplay: Codable, Equatable, Hashable, Sendable {
         case .playing: .playing
         case .paused: .paused
         }
+        // On Air and Ready only while something is playing: a stopped player has no break coming.
+        let live = state != .stopped
         return NowPlayingDisplay(station: snapshot.station?.name, track: track?.title, artist: track?.artistName,
                                  art: art, state: state,
-                                 // On Air only while something is playing: a stopped player has no break on air.
-                                 onAirLabel: state == .stopped ? nil : dj.onAirLabel)
+                                 onAirLabel: live ? dj.onAirLabel : nil,
+                                 readyLabel: live ? readyLabel(for: dj) : nil)
     }
 
     /// The copy written to the App Group for the widget. The widget's timeline cannot refresh
-    /// within a 30-second break, so it never shows On Air (a stale tally would outlive the
-    /// break). The Live Activity, which updates live and is what StandBy shows full screen,
-    /// carries the tally.
+    /// within a 30-second break, so it never shows On Air or Ready (a stale tally or line would
+    /// outlive the break, and a ready break can still become a quiet skip). The Live Activity,
+    /// which updates live and is what StandBy shows full screen, carries both.
     public var widgetCopy: NowPlayingDisplay {
-        NowPlayingDisplay(station: station, track: track, artist: artist, art: art, state: state, onAirLabel: nil)
+        NowPlayingDisplay(station: station, track: track, artist: artist, art: art, state: state,
+                          onAirLabel: nil, readyLabel: nil)
     }
 
     /// Fields that are redacted while the device is locked (`.privacySensitive()`), per 04b.
-    /// The clock, the state and the on-air dot stay visible.
+    /// The clock, the state, the on-air dot and the ready line stay visible.
     public static let privacySensitiveFields: Set<String> = ["station", "track", "artist", "art"]
     /// Every encoded key. Anything outside this set must never be added without Sentinel.
-    public static let allowedKeys: Set<String> = ["station", "track", "artist", "art", "state", "onAirLabel"]
+    public static let allowedKeys: Set<String> = ["station", "track", "artist", "art", "state", "onAirLabel", "readyLabel"]
     public static let allowedArtKeys: Set<String> = ["hues", "saturation", "brightness", "monogram", "angle"]
 }
 
@@ -169,6 +192,11 @@ public enum LiveActivityLayout {
     public static let headerHeight: Double = 20
     public static let rowSpacing: Double = 10
     public static let artSize: Double = 56
+    /// Caption line for Ready ("DJ break after this song"). Budgeted even when absent, so
+    /// showing it cannot push the lock presentation over the 160 pt cap.
+    public static let readyLineHeight: Double = 16
 
-    public static var contentHeight: Double { padding * 2 + headerHeight + rowSpacing + artSize }
+    public static var contentHeight: Double {
+        padding * 2 + headerHeight + rowSpacing + artSize + rowSpacing + readyLineHeight
+    }
 }

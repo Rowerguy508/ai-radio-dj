@@ -88,6 +88,25 @@ struct OnAirTally: View {
     }
 }
 
+/// The ready line. Shown only when the display carries `readyLabel` (a prepared `.ready`
+/// break). Not the On Air tally: no red dot, and never used for `.speaking` or `.failed`.
+/// Not privacy-sensitive: like the state caption, it stays visible.
+struct ReadyCaption: View {
+    let label: String
+
+    var body: some View {
+        Text(label)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(WidgetPalette.secondaryText)
+            .lineLimit(1)
+            // Fixed-height row (LiveActivityLayout.readyLineHeight): shrink rather than
+            // truncate at large Dynamic Type so the whole sentence stays readable.
+            .minimumScaleFactor(0.7)
+            .allowsTightening(true)
+            .accessibilityLabel(label)
+    }
+}
+
 extension NowPlayingDisplay.State {
     /// Short state caption; nil while playing (the art and title say enough).
     var caption: String? {
