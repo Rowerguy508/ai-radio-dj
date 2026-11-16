@@ -181,8 +181,10 @@ final class CloudVoiceConsentAtomicTests: XCTestCase {
     func testPartialMalformedAndOtherVersionRecordsAreNotGranted() async throws {
         let records: [Any] = [
             "", ":", "2", "2:", ":accepted", "accepted", "2:accepted:x", "2:accepted:", " 2:accepted",
-            "2 :accepted", "02:accepted", "+2:accepted", "-2:accepted", "1:accepted", "3:accepted",
-            "999999999999999999999:accepted", "2:Accepted", "2:accepte", "2:undecided", "x:accepted",
+            "2 :accepted", "02:accepted", "+2:accepted", "-2:accepted", "1:accepted",
+            "\(Store.currentVersion - 1):accepted", "\(Store.currentVersion + 1):accepted",
+            "0\(Store.currentVersion):accepted", " \(Store.currentVersion):accepted",
+            "999999999999999999999:accepted", "\(Store.currentVersion):Accepted", "2:accepte", "2:undecided", "x:accepted",
             2, true, Data("2:accepted".utf8), ["2", "accepted"],
         ]
         for record in records {
