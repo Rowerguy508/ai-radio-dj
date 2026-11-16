@@ -17,8 +17,23 @@ public enum CloudVoiceConsentState: String, Equatable, Sendable {
 /// is stored, and turning it off applies to the very next render. Reads go straight to
 /// `UserDefaults` (thread-safe), so every copy of this store agrees. Fail-closed: a missing,
 /// unknown or older-version value reads as `.undecided`, which is not granted. -Nova
+///
+/// #441 (-Sentinel): the answer and the copy version it answers are one value, `recordKey`
+/// ("<version>:<state>", e.g. "2:accepted"), read with one `string(forKey:)` and written with one
+/// `set`. Every reader sees a whole old record or a whole new one, never a state from one write
+/// paired with a version from another, so a decline can never pass through "v2 + accepted".
+/// The two-key layout before 2.0 (`stateKey`, `versionKey`) is legacy and is only ever read
+/// conservatively (`legacyState`): a legacy decline stays a decline, and a legacy acceptance of
+/// any version, v2 included, reads `.undecided`, because "accepted + v2" is exactly the shape a
+/// torn v1-accept-then-v2-decline left behind and its provenance cannot be proven. Existing
+/// testers who accepted v2 under the old layout are therefore asked once more; nothing is sent
+/// until they tap "Use cloud voice" again. The next write removes the legacy keys.
 public struct CloudVoiceConsentStore: @unchecked Sendable {
+    /// The single atomic record: "<copy version>:<state raw value>".
+    public static let recordKey = "AeroDJ.cloudVoiceConsent.record"
+    /// Legacy (before #441): read only by the fail-closed migration, removed on the next write.
     public static let stateKey = "AeroDJ.cloudVoiceConsent.state"
+    /// Legacy (before #441): read only by the fail-closed migration, removed on the next write.
     public static let versionKey = "AeroDJ.cloudVoiceConsent.version"
     /// Bump when the sheet copy changes materially: earlier acceptances then read `.undecided`.
     public static let currentVersion = CloudVoiceConsentCopy.version
@@ -48,41 +63,60 @@ public struct CloudVoiceConsentStore: @unchecked Sendable {
     }
 
     public var state: CloudVoiceConsentState {
-        let raw: String?
-        let version: Int
-        if let memory {
-            (raw, version) = memory.read()
-        } else if let defaults {
-            raw = defaults.string(forKey: Self.stateKey)
-            version = defaults.integer(forKey: Self.versionKey)
-        } else {
-            return .undecided
+        if let memory { return Self.decode(memory.read()) }
+        guard let defaults else { return .undecided }
+        // One read of one key: the record is never assembled from two reads.
+        if let record = defaults.object(forKey: Self.recordKey) {
+            return Self.decode(record as? String)
         }
-        guard let raw, let stored = CloudVoiceConsentState(rawValue: raw) else { return .undecided }
+        return Self.legacyState(defaults)
+    }
+
+    /// The stored record for `state` at the current copy version.
+    public static func encode(_ state: CloudVoiceConsentState, version: Int = currentVersion) -> String {
+        "\(version):\(state.rawValue)"
+    }
+
+    /// Strict, fail-closed parse of a record. Anything that is not exactly "<version>:<state>",
+    /// with a canonical non-negative version and a known state, reads `.undecided`. An acceptance
+    /// counts only for the current copy version (older or newer reads `.undecided`). A decline of
+    /// any version stays a decline.
+    public static func decode(_ record: String?) -> CloudVoiceConsentState {
+        guard let record else { return .undecided }
+        let parts = record.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, let version = Int(parts[0]), version >= 0, String(version) == parts[0],
+              let stored = CloudVoiceConsentState(rawValue: String(parts[1])) else { return .undecided }
         switch stored {
-        case .accepted:
-            // Consent covers only the copy the listener saw.
-            return version == Self.currentVersion ? .accepted : .undecided
-        case .declined, .undecided:
-            return stored
+        case .accepted: return version == currentVersion ? .accepted : .undecided
+        case .declined, .undecided: return stored
         }
     }
 
+    /// The two-key layout before #441, read so a legacy decline is kept. Never grants: the two
+    /// keys may be from different writes (a torn decline leaves "accepted" with the new version).
+    static func legacyState(_ defaults: UserDefaults) -> CloudVoiceConsentState {
+        guard let raw = defaults.string(forKey: stateKey),
+              let stored = CloudVoiceConsentState(rawValue: raw) else { return .undecided }
+        return stored == .declined ? .declined : .undecided
+    }
+
     private func write(_ state: CloudVoiceConsentState) {
+        let record = Self.encode(state)
         if let memory {
-            memory.write(state.rawValue, Self.currentVersion)
+            memory.write(record)
         } else if let defaults {
-            defaults.set(Self.currentVersion, forKey: Self.versionKey)
-            defaults.set(state.rawValue, forKey: Self.stateKey)
+            defaults.set(record, forKey: Self.recordKey)       // the one write that decides
+            // Legacy keys are ignored once the record exists, and never grant anyway.
+            defaults.removeObject(forKey: Self.stateKey)
+            defaults.removeObject(forKey: Self.versionKey)
         }
     }
 
     private final class MemoryBox: @unchecked Sendable {
         private let lock = NSLock()
-        private var raw: String?
-        private var version = 0
-        func read() -> (String?, Int) { lock.lock(); defer { lock.unlock() }; return (raw, version) }
-        func write(_ raw: String, _ version: Int) { lock.lock(); self.raw = raw; self.version = version; lock.unlock() }
+        private var record: String?
+        func read() -> String? { lock.lock(); defer { lock.unlock() }; return record }
+        func write(_ record: String) { lock.lock(); self.record = record; lock.unlock() }
     }
 
     /// True only for an accepted answer to the current copy version.
