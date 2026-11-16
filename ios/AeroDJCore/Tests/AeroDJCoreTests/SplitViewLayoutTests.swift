@@ -98,6 +98,35 @@ final class SplitViewLayoutTests: XCTestCase {
         XCTAssertNil(SplitViewLayout.sample(named: "phone"))
     }
 
+    func testTheDuoRailClearsTheHostInsetAndAFullScreenDuoDoesNotMove() {
+        let half = SplitViewLayout.half
+        let rail = SplitViewLayout.railFrame(containerWidth: half.width,
+                                             leadingInset: half.leading,
+                                             trailingInset: half.trailing)
+        XCTAssertEqual(rail.leading, half.leading, accuracy: 0.001)
+        XCTAssertEqual(rail.trailing, 0, accuracy: 0.001)
+        XCTAssertEqual(rail.width, half.width - half.leading, accuracy: 0.001)
+        // The symbol bar keeps the 16 pt design gutter inside that inset.
+        let barMin = rail.leading + FoldedColumnLayout.duoEdgeInset
+        XCTAssertGreaterThanOrEqual(barMin, half.leading)
+        let wide = SplitViewLayout.wide
+        let trailing = SplitViewLayout.railFrame(containerWidth: wide.width,
+                                                 leadingInset: wide.leading,
+                                                 trailingInset: wide.trailing)
+        XCTAssertEqual(trailing.leading, 0, accuracy: 0.001)
+        XCTAssertEqual(trailing.trailing, wide.trailing, accuracy: 0.001)
+        XCTAssertEqual(trailing.leading + trailing.width, wide.width - wide.trailing, accuracy: 0.001)
+        let barMax = trailing.leading + trailing.width - FoldedColumnLayout.duoEdgeInset
+        XCTAssertLessThanOrEqual(barMax, wide.width - wide.trailing)
+        // Phone and full-screen Duo: no split insets, the container is unchanged.
+        let duo = SplitViewLayout.railFrame(containerWidth: 640, leadingInset: 0, trailingInset: 0)
+        XCTAssertEqual(duo.leading, 0, accuracy: 0.001)
+        XCTAssertEqual(duo.trailing, 0, accuracy: 0.001)
+        XCTAssertEqual(duo.width, 640, accuracy: 0.001)
+        let phone = SplitViewLayout.railFrame(containerWidth: 390, leadingInset: 0, trailingInset: 0)
+        XCTAssertEqual(phone.width, 390, accuracy: 0.001)
+    }
+
     func testStationsPreferTheLeadingEdgeUntilTheOuterSideIsTrailing() {
         let half = SplitViewLayout.half
         let staying = SplitViewLayout.chrome(hasRegularWidth: half.hasRegularWidth,

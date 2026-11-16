@@ -185,6 +185,30 @@ public enum SplitViewLayout {
         return SidePadding(leading: lead, trailing: trail, asymmetric: abs(lead - trail) > 0.5)
     }
 
+    /// Where the Duo rail sits when it is framed to the split container's raw edge.
+    /// The host's safe-area inset does not shrink that frame, so the rail has to
+    /// move in by the insets the host reported. A zero pair leaves the width
+    /// alone: that is the phone and the full-screen Duo, which do not use this.
+    public struct RailFrame: Equatable, Sendable {
+        public var leading: Double
+        public var trailing: Double
+        public var width: Double
+
+        public init(leading: Double, trailing: Double, width: Double) {
+            self.leading = leading
+            self.trailing = trailing
+            self.width = width
+        }
+    }
+
+    public static func railFrame(containerWidth: Double, leadingInset: Double,
+                                 trailingInset: Double) -> RailFrame {
+        let width = finite(containerWidth)
+        let lead = min(finite(leadingInset), width)
+        let trail = min(finite(trailingInset), max(0, width - lead))
+        return RailFrame(leading: lead, trailing: trail, width: max(0, width - lead - trail))
+    }
+
     private static func finite(_ value: Double) -> Double {
         guard value.isFinite else { return 0 }
         return max(0, value)

@@ -183,7 +183,8 @@ struct PlayingScreen: View {
                              stationStops: stationStops,
                              onOpenStation: onOpenStation,
                              splitBarEdge: barEdge,
-                             layoutSize: splitCanvas)
+                             layoutSize: splitCanvas,
+                             splitHost: splitCanvas == nil ? nil : splitMeasure)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("layout.compact")
                     .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
