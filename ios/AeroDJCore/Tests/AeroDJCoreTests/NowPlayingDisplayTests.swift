@@ -242,6 +242,127 @@ final class NowPlayingDisplayTests: XCTestCase {
                                                appInForeground: true, activitiesEnabled: false), .end)
     }
 
+    // MARK: #539 one lock-screen card, and every activity follows the song
+
+    func testLockScreenDropsTheTrackWhileSystemNowPlayingOwnsIt() throws {
+        let playing = NowPlayingDisplay.make(snapshot: snapshot(), dj: .ready(includesBriefing: false, seconds: 30))
+        XCTAssertTrue(playing.systemNowPlayingOwnsLockScreen)
+        XCTAssertFalse(playing.lockScreenShowsPlaybackChrome)
+        XCTAssertEqual(playing.track, "Tidewater")
+        XCTAssertEqual(playing.widgetCopy.track, "Tidewater", "the widget still carries the song")
+        let card = playing.lockScreenPresentation
+        XCTAssertNil(card.track)
+        XCTAssertNil(card.artist)
+        XCTAssertNil(card.art)
+        XCTAssertNil(card.station)
+        XCTAssertNil(card.state.caption, "no transport line next to the system player")
+        XCTAssertEqual(card.state, .playing)
+        XCTAssertEqual(card.readyLabel, NowPlayingDisplay.readyLineCopy)
+        XCTAssertNil(card.onAirLabel)
+        XCTAssertEqual(playing.track, "Tidewater", "the activity payload keeps the song for the island")
+        let text = String(decoding: try JSONEncoder().encode(card), as: UTF8.self)
+        XCTAssertFalse(text.contains("Tidewater"))
+        XCTAssertFalse(text.contains("Lumen Harbor"))
+        XCTAssertFalse(text.contains("Morning Calm"))
+        XCTAssertTrue(text.contains(NowPlayingDisplay.readyLineCopy))
+
+        let speaking = NowPlayingDisplay.make(snapshot: snapshot(), dj: .speaking(includesBriefing: false))
+        XCTAssertEqual(speaking.lockScreenPresentation.onAirLabel, "On Air")
+        XCTAssertNil(speaking.lockScreenPresentation.readyLabel)
+        XCTAssertNil(speaking.lockScreenPresentation.track)
+
+        let paused = NowPlayingDisplay.make(snapshot: snapshot(.paused), dj: .idle)
+        XCTAssertEqual(paused.state.caption, "Paused")
+        XCTAssertTrue(paused.systemNowPlayingOwnsLockScreen)
+        XCTAssertNil(paused.lockScreenPresentation.track)
+        XCTAssertNil(paused.lockScreenPresentation.state.caption)
+        XCTAssertEqual(paused.state, .paused)
+
+        let starting = NowPlayingDisplay.make(snapshot: snapshot(.preparing),
+                                              dj: .ready(includesBriefing: false, seconds: 12))
+        XCTAssertEqual(starting.state, .starting)
+        XCTAssertFalse(starting.systemNowPlayingOwnsLockScreen)
+        XCTAssertTrue(starting.lockScreenShowsPlaybackChrome)
+        XCTAssertEqual(starting.lockScreenPresentation, starting)
+        XCTAssertEqual(starting.lockScreenPresentation.track, "Tidewater")
+        XCTAssertEqual(starting.lockScreenPresentation.state.caption, "Starting")
+
+        let stopped = NowPlayingDisplay.make(snapshot: snapshot(.stopped), dj: .idle)
+        XCTAssertFalse(stopped.systemNowPlayingOwnsLockScreen)
+    }
+
+    func testReconcilerUpdatesEveryActivityOnTrackChange() {
+        let first = song("Tidewater")
+        let next = song("Paper Satellites")
+        XCTAssertNotEqual(first, next)
+        XCTAssertEqual(LiveActivityReconciler.commands(display: next,
+                                                       running: [LiveActivityRecord(id: "live", content: first)],
+                                                       appInForeground: false, activitiesEnabled: true),
+                       [.update(id: "live", display: next)])
+        let paused = NowPlayingDisplay.make(snapshot: snapshot(.paused), dj: .idle)
+        XCTAssertEqual(LiveActivityReconciler.commands(display: paused,
+                                                       running: [LiveActivityRecord(id: "live", content: first)],
+                                                       appInForeground: false, activitiesEnabled: true),
+                       [.update(id: "live", display: paused)])
+        let ready = NowPlayingDisplay.make(snapshot: snapshot(), dj: .ready(includesBriefing: false, seconds: 30))
+        XCTAssertEqual(LiveActivityReconciler.commands(display: ready,
+                                                       running: [LiveActivityRecord(id: "live", content: first)],
+                                                       appInForeground: false, activitiesEnabled: true),
+                       [.update(id: "live", display: ready)])
+        // The song `.first` already shows is not a reason to skip the other activity.
+        XCTAssertEqual(LiveActivityReconciler.commands(display: next,
+                                                       running: [LiveActivityRecord(id: "shown", content: next),
+                                                                 LiveActivityRecord(id: "stuck", content: first)],
+                                                       appInForeground: false, activitiesEnabled: true),
+                       [.update(id: "stuck", display: next), .end(id: "stuck")])
+        XCTAssertEqual(LiveActivityReconciler.commands(display: next,
+                                                       running: [LiveActivityRecord(id: "live", content: next)],
+                                                       appInForeground: true, activitiesEnabled: true),
+                       [])
+    }
+
+    func testReconcilerEndsOnStopAndAtStartup() {
+        let playing = song("Tidewater")
+        let stopped = NowPlayingDisplay.make(snapshot: snapshot(.stopped), dj: .idle)
+        XCTAssertEqual(LiveActivityReconciler.commands(display: stopped,
+                                                       running: [LiveActivityRecord(id: "live", content: playing),
+                                                                 LiveActivityRecord(id: "stuck", content: playing)],
+                                                       appInForeground: false, activitiesEnabled: true),
+                       [.end(id: "live"), .end(id: "stuck")])
+        XCTAssertEqual(LiveActivityReconciler.commands(display: playing,
+                                                       running: [LiveActivityRecord(id: "live", content: playing)],
+                                                       appInForeground: true, activitiesEnabled: false),
+                       [.end(id: "live")])
+        XCTAssertEqual(LiveActivityReconciler.startupCommands(running: [
+            LiveActivityRecord(id: "live", content: playing),
+            LiveActivityRecord(id: "stuck", content: song("Paper Satellites")),
+        ]), [.end(id: "live"), .end(id: "stuck")])
+        XCTAssertEqual(LiveActivityReconciler.startupCommands(running: []), [])
+        // Nothing running, and not a foreground play: do not start a second card later.
+        XCTAssertEqual(LiveActivityReconciler.commands(display: stopped, running: [],
+                                                       appInForeground: true, activitiesEnabled: true),
+                       [])
+        XCTAssertEqual(LiveActivityReconciler.commands(display: playing, running: [],
+                                                       appInForeground: false, activitiesEnabled: true),
+                       [])
+        XCTAssertEqual(LiveActivityReconciler.commands(display: playing, running: [],
+                                                       appInForeground: true, activitiesEnabled: true),
+                       [.start(playing)])
+        let starting = NowPlayingDisplay.make(snapshot: snapshot(.preparing), dj: .idle)
+        XCTAssertEqual(LiveActivityReconciler.commands(display: starting,
+                                                       running: [LiveActivityRecord(id: "live", content: playing)],
+                                                       appInForeground: true, activitiesEnabled: true),
+                       [.update(id: "live", display: starting)])
+    }
+
+    private func song(_ title: String, transport: TransportState = .playing) -> NowPlayingDisplay {
+        NowPlayingDisplay.make(snapshot: PlaybackSnapshot(station: station,
+                                                          nowPlaying: TrackInfo(id: title, title: title,
+                                                                                artistName: "Lumen Harbor"),
+                                                          transport: transport),
+                               dj: .idle)
+    }
+
     func testLiveActivityFitsUnder160Points() {
         XCTAssertLessThanOrEqual(LiveActivityLayout.contentHeight, LiveActivityLayout.maxHeight)
         XCTAssertEqual(LiveActivityLayout.maxHeight, 160)
