@@ -106,8 +106,19 @@ struct FoldedPlayer: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        let reader = GeometryReader { geo in
-            laidOut(in: layoutSize ?? geo.size)
+        if let layoutSize {
+            // The container is split.container. The reader under the bar is shorter
+            // than duoMinHeight, and ignoresSafeArea on this view inflates the frame.
+            splitMeasured(layoutSize)
+        } else {
+            phoneBody
+        }
+    }
+
+    /// Phone and every non-split window. The reader decides the layout.
+    private var phoneBody: some View {
+        GeometryReader { geo in
+            laidOut(in: geo.size)
         }
         .background {
             FoldedBackdrop(track: heroTrack, station: station)
@@ -116,11 +127,21 @@ struct FoldedPlayer: View {
         }
         .environment(\.colorScheme, .dark)
         .environment(\.onSlab, true)
-        if layoutSize != nil {
-            reader.ignoresSafeArea(edges: .top)
-        } else {
-            reader
-        }
+    }
+
+    /// Split host: placement and the measured frame are the container. The backdrop
+    /// may ignore the safe area, and the frame after it is what gets measured.
+    private func splitMeasured(_ size: CGSize) -> some View {
+        laidOut(in: size)
+            .frame(width: size.width, height: size.height)
+            .background {
+                FoldedBackdrop(track: heroTrack, station: station)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
+            }
+            .frame(width: size.width, height: size.height)
+            .environment(\.colorScheme, .dark)
+            .environment(\.onSlab, true)
     }
 
     @ViewBuilder
