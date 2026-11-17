@@ -19,6 +19,11 @@ public enum FoldedOuterLayout {
     public static let artRadius: Double = 28
     public static let titlePointSize: Double = 34
     public static let artistPointSize: Double = 15
+    /// The 80 pt horizontal transport capsule. Mockup D draws no transport row on this screen
+    /// (Play/Pause and Skip moved to the rail in #537, the scrubber in D), so nothing draws
+    /// it. It survives only as arithmetic: `artReserveBelowWithRail` subtracts it, and
+    /// `RailDLayout.closedArtReserveBelow` builds on that, so changing it would still move the
+    /// closed art. Kept at 80 so that math and the play-ring fit below are unchanged. -Nova
     public static let transportHeight: Double = 80
     public static let transportRadius: Double = 40
     /// Play/Pause disc. The mockup drew 64 pt; this uses the shipped 68 pt transport target
@@ -92,9 +97,11 @@ public enum FoldedOuterLayout {
 
     /// Queue always (the Playing-from chip always opened it). Tune only where the toolbar
     /// showed it (`showsWorkspaceButtons`). Rating only where the star was drawn (a rating
-    /// controller that can rate).
-    public static func closedMoreItems(showsWorkspaceButtons: Bool, canRate: Bool) -> [ClosedMoreItem] {
-        var items: [ClosedMoreItem] = [.queue]
+    /// controller that can rate). `queueOnRail` (mockup D): Queue is a rail plate
+    /// (`queue.affordance`), so ⋯ does not repeat it.
+    public static func closedMoreItems(showsWorkspaceButtons: Bool, canRate: Bool,
+                                       queueOnRail: Bool = false) -> [ClosedMoreItem] {
+        var items: [ClosedMoreItem] = queueOnRail ? [] : [.queue]
         if showsWorkspaceButtons { items.append(.tune) }
         if canRate { items.append(.rating) }
         return items

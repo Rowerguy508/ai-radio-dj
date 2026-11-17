@@ -122,23 +122,65 @@ final class StudioScreenTests: XCTestCase {
         let any = app.descendants(matching: .any)
         XCTAssertFalse(any["folded.outer.upNext"].exists, "#537: no NEXT row when closed")
         XCTAssertFalse(shows(app, "Playing from"), "#537: no Playing-from row when closed")
-        XCTAssertFalse(app.buttons["queue.affordance"].exists, "#537: Queue is in ⋯, not on the closed screen")
+        // Mockup D (-Nova): Queue moved from ⋯ to the rail; Tune stays in ⋯.
+        XCTAssertTrue(app.buttons["queue.affordance"].isHittable, "D: Queue is a rail button")
+        XCTAssertTrue(any["folded.closedRail"].buttons["queue.affordance"].exists, "D: Queue on the rail")
         XCTAssertFalse(app.buttons["transport.tune"].exists, "#537: Tune is in ⋯, not on the closed screen")
         XCTAssertFalse(any["dj.micDown"].exists, "#537: no Mic down chip")
         XCTAssertTrue(any["station.title"].exists, "the header still names the station")
         save(app, "closed-compact")
 
-        // #537: the removed rows' actions are reachable in ⋯.
+        // #537: the removed rows' actions are reachable: Tune in ⋯ (now at the top of the rail),
+        // Queue on the rail itself (mockup D).
         openClosedMore(app)
-        XCTAssertTrue(closedMenuItem(app, "queue.affordance", labelPrefix: "Queue").waitForExistence(timeout: 5),
-                      "Queue in ⋯\n\(app.debugDescription)")
-        XCTAssertTrue(closedMenuItem(app, "transport.tune", labelPrefix: "Tune station").exists,
+        XCTAssertTrue(closedMenuItem(app, "transport.tune", labelPrefix: "Tune station").waitForExistence(timeout: 5),
                       "Tune in ⋯\n\(app.debugDescription)")
         save(app, "closed-more-menu")
-        closedMenuItem(app, "queue.affordance", labelPrefix: "Queue").tap()
-        XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
+        // Close the menu, then use the rail's Queue.
+        closeClosedMore(app, row: closedMenuItem(app, "transport.tune", labelPrefix: "Tune station"))
+        let queue = app.buttons["queue.affordance"].firstMatch
+        XCTAssertTrue(queue.waitForExistence(timeout: 5))
+        // Nothing (a sheet, the menu) may sit over the rail's Queue, or the tap goes nowhere.
+        XCTAssertTrue(queue.isHittable, "the rail's Queue is covered: \(queue.frame)\n\(app.debugDescription)")
+        queue.tap()
+        XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5),
+                      "Queue did not open the queue sheet\n\(app.debugDescription)")
         XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
         save(app, "closed-queue-sheet")
+    }
+
+    /// Mockup D (-Nova, Fry's #558 nit 3): closes the closed ⋯ menu without a blind coordinate.
+    /// Taps the system's popover dismiss region when there is one. Otherwise it taps an
+    /// existing, non-interactive anchor (the title block, then the station title) that sits
+    /// below the menu's rows. While the menu is up nothing under it is hittable, so the anchor
+    /// is picked by frame and tapped by coordinate; the tap lands on the menu's dismiss layer.
+    /// #558 Studio (iPhone 16e): the station title sat under "Tune station", so tapping it
+    /// chose that row and opened the Tune sheet over the rail's Queue. Fry: the last fallback
+    /// now checks the anchor exists. Then waits for `row` to go away.
+    @MainActor
+    private func closeClosedMore(_ app: XCUIApplication, row: XCUIElement,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        let any = app.descendants(matching: .any)
+        let dismissRegion = any["PopoverDismissRegion"]
+        if dismissRegion.exists && dismissRegion.isHittable {
+            dismissRegion.tap()
+        } else {
+            // The lowest edge of the menu: its rows (the caller's row, Tune, Connections, the star).
+            let rows = app.buttons.matching(NSPredicate(
+                format: "label BEGINSWITH %@ OR label BEGINSWITH %@ OR label BEGINSWITH %@",
+                "Tune station", "Connections", "Rate")).allElementsBoundByIndex + [row]
+            let menuMaxY = rows.filter(\.exists).map(\.frame).filter { !$0.isEmpty }.map(\.maxY).max() ?? 0
+            let anchors = [any["folded.titleBlock"], any["station.title"]]
+            guard let anchor = anchors.first(where: { $0.exists && !$0.frame.isEmpty && $0.frame.minY > menuMaxY + 8 }) else {
+                XCTFail("no anchor clear of the ⋯ menu (rows end at \(menuMaxY))\n\(app.debugDescription)",
+                        file: file, line: line)
+                return
+            }
+            anchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: row)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed,
+                       "⋯ did not close\n\(app.debugDescription)", file: file, line: line)
     }
 
     /// #537: ⋯ on the closed reskin. Opens the menu; the caller checks its rows.
@@ -155,8 +197,9 @@ final class StudioScreenTests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "identifier == %@ OR label BEGINSWITH %@", identifier, labelPrefix)).firstMatch
     }
 
-    /// Opens the queue from a closed layout: ⋯ → Queue on the reskin (#537). Phone layouts that
-    /// still draw the toolbar (landscape centred column) keep their Queue button.
+    /// Opens the queue from a closed layout: the rail's Queue on the reskin (mockup D; it was
+    /// ⋯ → Queue in #537, which stays as the fallback). Phone layouts that still draw the
+    /// toolbar (landscape centred column) keep their Queue button.
     @MainActor
     private func openClosedQueue(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let direct = app.buttons["queue.affordance"]
@@ -323,7 +366,7 @@ final class StudioScreenTests: XCTestCase {
         try XCTSkipIf(isOpenLayout, "Closed layout is checked on an iPhone-width simulator")
         let app = launch(dark: true)
         XCTAssertTrue(app.otherElements["layout.compact"].waitForExistence(timeout: 15))
-        openClosedQueue(app)  // #537: Queue is in ⋯ on the closed reskin
+        openClosedQueue(app)  // Mockup D: the rail's Queue on the closed reskin
         XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
         XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
         save(app, "closed-queue-sheet-dark")
@@ -406,9 +449,10 @@ final class StudioScreenTests: XCTestCase {
     }
 
     /// Owner, build 44 (#460): the unfolded Duo (640 pt, compact class) is fully horizontal.
-    /// Artwork and the title stay left of the fold. The content column holds the horizontal
-    /// scrubber, play/pause, skip, the station pill and the DJ chip. The rail holds
-    /// collapse, more, queue and the sleep timer. Tune stays in More.
+    /// Artwork and the title stay left of the fold. The rail holds collapse, more, play/pause,
+    /// skip, queue and the sleep timer. Tune stays in More.
+    /// Mockup D (-Nova): the song position is the rail's vertical bar, and the station name and
+    /// the DJ chip moved to the track column (header, and under the title).
     @MainActor
     func testDuoWideControlsSitInTheRightRail() throws {
         try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
@@ -472,10 +516,12 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertLessThan(title.frame.maxX, contentFrame.minX, "title stays left of the controls: \(frames)")
         XCTAssertGreaterThanOrEqual(contentFrame.minX, foldFrame.maxX - 2, "controls start right of the fold: \(frames)")
         XCTAssertLessThan(contentFrame.maxX, barFrame.minX + 8, "content column is left of the symbol bar: \(frames)")
-        for (name, element) in [("scrubber", scrubber), ("chip", chip), ("ready", ready)] {
-            XCTAssertGreaterThanOrEqual(element.frame.midX, contentFrame.minX - 4, "\(name) left the content column: \(frames)")
-            XCTAssertLessThanOrEqual(element.frame.midX, contentFrame.maxX + 4, "\(name) left the content column: \(frames)")
+        for (name, element) in [("chip", chip), ("ready", ready)] {
+            XCTAssertGreaterThanOrEqual(element.frame.minX, trackFrame.minX - 1, "D: \(name) left the track column: \(frames)")
+            XCTAssertLessThanOrEqual(element.frame.maxX, trackFrame.maxX + 1, "D: \(name) left the track column: \(frames)")
         }
+        XCTAssertGreaterThanOrEqual(scrubber.frame.midX, barFrame.minX - 4, "D: the bar is in the rail: \(frames)")
+        XCTAssertLessThanOrEqual(scrubber.frame.midX, barFrame.maxX + 4, "D: the bar is in the rail: \(frames)")
         for (name, element) in [("collapse", collapse), ("more", more), ("play", play), ("skip", skip),
                                 ("queue", queue), ("sleep", sleep), ("dot", dot)] {
             XCTAssertGreaterThanOrEqual(element.frame.midX, barFrame.minX - 4, "\(name) left the symbol bar: \(frames)")
@@ -488,7 +534,9 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertGreaterThan(dot.frame.minY, sleep.frame.maxY, "the live dot sits below the rail controls: \(frames)")
         XCTAssertEqual(dot.value as? String, "Off", "ready is not On Air: \(dot.label) \(String(describing: dot.value))")
         XCTAssertFalse(dot.label.localizedCaseInsensitiveContains("on air"), dot.label)
-        XCTAssertGreaterThan(scrubber.frame.width, scrubber.frame.height, "the scrubber stays horizontal: \(frames)")
+        XCTAssertGreaterThan(scrubber.frame.height, scrubber.frame.width, "D: the scrubber is vertical: \(frames)")
+        XCTAssertGreaterThan(scrubber.frame.minY, sleep.frame.maxY, "D: the bar sits under Sleep: \(frames)")
+        XCTAssertLessThan(scrubber.frame.maxY, dot.frame.minY + 1, "D: the bar sits above the live dot: \(frames)")
         XCTAssertGreaterThanOrEqual(play.frame.width, 44)
         XCTAssertGreaterThanOrEqual(collapse.frame.height, 44)
         XCTAssertGreaterThanOrEqual(more.frame.minY, barFrame.minY + 40, "chrome starts below the status clearance")
@@ -837,16 +885,146 @@ final class StudioScreenTests: XCTestCase {
         return nil
     }
 
+    // MARK: Build 51: the open Duo's landscape window and the sidebar-open detail (-Atlas)
+
+    /// Waits for the 820 × 640 pt open-Duo container and returns its settled frame.
+    @MainActor
+    private func openDuoContainer(_ app: XCUIApplication) -> (window: CGRect, box: CGRect)? {
+        let any = app.descendants(matching: .any)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window\n\(app.debugDescription)")
+        guard let windowFrame = settledFrame(of: window, "window") else { return nil }
+        let container = any["capture.duoOpenContainer"]
+        XCTAssertTrue(container.waitForExistence(timeout: 10), "open Duo container missing\n\(app.debugDescription)")
+        guard let box = settledFrame(of: container, "open Duo container", isFinal: {
+            abs($0.width - 820) <= 1 && abs($0.height - 640) <= 1
+        }) else { return nil }
+        XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box), "container \(box) outside window \(windowFrame)")
+        return (windowFrame, box)
+    }
+
+    /// Play/Pause, Skip and the scrubber are on screen: hittable, inside the window and inside
+    /// the 820 × 640 container. Play and Skip keep their 44 pt targets.
+    @MainActor
+    private func assertTransportOnScreen(_ app: XCUIApplication, window: CGRect, box: CGRect, _ context: String,
+                                         file: StaticString = #filePath, line: UInt = #line) {
+        let any = app.descendants(matching: .any)
+        let checks: [(String, XCUIElement)] = [("play", app.buttons["transport.playPause"]),
+                                                ("skip", app.buttons["transport.skip"]),
+                                                ("scrubber", any["playback.progress"])]
+        for (name, element) in checks {
+            XCTAssertTrue(element.waitForExistence(timeout: 8), "\(name) missing in \(context)\n\(app.debugDescription)",
+                          file: file, line: line)
+            guard let frame = settledFrame(of: element, "\(name) in \(context)") else { continue }
+            let detail = "\(context) \(name) \(frame) container \(box) window \(window)"
+            XCTAssertTrue(element.isHittable, "\(name) is not hittable: \(detail)", file: file, line: line)
+            XCTAssertTrue(window.insetBy(dx: -1, dy: -1).contains(frame), "\(name) is outside the window: \(detail)",
+                          file: file, line: line)
+            XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(frame), "\(name) is outside the container: \(detail)",
+                          file: file, line: line)
+            if name != "scrubber" {
+                XCTAssertGreaterThanOrEqual(frame.width, 44, "\(name) under 44 pt wide: \(detail)", file: file, line: line)
+                XCTAssertGreaterThanOrEqual(frame.height, 44, "\(name) under 44 pt tall: \(detail)", file: file, line: line)
+            }
+        }
+    }
+
+    /// Play and Skip sit in the rail, which is the container's trailing column.
+    @MainActor
+    private func assertTransportInRail(_ app: XCUIApplication, box: CGRect, _ context: String,
+                                       file: StaticString = #filePath, line: UInt = #line) {
+        let bar = app.descendants(matching: .any)["folded.systemBar"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 10), "the rail is missing in \(context)\n\(app.debugDescription)",
+                      file: file, line: line)
+        guard let barFrame = settledFrame(of: bar, "rail in \(context)") else { return }
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(barFrame), "rail \(barFrame) outside container \(box)",
+                      file: file, line: line)
+        XCTAssertGreaterThan(barFrame.midX, box.midX, "the rail is not on the trailing side: \(barFrame) in \(box)",
+                             file: file, line: line)
+        for identifier in ["transport.playPause", "transport.skip", "queue.affordance"] {
+            let frame = app.buttons[identifier].frame
+            XCTAssertTrue(frame.midX >= barFrame.minX - 4 && frame.midX <= barFrame.maxX + 4,
+                          "\(identifier) \(frame) is not in the rail \(barFrame) (\(context))", file: file, line: line)
+        }
+    }
+
+    /// Build 51 issue 1: the open Duo held sideways (820 × 640 pt with its navigation bar) showed
+    /// the centred column with the scrubber cut off and no Play/Skip. Now it is the rail; after
+    /// Collapse the transport is pinned on screen, ⋯ and Show rail sit in the top header row,
+    /// and Show rail brings the rail back.
+    @MainActor
+    func testOpenDuoLandscapeKeepsTheTransportOnScreenWithAndWithoutTheRail() throws {
+        try XCTSkipUnless(isOpenLayout, "The 820 × 640 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoLandscape")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        guard let found = openDuoContainer(app) else { return }
+        let (window, box) = found
+        XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10),
+                      "landscape is not the two-halves rail layout\n\(app.debugDescription)")
+        assertTransportInRail(app, box: box, "landscape rail")
+        assertTransportOnScreen(app, window: window, box: box, "landscape rail")
+        save(app, "open-landscape-rail")
+
+        let collapse = app.buttons["folded.collapse"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 5) && collapse.isHittable, app.debugDescription)
+        collapse.tap()
+        let bar = any["folded.systemBar"]
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "collapse left the rail up")
+        XCTAssertTrue(any["folded.wideColumn"].waitForExistence(timeout: 5), app.debugDescription)
+        assertTransportOnScreen(app, window: window, box: box, "landscape, rail collapsed")
+        let expand = app.buttons["folded.expandRail"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "no way back to the rail\n\(app.debugDescription)")
+        guard let expandFrame = settledFrame(of: expand, "Show rail") else { return }
+        XCTAssertTrue(expand.isHittable)
+        XCTAssertLessThan(expandFrame.midY, box.minY + box.height / 3, "Show rail is not in the top header row: \(expandFrame)")
+        XCTAssertGreaterThan(expandFrame.midX, box.midX, "Show rail is not on the trailing side: \(expandFrame)")
+        save(app, "open-rail-collapsed-landscape")
+
+        expand.tap()
+        XCTAssertTrue(bar.waitForExistence(timeout: 5), "Show rail did not bring the rail back\n\(app.debugDescription)")
+        app.terminate()
+    }
+
+    /// Build 51 issue 2: with the Stations sidebar open the player fell back to the old centred
+    /// layout (Playing-from bar, Queue and Tune buttons) and lost the rail. The ~500 pt detail now
+    /// keeps the rail, with Play, Skip and Queue on it, and the scrubber stays on screen.
+    @MainActor
+    func testOpenDuoWithTheSidebarOpenKeepsTheRail() throws {
+        try XCTSkipUnless(isOpenLayout, "The 820 × 640 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoSidebar")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        guard let found = openDuoContainer(app) else { return }
+        let (window, box) = found
+        let sidebar = any["split.sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 10), "the Stations sidebar is not open\n\(app.debugDescription)")
+        XCTAssertTrue(any["folded.railColumn"].waitForExistence(timeout: 10),
+                      "the sidebar-open detail is not the rail column\n\(app.debugDescription)")
+        XCTAssertFalse(any["folded.wideColumn"].exists, "the old centred layout is back")
+        assertTransportInRail(app, box: box, "sidebar open")
+        assertTransportOnScreen(app, window: window, box: box, "sidebar open")
+        if let sidebarFrame = settledFrame(of: sidebar, "sidebar"),
+           let barFrame = settledFrame(of: any["folded.systemBar"], "rail") {
+            XCTAssertGreaterThanOrEqual(barFrame.minX, sidebarFrame.maxX - 1, "the rail overlaps the sidebar")
+        }
+        save(app, "open-sidebar-rail")
+        app.terminate()
+    }
+
     /// 640 × 820, nothing playing and playing. Every control in the content column is
     /// hittable and its frame sits inside the window and inside that column.
     @MainActor
     func testDuoWideColumnControlsStayInsideTheWindow() throws {
         try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
-        assertDuoColumnControls(scenario: "duoWideEmpty", names: ["search": "playback.searchAppleMusic",
-                                                                   "station": "station.title"])
-        assertDuoColumnControls(scenario: "duoWideReady", names: ["station": "station.title",
-                                                                  "dj": "dj.ready",
-                                                                  "scrubber": "playback.progress"],
+        // Mockup D (-Nova): the station name heads the track column, the DJ chip sits under the
+        // title there, and the song position is the rail's vertical bar.
+        assertDuoColumnControls(scenario: "duoWideEmpty", names: ["search": "playback.searchAppleMusic"],
+                                 trackNames: ["station": "station.title"])
+        assertDuoColumnControls(scenario: "duoWideReady", names: [:],
+                                 trackNames: ["station": "station.title", "dj": "dj.ready"],
+                                 railNames: ["scrubber": "playback.progress"],
                                  transportInRail: true)
     }
 
@@ -854,6 +1032,8 @@ final class StudioScreenTests: XCTestCase {
     /// `transportInRail` is for a playing Duo: play and skip must sit in the rail, not in the column.
     @MainActor
     private func assertDuoColumnControls(scenario: String, names: [String: String],
+                                         trackNames: [String: String] = [:],
+                                         railNames: [String: String] = [:],
                                          transportInRail: Bool = false) {
         let app = launch(scenario: scenario)
         let any = app.descendants(matching: .any)
@@ -873,7 +1053,13 @@ final class StudioScreenTests: XCTestCase {
         let column = any["folded.contentColumn"]
         XCTAssertTrue(column.waitForExistence(timeout: 10), "content column missing\n\(app.debugDescription)")
         guard let columnFrame = settledFrame(of: column, "content column") else { return }
-        for (name, identifier) in names {
+        guard let trackFrame = settledFrame(of: any["folded.trackColumn"], "track column") else { return }
+        var placed: [(String, String, CGRect, String)] = names.map { ($0.key, $0.value, columnFrame, "content column") }
+        placed += trackNames.map { ($0.key, $0.value, trackFrame, "track column") }
+        if !railNames.isEmpty, let railFrame = settledFrame(of: any["folded.systemBar"], "rail") {
+            placed += railNames.map { ($0.key, $0.value, railFrame, "rail") }
+        }
+        for (name, identifier, columnFrame, columnName) in placed {
             let element = any[identifier]
             XCTAssertTrue(element.waitForExistence(timeout: 8),
                           "\(name) missing in \(scenario)\n\(app.debugDescription)")
@@ -883,7 +1069,7 @@ final class StudioScreenTests: XCTestCase {
             XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(frame),
                           "\(name) is outside the window: \(detail)")
             XCTAssertTrue(columnFrame.insetBy(dx: -1, dy: -1).contains(frame),
-                          "\(name) is outside the content column: \(detail)")
+                          "\(name) is outside the \(columnName): \(detail)")
         }
         if transportInRail {
             let bar = any["folded.systemBar"]
@@ -946,8 +1132,13 @@ final class StudioScreenTests: XCTestCase {
                            "a phone-width layout does not show the up-next timeline")
             let play = app.buttons["transport.playPause"]
             let ready = app.descendants(matching: .any)["dj.ready"]
-            XCTAssertGreaterThan(play.frame.minY, ready.frame.maxY,
-                                 "phone controls stay under the DJ line, not beside it")
+            // Mockup D (-Nova): Play/Pause is on the full-height trailing rail, so it is beside
+            // the DJ line, never over it: the line sits in the column leading of the rail.
+            let rail = app.descendants(matching: .any)["folded.closedRail"]
+            XCTAssertTrue(rail.exists, "D: the closed rail\n\(app.debugDescription)")
+            XCTAssertTrue(rail.frame.contains(CGPoint(x: play.frame.midX, y: play.frame.midY)), "D: play on the rail")
+            XCTAssertLessThanOrEqual(ready.frame.maxX, rail.frame.minX + 1,
+                                     "the DJ line stays in the column, clear of the rail")
         }
         XCTAssertTrue(app.buttons["transport.playPause"].exists)
         save(app, isOpenLayout ? "open-ready-no-break" : "closed-ready-line")
@@ -1010,8 +1201,13 @@ final class StudioScreenTests: XCTestCase {
         let frames = "window \(window) onAir \(pill) scrubber \(scrubber.frame) play \(play.frame)"
         XCTAssertGreaterThanOrEqual(pill.minY, window.minY, "ON AIR on screen without scrolling: \(frames)")
         XCTAssertLessThanOrEqual(pill.maxY, window.maxY, "ON AIR on screen without scrolling: \(frames)")
-        XCTAssertLessThanOrEqual(pill.maxY, scrubber.frame.minY + 1, "ON AIR pinned above the scrubber: \(frames)")
-        XCTAssertLessThan(pill.minY, play.frame.minY, "ON AIR above the transport: \(frames)")
+        // Mockup D (-Nova): the scrubber and the transport are on the trailing rail, so ON AIR
+        // is pinned in the column leading of them rather than above them.
+        let rail = any["folded.closedRail"]
+        XCTAssertTrue(rail.exists, "D: the closed rail\n\(app.debugDescription)")
+        XCTAssertTrue(rail.frame.contains(CGPoint(x: scrubber.frame.midX, y: scrubber.frame.midY)),
+                      "D: the scrubber is on the rail: \(frames)")
+        XCTAssertLessThanOrEqual(pill.maxX, rail.frame.minX + 1, "ON AIR clear of the rail's scrubber and transport: \(frames)")
         XCTAssertTrue(play.isHittable, "Play/pause stays reachable at AX5")
         // #345 review: the pinned pill must not cover the TEST STATION tag (capture mode
         // always shows it; a real station has none, so only check it when it exists).
@@ -1287,7 +1483,7 @@ final class StudioScreenTests: XCTestCase {
         // #542: open is the rail layout, so the queue (and search) is the sheet there too.
         let layout = "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
-        openClosedQueue(app)  // #537/#542: ⋯ → Queue on the closed reskin; the rail's Queue when open
+        openClosedQueue(app)  // Mockup D / #542: the rail's Queue, closed and open
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         replaceText(field, with: "violet")
@@ -1343,7 +1539,8 @@ final class StudioScreenTests: XCTestCase {
         if !isOpenLayout {
             // #537: the closed star lives in ⋯; with no controller ⋯ has no rating row either.
             openClosedMore(plain)
-            XCTAssertTrue(closedMenuItem(plain, "queue.affordance", labelPrefix: "Queue").waitForExistence(timeout: 5))
+            // Mockup D (-Nova): Queue left ⋯ for the rail; Connections is always in ⋯.
+            XCTAssertTrue(closedMenuItem(plain, "more.connections", labelPrefix: "Connections").waitForExistence(timeout: 5))
             XCTAssertFalse(closedMenuItem(plain, "nowPlaying.rating", labelPrefix: "Rate song").exists,
                            "no rating controller, no ⋯ rating row")
         }
@@ -1578,7 +1775,7 @@ final class StudioScreenTests: XCTestCase {
         pause()
         app.buttons["transport.playPause"].tap(); pause()
         app.buttons["transport.playPause"].tap(); pause()
-        openClosedQueue(app)  // #537/#542: ⋯ → Queue on the closed reskin; the rail's Queue when open
+        openClosedQueue(app)  // Mockup D / #542: the rail's Queue, closed and open
         XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
         pause()
         let segments = app.segmentedControls["workspace.segment"]
@@ -1601,7 +1798,10 @@ final class StudioScreenTests: XCTestCase {
         // column (accessibilitySortPriority 0, after the track and content columns at 2 and 1),
         // level with the title, so top-to-bottom order does not apply. There the check is that
         // Play/Pause is inside the rail and the text is in a column leading of it.
-        let rail = app.descendants(matching: .any)["folded.systemBar"]
+        // Mockup D (-Nova): the closed screen's full-height `folded.closedRail` (sort priority 0
+        // after the column) is the same case.
+        let openRail = app.descendants(matching: .any)["folded.systemBar"]
+        let rail = openRail.exists ? openRail : app.descendants(matching: .any)["folded.closedRail"]
         let onRail = rail.exists && rail.frame.contains(CGPoint(x: play.frame.midX, y: play.frame.midY))
         if onRail {
             XCTAssertLessThanOrEqual(titleEl.frame.maxX, rail.frame.minX + 1, "\(title) is in a column read before the rail transport")
