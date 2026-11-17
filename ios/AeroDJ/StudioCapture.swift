@@ -108,6 +108,14 @@ enum StudioCaptureScenario: String {
     /// an 820 × 640 pt container. The hinge is forced to partially open at 100° and fed to the
     /// real `DuoPoseDecision`; the clock and the on-air timer are frozen. Needs an iPad window.
     case duoTent
+    /// Build 51 (-Atlas): the open Duo held sideways, an 820 × 640 pt regular-width container with
+    /// its own navigation bar, a playing song and a break ready (the DJ-break pill). The rail, and
+    /// after Collapse the pinned column, must keep Play/Skip and the scrubber inside it.
+    case duoLandscape
+    /// Build 51 (-Atlas): the same 820 × 640 pt container as a two-column split with the Stations
+    /// sidebar open beside the player. The detail is regular width and ~500 pt wide: it keeps
+    /// the rail (`FoldedColumnLayout.usesRailColumn`).
+    case duoSidebar
 
     var access: PlaybackAccess {
         switch self {
@@ -124,7 +132,7 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.stopped
         case .error:
             return PlaybackFixtures.recoverableError
-        case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir:
+        case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir, .duoLandscape, .duoSidebar:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
             // which draws the scrubber as a non-interactive element.
             var playing = PlaybackFixtures.playing
@@ -193,6 +201,8 @@ struct StudioCaptureView: View {
                     .accessibilityIdentifier("capture.shell")
             } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideSpeaking || scenario == .duoWideOnAir {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario == .duoLandscape || scenario == .duoSidebar {
+                DuoOpenCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .splitView {
                 SplitViewCapture(studio: dependencies.studio)
             } else if scenario == .duoContinuity {
@@ -267,7 +277,7 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady, .duoWideReady, .duoArrangement:
+            case .breakReady, .duoWideReady, .duoArrangement, .duoLandscape, .duoSidebar:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .duoWideSpeaking, .onAir, .duoWideOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
@@ -369,6 +379,62 @@ private struct DuoWideCaptureContainer: View {
             .accessibilityIdentifier("capture.duoContainer")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+/// Build 51 (-Atlas): the open Duo's landscape window, 820 × 640 pt, regular width, on the same
+/// neutral backdrop as `DuoWideCaptureContainer`. `duoLandscape` is the player alone under its
+/// navigation bar; `duoSidebar` is a balanced two-column split with a stand-in Stations list
+/// (`split.sidebar`) beside the player. `capture.duoOpenContainer` lets the UI test wait for the
+/// final size before it reads frames or takes the screenshot.
+private struct DuoOpenCaptureContainer: View {
+    let scenario: StudioCaptureScenario
+    let studio: StudioPresentationModel
+
+    @State private var columns = NavigationSplitViewVisibility.all
+
+    static let size = StudioCapture.duoTentContainerSize
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack {
+            Color(white: 0.14)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+            Group {
+                if scenario == .duoSidebar {
+                    NavigationSplitView(columnVisibility: $columns) {
+                        List {
+                            Text(PlaybackFixtures.station.name)
+                            Text("Late Night")
+                        }
+                        .navigationTitle("Stations")
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("split.sidebar")
+                    } detail: {
+                        NavigationStack { player }
+                    }
+                    .navigationSplitViewStyle(.balanced)
+                } else {
+                    NavigationStack { player }
+                }
+            }
+            .environment(\.horizontalSizeClass, .regular)
+            .frame(width: Self.size.width, height: Self.size.height)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("capture.duoOpenContainer")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var player: some View {
+        PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                      snapshot: scenario.snapshot, actions: .preview,
+                      search: .captureOffline,
+                      studio: studio, isTestStation: true,
+                      timeSource: .fixture)
     }
 }
 

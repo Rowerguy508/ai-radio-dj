@@ -111,6 +111,14 @@ struct FoldedPlayer: View {
     /// Phone portrait and landscape ignore it. Playback is not involved.
     var showsUnfoldedRail: Bool = true
     var onCollapseRail: () -> Void = {}
+    /// Build 51 (-Atlas): brings the rail back after Collapse. Nil where there is no rail to show.
+    var onExpandRail: (() -> Void)? = nil
+    /// Build 51 (-Atlas): the open Duo with the Stations sidebar open (`FoldedColumnLayout.usesRailColumn`):
+    /// the centred column beside the rail, or (collapsed) the pinned column. False everywhere else.
+    var railColumn: Bool = false
+    /// The container `PlayingScreen` routed with: the reader plus its vertical safe-area insets
+    /// (`FoldedColumnLayout.routingHeight`). Nil reads this view's own reader, as before.
+    var placementSize: CGSize? = nil
     /// Stations the Duo dial can open. Empty on phone widths and when no list was passed.
     var stationStops: [DuoStationSwitch.Stop] = []
     /// The station-row open path. Nil hides the dial.
@@ -172,24 +180,37 @@ struct FoldedPlayer: View {
     /// Phone and every non-split window. The reader decides the layout.
     private var phoneBody: some View {
         GeometryReader { geo in
-            switch playerPlacement(in: geo.size) {
-            case .phoneBottom:
-                // 01-folded reskin (iPhone and folded Duo) whenever a track is showing.
-                // PlayingScreen.layout(mode:) uses the same rule to hide the system back
-                // and move ⋯ in. Other states keep compactBody.
-                if FoldedOuterLayout.usesOuterReskin(containerWidth: Double(geo.size.width), showsTrack: heroTrack != nil) {
-                    foldedOuterBody(in: geo.size)
-                } else {
-                    compactBody(in: geo.size)
-                }
-            case .centredColumn:
-                centredColumnBody(in: geo.size)
-            case .duoHorizontal:
+            let placement = playerPlacement(in: placementSize ?? geo.size)
+            if railColumn, placement != .duoHorizontal {
+                // Build 51: the sidebar-open open Duo keeps the rail (Play and Skip on it).
                 if showsUnfoldedRail {
-                    wideBody(in: geo.size)
+                    railColumnBody(in: geo.size)
                 } else {
-                    centredColumnBody(in: geo.size)
+                    pinnedColumnBody(in: geo.size)
                         .onAppear { moreOpen = false }
+                }
+            } else {
+                switch placement {
+                case .phoneBottom:
+                    // 01-folded reskin (iPhone and folded Duo) whenever a track is showing.
+                    // PlayingScreen.layout(mode:) uses the same rule to hide the system back
+                    // and move ⋯ in. Other states keep compactBody.
+                    if FoldedOuterLayout.usesOuterReskin(containerWidth: Double(geo.size.width), showsTrack: heroTrack != nil) {
+                        foldedOuterBody(in: geo.size)
+                    } else {
+                        compactBody(in: geo.size)
+                    }
+                case .centredColumn:
+                    centredColumnBody(in: geo.size)
+                case .duoHorizontal:
+                    if showsUnfoldedRail {
+                        wideBody(in: geo.size)
+                    } else {
+                        // Build 51: the collapsed rail pins the transport; the scrolling centred
+                        // column left Play and Skip below the 820 × 640 window.
+                        pinnedColumnBody(in: geo.size)
+                            .onAppear { moreOpen = false }
+                    }
                 }
             }
         }
@@ -255,11 +276,12 @@ struct FoldedPlayer: View {
         case .centredColumn:
             centredColumnBody(in: size)
         case .duoHorizontal:
-            // Same collapse rule as phoneBody (#479): a collapsed rail shows the centred column.
+            // Same collapse rule as phoneBody (#479): a collapsed rail shows the centred column,
+            // with the transport pinned (build 51).
             if showsUnfoldedRail {
                 wideBody(in: size)
             } else {
-                centredColumnBody(in: size)
+                pinnedColumnBody(in: size)
                     .onAppear { moreOpen = false }
             }
         }
@@ -439,29 +461,164 @@ struct FoldedPlayer: View {
         .frame(width: size.width, height: size.height)
         .overlay {
             if moreOpen, !systemBar, layout.barWidth > 0 {
-                let menu = DuoMoreMenuLayout.resolve(safeWidth: Double(size.width), safeHeight: Double(size.height))
-                ZStack(alignment: .topTrailing) {
-                    Color.clear
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .onTapGesture { moreOpen = false }
-                        .accessibilityHidden(true)
-                    DuoRailMorePanel(reviewCount: moreMenu?.reviewCount,
-                                     width: CGFloat(menu.width),
-                                     maxHeight: CGFloat(menu.maxHeight),
-                                     onConnections: moreMenu?.onConnections ?? {},
-                                     onTune: onTune,
-                                     dismiss: { moreOpen = false })
-                        .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
-                        .padding(.top, CGFloat(menu.topGap))
-                        .padding(.trailing, CGFloat(menu.trailingGap))
-                }
+                railMorePanel(in: size)
             }
         }
         .modifier(SplitLeadingBar(enabled: splitBarEdge == .leading))
         .background {
             FoldDivisionProbe(hinge: $foldHinge, divisions: $foldDivisions)
         }
+    }
+
+    /// The rail's ⋯ panel over the player, inside the safe box, inward of the rail.
+    private func railMorePanel(in size: CGSize) -> some View {
+        let menu = DuoMoreMenuLayout.resolve(safeWidth: Double(size.width), safeHeight: Double(size.height))
+        return ZStack(alignment: .topTrailing) {
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture { moreOpen = false }
+                .accessibilityHidden(true)
+            DuoRailMorePanel(reviewCount: moreMenu?.reviewCount,
+                             width: CGFloat(menu.width),
+                             maxHeight: CGFloat(menu.maxHeight),
+                             onConnections: moreMenu?.onConnections ?? {},
+                             onTune: onTune,
+                             dismiss: { moreOpen = false })
+                .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
+                .padding(.top, CGFloat(menu.topGap))
+                .padding(.trailing, CGFloat(menu.trailingGap))
+        }
+    }
+
+    /// The unfolded rail itself, the same in `railColumnBody` as in `wideBody`. Sorts last.
+    private func unfoldedRail(height: CGFloat, top: CGFloat) -> some View {
+        DuoVerticalRail(dj: dj, reviewCount: moreMenu?.reviewCount, upNext: snapshot.upNext,
+                        onCollapse: onCollapseRail,
+                        onConnections: moreMenu?.onConnections ?? {},
+                        onQueue: onQueue, onTune: onTune, pause: { actions.pause() },
+                        transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                        showsTransport: content.showsTransport,
+                        cancelStart: { actions.cancelStart() },
+                        resume: { await actions.resume() },
+                        skip: { await actions.skip() },
+                        moreOpen: $moreOpen)
+            .padding(.top, top)
+            .padding(.bottom, 8)
+            .frame(width: CGFloat(FoldedColumnLayout.duoBarWidth), height: height, alignment: .top)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("folded.systemBar")
+            .accessibilitySortPriority(0)
+    }
+
+    /// Build 51 (-Atlas): the open Duo with the Stations sidebar open. The detail is regular and
+    /// window-tall but too narrow for the two halves, so the player is one centred column (art,
+    /// title, DJ status, then the scrubber and station chip pinned under them) beside the same rail as `wideBody`,
+    /// which carries Play/Pause, Skip, Queue, ⋯ and Collapse. No Playing-from bar or Queue/Tune
+    /// buttons: every control lives in the rail. The column scrolls if the window is short; the
+    /// scrubber and the rail never do.
+    private func railColumnBody(in size: CGSize) -> some View {
+        let inset = CGFloat(FoldedColumnLayout.duoEdgeInset)
+        let bar = CGFloat(FoldedColumnLayout.duoBarWidth)
+        let gutter = inset
+        let column = max(0, size.width - inset * 2 - bar - gutter)
+        // Title, DJ status, the pinned scrubber and the station chip under the art.
+        let reserve: CGFloat = typeSize.isAccessibilitySize ? 500 : 260
+        let art = max(FoldedStyle.artMinSide, min(column, size.height - reserve, FoldedStyle.artMaxSide))
+        return HStack(alignment: .top, spacing: gutter) {
+            VStack(spacing: 0) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    upper(artSide: min(art, column), centered: true)
+                        .padding(.top, 8)
+                        .frame(width: column)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollContentBackground(.hidden)
+                .scrollPosition(id: scrollAnchor)
+                .modifier(ContinuityScrollerID(enabled: continuityProbe))
+                VStack(spacing: 12) {
+                    PlaybackErrorBanner(error: snapshot.error, actions: actions)
+                    if showsProgress, let timeSource {
+                        PlaybackScrubber(time: timeSource, transport: snapshot.transport,
+                                         trackID: snapshot.nowPlaying?.id,
+                                         canSeek: snapshot.canSeek,
+                                         onSeek: { await actions.seek(to: $0, trackID: $1) },
+                                         isDJSpeaking: dj.state.isOnAir)
+                    }
+                    // The opened station, as in the two-halves content column.
+                    FoldedStationChip(heading: heading, action: onQueue)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, 12)
+                .frame(width: column)
+            }
+            .frame(width: column, height: size.height, alignment: .top)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("folded.railColumn")
+            .accessibilitySortPriority(1)
+
+            unfoldedRail(height: size.height, top: 8)
+        }
+        .padding(.horizontal, inset)
+        .frame(width: size.width, height: size.height)
+        .overlay {
+            if moreOpen { railMorePanel(in: size) }
+        }
+    }
+
+    /// Build 51 (-Atlas): the collapsed rail on the open Duo (and the sidebar-open detail). The
+    /// centred column with its header row (⋯, then Show rail) pinned at the top and the controls
+    /// (scrubber, Play/Skip, the station bar) pinned at the bottom; only the art and title between
+    /// them scroll. The scrolling `centredColumnBody` (iPhone landscape) put the transport below
+    /// the 820 × 640 window and centred ⋯ halfway down the screen.
+    private func pinnedColumnBody(in size: CGSize) -> some View {
+        let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
+        let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
+                                           containerHeight: Double(size.height),
+                                           reserveBelowArt: reserve,
+                                           artMin: Double(FoldedStyle.artMinSide),
+                                           artMax: Double(FoldedStyle.artMaxSide))
+        let column = CGFloat(m.column)
+        typealias Gap = FoldedColumnLayout.Spacing
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                if let moreMenu {
+                    FoldedMoreMenu(reviewCount: moreMenu.reviewCount, onConnections: moreMenu.onConnections)
+                }
+                if let onExpandRail {
+                    Button(action: onExpandRail) {
+                        Image(systemName: "sidebar.trailing")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Show rail")
+                    .accessibilityHint("Shows the controls rail. Music continues.")
+                    .accessibilityIdentifier("folded.expandRail")
+                }
+            }
+            .frame(height: CGFloat(FoldedColumnLayout.headerHeight))
+            .padding(.horizontal, CGFloat(FoldedColumnLayout.duoEdgeInset))
+            ScrollView(.vertical, showsIndicators: false) {
+                upper(artSide: CGFloat(m.artSide), centered: true)
+                    .padding(.top, CGFloat(Gap.headerToArt))
+                    .frame(width: column)
+                    .frame(maxWidth: .infinity)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollContentBackground(.hidden)
+            .scrollPosition(id: scrollAnchor)
+            controls(contentInset: 0, toolbarInset: 0,
+                     spacing: CGFloat(Gap.betweenControls), balancesTransport: true)
+                .padding(.top, 8)
+                .frame(width: column)
+        }
+        .frame(width: size.width, height: size.height)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("folded.wideColumn")
     }
 
     /// Horizontal scrubber, station, and the DJ chip. Play/pause and skip live on the
