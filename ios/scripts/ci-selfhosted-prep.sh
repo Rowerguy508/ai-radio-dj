@@ -14,7 +14,7 @@
 set -euo pipefail
 
 runner_infra() {
-  echo "::error::RUNNER INFRA: $*"
+  echo "::error::RUNNER INFRA: $* This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
   exit 1
 }
 
@@ -22,12 +22,12 @@ check_free_disk() {
   : "${HOME:?HOME must be set}"
   FREE_KB=$(df -k "$HOME" | awk 'NR==2 {print $4}')
   if ! [[ "$FREE_KB" =~ ^[0-9]+$ ]]; then
-    runner_infra "could not read free disk on the self-hosted Mac. This is not a code failure. Free disk space or re-run on a clean runner; do not change product code."
+    runner_infra "could not read free disk on the self-hosted Mac."
   fi
   FREE_GIB=$((FREE_KB / 1024 / 1024))
   echo "Internal disk free: ${FREE_GIB} GiB"
   if [ "$FREE_KB" -lt $((8 * 1024 * 1024)) ]; then
-    runner_infra "the self-hosted Mac has only ${FREE_GIB} GiB free (need 8 GiB). This is not a code failure. Free disk space or re-run on a clean runner; do not change product code."
+    runner_infra "the self-hosted Mac has only ${FREE_GIB} GiB free (need 8 GiB)."
   fi
 }
 
@@ -42,12 +42,12 @@ JOB=${1:?usage: ci-selfhosted-prep.sh JOB|--check-disk}
 : "${HOME:?HOME must be set}"
 
 perl -e 'alarm 5; exec @ARGV' ls "$GITHUB_WORKSPACE" >/dev/null \
-  || runner_infra "reading $GITHUB_WORKSPACE did not return within 5 s (removable-volume permission prompt). This is not a code failure. Dismiss the prompt on the Mac or re-run on a clean runner; do not change product code."
+  || runner_infra "reading $GITHUB_WORKSPACE did not return within 5 s (removable-volume permission prompt)."
 
 DD_ROOT="$HOME/ci-dd"
 REC_ROOT="$HOME/ci-rec"
 mkdir -p "$DD_ROOT" "$REC_ROOT" \
-  || runner_infra "could not create $DD_ROOT on the self-hosted Mac. This is not a code failure. Free disk space or re-run on a clean runner; do not change product code."
+  || runner_infra "could not create $DD_ROOT on the self-hosted Mac."
 rm -rf "${DD_ROOT:?}/$JOB" "${REC_ROOT:?}/$JOB"
 find "$DD_ROOT" "$REC_ROOT" -mindepth 1 -maxdepth 1 -mmin +1440 -exec rm -rf {} +
 # Judge free space after this job's leftovers are gone, and before DerivedData is linked.

@@ -34,7 +34,9 @@ set -e
 [[ $code -ne 0 ]] || fail "7 GiB free should fail"
 grep -q '^::error::RUNNER INFRA:' "$tmp/out" || fail "7 GiB error should start with RUNNER INFRA: $(cat "$tmp/out")"
 grep -q 'This is not a code failure' "$tmp/out" || fail "7 GiB error should say it is not a code failure: $(cat "$tmp/out")"
-grep -q 'Free disk space or re-run on a clean runner' "$tmp/out" || fail "7 GiB error should say what to do: $(cat "$tmp/out")"
+grep -q 'Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner' "$tmp/out" || fail "7 GiB error should say what to do: $(cat "$tmp/out")"
+grep -q 'Clean $HOME/ci-rec' "$tmp/out" && fail "infra error must not tell agents to clean the mini"
+grep -q 'Free disk space' "$tmp/out" && fail "infra error must not tell agents to free disk themselves"
 grep -q 'do not change product code' "$tmp/out" || fail "7 GiB error should say not to change product code: $(cat "$tmp/out")"
 grep -q '::warning::' "$tmp/out" && fail "low disk must not warn"
 
@@ -98,9 +100,22 @@ grep -q 'ci-selfhosted-prep.sh runtime-mode' "$ios_yml" || fail "runtime-mode sh
 grep -q 'ci-selfhosted-prep.sh studio-screenshots' "$ios_yml" || fail "studio-screenshots should still call prep"
 grep -q 'RUNNER INFRA: walkthrough-closed.mp4 is missing or empty' "$ios_yml" || fail "empty mp4 should be RUNNER INFRA"
 grep -q 'RUNNER INFRA: simctl recordVideo exited' "$ios_yml" || fail "dead recorder should be RUNNER INFRA"
-grep -q 'RUNNER INFRA: could not copy walkthrough-closed.mp4' "$ios_yml" || fail "mp4 copy failure should be RUNNER INFRA"
-if grep -n 'Less than 8 GiB' "$PREP" "$ios_yml" "$ipad_yml"; then
-  fail "disk check still warns"
+grep -q 'capture_or_test_failure "could not copy walkthrough-closed.mp4' "$ios_yml" || fail "mp4 copy failure should be RUNNER INFRA only after the test"
+grep -q 'Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner' "$ios_yml" || fail "ios.yml infra errors should ask the owner"
+grep -q 'Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner' "$PREP" || fail "prep infra errors should ask the owner"
+calls=$(grep -c 'capture_or_test_failure "' "$ios_yml" || true)
+[[ "$calls" -eq 3 ]] || fail "expected 3 post-test capture checks, found $calls"
+helper=$(awk '
+  /capture_or_test_failure\(\)/ {p=1}
+  p {print}
+  p && /^          }$/ {exit}
+' "$ios_yml")
+printf '%s\n' "$helper" | grep -q 'walkthrough test failed (exit ${STATUS})' || fail "helper should report the walkthrough test failure"
+test_line=$(printf '%s\n' "$helper" | grep -n 'walkthrough test failed' | head -1 | cut -d: -f1)
+infra_line=$(printf '%s\n' "$helper" | grep -n 'RUNNER INFRA' | head -1 | cut -d: -f1)
+[[ -n "$test_line" && -n "$infra_line" && "$test_line" -lt "$infra_line" ]] || fail "test failure must be printed before RUNNER INFRA"
+if grep -n -E 'Less than 8 GiB|Clean \$HOME/ci-rec|Free disk space|Dismiss the prompt' "$PREP" "$ios_yml" "$ipad_yml"; then
+  fail "disk check still warns, or an infra error tells agents to clean the mini"
 fi
 
 echo "ok"

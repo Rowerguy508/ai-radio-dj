@@ -836,7 +836,7 @@ jobs:
           # The recorder must still be running before the walkthrough starts.
           # A recorder that dies here is the Mac (disk, volume, simctl), not a Studio assertion.
           kill -0 "$REC" 2>/dev/null || {
-            echo "::error::RUNNER INFRA: simctl recordVideo exited before writing a walkthrough video (see its error above). This is not a code failure. Free disk space or re-run on a clean runner; do not change product code."
+            echo "::error::RUNNER INFRA: simctl recordVideo exited before writing a walkthrough video (see its error above). This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
             exit 1
           }
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
@@ -848,7 +848,16 @@ jobs:
             -only-testing:AeroDJUITests/StudioScreenTests/testRecordedWalkthrough \
             CODE_SIGNING_ALLOWED=NO || STATUS=$?
           # The recorder may already have exited; that must not fail the step under bash -e.
-          # A missing or empty video is runner infrastructure (disk / capture), not a Studio UI failure.
+          # A failed walkthrough is a Studio failure even when the video is also empty.
+          # RUNNER INFRA only when that test passed and the capture is missing or empty.
+          capture_or_test_failure() {
+            if [ "${STATUS:-0}" -ne 0 ]; then
+              echo "::error::walkthrough test failed (exit ${STATUS})"
+              exit "${STATUS}"
+            fi
+            echo "::error::RUNNER INFRA: $* This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
+            exit 1
+          }
           kill -INT "$REC" 2>/dev/null || true
           wait "$REC" || true
           if [ "$OUT" != "$SHOTS/walkthrough-closed.mp4" ]; then
@@ -873,20 +882,13 @@ jobs:
               sleep 3
             done
             if [ "$stable" -ne 1 ]; then
-              echo "::error::RUNNER INFRA: walkthrough-closed.mp4 is missing or empty (source size: ${size} bytes). This is not a code failure. Clean $HOME/ci-rec, free disk space, or re-run on a clean runner; do not change product code."
-              exit 1
+              capture_or_test_failure "walkthrough-closed.mp4 is missing or empty (source size: ${size} bytes)."
             fi
             echo "Walkthrough recording stable at ${size} bytes: $OUT"
             ls -la "$OUT"
-            cp "$OUT" "$SHOTS/walkthrough-closed.mp4" || {
-              echo "::error::RUNNER INFRA: could not copy walkthrough-closed.mp4 into $SHOTS (source size: ${size} bytes). This is not a code failure. Free disk space or re-run on a clean runner; do not change product code."
-              exit 1
-            }
+            cp "$OUT" "$SHOTS/walkthrough-closed.mp4" || capture_or_test_failure "could not copy walkthrough-closed.mp4 into $SHOTS (source size: ${size} bytes)."
           fi
-          ls -la "$SHOTS"/*.mp4 || {
-            echo "::error::RUNNER INFRA: walkthrough-closed.mp4 is missing or empty (source size: 0 bytes). This is not a code failure. Clean $HOME/ci-rec, free disk space, or re-run on a clean runner; do not change product code."
-            exit 1
-          }
+          ls -la "$SHOTS"/*.mp4 || capture_or_test_failure "walkthrough-closed.mp4 is missing or empty (source size: 0 bytes)."
           exit ${STATUS:-0}
       - name: UI tests on iPad (open, two-zone Studio)
         timeout-minutes: ${{ runner.environment == 'self-hosted' && 25 || 360 }}
@@ -941,7 +943,7 @@ jobs:
           ls "$SHOTS" | grep -q '^duo-tent_' || { echo "missing duo-tent screenshot"; exit 1; }
           if [ ! -s "$SHOTS/walkthrough-closed.mp4" ]; then
             size=$(stat -f%z "$SHOTS/walkthrough-closed.mp4" 2>/dev/null || echo 0)
-            echo "::error::RUNNER INFRA: walkthrough-closed.mp4 is missing or empty (source size: ${size} bytes). This is not a code failure. Clean $HOME/ci-rec, free disk space, or re-run on a clean runner; do not change product code."
+            echo "::error::RUNNER INFRA: walkthrough-closed.mp4 is missing or empty (source size: ${size} bytes). This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
             exit 1
           fi
       - name: Upload screenshots
