@@ -247,17 +247,75 @@ public enum DuoStationsLayout {
         return "Open player, now playing \(stationName)"
     }
 
-    /// Rail D on Stations, top to bottom: the now-playing thumbnail in Collapse's place, then
-    /// Play/Pause and Skip while a station is loaded. Nothing else: Queue, the sleep timer, the
-    /// song bar and the live dot stay on the player.
+    /// Rail D on Stations, top to bottom: the player's open-Duo rail (`RailDLayout.slots`) with
+    /// the now-playing thumbnail in Collapse's place. ⋯, Play/Pause and Skip (while a station is
+    /// loaded), Queue, the sleep timer, the vertical song bar with its times (a track with a known
+    /// duration; otherwise the spacer) and the live dot, all Rail D's own views.
     public enum RailSlot: String, Equatable, Sendable {
         case nowPlayingThumbnail
+        case more
         case playPause
         case skip
+        case queue
+        case sleepTimer
+        case scrubber
+        case liveDot
+
+        /// The player rail's slot this one stands in for. The thumbnail takes Collapse's 44 pt plate.
+        public var railD: RailDLayout.Slot {
+            switch self {
+            case .nowPlayingThumbnail: .collapse
+            case .more: .more
+            case .playPause: .playPause
+            case .skip: .skip
+            case .queue: .queue
+            case .sleepTimer: .sleepTimer
+            case .scrubber: .scrubber
+            case .liveDot: .liveDot
+            }
+        }
     }
 
-    public static func railSlots(hasNowPlaying: Bool) -> [RailSlot] {
-        hasNowPlaying ? [.nowPlayingThumbnail, .playPause, .skip] : [.nowPlayingThumbnail]
+    public static func railSlots(hasNowPlaying: Bool, showsScrubber: Bool) -> [RailSlot] {
+        RailDLayout.slots(hasCollapse: true, showsTransport: hasNowPlaying,
+                          showsScrubber: hasNowPlaying && showsScrubber).map { slot in
+            switch slot {
+            case .collapse: .nowPlayingThumbnail
+            case .more: .more
+            case .playPause: .playPause
+            case .skip: .skip
+            case .queue: .queue
+            case .sleepTimer: .sleepTimer
+            case .scrubber: .scrubber
+            case .liveDot: .liveDot
+            }
+        }
+    }
+
+    /// The rail glass's height: the container less `railVerticalInset` above and below.
+    public static func railHeight(containerHeight: Double) -> Double {
+        max(0, containerHeight - 2 * railVerticalInset)
+    }
+
+    /// Song-bar length left in the Stations rail (Rail D's arithmetic, same plates and 10 pt gaps).
+    public static func railTrackLength(containerHeight: Double, slots: [RailSlot]) -> Double {
+        RailDLayout.trackLength(railHeight: railHeight(containerHeight: containerHeight), slots: slots.map(\.railD))
+    }
+
+    /// True when every 44 pt plate and a 44 pt song bar fit in the rail.
+    public static func railFits(containerHeight: Double, slots: [RailSlot]) -> Bool {
+        RailDLayout.fits(railHeight: railHeight(containerHeight: containerHeight), slots: slots.map(\.railD))
+    }
+
+    /// The ⋯ panel: top-aligned with the rail, `morePanelGap` inward of it, and never wider than
+    /// the page it opens over (the trailing page in the book pose), so it stays off the fold.
+    public static let morePanelGap: Double = 8
+
+    public static func morePanelFrame(_ geometry: Geometry, containerWidth: Double) -> (width: Double, trailingGap: Double) {
+        let trailingGap = max(0, containerWidth - geometry.railMinX + morePanelGap)
+        let pageMinX = geometry.pages.last?.minX ?? 0
+        let width = max(RailDLayout.controlSize, geometry.railMinX - morePanelGap - pageMinX)
+        return (width, trailingGap)
     }
 
     /// The thumbnail's plate and its art: 44 pt target, 38 pt art inside a 2 pt teal ring.

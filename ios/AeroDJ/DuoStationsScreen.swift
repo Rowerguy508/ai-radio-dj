@@ -3,8 +3,10 @@ import SwiftUI
 
 // Open-Duo Stations (owner, 2026-11-17 10:24 ET): the three mockup designs, A tile grid
 // (default), B Daytime / After dark list and C featured card plus "Switch to", chosen in
-// Settings > Stations layout. Rail D on the right; on Stations its top slot is the 44 pt
-// now-playing thumbnail that opens the player (the player's rail keeps Collapse). Replaces
+// Settings > Stations layout. Rail D on the right: the player's open-Duo rail (⋯, Play/Pause,
+// Skip, Queue, sleep timer, the song bar with its times, the live dot), except that its top
+// slot is the 44 pt now-playing thumbnail that opens the player (the player's rail keeps
+// Collapse). Replaces
 // #551's open-Duo carousel. Only `StationSplitRoot` draws this, and only when
 // `DuoStationsLayout.usesOpenDuoStations` (the open Duo, compact class): every iPhone, the
 // closed Duo and regular width keep today's Stations. Numbers live in `DuoStationsLayout`
@@ -18,31 +20,55 @@ struct DuoStationsNowPlaying: Equatable {
     var stationName: String?
     var trackTitle: String?
     var artistName: String?
+    var trackID: String?
+    var upNext: [TrackInfo]
     var transport: TransportState
     var startTimedOut: Bool
+    var canSeek: Bool
 
     init(snapshot: PlaybackSnapshot) {
         stationID = snapshot.station?.id
         stationName = snapshot.station?.name
         trackTitle = snapshot.nowPlaying?.title
         artistName = snapshot.nowPlaying?.artistName
+        trackID = snapshot.nowPlaying?.id
+        upNext = snapshot.upNext
         transport = snapshot.transport
         startTimedOut = snapshot.startTimedOut
+        canSeek = snapshot.canSeek
     }
 }
 
-/// The rail's Play/Pause and Skip: the same `PlaybackActions` the player's rail uses.
+/// One-shot: a Stations rail control that lives in the player's workspace (Queue, Tune,
+/// Connections) asks the player it is about to push to open that segment, exactly as the
+/// player's own rail does (`segment = …; showWorkspace = true`). `PlayingScreen` takes it on
+/// appear; nil, the default, changes nothing anywhere else.
+@MainActor
+enum PlayerWorkspaceRequest {
+    static var pending: WorkspaceSegment?
+
+    static func take() -> WorkspaceSegment? {
+        defer { pending = nil }
+        return pending
+    }
+}
+
+/// The rail's Play/Pause, Skip, sleep timer and song bar: the same `PlaybackActions` the
+/// player's rail uses. Main actor, like `PlaybackActions`, whose closures it copies.
+@MainActor
 struct DuoStationsRailActions {
     var pause: () -> Void
     var resume: () async -> Void
     var skip: () async -> Void
     var cancelStart: () -> Void
+    var seek: PlaybackScrubber.Seek
 
     init(_ actions: PlaybackActions) {
         pause = actions.pause
         resume = actions.resume
         skip = actions.skip
         cancelStart = actions.cancelStart
+        seek = { await actions.seek(to: $0, trackID: $1) }
     }
 }
 
@@ -54,6 +80,12 @@ struct DuoStationsSource {
     /// Captures: a fixed snapshot instead of `music`.
     var fixture: PlaybackSnapshot?
     var actions: DuoStationsRailActions?
+    /// The song bar's clock (`.live` in the app, the fixture in captures). Nil hides the bar.
+    var timeSource: PlaybackTimeSource?
+    /// Live: the live dot and ⋯'s review count follow the DJ (observed).
+    var studio: StudioPresentationModel?
+    /// Captures: a fixed DJ state instead of `studio`.
+    var fixtureDJ: DJStudioState = .idle
     /// Captures pin a design; nil reads Settings > Stations layout.
     var pinnedStyle: StationsLayoutStyle?
     /// B's Daytime / After dark. Built-ins are known; created stations balance the groups.
@@ -69,6 +101,9 @@ struct DuoStationsHost: View {
     let onOpenSettings: (() -> Void)?
     let onAddStation: (() -> Void)?
     let onSharedInbox: (() -> Void)?
+    /// False while the player is pushed over Stations: the host stays (an armed sleep timer keeps
+    /// running) but drops the song bar's clock, so nothing ticks unseen.
+    var isShown: Bool = true
 
     @AppStorage(StationsLayoutStyle.defaultsKey) private var storedStyle = StationsLayoutStyle.defaultStyle.rawValue
 
@@ -77,16 +112,25 @@ struct DuoStationsHost: View {
     }
 
     var body: some View {
-        if let music = source.music {
-            DuoStationsLiveSnapshot(music: music) { screen($0) }
-        } else {
-            screen(source.fixture ?? PlaybackSnapshot())
+        Group {
+            if let music = source.music {
+                DuoStationsLiveSnapshot(music: music) { screen($0) }
+            } else {
+                screen(source.fixture ?? PlaybackSnapshot())
+            }
+        }
+        // Back on Stations: a workspace request the player never took must not open a sheet later.
+        .onChange(of: isShown) { _, shown in
+            if shown { PlayerWorkspaceRequest.pending = nil }
         }
     }
 
     private func screen(_ snapshot: PlaybackSnapshot) -> some View {
         DuoStationsScreen(stations: stations, style: style, nowPlaying: DuoStationsNowPlaying(snapshot: snapshot),
-                          actions: source.actions, daypart: source.daypart,
+                          actions: source.actions,
+                          dj: DJStatusPresentation(state: source.studio?.djState ?? source.fixtureDJ),
+                          timeSource: isShown ? source.timeSource : nil,
+                          daypart: source.daypart,
                           onSelect: onSelect, onOpenPlayer: onOpenPlayer, onOpenSettings: onOpenSettings,
                           onAddStation: onAddStation, onSharedInbox: onSharedInbox)
     }
@@ -106,6 +150,8 @@ struct DuoStationsScreen: View {
     let style: StationsLayoutStyle
     let nowPlaying: DuoStationsNowPlaying
     let actions: DuoStationsRailActions?
+    var dj = DJStatusPresentation(state: .idle)
+    var timeSource: PlaybackTimeSource? = nil
     let daypart: (Station) -> DuoStationsLayout.Daypart?
     let onSelect: (Station.ID) -> Void
     let onOpenPlayer: (Station.ID) -> Void
@@ -114,6 +160,8 @@ struct DuoStationsScreen: View {
     let onSharedInbox: (() -> Void)?
 
     @Environment(\.foldPoseOverride) private var foldOverride
+    /// The rail's ⋯ panel, as on the player (`FoldedPlayer.moreOpen`).
+    @State private var moreOpen = false
 
     private var playingIndex: Int? {
         DuoStationsLayout.nowPlayingIndex(stationIDs: stations.map(\.id.uuidString),
@@ -138,16 +186,61 @@ struct DuoStationsScreen: View {
                 content(geometry, pageHeight: Double(pageHeight))
                     .padding(.top, inset)
                 DuoStationsRail(nowPlaying: nowPlaying, playing: playingStation, actions: actions,
-                                onOpenPlayer: onOpenPlayer)
+                                dj: dj, scrubber: railScrubber, moreOpen: $moreOpen,
+                                onOpenPlayer: onOpenPlayer, onOpenWorkspace: openWorkspace)
                     .frame(width: CGFloat(RailDLayout.railWidth), height: pageHeight)
                     .padding(.leading, CGFloat(geometry.railMinX))
                     .padding(.top, inset)
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            .overlay {
+                if moreOpen { morePanel(geometry, width: width, height: Double(pageHeight), top: inset) }
+            }
         }
         .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("stations.duo.\(style.rawValue)")
+    }
+
+    /// The rail's song bar: the same inputs as the player's (`FoldedPlayer.railScrubber`). Nil with
+    /// nothing playing or no known duration; the rail then keeps its spacer above the live dot.
+    private var railScrubber: RailScrubberInput? {
+        guard playingStation != nil, let timeSource, let actions,
+              timeSource.duration().map({ $0 > 0 }) ?? false else { return nil }
+        return RailScrubberInput(time: timeSource, transport: nowPlaying.transport,
+                                 trackID: nowPlaying.trackID, canSeek: nowPlaying.canSeek,
+                                 onSeek: actions.seek, isDJSpeaking: dj.state.isOnAir)
+    }
+
+    /// Queue, Tune and Connections live in the player's workspace: push the playing station's
+    /// player and open it there, as the player's rail would.
+    private func openWorkspace(_ segment: WorkspaceSegment) {
+        guard let playing = playingStation else { return }
+        moreOpen = false
+        PlayerWorkspaceRequest.pending = segment
+        onOpenPlayer(playing.id)
+    }
+
+    /// Rail D's ⋯ panel (`DuoRailMorePanel`), inward of the rail and level with its top, never
+    /// wider than the page it opens over, so it stays off the fold. A tap outside closes it.
+    private func morePanel(_ geometry: DuoStationsLayout.Geometry, width: Double, height: Double,
+                           top: CGFloat) -> some View {
+        let frame = DuoStationsLayout.morePanelFrame(geometry, containerWidth: width)
+        return ZStack(alignment: .topTrailing) {
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture { moreOpen = false }
+                .accessibilityHidden(true)
+            DuoRailMorePanel(reviewCount: dj.reviewCount,
+                             width: CGFloat(frame.width),
+                             maxHeight: CGFloat(height),
+                             onConnections: { openWorkspace(.connections) },
+                             onTune: { openWorkspace(.tune) },
+                             dismiss: { moreOpen = false })
+                .padding(.top, top)
+                .padding(.trailing, CGFloat(frame.trailingGap))
+        }
     }
 
     /// A reported vertical division in this view's points (Studio captures force one; the
@@ -766,19 +859,34 @@ struct DuoStationsFeatured: View {
 
 // MARK: - Rail D on Stations
 
-/// Rail D on the Stations screen: the now-playing thumbnail in Collapse's slot (it opens the
-/// player), then Play/Pause and Skip while a station is loaded. The same 56 pt glass column,
-/// 28 pt radius and 44 pt plates as the player's rail (`DuoRailGlass`).
+/// Rail D on the Stations screen: the player's open-Duo rail (`DuoVerticalRail`) with the
+/// now-playing thumbnail in Collapse's slot (it opens the player). Then ⋯ (Rail D's panel:
+/// Connections, Review, Tune), Play/Pause and Skip while a station is loaded, Queue, the sleep
+/// timer, the vertical song bar with its times and the live dot: the same views and behaviour,
+/// the same 56 pt glass column, 28 pt radius, 44 pt plates and 10 pt gaps (`DuoRailGlass`,
+/// `DuoRailLayout`). Queue and ⋯'s rows open the playing station's player on that segment.
 struct DuoStationsRail: View {
     let nowPlaying: DuoStationsNowPlaying
     let playing: Station?
     let actions: DuoStationsRailActions?
+    let dj: DJStatusPresentation
+    let scrubber: RailScrubberInput?
+    @Binding var moreOpen: Bool
     let onOpenPlayer: (Station.ID) -> Void
+    let onOpenWorkspace: (WorkspaceSegment) -> Void
+
+    /// ⋯ and Queue open the playing station's player, so they wait for one.
+    private var canOpenPlayer: Bool { playing != nil }
 
     var body: some View {
-        let slots = DuoStationsLayout.railSlots(hasNowPlaying: playing != nil && actions != nil)
+        let slots = DuoStationsLayout.railSlots(hasNowPlaying: playing != nil && actions != nil,
+                                                showsScrubber: scrubber != nil)
+        // `DuoVerticalRail`'s stack with the thumbnail in Collapse's place: the same views,
+        // 44 pt plates and 10 pt gaps.
         VStack(spacing: CGFloat(DuoRailLayout.spacing)) {
             thumbnail
+            DuoRailMoreButton(open: $moreOpen, reviewCount: dj.reviewCount)
+                .disabled(!canOpenPlayer)
             if slots.contains(.playPause), let actions {
                 DuoRailPlayPauseButton(transport: nowPlaying.transport, startTimedOut: nowPlaying.startTimedOut,
                                        pause: actions.pause, cancelStart: actions.cancelStart, resume: actions.resume)
@@ -787,7 +895,17 @@ struct DuoStationsRail: View {
                 DuoRailIconButton(systemImage: "forward.fill", label: "Skip", hint: "Skips this song.",
                                   identifier: "transport.skip", action: { Task { await actions.skip() } })
             }
-            Spacer(minLength: CGFloat(DuoRailLayout.spacerMinLength))
+            DuoRailIconButton(systemImage: "list.bullet", label: DuoVerticalRail.queueLabel(nowPlaying.upNext),
+                              hint: "Opens the queue",
+                              identifier: "queue.affordance", action: { onOpenWorkspace(.queue) })
+                .disabled(!canOpenPlayer)
+            DuoSleepTimerButton(pause: actions?.pause ?? {})
+            if slots.contains(.scrubber), let scrubber {
+                RailScrubber(input: scrubber)
+            } else {
+                Spacer(minLength: CGFloat(DuoRailLayout.spacerMinLength))
+            }
+            DuoLiveDot(state: dj.state)
         }
         .padding(.vertical, CGFloat(DuoRailLayout.verticalPadding))
         .frame(maxWidth: .infinity, maxHeight: .infinity)

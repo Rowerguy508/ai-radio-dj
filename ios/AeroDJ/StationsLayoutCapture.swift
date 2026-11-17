@@ -77,7 +77,7 @@ enum StationsLayoutFixtures {
         return PlaybackSnapshot(station: StationRef(id: playing.id.uuidString, name: playing.name),
                                 nowPlaying: TrackInfo(id: "fixture-tidewater", title: "Tidewater", artistName: "Lumen Harbor"),
                                 upNext: [TrackInfo(id: "fixture-saltlines", title: "Salt Lines", artistName: "Paper Lanterns")],
-                                transport: .playing)
+                                transport: .playing, canSeek: true)
     }
 
     static func daypart(_ station: Station) -> DuoStationsLayout.Daypart? {
@@ -129,19 +129,34 @@ struct StationsLayoutCaptureView: View {
                              onAddStation: {}, onOpenSettings: {},
                              duoStations: DuoStationsSource(fixture: StationsLayoutFixtures.snapshot,
                                                             // No-op actions: the rail draws Pause and Skip; nothing plays.
-                                                            actions: DuoStationsRailActions(.preview), pinnedStyle: style,
+                                                            actions: DuoStationsRailActions(.preview),
+                                                            // 1:12 of 3:45 in the rail's song bar.
+                                                            timeSource: .fixture,
+                                                            pinnedStyle: style,
                                                             daypart: StationsLayoutFixtures.daypart)) { station in
                 // Stands in for the player: a tap must open it and start nothing.
-                Text("Player: \(station.name)")
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(FoldedStyle.background)
-                    .accessibilityIdentifier("capture.stationsLayout.player")
+                StationsLayoutPlayerStandIn(name: station.name)
             }
         } else {
             SettingsView(isPresented: .constant(true), isTestStation: true)
                 .appWideScreen(.settings, formMargins: true)
         }
+    }
+}
+
+/// The capture's player: its name, plus the workspace segment the Stations rail asked for
+/// (`PlayerWorkspaceRequest`), taken on appear as `PlayingScreen` takes it.
+private struct StationsLayoutPlayerStandIn: View {
+    let name: String
+    @State private var segment: WorkspaceSegment?
+
+    var body: some View {
+        Text(verbatim: segment.map { "Player: \(name), \($0.rawValue)" } ?? "Player: \(name)")
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(FoldedStyle.background)
+            .accessibilityIdentifier("capture.stationsLayout.player")
+            .onAppear { segment = PlayerWorkspaceRequest.take() }
     }
 }
 #endif

@@ -127,6 +127,14 @@ struct PlayingScreen: View {
                     PlayingLayoutLog.chose(chosen, sizeClass: horizontalSizeClass,
                                            width: width, height: Double(routeHeight))
                 }
+            // Open-Duo Stations' rail (Queue, Tune, Connections): open the workspace on that
+            // segment, as `openQueue` / `openTune` / `openConnections` do. Nil everywhere else.
+            .onAppear {
+                if let requested = PlayerWorkspaceRequest.take() {
+                    segment = requested
+                    if mode == .compact { showWorkspace = true }
+                }
+            }
             #if DEBUG
             .onAppear {
                 if splitCanvas != nil {

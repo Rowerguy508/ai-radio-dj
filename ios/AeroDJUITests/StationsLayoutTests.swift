@@ -2,7 +2,8 @@ import XCTest
 import UIKit
 
 /// Open-Duo Stations (owner, 2026-11-17): the three designs on the open Duo in the book pose
-/// (820 × 640, fold band 396…424) and upright (640 × 820), Rail D's now-playing thumbnail, and
+/// (820 × 640, fold band 396…424) and upright (640 × 820), Rail D (the player's full open-Duo
+/// rail with the now-playing thumbnail in Collapse's place), and
 /// Settings > Stations layout on the iPhone and the Duo (`StationsLayoutCaptureScenario`).
 /// The Duo-sized frames need an iPad window: on an iPad they fail, never skip, if the window is
 /// too small, and ios.yml requires every shot. Main-actor work runs inside
@@ -31,6 +32,31 @@ final class StationsLayoutTests: XCTestCase {
             XCTAssertTrue(late.isHittable, "Late Night tile")
             late.tap()
             assertPlayerOpened(app, station: "Late Night")
+        }
+    }
+
+    /// ⋯ on the Stations rail: Rail D's own panel, inward of the rail, on the trailing page and
+    /// off the fold. Tune opens the playing station's player on its Tune segment.
+    func testLayoutABookPoseMoreMenu() throws {
+        try MainActor.assumeIsolated {
+            let (app, box) = try launch("stationsLayoutABook", size: Self.book, needsPad: true)
+            let any = app.descendants(matching: .any)
+            XCTAssertTrue(any["stations.duo.tiles"].waitForExistence(timeout: 10), app.debugDescription)
+            let rail = any["stations.rail"]
+            app.buttons["folded.more"].tap()
+            let menu = any["folded.moreMenu"]
+            XCTAssertTrue(menu.waitForExistence(timeout: 5), "⋯ panel missing\n\(app.debugDescription)")
+            XCTAssertLessThanOrEqual(menu.frame.maxX, rail.frame.minX, "the panel opens inward of the rail")
+            XCTAssertGreaterThanOrEqual(menu.frame.minX, box.minX + Self.foldMaxX, "the panel stays off the fold")
+            for id in ["more.connections", "transport.tune"] {
+                let row = any[id]
+                XCTAssertTrue(row.exists, "\(id) missing\n\(app.debugDescription)")
+                XCTAssertGreaterThanOrEqual(row.frame.height, 44, "\(id) \(row.frame)")
+            }
+            any["transport.tune"].tap()
+            assertPlayerOpened(app, station: "Morning Calm")
+            XCTAssertTrue(any["capture.stationsLayout.player"].label.hasSuffix(", tune"),
+                          "Tune asks the player for its Tune segment: \(any["capture.stationsLayout.player"].label)")
         }
     }
 
@@ -94,9 +120,16 @@ final class StationsLayoutTests: XCTestCase {
 
     func testLayoutCPortrait() throws {
         try MainActor.assumeIsolated {
-            _ = try checkStations("stationsLayoutCPortrait", style: "featured", size: Self.portrait,
-                                  rowPrefix: "stations.switchRow.", rows: 7,
-                                  shot: "stations-layout-c-duo-open-portrait")
+            let (app, _) = try checkStations("stationsLayoutCPortrait", style: "featured", size: Self.portrait,
+                                             rowPrefix: "stations.switchRow.", rows: 7,
+                                             shot: "stations-layout-c-duo-open-portrait")
+            // Queue on the Stations rail opens the playing station's player on its queue.
+            let queue = app.buttons["queue.affordance"]
+            XCTAssertEqual(queue.label, "Up next: Salt Lines by Paper Lanterns")
+            queue.tap()
+            assertPlayerOpened(app, station: "Morning Calm")
+            let player = app.descendants(matching: .any)["capture.stationsLayout.player"]
+            XCTAssertTrue(player.label.hasSuffix(", queue"), "Queue asks for the queue: \(player.label)")
         }
     }
 
@@ -194,14 +227,13 @@ final class StationsLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(thumb.frame.height, 44)
         XCTAssertTrue(rail.frame.insetBy(dx: -1, dy: -1).contains(thumb.frame), "thumbnail sits in the rail")
         XCTAssertLessThanOrEqual(thumb.frame.minY, rail.frame.minY + 12, "the thumbnail is the top slot")
-        XCTAssertTrue(app.buttons["transport.playPause"].exists, "Play/Pause under the thumbnail")
-        XCTAssertGreaterThan(app.buttons["transport.playPause"].frame.minY, thumb.frame.maxY - 1)
+        assertFullRail(app, rail: rail, thumb: thumb, box: box, bookPose: size.width > size.height)
 
         let stationButtons = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", rowPrefix))
         XCTAssertEqual(stationButtons.count, rows, "every station is drawn\n\(app.debugDescription)")
         XCTAssertTrue(stationButton(app, prefix: rowPrefix, named: "Late Night").exists)
 
-        let controls = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'stations.' OR identifier BEGINSWITH 'transport.'"))
+        let controls = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'stations.' OR identifier BEGINSWITH 'transport.' OR identifier BEGINSWITH 'folded.' OR identifier BEGINSWITH 'queue.'"))
         for index in 0..<controls.count {
             let control = controls.element(boundBy: index)
             guard control.isHittable else { continue }
@@ -220,6 +252,46 @@ final class StationsLayoutTests: XCTestCase {
         }
         save(app, shot)
         return (app, box)
+    }
+
+    /// The rest of Rail D's open-Duo rail under the thumbnail, in the player's order: ⋯,
+    /// Play/Pause, Skip, Queue, the sleep timer, the song bar with its times and the live dot.
+    /// Every item is at least 44 pt, centred in the 56 pt rail, inside it, and 10 pt from the next;
+    /// the rail itself is right of the fold band in the book pose.
+    @MainActor
+    private func assertFullRail(_ app: XCUIApplication, rail: XCUIElement, thumb: XCUIElement, box: CGRect,
+                                bookPose: Bool) {
+        let any = app.descendants(matching: .any)
+        let items: [(String, XCUIElement)] = [
+            ("thumbnail", thumb),
+            ("more", any["folded.more"]),
+            ("play/pause", any["transport.playPause"]),
+            ("skip", any["transport.skip"]),
+            ("queue", any["queue.affordance"]),
+            ("sleep timer", any["folded.sleepTimer"]),
+            ("song bar", any["playback.progress"]),
+            ("live dot", any["folded.liveDot"]),
+        ]
+        var previous: (String, CGRect)?
+        for (name, element) in items {
+            XCTAssertTrue(element.exists, "\(name) missing from the Stations rail\n\(app.debugDescription)")
+            let frame = element.frame
+            XCTAssertTrue(rail.frame.insetBy(dx: -1, dy: -1).contains(frame), "\(name) \(frame) is outside the rail \(rail.frame)")
+            XCTAssertGreaterThanOrEqual(frame.width, 44, "\(name) \(frame)")
+            XCTAssertGreaterThanOrEqual(frame.height, 44, "\(name) \(frame)")
+            XCTAssertEqual(frame.midX, rail.frame.midX, accuracy: 1.5, "\(name) is centred in the rail")
+            if let previous {
+                XCTAssertGreaterThanOrEqual(frame.minY - previous.1.maxY, 10 - 1, "\(name) sits 10 pt under \(previous.0)")
+            }
+            previous = (name, frame)
+        }
+        XCTAssertEqual(any["playback.progress"].value as? String, "1:12 of 3:45", "the song bar and its times")
+        XCTAssertGreaterThanOrEqual(any["playback.progress"].frame.height, 44 + 36, "a 44 pt track plus both times")
+        XCTAssertEqual(any["folded.liveDot"].label, "DJ live dot")
+        XCTAssertFalse(any["folded.collapse"].exists, "the thumbnail replaces Collapse on Stations")
+        if bookPose {
+            XCTAssertGreaterThan(rail.frame.minX, box.minX + Self.foldMaxX, "the rail is clear of the fold band")
+        }
     }
 
     @MainActor

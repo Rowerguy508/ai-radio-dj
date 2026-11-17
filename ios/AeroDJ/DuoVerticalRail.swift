@@ -464,7 +464,8 @@ private struct RailHint: ViewModifier {
 }
 
 /// Pauses with the existing pause action after the chosen duration. Off does not pause.
-private struct DuoSleepTimerButton: View {
+/// Internal (not private) so the open-Duo Stations rail (`DuoStationsRail`) uses the same timer.
+struct DuoSleepTimerButton: View {
     let pause: () -> Void
     @State private var minutes: Int?
     @State private var token = UUID()
@@ -506,7 +507,8 @@ private struct DuoSleepTimerButton: View {
 }
 
 /// Lit only from `DJStudioState.onAirLabel` (`.speaking`). Not a new on-air flag.
-private struct DuoLiveDot: View {
+/// Internal (not private) so the open-Duo Stations rail (`DuoStationsRail`) shows the same dot.
+struct DuoLiveDot: View {
     let state: DJStudioState
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast

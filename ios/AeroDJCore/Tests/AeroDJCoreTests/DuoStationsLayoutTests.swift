@@ -176,9 +176,49 @@ final class DuoStationsLayoutTests: XCTestCase {
     }
 
     func testThumbnailReplacesCollapseAtTheTopOfTheRail() {
-        XCTAssertEqual(DuoStationsLayout.railSlots(hasNowPlaying: true), [.nowPlayingThumbnail, .playPause, .skip])
-        XCTAssertEqual(DuoStationsLayout.railSlots(hasNowPlaying: false), [.nowPlayingThumbnail])
+        XCTAssertEqual(DuoStationsLayout.railSlots(hasNowPlaying: true, showsScrubber: true),
+                       [.nowPlayingThumbnail, .more, .playPause, .skip, .queue, .sleepTimer, .scrubber, .liveDot])
+        XCTAssertEqual(DuoStationsLayout.railSlots(hasNowPlaying: true, showsScrubber: false),
+                       [.nowPlayingThumbnail, .more, .playPause, .skip, .queue, .sleepTimer, .liveDot])
+        XCTAssertEqual(DuoStationsLayout.railSlots(hasNowPlaying: false, showsScrubber: true),
+                       [.nowPlayingThumbnail, .more, .queue, .sleepTimer, .liveDot])
+        // Only the top slot differs from the player's open-Duo rail.
+        let player = RailDLayout.slots(hasCollapse: true, showsTransport: true, showsScrubber: true)
+        let stations = DuoStationsLayout.railSlots(hasNowPlaying: true, showsScrubber: true)
+        XCTAssertEqual(stations.map(\.railD), player)
+        XCTAssertEqual(player.first, .collapse)
         XCTAssertEqual(DuoStationsLayout.thumbnailLabel(stationName: "Harbor Lights"), "Open player, now playing Harbor Lights")
         XCTAssertEqual(DuoStationsLayout.thumbnailLabel(stationName: nil), "Open player, nothing playing")
+    }
+
+    func testFullRailFitsBothPosesWithTheSongBar() {
+        let slots = DuoStationsLayout.railSlots(hasNowPlaying: true, showsScrubber: true)
+        // Book pose 640 tall: 624 glass, seven 44 pt plates, seven 10 pt gaps, 6 pt caps, 36 pt of times.
+        XCTAssertEqual(DuoStationsLayout.railHeight(containerHeight: 640), 624)
+        let plates: Double = 7 * 44
+        let gaps: Double = 7 * 10
+        let fixed = plates + gaps + 36 + 12
+        XCTAssertEqual(fixed, 426)
+        XCTAssertEqual(DuoStationsLayout.railTrackLength(containerHeight: 640, slots: slots), 624 - fixed)
+        XCTAssertTrue(DuoStationsLayout.railFits(containerHeight: 640, slots: slots))
+        XCTAssertTrue(DuoStationsLayout.railFits(containerHeight: 820, slots: slots))
+        XCTAssertGreaterThan(DuoStationsLayout.railTrackLength(containerHeight: 820, slots: slots),
+                             DuoStationsLayout.railTrackLength(containerHeight: 640, slots: slots))
+        XCTAssertFalse(DuoStationsLayout.railFits(containerHeight: 400, slots: slots))
+        XCTAssertEqual(DuoRailLayout.spacing, 10)
+        XCTAssertEqual(DuoRailLayout.controlSize, 44)
+    }
+
+    func testMorePanelStaysOnTheTrailingPage() {
+        let book = DuoStationsLayout.geometry(containerWidth: 820, containerHeight: 640)
+        let panel = DuoStationsLayout.morePanelFrame(book, containerWidth: 820)
+        XCTAssertEqual(panel.trailingGap, 820 - 756 + 8)
+        XCTAssertEqual(panel.width, 756 - 8 - 440)
+        // Its leading edge (820 - gap - width) is the trailing page's, right of the fold band.
+        XCTAssertGreaterThanOrEqual(820 - panel.trailingGap - panel.width, book.fold!.maxX)
+        let portrait = DuoStationsLayout.geometry(containerWidth: 640, containerHeight: 820)
+        let upright = DuoStationsLayout.morePanelFrame(portrait, containerWidth: 640)
+        XCTAssertEqual(upright.trailingGap, 640 - 576 + 8)
+        XCTAssertEqual(upright.width, 576 - 8 - 24)
     }
 }

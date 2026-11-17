@@ -54,7 +54,9 @@ struct StationListView: View {
                          // Stations designs and Rail D's now-playing thumbnail. Same player and
                          // actions as `PlayerView` (`.live`). Phones never draw it.
                          duoStations: DuoStationsSource(music: dependencies.playback,
-                                                        actions: DuoStationsRailActions(.live(dependencies.playback)))) { station in
+                                                        actions: DuoStationsRailActions(.live(dependencies.playback)),
+                                                        timeSource: .live,
+                                                        studio: dependencies.studio)) { station in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation,
@@ -263,14 +265,20 @@ struct StationSplitRoot<Detail: View>: View {
 
     @ViewBuilder
     private var duoStationsOverlay: some View {
-        if showsDuoStations, let duoStations {
+        // Kept (hidden) while the player is pushed, so a sleep timer armed on the Stations rail
+        // still fires; hidden, it draws nothing, takes no touches and leaves VoiceOver.
+        if usesDuoStations, let duoStations {
             DuoStationsHost(source: duoStations, stations: stations,
                             // A tile or row: the list's own setter, so it opens and starts (#454).
                             onSelect: { selection.wrappedValue = $0 },
                             onOpenPlayer: openPlayer,
                             onOpenSettings: onOpenSettings,
                             onAddStation: onAddStation,
-                            onSharedInbox: showsSharedInbox ? { showSharedInbox = true } : nil)
+                            onSharedInbox: showsSharedInbox ? { showSharedInbox = true } : nil,
+                            isShown: showsDuoStations)
+                .opacity(showsDuoStations ? 1 : 0)
+                .allowsHitTesting(showsDuoStations)
+                .accessibilityHidden(!showsDuoStations)
         }
     }
 
