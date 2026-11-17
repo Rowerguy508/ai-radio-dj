@@ -53,11 +53,19 @@ public final class SongRatingController {
     public private(set) var labelSeen: Bool
     @ObservationIgnored private let hooks: Hooks
     @ObservationIgnored private let defaults: UserDefaults
+    /// Production sleeps `toastDuration`. Tests pass a clock so the six seconds are not wall time.
+    @ObservationIgnored private let sleep: @MainActor (Duration) async -> Void
+    #if DEBUG
+    /// Set only by `holdToastUntilExplicitDismiss()`, which only the StudioCapture fixture calls.
+    @ObservationIgnored private var fixtureHoldsToast = false
+    #endif
 
-    public init(ratings: StationRatingsModel, hooks: Hooks, defaults: UserDefaults = .standard) {
+    public init(ratings: StationRatingsModel, hooks: Hooks, defaults: UserDefaults = .standard,
+                sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
         self.ratings = ratings
         self.hooks = hooks
         self.defaults = defaults
+        self.sleep = sleep
         labelSeen = defaults.bool(forKey: SongRatingPresentation.labelSeenKey)
     }
 
@@ -101,6 +109,30 @@ public final class SongRatingController {
     public func dismissToast(id: UUID) {
         if toast?.id == id { toast = nil }
     }
+
+    /// Production: sleep `toastDuration` (six seconds), then dismiss this toast if it is still showing.
+    /// A newer toast cancels the sleep, and that cancellation does not dismiss the new one.
+    /// A debug fixture that called `holdToastUntilExplicitDismiss()` returns immediately, so the
+    /// toast stays until Undo or `dismissToast`. Release builds have no hold.
+    public func awaitToastExpiry(id: UUID) async {
+        #if DEBUG
+        if fixtureHoldsToast { return }
+        #endif
+        await sleep(Self.toastDuration)
+        guard !Task.isCancelled else { return }
+        dismissToast(id: id)
+    }
+
+    #if DEBUG
+    /// StudioCapture's rating fixture only. The never toast stays until Undo or `dismissToast`.
+    /// Release does not compile this. No setting, launch argument, or URL can turn it on.
+    public func holdToastUntilExplicitDismiss() {
+        fixtureHoldsToast = true
+    }
+
+    /// The fixture station's scope key, so a UI test can see that Undo stayed on it.
+    public var fixtureScopeKey: String? { hooks.scope()?.storageKey }
+    #endif
 
     /// "Clear ratings for this station".
     public func clearStation() async {
