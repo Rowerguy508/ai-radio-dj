@@ -37,7 +37,8 @@ extension SongRatingController {
 
     #if DEBUG
     /// Screenshots and previews (StudioCapture): an in-memory book, fixed day, no playback.
-    static func fixture(rated: SongRating? = nil, songID: String, labelSeen: Bool = false) async -> SongRatingController {
+    static func fixture(rated: SongRating? = nil, songID: String, labelSeen: Bool = false,
+                        holdToast: Bool = false) async -> SongRatingController {
         let scope = StationRatingScope.seeds(0xA11CE)
         // Its own suite (Fry's #387 Debug nit, #388): the fixture's ratings model reads and writes the
         // purge flag here, never the live AeroDJRatingsPurgePending. Cleared so captures start unlocked.
@@ -52,7 +53,10 @@ extension SongRatingController {
             ratings.rate(rated, song: StationRatedSong(songID: songID, artistName: "Fixture"), in: scope)
         }
         defaults.set(labelSeen, forKey: SongRatingPresentation.labelSeenKey)
-        return SongRatingController(ratings: ratings, hooks: .init(scope: { scope }), defaults: defaults)
+        let controller = SongRatingController(ratings: ratings, hooks: .init(scope: { scope }), defaults: defaults)
+        // Only the UI-test capture asks for this. A normal launch, including every other fixture, uses 6s.
+        if holdToast { controller.holdToastUntilExplicitDismiss() }
+        return controller
     }
     #endif
 }
@@ -151,9 +155,7 @@ struct SongRatingToast: View {
         .task(id: controller.toast?.id) {
             guard let toast = controller.toast else { return }
             AccessibilityNotification.Announcement(toast.message).post()
-            try? await Task.sleep(for: SongRatingController.toastDuration)
-            guard !Task.isCancelled else { return }
-            controller.dismissToast(id: toast.id)
+            await controller.awaitToastExpiry(id: toast.id)
         }
     }
 }

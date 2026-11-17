@@ -11,15 +11,16 @@ import OSLog
 // MARK: - Surfaces
 
 /// Restrained Liquid Glass on iOS 26+, a material before that, and an opaque grouped
-/// background when Reduce Transparency is on. Used for the transport bar and the two
-/// Studio zones only; content itself is never glass. The decision lives in `aeroGlass`.
+/// background with Reduce Transparency or Increase Contrast. Content itself is never glass.
+/// On iOS 26 the corners are concentric with the container (#465 item 9), never tighter
+/// than `cornerRadius`. The decision lives in `GlassTreatment`; see `aeroConcentricGlass`.
 struct StudioSurface: ViewModifier {
     var cornerRadius: CGFloat = 24
 
     func body(content: Content) -> some View {
-        content.aeroGlass(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
-                          fallback: AnyShapeStyle(.regularMaterial),
-                          opaqueFill: Color(.secondarySystemBackground))
+        content.aeroConcentricGlass(minimumRadius: cornerRadius,
+                                    fallback: AnyShapeStyle(.regularMaterial),
+                                    opaqueFill: Color(.secondarySystemBackground))
     }
 }
 
@@ -402,9 +403,13 @@ struct DJStatusLine: View {
 
 // MARK: - TransportRow
 
-/// Tune (opens the tuner), Play/Pause (64 pt, filled in the station colour) and Skip.
+/// Tune (opens the tuner), Play/Pause (68 pt) and Skip.
 /// Haptics fire only on the user's own taps, via a counter bumped inside the button
 /// actions, never on a snapshot or DJ change.
+///
+/// Liquid Glass (#465 item 9): play is the only tinted control (prominent glass, tinted the
+/// white of its old disc); Tune and Skip are plain glass circles. Reduce Transparency and Increase Contrast give
+/// solid fills, Reduce Motion drops the press morph. Before iOS 26 the row looks as it did.
 struct TransportRow: View {
     let transport: TransportState
     /// `PlaybackSnapshot.startTimedOut`: the `.preparing` start passed its 8 s deadline.
@@ -427,12 +432,19 @@ struct TransportRow: View {
     @Environment(\.onSlab) private var onSlab
 
     private var ink: Color { onSlab ? AeroDJPalette.onMediaLight : Color.primary }
+    /// Tune and Skip's opaque circle with Reduce Transparency or Increase Contrast, chosen so
+    /// `ink` stays readable on it: the warm-black slab under light ink, grouped background otherwise.
+    private var solidControlFill: Color { onSlab ? AeroDJPalette.slab : Color(.secondarySystemBackground) }
 
     private var face: TransportButtonFace {
         TransportTapPolicy.face(transport: transport, startTimedOut: startTimedOut)
     }
 
     var body: some View {
+        AeroGlassGroup(spacing: 0) { row }
+    }
+
+    private var row: some View {
         HStack(spacing: 0) {
             side {
                 if let onTune {
@@ -444,6 +456,7 @@ struct TransportRow: View {
                             .labelStyle(.iconOnly)
                             .font(.system(size: 20, weight: .semibold))
                             .frame(width: 52, height: 52)
+                            .aeroGlassControl(.secondary, solidFill: solidControlFill)
                             .contentShape(Circle())
                     }
                     .foregroundStyle(ink)
@@ -488,7 +501,7 @@ struct TransportRow: View {
                 .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(AeroDJPalette.onMediaInk)
                 .frame(width: 68, height: 68)
-                .background(Circle().fill(AeroDJPalette.onMediaLight))
+                .aeroGlassControl(.primary, tint: AeroDJPalette.onMediaLight)
                 .contentShape(Circle())
                 .modifier(SymbolReplace(enabled: !reduceMotion))
             }
@@ -507,6 +520,7 @@ struct TransportRow: View {
                         .labelStyle(.iconOnly)
                         .font(.system(size: 24, weight: .semibold))
                         .frame(width: 52, height: 52)
+                        .aeroGlassControl(.secondary, solidFill: solidControlFill)
                         .contentShape(Circle())
                 }
                 .foregroundStyle(ink)
@@ -640,6 +654,7 @@ struct NowPlayingPlaceholder: View {
     /// Required for `.needsAuthorization` so Allow calls `authorize()`, never a no-op.
     var actions: PlaybackActions? = nil
     @Environment(\.openURL) private var openURL
+    @Environment(\.stationStart) private var stationStart
 
     @Environment(\.onSlab) private var onSlab
 
@@ -648,7 +663,7 @@ struct NowPlayingPlaceholder: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            if content == .connecting {
+            if content.showsStartSpinner {
                 ProgressView()
                     .tint(ink)
                     .accessibilityHidden(true)
@@ -676,10 +691,56 @@ struct NowPlayingPlaceholder: View {
                 Button("Open Settings") { openURL(url) }
                     .buttonStyle(.borderedProminent)
             }
+            // #454: a failed station start retries the same tap, on this same screen.
+            if content.offersStartRetry, let stationStart {
+                Button("Try again") { stationStart.retry() }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("playback.retryStationStart")
+            }
         }
         .frame(maxWidth: .infinity)
-        // Keep Allow / Settings as their own elements so UI tests can find them.
-        .accessibilityElement(children: (content == .needsAuthorization || content == .accessDenied) ? .contain : .combine)
+        // Keep Allow / Settings / Try again as their own elements so UI tests can find them.
+        .accessibilityElement(children: keepsButtons ? .contain : .combine)
+        // #454: the UI test finds the start state by this id; other states keep no id, as before.
+        .accessibilityIdentifier(content.isStationStart ? "nowPlaying.stationStart" : "")
+    }
+
+    private var keepsButtons: Bool {
+        content == .needsAuthorization || content == .accessDenied || content.offersStartRetry
+    }
+}
+
+/// #454: the app's `StudioPresentationModel.stationStart`, for the placeholder's Try again.
+private struct StationStartStatusKey: EnvironmentKey { static let defaultValue: StationStartStatus? = nil }
+
+extension EnvironmentValues {
+    /// Set by `PlayingScreen`. Nil (previews) hides Try again.
+    var stationStart: StationStartStatus? {
+        get { self[StationStartStatusKey.self] }
+        set { self[StationStartStatusKey.self] = newValue }
+    }
+}
+
+/// #454: the explicit way to search from an empty station screen. Search is never what a station
+/// tap shows by itself; this opens the Queue workspace, where `StartListeningView` lives.
+struct SearchAppleMusicButton: View {
+    let action: () -> Void
+    /// Full label. The Duo column passes a shorter one when this label's ideal width
+    /// does not fit (`ViewThatFits`).
+    var title: String = "Search Apple Music"
+    var showsTitle: Bool = true
+
+    var body: some View {
+        Button(action: action) {
+            if showsTitle {
+                Label(title, systemImage: "magnifyingglass")
+            } else {
+                Label(title, systemImage: "magnifyingglass").labelStyle(.iconOnly)
+            }
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel(title)
+        .accessibilityIdentifier("playback.searchAppleMusic")
     }
 }
 
@@ -915,6 +976,7 @@ struct PlaybackScrubber: View {
             .foregroundStyle(dragging ? .primary : .secondary)
         }
         .accessibilityElement(children: .ignore)
+        .contentShape(Rectangle())
         .accessibilityLabel("Playback position")
         .accessibilityValue(PlaybackTimeFormat.accessibilityValue(position: position, duration: duration))
         .modifier(ScrubberAccessibility(isWired: isWired, canSeek: canSeek,
@@ -1127,7 +1189,7 @@ private extension View {
 }
 #endif
 
-private struct SymbolReplace: ViewModifier {
+struct SymbolReplace: ViewModifier {
     var enabled: Bool
 
     @ViewBuilder

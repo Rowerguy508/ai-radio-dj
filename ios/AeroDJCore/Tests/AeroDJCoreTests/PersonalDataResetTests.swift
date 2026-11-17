@@ -41,8 +41,9 @@ final class PersonalDataResetTests: XCTestCase {
 
     func testTheCopySaysWhatGoesAndWhatStays() {
         XCTAssertEqual(PersonalDataReset.title, "Delete DJ clips, ratings and location")
-        XCTAssertEqual(PersonalDataReset.message, "Deletes the DJ's spoken clips and planned breaks that mention your calendar, notes or shared items, your song ratings, your saved location and saved news headlines. It doesn't delete the shared items themselves, your review choices, play history or search text. Your stations and settings stay.")
+        XCTAssertEqual(PersonalDataReset.message, "Deletes the DJ's spoken clips and planned breaks that mention your calendar, notes or shared items, the cloud-voice clips of your library songs and station names, your song ratings, your saved location and saved news headlines. It doesn't delete the shared items themselves, your review choices, play history or search text. Your stations and settings stay.")
         XCTAssertTrue(PersonalDataReset.message.contains("song ratings"))
+        XCTAssertTrue(PersonalDataReset.message.contains("cloud-voice clips of your library songs and station names"))
         XCTAssertTrue(PersonalDataReset.message.contains("saved location"))
         XCTAssertFalse(PersonalDataReset.title.contains("my DJ data"), "owner: the row names only what it clears")
         XCTAssertTrue(PersonalDataReset.message.contains("Your stations and settings stay."))

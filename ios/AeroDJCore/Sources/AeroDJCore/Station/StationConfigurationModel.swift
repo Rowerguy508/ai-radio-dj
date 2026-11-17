@@ -251,6 +251,13 @@ public final class StationConfigurationModel {
         if playbackActivity == .idle { await applyPendingBecauseIdle() }
     }
 
+    /// #454 (-Atlas): a station row tap switches now. Promotes the pending change the tap's recipe
+    /// just made (and any other already-saved pending change) at once, as an idle player would.
+    /// Only `CreatedStationStarter` calls this, for a row tap; Tune edits keep the boundary rules.
+    public func applyPendingForStationSwitch() async {
+        await applyPendingBecauseIdle()
+    }
+
     /// Commits the unsaved Tune draft: schedules it for the next safe boundary, persists, and
     /// when playback is idle applies it immediately. Never stops the current song or a DJ break.
     /// No-op when there is nothing unsaved.

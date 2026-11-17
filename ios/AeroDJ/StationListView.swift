@@ -3,8 +3,8 @@ import SwiftUI
 
 /// Station selection screen. Adaptive container sizing (no hardcoded device dims).
 /// The split root owns the selection and the one shared studio/playback session.
-/// Neither column creates a model. Choosing a built-in station never starts playback; tapping a
-/// created one starts it only when nothing is queued (restore never does).
+/// Neither column creates a model. #454: tapping any station row starts that station right away
+/// (switching from whatever plays); restoring the selection never does.
 struct StationListView: View {
     /// Composed once at launch by `AppDependencies`; views receive it, never build it.
     let dependencies: AppDependencies
@@ -25,7 +25,12 @@ struct StationListView: View {
     var body: some View {
         #if DEBUG
         if StudioCapture.isRequested(mode: dependencies.mode) {
-            StudioCaptureView(dependencies: dependencies)
+            // #465 item 10: the app-wide captures have their own scenario names.
+            if let appWide = AppWideCaptureScenario.requested() {
+                AppWideCaptureView(scenario: appWide, dependencies: dependencies)
+            } else {
+                StudioCaptureView(dependencies: dependencies)
+            }
         } else {
             split
         }
@@ -39,41 +44,30 @@ struct StationListView: View {
     private var split: some View {
         StationSplitRoot(stations: stations, showsSharedInbox: dependencies.mode == .live,
                          showSharedInbox: $showSharedInbox,
-                         onUserOpenedStation: { id in
-                             // Row tap only, never restore. A created station starts now when nothing
-                             // is queued, otherwise takes over at the song boundary (CreatedStationStarter).
-                             // Any tap clears the start toast; only this tap's idle-start failure shows it.
-                             let tap = startNotice.beginTap()
-                             guard let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes) else {
-                                 // HOOK(Atlas, Fry #213 nit 2): a built-in tap cancels a waiting created-station start.
-                                 dependencies.stationQueue?.cancelCreatedStationStart()
-                                 await dependencies.playback.authorize()
-                                 return
-                             }
-                             if let stationQueue = dependencies.stationQueue {
-                                 let outcome = await stationQueue.openCreatedStation(.userTap, recipeID: recipeID,
-                                                                                     studio: dependencies.studio)
-                                 // Status read only (never authorize() or a prompt), and only if a toast is due.
-                                 startNotice.finish(tap: tap, outcome: outcome, musicAuthorized: GenreAccess.isAuthorized)
-                             } else {
-                                 await dependencies.playback.authorize()
-                                 _ = await dependencies.studio.applyRecipe(recipeID)
-                             }
-                         },
+                         onUserOpenedStation: { id in await openStation(id) },
                          onAddStation: addStationAction,
                          onOpenSettings: { showSettings = true }) { station in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
-                       isTestStation: dependencies.mode == .testStation)
+                       isTestStation: dependencies.mode == .testStation,
+                       stationStops: stations.map { DuoStationSwitch.Stop(id: $0.id.uuidString, name: $0.name) },
+                       onOpenStation: { id in
+                           guard let uuid = UUID(uuidString: id) else { return }
+                           await openStation(uuid)
+                       })
             // Inside the detail's NavigationStack: the top of the content, below the nav bar,
             // so it never covers Back or the title. A tap always opens this column. Never takes a tap.
             .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
         }
+        // #465 item 10: measures the window for the Duo's station grid. Nil on every phone.
+        .appWideScreen(.stations)
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
         .sheet(isPresented: $showSettings) {
             SettingsView(isPresented: $showSettings, isTestStation: dependencies.mode == .testStation,
                          // Sentinel's #410 n4: the app's one purge-all.
                          personalDataReset: dependencies.purger)
+                // #465 item 10: readable rows on the Duo and wide windows; untouched on phones.
+                .appWideScreen(.settings, formMargins: true)
         }
         .sheet(isPresented: $showSharedInbox) {
             // Always a NavigationStack with Done. An empty `if` body left an undismissable sheet.
@@ -97,12 +91,44 @@ struct StationListView: View {
                 AddStationWalkthroughView(studio: dependencies.studio, creation: stationCreation) {
                     self.stationCreation = nil
                 }
+                // #465 item 10: readable width and two library columns when wide.
+                .appWideScreen(.library)
             }
         }
         // Live only: lets Connections offer the .md file picker (nil in the test station).
         .environment(\.pickedNotes, dependencies.pickedNotes)
         .ownerVoiceTrialEntry() // AERODJ_OWNER_AB only; a no-op otherwise
-        .testerCloudVoiceConsent() // AERODJ_TESTER_VOICE only; a no-op otherwise
+        .testerCloudVoiceConsent() // AERODJ_TESTER_VOICE or AERODJ_OWNER_AB only; a no-op otherwise
+    }
+
+    /// #454 (-Atlas): every station row tap (built-in, library or created) starts that station on
+    /// one path (`StationQueuePlayer.openStation`): Now Playing shows "Starting <name>…" at once,
+    /// the first song plays as soon as it resolves, and a failure stays on that screen with Try
+    /// again (plus the existing toast). Row tap only, never restore. Any tap clears the toast.
+    private func openStation(_ id: Station.ID) async {
+        let tap = startNotice.beginTap()
+        let name = stations.first(where: { $0.id == id })?.name ?? "station"
+        let recipeID = CreatedStations.recipeID(for: id, in: dependencies.studio.recipes.recipes)
+        let status = dependencies.studio.stationStart
+        let statusTap = status.begin(stationID: id.uuidString, stationName: name,
+                                     songAtTap: dependencies.playback.snapshot.nowPlaying?.id,
+                                     retry: { Task { await openStation(id) } })
+        guard let stationQueue = dependencies.stationQueue else {
+            // No station queue (previews): the old behavior, no start.
+            await dependencies.playback.authorize()
+            if let recipeID { _ = await dependencies.studio.applyRecipe(recipeID) }
+            status.finish(tap: statusTap, outcome: .notStarted(.notAvailableYet))
+            return
+        }
+        let outcome: CreatedStationOpenOutcome
+        if let recipeID {
+            outcome = await stationQueue.openCreatedStation(.userTap, recipeID: recipeID, studio: dependencies.studio)
+        } else {
+            outcome = await stationQueue.openBuiltInStation(.userTap, stationID: id, studio: dependencies.studio)
+        }
+        status.finish(tap: statusTap, outcome: outcome)
+        // Status read only (never authorize() or a prompt), and only if a toast is due.
+        startNotice.finish(tap: tap, outcome: outcome, musicAuthorized: GenreAccess.isAuthorized)
     }
 
     /// The + action, or nil (no button) when the app has no seed search: previews and the Test Station.
@@ -135,9 +161,14 @@ struct StationSplitRoot<Detail: View>: View {
     @SceneStorage("aerodj.selectedStationID") private var storedStationID = ""
     /// Regular width shows both columns. Compact uses `preferredCompactColumn`.
     @State private var columnVisibility = NavigationSplitViewVisibility.automatic
+    @State private var containerWidth: Double = 0
+    @State private var containerHeight: Double = 0
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.splitMeasure) private var splitMeasure
     /// The scheme around the split. Regular width keeps it; compact forces dark (see `body`).
     @Environment(\.colorScheme) private var systemColorScheme
+    /// #465 item 10: nil on every phone and narrow split, so compact keeps the carousel.
+    @Environment(\.appWideLayout) private var appWide
 
     init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
          onUserOpenedStation: ((Station.ID) async -> Void)? = nil,
@@ -157,6 +188,26 @@ struct StationSplitRoot<Detail: View>: View {
 
     private var selectedStationID: Station.ID? { navigation.selectedID }
 
+    /// Sidebar + detail. A three-column split would open with `.doubleColumn`.
+    private static var openListVisibility: NavigationSplitViewVisibility { .all }
+
+    private var layoutWidth: Double {
+        containerWidth > 0 ? containerWidth : (splitMeasure?.containerWidth ?? 0)
+    }
+
+    private var layoutHeight: Double {
+        containerHeight > 0 ? containerHeight : (splitMeasure?.containerHeight ?? 0)
+    }
+
+    /// Half is the adapting width where sidebar and detail cannot sit side by side.
+    /// SwiftUI then keeps the detail. The compact column, held on the sidebar, is the
+    /// one it shows. Full width and two-thirds are not this span.
+    private var isHalfSpan: Bool {
+        guard layoutWidth > 0 else { return false }
+        return SplitViewLayout.span(hasRegularWidth: true, containerWidth: layoutWidth,
+                                     containerHeight: layoutHeight) == .half
+    }
+
     /// Derived from `navigation`: the open station whenever one is selected, unless the
     /// listener went back in compact width. Writes made in regular width are ignored there.
     private var preferredCompactColumn: Binding<NavigationSplitViewColumn> {
@@ -167,8 +218,15 @@ struct StationSplitRoot<Detail: View>: View {
     }
 
     var body: some View {
+        SplitBarHost(preferred: .leading) { insets in
+            columns(insets)
+        }
+    }
+
+    /// `insets` nil keeps the sidebar on the leading edge and the gear where it is.
+    private func columns(_ insets: SplitInsets?) -> some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: preferredCompactColumn) {
-            stationPicker
+            stationPicker(insets)
             .navigationTitle(AppName.display)
             // Contain first, so this identifier stays on the list and does not replace the rows.
             .accessibilityElement(children: .contain)
@@ -178,10 +236,13 @@ struct StationSplitRoot<Detail: View>: View {
             .morphingLargeTitle("Stations", subtitle: "Your AI-hosted radio, on Apple Music")
             .toolbar {
                 if let onOpenSettings {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItem(placement: SplitToolbar.placement(
+                        preferred: .leading, edge: insets?.barEdge,
+                        leading: .topBarLeading, trailing: .topBarTrailing)) {
                         Button(action: onOpenSettings) {
                             Label("Settings", systemImage: "gearshape")
                         }
+                        .modifier(SplitMinimumTarget(enabled: insets != nil))
                         .accessibilityIdentifier("stations.settings")
                     }
                 }
@@ -208,6 +269,7 @@ struct StationSplitRoot<Detail: View>: View {
             // an `if`, so folding or unfolding keeps the column's identity and scroll state.
             .environment(\.colorScheme, isCompact ? .dark : systemColorScheme)
             .toolbarColorScheme(isCompact ? .dark : nil, for: .navigationBar)
+            .modifier(SplitColumnText(enabled: insets?.barEdge == .trailing))
         } detail: {
             if let station = stations.first(where: { $0.id == selectedStationID }) {
                 NavigationStack {
@@ -216,19 +278,26 @@ struct StationSplitRoot<Detail: View>: View {
                     detail(station)
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("split.detail")
+                        .modifier(SplitColumnText(enabled: insets?.barEdge == .trailing))
                 }
             } else {
                 Text("Choose a station")
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("split.placeholder")
+                    .modifier(SplitColumnText(enabled: insets?.barEdge == .trailing))
             }
         }
         // Balanced keeps the sidebar beside the detail. The prominent style lays the
         // detail over the sidebar, which is why portrait showed only Show Sidebar.
         .navigationSplitViewStyle(.balanced)
+        .background { if insets != nil { splitSizeReader } }
+        .modifier(HalfSplitSidebarColumn(enabled: insets != nil && selectedStationID == nil && isHalfSpan))
         // After the list exists. An earlier copy loses to the list resetting selection,
         // and a stored id can arrive after the first render.
-        .task { restoreSelection() }
+        .task {
+            restoreSelection()
+            showStationListIfUnselected(insets)
+        }
         .onChange(of: storedStationID) { _, _ in restoreSelection() }
         // Created stations arrive when the recipes load, after the first render.
         .onChange(of: stations.map(\.id)) { _, _ in restoreSelection() }
@@ -237,26 +306,74 @@ struct StationSplitRoot<Detail: View>: View {
         // rotation or Split View change shows the same open station. Never writes the selection.
         .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
             navigation.setRegularWidth(sizeClass == .regular)
-            columnVisibility = navigation.showsBothColumns ? .all : .automatic
+            // Nil insets is the phone: both columns or the compact column, unchanged.
+            // An adapting split with nothing selected opens `.all` (this split is two
+            // columns). A chosen station leaves visibility alone so the sidebar can collapse.
+            if insets == nil || selectedStationID != nil {
+                columnVisibility = navigation.showsBothColumns ? .all : .automatic
+            } else {
+                showStationListIfUnselected(insets)
+            }
         }
+        .onChange(of: selectedStationID) { _, _ in
+            showStationListIfUnselected(insets)
+        }
+        .modifier(SplitLeadingBar(enabled: insets?.barEdge == .trailing))
+        .environment(\.splitBarEdge, insets?.barEdge)
+    }
+
+    /// Adapting split, nothing selected: sidebar + detail (`.all`). Does nothing on the
+    /// phone, and nothing after a station is picked. Compact width (the narrow split)
+    /// keeps `.automatic`, which is already the sidebar column.
+    private func showStationListIfUnselected(_ insets: SplitInsets?) {
+        guard insets != nil, selectedStationID == nil, horizontalSizeClass == .regular else { return }
+        if columnVisibility != Self.openListVisibility {
+            columnVisibility = Self.openListVisibility
+        }
+    }
+
+    /// The split's laid-out size. Hidden, and it does not take taps.
+    private var splitSizeReader: some View {
+        GeometryReader { geo in
+            Color.clear
+                .onAppear { publishSize(geo.size) }
+                .onChange(of: geo.size) { _, size in publishSize(size) }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func publishSize(_ size: CGSize) {
+        let width = Double(size.width)
+        let height = Double(size.height)
+        if width != containerWidth { containerWidth = width }
+        if height != containerHeight { containerHeight = height }
     }
 
     /// Compact width (the folded phone) gets the arc carousel; regular width keeps the
     /// sidebar list. Both write the same `selection`, so a pick only selects and opens.
     @ViewBuilder
-    private var stationPicker: some View {
+    private func stationPicker(_ insets: SplitInsets?) -> some View {
         if isCompact {
             // A card tap goes through the list's own setter: same push, same one-time
             // authorization request, same stored id. Scrolling the carousel selects nothing.
-            StationCarousel(stations: stations, selectedID: selectedStationID) { id in
-                selection.wrappedValue = id
+            if let appWide, appWide.columns > 1 {
+                // #465 item 10: the unfolded Duo (compact class, 640 pt) shows every station
+                // as a grid. Same cards and the same selection path as the carousel.
+                StationGrid(stations: stations, selectedID: selectedStationID, layout: appWide) { id in
+                    selection.wrappedValue = id
+                }
+            } else {
+                StationCarousel(stations: stations, selectedID: selectedStationID) { id in
+                    selection.wrappedValue = id
+                }
             }
         } else {
-            stationList
+            stationList(insets)
         }
     }
 
-    private var stationList: some View {
+    private func stationList(_ insets: SplitInsets?) -> some View {
         List(selection: selection) {
             ForEach(stations) { station in
                 // The link is the row. Its value is the station ID, so the tap selects
@@ -279,12 +396,16 @@ struct StationSplitRoot<Detail: View>: View {
                 .accessibilityIdentifier("stations.row.\(station.id.uuidString)")
             }
         }
+        // A List keeps its own row margin and ignores the host's safeAreaInset,
+        // so on the 540 pt split the row starts 20 pt in, inside the 28 pt leading.
+        // Nil insets is the phone, and the list is returned with no padding.
+        .modifier(SplitStationListPadding(insets: insets))
     }
 
     /// The row the list selects. Nil is not stored: the split clears the binding while it
     /// builds the list, and writing that empty value would erase the station the next launch needs.
-    /// Choosing a station records its id and pushes the detail. Only a tap on a created station
-    /// with nothing queued plays (`StationQueuePlayer.openCreatedStation`).
+    /// Choosing a station records its id and pushes the detail. #454: a tap starts that station
+    /// (`StationListView.openStation`); restore never enters this setter.
     /// The back gesture writes `preferredCompactColumn`, so the list can show again.
     private var selection: Binding<Station.ID?> {
         Binding(
@@ -326,30 +447,60 @@ struct StationSplitRoot<Detail: View>: View {
     }
 }
 
+/// Pads a split station list by the host's extra insets. A nil inset is the phone
+/// list, returned unchanged. Full width does not adapt, so it is unchanged too.
+private struct SplitStationListPadding: ViewModifier {
+    var insets: SplitInsets?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let insets {
+            content
+                .padding(.leading, CGFloat(insets.padding.leading))
+                .padding(.trailing, CGFloat(insets.padding.trailing))
+        } else {
+            content
+        }
+    }
+}
+
+/// Half split, nothing selected: the width class the split actually honors, so the
+/// sidebar column is the one on screen. Off is the view unchanged.
+private struct HalfSplitSidebarColumn: ViewModifier {
+    var enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.environment(\.horizontalSizeClass, .compact)
+        } else {
+            content
+        }
+    }
+}
+
 /// Lightweight station model for the app shell. Domain types live in AeroDJCore.
 struct Station: Identifiable, Hashable {
     let id: UUID
     let name: String
     let description: String?
-    /// A station made with + (a seeded recipe). Its row tap can start playback (#213).
+    /// A station made with + (a seeded recipe, catalog or library seeds).
     var isCreated = false
 
-    /// VoiceOver hint for the list row and carousel card: what a tap does. A created station
-    /// starts right away when nothing is queued (CreatedStationStarter), else after this song.
+    /// VoiceOver hint for the list row and carousel card: what a tap does. #454: every station
+    /// starts right away, switching from whatever plays (`StationListView.openStation`).
     var openHint: String {
-        isCreated
-            ? "Plays the station now if nothing is queued, otherwise after this song."
-            : "Opens the station. Music starts only when you press Play."
+        "Plays the station now."
     }
 
     /// Stable IDs so a restored selection can find the same row after a relaunch.
-    static let morningCalmID = UUID(uuidString: "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D")!
-    static let lateNightID = UUID(uuidString: "8D3B2C21-5F60-4B7C-9D0E-1F2A3B4C5D6E")!
+    /// The same ids as `BuiltInStations`, which holds the seeds those rows play.
+    static let morningCalmID = BuiltInStations.morningCalm.id
+    static let lateNightID = BuiltInStations.lateNight.id
 
-    static let defaultStations: [Station] = [
-        Station(id: morningCalmID, name: "Morning Calm", description: "Warm, unhurried host"),
-        Station(id: lateNightID, name: "Late Night", description: "Smooth vinyl-bar vibes"),
-    ]
+    static let defaultStations: [Station] = BuiltInStations.all.map {
+        Station(id: $0.id, name: $0.name, description: $0.summary)
+    }
 }
 
 extension Station {

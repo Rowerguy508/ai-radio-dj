@@ -8,5 +8,7 @@
 	<array>
 		<string>group.com.aerodj</string>
 	</array>
+	<key>com.apple.developer.carplay-audio</key>
+	<true/>
 </dict>
 </plist>

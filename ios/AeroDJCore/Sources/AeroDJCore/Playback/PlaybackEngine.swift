@@ -33,6 +33,9 @@ public enum PlaybackEvent: Equatable, Sendable {
     case djFailed(message: String)
     /// The user edited the songs after the one playing. The playing song is never affected.
     case upNextEdited(UpNextEdit)
+    /// #454 (-Atlas): songs appended behind the queue (a station that started on one song fills in
+    /// the background). The playing song, its position and the transport are never affected.
+    case queueExtended(tracks: [TrackInfo])
     case errorRaised(PlaybackError)
     case errorCleared
     /// Song scrubbing (-Atlas): the loaded song really started (`noteSongStarted`), with its
@@ -158,6 +161,12 @@ public struct PlaybackEngine: Sendable {
             case let .failure(reason):
                 snapshot.error = PlaybackError(kind: .playbackFailed, message: Self.message(for: reason), isRecoverable: true)
             }
+
+        case let .queueExtended(added):
+            // Nothing queued (the queue finished or was replaced by an empty one): nothing to extend.
+            guard tracks.indices.contains(index), !added.isEmpty else { break }
+            tracks += added
+            snapshot.upNext = Array(tracks[(index + 1)...])
 
         case let .errorRaised(error):
             snapshot.error = error

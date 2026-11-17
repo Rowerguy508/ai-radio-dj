@@ -343,7 +343,8 @@ final class SongRatingControllerTests: XCTestCase {
         var scope: StationRatingScope? = SongRatingControllerTests.scope
     }
 
-    private func controller(_ calls: Calls, loaded: Bool = true) async -> (SongRatingController, UserDefaults) {
+    private func controller(_ calls: Calls, loaded: Bool = true,
+                            sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }) async -> (SongRatingController, UserDefaults) {
         let ratings = StationRatingsModel(store: InMemoryStationRatingStore(), today: { 42 })
         if loaded { await ratings.load() }
         let suite = "ratings-\(UUID().uuidString)"
@@ -355,7 +356,103 @@ final class SongRatingControllerTests: XCTestCase {
             artistID: { "aid-\($0)" },
             skipPlaying: { calls.log.append("skip") },
             ratingsChanged: { calls.log.append("changed") })
-        return (SongRatingController(ratings: ratings, hooks: hooks, defaults: defaults), defaults)
+        return (SongRatingController(ratings: ratings, hooks: hooks, defaults: defaults, sleep: sleep), defaults)
+    }
+
+    /// The real dismissal policy: the clock is asked for exactly six seconds, and the toast
+    /// is still up until that sleep returns. (#448, #489)
+    func testToastStaysUpUntilTheClockSleepsSixSeconds() async throws {
+        let gate = ExpiryGate()
+        let calls = Calls()
+        let (c, _) = await controller(calls) { duration in
+            await gate.sleep(duration)
+        }
+        await c.rate(.never, songID: "later", artistName: "A")
+        let id = try XCTUnwrap(c.toast?.id)
+        let expiry = Task { await c.awaitToastExpiry(id: id) }
+        for _ in 0..<50 where !gate.isWaiting { await Task.yield() }
+        XCTAssertEqual(SongRatingController.toastDuration, .seconds(6))
+        XCTAssertEqual(gate.duration, .seconds(6), "production waits the six-second toast duration")
+        XCTAssertTrue(gate.isWaiting)
+        XCTAssertEqual(c.toast?.id, id, "still showing until the clock finishes")
+        guard gate.isWaiting else { expiry.cancel(); return }
+        gate.finish()
+        await expiry.value
+        XCTAssertNil(c.toast, "the six seconds dismiss this toast and do not undo the rating")
+        XCTAssertEqual(c.rating(for: "later"), .never)
+    }
+
+    #if DEBUG
+    /// The UI-test fixture holds the toast. Undo restores the previous rating in that station's
+    /// scope and leaves every other station alone. `dismissToast` is the explicit trigger.
+    func testFixtureHoldKeepsTheToastUntilUndoOrDismiss() async throws {
+        let calls = Calls()
+        let (c, _) = await controller(calls) { _ in
+            XCTFail("a held toast must not start the 6s timer")
+        }
+        c.holdToastUntilExplicitDismiss()
+        let scope = calls.scope
+        await c.rate(.like, songID: "later", artistName: "A")
+        let other = StationRatingScope.seeds(0x0C0FFEE)
+        c.ratings.rate(.tired, song: StationRatedSong(songID: "later", artistName: "A"), in: other)
+        await c.rate(.never, songID: "later", artistName: "A")
+        let id = try XCTUnwrap(c.toast?.id)
+        XCTAssertEqual(c.toast?.change.scope, scope)
+        await c.awaitToastExpiry(id: id)
+        XCTAssertEqual(c.toast?.id, id, "the fixture holds the toast")
+        XCTAssertEqual(c.rating(for: "later"), .never)
+
+        await c.undo()
+        XCTAssertNil(c.toast)
+        XCTAssertEqual(c.rating(for: "later"), .like, "undo puts the prior rating back")
+        XCTAssertEqual(calls.scope, scope, "undo does not switch station scope")
+        XCTAssertEqual(c.ratings.rating(for: "later", in: other), .tired, "another station is untouched")
+
+        await c.rate(.never, songID: "later", artistName: "A")
+        let again = try XCTUnwrap(c.toast?.id)
+        await c.awaitToastExpiry(id: again)
+        XCTAssertEqual(c.toast?.id, again)
+        c.dismissToast(id: again)
+        XCTAssertNil(c.toast, "dismissToast is the explicit trigger")
+        XCTAssertEqual(c.rating(for: "later"), .never, "dismiss hides the toast and keeps the rating")
+    }
+    #endif
+
+    /// The view uses the controller clock. The hold is compiled only for the capture fixture.
+    func testProductionToastUsesTheSixSecondClockAndTheHoldIsFixtureOnly() throws {
+        let core = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/AeroDJCore/Station/SongRatingController.swift")
+        let ios = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let controller = try String(contentsOf: core, encoding: .utf8)
+        let view = try String(contentsOf: ios.appendingPathComponent("AeroDJ/SongRatingControl.swift"), encoding: .utf8)
+        let capture = try String(contentsOf: ios.appendingPathComponent("AeroDJ/StudioCapture.swift"), encoding: .utf8)
+        XCTAssertTrue(controller.contains("public static let toastDuration: Duration = .seconds(6)"))
+        XCTAssertTrue(view.contains("await controller.awaitToastExpiry(id: toast.id)"))
+        XCTAssertFalse(view.contains("Task.sleep(for: SongRatingController.toastDuration)"),
+                       "the view must not run its own timer")
+        XCTAssertTrue(view.contains("if holdToast { controller.holdToastUntilExplicitDismiss() }"))
+        XCTAssertTrue(capture.contains("holdToast: true"))
+        XCTAssertTrue(capture.contains("capture.ratingState"))
+        XCTAssertFalse(view.contains("capture.ratingState"), "the rating readout is the capture fixture, not the player")
+        for source in [controller, view, capture] {
+            XCTAssertFalse(source.contains("AeroDJHoldRatingToast"))
+        }
+        let lines = controller.components(separatedBy: "\n")
+        let at = try XCTUnwrap(lines.firstIndex { $0.contains("func holdToastUntilExplicitDismiss") })
+        let holdEnd = try XCTUnwrap(lines[at...].firstIndex { $0.trimmingCharacters(in: .whitespaces) == "#endif" })
+        let hold = lines[at...holdEnd].joined(separator: "\n")
+        XCTAssertFalse(hold.contains("UserDefaults"), "the hold is not a setting")
+        XCTAssertFalse(hold.contains("forKey"))
+        XCTAssertFalse(hold.contains("URL"))
+        var depth = 0
+        for line in lines[..<at] {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t == "#if DEBUG" { depth += 1 } else if t == "#endif", depth > 0 { depth -= 1 }
+        }
+        XCTAssertEqual(depth, 1, "the hold compiles out of Release")
     }
 
     func testNeverOnThePlayingSongSkipsItAfterTheBreaksAreDroppedAndOffersUndo() async {
@@ -464,5 +561,28 @@ final class SongRatingControllerTests: XCTestCase {
         XCTAssertNil(c.rating(for: "z"))
         XCTAssertNil(c.toast)
         XCTAssertEqual(calls.log.last, "changed", "the queue rebuilds after a clear")
+    }
+}
+
+/// Records the duration `awaitToastExpiry` sleeps, and finishes only when the test says so.
+@MainActor
+private final class ExpiryGate {
+    private(set) var duration: Duration?
+    private(set) var isWaiting = false
+    private var release: CheckedContinuation<Void, Never>?
+
+    func sleep(_ duration: Duration) async {
+        self.duration = duration
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            release = cont
+            isWaiting = true
+        }
+    }
+
+    func finish() {
+        isWaiting = false
+        let cont = release
+        release = nil
+        cont?.resume()
     }
 }

@@ -21,6 +21,9 @@ enum StudioCapture {
     /// `duoWideReady`: the stand-in for the unfolded Duo's split-view detail. The UI test
     /// (`testDuoWideListenPlayerIsOneCentredColumn`) checks the same 640 × 820 pt.
     static let duoWideContainerSize = CGSize(width: 640, height: 820)
+    /// `duoTent` (#465 item 3): the unfolded Duo rotated, fold horizontal at y = 320. Assumed
+    /// from the 640 × 820 pt measurement, as in the owner mockup; not measured in a tent.
+    static let duoTentContainerSize = CGSize(width: 820, height: 640)
 
     static func isRequested(mode: AppRuntimeMode, defaults: UserDefaults = .standard) -> Bool {
         mode == .testStation && defaults.bool(forKey: defaultsKey)
@@ -64,18 +67,49 @@ enum StudioCaptureScenario: String {
     /// container: below the Studio switch but wider than any phone in portrait, like the
     /// unfolded Duo's split-view detail (owner, build 25). Needs a window at least that big.
     case duoWideReady
+    /// The same 640 × 820 pt container with nothing playing, so Search Apple Music is the
+    /// content column's first control.
+    case duoWideEmpty
+    /// A side-by-side split. `AeroDJSplitExample` is `narrow`, `half` or `wide`.
+    case splitView
+    /// Folded phone container, then the unfolded Duo, in one launch. Playback, the
+    /// scroll anchor and the selected station must survive the size-class change.
+    case duoContinuity
+    /// The unfolded rail with the DJ speaking, so the live dot is lit. Same container as
+    /// `duoWideReady`. The ON AIR pill's timer is frozen, as in `onAir`.
+    case duoWideSpeaking
+    /// Regular width at the same 640 × 820 pt: artwork and controls in one pane, the
+    /// up-next timeline in the other. The compact-class `duoWideReady` container is unchanged.
+    case duoArrangement
+    /// The same 640 × 820 pt container with the DJ on air: `breakReady` then `playbackStarted`,
+    /// the same events as `onAir`, with the ON AIR timer frozen at 0:12. The track column
+    /// keeps the art (`keepArtVisible`); the orb sits in the content column (`folded.visualizer`).
+    case duoWideOnAir
     /// The DJ is on air: a break became ready and the player reported it started
     /// (`breakReady` then `playbackStarted`, the same events the audio player sends), so the
-    /// folded player draws the ON AIR pill. At AX5 on a phone it is pinned above the
-    /// scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
+    /// folded player draws the ON AIR pill. At default size, `testDefaultOnAirShowsOrbOnlyArtCard`
+    /// captures `closed-onair` / `open-onair` (#435 n1). At AX5 on a phone the pill is pinned
+    /// above the scrubber (#310, `testAX5OnAirPinnedAboveScrubber`).
     case onAir
     /// Station ratings (-Nova, PR B): `playing` with the rating button, unrated, with its
     /// first-time "Rate" label. The other scenarios get no rating controller, so they are unchanged.
     case ratingFirstTime
+    /// #454: a station row was tapped and its first song is on its way: "Starting <name>…" on
+    /// Now Playing, never the search field.
+    case stationStarting
+    /// #454: the tapped station could not start: "Couldn't start <name>" with Try again (which
+    /// counts a play in the capture), on the same screen, never the search field.
+    case stationStartFailed
     /// The playing song rated Like it (plus.circle), label already seen.
     case ratingLiked
-    /// A queued song just rated Never: the Undo toast over the player (no skip in a capture).
+    /// The playing song was Like it, then Never: the Undo toast over the player. The fixture
+    /// holds that toast until Undo (no skip: the capture has no playing-song id). Production
+    /// still dismisses a never toast after six seconds.
     case ratingNever
+    /// #465 item 3: the tent pose with the DJ on air (`breakReady` then `playbackStarted`), in
+    /// an 820 × 640 pt container. The hinge is forced to partially open at 100° and fed to the
+    /// real `DuoPoseDecision`; the clock and the on-air timer are frozen. Needs an iPad window.
+    case duoTent
 
     var access: PlaybackAccess {
         switch self {
@@ -88,9 +122,18 @@ enum StudioCaptureScenario: String {
 
     var snapshot: PlaybackSnapshot {
         switch self {
-        case .empty, .loading, .denied, .stations, .resize: PlaybackFixtures.stopped
-        case .error: PlaybackFixtures.recoverableError
-        default: PlaybackFixtures.playing
+        case .empty, .loading, .denied, .stations, .resize, .stationStarting, .stationStartFailed, .duoWideEmpty:
+            return PlaybackFixtures.stopped
+        case .error:
+            return PlaybackFixtures.recoverableError
+        case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir:
+            // A playing song the listener can seek. The shared fixture leaves canSeek false,
+            // which draws the scrubber as a non-interactive element.
+            var playing = PlaybackFixtures.playing
+            playing.canSeek = true
+            return playing
+        default:
+            return PlaybackFixtures.playing
         }
     }
 
@@ -118,6 +161,7 @@ struct StudioCaptureView: View {
     @State private var failure: String?
     /// Only the rating scenarios set one; nil keeps every other capture as it was (-Nova, PR B).
     @State private var captureRating: SongRatingController?
+    @StateObject private var continuityLoads = DisplayContinuityLoadCounter()
 
     private var showsProbe: Bool {
         loaded && (scenario == .resize || scenario == .resizeTune)
@@ -137,6 +181,8 @@ struct StudioCaptureView: View {
                 Text("Loading studio capture")
                     .font(.body)
                     .accessibilityIdentifier("capture.loading")
+            } else if scenario == .duoTent {
+                TentCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .stations {
                 // The split is the root. An outer NavigationStack makes compact width
                 // open the detail column, so the fixture list never appears.
@@ -147,8 +193,14 @@ struct StudioCaptureView: View {
                 CaptureStationSplit(dependencies: dependencies)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("capture.shell")
-            } else if scenario == .duoWideReady {
+            } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideSpeaking || scenario == .duoWideOnAir {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario == .splitView {
+                SplitViewCapture(studio: dependencies.studio)
+            } else if scenario == .duoContinuity {
+                DuoContinuityCapture(studio: dependencies.studio, loads: continuityLoads)
+            } else if scenario == .duoArrangement {
+                ArrangementCaptureContainer(studio: dependencies.studio)
             } else {
                 NavigationStack {
                     if showsProbe {
@@ -182,11 +234,19 @@ struct StudioCaptureView: View {
         .preferredColorScheme(UserDefaults.standard.bool(forKey: StudioCapture.darkKey) ? .dark : nil)
         // Replaces the app root's controller: nil outside the rating scenarios.
         .environment(\.songRating, captureRating)
+        .overlay(alignment: .bottomLeading) {
+            // ratingNever only: the playing song's rating and its station scope, for the Undo test.
+            // One point, not hittable, so it does not cover Undo or move the player.
+            if loaded, scenario == .ratingNever, let captureRating {
+                RatingCaptureReadout(controller: captureRating, songID: PlaybackFixtures.songs[0].id)
+            }
+        }
         .task {
             // The app root's task starts Studio (b39d15f). Wait for that load to finish rather
             // than loading again: a second load would overwrite the scenario's edits below.
             let studio = dependencies.studio
             let defaults = UserDefaults.standard
+            defaults.set(false, forKey: DisplayContinuityLaunch.probeKey)
             let name = defaults.string(forKey: StudioCapture.scenarioKey) ?? "playing"
             var settled = false
             for _ in 0..<200 {
@@ -205,15 +265,20 @@ struct StudioCaptureView: View {
                 return
             }
             scenario = chosen
+            if chosen == .duoContinuity {
+                defaults.set(true, forKey: DisplayContinuityLaunch.probeKey)
+                // The station model finished loading above. One load, not one per layout.
+                continuityLoads.noteLoad()
+            }
             switch scenario {
             case .revoked:
                 await studio.connections.refresh()
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady, .duoWideReady:
+            case .breakReady, .duoWideReady, .duoArrangement:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
-            case .onAir:
+            case .duoWideSpeaking, .onAir, .duoWideOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
                 StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
@@ -226,13 +291,28 @@ struct StudioCaptureView: View {
                 await studio.station.setEnergy(0.85)
                 await studio.station.setGenres(["pop", "indie", "synthwave"])
                 await studio.station.saveChanges()
+            case .stationStarting:
+                studio.stationStart.begin(stationID: PlaybackFixtures.station.id,
+                                          stationName: PlaybackFixtures.station.name, songAtTap: nil)
+            case .stationStartFailed:
+                let tap = studio.stationStart.begin(stationID: PlaybackFixtures.station.id,
+                                                    stationName: PlaybackFixtures.station.name, songAtTap: nil,
+                                                    retry: { PlaybackCallLog.shared.recordPlay() })
+                studio.stationStart.finish(tap: tap, outcome: .notStarted(.notReadyInTime))
             case .ratingFirstTime:
                 captureRating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id)
             case .ratingLiked:
                 captureRating = await SongRatingController.fixture(rated: .like, songID: PlaybackFixtures.songs[0].id, labelSeen: true)
+            case .duoTent:
+                TentPoseCapture.forcedHinge = TentPoseCapture.capturedHinge
+                TentPoseCapture.frozenDate = TentPoseCapture.capturedDate
+                StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
+                studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
+                studio.dj.send(.playbackStarted(afterTrack: 0))
             case .ratingNever:
-                let rating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id, labelSeen: true)
-                await rating.rate(.never, songID: PlaybackFixtures.songs[1].id, artistName: PlaybackFixtures.songs[1].artistName)
+                let song = PlaybackFixtures.songs[0]
+                let rating = await SongRatingController.fixture(rated: .like, songID: song.id, labelSeen: true, holdToast: true)
+                await rating.rate(.never, songID: song.id, artistName: song.artistName)
                 captureRating = rating
             default:
                 break
@@ -264,9 +344,15 @@ private struct DuoWideCaptureContainer: View {
     let scenario: StudioCaptureScenario
     let studio: StudioPresentationModel
 
+    @State private var openedStation = ""
+
     var body: some View {
         let size = StudioCapture.duoWideContainerSize
         let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let stops = [
+            DuoStationSwitch.Stop(id: PlaybackFixtures.station.id, name: PlaybackFixtures.station.name),
+            DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
+        ]
         ZStack {
             Color(white: 0.14)
                 .ignoresSafeArea()
@@ -276,7 +362,14 @@ private struct DuoWideCaptureContainer: View {
                               snapshot: scenario.snapshot, actions: .preview,
                               search: .captureOffline,
                               studio: studio, isTestStation: true,
-                              timeSource: .fixture)
+                              timeSource: .fixture,
+                              stationStops: stops,
+                              onOpenStation: { openedStation = $0 })
+                Text(verbatim: openedStation)
+                    .font(.system(size: 1))
+                    .accessibilityIdentifier("duo.openedStation")
+                    .accessibilityLabel(openedStation)
+                    .allowsHitTesting(false)
             }
             .environment(\.horizontalSizeClass, .compact)
             .frame(width: size.width, height: size.height)
@@ -284,6 +377,50 @@ private struct DuoWideCaptureContainer: View {
             .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("capture.duoContainer")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+/// The tent pose (#465 item 3) in a fixed 820 × 640 pt container on the same neutral
+/// backdrop as `DuoWideCaptureContainer`. `capture.tentContainer` lets the UI test wait for
+/// its final size before the screenshot.
+private struct TentCaptureContainer: View {
+    let scenario: StudioCaptureScenario
+    let studio: StudioPresentationModel
+
+    @State private var openedStation = ""
+
+    var body: some View {
+        let size = StudioCapture.duoTentContainerSize
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let stops = [
+            DuoStationSwitch.Stop(id: PlaybackFixtures.station.id, name: PlaybackFixtures.station.name),
+            DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
+        ]
+        ZStack {
+            Color(white: 0.14)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+            NavigationStack {
+                PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                              snapshot: scenario.snapshot, actions: .preview,
+                              search: .captureOffline,
+                              studio: studio, isTestStation: true,
+                              timeSource: .fixture,
+                              stationStops: stops,
+                              onOpenStation: { openedStation = $0 })
+                Text(verbatim: openedStation)
+                    .font(.system(size: 1))
+                    .accessibilityIdentifier("tent.openedStation")
+                    .accessibilityLabel(openedStation)
+                    .allowsHitTesting(false)
+            }
+            .frame(width: size.width, height: size.height)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("capture.tentContainer")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
@@ -386,6 +523,140 @@ private struct CaptureStationSplit: View {
     }
 }
 
+/// Folded phone (390×844, compact) then the unfolded Duo (640×820, regular) around one
+/// `PlayingScreen`. The size-class change is the simulator's stand-in for opening the
+/// phone. The scroll anchor, station and playback token live in scene storage above
+/// the player's placement switch. The load counter increments once, when this capture
+/// finishes loading the station, and the unfold button does not touch it.
+private struct DuoContinuityCapture: View {
+    let studio: StudioPresentationModel
+    @ObservedObject var loads: DisplayContinuityLoadCounter
+    @State private var unfolded = false
+    @SceneStorage("aerodj.player.scrollAnchor") private var storedScrollAnchor = ""
+    @SceneStorage("aerodj.continuity.station") private var continuityStation = ""
+    @SceneStorage("aerodj.continuity.playback") private var continuityPlayback = ""
+    @ObservedObject private var calls = PlaybackCallLog.shared
+
+    private var containerSize: CGSize {
+        unfolded ? StudioCapture.duoWideContainerSize : CGSize(width: 390, height: 844)
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack {
+            Color(white: 0.14).ignoresSafeArea().accessibilityHidden(true)
+            NavigationStack {
+                PlayingScreen(station: PlaybackFixtures.station, access: .authorized,
+                              snapshot: duoSnapshot, actions: .counting, search: .counting,
+                              studio: studio, isTestStation: true, timeSource: .fixture,
+                              stationStops: [
+                                  DuoStationSwitch.Stop(id: PlaybackFixtures.station.id,
+                                                        name: PlaybackFixtures.station.name),
+                                  DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
+                              ],
+                              onOpenStation: { _ in })
+            }
+            .environment(\.horizontalSizeClass, unfolded ? .regular : .compact)
+            .frame(width: containerSize.width, height: containerSize.height)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("continuity.container")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .overlay(alignment: .topTrailing) { chrome }
+    }
+
+    /// The fixture song, seekable, so the scrubber is the same control the Duo tests use.
+    private var duoSnapshot: PlaybackSnapshot {
+        var playing = PlaybackFixtures.playing
+        playing.canSeek = true
+        return playing
+    }
+
+    private var chrome: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            HStack(spacing: 8) {
+                Button {
+                    storedScrollAnchor = DisplayContinuity.rowAnchor(4)
+                } label: {
+                    Text("Row 4")
+                        .font(.caption.weight(.semibold))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(.horizontal, 8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("continuity.scrollToRow")
+                Button {
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { unfolded.toggle() }
+                } label: {
+                    Text(unfolded ? "Fold" : "Unfold")
+                        .font(.caption.weight(.semibold))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(.horizontal, 8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("continuity.unfold")
+            }
+            readout("continuity.anchor", storedScrollAnchor.isEmpty ? "none" : storedScrollAnchor)
+            readout("continuity.station", continuityStation)
+            readout("continuity.playback", continuityPlayback)
+            readout("continuity.loads", "\(loads.count)")
+            readout("continuity.sizeClass", unfolded ? "regular" : "compact")
+            readout("continuity.pose", unfolded ? "unfolded" : "folded")
+            Text(verbatim: calls.label)
+                .font(.caption.monospacedDigit())
+                .padding(.horizontal, 8)
+                .frame(minHeight: 44)
+                .background(.regularMaterial, in: Capsule())
+                .accessibilityIdentifier("playback.calls")
+        }
+        .padding(.top, 8)
+        .padding(.trailing, 8)
+    }
+
+    private func readout(_ identifier: String, _ value: String) -> some View {
+        Text(value)
+            .font(.system(size: 1))
+            .accessibilityIdentifier(identifier)
+            .accessibilityLabel(value)
+            .allowsHitTesting(false)
+    }
+}
+
+/// Counts real loads for the continuity capture. A size-class change does not call `noteLoad`.
+@MainActor
+final class DisplayContinuityLoadCounter: ObservableObject {
+    @Published private(set) var count = 0
+
+    func noteLoad() {
+        count = DisplayContinuity.Session(
+            selectedStationID: nil, scrollAnchor: nil, playbackToken: "", loadCount: count
+        ).loaded().loadCount
+    }
+}
+
+/// UI tests pass `-AeroDJResetContinuity YES` so a scroll anchor stored by an earlier
+/// test cannot move the next screenshot. The first appear of each view clears; a later
+/// appear in the same launch (the unfold) does not.
+@MainActor
+enum DisplayContinuityLaunch {
+    static let resetKey = "AeroDJResetContinuity"
+    static let probeKey = "AeroDJContinuityProbe"
+    private static var resetViews: Set<String> = []
+
+    static func shouldReset(_ view: String) -> Bool {
+        guard UserDefaults.standard.bool(forKey: resetKey) else { return false }
+        if resetViews.contains(view) { return false }
+        resetViews.insert(view)
+        return true
+    }
+}
+
 /// Narrow (compact) then wide (regular) around one `PlayingScreen`, so `@State` survives.
 /// The fold control lives on `ProbeChrome`, not in this column.
 private struct LayoutResizeProbe: View {
@@ -398,13 +669,21 @@ private struct LayoutResizeProbe: View {
         return CGFloat(wide ? minimum + 64 : minimum - 64)
     }
 
+    /// Narrow stays 680 pt (the centred column). Wide is shorter than the landscape rail
+    /// (`FoldedColumnLayout.landscapeDuoMinHeight`, #542), so the widened probe still opens
+    /// the two-zone Studio this probe exists to check. At 780 × 680 it would now be the rail,
+    /// whose trailing controls sit past a 390 pt iPhone window in this top-leading frame.
+    private var columnHeight: CGFloat {
+        CGFloat(wide ? FoldedColumnLayout.landscapeDuoMinHeight - 80 : 680)
+    }
+
     var body: some View {
         PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
                       snapshot: scenario.snapshot, actions: .counting, search: .counting,
                       studio: studio, isTestStation: true,
                       timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
             .environment(\.horizontalSizeClass, wide ? .regular : .compact)
-            .frame(width: columnWidth, height: 680, alignment: .topLeading)
+            .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
@@ -445,19 +724,176 @@ extension MusicSearch {
     static let captureOffline = MusicSearch(search: { _ in throw CancellationError() }, play: { _, _ in })
 }
 
+/// The playing song's rating and the fixture station scope. UI tests read it; it is not a control.
+private struct RatingCaptureReadout: View {
+    let controller: SongRatingController
+    let songID: String
+
+    var body: some View {
+        let rating = SongRatingPresentation.accessibilityLabel(controller.rating(for: songID))
+        let scope = controller.fixtureScopeKey ?? ""
+        Text(rating)
+            .font(.system(size: 1))
+            .frame(width: 1, height: 1)
+            .accessibilityIdentifier("capture.ratingState")
+            .accessibilityLabel("\(rating)|\(scope)")
+            .allowsHitTesting(false)
+    }
+}
+
 /// The segment a capture run starts on, read by `PlayingScreen` once.
 @MainActor
 enum StudioCaptureSegment {
     static var initial: WorkspaceSegment?
 }
 
-/// The `onAir` capture's frozen ON AIR timer. `FoldedOnAirPill` shows `frozenElapsed` when it
-/// is set; only the `onAir` scenario sets it, so every other run (and Release, which does not
-/// compile this) counts from when the pill appeared.
+/// The `onAir`, `duoWideSpeaking`, and `duoWideOnAir` captures' frozen ON AIR timer.
+/// `FoldedOnAirPill` shows `frozenElapsed` when it is set; only those scenarios set it, so
+/// every other run (and Release, which does not compile this) counts from when the pill appeared.
 @MainActor
 enum StudioCaptureOnAir {
     /// What `closed-ax5-onair` shows: "0:12". Same width as a live "0:0x".
     static let capturedElapsed: TimeInterval = 12
     static var frozenElapsed: TimeInterval?
+}
+
+private enum SplitCaptureScreen: String, CaseIterable, Identifiable {
+    case nowPlaying, library, stations, settings
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .nowPlaying: "Now Playing"
+        case .library: "Library"
+        case .stations: "Stations"
+        case .settings: "Settings"
+        }
+    }
+}
+
+/// One split width, then Now Playing, Library, Stations and Settings inside it.
+/// The safe area is the sample's leading and trailing insets. The host pads by
+/// those, because this container is the window and not already inside a safe area.
+private struct SplitViewCapture: View {
+    let studio: StudioPresentationModel
+    @State private var screen: SplitCaptureScreen = .nowPlaying
+
+    private var sample: SplitViewLayout.Sample? {
+        let name = UserDefaults.standard.string(forKey: "AeroDJSplitExample") ?? ""
+        return SplitViewLayout.sample(named: name)
+    }
+
+    var body: some View {
+        if let sample {
+            let measure = SplitMeasure(containerWidth: sample.width, containerHeight: sample.height,
+                                       leading: sample.leading, trailing: sample.trailing)
+            ZStack {
+                Color(white: 0.14).ignoresSafeArea().accessibilityHidden(true)
+                splitScreen
+                    .environment(\.horizontalSizeClass, sample.hasRegularWidth ? .regular : .compact)
+                    .environment(\.splitMeasure, measure)
+                    .frame(width: CGFloat(sample.width), height: CGFloat(sample.height))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                            .allowsHitTesting(false)
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("split.container")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .overlay(alignment: .top) { switcher }
+        } else {
+            Text("Studio capture failed: unknown split example")
+                .accessibilityIdentifier("capture.failed")
+        }
+    }
+
+    @ViewBuilder
+    private var splitScreen: some View {
+        switch screen {
+        case .nowPlaying:
+            SplitBarHost(preferred: .trailing) { insets in
+                NavigationStack {
+                    nowPlaying
+                }
+                .environment(\.splitBarEdge, insets?.barEdge)
+            }
+        case .library:
+            SplitLibraryPane()
+        case .stations:
+            StationSplitRoot(stations: Station.defaultStations, onOpenSettings: {}) { _ in
+                Text("Choose a station")
+                    .accessibilityIdentifier("split.placeholder")
+            }
+        case .settings:
+            SettingsView(isPresented: .constant(true), isTestStation: true)
+        }
+    }
+
+    private var nowPlaying: some View {
+        var playing = PlaybackFixtures.playing
+        playing.canSeek = true
+        return PlayingScreen(station: PlaybackFixtures.station, access: .authorized,
+                             snapshot: playing, actions: .preview, search: .captureOffline,
+                             studio: studio, isTestStation: true, timeSource: .fixture)
+    }
+
+    private var switcher: some View {
+        HStack(spacing: 8) {
+            ForEach(SplitCaptureScreen.allCases) { item in
+                Button {
+                    screen = item
+                } label: {
+                    Text(item.title)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.plain)
+                // The 44 pt floor has to be on the button. On the iOS 26.5 plain
+                // style, a minHeight on the label alone left the control's
+                // accessibility frame at the caption height (42 pt).
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+                .accessibilityIdentifier("split.show.\(item.rawValue)")
+            }
+        }
+        .padding(6)
+        .background(.regularMaterial, in: Capsule())
+        .padding(.top, 8)
+    }
+}
+
+/// The listener's library: the fixture songs, with the bar button on the outer edge.
+private struct SplitLibraryPane: View {
+    var body: some View {
+        SplitBarHost(preferred: .trailing) { insets in
+            NavigationStack {
+                List {
+                    ForEach(Array(PlaybackFixtures.songs.enumerated()), id: \.element.id) { index, song in
+                        Button {} label: {
+                            Text("\(song.title) · \(song.artistName)")
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        .accessibilityIdentifier("library.row.\(index)")
+                    }
+                }
+                // A List keeps a 16 pt row margin and lays that out from its own
+                // bounds, ignoring the host's safeAreaInset. On the 340 pt split
+                // the row then starts 16 pt in, 12 pt inside the 28 pt leading.
+                // This pane is the capture only. The phone lists are not this view.
+                .padding(.leading, CGFloat(insets?.padding.leading ?? 0))
+                .padding(.trailing, CGFloat(insets?.padding.trailing ?? 0))
+                .navigationTitle("Library")
+                .toolbar {
+                    ToolbarItem(placement: SplitToolbar.placement(
+                        preferred: .trailing, edge: insets?.barEdge,
+                        leading: .topBarLeading, trailing: .topBarTrailing)) {
+                        Button("Edit") {}
+                            .accessibilityIdentifier("library.edit")
+                    }
+                }
+            }
+        }
+    }
 }
 #endif
