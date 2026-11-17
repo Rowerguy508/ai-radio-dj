@@ -14,6 +14,22 @@ name: TestFlight upload
 #   PROFILE_WIDGETS                          App Store profile for com.aerodj.app.widgets, base64
 #
 # The Apple Developer Team ID is not a secret: vars.APPLE_TEAM_ID, else S85APB73YV.
+#
+# Voice (build 49): tester_voice defaults to false. A dispatch that leaves it
+# false is refused in the voice-gate job, before the testflight environment,
+# certificate import, archive, and upload, unless confirm_device_voice=true.
+# Run the workflow from this branch (the file GitHub loads is the one that gates):
+#   Tester cloud voice, the usual TestFlight cut:
+#     gh workflow run testflight.yml --ref integration/device-duo -f tester_voice=true
+#   Device speech on purpose, or an owner A/B / P0 build that must not compile
+#   AERODJ_TESTER_VOICE (do not also set tester_voice; that selects App Attest):
+#     gh workflow run testflight.yml --ref integration/device-duo -f confirm_device_voice=true
+#     gh workflow run testflight.yml --ref integration/device-duo -f owner_ab=true -f confirm_device_voice=true
+#     gh workflow run testflight.yml --ref integration/device-duo -f p0_diag=true -f confirm_device_voice=true
+# --ref selects this workflow file. The ref input (default integration/device-duo)
+# is the commit that gets archived. Pass -f ref=<branch-or-sha> to archive another
+# allowed commit. The default of tester_voice stays false so an owner A/B or P0
+# dispatch cannot pick up the tester entitlements by omission.
 on:
   workflow_dispatch:
     inputs:
@@ -42,7 +58,16 @@ on:
         # Only these builds sign with the tester entitlements file (App Attest), so only they
         # need App Attest enabled on the App ID and a regenerated PROFILE_APP (owner, Apple
         # portal). Other builds keep the shared AeroDJ.entitlements and the current profile.
-        description: Tester cloud voice build (AERODJ_TESTER_VOICE, App Attest). Not for App Store.
+        description: Tester cloud voice (AERODJ_TESTER_VOICE, App Attest). Not for App Store. Left false, the run is refused unless confirm_device_voice is true.
+        required: false
+        default: false
+        type: boolean
+      confirm_device_voice:
+        # Build 49 shipped on-device speech because a dispatch omitted tester_voice and the
+        # default is false. This is the only opt-in for that binary. It does not compile
+        # AERODJ_TESTER_VOICE and it does not select the App Attest entitlements. Owner A/B
+        # and P0 builds that must stay off the tester voice set this and leave tester_voice false.
+        description: Opt in to upload with tester_voice off (on-device speech, or owner A/B / P0 without tester voice).
         required: false
         default: false
         type: boolean
@@ -50,13 +75,36 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: testflight-upload
-  cancel-in-progress: false
+env:
+  # Strict: only a workflow_dispatch run with the input exactly true. voice-gate
+  # and the archive both read these. confirm_device_voice adds no Swift condition.
+  TESTER_VOICE: ${{ (github.event_name == 'workflow_dispatch' && inputs.tester_voice == true) && 'true' || 'false' }}
+  CONFIRM_DEVICE_VOICE: ${{ (github.event_name == 'workflow_dispatch' && inputs.confirm_device_voice == true) && 'true' || 'false' }}
 
 jobs:
+  voice-gate:
+    name: Refuse device-speech upload unless explicit
+    # Cheap and immediate: no testflight environment, so a forgotten flag never
+    # asks for signing secrets, and no concurrency group, so it does not wait
+    # behind an archive that is already running. The upload job needs this.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Refuse tester_voice off unless confirm_device_voice
+        run: bash ios/scripts/check-testflight-voice-dispatch.sh
+
   upload:
     name: Archive and upload to TestFlight
+    needs: voice-gate
+    # One upload at a time. A refused dispatch does not join this group, and a
+    # new dispatch does not cancel an archive that is already running.
+    concurrency:
+      group: testflight-upload
+      cancel-in-progress: false
     # xcode-27 image (actions/runner-images#14404): Xcode 27.0, 27.1 and 27.2 RC
     # with iphoneos27.2. macos-26 tops out at iphoneos26.5, which letterboxes on
     # the Duo (TestFlight run 40437725131).
@@ -73,8 +121,7 @@ jobs:
       P0_DIAG: ${{ inputs.p0_diag && 'true' || 'false' }}
       # Strict: only a workflow_dispatch run with owner_ab exactly true; anything else is 'false'.
       OWNER_AB: ${{ (github.event_name == 'workflow_dispatch' && inputs.owner_ab == true) && 'true' || 'false' }}
-      # Same strict rule for the App Attest tester voice (#378).
-      TESTER_VOICE: ${{ (github.event_name == 'workflow_dispatch' && inputs.tester_voice == true) && 'true' || 'false' }}
+      # TESTER_VOICE and CONFIRM_DEVICE_VOICE are workflow env (same strict rule).
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID || 'S85APB73YV' }}
       BUNDLE_APP: com.aerodj.app
       BUNDLE_SHARE: com.aerodj.app.share
@@ -407,6 +454,8 @@ jobs:
           EXPECT=absent
           case " $CONDS " in *" AERODJ_OWNER_AB "*) EXPECT=present
             echo "::warning::Owner A/B build (AERODJ_OWNER_AB). Internal TestFlight only, not for App Store." ;; esac
+          # voice-gate already refused tester_voice off unless confirm_device_voice=true.
+          # This warning is the positive case only.
           case " $CONDS " in *" AERODJ_TESTER_VOICE "*)
             echo "::warning::Tester voice build (AERODJ_TESTER_VOICE, App Attest). For TestFlight testers, not for App Store." ;; esac
           if [ -n "$CONDS" ]; then EXTRA+=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited)$CONDS"); fi
@@ -599,6 +648,11 @@ jobs:
               echo "- **DIAG, internal only** (AERODJ_P0_DIAG, testFlightInternalTestingOnly). Not for App Store."
             else
               echo "- P0 diagnostic: \`false\`"
+            fi
+            if [ "$TESTER_VOICE" = "true" ]; then
+              echo "- Voice: tester cloud voice (\`tester_voice=true\`)."
+            else
+              echo "- Voice: tester cloud voice off (\`confirm_device_voice=true\`). On-device speech unless this is an owner A/B build."
             fi
             echo "- Resolved SHA: \`$RESOLVED_SHA\`"
             echo "- Uploaded via altool; the build appears in TestFlight after processing."
