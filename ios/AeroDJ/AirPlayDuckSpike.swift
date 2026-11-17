@@ -184,7 +184,7 @@ final class AirPlayDuckSpikeRunner: NSObject, ObservableObject, AVAudioPlayerDel
         }
     }
 
-    private static func status(_ status: MusicPlayer.PlaybackStatus) -> String {
+    private static func status(_ status: MusicKit.MusicPlayer.PlaybackStatus) -> String {
         switch status {
         case .playing: "playing"
         case .paused: "paused"
