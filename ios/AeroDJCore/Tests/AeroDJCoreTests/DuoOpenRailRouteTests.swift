@@ -24,6 +24,25 @@ final class DuoOpenRailRouteTests: XCTestCase {
         XCTAssertEqual(FoldedColumnLayout.routingHeight(readerHeight: 400, safeAreaTop: -3, safeAreaBottom: 20), 420)
     }
 
+    /// CI run 44014298982 (iPhone 16e): the Studio resize probe's widened column (Studio-height,
+    /// wider than the 390 pt window) is centred off screen, at about (−235, −96). Its insets are
+    /// the hidden parts under the bars, so it keeps the reader height and the two-zone Studio.
+    func testAContainerCentredOffScreenKeepsItsReaderHeight() {
+        let probeHeight = FoldedColumnLayout.landscapeDuoMinHeight - 80
+        XCTAssertEqual(FoldedColumnLayout.routingHeight(readerHeight: probeHeight, safeAreaTop: 197, safeAreaBottom: 0,
+                                                        readerMinX: -235, readerMinY: -96), probeHeight)
+        XCTAssertEqual(FoldedColumnLayout.routingHeight(readerHeight: probeHeight, safeAreaTop: 197, safeAreaBottom: 0,
+                                                        readerMinX: 10, readerMinY: -96), probeHeight)
+        XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: 780, containerHeight: probeHeight,
+                                                accessibilityTextSize: false), .studio)
+        // On screen (the open Duo's window, or the 820 × 640 capture container centred in the iPad
+        // window at x = 0): the insets count.
+        XCTAssertEqual(FoldedColumnLayout.routingHeight(readerHeight: 590, safeAreaTop: 50, safeAreaBottom: 0,
+                                                        readerMinX: 0, readerMinY: 320), 640)
+        XCTAssertEqual(FoldedColumnLayout.routingHeight(readerHeight: 590, safeAreaTop: 50, safeAreaBottom: 0,
+                                                        readerMinX: -0.5, readerMinY: 50), 640)
+    }
+
     /// Phones keep their layouts with the routed height: iPhone landscape is at most 430 pt
     /// tall as a window, and phone portrait is under `wideMinWidth`.
     func testPhonesKeepTheirLayoutsWithTheRoutedHeight() {

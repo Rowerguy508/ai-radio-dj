@@ -154,8 +154,15 @@ public enum FoldedColumnLayout {
     /// landscape window measured about 566 pt under its navigation bar, below
     /// `landscapeDuoMinHeight`, so it got the centred column (transport off the bottom) instead
     /// of the rail. The navigation bar is transparent over the player, so the window is the container.
-    public static func routingHeight(readerHeight: Double, safeAreaTop: Double, safeAreaBottom: Double) -> Double {
-        readerHeight + max(0, safeAreaTop) + max(0, safeAreaBottom)
+    ///
+    /// Only a reader that starts on screen (global origin not left of or above the window) counts
+    /// its insets. A fixed-size container larger than its window (the Studio resize probe's
+    /// 780 pt column on a 390 pt iPhone) is centred off screen, so its insets are the parts hidden
+    /// under the status and navigation bars, not room it can use: it keeps the reader height.
+    public static func routingHeight(readerHeight: Double, safeAreaTop: Double, safeAreaBottom: Double,
+                                     readerMinX: Double = 0, readerMinY: Double = 0) -> Double {
+        guard readerMinX >= -1, readerMinY >= -1 else { return readerHeight }
+        return readerHeight + max(0, safeAreaTop) + max(0, safeAreaBottom)
     }
 
     /// Horizontal Duo metrics. Phone widths do not call this.
