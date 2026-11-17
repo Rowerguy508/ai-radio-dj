@@ -228,28 +228,48 @@ const SIGN_LINE = /^SIGN ([0-9a-fA-F]{8}|[0-9a-fA-F]{40}) -([A-Za-z][A-Za-z0-9]*
 const DEVICE_NOT_TESTED = /^Device: NOT TESTED\b/
 const DEVICE_TESTED = /^Device: TESTED\b/
 
-function isHtmlOrCursorFooter(line) {
+const CURSOR_FOOTER = /Open in Web|Open in Cursor|cursor_cta|cursor\.com\/(?:agents|background-agent)/i
+
+function isCursorFooterLine(line) {
   const trimmed = line.trim()
   if (!trimmed) return false
-  if (trimmed.startsWith('<')) return true
-  return /cursor\.com\/(?:agents|background-agent)|Open in Web|Open in Cursor|cursor_cta/i.test(trimmed)
+  return trimmed.startsWith('<') || CURSOR_FOOTER.test(trimmed)
+}
+
+// Drop only a short trailing "Open in Web" HTML block. Do not walk the rest of the body.
+function stripTrailingCursorFooter(lines) {
+  let end = lines.length
+  while (end > 0 && lines[end - 1].trim() === '') end--
+  const bound = Math.max(0, end - 20)
+  let sawCursorFooter = false
+  let i = end - 1
+  while (i >= bound) {
+    const trimmed = lines[i].trim()
+    if (trimmed === '') {
+      i--
+      continue
+    }
+    if (!isCursorFooterLine(lines[i])) break
+    if (CURSOR_FOOTER.test(trimmed)) sawCursorFooter = true
+    i--
+  }
+  if (!sawCursorFooter) return lines.slice(0, end)
+  return lines.slice(0, i + 1)
 }
 
 function signatureOnLastLine(text) {
   if (!text) return null
-  const lines = String(text).split(/\r?\n/)
+  const lines = stripTrailingCursorFooter(String(text).split(/\r?\n/))
   for (let i = lines.length - 1; i >= 0; i--) {
     if (lines[i].trim() === '') continue
-    if (isHtmlOrCursorFooter(lines[i])) continue
     const match = lines[i].match(SIGNATURE_AT_END)
     return match ? match[1] : null
   }
   return null
 }
 
-// The author is the last real line, after blank lines and the Cursor HTML
-// footer are skipped. A flag such as `-Werror` earlier in the body does not
-// count. If that last line is not `-Name`, fail closed.
+// Author is only the last real content line, after a trailing Cursor footer
+// is removed. Anything else, including an earlier `-Name` or `-Werror`, fails closed.
 export function authorFromBody(body) {
   return signatureOnLastLine(body)
 }
@@ -626,6 +646,16 @@ jobs:
   assert(
     authorFromBody('Build with -Werror\n\nDevice: NOT TESTED\n\nThanks all') === null,
     'a -Werror flag with no signature line must fail closed',
+    failures,
+  )
+  assert(
+    authorFromBody('Gate the merge.\n\nSigns needed:\n- Fry\n- Echo\n\nDevice: NOT TESTED') === null,
+    'signer bullets with no signature line must fail closed',
+    failures,
+  )
+  assert(
+    authorFromBody('-Nova\n\nDevice: NOT TESTED') === null,
+    'a signature followed by ordinary content must fail closed',
     failures,
   )
   assert(
