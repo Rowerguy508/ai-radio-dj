@@ -7,7 +7,8 @@
 # other event, or an empty/missing/other input, never passes them. AERODJ_TESTER_VOICE (#378)
 # is the App Attest tester voice for TestFlight testers (#436: not only the internal group;
 # still not for App Store); an owner A/B build keeps the owner path, which takes precedence in
-# code even if both are set.
+# code even if both are set. CONFIRM_DEVICE_VOICE is not read here: it only
+# acknowledges a device-speech upload and must not add a compilation condition.
 set -euo pipefail
 conds=""
 if [ "${P0_DIAG:-}" = "true" ]; then conds+=" AERODJ_P0_DIAG"; fi
