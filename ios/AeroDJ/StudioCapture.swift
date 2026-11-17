@@ -118,6 +118,14 @@ enum StudioCaptureScenario: String {
     /// an 820 × 640 pt container. The hinge is forced to partially open at 100° and fed to the
     /// real `DuoPoseDecision`; the clock and the on-air timer are frozen. Needs an iPad window.
     case duoTent
+    /// Build 51 (-Atlas): the open Duo held sideways, an 820 × 640 pt regular-width container with
+    /// its own navigation bar, a playing song and a break ready (the DJ-break pill). The rail, and
+    /// after Collapse the pinned column, must keep Play/Skip and the scrubber inside it.
+    case duoLandscape
+    /// Build 51 (-Atlas): the same 820 × 640 pt container as a two-column split with the Stations
+    /// sidebar open beside the player. The detail is regular width and ~500 pt wide: it keeps
+    /// the rail (`FoldedColumnLayout.usesRailColumn`).
+    case duoSidebar
 
     var access: PlaybackAccess {
         switch self {
@@ -134,7 +142,7 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.stopped
         case .error:
             return PlaybackFixtures.recoverableError
-        case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir:
+        case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir, .duoLandscape, .duoSidebar:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
             // which draws the scrubber as a non-interactive element.
             var playing = PlaybackFixtures.playing
@@ -205,23 +213,26 @@ struct StudioCaptureView: View {
                 StationTapDuoContainer(dependencies: dependencies)
             } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideSpeaking || scenario == .duoWideOnAir {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario == .duoLandscape || scenario == .duoSidebar {
+                DuoOpenCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .splitView {
                 SplitViewCapture(studio: dependencies.studio)
             } else if scenario == .duoContinuity {
                 DuoContinuityCapture(studio: dependencies.studio, loads: continuityLoads)
             } else if scenario == .duoArrangement {
                 ArrangementCaptureContainer(studio: dependencies.studio)
+            } else if showsProbe {
+                // The probe owns its NavigationStack inside its fixed column (#552), like a
+                // window or a split-view detail column. No window-wide stack above it.
+                LayoutResizeProbe(wide: $probeWide, scenario: scenario, studio: dependencies.studio)
+                    .modifier(SongRatingToastHost())
             } else {
                 NavigationStack {
-                    if showsProbe {
-                        LayoutResizeProbe(wide: $probeWide, scenario: scenario, studio: dependencies.studio)
-                    } else {
-                        PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
-                                      snapshot: scenario.snapshot, actions: .preview,
-                                      search: scenario == .empty ? .counting : .captureOffline,
-                                      studio: dependencies.studio, isTestStation: true,
-                                      timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
-                    }
+                    PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                                  snapshot: scenario.snapshot, actions: .preview,
+                                  search: scenario == .empty ? .counting : .captureOffline,
+                                  studio: dependencies.studio, isTestStation: true,
+                                  timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
                 }
                 .modifier(SongRatingToastHost())
             }
@@ -286,7 +297,7 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady, .duoWideReady, .duoArrangement:
+            case .breakReady, .duoWideReady, .duoArrangement, .duoLandscape, .duoSidebar:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .duoWideSpeaking, .onAir, .duoWideOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
@@ -416,6 +427,62 @@ private struct StationTapDuoContainer: View {
                 .accessibilityIdentifier("capture.duoContainer")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+/// Build 51 (-Atlas): the open Duo's landscape window, 820 × 640 pt, regular width, on the same
+/// neutral backdrop as `DuoWideCaptureContainer`. `duoLandscape` is the player alone under its
+/// navigation bar; `duoSidebar` is a balanced two-column split with a stand-in Stations list
+/// (`split.sidebar`) beside the player. `capture.duoOpenContainer` lets the UI test wait for the
+/// final size before it reads frames or takes the screenshot.
+private struct DuoOpenCaptureContainer: View {
+    let scenario: StudioCaptureScenario
+    let studio: StudioPresentationModel
+
+    @State private var columns = NavigationSplitViewVisibility.all
+
+    static let size = StudioCapture.duoTentContainerSize
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack {
+            Color(white: 0.14)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+            Group {
+                if scenario == .duoSidebar {
+                    NavigationSplitView(columnVisibility: $columns) {
+                        List {
+                            Text(PlaybackFixtures.station.name)
+                            Text("Late Night")
+                        }
+                        .navigationTitle("Stations")
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("split.sidebar")
+                    } detail: {
+                        NavigationStack { player }
+                    }
+                    .navigationSplitViewStyle(.balanced)
+                } else {
+                    NavigationStack { player }
+                }
+            }
+            .environment(\.horizontalSizeClass, .regular)
+            .frame(width: Self.size.width, height: Self.size.height)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("capture.duoOpenContainer")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var player: some View {
+        PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                      snapshot: scenario.snapshot, actions: .preview,
+                      search: .captureOffline,
+                      studio: studio, isTestStation: true,
+                      timeSource: .fixture)
     }
 }
 
@@ -752,6 +819,12 @@ enum DisplayContinuityLaunch {
 
 /// Narrow (compact) then wide (regular) around one `PlayingScreen`, so `@State` survives.
 /// The fold control lives on `ProbeChrome`, not in this column.
+///
+/// The column is a window of its own (#552): its `NavigationStack` and bar sit inside the fixed
+/// frame, as in `DuoOpenCaptureContainer`, so the real layout gate
+/// (`FoldedColumnLayout.routingHeight`) counts only this column's bar. Under a window-wide stack
+/// the gate also counted the window's bar and home-indicator insets on iPad (CI run
+/// 44024149188: 652 × 680 routed as 652 × 818), and the widened column became the rail.
 private struct LayoutResizeProbe: View {
     @Binding var wide: Bool
     let scenario: StudioCaptureScenario
@@ -771,13 +844,22 @@ private struct LayoutResizeProbe: View {
     }
 
     var body: some View {
-        PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
-                      snapshot: scenario.snapshot, actions: .counting, search: .counting,
-                      studio: studio, isTestStation: true,
-                      timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
-            .environment(\.horizontalSizeClass, wide ? .regular : .compact)
-            .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // The column hangs off a window-sized base, so a column wider than an iPhone window
+        // cannot widen the capture root and push `ProbeChrome` (top-trailing) off screen
+        // (CI run 44073668790: probe.widen landed at x 469, past the iPhone window).
+        Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topLeading) {
+                NavigationStack {
+                    // Set on the player, inside the stack, so the stack's own traits cannot override it.
+                    PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                                  snapshot: scenario.snapshot, actions: .counting, search: .counting,
+                                  studio: studio, isTestStation: true,
+                                  timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
+                        .environment(\.horizontalSizeClass, wide ? .regular : .compact)
+                }
+                .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
+            }
     }
 }
 
