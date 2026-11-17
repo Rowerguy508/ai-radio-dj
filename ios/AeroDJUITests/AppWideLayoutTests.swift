@@ -105,6 +105,26 @@ final class AppWideLayoutTests: XCTestCase {
         save(app, "duo-wide-library")
     }
 
+    /// Build 51: the open Duo turned sideways keeps the arc carousel (phone path) under the
+    /// real Settings / Shared Items / + toolbar. Saves `duo-open-stations-carousel` for review
+    /// of the cards against the trailing controls and the centred card's face (no diagonal line).
+    @MainActor
+    func testDuoOpenStationsCarouselBesideTheToolbar() throws {
+        let (app, box) = try launch("duoOpenStationsCarousel", size: CGSize(width: 820, height: 640))
+        XCTAssertEqual(decision(app), "phone 1 0")
+        let any = app.descendants(matching: .any)
+        let carousel = any["stations.carousel"]
+        XCTAssertTrue(carousel.waitForExistence(timeout: 10), "carousel missing\n\(app.debugDescription)")
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(carousel.frame), "carousel \(carousel.frame) left \(box)")
+        let settings = app.buttons["stations.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10), app.debugDescription)
+        assertTarget(settings, in: box, "Settings")
+        XCTAssertGreaterThanOrEqual(settings.frame.width, 44, "Settings \(settings.frame)")
+        let cards = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'stations.card.'"))
+        XCTAssertGreaterThanOrEqual(cards.count, 1, app.debugDescription)
+        save(app, "duo-open-stations-carousel")
+    }
+
     @MainActor
     func testDuoWideStationsIsAGridOfTheCarouselCards() throws {
         let (app, box) = try launch("duoWideStations", size: Self.duo)

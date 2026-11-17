@@ -16,6 +16,10 @@ enum AppWideCaptureScenario: String, CaseIterable {
     case splitNarrowSettings
     /// Onboarding: `LocalAreaPrompt` at Duo width. Nothing is tapped; no location prompt.
     case duoWideLocalArea
+    /// Build 51: the open Duo turned sideways (820 x 640, compact). `AppWideLayout` keeps the
+    /// phone path there, so Stations is the arc carousel, drawn by the real `StationSplitRoot`
+    /// with its Settings, Shared Items and + toolbar. Shot `duo-open-stations-carousel`.
+    case duoOpenStationsCarousel
 
     /// The scenario named in `-AeroDJStudioCaptureScenario`, if it is one of these.
     static func requested(defaults: UserDefaults = .standard) -> AppWideCaptureScenario? {
@@ -25,7 +29,7 @@ enum AppWideCaptureScenario: String, CaseIterable {
     var screen: AppWideLayout.Screen {
         switch self {
         case .duoWideLibrary, .splitNarrowLibrary: .library
-        case .duoWideStations, .splitNarrowStations: .stations
+        case .duoWideStations, .splitNarrowStations, .duoOpenStationsCarousel: .stations
         case .duoWideSettings, .splitNarrowSettings: .settings
         case .duoWideLocalArea: .onboarding
         }
@@ -35,6 +39,7 @@ enum AppWideCaptureScenario: String, CaseIterable {
         switch self {
         case .duoWideLibrary, .duoWideStations, .duoWideSettings, .duoWideLocalArea: AppWideLayout.duoWide
         case .splitNarrowLibrary, .splitNarrowStations, .splitNarrowSettings: AppWideLayout.splitNarrow
+        case .duoOpenStationsCarousel: AppWideLayout.Input(hasRegularWidth: false, containerWidth: 820, containerHeight: 640)
         }
     }
 
@@ -116,10 +121,21 @@ struct AppWideCaptureView: View {
                     .appWideScreen(.library)
             }
         case .stations:
-            // The sidebar column as the split root draws it in compact width, without the
-            // split's stored station id, so no restore can push a player over it.
-            AppWideStationsCapture()
+            if scenario == .duoOpenStationsCarousel {
+                // The real split root and toolbar, so the shot shows the cards against the
+                // trailing Settings / Shared Items / + controls. Nothing is selected or played.
+                StationSplitRoot(stations: Station.defaultStations, showsSharedInbox: true,
+                                 onAddStation: {}, onOpenSettings: {}) { _ in
+                    Text("Choose a station")
+                        .accessibilityIdentifier("split.placeholder")
+                }
                 .appWideScreen(.stations)
+            } else {
+                // The sidebar column as the split root draws it in compact width, without the
+                // split's stored station id, so no restore can push a player over it.
+                AppWideStationsCapture()
+                    .appWideScreen(.stations)
+            }
         case .settings:
             SettingsView(isPresented: .constant(true), isTestStation: true)
                 .appWideScreen(.settings, formMargins: true)
