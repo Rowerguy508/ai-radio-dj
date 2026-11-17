@@ -771,6 +771,117 @@ final class LockScreenDoubleSkipTests: XCTestCase {
         XCTAssertTrue(source.contains("skipCoordinator.noteSelected(index: next)"))
         XCTAssertFalse(source.contains("logPlayback(\"skipLoadCut index="), "the old unstructured line is gone")
     }
+
+    // MARK: - #444 at cafea9d4: MusicKit's own Next, twice, while a break is in flight
+
+    /// The system Next (queue cleared) arrives again while the first skip is still in
+    /// `prepareToPlay`, dropping the prepared break. One stored follow-up: two songs on,
+    /// still playing, and that break never airs.
+    func testMusicKitClearDetectedTwiceWhileDroppingAPreparedBreakStaysPlaying() async {
+        let show = await Show.preparedBreak()
+        XCTAssertTrue(show.breakIsReady)
+        await show.musicKitSkipsWhileLoading(first: .clear, extra: 1)
+        await show.assertBreakNotAiring(advancedTo: 2)
+        XCTAssertEqual(show.reloads, 0, "the second clear is a follow-up Next, not a reload")
+        XCTAssertEqual(show.surfaces, 0)
+        XCTAssertFalse(show.pausedByNoProgress)
+        XCTAssertFalse(show.everPaused)
+        let dropped = await show.preparer?.testResult(afterTrack: 0)
+        XCTAssertEqual(dropped, .skipped(.notNaturalBoundary))
+        let aired = await show.session?.naturalBoundary(afterTrack: 0)
+        XCTAssertNil(aired, "the prepared break was dropped with the skip and is not played")
+    }
+
+    /// The rewind shape of the same moment: the new song has only been seen at 0:00, so the
+    /// second rewind is not a distinct Next. It is ignored. Playback stays on the first advance
+    /// and the prepared break still does not air.
+    func testMusicKitRewindDetectedTwiceWhileDroppingAPreparedBreakDoesNotStick() async {
+        let show = await Show.preparedBreak()
+        XCTAssertTrue(show.breakIsReady)
+        await show.musicKitSkipsWhileLoading(first: .rewind, extra: 1)
+        show.assertPlaying(index: 1)
+        XCTAssertEqual(show.advances, 1, "the second rewind is ignored, not a second chain")
+        XCTAssertEqual(show.reloads, 0)
+        XCTAssertEqual(show.surfaces, 0)
+        XCTAssertFalse(show.pausedByNoProgress)
+        await show.assertPreparedBreakDropped()
+    }
+
+    /// A break is on air. Two system clears: the first skip stops the speech, the second is the
+    /// one stored follow-up. Speech stays stopped and the player is not paused.
+    func testMusicKitClearDetectedTwiceWhileABreakIsAiringStopsItAndStaysPlaying() async {
+        let show = await Show.airingBreak()
+        XCTAssertTrue(show.dj?.state.isLive == true)
+        await show.musicKitSkipsWhileLoading(first: .clear, extra: 1)
+        await show.assertBreakNotAiring(advancedTo: 2)
+        XCTAssertEqual(show.dj?.speechLevel, 0)
+        XCTAssertFalse(show.speechOverlapped)
+        XCTAssertEqual(show.surfaces, 0)
+        XCTAssertFalse(show.pausedByNoProgress)
+        let aired = await show.session?.naturalBoundary(afterTrack: 0)
+        XCTAssertNil(aired)
+    }
+
+    /// Rewind twice while that break is on air and the first skip is still loading. The second
+    /// rewind is not a second Next. Speech stops with the first skip and playback continues.
+    func testMusicKitRewindDetectedTwiceWhileABreakIsAiringDoesNotStick() async {
+        let show = await Show.airingBreak()
+        XCTAssertTrue(show.dj?.state.isLive == true)
+        await show.musicKitSkipsWhileLoading(first: .rewind, extra: 1)
+        show.assertPlaying(index: 1)
+        XCTAssertEqual(show.dj?.speechLevel, 0)
+        XCTAssertFalse(show.speechOverlapped)
+        XCTAssertEqual(show.advances, 1)
+        XCTAssertEqual(show.surfaces, 0)
+        XCTAssertFalse(show.pausedByNoProgress)
+    }
+
+    /// Three system clears while the first skip is dropping a prepared break. The third is ignored.
+    func testThreeMusicKitClearsWhileDroppingAPreparedBreakAdvanceTwice() async {
+        let show = await Show.preparedBreak()
+        await show.musicKitSkipsWhileLoading(first: .clear, extra: 2)
+        await show.assertBreakNotAiring(advancedTo: 2)
+        XCTAssertEqual(show.advances, 2, "a triple clear stores one follow-up and ignores the third")
+        XCTAssertEqual(show.reloads, 0)
+        XCTAssertEqual(show.surfaces, 0)
+        await show.assertPreparedBreakDropped()
+    }
+
+    /// Three system clears while a break is on air. Same coalesce: two advances, speech stopped.
+    func testThreeMusicKitClearsWhileABreakIsAiringAdvanceTwice() async {
+        let show = await Show.airingBreak()
+        await show.musicKitSkipsWhileLoading(first: .clear, extra: 2)
+        await show.assertBreakNotAiring(advancedTo: 2)
+        XCTAssertEqual(show.advances, 2)
+        XCTAssertEqual(show.dj?.speechLevel, 0)
+        XCTAssertFalse(show.speechOverlapped)
+        XCTAssertEqual(show.surfaces, 0)
+        XCTAssertFalse(show.pausedByNoProgress)
+    }
+
+    /// Both ways a lock-screen Next can arrive for the same presses: the command target and
+    /// MusicKit clearing the one-song queue. Two of each, while the first load is in flight,
+    /// still advance twice and keep playing.
+    func testTwoNextTrackCommandsAndTwoMusicKitClearsWhileLoadingAdvanceTwice() async {
+        let show = Show()
+        show.suspendAt = .prepare
+        show.primePlaying()
+        XCTAssertEqual(RemoteNextCommand.decide(queueIndex: 0, queueCount: show.songs), .skip)
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        await show.skip()
+        show.feed(show.cleared())
+        XCTAssertEqual(RemoteNextCommand.decide(queueIndex: show.index, queueCount: show.songs), .skip)
+        await show.skip()
+        show.finishLoad()
+        await show.untilIdle()
+        show.assertPlaying(index: 2)
+        XCTAssertEqual(show.advances, 2)
+        XCTAssertEqual(show.reloads, 0)
+        XCTAssertEqual(show.surfaces, 0)
+        XCTAssertFalse(show.pausedByNoProgress)
+        XCTAssertFalse(show.coordinator.isInFlight)
+    }
 }
 
 // MARK: - Show
@@ -956,6 +1067,45 @@ private final class Show {
         finishLoad()
         await running.value
         await untilIdle()
+    }
+
+    /// How MusicKit's own lock-screen Next shows up in the poll: the one-song queue is cleared,
+    /// or the entry is kept and rewound to 0:00.
+    enum MusicKitSkipShape {
+        case clear
+        case rewind
+    }
+
+    /// `extra` further MusicKit observations arrive while the first skip is suspended in
+    /// `prepareToPlay`. The first observation is a mid-song remote skip, the same intake as
+    /// `nextTrackCommand` → `skip()`.
+    func musicKitSkipsWhileLoading(first shape: MusicKitSkipShape, extra: Int) async {
+        suspendAt = .prepare
+        primePlaying()
+        markHistory()
+        XCTAssertEqual(RemoteNextCommand.decide(queueIndex: index, queueCount: songs), .skip)
+        feed(observation(shape))
+        await untilLoadSuspended()
+        for _ in 0..<extra {
+            feed(observation(shape))
+        }
+        finishLoad()
+        await untilIdle()
+        await untilDropsSettle()
+    }
+
+    func assertPreparedBreakDropped() async {
+        let dropped = await preparer?.testResult(afterTrack: 0)
+        XCTAssertEqual(dropped, .skipped(.notNaturalBoundary))
+        let aired = await session?.naturalBoundary(afterTrack: 0)
+        XCTAssertNil(aired, "the prepared break was dropped with the skip and is not played")
+    }
+
+    private func observation(_ shape: MusicKitSkipShape) -> PlaybackObservation {
+        switch shape {
+        case .clear: cleared()
+        case .rewind: rewound()
+        }
     }
 
     /// Same intake as `MusicKitService.skip()`.
