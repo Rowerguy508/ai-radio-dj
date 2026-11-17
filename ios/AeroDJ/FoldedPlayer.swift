@@ -1718,6 +1718,11 @@ private struct FoldedStatusCapsule: View {
         .foldedGlass(Capsule())
         .clipShape(Capsule())
         .accessibilityElement(children: .ignore)
+        // #558 (-Nova): without this the element's frame is the union of the icon and the
+        // text (37.3 pt, 18 pt tall on the iPhone), not the 32 pt capsule that is drawn at the
+        // title's leading edge (24 pt), so XCUI read the chip 13 pt right of the title.
+        // Accessibility only: hit-testing and the drawing are unchanged.
+        .contentShape(.accessibility, Capsule())
         .accessibilityLabel(accessibilityLabel.isEmpty ? headline : accessibilityLabel)
         .accessibilityIdentifier(identifier)
     }
