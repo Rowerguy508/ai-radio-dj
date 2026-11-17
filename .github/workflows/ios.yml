@@ -895,7 +895,7 @@ jobs:
           ls "$SHOTS" | grep -q '^closed-compact_' || { echo "missing closed screenshot"; exit 1; }
           # #537: the decluttered closed player's ⋯ with Queue and Tune (and the star when rated). -Nova
           ls "$SHOTS" | grep -q '^closed-more-menu_' || { echo "missing closed-more-menu screenshot"; exit 1; }
-          ls "$SHOTS" | grep -q '^open-studio-queue_' || { echo "missing open screenshot"; exit 1; }
+          ls "$SHOTS" | grep -q '^open-rail-queue-sheet_' || { echo "missing open screenshot"; exit 1; }
           # #465 item 10: Library, Stations and Settings at Duo width, required like
           # duo-wide-ready (AppWideLayoutTests). -Nova
           for shot in duo-wide-library duo-wide-stations duo-wide-settings duo-wide-localarea; do
@@ -903,9 +903,9 @@ jobs:
           done
           for shot in closed-dark closed-state-empty closed-state-loading closed-state-error closed-state-denied \
                       closed-connections-revoked closed-tune-config-change closed-large-text \
-                      open-studio-tune-dark open-large-text open-connections-revoked open-tune-config-change \
-                      closed-queue-sheet-dark open-studio-queue-dark \
-                      closed-connections-dark open-studio-connections-dark \
+                      open-rail-tune-dark open-large-text open-connections-revoked open-tune-config-change \
+                      closed-queue-sheet-dark open-rail-queue-dark \
+                      closed-connections-dark open-rail-connections-dark \
                       closed-station-list-dark open-station-list-dark \
                       closed-state-empty-dark closed-state-loading-dark closed-state-error-dark \
                       closed-state-denied-dark closed-state-playbackFailed-dark \
@@ -918,7 +918,8 @@ jobs:
                       duo-continuity-folded duo-continuity-unfolded; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
-          ls "$SHOTS" | grep -q '^duo-arrangement_' || { echo "missing duo-arrangement screenshot"; exit 1; }
+          # #542: the regular-width Duo draws the rail, not the two-pane arrangement (ArrangementPaneTests). -Atlas
+          ls "$SHOTS" | grep -q '^duo-regular-rail_' || { echo "missing duo-regular-rail screenshot"; exit 1; }
           # #465 item 3: the tent pose, required like duo-wide-ready (TentPoseTests). -Nova
           ls "$SHOTS" | grep -q '^duo-tent_' || { echo "missing duo-tent screenshot"; exit 1; }
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }

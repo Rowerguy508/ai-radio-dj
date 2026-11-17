@@ -4,8 +4,8 @@ import SwiftUI
 // The unfolded Duo's right rail (#465, mockup 02). Glass styling lives only in this file
 // so it can move into Nova's shared glass helper later. No other control is restyled here.
 //
-// On iOS 27.1, built with that SDK, the same controls go in the system vertical toolbar.
-// Xcode 26.6 / iphoneos 26.5 (CI) compiles only the custom rail below.
+// The custom rail below is drawn in every build (#542). The iOS 27.1 system vertical
+// toolbar is still compiled under that SDK but not attached (`usesSystemBar` is false).
 
 /// Actions the rail and, on iOS 27.1, the system vertical toolbar share.
 struct DuoRailHooks {
@@ -51,14 +51,12 @@ struct DuoVerticalRail: View {
     var skip: () async -> Void = {}
     @Binding var moreOpen: Bool
 
-    /// True only in a binary built with the iOS 27.1 SDK, running on iOS 27.1+.
-    /// The 26.5 CI build always takes the custom rail.
-    static var usesSystemBar: Bool {
-        #if compiler(>=6.4)
-        if #available(iOS 27.1, *) { return true }
-        #endif
-        return false
-    }
+    /// Always false (#542). Build 49 (Xcode 27.2, iOS 27.1) took the system vertical toolbar
+    /// here, a path no CI build or UI test has ever run, and the Duo lost the 2.0 rail. Every
+    /// build now draws this custom rail. `DuoSystemVerticalToolbar` below stays compiled under
+    /// `#if compiler(>=6.4)` but is not attached; turning it back on needs UI tests on a 27.1
+    /// SDK runner first.
+    static var usesSystemBar: Bool { false }
 
     var body: some View {
         VStack(spacing: CGFloat(DuoRailLayout.spacing)) {
@@ -531,7 +529,9 @@ private struct DuoSystemRailAttacher: ViewModifier {
     @ViewBuilder
     private func attached(_ content: Content) -> some View {
         #if compiler(>=6.4)
-        if #available(iOS 27.1, *), keepBehavior {
+        // Gated on `usesSystemBar` (false since #542) so the custom rail is never doubled by,
+        // or swapped for, the system toolbar.
+        if #available(iOS 27.1, *), keepBehavior, DuoVerticalRail.usesSystemBar {
             content.modifier(DuoSystemVerticalToolbar(hooks: hooks))
         } else {
             content
