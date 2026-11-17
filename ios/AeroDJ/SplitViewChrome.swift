@@ -202,6 +202,24 @@ struct SplitMinimumTarget: ViewModifier {
     }
 }
 
+/// 44 pt layout, hit area and XCUI frame around the same glyph. Off is the control
+/// unchanged, so every iPhone snapshot stays byte-identical. Used on the open Duo's
+/// compact Stations toolbar, where `SplitMinimumTarget` is off because insets are nil.
+struct OpenDuoToolbarTarget: ViewModifier {
+    var enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        } else {
+            content
+        }
+    }
+}
+
 /// Moves a trailing column to the leading edge. Text inside the columns stays left to right.
 struct SplitLeadingBar: ViewModifier {
     var enabled: Bool

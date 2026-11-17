@@ -163,6 +163,8 @@ struct StationSplitRoot<Detail: View>: View {
     @State private var columnVisibility = NavigationSplitViewVisibility.automatic
     @State private var containerWidth: Double = 0
     @State private var containerHeight: Double = 0
+    /// The whole column, safe areas and bars included. Only decides `expandsToolbarTargets`.
+    @State private var columnSize: CGSize = .zero
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.splitMeasure) private var splitMeasure
     /// The scheme around the split. Regular width keeps it; compact forces dark (see `body`).
@@ -197,6 +199,14 @@ struct StationSplitRoot<Detail: View>: View {
 
     private var layoutHeight: Double {
         containerHeight > 0 ? containerHeight : (splitMeasure?.containerHeight ?? 0)
+    }
+
+    /// Open Duo only: 44 pt toolbar targets on the compact path, where
+    /// `SplitMinimumTarget` is otherwise off (`insets == nil`). Every iPhone is false,
+    /// so the phone keeps the existing 36 pt system control and its snapshots.
+    private var expandsToolbarTargets: Bool {
+        StationCarouselLayout.isOpenDuo(containerWidth: Double(columnSize.width),
+                                        containerHeight: Double(columnSize.height))
     }
 
     /// Half is the adapting width where sidebar and detail cannot sit side by side.
@@ -241,6 +251,7 @@ struct StationSplitRoot<Detail: View>: View {
                         leading: .topBarLeading, trailing: .topBarTrailing)) {
                         Button(action: onOpenSettings) {
                             Label("Settings", systemImage: "gearshape")
+                                .modifier(OpenDuoToolbarTarget(enabled: expandsToolbarTargets))
                         }
                         .modifier(SplitMinimumTarget(enabled: insets != nil))
                         .accessibilityIdentifier("stations.settings")
@@ -254,6 +265,7 @@ struct StationSplitRoot<Detail: View>: View {
                             showSharedInbox = true
                         } label: {
                             Label("Shared Items", systemImage: "square.and.arrow.up")
+                                .modifier(OpenDuoToolbarTarget(enabled: expandsToolbarTargets))
                         }
                         // Identifier only (UI tests): no visual or VoiceOver change.
                         .accessibilityIdentifier("stations.sharedInbox")
@@ -261,7 +273,7 @@ struct StationSplitRoot<Detail: View>: View {
                 }
                 if let onAddStation {
                     ToolbarItem(placement: .primaryAction) {
-                        AddStationToolbarButton(action: onAddStation)
+                        AddStationToolbarButton(action: onAddStation, expandsTarget: expandsToolbarTargets)
                     }
                 }
             }
@@ -293,6 +305,9 @@ struct StationSplitRoot<Detail: View>: View {
         // detail over the sidebar, which is why portrait showed only Show Sidebar.
         .navigationSplitViewStyle(.balanced)
         .background { if insets != nil { splitSizeReader } }
+        // Hidden size only; Color.clear does not paint. Always on so the open Duo can
+        // expand the compact toolbar, and a no-op on every iPhone (`isOpenDuo` is false).
+        .background { openDuoColumnReader }
         .modifier(HalfSplitSidebarColumn(enabled: insets != nil && selectedStationID == nil && isHalfSpan))
         // After the list exists. An earlier copy loses to the list resetting selection,
         // and a stored id can arrive after the first render.
@@ -332,6 +347,19 @@ struct StationSplitRoot<Detail: View>: View {
         if columnVisibility != Self.openListVisibility {
             columnVisibility = Self.openListVisibility
         }
+    }
+
+    /// Full column size, including safe areas and bars. Hidden, no taps, no fill.
+    private var openDuoColumnReader: some View {
+        Color.clear
+            .ignoresSafeArea()
+            .onGeometryChange(for: CGSize.self) { proxy in
+                proxy.size
+            } action: { size in
+                if size != columnSize { columnSize = size }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     /// The split's laid-out size. Hidden, and it does not take taps.

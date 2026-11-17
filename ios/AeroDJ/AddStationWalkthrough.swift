@@ -77,10 +77,14 @@ private struct PopIn: ViewModifier {
 /// The + on the Stations screen. Shown only when the app has seed search (never in the Test Station).
 struct AddStationToolbarButton: View {
     let action: () -> Void
+    /// Open Duo only: 44 pt hit target around the same plus glyph. Default off is the
+    /// existing control, so the iPhone toolbar is unchanged.
+    var expandsTarget: Bool = false
 
     var body: some View {
         Button(action: action) {
             Label("Add station", systemImage: "plus")
+                .modifier(OpenDuoToolbarTarget(enabled: expandsTarget))
         }
         .accessibilityLabel("Add station")
         .accessibilityHint("Build a new station from artists, a genre or a playlist")
