@@ -1550,6 +1550,56 @@ final class StudioScreenTests: XCTestCase {
         }
     }
 
+    /// #454 (-Nova): a station tap (row or carousel card, and the Duo dial when the layout has it)
+    /// goes through the split's one tap route: it starts the tapped station's id, and Now Playing
+    /// shows that station starting, with no search field and no search button. The capture records
+    /// the id it would start and never plays or searches (`stationTap`).
+    @MainActor
+    func testStationTapStartsThatStationNotSearch() {
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let lateNight = "8D3B2C21-5F60-4B7C-9D0E-1F2A3B4C5D6E"
+        let app = launch(scenario: "stationTap", musicAuthStatus: "authorized")
+        let any = app.descendants(matching: .any)
+        let sidebar = any["split.sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 15), app.debugDescription)
+        let calm = stationRow(sidebar, named: "Morning Calm")
+        XCTAssertTrue(calm.waitForExistence(timeout: 5), app.debugDescription)
+        calm.tap()
+        let started = any["capture.startedStation"]
+        XCTAssertTrue(started.waitForExistence(timeout: 10), app.debugDescription)
+        waitLabel(started, morningCalm, "the tap starts the tapped station's id")
+        XCTAssertTrue(any["nowPlaying.stationStart"].waitForExistence(timeout: 10),
+                      "Now Playing shows the station starting\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Starting Morning Calm"), app.debugDescription)
+        XCTAssertFalse(app.textFields["search.field"].exists, "A station tap never shows search\n\(app.debugDescription)")
+        XCTAssertFalse(app.buttons["playback.searchAppleMusic"].exists, "No search button while starting")
+        XCTAssertEqual(callLabel(app), "0/0", "The capture never searches or plays\n\(app.debugDescription)")
+        save(app, isOpenLayout ? "ipad-station-tap" : "iphone-station-tap")
+
+        // The Duo dial is only in the open layouts. Its tap takes the same route: the split selects
+        // Late Night (its header and start state), not just the queue.
+        let stop = app.buttons["duo.station.\(lateNight)"]
+        guard stop.waitForExistence(timeout: 5) else {
+            XCTAssertFalse(any["duo.stationDial"].exists, app.debugDescription)
+            return
+        }
+        XCTAssertGreaterThanOrEqual(stop.frame.height, 44, "dial stop under 44 pt: \(stop.frame)")
+        stop.tap()
+        waitLabel(started, lateNight, "the dial starts the tapped station's id")
+        let title = any["station.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(title.label.contains("Late Night"), "the dial selects the station it starts: \(title.label)")
+        XCTAssertTrue(shows(app, "Starting Late Night"), app.debugDescription)
+        XCTAssertFalse(app.textFields["search.field"].exists, "A dial tap never shows search\n\(app.debugDescription)")
+        XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
+    }
+
+    @MainActor
+    private func waitLabel(_ element: XCUIElement, _ label: String, _ message: String) {
+        let match = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", label), object: element)
+        XCTAssertEqual(XCTWaiter().wait(for: [match], timeout: 10), .completed, "\(message): \(element.label)")
+    }
+
     /// Shared Items sheet always has Done and dismisses without force-quit.
     @MainActor
     func testShareSheetDismissesViaDone() throws {

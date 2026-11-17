@@ -501,7 +501,8 @@ struct FoldedPlayer: View {
             }
             FoldedStationChip(heading: heading, action: onQueue)
             if stationStops.count > 1, let onOpenStation {
-                DuoStationDial(stops: stationStops, openedID: heading.opened.id, onOpen: onOpenStation)
+                DuoStationDial(stops: stationStops, openedID: heading.opened.id,
+                               playingID: StationTapRoute.dialPlayingID(snapshot), onOpen: onOpenStation)
             }
             DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
             Spacer(minLength: gap)
@@ -1418,6 +1419,9 @@ private struct FoldedToolbar: View {
 private struct DuoStationDial: View {
     let stops: [DuoStationSwitch.Stop]
     let openedID: String
+    /// #454: the station actually playing (`StationTapRoute.dialPlayingID`), "" when none. Only that
+    /// stop is not reopened; the opened station after a restore is idle and its stop starts it.
+    let playingID: String
     let onOpen: (String) async -> Void
 
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
@@ -1523,7 +1527,7 @@ private struct DuoStationDial: View {
         .onChange(of: openedID) { _, id in storedSnap = id }
         .onChange(of: storedSnap) { _, id in
             guard !id.isEmpty else { return }
-            _ = flight.receive(.snap(id), playingID: openedID)
+            _ = flight.receive(.snap(id), playingID: playingID)
         }
         .transaction { if reduceMotion { $0.disablesAnimations = true } }
     }
@@ -1531,7 +1535,7 @@ private struct DuoStationDial: View {
     /// Tap or Tune. A swipe never reaches this. A newer tap cancels a pending open.
     private func open(_ id: String) {
         storedSnap = id
-        guard let token = flight.receive(.tap(id), playingID: openedID) else { return }
+        guard let token = flight.receive(.tap(id), playingID: playingID) else { return }
         openTask?.cancel()
         openTask = Task {
             guard flight.accepts(token), !Task.isCancelled else { return }
