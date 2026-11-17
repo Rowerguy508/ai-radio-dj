@@ -281,4 +281,30 @@ final class AirPlayGapEndWatchTests: XCTestCase {
         }
         XCTAssertTrue(service.contains("withTimeInterval: 1.0, repeats: true"), "today's 1 s poll is unchanged")
     }
+
+    /// A stale watch must not poll after a queue replace or station switch in a song's last 3 s.
+    /// The app target does not build on Linux, so this pins the wiring in MusicKitService.swift.
+    func testTheWatchIsCancelledWhenTheQueueIsReplaced() throws {
+        let service = try String(contentsOf: Self.ios.appendingPathComponent("AeroDJ/MusicKitService.swift"), encoding: .utf8)
+        let lines = service.components(separatedBy: "\n")
+
+        let helperStart = try XCTUnwrap(lines.firstIndex { $0.contains("private func cancelGapEndWatch(") })
+        let helperEnd = try XCTUnwrap(lines[(helperStart + 1)...].firstIndex { $0.contains("private func updateGapEndWatch(") })
+        let helper = lines[helperStart..<helperEnd].joined(separator: "\n")
+        XCTAssertTrue(helper.contains("gapEndWatch.disarm()"), "disarm first so an in-flight step cannot poll")
+        XCTAssertTrue(helper.contains("gapEndWatchTask?.cancel()"))
+        XCTAssertTrue(helper.contains("gapEndWatchTask = nil"))
+
+        let playStart = try XCTUnwrap(lines.firstIndex { $0.contains("func play(_ tracks: [Track]") })
+        let playEnd = try XCTUnwrap(lines[(playStart + 1)...].firstIndex { $0.contains("func appendStationSongs(") })
+        let play = lines[playStart..<playEnd].joined(separator: "\n")
+        XCTAssertTrue(play.contains("cancelGapEndWatch()"), "a tap or station switch must cancel the watch")
+        XCTAssertTrue(play.contains("queue = tracks"))
+        XCTAssertTrue(play.contains("onQueueReplaced?()"))
+
+        let handoff = try XCTUnwrap(lines.firstIndex { $0.contains("queue = oldQueue") })
+        let window = lines[max(0, handoff - 8)...min(lines.count - 1, handoff + 2)].joined(separator: "\n")
+        XCTAssertTrue(window.contains("cancelGapEndWatch()"),
+                      "restoring the old queue after a failed station hand-off must cancel the watch")
+    }
 }

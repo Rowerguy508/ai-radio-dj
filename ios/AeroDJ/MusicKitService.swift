@@ -250,6 +250,9 @@ final class MusicKitService: ObservableObject {
         // is replaced, the same as `skip()`. Nil routes to `interlude.stop()`, which cancels
         // a pending play and halts a playing clip.
         onBreakMustStop?(nil)
+        // #526: drop a stale AirPlay gap-end watch so it cannot poll after this station switch
+        // or tap, if the previous song was in its last 3 s.
+        cancelGapEndWatch()
         queue = tracks
         onQueueReplaced?()
         currentTrack = tracks.first
@@ -778,6 +781,9 @@ final class MusicKitService: ObservableObject {
                 result: result, generationBefore: generationBefore, generationNow: attempts.queueGeneration,
                 next: next, oldQueueCount: oldQueue.count) else { return }
             logPlayback(PlaybackLog.stationHandOffFallback(next: next))
+            // The app queue is replaced (the failed hand-off already ended the previous song's
+            // watch in the usual case; cancel anyway so a stale watch cannot poll this restore).
+            cancelGapEndWatch()
             queue = oldQueue
             send(.queueStarted(tracks: oldQueue.map(\.info), startIndex: next, station: snapshot.station))
             fellBackToOldQueue = true
@@ -905,6 +911,16 @@ final class MusicKitService: ObservableObject {
             duration: currentDuration,
             uptime: ProcessInfo.processInfo.systemUptime
         )
+    }
+
+    /// #526 PR A (-Echo): drop a stale AirPlay gap-end watch. Called when the app queue is
+    /// replaced (`play`, or the failed station hand-off restore) so a watch armed in a song's
+    /// last 3 s cannot fire `pollPlaybackPosition` after a station switch. Disarm first, then
+    /// cancel: an in-flight `step` then returns `.stop` and does not poll.
+    private func cancelGapEndWatch() {
+        gapEndWatch.disarm()
+        gapEndWatchTask?.cancel()
+        gapEndWatchTask = nil
     }
 
     /// #526 PR A (-Echo): AirPlay gap route only. In the song's last seconds, read the player at
