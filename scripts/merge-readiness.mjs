@@ -1,14 +1,13 @@
+import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // Merge gate for PRs into integration/device-duo.
 //
-// Signs in this repo are not GitHub approvals. Every agent comments as the
-// same login, and a real sign is a comment or review whose last line is
-// `-Name` and which names the head SHA the way #506 and #550 do:
-//   "Signed at fa70a233" / "Re-signed at c00e290f" / "sign for #506 at c00e290f"
-// Those SHAs are 8 hex digits, a prefix of the head, not the full 40.
-// "I'll sign once …" and "My sign posts at … once" end in `-Name` too, and
-// are not signs. A sign at an older head does not count.
+// A sign is one line, on its own: `SIGN <sha> -Name`.
+// <sha> is the full head SHA or its first 8 hex characters. Name is one word.
+// Older free-form lines ("Signed at", "Sign (Name) at", "Atlas sign at") do not count.
 
 export const TARGET_BASE = 'integration/device-duo'
 export const REQUIRED_SIGN_COUNT = 2
@@ -19,30 +18,81 @@ export const REQUIRED_SIGN_COUNT = 2
 export const TRUSTED_LOGINS = ['Rowerguy508']
 export const TRUSTED_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR']
 
-// Public check-run names. CI jobs set these with `name:`. The seven heavy
-// iOS jobs keep the same strings on their `*-result` companions so a path
-// filter skip still reports success. `changes` always runs.
-export const CI_CHECK_NAMES = ['CI checks', 'CI tts-proxy']
+// Check-run name GitHub shows: the job's `name:`, or the job id when it has none.
+export function checkNamesFromWorkflow(yaml) {
+  const names = []
+  let inJobs = false
+  let currentJob = null
+  let jobName = null
+  let sawSteps = false
+  const flush = () => {
+    if (!currentJob) return
+    names.push(jobName || currentJob)
+    currentJob = null
+    jobName = null
+    sawSteps = false
+  }
+  for (const line of String(yaml || '').split(/\r?\n/)) {
+    if (!inJobs) {
+      if (line === 'jobs:') inJobs = true
+      continue
+    }
+    if (line.length > 0 && !line.startsWith(' ') && !line.startsWith('#')) {
+      flush()
+      break
+    }
+    const jobMatch = line.match(/^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$/)
+    if (jobMatch) {
+      flush()
+      currentJob = jobMatch[1]
+      continue
+    }
+    if (!currentJob || sawSteps) continue
+    if (/^    steps:\s*(?:#.*)?$/.test(line)) {
+      sawSteps = true
+      continue
+    }
+    const nameMatch = line.match(/^    name:\s*(.+?)\s*(?:#.*)?$/)
+    if (nameMatch && !jobName) {
+      let value = nameMatch[1].trim()
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1)
+      }
+      jobName = value
+    }
+  }
+  flush()
+  return names
+}
 
-export const IOS_CHECK_NAMES = [
-  'changes',
-  'AeroDJCore tests',
-  'AeroDJCore tests (Linux)',
-  'iOS simulator build',
-  'iOS device build (unsigned)',
-  'Release archive (Xcode 27.2, unsigned)',
-  'Runtime mode on simulator (Debug vs Release)',
-  'Studio UI tests and screenshots (closed + open)',
-]
+export function requiredCheckNamesFromWorkflows(iosYaml, ciYaml) {
+  const ci = checkNamesFromWorkflow(ciYaml)
+  const ios = checkNamesFromWorkflow(iosYaml)
+  if (ci.length === 0 || ios.length === 0) {
+    return { ok: false, names: [], ci, ios }
+  }
+  return { ok: true, names: [...ci, ...ios], ci, ios }
+}
 
-export const REQUIRED_CHECK_NAMES = [...CI_CHECK_NAMES, ...IOS_CHECK_NAMES]
+function workflowPath(name) {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '.github', 'workflows', name)
+}
+
+export function requiredCheckNamesFromDisk() {
+  return requiredCheckNamesFromWorkflows(
+    readFileSync(workflowPath('ios.yml'), 'utf8'),
+    readFileSync(workflowPath('ci.yml'), 'utf8'),
+  )
+}
 
 // Own line (`-Echo`) or the end of the last line (`… evidence. -Fry`).
 // The dash has to start the line or follow whitespace, so `pass-through` is not a name.
 const SIGNATURE_AT_END = /(?:^|\s)-\s*([A-Za-z][\w-]*)[ \t]*$/
-// `re-signed` and `signed` before bare `sign`, so "Re-signed at" is one anchor.
-const SIGN_ANCHOR =
-  /\b(?:re-signed|signed|sign(?:\s+for\s+#\d+)?)\s+at\s+([0-9a-f]{7,40})\b/gi
+// Exact sign line. SIGN is uppercase. The sha is 8 or 40 hex digits.
+const SIGN_LINE = /^SIGN ([0-9a-fA-F]{8}|[0-9a-fA-F]{40}) -([A-Za-z][A-Za-z0-9]*)$/
 
 const DEVICE_NOT_TESTED = /^Device: NOT TESTED\b/
 const DEVICE_TESTED = /^Device: TESTED\b/
@@ -71,22 +121,38 @@ export function terminalSignature(text) {
   return signatureOnLastLine(text)
 }
 
-export function signAnchors(text) {
-  if (!text) return []
-  const pattern = new RegExp(SIGN_ANCHOR.source, 'gi')
-  return [...String(text).matchAll(pattern)].map((match) => match[1].toLowerCase())
+export function canonicalSignLines(text) {
+  const found = []
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const match = raw.trim().match(SIGN_LINE)
+    if (!match) continue
+    found.push({ sha: match[1].toLowerCase(), name: match[2] })
+  }
+  return found
 }
 
 export function shaMatches(anchor, head) {
   if (!anchor || !head) return false
   const prefix = anchor.toLowerCase()
   const full = head.toLowerCase()
-  if (!/^[0-9a-f]{7,40}$/.test(prefix) || !/^[0-9a-f]{7,40}$/.test(full)) return false
-  return full.startsWith(prefix) || prefix.startsWith(full)
+  if (!/^[0-9a-f]{40}$/.test(full)) return false
+  if (/^[0-9a-f]{40}$/.test(prefix)) return prefix === full
+  if (/^[0-9a-f]{8}$/.test(prefix)) return full.startsWith(prefix)
+  return false
 }
 
-// A promise to sign later, not a sign. "Comment, not approval" is a disclaimer
-// real signs also use (the GitHub review state is COMMENTED), so it is not here.
+export function signLineFor(headSha) {
+  return `SIGN ${String(headSha || '').slice(0, 8)} -YourName`
+}
+
+// "No blockers" is not a blocker. Any other use of the word is.
+export function containsBlocker(text) {
+  const stripped = String(text || '').replace(/\bno\s+blockers?\b/gi, '')
+  return /\bblockers?\b/i.test(stripped)
+}
+
+// A promise, a refusal, or a negative claim is not a sign, even if a
+// canonical line is also present. "Comment, not approval" is not one of these.
 export function isDeferredSign(text) {
   const body = text || ''
   return (
@@ -94,12 +160,11 @@ export function isDeferredSign(text) {
     /\bmy sign posts\b/i.test(body) ||
     /\bsign\s+posts\b/i.test(body) ||
     /\bnot a sign\b/i.test(body) ||
-    /\bdo not sign\b/i.test(body)
+    /\bdo not sign\b/i.test(body) ||
+    /\bnobody has signed\b/i.test(body) ||
+    /\bno one has signed\b/i.test(body) ||
+    containsBlocker(body)
   )
-}
-
-function affirmsSign(text) {
-  return /\b(?:re-)?signed\b/i.test(text || '') || /\bsigning\b/i.test(text || '')
 }
 
 function isBot(posting) {
@@ -124,55 +189,56 @@ export function headComesFromFork(pr) {
   return head.full_name.toLowerCase() !== base.full_name.toLowerCase()
 }
 
-// A posting counts at this head, is stale (bound to some other sha), or is
-// not a sign. Explicit "signed at <sha>" wins over commit_id and timing.
-function classifyPosting(posting, headSha, headCommittedAt) {
-  const anchors = signAnchors(posting.body)
-  if (anchors.length > 0) {
-    const hit = anchors.find((anchor) => shaMatches(anchor, headSha))
-    if (hit) return { match: true, sha: hit }
-    return { match: false, sha: anchors[0] }
-  }
-  if (isDeferredSign(posting.body)) return null
-  if (posting.commitId && /^[0-9a-f]{40}$/i.test(posting.commitId)) {
-    if (posting.commitId.toLowerCase() === headSha.toLowerCase()) return { match: true, sha: posting.commitId }
-    return { match: false, sha: posting.commitId.slice(0, 12) }
-  }
-  if (!affirmsSign(posting.body)) return null
-  const created = Date.parse(posting.createdAt || '')
-  const headAt = Date.parse(headCommittedAt || '')
-  if (!Number.isFinite(created) || !Number.isFinite(headAt) || created < headAt) return null
-  return { match: true, sha: 'after-head-commit' }
+function isChangesRequested(posting) {
+  return (posting.state || '').toUpperCase() === 'CHANGES_REQUESTED'
 }
 
-export function collectSigns(postings, { headSha, author, headCommittedAt }) {
+// Only a canonical SIGN line counts. Promises, blockers, and
+// CHANGES_REQUESTED reviews do not, even when they contain that line.
+// There is no commit_id or timestamp fallback.
+function classifyPosting(posting, headSha) {
+  const lines = canonicalSignLines(posting.body)
+  if (isChangesRequested(posting) || isDeferredSign(posting.body)) {
+    return { rejected: lines.length > 0, lines: [] }
+  }
+  return { rejected: false, lines }
+}
+
+export function collectSigns(postings, { headSha, author }) {
   const atHead = new Map()
   const stale = []
   const ignoredAuthor = []
   const ignoredUntrusted = []
+  const ignoredDisqualified = []
   for (const posting of postings || []) {
     if (isBot(posting)) continue
-    const name = terminalSignature(posting.body)
-    if (!name) continue
-    const decision = classifyPosting(posting, headSha, headCommittedAt)
-    if (!decision) continue
-    if (!isTrustedPoster(posting)) {
-      ignoredUntrusted.push({
-        name,
-        login: posting.userLogin || 'unknown',
-        association: posting.authorAssociation || 'NONE',
-      })
+    const decision = classifyPosting(posting, headSha)
+    if (decision.rejected) {
+      ignoredDisqualified.push(posting.userLogin || 'unknown')
       continue
     }
-    if (author && name.toLowerCase() === author.toLowerCase()) {
-      ignoredAuthor.push(name)
-      continue
+    for (const line of decision.lines) {
+      const matchesHead = shaMatches(line.sha, headSha)
+      if (!isTrustedPoster(posting)) {
+        if (matchesHead) {
+          ignoredUntrusted.push({
+            name: line.name,
+            login: posting.userLogin || 'unknown',
+            association: posting.authorAssociation || 'NONE',
+          })
+        }
+        continue
+      }
+      if (author && line.name.toLowerCase() === author.toLowerCase()) {
+        if (matchesHead) ignoredAuthor.push(line.name)
+        continue
+      }
+      if (matchesHead) {
+        if (!atHead.has(line.name.toLowerCase())) atHead.set(line.name.toLowerCase(), line.name)
+        continue
+      }
+      stale.push({ name: line.name, sha: line.sha })
     }
-    if (decision.match) {
-      if (!atHead.has(name.toLowerCase())) atHead.set(name.toLowerCase(), name)
-      continue
-    }
-    stale.push({ name, sha: decision.sha })
   }
   const staleOnly = []
   const seen = new Set()
@@ -183,7 +249,13 @@ export function collectSigns(postings, { headSha, author, headCommittedAt }) {
     seen.add(key)
     staleOnly.push(item)
   }
-  return { atHead: [...atHead.values()], stale: staleOnly, ignoredAuthor, ignoredUntrusted }
+  return {
+    atHead: [...atHead.values()],
+    stale: staleOnly,
+    ignoredAuthor,
+    ignoredUntrusted,
+    ignoredDisqualified,
+  }
 }
 
 function recency(run) {
@@ -204,9 +276,10 @@ function latestRun(runs, name) {
   return best
 }
 
-export function assessChecks(runs) {
+export function assessChecks(runs, names) {
   const missing = []
-  for (const name of REQUIRED_CHECK_NAMES) {
+  const required = names || requiredCheckNamesFromDisk().names
+  for (const name of required) {
     const run = latestRun(runs, name)
     if (!run) {
       missing.push(`${name} (no check run at this head)`)
@@ -223,10 +296,6 @@ export function assessChecks(runs) {
   return { ok: missing.length === 0, missing }
 }
 
-function shortSha(headSha) {
-  return (headSha || '').slice(0, 7)
-}
-
 export function readinessProblems({
   headSha,
   baseRef,
@@ -237,6 +306,7 @@ export function readinessProblems({
   fork = false,
   headRepo = '',
   baseRepo = '',
+  requiredCheckNames,
 }) {
   if (baseRef && baseRef !== TARGET_BASE) {
     return {
@@ -267,9 +337,9 @@ export function readinessProblems({
     )
   }
 
-  const signs = collectSigns(postings, { headSha, author, headCommittedAt })
+  const signs = collectSigns(postings, { headSha, author })
   if (signs.atHead.length < REQUIRED_SIGN_COUNT) {
-    const found = signs.atHead.length > 0 ? signs.atHead.join(', ') : 'none'
+    const found = signs.atHead.length > 0 ? ` Found ${signs.atHead.length} (${signs.atHead.join(', ')}).` : ''
     const stale =
       signs.stale.length > 0
         ? ` Stale signs that do not count: ${signs.stale.map((item) => `${item.name} at ${item.sha}`).join(', ')}.`
@@ -282,15 +352,28 @@ export function readinessProblems({
             .map((item) => `${item.login} (association ${item.association}, -${item.name})`)
             .join(', ')}. A sign counts only when that poster's author_association is OWNER, MEMBER, or COLLABORATOR, or their login is in TRUSTED_LOGINS in scripts/merge-readiness.mjs.`
         : ''
+    const disqualified =
+      signs.ignoredDisqualified.length > 0
+        ? ' Ignored a SIGN line because the comment promises to sign later, is negative, contains a blocker, or the review is CHANGES_REQUESTED.'
+        : ''
+    const example = signLineFor(headSha)
     lines.push(
-      `merge-readiness: only ${signs.atHead.length} non-author sign${signs.atHead.length === 1 ? '' : 's'} at head ${shortSha(headSha)}; need ${REQUIRED_SIGN_COUNT}. Found: ${found}.${stale}${ignored}${untrusted} Ask a reviewer to re-sign at this sha. A sign is a PR comment or review whose text ends with -Name (for example -Orion) and which says "Signed at ${shortSha(headSha)}" (7 or more hex digits of this head; pull requests 506 and 550 use 8). The GitHub poster must be trusted. Non-author is the -Name, not the login, so agents who share ${TRUSTED_LOGINS.join(', ')} can still sign for someone else. The author's own -Name does not count. A sign at an older head does not count. Do not self-approve.`,
+      `merge-readiness: need ${REQUIRED_SIGN_COUNT} signs at ${headSha.slice(0, 8)}; post a line exactly \`${example}\`.${found}${stale}${ignored}${untrusted}${disqualified} The line must be its own line. The sha is this head or its first 8 hex characters. Name is one word, and it cannot be the author's. The poster must be trusted. Do not self-approve.`,
     )
   }
 
-  const checks = assessChecks(checkRuns)
-  if (!checks.ok) {
+  const loadedNames = requiredCheckNames || requiredCheckNamesFromDisk()
+  const checkNames = Array.isArray(loadedNames) ? loadedNames : loadedNames.names
+  const checksOkToRead = Array.isArray(loadedNames) || loadedNames.ok
+  if (!checksOkToRead) {
     lines.push(
-      `merge-readiness: head ${shortSha(headSha)} is missing green required checks: ${checks.missing.join(', ')}. Wait for CI and all 8 iOS jobs at this sha (including Release archive (Xcode 27.2, unsigned)), or push a fix. A skipped, failed, or cancelled job is not green. Do not merge.`,
+      'merge-readiness: could not read job names from .github/workflows/ios.yml and ci.yml on the base branch. Refusing to pass. Do not merge.',
+    )
+  }
+  const checks = assessChecks(checkRuns, checkNames)
+  if (checksOkToRead && !checks.ok) {
+    lines.push(
+      `merge-readiness: head ${headSha.slice(0, 8)} is missing green required checks: ${checks.missing.join(', ')}. These names are read from ci.yml and ios.yml on the base branch (a job's name:, or its id when it has no name). A skipped, failed, or cancelled job is not green. Wait for them at this sha, or push a fix. Do not merge.`,
     )
   }
 
@@ -302,7 +385,7 @@ export function readinessProblems({
 }
 
 export function successLine(headSha, signs) {
-  return `merge-readiness: head ${headSha} has ${signs.atHead.length} non-author signs (${signs.atHead.join(', ')}), a Device line, and green CI + all 8 iOS jobs.`
+  return `merge-readiness: head ${headSha} has ${signs.atHead.length} non-author signs (${signs.atHead.join(', ')}), a Device line, and green CI and iOS checks from the base-branch workflows.`
 }
 
 function assert(condition, message, failures) {
@@ -315,13 +398,39 @@ export function selfTest() {
   const older = 'fa70a233aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
   const other = '8f5b10d1ef7096d45a9836f4f88dde447f65c36f'
 
-  assert(IOS_CHECK_NAMES.length === 8, `expected 8 iOS checks, got ${IOS_CHECK_NAMES.length}`, failures)
+  const workflowNames = requiredCheckNamesFromDisk()
+  assert(workflowNames.ok, 'ci.yml and ios.yml must yield job names', failures)
+  assert(workflowNames.ios.length === 15, `expected 15 iOS checks from ios.yml, got ${workflowNames.ios.length}: ${workflowNames.ios.join(', ')}`, failures)
+  assert(workflowNames.ci.length === 2, `expected 2 CI checks, got ${workflowNames.ci.join(', ')}`, failures)
   assert(
-    IOS_CHECK_NAMES.includes('Release archive (Xcode 27.2, unsigned)'),
+    workflowNames.ios.includes('Release archive (Xcode 27.2, unsigned)'),
     'Release archive check name missing',
     failures,
   )
-  assert(CI_CHECK_NAMES.length === 2, 'expected 2 CI checks', failures)
+  assert(workflowNames.ios.includes('core-tests'), 'heavy job id core-tests missing', failures)
+  assert(workflowNames.ios.includes('changes'), 'changes job missing', failures)
+  const parsedFixture = checkNamesFromWorkflow(`
+name: Example
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+  heavy:
+    needs: changes
+    steps:
+      - name: Run
+  heavy-result:
+    name: Heavy job (public)
+    needs: [changes, heavy]
+    steps:
+      - name: Report
+`)
+  assert(
+    parsedFixture.join('|') === 'changes|heavy|Heavy job (public)',
+    `workflow parser got ${parsedFixture.join('|')}`,
+    failures,
+  )
 
   assert(hasDeviceLine('Device: NOT TESTED\n'), 'exact device line', failures)
   assert(
@@ -357,7 +466,7 @@ export function selfTest() {
     createdAt: '2026-11-14T23:58:28Z',
   }
   const echoResigned = {
-    body: 'Re-signed at c00e290f by delta from fa70a233. iOS passed all 7 jobs.\n\n-Echo',
+    body: 'SIGN c00e290f -Echo',
     userLogin: 'Rowerguy508',
     userType: 'User',
     createdAt: '2026-11-15T07:53:59Z',
@@ -369,7 +478,7 @@ export function selfTest() {
     createdAt: '2026-11-13T21:47:32Z',
   }
   const frySign = {
-    body: 'Fry sign for #506 at c00e290f, posted after merge.\n\nComment, not approval. Naturalness NOT TESTED; not device evidence. -Fry',
+    body: `Notes.\nSIGN ${head} -Fry\n`,
     userLogin: 'Rowerguy508',
     userType: 'User',
     createdAt: '2026-11-15T07:59:53Z',
@@ -382,7 +491,7 @@ export function selfTest() {
     commitId: head,
   }
   const sentinelSign = {
-    body: 'Sign at c00e290f: iOS green on all 8 jobs.\n\nComment, not approval.\n-Sentinel',
+    body: `SIGN ${head} -Sentinel\nComment, not approval.`,
     userLogin: 'Rowerguy508',
     userType: 'User',
     createdAt: '2026-11-17T04:31:57Z',
@@ -432,7 +541,7 @@ export function selfTest() {
   const trustedCollab = collectSigns(
     [
       {
-        body: 'Signed at c00e290f.\n\n-Echo',
+        body: 'SIGN c00e290f -Echo',
         userLogin: 'studio-collab',
         userType: 'User',
         authorAssociation: 'COLLABORATOR',
@@ -446,14 +555,14 @@ export function selfTest() {
   const untrusted = collectSigns(
     [
       {
-        body: 'Signed at c00e290f.\n\n-Echo',
+        body: 'SIGN c00e290f -Echo',
         userLogin: 'outsider',
         userType: 'User',
         authorAssociation: 'NONE',
         createdAt: '2026-11-15T08:00:00Z',
       },
       {
-        body: 'Signed at c00e290f.\n\n-Fry',
+        body: 'SIGN c00e290f -Fry',
         userLogin: 'drive-by',
         userType: 'User',
         authorAssociation: 'CONTRIBUTOR',
@@ -474,10 +583,23 @@ export function selfTest() {
     author: 'Nova',
     headCommittedAt: '2026-11-15T07:00:00Z',
   })
-  assert(onlyOld.atHead.length === 0, 'sign at an older head must not count', failures)
+  assert(onlyOld.atHead.length === 0, 'an old free-form sign must not count', failures)
+  assert(onlyOld.stale.length === 0, 'an old free-form sign is not a stale canonical sign', failures)
+
+  const staleCanonical = collectSigns(
+    [
+      {
+        body: 'SIGN fa70a233 -Echo',
+        userLogin: 'Rowerguy508',
+        userType: 'User',
+      },
+    ],
+    { headSha: head, author: 'Nova' },
+  )
+  assert(staleCanonical.atHead.length === 0, 'canonical line at another sha must not count', failures)
   assert(
-    onlyOld.stale.some((item) => item.name === 'Echo' && item.sha === 'fa70a233'),
-    `stale Echo sign missing: ${JSON.stringify(onlyOld.stale)}`,
+    staleCanonical.stale.some((item) => item.name === 'Echo' && item.sha === 'fa70a233'),
+    `stale canonical sign missing: ${JSON.stringify(staleCanonical.stale)}`,
     failures,
   )
 
@@ -493,7 +615,7 @@ export function selfTest() {
     ],
     { headSha: head, author: 'Nova', headCommittedAt: '2026-11-15T07:00:00Z' },
   )
-  assert(reviewByCommit.atHead.join(',') === 'Orion', 'review commit_id fallback', failures)
+  assert(reviewByCommit.atHead.length === 0, 'a review without a SIGN line does not count, even at this head', failures)
 
   const reviewOnOldCommit = collectSigns(
     [
@@ -526,7 +648,7 @@ export function selfTest() {
     ],
     { headSha: head, author: 'Nova', headCommittedAt: '2026-11-15T07:00:00Z' },
   )
-  assert(timing.atHead.join(',') === 'Atlas', 'only the comment after the head commit counts', failures)
+  assert(timing.atHead.length === 0, 'a timestamp plus the word Signed is not a sign', failures)
 
   const promiseNotSign = collectSigns([fryNotYet, sentinelPromise], {
     headSha: head,
@@ -535,7 +657,71 @@ export function selfTest() {
   })
   assert(promiseNotSign.atHead.length === 0, `promises to sign counted: ${promiseNotSign.atHead.join(',')}`, failures)
 
-  const greenRuns = REQUIRED_CHECK_NAMES.map((name, index) => ({
+  const oldFormats = [
+    ['Echo', `Signed at ${head.slice(0, 8)}. iOS 44011129006 is green with all 8 jobs run.\n\n-Echo`],
+    ['Fry', `Sign (Fry) at ${head}. iOS 44011129006: all 8 jobs green.\n-Fry`],
+    ['Sentinel', `Sign at ${head.slice(0, 8)}: iOS green.\n\nComment, not approval. -Sentinel`],
+    ['Atlas', `Atlas sign at ${head}: green. No blockers.\n-Atlas`],
+  ]
+  for (const [name, body] of oldFormats) {
+    const result = collectSigns(
+      [{ body, userLogin: 'Rowerguy508', userType: 'User' }],
+      { headSha: head, author: 'Nova' },
+    )
+    assert(result.atHead.length === 0, `old ${name} format must be rejected: ${result.atHead.join(',')}`, failures)
+  }
+
+  const deferredWithLine = collectSigns(
+    [
+      {
+        body: `I will sign once iOS is green.\nSIGN ${head.slice(0, 8)} -Atlas`,
+        userLogin: 'Rowerguy508',
+        userType: 'User',
+      },
+    ],
+    { headSha: head, author: 'Nova' },
+  )
+  assert(deferredWithLine.atHead.length === 0, 'deferred wording rejects a canonical line', failures)
+
+  const negativeWithLine = collectSigns(
+    [
+      {
+        body: `nobody has signed at ${head.slice(0, 8)} yet\nSIGN ${head.slice(0, 8)} -Sentinel`,
+        userLogin: 'Rowerguy508',
+        userType: 'User',
+      },
+    ],
+    { headSha: head, author: 'Nova' },
+  )
+  assert(negativeWithLine.atHead.length === 0, 'negative wording rejects a canonical line', failures)
+
+  const blockerReview = collectSigns(
+    [
+      {
+        body: `One blocker remains.\nSIGN ${head.slice(0, 8)} -Sentinel`,
+        userLogin: 'Rowerguy508',
+        userType: 'User',
+        state: 'COMMENTED',
+      },
+    ],
+    { headSha: head, author: 'Nova' },
+  )
+  assert(blockerReview.atHead.length === 0, 'a blocker review must not count', failures)
+
+  const changesRequested = collectSigns(
+    [
+      {
+        body: `SIGN ${head.slice(0, 8)} -Fry`,
+        userLogin: 'Rowerguy508',
+        userType: 'User',
+        state: 'CHANGES_REQUESTED',
+      },
+    ],
+    { headSha: head, author: 'Nova' },
+  )
+  assert(changesRequested.atHead.length === 0, 'CHANGES_REQUESTED must not count', failures)
+
+  const greenRuns = workflowNames.names.map((name, index) => ({
     id: index + 1,
     name,
     status: 'completed',
@@ -605,10 +791,12 @@ export function selfTest() {
   })
   assert(!notReady.ok, 'incomplete PR must fail', failures)
   const text = notReady.lines.join('\n')
-  assert(text.includes('only 0 non-author signs'), `sign line missing:\n${text}`, failures)
-  assert(text.includes(`head ${head.slice(0, 7)}`), 'short head sha in the sign line', failures)
-  assert(text.includes('Ask a reviewer to re-sign at this sha'), 're-sign instruction', failures)
-  assert(text.includes('Stale signs that do not count: Echo at fa70a233'), `stale sign not in the error:\n${text}`, failures)
+  assert(text.includes(`need 2 signs at ${head.slice(0, 8)}`), `sign line missing:\n${text}`, failures)
+  assert(
+    text.includes(`post a line exactly \`${signLineFor(head)}\``),
+    `exact sign instruction missing:\n${text}`,
+    failures,
+  )
   assert(text.includes('Device: NOT TESTED'), 'device instruction', failures)
   assert(text.includes('Device check:'), 'device-check counterexample', failures)
   assert(text.includes('Release archive (Xcode 27.2, unsigned)'), 'archive named in the check failure', failures)
@@ -674,14 +862,14 @@ export function selfTest() {
     body: 'Fixes the gate.\n\nDevice: NOT TESTED\n\n-Nova',
     postings: [
       {
-        body: 'Signed at c00e290f.\n\n-Echo',
+        body: 'SIGN c00e290f -Echo',
         userLogin: 'outsider',
         userType: 'User',
         authorAssociation: 'NONE',
         createdAt: '2026-11-15T08:00:00Z',
       },
       {
-        body: 'Signed at c00e290f.\n\n-Fry',
+        body: 'SIGN c00e290f -Fry',
         userLogin: 'drive-by',
         userType: 'User',
         authorAssociation: 'CONTRIBUTOR',
@@ -694,7 +882,7 @@ export function selfTest() {
   })
   assert(!outsidePair.ok, 'two outside accounts must not turn the gate green', failures)
   const outsideText = outsidePair.lines.join('\n')
-  assert(outsideText.includes('only 0 non-author signs'), `outside signs counted:\n${outsideText}`, failures)
+  assert(outsideText.includes(`need 2 signs at ${head.slice(0, 8)}`), `outside signs counted:\n${outsideText}`, failures)
   assert(outsideText.includes('outsider'), 'untrusted outsider missing from the error', failures)
   assert(outsideText.includes('TRUSTED_LOGINS'), 'the error must point at the allowlist', failures)
 
@@ -800,6 +988,7 @@ async function loadPullRequest(token, owner, repo, number) {
     githubList(token, `/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`),
     githubList(token, `/repos/${owner}/${repo}/pulls/${number}/comments?per_page=100`),
   ])
+  const stateByReview = new Map(reviews.map((review) => [review.id, review.state || '']))
   const postings = [
     ...comments.map(postingFromComment),
     ...reviews.map((review) => ({
@@ -807,10 +996,14 @@ async function loadPullRequest(token, owner, repo, number) {
       userLogin: review.user?.login || '',
       userType: review.user?.type || '',
       authorAssociation: review.author_association || '',
+      state: review.state || '',
       createdAt: review.submitted_at || null,
       commitId: review.commit_id || null,
     })),
-    ...reviewComments.map(postingFromComment),
+    ...reviewComments.map((comment) => ({
+      ...postingFromComment(comment),
+      state: stateByReview.get(comment.pull_request_review_id) || '',
+    })),
   ]
   let headCommittedAt = null
   try {
@@ -890,10 +1083,9 @@ async function main() {
     return
   }
 
-  // pull_request and pull_request_review already publish this job as the
-  // merge-readiness check on the PR head. Other events run against the
-  // default branch, so the conclusion has to be written onto the head SHA.
-  const publishesViaJob = eventName === 'pull_request' || eventName === 'pull_request_review'
+  // pull_request_target's automatic check is not a reliable head-SHA status.
+  // Always write merge-readiness onto the head. The job still exits non-zero
+  // when the pull request is not ready.
   let failed = false
   for (const number of numbers) {
     let loaded
@@ -925,7 +1117,7 @@ async function main() {
       : result.lines
     console.log(`merge-readiness: evaluated PR #${number} at ${loaded.headSha} (base ${loaded.baseRef}).`)
     emit(lines, result.ok)
-    if (!publishesViaJob && result.applies) {
+    if (result.applies) {
       try {
         await publishCheck(token, owner, repo, loaded.headSha, result.ok, lines.join('\n\n'))
         console.log(`merge-readiness: wrote the check onto ${loaded.headSha}.`)
