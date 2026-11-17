@@ -3,28 +3,31 @@ name: Merge readiness
 # Gate for PRs into integration/device-duo. The check name branch protection
 # must require is merge-readiness.
 #
-# pull_request_target runs the workflow file from the default branch and
-# checks out only the pull request's base commit. It does not run code from
-# the pull request head. issue_comment, check_run, check_suite, and
-# workflow_run also run the default-branch file; this workflow still checks
-# out the base commit before it runs the gate scripts.
+# Every trigger below runs this file from the default branch. pull_request
+# and pull_request_review are intentionally absent: those events run the
+# workflow file from the pull request merge commit, and this token can write
+# checks. A review is noticed by "Merge readiness review relay", which has
+# no permissions; workflow_run then runs this file.
+#
+# The checkout ref is the base sha returned by the API for a pull request
+# number. Event text, including the relay run name, is only a candidate
+# number. This file does not check out the pull request head.
 #
 # check_run and check_suite do not fire for suites GitHub Actions itself
 # created. CI and iOS finishing is observed via workflow_run. The script
-# writes the merge-readiness check onto the head SHA. It does not forge signs.
+# writes the merge-readiness check onto the head SHA from the API. It does
+# not forge signs.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited, ready_for_review]
   issue_comment:
     types: [created, edited, deleted]
-  pull_request_review:
-    types: [submitted, edited]
   check_run:
     types: [completed]
   check_suite:
     types: [completed]
   workflow_run:
-    workflows: ['CI', 'iOS']
+    workflows: ['CI', 'iOS', 'Merge readiness review relay']
     types: [completed]
 
 permissions:
@@ -42,7 +45,6 @@ jobs:
     name: merge-readiness
     if: >-
       github.event_name == 'pull_request_target' ||
-      github.event_name == 'pull_request_review' ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) ||
       (github.event_name == 'check_suite' && github.event.check_suite.app.slug != 'github-actions') ||
       (github.event_name == 'check_run' && github.event.check_run.app.slug != 'github-actions') ||
@@ -54,34 +56,52 @@ jobs:
         id: trusted
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          WR_BASE_SHA: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
-          CS_BASE_SHA: ${{ github.event.check_suite.pull_requests[0].base.sha }}
-          CR_BASE_SHA: ${{ github.event.check_run.pull_requests[0].base.sha }}
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_IS_PR: ${{ github.event.issue.pull_request && '1' || '' }}
+          WR_NAME: ${{ github.event.workflow_run.name }}
+          WR_TITLE: ${{ github.event.workflow_run.display_title }}
+          WR_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          CS_PR: ${{ github.event.check_suite.pull_requests[0].number }}
+          CR_PR: ${{ github.event.check_run.pull_requests[0].number }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          ref="${PR_BASE_SHA:-}"
-          if [ -z "$ref" ]; then ref="${WR_BASE_SHA:-}"; fi
-          if [ -z "$ref" ]; then ref="${CS_BASE_SHA:-}"; fi
-          if [ -z "$ref" ]; then ref="${CR_BASE_SHA:-}"; fi
-          if [ -z "$ref" ] && [ "$EVENT_NAME" = "issue_comment" ] && [ "$ISSUE_IS_PR" = "1" ]; then
-            ref="$(curl -fsSL \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${REPO}/pulls/${ISSUE_NUMBER}" \
-              | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const j=JSON.parse(s);process.stdout.write((j.base&&j.base.sha)||"")})')"
-          fi
-          if [ -z "$ref" ]; then
-            echo "No pull request base commit. Nothing to gate."
+          is_num() { printf '%s' "$1" | grep -Eq '^[1-9][0-9]{0,9}$'; }
+          num=""
+          case "$EVENT_NAME" in
+            pull_request_target) num="${PR_NUMBER:-}" ;;
+            issue_comment)
+              if [ "$ISSUE_IS_PR" = "1" ]; then num="${ISSUE_NUMBER:-}"; fi
+              ;;
+            check_suite) num="${CS_PR:-}" ;;
+            check_run) num="${CR_PR:-}" ;;
+            workflow_run)
+              if [ "$WR_NAME" = "Merge readiness review relay" ]; then
+                if is_num "${WR_PR:-}" && is_num "${WR_TITLE:-}" && [ "$WR_PR" != "$WR_TITLE" ]; then
+                  echo "::error::merge-readiness: relay number ${WR_TITLE} does not match event pull request ${WR_PR}. Do not treat this as a pass."
+                  exit 1
+                fi
+                if is_num "${WR_TITLE:-}"; then num="$WR_TITLE"; else num="${WR_PR:-}"; fi
+              else
+                num="${WR_PR:-}"
+              fi
+              ;;
+          esac
+          if ! is_num "$num"; then
+            echo "No pull request number. Nothing to gate."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # The number is untrusted. The base sha is whatever the API says for that pull request.
+          ref="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pulls/${num}" \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const j=JSON.parse(s);process.stdout.write((j.base&&j.base.sha)||"")})')"
           if ! printf '%s' "$ref" | grep -Eq '^[0-9a-fA-F]{40}$'; then
-            echo "::error::merge-readiness: refusing to check out ${ref}. Expected the base commit sha. Do not merge."
+            echo "::error::merge-readiness: API did not return a base sha for pull request ${num}. Do not treat this as a pass."
             exit 1
           fi
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"

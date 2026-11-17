@@ -11,6 +11,15 @@ import { fileURLToPath } from 'node:url'
 
 export const TARGET_BASE = 'integration/device-duo'
 export const REQUIRED_SIGN_COUNT = 2
+export const RELAY_WORKFLOW_NAME = 'Merge readiness review relay'
+export const GATE_TRIGGERS = [
+  'pull_request_target',
+  'issue_comment',
+  'check_run',
+  'check_suite',
+  'workflow_run',
+]
+export const FORBIDDEN_TRIGGERS = ['pull_request', 'pull_request_review', 'push']
 
 // Who may post a sign. Edit TRUSTED_LOGINS here when a trusted person is not
 // already OWNER, MEMBER, or COLLABORATOR. Agents share Rowerguy508 with the
@@ -86,6 +95,128 @@ export function requiredCheckNamesFromDisk() {
     readFileSync(workflowPath('ios.yml'), 'utf8'),
     readFileSync(workflowPath('ci.yml'), 'utf8'),
   )
+}
+
+// A relay or event may only contribute a pull request number. Anything else
+// is rejected. The head sha always comes from a later API read of that pull request.
+export function parseRelayPrNumber(value) {
+  const text = String(value ?? '').trim()
+  if (!/^[1-9][0-9]{0,9}$/.test(text)) return null
+  const number = Number(text)
+  if (!Number.isSafeInteger(number) || number <= 0) return null
+  return number
+}
+
+function onBlock(yaml) {
+  return String(yaml || '').split(/^on:\s*$/m)[1]?.split(/^(?:permissions|concurrency|jobs):/m)[0] || ''
+}
+
+function triggerNames(yaml) {
+  return [...onBlock(yaml).matchAll(/^  ([A-Za-z0-9_]+):\s*$/gm)].map((match) => match[1])
+}
+
+export function auditGateWorkflow(yaml) {
+  const errors = []
+  const text = String(yaml || '')
+  const triggers = triggerNames(text)
+  for (const name of triggers) {
+    if (!GATE_TRIGGERS.includes(name)) errors.push(`unexpected trigger ${name}`)
+  }
+  for (const name of FORBIDDEN_TRIGGERS) {
+    if (triggers.includes(name)) errors.push(`forbidden trigger ${name}`)
+  }
+  for (const name of GATE_TRIGGERS) {
+    if (!triggers.includes(name)) errors.push(`missing trigger ${name}`)
+  }
+  const listed = text.match(/workflows:\s*\[([^\]]+)\]/)
+  const workflows = listed ? listed[1].split(',').map((item) => item.trim().replace(/^['"]|['"]$/g, '')) : []
+  for (const required of ['CI', 'iOS', RELAY_WORKFLOW_NAME]) {
+    if (!workflows.includes(required)) errors.push(`workflow_run is missing ${required}`)
+  }
+  const permBlock = text.split(/^permissions:\s*$/m)[1]?.split(/^(?:concurrency|jobs):\s*$/m)[0] || ''
+  const writes = [...permBlock.matchAll(/^  ([A-Za-z0-9_-]+):\s*(\w+)\s*$/gm)]
+    .filter((match) => match[2] === 'write')
+    .map((match) => match[1])
+  if (writes.length !== 1 || writes[0] !== 'checks') {
+    errors.push(`write permissions must be only checks, got ${writes.join(', ') || 'none'}`)
+  }
+  if (/github\.event\.pull_request\.head/.test(text) || /github\.sha/.test(text)) {
+    errors.push('gate workflow must not check out the pull request head or github.sha')
+  }
+  return errors
+}
+
+export function auditRelayWorkflow(yaml) {
+  const errors = []
+  const text = String(yaml || '')
+  if (!/^permissions:\s*\{\}\s*$/m.test(text)) errors.push('relay permissions must be {}')
+  const triggers = triggerNames(text)
+  if (triggers.length !== 1 || triggers[0] !== 'pull_request_review') {
+    errors.push(`relay triggers must be only pull_request_review, got ${triggers.join(', ') || 'none'}`)
+  }
+  if (/:\s*write\b/.test(text)) errors.push('relay must not grant a write permission')
+  if (/actions\/checkout/.test(text) || /pull_request\.head/.test(text)) {
+    errors.push('relay must not checkout the repository or read the head ref')
+  }
+  return errors
+}
+
+export function auditWorkflowsFromDisk() {
+  return [
+    ...auditGateWorkflow(readFileSync(workflowPath('merge-readiness.yml'), 'utf8')),
+    ...auditRelayWorkflow(readFileSync(workflowPath('merge-readiness-review-relay.yml'), 'utf8')),
+  ]
+}
+
+export function resolveEventPullRequests(eventName, payload) {
+  if (eventName === 'pull_request' || eventName === 'pull_request_review') {
+    return {
+      numbers: [],
+      rejected: true,
+      reason: `${eventName} would run a pull-request copy of a workflow; that trigger is not used`,
+    }
+  }
+  const take = (value) => parseRelayPrNumber(value)
+  if (eventName === 'pull_request_target') {
+    const number = take(payload.pull_request?.number)
+    return number
+      ? { numbers: [number], rejected: false }
+      : { numbers: [], rejected: true, reason: 'pull_request_target had no integer pull request number' }
+  }
+  if (eventName === 'issue_comment') {
+    if (!payload.issue?.pull_request) return { numbers: [], rejected: false }
+    const number = take(payload.issue.number)
+    return number
+      ? { numbers: [number], rejected: false }
+      : { numbers: [], rejected: true, reason: 'issue comment had no integer pull request number' }
+  }
+  if (eventName === 'check_suite' || eventName === 'check_run') {
+    const key = eventName === 'check_suite' ? payload.check_suite : payload.check_run
+    const listed = key?.pull_requests || key?.check_suite?.pull_requests || []
+    const numbers = [...new Set(listed.map((pr) => take(pr?.number)).filter(Boolean))]
+    if (listed.length > 0 && numbers.length !== 1) {
+      return { numbers: [], rejected: true, reason: 'check event did not name one integer pull request' }
+    }
+    return { numbers, rejected: false }
+  }
+  if (eventName === 'workflow_run') {
+    const run = payload.workflow_run || {}
+    const fromList = [...new Set((run.pull_requests || []).map((pr) => take(pr?.number)).filter(Boolean))]
+    if (run.name !== RELAY_WORKFLOW_NAME) return { numbers: fromList, rejected: false }
+    const fromTitle = take(run.display_title)
+    const candidates = [...fromList]
+    if (fromTitle) candidates.push(fromTitle)
+    const unique = [...new Set(candidates)]
+    if (unique.length !== 1) {
+      return {
+        numbers: [],
+        rejected: true,
+        reason: 'relay pull request number is missing or does not match the event',
+      }
+    }
+    return { numbers: unique, rejected: false }
+  }
+  return { numbers: [], rejected: false }
 }
 
 // Own line (`-Echo`) or the end of the last line (`… evidence. -Fry`).
@@ -886,6 +1017,46 @@ jobs:
   assert(outsideText.includes('outsider'), 'untrusted outsider missing from the error', failures)
   assert(outsideText.includes('TRUSTED_LOGINS'), 'the error must point at the allowlist', failures)
 
+  assert(parseRelayPrNumber('559') === 559, 'a decimal pull request number is accepted', failures)
+  assert(parseRelayPrNumber(' 559\n') === 559, 'surrounding whitespace is ignored', failures)
+  assert(parseRelayPrNumber('0559') === null, 'leading zeros are rejected', failures)
+  assert(parseRelayPrNumber('559; rm -rf') === null, 'a number with a suffix is rejected', failures)
+  assert(parseRelayPrNumber('c00e290f') === null, 'a sha is not a pull request number', failures)
+  assert(parseRelayPrNumber('') === null, 'an empty relay value is rejected', failures)
+
+  const relayOk = resolveEventPullRequests('workflow_run', {
+    workflow_run: {
+      name: RELAY_WORKFLOW_NAME,
+      display_title: '559',
+      pull_requests: [{ number: 559 }],
+    },
+  })
+  assert(relayOk.rejected === false && relayOk.numbers.join() === '559', 'matching relay number is kept', failures)
+  const relayLie = resolveEventPullRequests('workflow_run', {
+    workflow_run: {
+      name: RELAY_WORKFLOW_NAME,
+      display_title: '1',
+      pull_requests: [{ number: 559 }],
+    },
+  })
+  assert(relayLie.rejected === true && relayLie.numbers.length === 0, 'a relay number that disagrees is rejected', failures)
+  const relayOnlyTitle = resolveEventPullRequests('workflow_run', {
+    workflow_run: { name: RELAY_WORKFLOW_NAME, display_title: '559', pull_requests: [] },
+  })
+  assert(relayOnlyTitle.numbers.join() === '559', 'a relay run name can supply the number', failures)
+  const reviewTrigger = resolveEventPullRequests('pull_request_review', { pull_request: { number: 559 } })
+  assert(reviewTrigger.rejected === true, 'pull_request_review must not be evaluated by the gate', failures)
+
+  const workflowAudit = auditWorkflowsFromDisk()
+  assert(workflowAudit.length === 0, `workflow audit failed: ${workflowAudit.join('; ')}`, failures)
+  assert(
+    auditGateWorkflow('on:\n  pull_request_review:\npermissions:\n  checks: write\n').some((error) =>
+      error.includes('forbidden trigger'),
+    ),
+    'a gate that listens to pull_request_review must fail the audit',
+    failures,
+  )
+
   if (failures.length > 0) {
     throw new Error(`merge-readiness self-test failed:\n${failures.map((item) => `- ${item}`).join('\n')}`)
   }
@@ -950,24 +1121,7 @@ async function githubList(token, path) {
 }
 
 function prNumbersFromEvent(eventName, payload) {
-  if (eventName === 'pull_request' || eventName === 'pull_request_review') {
-    return payload.pull_request?.number ? [payload.pull_request.number] : []
-  }
-  if (eventName === 'issue_comment') {
-    if (!payload.issue?.pull_request) return []
-    return payload.issue.number ? [payload.issue.number] : []
-  }
-  if (eventName === 'check_suite') {
-    return (payload.check_suite?.pull_requests || []).map((pr) => pr.number).filter(Boolean)
-  }
-  if (eventName === 'check_run') {
-    const embedded = payload.check_run?.pull_requests || payload.check_run?.check_suite?.pull_requests || []
-    return embedded.map((pr) => pr.number).filter(Boolean)
-  }
-  if (eventName === 'workflow_run') {
-    return (payload.workflow_run?.pull_requests || []).map((pr) => pr.number).filter(Boolean)
-  }
-  return []
+  return resolveEventPullRequests(eventName, payload)
 }
 
 function postingFromComment(comment) {
@@ -1077,7 +1231,13 @@ async function main() {
   }
   const [owner, repo] = repository.split('/')
   const payload = JSON.parse(await readFile(eventPath, 'utf8'))
-  const numbers = [...new Set(prNumbersFromEvent(eventName, payload))]
+  const resolved = prNumbersFromEvent(eventName, payload)
+  if (resolved.rejected) {
+    console.log(`::error::merge-readiness: ${resolved.reason}. Do not treat this as a pass.`)
+    process.exitCode = 1
+    return
+  }
+  const numbers = resolved.numbers
   if (numbers.length === 0) {
     console.log(`merge-readiness: ${eventName} is not attached to a pull request. Nothing to gate.`)
     return
