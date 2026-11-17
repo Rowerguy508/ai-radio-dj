@@ -228,19 +228,36 @@ const SIGN_LINE = /^SIGN ([0-9a-fA-F]{8}|[0-9a-fA-F]{40}) -([A-Za-z][A-Za-z0-9]*
 const DEVICE_NOT_TESTED = /^Device: NOT TESTED\b/
 const DEVICE_TESTED = /^Device: TESTED\b/
 
+function isHtmlOrCursorFooter(line) {
+  const trimmed = line.trim()
+  if (!trimmed) return false
+  if (trimmed.startsWith('<')) return true
+  return /cursor\.com\/(?:agents|background-agent)|Open in Web|Open in Cursor|cursor_cta/i.test(trimmed)
+}
+
 function signatureOnLastLine(text) {
   if (!text) return null
   const lines = String(text).split(/\r?\n/)
   for (let i = lines.length - 1; i >= 0; i--) {
     if (lines[i].trim() === '') continue
+    if (isHtmlOrCursorFooter(lines[i])) continue
     const match = lines[i].match(SIGNATURE_AT_END)
     return match ? match[1] : null
   }
   return null
 }
 
+// The author line may sit above a Cursor HTML footer. A real line is one that
+// ends in `-Name` and is not markup. No such line means fail closed.
 export function authorFromBody(body) {
-  return signatureOnLastLine(body)
+  if (!body) return null
+  let found = null
+  for (const line of String(body).split(/\r?\n/)) {
+    if (isHtmlOrCursorFooter(line)) continue
+    const match = line.match(SIGNATURE_AT_END)
+    if (match) found = match[1]
+  }
+  return found
 }
 
 export function hasDeviceLine(body) {
@@ -282,9 +299,7 @@ export function containsBlocker(text) {
   return /\bblockers?\b/i.test(stripped)
 }
 
-// A promise, a refusal, or a negative claim is not a sign, even if a
-// canonical line is also present. "Comment, not approval" is not one of these.
-export function isDeferredSign(text) {
+function deferredOrNegative(text) {
   const body = text || ''
   return (
     /\b(?:i'll|i will|we'll|we will|will)\s+sign\b/i.test(body) ||
@@ -296,6 +311,21 @@ export function isDeferredSign(text) {
     /\bno one has signed\b/i.test(body) ||
     containsBlocker(body)
   )
+}
+
+// "Comment, not approval" is not a refusal. When the first content line is a
+// canonical SIGN line, later notes may mention "will sign" or "blocker"
+// without throwing the sign away. A SIGN line that is itself deferred or
+// negated never matches the canonical pattern, so the whole comment is checked.
+export function isDeferredSign(text) {
+  const lines = String(text || '').split(/\r?\n/)
+  for (const raw of lines) {
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    if (SIGN_LINE.test(trimmed)) return deferredOrNegative(trimmed)
+    break
+  }
+  return deferredOrNegative(text)
 }
 
 function isBot(posting) {
@@ -324,9 +354,9 @@ function isChangesRequested(posting) {
   return (posting.state || '').toUpperCase() === 'CHANGES_REQUESTED'
 }
 
-// Only a canonical SIGN line counts. Promises, blockers, and
-// CHANGES_REQUESTED reviews do not, even when they contain that line.
-// There is no commit_id or timestamp fallback.
+// Only a canonical SIGN line counts. A CHANGES_REQUESTED review never counts.
+// Deferred or negative wording rejects the comment unless its first content
+// line is itself a valid SIGN line. There is no commit_id or timestamp fallback.
 function classifyPosting(posting, headSha) {
   const lines = canonicalSignLines(posting.body)
   if (isChangesRequested(posting) || isDeferredSign(posting.body)) {
@@ -588,6 +618,17 @@ jobs:
     'author can sit at the end of the last line',
     failures,
   )
+  assert(authorFromBody('<div><a href="https://cursor.com/agents/bc-1">Open in Web</a></div>\n') === null, 'a footer alone is not an author', failures)
+  const cursorFooterBody = [
+    'Gate the merge.',
+    '',
+    'Device: NOT TESTED',
+    '',
+    '-Grok',
+    '',
+    '<div><a href="https://cursor.com/agents/bc-4075b6b5?cursor_ref=pr_footer&cursor_cta=open_in_web"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cursor.com/assets/images/open-in-web-dark.png"><img alt="Open in Web" src="https://cursor.com/assets/images/open-in-web-dark.png"></picture></a>&nbsp;<a href="https://cursor.com/background-agent?bcId=bc-4075b6b5&cursor_cta=open_in_cursor"><img alt="Open in Cursor" src="https://cursor.com/assets/images/open-in-cursor-dark.png"></a>&nbsp;</div>',
+  ].join('\n')
+  assert(authorFromBody(cursorFooterBody) === 'Grok', 'author is read above the Cursor Open in Web footer', failures)
   assert(terminalSignature('still the pass-through\n') === null, 'a hyphenated word is not a signature', failures)
 
   const echoSignedOld = {
@@ -851,6 +892,42 @@ jobs:
     { headSha: head, author: 'Nova' },
   )
   assert(changesRequested.atHead.length === 0, 'CHANGES_REQUESTED must not count', failures)
+
+  const signThenNotes = collectSigns(
+    [
+      {
+        body: `SIGN ${head.slice(0, 8)} -Echo\nI will sign the follow-up separately. One blocker is noted in the log, not this sha.`,
+        userLogin: 'Rowerguy508',
+        userType: 'User',
+      },
+    ],
+    { headSha: head, author: 'Nova' },
+  )
+  assert(signThenNotes.atHead.join(',') === 'Echo', 'notes after a leading SIGN line must not discard it', failures)
+
+  const negatedSignLine = collectSigns(
+    [
+      {
+        body: `not a sign SIGN ${head.slice(0, 8)} -Echo`,
+        userLogin: 'Rowerguy508',
+        userType: 'User',
+      },
+    ],
+    { headSha: head, author: 'Nova' },
+  )
+  assert(negatedSignLine.atHead.length === 0, 'a negated SIGN line is not canonical and must not count', failures)
+
+  const noSignLine = collectSigns(
+    [
+      {
+        body: 'I will sign once iOS is green.\n-Fry',
+        userLogin: 'Rowerguy508',
+        userType: 'User',
+      },
+    ],
+    { headSha: head, author: 'Nova' },
+  )
+  assert(noSignLine.atHead.length === 0, 'a comment with no SIGN line must not count', failures)
 
   const greenRuns = workflowNames.names.map((name, index) => ({
     id: index + 1,
