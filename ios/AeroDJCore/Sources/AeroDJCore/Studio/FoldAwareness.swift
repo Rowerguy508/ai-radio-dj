@@ -83,6 +83,10 @@ public enum FoldAwareness {
             fold: fold, artMin: artMin, artMax: artMax))
     }
 
+    /// Narrowest side of the fold (after the `duoEdgeInset`s) that takes the collapsed-rail
+    /// column. Under it, `bookColumn` is nil and the column stays centred as before (#548).
+    public static let bookColumnMinSideWidth: Double = 260
+
     /// The single centred column the Duo shows once its rail is collapsed (#479), in book pose.
     /// `minX` and `width` are container points; `artSide` is clamped to the column.
     public struct BookColumn: Equatable, Sendable {
@@ -102,10 +106,10 @@ public enum FoldAwareness {
     /// #507: with the rail collapsed, the wide Duo draws one centred column (art, transport,
     /// scrubber, toolbar). Centred on a 640 pt display it spans the crease. In book pose the
     /// whole column moves to one side of the fold: the leading side, unless the trailing side
-    /// is wider. It keeps its preferred width when that fits, otherwise it takes the side's
+    /// is wider. That side must be at least `bookColumnMinSideWidth`. It keeps its preferred width when that fits, otherwise it takes the side's
     /// width (`duoEdgeInset` from the edge, flush with the fold), and stays centred in the side.
     ///
-    /// Nil whenever `resolve` is not book pose (no fold, flat or closed hinge, laptop pose,
+    /// Nil when the chosen side is narrower than `bookColumnMinSideWidth`, and whenever `resolve` is not book pose (no fold, flat or closed hinge, laptop pose,
     /// a phone or the iPhone-landscape centred column): the caller keeps today's centred column.
     public static func bookColumn(containerWidth: Double, containerHeight: Double,
                                   hinge: HingeSample?, divisions: [Division],
@@ -121,7 +125,7 @@ public enum FoldAwareness {
         let leading = (start: edge, width: foldMin - edge)
         let trailing = (start: foldMax, width: innerEnd - foldMax)
         let side = trailing.width > leading.width ? trailing : leading
-        guard side.width > 0 else { return nil }
+        guard side.width >= bookColumnMinSideWidth else { return nil }
         let width = min(column, side.width)
         return BookColumn(minX: side.start + (side.width - width) / 2, width: width,
                           artSide: max(0, min(artSide, width)))

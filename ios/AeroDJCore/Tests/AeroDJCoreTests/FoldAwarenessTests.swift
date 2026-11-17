@@ -177,27 +177,65 @@ final class FoldAwarenessTests: XCTestCase {
 
     // MARK: - #507 collapsed rail: the centred column moves off the fold
 
-    /// The Duo's book-pose sizes: the open display, and the narrower Duo frame tested above.
-    private let bookSizes: [(width: Double, height: Double)] = [(640, 820), (500, 820)]
-
-    func testTheCollapsedColumnAvoidsACentredFoldAtTheDuosBookPoseSizes() throws {
-        for size in bookSizes {
-            for gutter in [FoldedColumnLayout.duoFoldGutter, 40.0] {
-                let fold = vertical(minX: size.width / 2 - gutter / 2, width: gutter, height: size.height)
-                let today = centredColumn(width: size.width, height: size.height)
-                // Today's column, centred on the container, crosses the crease.
-                let todayMinX = (size.width - today.column) / 2
-                XCTAssertTrue(rangesOverlap(todayMinX, todayMinX + today.column, fold.minX, fold.maxX),
-                              "\(size) \(gutter)")
-                let column = try XCTUnwrap(bookColumn(width: size.width, height: size.height, divisions: [fold]),
-                                           "\(size) \(gutter)")
-                assertColumnClear(column, of: fold, containerWidth: size.width)
-                XCTAssertLessThanOrEqual(column.maxX, fold.minX + 0.001, "a symmetric fold keeps the leading side")
-                XCTAssertGreaterThanOrEqual(column.width, StudioLayoutMetrics.touchTargetMin)
-                XCTAssertLessThanOrEqual(column.width, today.column)
-                XCTAssertLessThanOrEqual(column.artSide, column.width)
-            }
+    func testTheCollapsedColumnAvoidsACentredFoldOnTheOpenDuo() throws {
+        for gutter in [FoldedColumnLayout.duoFoldGutter, 40.0] {
+            let fold = vertical(minX: width / 2 - gutter / 2, width: gutter, height: height)
+            let today = centredColumn(width: width, height: height)
+            // Today's column, centred on the container, crosses the crease.
+            let todayMinX = (width - today.column) / 2
+            XCTAssertTrue(rangesOverlap(todayMinX, todayMinX + today.column, fold.minX, fold.maxX), "\(gutter)")
+            let column = try XCTUnwrap(bookColumn(divisions: [fold]), "\(gutter)")
+            assertColumnClear(column, of: fold, containerWidth: width)
+            XCTAssertLessThanOrEqual(column.maxX, fold.minX + 0.001, "a symmetric fold keeps the leading side")
+            XCTAssertLessThanOrEqual(column.width, today.column)
+            XCTAssertLessThanOrEqual(column.artSide, column.width)
         }
+    }
+
+    /// 640 x 820 with the 28 pt centred fold: the leading side is 640 / 2 - 14 - 16 = 290 pt.
+    /// The column takes all of it, and the transport row still fits with 44 pt targets.
+    /// `TransportRow` (app target) draws Play at 68 and Skip at 52, with a 52 pt balancing
+    /// slot when there is no Tune; those literals are the AeroDJCore constants
+    /// `FoldedOuterLayout.playSide` / `skipSide` (pinned by LiquidGlassTransportTests).
+    func testTheOpenDuoColumnIsAbout290AndHoldsTheTransportTargets() throws {
+        let fold = vertical(minX: width / 2 - 14, width: 28, height: height)
+        let column = try XCTUnwrap(bookColumn(divisions: [fold]))
+        XCTAssertEqual(column.width, 290, accuracy: 0.001)
+        XCTAssertEqual(column.minX, FoldedColumnLayout.duoEdgeInset, accuracy: 0.001)
+        assertColumnClear(column, of: fold, containerWidth: width)
+
+        let play = FoldedOuterLayout.playSide
+        let skip = FoldedOuterLayout.skipSide
+        XCTAssertGreaterThanOrEqual(play, StudioLayoutMetrics.touchTargetMin)
+        XCTAssertGreaterThanOrEqual(skip, StudioLayoutMetrics.touchTargetMin)
+        // Balanced row (the collapsed column passes `balancesSides: true`): slot, Play, Skip.
+        let balancedRow = skip + play + skip
+        XCTAssertGreaterThanOrEqual(column.width, balancedRow)
+        XCTAssertGreaterThanOrEqual(column.width, FoldAwareness.bookColumnMinSideWidth)
+    }
+
+    /// The narrow 500 x 820 frame: a centred fold leaves 220 or 214 pt a side, under the
+    /// minimum, so the column stays centred exactly as today.
+    func testTheNarrowFrameKeepsTheCentredColumn() {
+        for gutter in [28.0, 40.0] {
+            let fold = vertical(minX: 250 - gutter / 2, width: gutter, height: height)
+            XCTAssertLessThan((500 - 2 * FoldedColumnLayout.duoEdgeInset - gutter) / 2,
+                              FoldAwareness.bookColumnMinSideWidth)
+            XCTAssertNil(bookColumn(width: 500, divisions: [fold]), "\(gutter)")
+        }
+    }
+
+    /// A centred 28 pt fold leaves (W - 32 - 28) / 2 a side: 580 pt gives exactly 260, 579 gives 259.5.
+    func testTheMinimumSideWidthBoundary() throws {
+        XCTAssertEqual(FoldAwareness.bookColumnMinSideWidth, 260)
+        let atMin = vertical(minX: 580 / 2 - 14, width: 28, height: height)
+        let moved = try XCTUnwrap(bookColumn(width: 580, divisions: [atMin]))
+        XCTAssertEqual(moved.width, 260, accuracy: 0.001)
+        XCTAssertEqual(moved.minX, FoldedColumnLayout.duoEdgeInset, accuracy: 0.001, "a tie keeps the leading side")
+        assertColumnClear(moved, of: atMin, containerWidth: 580)
+
+        let under = vertical(minX: 579 / 2 - 14, width: 28, height: height)
+        XCTAssertNil(bookColumn(width: 579, divisions: [under]))
     }
 
     func testTheCollapsedColumnTakesTheWiderSideOfAnOffCentreFold() throws {
