@@ -38,6 +38,10 @@ jobs:
       DERIVED_DATA: ios/build/DerivedData-ipad
     steps:
       - uses: actions/checkout@v4
+      - name: Self-hosted disk check
+        if: runner.environment == 'self-hosted'
+        timeout-minutes: 3
+        run: ios/scripts/ci-selfhosted-prep.sh --check-disk
       - name: Install pinned XcodeGen
         run: |
           curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
