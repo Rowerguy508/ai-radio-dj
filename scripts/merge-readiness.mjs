@@ -13,6 +13,12 @@ import { readFile } from 'node:fs/promises'
 export const TARGET_BASE = 'integration/device-duo'
 export const REQUIRED_SIGN_COUNT = 2
 
+// Who may post a sign. Edit TRUSTED_LOGINS here when a trusted person is not
+// already OWNER, MEMBER, or COLLABORATOR. Agents share Rowerguy508 with the
+// PR author, so "non-author" stays the -Name on the comment, not this login.
+export const TRUSTED_LOGINS = ['Rowerguy508']
+export const TRUSTED_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR']
+
 // Public check-run names. CI jobs set these with `name:`. The seven heavy
 // iOS jobs keep the same strings on their `*-result` companions so a path
 // filter skip still reports success. `changes` always runs.
@@ -102,6 +108,22 @@ function isBot(posting) {
   return type === 'bot' || /\[bot\]$/i.test(login)
 }
 
+export function isTrustedPoster(posting) {
+  const login = posting?.userLogin || ''
+  if (TRUSTED_LOGINS.some((allowed) => allowed.toLowerCase() === login.toLowerCase())) return true
+  const association = (posting?.authorAssociation || '').toUpperCase()
+  return TRUSTED_ASSOCIATIONS.includes(association)
+}
+
+// Missing head repo, a fork flag, or a different repository all fail closed.
+export function headComesFromFork(pr) {
+  const head = pr?.head?.repo
+  const base = pr?.base?.repo
+  if (!head?.full_name || !base?.full_name) return true
+  if (head.fork === true) return true
+  return head.full_name.toLowerCase() !== base.full_name.toLowerCase()
+}
+
 // A posting counts at this head, is stale (bound to some other sha), or is
 // not a sign. Explicit "signed at <sha>" wins over commit_id and timing.
 function classifyPosting(posting, headSha, headCommittedAt) {
@@ -127,12 +149,21 @@ export function collectSigns(postings, { headSha, author, headCommittedAt }) {
   const atHead = new Map()
   const stale = []
   const ignoredAuthor = []
+  const ignoredUntrusted = []
   for (const posting of postings || []) {
     if (isBot(posting)) continue
     const name = terminalSignature(posting.body)
     if (!name) continue
     const decision = classifyPosting(posting, headSha, headCommittedAt)
     if (!decision) continue
+    if (!isTrustedPoster(posting)) {
+      ignoredUntrusted.push({
+        name,
+        login: posting.userLogin || 'unknown',
+        association: posting.authorAssociation || 'NONE',
+      })
+      continue
+    }
     if (author && name.toLowerCase() === author.toLowerCase()) {
       ignoredAuthor.push(name)
       continue
@@ -152,7 +183,7 @@ export function collectSigns(postings, { headSha, author, headCommittedAt }) {
     seen.add(key)
     staleOnly.push(item)
   }
-  return { atHead: [...atHead.values()], stale: staleOnly, ignoredAuthor }
+  return { atHead: [...atHead.values()], stale: staleOnly, ignoredAuthor, ignoredUntrusted }
 }
 
 function recency(run) {
@@ -203,6 +234,9 @@ export function readinessProblems({
   postings,
   headCommittedAt,
   checkRuns,
+  fork = false,
+  headRepo = '',
+  baseRepo = '',
 }) {
   if (baseRef && baseRef !== TARGET_BASE) {
     return {
@@ -215,6 +249,11 @@ export function readinessProblems({
   }
 
   const lines = []
+  if (fork) {
+    lines.push(
+      `merge-readiness: head comes from a fork (${headRepo || 'unknown repository'}). This check fails closed on fork PRs. Push the branch to ${baseRepo || 'this repository'} and open the pull request from there. Do not merge.`,
+    )
+  }
   const author = authorFromBody(body)
   if (!author) {
     lines.push(
@@ -237,8 +276,14 @@ export function readinessProblems({
         : ''
     const ignored =
       signs.ignoredAuthor.length > 0 ? ` Ignored author sign from ${author}.` : ''
+    const untrusted =
+      signs.ignoredUntrusted.length > 0
+        ? ` Ignored untrusted sign from ${signs.ignoredUntrusted
+            .map((item) => `${item.login} (association ${item.association}, -${item.name})`)
+            .join(', ')}. A sign counts only when that poster's author_association is OWNER, MEMBER, or COLLABORATOR, or their login is in TRUSTED_LOGINS in scripts/merge-readiness.mjs.`
+        : ''
     lines.push(
-      `merge-readiness: only ${signs.atHead.length} non-author sign${signs.atHead.length === 1 ? '' : 's'} at head ${shortSha(headSha)}; need ${REQUIRED_SIGN_COUNT}. Found: ${found}.${stale}${ignored} Ask a reviewer to re-sign at this sha. A sign is a PR comment or review whose last line is -Name (for example -Orion) and which says "Signed at ${shortSha(headSha)}" (7 or more hex digits of this head; #506 and #550 use 8). A sign at an older head does not count. Do not self-approve.`,
+      `merge-readiness: only ${signs.atHead.length} non-author sign${signs.atHead.length === 1 ? '' : 's'} at head ${shortSha(headSha)}; need ${REQUIRED_SIGN_COUNT}. Found: ${found}.${stale}${ignored}${untrusted} Ask a reviewer to re-sign at this sha. A sign is a PR comment or review whose text ends with -Name (for example -Orion) and which says "Signed at ${shortSha(headSha)}" (7 or more hex digits of this head; pull requests 506 and 550 use 8). The GitHub poster must be trusted. Non-author is the -Name, not the login, so agents who share ${TRUSTED_LOGINS.join(', ')} can still sign for someone else. The author's own -Name does not count. A sign at an older head does not count. Do not self-approve.`,
     )
   }
 
@@ -378,6 +423,51 @@ export function selfTest() {
     failures,
   )
   assert(authorExcluded.ignoredAuthor.includes('Echo'), 'author sign should be reported', failures)
+  assert(
+    authorExcluded.ignoredUntrusted.length === 0,
+    'a trusted login posting the author -Name is an author exclusion, not an untrusted poster',
+    failures,
+  )
+
+  const trustedCollab = collectSigns(
+    [
+      {
+        body: 'Signed at c00e290f.\n\n-Echo',
+        userLogin: 'studio-collab',
+        userType: 'User',
+        authorAssociation: 'COLLABORATOR',
+        createdAt: '2026-11-15T08:00:00Z',
+      },
+    ],
+    { headSha: head, author: 'Nova', headCommittedAt: '2026-11-15T07:00:00Z' },
+  )
+  assert(trustedCollab.atHead.join(',') === 'Echo', 'COLLABORATOR sign must count', failures)
+
+  const untrusted = collectSigns(
+    [
+      {
+        body: 'Signed at c00e290f.\n\n-Echo',
+        userLogin: 'outsider',
+        userType: 'User',
+        authorAssociation: 'NONE',
+        createdAt: '2026-11-15T08:00:00Z',
+      },
+      {
+        body: 'Signed at c00e290f.\n\n-Fry',
+        userLogin: 'drive-by',
+        userType: 'User',
+        authorAssociation: 'CONTRIBUTOR',
+        createdAt: '2026-11-15T08:00:00Z',
+      },
+    ],
+    { headSha: head, author: 'Nova', headCommittedAt: '2026-11-15T07:00:00Z' },
+  )
+  assert(untrusted.atHead.length === 0, `untrusted posters must not count, got ${untrusted.atHead.join(',')}`, failures)
+  assert(
+    untrusted.ignoredUntrusted.map((item) => item.login).sort().join(',') === 'drive-by,outsider',
+    `untrusted signs were not reported: ${JSON.stringify(untrusted.ignoredUntrusted)}`,
+    failures,
+  )
 
   const onlyOld = collectSigns([echoSignedOld], {
     headSha: head,
@@ -535,6 +625,79 @@ export function selfTest() {
   })
   assert(otherBase.ok && otherBase.applies === false, 'other bases are out of scope', failures)
 
+  assert(
+    headComesFromFork({
+      head: { repo: { full_name: 'Rowerguy508/ai-radio-dj', fork: false } },
+      base: { repo: { full_name: 'Rowerguy508/ai-radio-dj', fork: false } },
+    }) === false,
+    'same-repo head is not a fork',
+    failures,
+  )
+  assert(
+    headComesFromFork({
+      head: { repo: { full_name: 'outsider/ai-radio-dj', fork: true } },
+      base: { repo: { full_name: 'Rowerguy508/ai-radio-dj', fork: false } },
+    }) === true,
+    'fork head must be detected',
+    failures,
+  )
+  assert(
+    headComesFromFork({
+      head: { repo: null },
+      base: { repo: { full_name: 'Rowerguy508/ai-radio-dj' } },
+    }) === true,
+    'missing head repo fails closed as a fork',
+    failures,
+  )
+
+  const forked = readinessProblems({
+    headSha: head,
+    baseRef: TARGET_BASE,
+    body: 'Fixes the gate.\n\nDevice: NOT TESTED\n\n-Nova',
+    postings: [echoResigned, frySign],
+    headCommittedAt: '2026-11-15T07:00:00Z',
+    checkRuns: greenRuns,
+    fork: true,
+    headRepo: 'outsider/ai-radio-dj',
+    baseRepo: 'Rowerguy508/ai-radio-dj',
+  })
+  assert(!forked.ok, 'a fork head must fail even with trusted signs and green checks', failures)
+  assert(
+    forked.lines.some((line) => line.includes('fails closed on fork PRs') && line.includes('outsider/ai-radio-dj')),
+    `fork failure missing:\n${forked.lines.join('\n')}`,
+    failures,
+  )
+
+  const outsidePair = readinessProblems({
+    headSha: head,
+    baseRef: TARGET_BASE,
+    body: 'Fixes the gate.\n\nDevice: NOT TESTED\n\n-Nova',
+    postings: [
+      {
+        body: 'Signed at c00e290f.\n\n-Echo',
+        userLogin: 'outsider',
+        userType: 'User',
+        authorAssociation: 'NONE',
+        createdAt: '2026-11-15T08:00:00Z',
+      },
+      {
+        body: 'Signed at c00e290f.\n\n-Fry',
+        userLogin: 'drive-by',
+        userType: 'User',
+        authorAssociation: 'CONTRIBUTOR',
+        createdAt: '2026-11-15T08:00:00Z',
+      },
+    ],
+    headCommittedAt: '2026-11-15T07:00:00Z',
+    checkRuns: greenRuns,
+    fork: false,
+  })
+  assert(!outsidePair.ok, 'two outside accounts must not turn the gate green', failures)
+  const outsideText = outsidePair.lines.join('\n')
+  assert(outsideText.includes('only 0 non-author signs'), `outside signs counted:\n${outsideText}`, failures)
+  assert(outsideText.includes('outsider'), 'untrusted outsider missing from the error', failures)
+  assert(outsideText.includes('TRUSTED_LOGINS'), 'the error must point at the allowlist', failures)
+
   if (failures.length > 0) {
     throw new Error(`merge-readiness self-test failed:\n${failures.map((item) => `- ${item}`).join('\n')}`)
   }
@@ -624,6 +787,7 @@ function postingFromComment(comment) {
     body: comment.body || '',
     userLogin: comment.user?.login || '',
     userType: comment.user?.type || '',
+    authorAssociation: comment.author_association || '',
     createdAt: comment.created_at || null,
     commitId: comment.commit_id || null,
   }
@@ -642,6 +806,7 @@ async function loadPullRequest(token, owner, repo, number) {
       body: review.body || '',
       userLogin: review.user?.login || '',
       userType: review.user?.type || '',
+      authorAssociation: review.author_association || '',
       createdAt: review.submitted_at || null,
       commitId: review.commit_id || null,
     })),
@@ -661,6 +826,9 @@ async function loadPullRequest(token, owner, repo, number) {
     baseRef: pr.base?.ref,
     headSha: pr.head?.sha,
     body: pr.body || '',
+    fork: headComesFromFork(pr),
+    headRepo: pr.head?.repo?.full_name || '',
+    baseRepo: pr.base?.repo?.full_name || '',
     headCommittedAt,
     postings,
     checkRuns: checkRuns.map((run) => ({
@@ -748,6 +916,9 @@ async function main() {
       postings: loaded.postings,
       headCommittedAt: loaded.headCommittedAt,
       checkRuns: loaded.checkRuns,
+      fork: loaded.fork,
+      headRepo: loaded.headRepo,
+      baseRepo: loaded.baseRepo,
     })
     const lines = result.ok && result.applies
       ? [successLine(loaded.headSha, result.signs)]
