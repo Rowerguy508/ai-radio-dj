@@ -739,8 +739,23 @@ private struct LayoutResizeProbe: View {
                       studio: studio, isTestStation: true,
                       timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
             .environment(\.horizontalSizeClass, wide ? .regular : .compact)
+            .environment(\.routesOnReaderHeight, true)
             .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// The probe's column is the container its layout gate reads (#552). It is a fixed frame at
+/// the top of a window-wide `NavigationStack`, so the window's bar and home-indicator insets
+/// are not room it can grow into. Without this, `FoldedColumnLayout.routingHeight` added
+/// them on iPad (CI run 44024149188: the narrow 652 × 680 column routed as 652 × 818, the
+/// rail), and the widened 780 pt column became the rail instead of the two-zone Studio.
+private struct RoutesOnReaderHeightKey: EnvironmentKey { static let defaultValue = false }
+
+extension EnvironmentValues {
+    var routesOnReaderHeight: Bool {
+        get { self[RoutesOnReaderHeightKey.self] }
+        set { self[RoutesOnReaderHeightKey.self] = newValue }
     }
 }
 
