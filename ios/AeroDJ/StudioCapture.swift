@@ -741,16 +741,22 @@ private struct LayoutResizeProbe: View {
     }
 
     var body: some View {
-        NavigationStack {
-            // Set on the player, inside the stack, so the stack's own traits cannot override it.
-            PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
-                          snapshot: scenario.snapshot, actions: .counting, search: .counting,
-                          studio: studio, isTestStation: true,
-                          timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
-                .environment(\.horizontalSizeClass, wide ? .regular : .compact)
-        }
-        .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // The column hangs off a window-sized base, so a column wider than an iPhone window
+        // cannot widen the capture root and push `ProbeChrome` (top-trailing) off screen
+        // (CI run 44073668790: probe.widen landed at x 469, past the iPhone window).
+        Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topLeading) {
+                NavigationStack {
+                    // Set on the player, inside the stack, so the stack's own traits cannot override it.
+                    PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                                  snapshot: scenario.snapshot, actions: .counting, search: .counting,
+                                  studio: studio, isTestStation: true,
+                                  timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
+                        .environment(\.horizontalSizeClass, wide ? .regular : .compact)
+                }
+                .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
+            }
     }
 }
 
