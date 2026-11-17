@@ -1463,6 +1463,13 @@ private struct DuoStationDial: View {
                                 .foldedGlass(Capsule(), role: .control)
                         }
                         .buttonStyle(.plain)
+                        // #562 (-Nova): the 44 pt floor has to be on the button, as in
+                        // StudioCapture's split.show buttons. On the iOS 26.5 plain style the
+                        // label's minHeight draws the 44 pt capsule but left the stop's
+                        // accessibility frame at the text height (18 pt). Same size as the
+                        // label, so nothing moves or redraws.
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                         .accessibilityLabel(stop.name)
                         .accessibilityHint("Plays the station now.")
                         .accessibilityAddTraits(selected ? .isSelected : [])
