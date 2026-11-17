@@ -1,9 +1,9 @@
 import Foundation
 
 // The break's line clock across a system interruption (#377, -Fry). Pure: no audio session,
-// no player, and no timer that fires on its own. `InterludePlaybackAdapter` executes the same
-// decisions (pause the clip, cancel the line timeout, start no next line, then one
-// acknowledgement and the interrupted line). Linux green is not device evidence.
+// no player, and no timer that fires on its own. The app does not call this type. It models
+// the decisions `InterludePlaybackAdapter` already makes; the tests prove the model, and a
+// source pin checks the adapter still pauses before any halt. Linux green is not device evidence.
 //
 // A `.playback` session that mixes with others may get no `.began` at all, so this clock never
 // runs for that notice. Whether Siri delivers `.began` is the Duo P0 DIAG `interruption` rows.
@@ -39,10 +39,11 @@ public enum BreakTimelineStopPolicy {
 ///
 /// `.began` disarms the line timer: a later `advance` starts no next line. `.ended` with
 /// `shouldResume` and a ready acknowledgement appends exactly one acknowledgement, then the
-/// interrupted line from its beginning. Without `shouldResume` the clock stays disarmed.
-/// No break, a second `.began`, or a second `.ended` changes nothing. An interruption during
-/// the acknowledgement pauses it and does not play a second one. Talk-over stops and is not
-/// replayed.
+/// interrupted line from its beginning. Without `shouldResume` this model stays `.held` and
+/// disarmed. The adapter is not identical there: it then ends that break as cancelled so the
+/// break does not stay open, and music stays held. No break, a second `.began`, or a second
+/// `.ended` changes nothing. An interruption during the acknowledgement pauses it and does not
+/// play a second one. Talk-over stops and is not replayed.
 public struct BreakLineTimeline: Equatable, Sendable {
     public enum Event: Equatable, Sendable {
         case scriptLine(Int)
@@ -54,8 +55,8 @@ public struct BreakLineTimeline: Equatable, Sendable {
         case acknowledgement(ends: Double)
     }
 
-    /// The acknowledgement cue's estimated length. The real clip is whatever on-device
-    /// `VoiceRenderer` produced; this clock only needs a duration so `advance` can finish it.
+    /// Test-clock estimate only, so `advance` can finish the acknowledgement. Not a playback
+    /// schedule: the adapter plays whatever on-device `VoiceRenderer` produced.
     private static let acknowledgementSeconds = 2.0
 
     private var interruption = BreakInterruptionState()
