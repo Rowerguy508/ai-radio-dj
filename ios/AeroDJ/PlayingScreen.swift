@@ -58,11 +58,6 @@ struct PlayingScreen: View {
         #endif
     }
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    #if DEBUG
-    /// Set only by the Studio resize probe (`LayoutResizeProbe`), whose fixed column sits
-    /// inside a window-wide navigation stack and is not the window-tall container.
-    @Environment(\.routesOnReaderHeight) private var routesOnReaderHeight
-    #endif
     /// Set by the split host. Nil keeps the phone and the centred column as they are.
     @Environment(\.splitBarEdge) private var splitBarEdge
     /// The split container, set by the capture. Nil on a phone, so the reader is unchanged.
@@ -74,16 +69,6 @@ struct PlayingScreen: View {
         // query from settling, so capture runs skip the morph. The app still animates it.
         if reduceMotion || ProcessInfo.processInfo.environment["STUDIO_SCREENSHOT_DIR"] != nil { return nil }
         return bleedArt
-    }
-
-    /// True when the gate must read the reader's own height, not the reader plus its insets.
-    /// Release always routes on the window-tall container (`FoldedColumnLayout.routingHeight`).
-    private var routesOnReader: Bool {
-        #if DEBUG
-        routesOnReaderHeight
-        #else
-        false
-        #endif
     }
 
     /// Container the split host measured. Nil unless that host is adapting, so a phone
@@ -126,14 +111,12 @@ struct PlayingScreen: View {
             // Build 51 (-Atlas): the gate reads the window-tall container, not the reader under
             // the navigation bar, so the open Duo's 820 × 640 landscape window is the rail.
             // Drawing still uses the reader (`height`).
-            // The Studio resize probe's fixed column is its own container (`routesOnReader`).
-            let windowHeight = CGFloat(FoldedColumnLayout.routingHeight(
+            let routeHeight = canvas?.height ?? CGFloat(FoldedColumnLayout.routingHeight(
                 readerHeight: Double(geo.size.height),
                 safeAreaTop: Double(geo.safeAreaInsets.top),
                 safeAreaBottom: Double(geo.safeAreaInsets.bottom),
                 readerMinX: Double(geo.frame(in: .global).minX),
                 readerMinY: Double(geo.frame(in: .global).minY)))
-            let routeHeight = canvas?.height ?? (routesOnReader ? geo.size.height : windowHeight)
             let decision = resolvedLayout(containerWidth: width, containerHeight: Double(routeHeight))
             let mode = DisplayContinuity.screenMode(decision)
             layout(mode: mode, width: width, height: height, routeHeight: routeHeight, barEdge: splitBarEdge)

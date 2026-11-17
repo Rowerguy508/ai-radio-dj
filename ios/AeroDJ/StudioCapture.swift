@@ -209,17 +209,18 @@ struct StudioCaptureView: View {
                 DuoContinuityCapture(studio: dependencies.studio, loads: continuityLoads)
             } else if scenario == .duoArrangement {
                 ArrangementCaptureContainer(studio: dependencies.studio)
+            } else if showsProbe {
+                // The probe owns its NavigationStack inside its fixed column (#552), like a
+                // window or a split-view detail column. No window-wide stack above it.
+                LayoutResizeProbe(wide: $probeWide, scenario: scenario, studio: dependencies.studio)
+                    .modifier(SongRatingToastHost())
             } else {
                 NavigationStack {
-                    if showsProbe {
-                        LayoutResizeProbe(wide: $probeWide, scenario: scenario, studio: dependencies.studio)
-                    } else {
-                        PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
-                                      snapshot: scenario.snapshot, actions: .preview,
-                                      search: scenario == .empty ? .counting : .captureOffline,
-                                      studio: dependencies.studio, isTestStation: true,
-                                      timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
-                    }
+                    PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                                  snapshot: scenario.snapshot, actions: .preview,
+                                  search: scenario == .empty ? .counting : .captureOffline,
+                                  studio: dependencies.studio, isTestStation: true,
+                                  timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
                 }
                 .modifier(SongRatingToastHost())
             }
@@ -715,6 +716,12 @@ enum DisplayContinuityLaunch {
 
 /// Narrow (compact) then wide (regular) around one `PlayingScreen`, so `@State` survives.
 /// The fold control lives on `ProbeChrome`, not in this column.
+///
+/// The column is a window of its own (#552): its `NavigationStack` and bar sit inside the fixed
+/// frame, as in `DuoOpenCaptureContainer`, so the real layout gate
+/// (`FoldedColumnLayout.routingHeight`) counts only this column's bar. Under a window-wide stack
+/// the gate also counted the window's bar and home-indicator insets on iPad (CI run
+/// 44024149188: 652 × 680 routed as 652 × 818), and the widened column became the rail.
 private struct LayoutResizeProbe: View {
     @Binding var wide: Bool
     let scenario: StudioCaptureScenario
@@ -734,28 +741,16 @@ private struct LayoutResizeProbe: View {
     }
 
     var body: some View {
-        PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
-                      snapshot: scenario.snapshot, actions: .counting, search: .counting,
-                      studio: studio, isTestStation: true,
-                      timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
-            .environment(\.horizontalSizeClass, wide ? .regular : .compact)
-            .environment(\.routesOnReaderHeight, true)
-            .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-}
-
-/// The probe's column is the container its layout gate reads (#552). It is a fixed frame at
-/// the top of a window-wide `NavigationStack`, so the window's bar and home-indicator insets
-/// are not room it can grow into. Without this, `FoldedColumnLayout.routingHeight` added
-/// them on iPad (CI run 44024149188: the narrow 652 × 680 column routed as 652 × 818, the
-/// rail), and the widened 780 pt column became the rail instead of the two-zone Studio.
-private struct RoutesOnReaderHeightKey: EnvironmentKey { static let defaultValue = false }
-
-extension EnvironmentValues {
-    var routesOnReaderHeight: Bool {
-        get { self[RoutesOnReaderHeightKey.self] }
-        set { self[RoutesOnReaderHeightKey.self] = newValue }
+        NavigationStack {
+            // Set on the player, inside the stack, so the stack's own traits cannot override it.
+            PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                          snapshot: scenario.snapshot, actions: .counting, search: .counting,
+                          studio: studio, isTestStation: true,
+                          timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
+                .environment(\.horizontalSizeClass, wide ? .regular : .compact)
+        }
+        .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
