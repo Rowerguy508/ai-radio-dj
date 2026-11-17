@@ -63,6 +63,14 @@ enum StudioCaptureScenario: String {
     case resizeTune
     /// The real station split. Selecting a row must not start playback.
     case shell
+    /// #454: the real station split with the tap route wired: a row, card or Duo dial tap selects
+    /// the station and records the id it would start (`capture.startedStation`), and Now Playing
+    /// shows that station's "Starting <name>…". Nothing searches or plays.
+    case stationTap
+    /// #454 (-Nova): the same tap-routed split as `stationTap`, inside the 640 × 820 pt
+    /// compact-class Duo container (`StationTapDuoContainer`), so the opened station's detail is
+    /// the unfolded player and draws the dial. Needs an iPad window, like `duoWideReady`.
+    case stationTapDuo
     /// The listen player with a break ready (`breakReady`) in a 640 × 820 pt compact-class
     /// container: below the Studio switch but wider than any phone in portrait, like the
     /// unfolded Duo's split-view detail (owner, build 25). Needs a window at least that big.
@@ -123,7 +131,7 @@ enum StudioCaptureScenario: String {
         switch self {
         case .loading: .checking
         case .denied: .denied
-        case .stations, .resize, .resizeTune, .shell: .authorized
+        case .stations, .resize, .resizeTune, .shell, .stationTap, .stationTapDuo: .authorized
         default: .authorized
         }
     }
@@ -151,7 +159,7 @@ enum StudioCaptureScenario: String {
         case .revoked: .connections
         case .config, .resizeTune: .tune
         case .resize: .queue
-        case .stations, .shell: nil
+        case .stations, .shell, .stationTap, .stationTapDuo: nil
         default: nil
         }
     }
@@ -195,12 +203,14 @@ struct StudioCaptureView: View {
                 // The split is the root. An outer NavigationStack makes compact width
                 // open the detail column, so the fixture list never appears.
                 StationListCapture()
-            } else if scenario == .shell {
+            } else if scenario == .shell || scenario == .stationTap {
                 // Auth is settled in `.task` before `loaded` so the shell never paints
                 // `.checking` / Connecting in place of Allow.
-                CaptureStationSplit(dependencies: dependencies)
+                CaptureStationSplit(dependencies: dependencies, routesTaps: scenario == .stationTap)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("capture.shell")
+            } else if scenario == .stationTapDuo {
+                StationTapDuoContainer(dependencies: dependencies)
             } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideSpeaking || scenario == .duoWideOnAir {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .duoLandscape || scenario == .duoSidebar {
@@ -334,7 +344,7 @@ struct StudioCaptureView: View {
             // Shell observes authState. Settle the non-prompting status before flipping
             // `loaded`, so CaptureStationSplit's first frame is Allow / denied / ready —
             // never the bare Connecting spinner, and never blocked on MusicKit request().
-            if chosen == .shell {
+            if chosen == .shell || chosen == .stationTap || chosen == .stationTapDuo {
                 await dependencies.playback.refreshAuthorizationStatus()
             }
             loaded = true
@@ -388,6 +398,33 @@ private struct DuoWideCaptureContainer: View {
             .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("capture.duoContainer")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+/// #454 (-Nova, `stationTapDuo`): the tap-routed station split in the same 640 × 820 pt
+/// compact-class container, backdrop, clip and outline as `DuoWideCaptureContainer`. Compact
+/// width collapses the split to one column, so a row tap opens the detail at the container's
+/// full width: the unfolded player, with the Duo dial wired to the split's own tap route.
+/// `capture.duoContainer` lets the UI test wait for the final size before it taps.
+private struct StationTapDuoContainer: View {
+    let dependencies: AppDependencies
+
+    var body: some View {
+        let size = StudioCapture.duoWideContainerSize
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack {
+            Color(white: 0.14)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+            CaptureStationSplit(dependencies: dependencies, routesTaps: true)
+                .environment(\.horizontalSizeClass, .compact)
+                .frame(width: size.width, height: size.height)
+                .clipShape(shape)
+                .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("capture.duoContainer")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
@@ -526,6 +563,10 @@ private struct StationListCapture: View {
 /// non-prompting `refreshAuthorizationStatus()` (capture defaults to `.notDetermined`).
 private struct CaptureStationSplit: View {
     let dependencies: AppDependencies
+    /// #454 (`stationTap`): wire the split's tap route and the Duo dial. Off for `shell`, unchanged.
+    var routesTaps = false
+    /// The last station a tap would start (`capture.startedStation`), "" before any tap.
+    @State private var startedStation = ""
     @ObservedObject private var music = MusicKitService.shared
     @ObservedObject private var calls = PlaybackCallLog.shared
     @State private var showSharedInbox = false
@@ -556,17 +597,69 @@ private struct CaptureStationSplit: View {
         )
     }
 
+    private var snapshot: PlaybackSnapshot {
+        guard access == .authorized else { return music.snapshot }
+        guard routesTaps else { return PlaybackFixtures.playing }
+        // `stationTap`: the fixture plays from the real Morning Calm id, so its dial stop is the
+        // playing one and a tap on it must start nothing (`StationTapRoute.dialPlayingID`).
+        var playing = PlaybackFixtures.playing
+        playing.station = StationRef(id: Station.morningCalmID.uuidString, name: "Morning Calm")
+        return playing
+    }
+
+    /// #454: what `StationListView.openStation` does first on a tap, minus the queue: Now Playing
+    /// shows "Starting <name>…" for the selected station. Records the id; never plays or searches.
+    private func started(_ id: Station.ID) {
+        startedStation = id.uuidString
+        let name = Station.defaultStations.first { $0.id == id }?.name ?? "station"
+        dependencies.studio.stationStart.begin(stationID: id.uuidString, stationName: name,
+                                               songAtTap: snapshot.nowPlaying?.id)
+    }
+
+    private static var stops: [DuoStationSwitch.Stop] {
+        Station.defaultStations.map { DuoStationSwitch.Stop(id: $0.id.uuidString, name: $0.name) }
+    }
+
+    /// The split's start action, `stationTap` only. Nil keeps `shell` as it was.
+    private var startRoute: ((Station.ID) async -> Void)? {
+        guard routesTaps else { return nil }
+        return { id in started(id) }
+    }
+
+    /// The Duo dial's open action, `stationTap` only: the split's own tap route, like the live app.
+    private func dialRoute(_ openFromDetail: @escaping (Station.ID) -> Void) -> ((String) async -> Void)? {
+        guard routesTaps else { return nil }
+        return { stopID in
+            guard let id = StationTapRoute.stationID(forStop: stopID, in: Station.defaultStations.map(\.id)) else { return }
+            openFromDetail(id)
+        }
+    }
+
     var body: some View {
         // Same once-only binder as the live split. Refresh is non-prompting; request()
         // waits for Allow or an explicit station open.
         StationSplitRoot(stations: Station.defaultStations, showsSharedInbox: true,
-                         showSharedInbox: $showSharedInbox) { station in
+                         showSharedInbox: $showSharedInbox,
+                         onUserOpenedStation: startRoute,
+                         stationDetail: { station, openFromDetail in
             PlayingScreen(station: StationRef(id: station.id.uuidString, name: station.name),
                           access: access,
-                          snapshot: access == .authorized ? PlaybackFixtures.playing : music.snapshot,
+                          snapshot: snapshot,
                           actions: actions, search: .counting,
                           studio: dependencies.studio, isTestStation: true,
-                          timeSource: access == .authorized ? .fixture : nil)
+                          timeSource: access == .authorized ? .fixture : nil,
+                          stationStops: routesTaps ? Self.stops : [],
+                          onOpenStation: dialRoute(openFromDetail))
+        })
+        .overlay(alignment: .bottomTrailing) {
+            if routesTaps {
+                Text(verbatim: startedStation)
+                    .font(.caption2)
+                    .padding(6)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("capture.startedStation")
+                    .accessibilityLabel(startedStation)
+            }
         }
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
         .sheet(isPresented: $showSharedInbox) {

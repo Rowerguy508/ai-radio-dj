@@ -46,19 +46,22 @@ struct StationListView: View {
                          showSharedInbox: $showSharedInbox,
                          onUserOpenedStation: { id in await openStation(id) },
                          onAddStation: addStationAction,
-                         onOpenSettings: { showSettings = true }) { station in
+                         onOpenSettings: { showSettings = true },
+                         stationDetail: { station, openFromDetail in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation,
                        stationStops: stations.map { DuoStationSwitch.Stop(id: $0.id.uuidString, name: $0.name) },
+                       // #454: a Duo dial tap takes the same route as a row tap. It selects the
+                       // station (header, start state, song taps) and then starts it.
                        onOpenStation: { id in
-                           guard let uuid = UUID(uuidString: id) else { return }
-                           await openStation(uuid)
+                           guard let uuid = StationTapRoute.stationID(forStop: id, in: stations.map(\.id)) else { return }
+                           openFromDetail(uuid)
                        })
             // Inside the detail's NavigationStack: the top of the content, below the nav bar,
             // so it never covers Back or the title. A tap always opens this column. Never takes a tap.
             .overlay(alignment: .top) { StationStartToast(notice: startNotice) }
-        }
+        })
         // #465 item 10: measures the window for the Duo's station grid. Nil on every phone.
         .appWideScreen(.stations)
         .task(id: "playback-session") { await PlaybackSessionBinder.bind(dependencies) }
@@ -144,14 +147,17 @@ struct StationSplitRoot<Detail: View>: View {
     let stations: [Station]
     var showsSharedInbox: Bool = false
     @Binding var showSharedInbox: Bool
-    /// Fired only from the list selection setter (a row tap). Restore never calls this, so a
-    /// relaunch with a stored station ID cannot request Apple Music permission.
+    /// Fired only from a user tap (`userTapped`): a list row, carousel or grid card, or the Duo
+    /// dial in the detail. Restore never calls this, so a relaunch with a stored station ID cannot
+    /// request Apple Music permission.
     var onUserOpenedStation: ((Station.ID) async -> Void)? = nil
     /// Opens the add-station walkthrough. Nil hides the + button.
     var onAddStation: (() -> Void)? = nil
     /// Opens Settings. Nil hides the gear (StudioCapture passes none).
     var onOpenSettings: (() -> Void)? = nil
-    private let detail: (Station) -> Detail
+    /// The detail for the open station. Its second argument is the split's own tap route (#454): a
+    /// station tapped inside the detail (the Duo dial) is selected here like a row, then started.
+    private let detail: (Station, @escaping (Station.ID) -> Void) -> Detail
 
     /// The one source of truth for both layouts: the selected station, whether restore has
     /// run, and what compact width shows. The regular detail and the compact column are both
@@ -175,13 +181,24 @@ struct StationSplitRoot<Detail: View>: View {
          onAddStation: (() -> Void)? = nil,
          onOpenSettings: (() -> Void)? = nil,
          @ViewBuilder detail: @escaping (Station) -> Detail) {
+        self.init(stations: stations, showsSharedInbox: showsSharedInbox, showSharedInbox: showSharedInbox,
+                  onUserOpenedStation: onUserOpenedStation, onAddStation: onAddStation,
+                  onOpenSettings: onOpenSettings, stationDetail: { station, _ in detail(station) })
+    }
+
+    /// #454: `stationDetail` also gets the split's tap route, for a station tapped inside the detail.
+    init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
+         onUserOpenedStation: ((Station.ID) async -> Void)? = nil,
+         onAddStation: (() -> Void)? = nil,
+         onOpenSettings: (() -> Void)? = nil,
+         @ViewBuilder stationDetail: @escaping (Station, @escaping (Station.ID) -> Void) -> Detail) {
         self.stations = stations
         self.showsSharedInbox = showsSharedInbox
         self._showSharedInbox = showSharedInbox
         self.onUserOpenedStation = onUserOpenedStation
         self.onAddStation = onAddStation
         self.onOpenSettings = onOpenSettings
-        self.detail = detail
+        self.detail = stationDetail
     }
 
     private var isCompact: Bool { horizontalSizeClass != .regular }
@@ -275,7 +292,7 @@ struct StationSplitRoot<Detail: View>: View {
                 NavigationStack {
                     // Contain first. A bare identifier here is copied onto every child
                     // and replaces studio.model.
-                    detail(station)
+                    detail(station, { userTapped($0) })
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("split.detail")
                         .modifier(SplitColumnText(enabled: insets?.barEdge == .trailing))
@@ -410,21 +427,28 @@ struct StationSplitRoot<Detail: View>: View {
     private var selection: Binding<Station.ID?> {
         Binding(
             get: { selectedStationID },
-            set: { newValue in
-                guard let newValue else { return }
-                // Keep the system NavigationSplitView push. Setting the column outside
-                // an animation was skipping the transition on compact width.
-                withAnimation {
-                    navigation.select(newValue)
-                }
-                storedStationID = newValue.uuidString
-                // Explicit row tap only. `restoreSelection` writes `navigation` directly
-                // and never enters this setter, so restore cannot request Apple Music.
-                if let onUserOpenedStation {
-                    Task { await onUserOpenedStation(newValue) }
-                }
-            }
+            set: { userTapped($0) }
         )
+    }
+
+    /// #454: every station tap, from the list, carousel, grid or the detail's Duo dial. Selects the
+    /// station (`StationTapRoute`), stores its id and starts it. Restore never calls this, so it
+    /// cannot request Apple Music.
+    private func userTapped(_ id: Station.ID?) {
+        var next = navigation
+        guard let picked = StationTapRoute.tap(id, navigation: &next, available: stations.map(\.id)) else { return }
+        // Keep the system NavigationSplitView push. Setting the column outside
+        // an animation was skipping the transition on compact width.
+        withAnimation {
+            navigation = next
+        }
+        storedStationID = picked.uuidString
+        // Its own task, as a row tap always did: once a tap reaches here its start runs to the end
+        // (the dial's newer-tap cancel only stops a tap that has not reached here). A newer tap's
+        // start supersedes it in the start path (`.superseded`), so the latest tap still wins.
+        if let onUserOpenedStation {
+            Task { await onUserOpenedStation(picked) }
+        }
     }
 
     /// Copies the stored station into `navigation` once. Playback still starts only from
