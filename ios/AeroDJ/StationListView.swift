@@ -147,8 +147,9 @@ struct StationSplitRoot<Detail: View>: View {
     let stations: [Station]
     var showsSharedInbox: Bool = false
     @Binding var showSharedInbox: Bool
-    /// Fired only from the list selection setter (a row tap). Restore never calls this, so a
-    /// relaunch with a stored station ID cannot request Apple Music permission.
+    /// Fired only from a user tap (`userTapped`): a list row, carousel or grid card, or the Duo
+    /// dial in the detail. Restore never calls this, so a relaunch with a stored station ID cannot
+    /// request Apple Music permission.
     var onUserOpenedStation: ((Station.ID) async -> Void)? = nil
     /// Opens the add-station walkthrough. Nil hides the + button.
     var onAddStation: (() -> Void)? = nil
@@ -442,6 +443,9 @@ struct StationSplitRoot<Detail: View>: View {
             navigation = next
         }
         storedStationID = picked.uuidString
+        // Its own task, as a row tap always did: once a tap reaches here its start runs to the end
+        // (the dial's newer-tap cancel only stops a tap that has not reached here). A newer tap's
+        // start supersedes it in the start path (`.superseded`), so the latest tap still wins.
         if let onUserOpenedStation {
             Task { await onUserOpenedStation(picked) }
         }

@@ -1592,6 +1592,14 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(shows(app, "Starting Late Night"), app.debugDescription)
         XCTAssertFalse(app.textFields["search.field"].exists, "A dial tap never shows search\n\(app.debugDescription)")
         XCTAssertEqual(callLabel(app), "0/0", app.debugDescription)
+        save(app, "ipad-station-tap-dial")
+
+        // The fixture is playing Morning Calm, so its stop is the playing station: a tap starts nothing.
+        let playingStop = app.buttons["duo.station.\(morningCalm)"]
+        XCTAssertTrue(playingStop.waitForExistence(timeout: 5), app.debugDescription)
+        playingStop.tap()
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertEqual(started.label, lateNight, "tapping the playing station's stop is a no-op")
     }
 
     @MainActor

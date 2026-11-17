@@ -498,7 +498,13 @@ private struct CaptureStationSplit: View {
     }
 
     private var snapshot: PlaybackSnapshot {
-        access == .authorized ? PlaybackFixtures.playing : music.snapshot
+        guard access == .authorized else { return music.snapshot }
+        guard routesTaps else { return PlaybackFixtures.playing }
+        // `stationTap`: the fixture plays from the real Morning Calm id, so its dial stop is the
+        // playing one and a tap on it must start nothing (`StationTapRoute.dialPlayingID`).
+        var playing = PlaybackFixtures.playing
+        playing.station = StationRef(id: Station.morningCalmID.uuidString, name: "Morning Calm")
+        return playing
     }
 
     /// #454: what `StationListView.openStation` does first on a tap, minus the queue: Now Playing
