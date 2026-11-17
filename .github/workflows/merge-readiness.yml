@@ -1,0 +1,63 @@
+name: Merge readiness
+
+# Gate for PRs into integration/device-duo. The job name is the check name
+# branch protection must require: merge-readiness.
+#
+# pull_request and pull_request_review run this file from the merge commit, so
+# they work as soon as it is on integration/device-duo. issue_comment,
+# check_run, check_suite, and workflow_run run only the copy on the default
+# branch (main). Until this file is on main, a comment or a finished CI run
+# will not re-evaluate; re-run the job or submit a review.
+#
+# check_run and check_suite do not fire for suites GitHub Actions itself
+# created (recursion guard). CI and iOS finishing is observed via workflow_run.
+# Those events are not on the PR head, so the script writes a check run onto
+# the head SHA. It does not forge -Name signs.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, edited]
+  check_run:
+    types: [completed]
+  check_suite:
+    types: [completed]
+  workflow_run:
+    workflows: ['CI', 'iOS']
+    types: [completed]
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: merge-readiness-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.head_sha || github.event.check_suite.head_sha || github.event.check_run.head_sha || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  merge-readiness:
+    name: merge-readiness
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event_name == 'pull_request_review' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) ||
+      (github.event_name == 'check_suite' && github.event.check_suite.app.slug != 'github-actions') ||
+      (github.event_name == 'check_run' && github.event.check_run.app.slug != 'github-actions') ||
+      github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Parser self-test
+        run: node scripts/merge-readiness.mjs --self-test
+      - name: Evaluate merge readiness
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/merge-readiness.mjs
