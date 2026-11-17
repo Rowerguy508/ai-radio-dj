@@ -188,6 +188,24 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertEqual(RailDLayout.railColumnWidth(detailWidth: .infinity), 0)
         XCTAssertLessThan(RailDLayout.railColumnWidth(detailWidth: 350), RailDLayout.largeTitleMinColumn, "28 pt title")
         XCTAssertGreaterThanOrEqual(RailDLayout.railColumnWidth(detailWidth: 820 - 320 + 44), 0)
+        // The system-drawn bar (Atlas's guard) takes no column width.
+        XCTAssertEqual(RailDLayout.railColumnWidth(detailWidth: 350, barWidth: 0), 314)
+    }
+
+    /// Atlas's #552 metrics and D's column agree on the art: same reserve, same clamp; D's
+    /// column is 12 pt wider (16 / 12 / 8 against 16 / 16 / 16).
+    func testRailColumnArtUsesAtlassReserve() {
+        for (w, h, ax) in [(500.0, 640.0, false), (500, 640, true), (715, 1180, false), (320, 1180, false), (350, 776, false)] {
+            let atlas = FoldedColumnLayout.railColumnMetrics(containerWidth: w, containerHeight: h, barWidth: 56,
+                                                             accessibilityTextSize: ax, artMin: 140, artMax: 420)
+            let column = RailDLayout.railColumnWidth(detailWidth: w)
+            XCTAssertEqual(column, atlas.column + 12, "\(w)")
+            let art = RailDLayout.railColumnArtSide(column: column, containerHeight: h, accessibilityTextSize: ax,
+                                                    artMin: 140, artMax: 420)
+            XCTAssertGreaterThanOrEqual(art, atlas.artSide, "\(w)x\(h)")
+            XCTAssertLessThanOrEqual(art, atlas.artSide + 12, "\(w)x\(h)")
+            XCTAssertLessThanOrEqual(art, column)
+        }
     }
 
     // MARK: Source guards (the app target is not built on Linux)

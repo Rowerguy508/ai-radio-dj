@@ -114,7 +114,9 @@ struct PlayingScreen: View {
             let routeHeight = canvas?.height ?? CGFloat(FoldedColumnLayout.routingHeight(
                 readerHeight: Double(geo.size.height),
                 safeAreaTop: Double(geo.safeAreaInsets.top),
-                safeAreaBottom: Double(geo.safeAreaInsets.bottom)))
+                safeAreaBottom: Double(geo.safeAreaInsets.bottom),
+                readerMinX: Double(geo.frame(in: .global).minX),
+                readerMinY: Double(geo.frame(in: .global).minY)))
             let decision = resolvedLayout(containerWidth: width, containerHeight: Double(routeHeight))
             let mode = DisplayContinuity.screenMode(decision)
             layout(mode: mode, width: width, height: height, routeHeight: routeHeight, barEdge: splitBarEdge)

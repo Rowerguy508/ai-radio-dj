@@ -220,9 +220,24 @@ public enum RailDLayout {
     /// 16 / 16 / 16 so a 290 pt portrait sidebar leaves the column the DJ chip needs.
     public static let railColumnLeadingInset: Double = 16
     public static let railColumnGutter: Double = 12
-    public static func railColumnWidth(detailWidth: Double) -> Double {
-        guard detailWidth.isFinite else { return 0 }
-        return max(0, detailWidth - railColumnLeadingInset - railColumnGutter - railWidth - trailingInset)
+    /// `barWidth` is 0 when the system draws the rail (Atlas's #552 guard), as in
+    /// `FoldedColumnLayout.railColumnMetrics`.
+    public static func railColumnWidth(detailWidth: Double, barWidth: Double = railWidth) -> Double {
+        guard detailWidth.isFinite, barWidth.isFinite else { return 0 }
+        return max(0, detailWidth - railColumnLeadingInset - railColumnGutter - max(0, barWidth) - trailingInset)
+    }
+
+    /// The rail column's art: D's column with Atlas's reserve under the art
+    /// (`FoldedColumnLayout.railColumnReserveBelowArt`, the accessibility one at AX sizes), the
+    /// same clamp as `FoldedColumnLayout.railColumnMetrics`, never wider than the column. Only the
+    /// column width differs from his metrics (D's 16 / 12 / 8 insets, 12 pt wider).
+    public static func railColumnArtSide(column: Double, containerHeight: Double, accessibilityTextSize: Bool,
+                                         artMin: Double, artMax: Double) -> Double {
+        let reserve = accessibilityTextSize
+            ? FoldedColumnLayout.railColumnReserveBelowArtAccessibility
+            : FoldedColumnLayout.railColumnReserveBelowArt
+        let art = max(artMin, min(column, containerHeight - reserve, artMax))
+        return min(art, max(0, column))
     }
 
     /// The open title size: 34 pt in the two halves, 28 pt in the narrow rail column.

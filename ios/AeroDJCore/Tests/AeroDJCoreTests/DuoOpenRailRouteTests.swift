@@ -24,6 +24,52 @@ final class DuoOpenRailRouteTests: XCTestCase {
         XCTAssertEqual(FoldedColumnLayout.routingHeight(readerHeight: 400, safeAreaTop: -3, safeAreaBottom: 20), 420)
     }
 
+    /// CI run 44014298982 (iPhone 16e): the Studio resize probe's widened column (Studio-height,
+    /// wider than the 390 pt window) is centred off screen, at about (−235, −96). Its insets are
+    /// the hidden parts under the bars, so it keeps the reader height and the two-zone Studio.
+    func testAContainerCentredOffScreenKeepsItsReaderHeight() {
+        let probeHeight = FoldedColumnLayout.landscapeDuoMinHeight - 80
+        XCTAssertEqual(FoldedColumnLayout.routingHeight(readerHeight: probeHeight, safeAreaTop: 197, safeAreaBottom: 0,
+                                                        readerMinX: -235, readerMinY: -96), probeHeight)
+        XCTAssertEqual(FoldedColumnLayout.routingHeight(readerHeight: probeHeight, safeAreaTop: 197, safeAreaBottom: 0,
+                                                        readerMinX: 10, readerMinY: -96), probeHeight)
+        XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: 780, containerHeight: probeHeight,
+                                                accessibilityTextSize: false), .studio)
+        // On screen (the open Duo's window, or the 820 × 640 capture container centred in the iPad
+        // window at x = 0): the insets count.
+        XCTAssertEqual(FoldedColumnLayout.routingHeight(readerHeight: 590, safeAreaTop: 50, safeAreaBottom: 0,
+                                                        readerMinX: 0, readerMinY: 320), 640)
+        XCTAssertEqual(FoldedColumnLayout.routingHeight(readerHeight: 590, safeAreaTop: 50, safeAreaBottom: 0,
+                                                        readerMinX: -0.5, readerMinY: 50), 640)
+    }
+
+    /// The rail column's art and column, pinned (Fry's #552 review: no magic reserve in the view).
+    func testRailColumnMetrics() {
+        XCTAssertEqual(FoldedColumnLayout.railColumnReserveBelowArt, 260)
+        XCTAssertEqual(FoldedColumnLayout.railColumnReserveBelowArtAccessibility, 500)
+        // A ~500 pt detail beside the sidebar, 640 tall: 500 − 3 × 16 − 56 = 396; 640 − 260 = 380.
+        var m = FoldedColumnLayout.railColumnMetrics(containerWidth: 500, containerHeight: 640, barWidth: 56,
+                                                     accessibilityTextSize: false, artMin: 140, artMax: 420)
+        XCTAssertEqual(m.column, 396)
+        XCTAssertEqual(m.artSide, 380)
+        // Accessibility text: 640 − 500 = 140, the art floor.
+        m = FoldedColumnLayout.railColumnMetrics(containerWidth: 500, containerHeight: 640, barWidth: 56,
+                                                 accessibilityTextSize: true, artMin: 140, artMax: 420)
+        XCTAssertEqual(m.artSide, 140)
+        // Tall: capped at artMax; narrow: never wider than the column.
+        m = FoldedColumnLayout.railColumnMetrics(containerWidth: 715, containerHeight: 1180, barWidth: 56,
+                                                 accessibilityTextSize: false, artMin: 140, artMax: 420)
+        XCTAssertEqual(m.artSide, 420)
+        m = FoldedColumnLayout.railColumnMetrics(containerWidth: 320, containerHeight: 1180, barWidth: 56,
+                                                 accessibilityTextSize: false, artMin: 140, artMax: 420)
+        XCTAssertEqual(m.column, 216)
+        XCTAssertEqual(m.artSide, 216)
+        // The system-drawn bar takes no column width.
+        m = FoldedColumnLayout.railColumnMetrics(containerWidth: 500, containerHeight: 640, barWidth: 0,
+                                                 accessibilityTextSize: false, artMin: 140, artMax: 420)
+        XCTAssertEqual(m.column, 452)
+    }
+
     /// Phones keep their layouts with the routed height: iPhone landscape is at most 430 pt
     /// tall as a window, and phone portrait is under `wideMinWidth`.
     func testPhonesKeepTheirLayoutsWithTheRoutedHeight() {
