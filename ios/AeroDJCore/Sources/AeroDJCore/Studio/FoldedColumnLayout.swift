@@ -149,6 +149,24 @@ public enum FoldedColumnLayout {
         return containerWidth >= railColumnMinWidth && containerHeight >= landscapeDuoMinHeight
     }
 
+    /// What the rail column keeps under its art: title, DJ status, the pinned scrubber and the
+    /// station chip (`railColumnMetrics`). Larger at accessibility text sizes.
+    public static let railColumnReserveBelowArt: Double = 260
+    public static let railColumnReserveBelowArtAccessibility: Double = 500
+
+    /// The art side and column width for the rail column (the sidebar-open detail): the
+    /// container less `duoEdgeInset` at both edges, the rail (`barWidth`, 0 when the system
+    /// draws it) and one `duoEdgeInset` gutter. The art fits the column and the height less
+    /// `railColumnReserveBelowArt`, within `artMin`…`artMax`, never wider than the column.
+    public static func railColumnMetrics(containerWidth: Double, containerHeight: Double, barWidth: Double,
+                                         accessibilityTextSize: Bool,
+                                         artMin: Double, artMax: Double) -> (artSide: Double, column: Double) {
+        let column = max(0, containerWidth - duoEdgeInset * 3 - barWidth)
+        let reserve = accessibilityTextSize ? railColumnReserveBelowArtAccessibility : railColumnReserveBelowArt
+        let art = max(artMin, min(column, containerHeight - reserve, artMax))
+        return (min(art, column), column)
+    }
+
     /// The height the layout gate should read: the reader's height plus its vertical safe-area
     /// insets (status bar, navigation bar, home indicator). Build 51: the open Duo's 820 × 640
     /// landscape window measured about 566 pt under its navigation bar, below

@@ -438,23 +438,8 @@ struct FoldedPlayer: View {
             }
 
             if !systemBar, layout.barWidth > 0 {
-                DuoVerticalRail(dj: dj, reviewCount: moreMenu?.reviewCount, upNext: snapshot.upNext,
-                                onCollapse: onCollapseRail,
-                                onConnections: moreMenu?.onConnections ?? {},
-                                onQueue: onQueue, onTune: onTune, pause: { actions.pause() },
-                                transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
-                                showsTransport: content.showsTransport,
-                                cancelStart: { actions.cancelStart() },
-                                resume: { await actions.resume() },
-                                skip: { await actions.skip() },
-                                moreOpen: $moreOpen)
-                    .padding(.top, CGFloat(layout.topClearance))
-                    .padding(.bottom, 8)
-                    .frame(width: CGFloat(layout.barWidth), height: size.height, alignment: .top)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("folded.systemBar")
-                    .accessibilitySortPriority(0)
-                    .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
+                unfoldedRail(width: CGFloat(layout.barWidth), height: size.height,
+                             top: CGFloat(layout.topClearance))
             }
         }
         .padding(.horizontal, CGFloat(layout.edgeInset))
@@ -492,7 +477,7 @@ struct FoldedPlayer: View {
     }
 
     /// The unfolded rail itself, the same in `railColumnBody` as in `wideBody`. Sorts last.
-    private func unfoldedRail(height: CGFloat, top: CGFloat) -> some View {
+    private func unfoldedRail(width: CGFloat, height: CGFloat, top: CGFloat) -> some View {
         DuoVerticalRail(dj: dj, reviewCount: moreMenu?.reviewCount, upNext: snapshot.upNext,
                         onCollapse: onCollapseRail,
                         onConnections: moreMenu?.onConnections ?? {},
@@ -505,10 +490,11 @@ struct FoldedPlayer: View {
                         moreOpen: $moreOpen)
             .padding(.top, top)
             .padding(.bottom, 8)
-            .frame(width: CGFloat(FoldedColumnLayout.duoBarWidth), height: height, alignment: .top)
+            .frame(width: width, height: height, alignment: .top)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("folded.systemBar")
             .accessibilitySortPriority(0)
+            .modifier(SplitColumnText(enabled: splitBarEdge == .leading))
     }
 
     /// Build 51 (-Atlas): the open Duo with the Stations sidebar open. The detail is regular and
@@ -519,16 +505,20 @@ struct FoldedPlayer: View {
     /// scrubber and the rail never do.
     private func railColumnBody(in size: CGSize) -> some View {
         let inset = CGFloat(FoldedColumnLayout.duoEdgeInset)
-        let bar = CGFloat(FoldedColumnLayout.duoBarWidth)
-        let gutter = inset
-        let column = max(0, size.width - inset * 2 - bar - gutter)
-        // Title, DJ status, the pinned scrubber and the station chip under the art.
-        let reserve: CGFloat = typeSize.isAccessibilitySize ? 500 : 260
-        let art = max(FoldedStyle.artMinSide, min(column, size.height - reserve, FoldedStyle.artMaxSide))
-        return HStack(alignment: .top, spacing: gutter) {
+        // As in `wideBody`: 27.1 draws the rail as the system vertical bar, outside this width.
+        let systemBar = DuoVerticalRail.usesSystemBar
+        let bar = systemBar ? 0 : FoldedColumnLayout.duoBarWidth
+        let m = FoldedColumnLayout.railColumnMetrics(containerWidth: Double(size.width),
+                                                     containerHeight: Double(size.height),
+                                                     barWidth: bar,
+                                                     accessibilityTextSize: typeSize.isAccessibilitySize,
+                                                     artMin: Double(FoldedStyle.artMinSide),
+                                                     artMax: Double(FoldedStyle.artMaxSide))
+        let column = CGFloat(m.column)
+        return HStack(alignment: .top, spacing: inset) {
             VStack(spacing: 0) {
                 ScrollView(.vertical, showsIndicators: false) {
-                    upper(artSide: min(art, column), centered: true)
+                    upper(artSide: CGFloat(m.artSide), centered: true)
                         .padding(.top, 8)
                         .frame(width: column)
                 }
@@ -557,12 +547,14 @@ struct FoldedPlayer: View {
             .accessibilityIdentifier("folded.railColumn")
             .accessibilitySortPriority(1)
 
-            unfoldedRail(height: size.height, top: 8)
+            if !systemBar {
+                unfoldedRail(width: CGFloat(bar), height: size.height, top: 8)
+            }
         }
         .padding(.horizontal, inset)
         .frame(width: size.width, height: size.height)
         .overlay {
-            if moreOpen { railMorePanel(in: size) }
+            if moreOpen, !systemBar { railMorePanel(in: size) }
         }
     }
 
