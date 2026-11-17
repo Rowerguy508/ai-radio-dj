@@ -40,6 +40,9 @@ final class MusicKitService: ObservableObject {
     private var stateMachine = AudioStateMachine()
     private var audioSessionConfigured = false
     private var boundaries = BoundaryInterpreter()
+    /// #526 PR A (-Echo): the AirPlay gap route's end watch (Core's `AirPlayGapEndWatch`).
+    private var gapEndWatch = AirPlayGapEndWatch()
+    private var gapEndWatchTask: Task<Void, Never>?
     private var sessionPolicy = AudioSessionPolicy()
     /// Build 10 P0: ignores only the interruption our own start causes (see the type's doc).
     private var selfStartGate = SelfStartInterruptionGate()
@@ -247,6 +250,9 @@ final class MusicKitService: ObservableObject {
         // is replaced, the same as `skip()`. Nil routes to `interlude.stop()`, which cancels
         // a pending play and halts a playing clip.
         onBreakMustStop?(nil)
+        // #526: drop a stale AirPlay gap-end watch so it cannot poll after this station switch
+        // or tap, if the previous song was in its last 3 s.
+        cancelGapEndWatch()
         queue = tracks
         onQueueReplaced?()
         currentTrack = tracks.first
@@ -775,6 +781,9 @@ final class MusicKitService: ObservableObject {
                 result: result, generationBefore: generationBefore, generationNow: attempts.queueGeneration,
                 next: next, oldQueueCount: oldQueue.count) else { return }
             logPlayback(PlaybackLog.stationHandOffFallback(next: next))
+            // The app queue is replaced (the failed hand-off already ended the previous song's
+            // watch in the usual case; cancel anyway so a stale watch cannot poll this restore).
+            cancelGapEndWatch()
             queue = oldQueue
             send(.queueStarted(tracks: oldQueue.map(\.info), startIndex: next, station: snapshot.station))
             fellBackToOldQueue = true
@@ -891,16 +900,68 @@ final class MusicKitService: ObservableObject {
         }
     }
 
-    private func pollPlaybackPosition() {
+    /// One read of the player for the boundary detector (and the AirPlay gap end watch).
+    private func playbackObservation() -> PlaybackObservation {
         // Position and duration let the detector see a finish even if the queue keeps its last entry.
         let currentDuration = queue.indices.contains(queueIndex) ? queue[queueIndex].song?.duration : nil
-        let observation = PlaybackObservation(
+        return PlaybackObservation(
             entryID: player.queue.currentEntry?.id,
             isPlaying: player.state.playbackStatus == .playing,
             position: player.playbackTime,
             duration: currentDuration,
             uptime: ProcessInfo.processInfo.systemUptime
         )
+    }
+
+    /// #526 PR A (-Echo): drop a stale AirPlay gap-end watch. Called when the app queue is
+    /// replaced (`play`, or the failed station hand-off restore) so a watch armed in a song's
+    /// last 3 s cannot fire `pollPlaybackPosition` after a station switch. Disarm first, then
+    /// cancel: an in-flight `step` then returns `.stop` and does not poll.
+    private func cancelGapEndWatch() {
+        gapEndWatch.disarm()
+        gapEndWatchTask?.cancel()
+        gapEndWatchTask = nil
+    }
+
+    /// #526 PR A (-Echo): AirPlay gap route only. In the song's last seconds, read the player at
+    /// 10 Hz and run the regular poll below as soon as MusicKit shows an unambiguous end (Core's
+    /// `AirPlayGapEndWatch`). It only calls `pollPlaybackPosition`; it never pauses, plays or
+    /// touches the session. Any other route, or the #525 kill switch off: never armed.
+    private func updateGapEndWatch(_ observation: PlaybackObservation) {
+        let armed = gapEndWatch.regularSample(observation,
+                                              airPlayGapRoute: !DJLongFormRouteState.shared.talkoverAllowed)
+        guard armed else {
+            gapEndWatchTask?.cancel()
+            gapEndWatchTask = nil
+            return
+        }
+        guard gapEndWatchTask == nil else { return }
+        let nanos = UInt64(AirPlayGapEndWatch.watchPollSeconds * 1_000_000_000)
+        gapEndWatchTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: nanos)
+                guard let self, !Task.isCancelled else { return }
+                switch self.gapEndWatch.step(self.playbackObservation()) {
+                case .keepWatching:
+                    continue
+                case .stop:
+                    self.gapEndWatch.disarm()
+                    self.gapEndWatchTask = nil
+                    return
+                case .pollNow:
+                    self.gapEndWatch.disarm()
+                    self.gapEndWatchTask = nil
+                    self.logPlayback("airPlayGapEndWatch pollNow")
+                    self.pollPlaybackPosition()
+                    return
+                }
+            }
+        }
+    }
+
+    private func pollPlaybackPosition() {
+        let observation = playbackObservation()
+        updateGapEndWatch(observation)
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.beginPoll(observation, before: P0DetectorState(boundaries), queueIndex: queueIndex, queueCount: queue.count)
         #endif
