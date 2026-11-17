@@ -175,6 +175,96 @@ final class FoldAwarenessTests: XCTestCase {
         assertClear(decision, of: fold, containerWidth: width)
     }
 
+    // MARK: - #507 collapsed rail: the centred column moves off the fold
+
+    /// The Duo's book-pose sizes: the open display, and the narrower Duo frame tested above.
+    private let bookSizes: [(width: Double, height: Double)] = [(640, 820), (500, 820)]
+
+    func testTheCollapsedColumnAvoidsACentredFoldAtTheDuosBookPoseSizes() throws {
+        for size in bookSizes {
+            for gutter in [FoldedColumnLayout.duoFoldGutter, 40.0] {
+                let fold = vertical(minX: size.width / 2 - gutter / 2, width: gutter, height: size.height)
+                let today = centredColumn(width: size.width, height: size.height)
+                // Today's column, centred on the container, crosses the crease.
+                let todayMinX = (size.width - today.column) / 2
+                XCTAssertTrue(rangesOverlap(todayMinX, todayMinX + today.column, fold.minX, fold.maxX),
+                              "\(size) \(gutter)")
+                let column = try XCTUnwrap(bookColumn(width: size.width, height: size.height, divisions: [fold]),
+                                           "\(size) \(gutter)")
+                assertColumnClear(column, of: fold, containerWidth: size.width)
+                XCTAssertLessThanOrEqual(column.maxX, fold.minX + 0.001, "a symmetric fold keeps the leading side")
+                XCTAssertGreaterThanOrEqual(column.width, StudioLayoutMetrics.touchTargetMin)
+                XCTAssertLessThanOrEqual(column.width, today.column)
+                XCTAssertLessThanOrEqual(column.artSide, column.width)
+            }
+        }
+    }
+
+    func testTheCollapsedColumnTakesTheWiderSideOfAnOffCentreFold() throws {
+        let leadingFold = vertical(minX: 200, width: 48, height: height)
+        let trailing = try XCTUnwrap(bookColumn(divisions: [leadingFold]))
+        XCTAssertGreaterThanOrEqual(trailing.minX, leadingFold.maxX - 0.001)
+        assertColumnClear(trailing, of: leadingFold, containerWidth: width)
+
+        let trailingFold = vertical(minX: 440, width: 48, height: height)
+        let leading = try XCTUnwrap(bookColumn(divisions: [trailingFold]))
+        XCTAssertLessThanOrEqual(leading.maxX, trailingFold.minX + 0.001)
+        assertColumnClear(leading, of: trailingFold, containerWidth: width)
+        // The preferred column fits the wide side, so it keeps its width there.
+        XCTAssertEqual(leading.width, centredColumn(width: width, height: height).column, accuracy: 0.001)
+    }
+
+    func testTheCollapsedColumnIgnoresTheAngle() {
+        let fold = vertical(minX: 306, width: 28, height: height)
+        XCTAssertEqual(bookColumn(angle: 20, divisions: [fold]), bookColumn(angle: 160, divisions: [fold]))
+    }
+
+    func testNoFoldLeavesTheCollapsedColumnUnchanged() {
+        let fold = vertical(minX: 306, width: 28, height: height)
+        var inactive = fold
+        inactive.isActive = false
+        let laptop = FoldAwareness.Division(minX: 0, minY: 400, width: width, height: 32, isActive: true)
+        XCTAssertNil(bookColumn(divisions: []))
+        XCTAssertNil(bookColumn(divisions: [inactive]))
+        XCTAssertNil(bookColumn(divisions: [laptop]))
+        XCTAssertNil(bookColumn(divisions: [vertical(minX: 300, width: 20, height: 200)]))
+        for status in [FoldAwareness.HingeStatus.fullyOpen, .closed] {
+            XCTAssertNil(bookColumn(status: status, divisions: [fold]), "\(status)")
+        }
+        XCTAssertNotNil(bookColumn(status: nil, divisions: [fold]), "the region alone is the signal")
+        XCTAssertNotNil(bookColumn(status: .unknown, divisions: [fold]))
+        // Phone portrait, iPhone landscape (the centred-column placement) and a bad size.
+        XCTAssertNil(bookColumn(width: 390, height: 844, divisions: [vertical(minX: 180, width: 30, height: 844)]))
+        XCTAssertNil(bookColumn(width: 844, height: 390, divisions: [vertical(minX: 400, width: 28, height: 390)]))
+        XCTAssertNil(bookColumn(width: .nan, divisions: [fold]))
+    }
+
+    private func centredColumn(width: Double, height: Double) -> (artSide: Double, column: Double) {
+        FoldedColumnLayout.metrics(containerWidth: width, containerHeight: height, reserveBelowArt: 380,
+                                   artMin: artMin, artMax: artMax)
+    }
+
+    private func bookColumn(width: Double? = nil, height: Double? = nil,
+                            status: FoldAwareness.HingeStatus? = .partiallyOpen, angle: Double = 120,
+                            divisions: [FoldAwareness.Division]) -> FoldAwareness.BookColumn? {
+        let containerWidth = width ?? self.width
+        let containerHeight = height ?? self.height
+        let today = centredColumn(width: containerWidth.isFinite ? containerWidth : 640, height: containerHeight)
+        return FoldAwareness.bookColumn(
+            containerWidth: containerWidth, containerHeight: containerHeight,
+            hinge: status.map { FoldAwareness.HingeSample(status: $0, angleDegrees: angle) },
+            divisions: divisions, column: today.column, artSide: today.artSide)
+    }
+
+    /// The whole column (art, transport, scrubber, toolbar) is on one side of the fold and
+    /// inside the edge insets.
+    private func assertColumnClear(_ column: FoldAwareness.BookColumn, of fold: FoldAwareness.Division,
+                                   containerWidth: Double, line: UInt = #line) {
+        XCTAssertFalse(rangesOverlap(column.minX, column.maxX, fold.minX, fold.maxX), line: line)
+        XCTAssertGreaterThanOrEqual(column.minX, FoldedColumnLayout.duoEdgeInset - 0.001, line: line)
+        XCTAssertLessThanOrEqual(column.maxX, containerWidth - FoldedColumnLayout.duoEdgeInset + 0.001, line: line)
+    }
+
     // MARK: - Helpers
 
     private func resolve(width: Double? = nil, height: Double? = nil,

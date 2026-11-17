@@ -188,7 +188,7 @@ struct FoldedPlayer: View {
                 if showsUnfoldedRail {
                     wideBody(in: geo.size)
                 } else {
-                    centredColumnBody(in: geo.size)
+                    centredColumnBody(in: geo.size, foldAware: true)
                         .onAppear { moreOpen = false }
                 }
             }
@@ -259,7 +259,7 @@ struct FoldedPlayer: View {
             if showsUnfoldedRail {
                 wideBody(in: size)
             } else {
-                centredColumnBody(in: size)
+                centredColumnBody(in: size, foldAware: true)
                     .onAppear { moreOpen = false }
             }
         }
@@ -320,14 +320,25 @@ struct FoldedPlayer: View {
 
     /// iPhone landscape: one centred column, the layout this width had before the Duo rail.
     /// ⋯ is in the column header. Controls sit under the art. No fold gutter, no top clearance.
-    private func centredColumnBody(in size: CGSize) -> some View {
+    /// `foldAware` is true only for the wide Duo with its rail collapsed (#479). In book pose
+    /// (#507) the whole column then moves to one side of the fold (`FoldAwareness.bookColumn`),
+    /// so no control spans the crease. iPhone landscape (`.centredColumn`) passes false: no
+    /// probe is attached and the column is exactly today's.
+    private func centredColumnBody(in size: CGSize, foldAware: Bool = false) -> some View {
         let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
         let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
                                            containerHeight: Double(size.height),
                                            reserveBelowArt: reserve,
                                            artMin: Double(FoldedStyle.artMinSide),
                                            artMax: Double(FoldedStyle.artMaxSide))
-        let column = CGFloat(m.column)
+        let book: FoldAwareness.BookColumn? = foldAware
+            ? FoldAwareness.bookColumn(containerWidth: Double(size.width),
+                                       containerHeight: Double(size.height),
+                                       hinge: foldHinge, divisions: foldDivisions,
+                                       column: m.column, artSide: m.artSide)
+            : nil
+        let column = CGFloat(book?.width ?? m.column)
+        let artSide = CGFloat(book?.artSide ?? m.artSide)
         typealias Gap = FoldedColumnLayout.Spacing
         return ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 0) {
@@ -338,7 +349,7 @@ struct FoldedPlayer: View {
                     }
                 }
                 .frame(height: CGFloat(FoldedColumnLayout.headerHeight))
-                upper(artSide: CGFloat(m.artSide), centered: true)
+                upper(artSide: artSide, centered: true)
                     .padding(.top, CGFloat(Gap.headerToArt))
                 controls(contentInset: 0, toolbarInset: 0,
                          spacing: CGFloat(Gap.betweenControls), balancesTransport: true)
@@ -348,13 +359,22 @@ struct FoldedPlayer: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("folded.wideColumn")
             .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, minHeight: size.height, alignment: .center)
+            // Book pose: the column's leading edge at `book.minX`, off the fold. Otherwise
+            // centred as before.
+            .padding(.leading, CGFloat(book?.minX ?? 0))
+            .frame(maxWidth: .infinity, minHeight: size.height,
+                   alignment: book == nil ? .center : .leading)
             .scrollTargetLayout()
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
         .scrollPosition(id: scrollAnchor)
         .frame(width: size.width, height: size.height)
+        .background {
+            if foldAware {
+                FoldDivisionProbe(hinge: $foldHinge, divisions: $foldDivisions)
+            }
+        }
     }
 
     /// Full-width Duo. The centre gutter is the fold: no control sits in it.

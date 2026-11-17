@@ -74,25 +74,76 @@ public enum FoldAwareness {
             containerWidth: containerWidth, containerHeight: containerHeight,
             artMin: artMin, artMax: artMax)
         let unchanged = Decision(isBookPose: false, metrics: ordinary)
-        guard containerWidth.isFinite, containerHeight.isFinite,
-              containerWidth > 0, containerHeight > 0 else { return unchanged }
-        guard FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
-                                                  containerHeight: containerHeight) == .duoHorizontal else {
-            return unchanged
-        }
-        if let hinge {
-            switch hinge.status {
-            case .closed, .fullyOpen:
-                return unchanged
-            case .partiallyOpen, .unknown:
-                break
-            }
-        }
+        guard isBookPose(containerWidth: containerWidth, containerHeight: containerHeight,
+                         hinge: hinge) else { return unchanged }
         guard let fold = bookFold(in: divisions, containerWidth: containerWidth,
                                   containerHeight: containerHeight) else { return unchanged }
         return Decision(isBookPose: true, metrics: bookMetrics(
             containerWidth: containerWidth, containerHeight: containerHeight,
             fold: fold, artMin: artMin, artMax: artMax))
+    }
+
+    /// The single centred column the Duo shows once its rail is collapsed (#479), in book pose.
+    /// `minX` and `width` are container points; `artSide` is clamped to the column.
+    public struct BookColumn: Equatable, Sendable {
+        public var minX: Double
+        public var width: Double
+        public var artSide: Double
+
+        public init(minX: Double, width: Double, artSide: Double) {
+            self.minX = minX
+            self.width = width
+            self.artSide = artSide
+        }
+
+        public var maxX: Double { minX + width }
+    }
+
+    /// #507: with the rail collapsed, the wide Duo draws one centred column (art, transport,
+    /// scrubber, toolbar). Centred on a 640 pt display it spans the crease. In book pose the
+    /// whole column moves to one side of the fold: the leading side, unless the trailing side
+    /// is wider. It keeps its preferred width when that fits, otherwise it takes the side's
+    /// width (`duoEdgeInset` from the edge, flush with the fold), and stays centred in the side.
+    ///
+    /// Nil whenever `resolve` is not book pose (no fold, flat or closed hinge, laptop pose,
+    /// a phone or the iPhone-landscape centred column): the caller keeps today's centred column.
+    public static func bookColumn(containerWidth: Double, containerHeight: Double,
+                                  hinge: HingeSample?, divisions: [Division],
+                                  column: Double, artSide: Double) -> BookColumn? {
+        guard column.isFinite, artSide.isFinite, column > 0 else { return nil }
+        guard isBookPose(containerWidth: containerWidth, containerHeight: containerHeight, hinge: hinge),
+              let fold = bookFold(in: divisions, containerWidth: containerWidth,
+                                  containerHeight: containerHeight) else { return nil }
+        let edge = FoldedColumnLayout.duoEdgeInset
+        let innerEnd = max(edge, containerWidth - edge)
+        let foldMin = min(max(fold.minX, edge), innerEnd)
+        let foldMax = min(max(fold.maxX, foldMin), innerEnd)
+        let leading = (start: edge, width: foldMin - edge)
+        let trailing = (start: foldMax, width: innerEnd - foldMax)
+        let side = trailing.width > leading.width ? trailing : leading
+        guard side.width > 0 else { return nil }
+        let width = min(column, side.width)
+        return BookColumn(minX: side.start + (side.width - width) / 2, width: width,
+                          artSide: max(0, min(artSide, width)))
+    }
+
+    /// The gates `resolve` applies before it looks for a fold.
+    private static func isBookPose(containerWidth: Double, containerHeight: Double, hinge: HingeSample?) -> Bool {
+        guard containerWidth.isFinite, containerHeight.isFinite,
+              containerWidth > 0, containerHeight > 0 else { return false }
+        guard FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
+                                                  containerHeight: containerHeight) == .duoHorizontal else {
+            return false
+        }
+        if let hinge {
+            switch hinge.status {
+            case .closed, .fullyOpen:
+                return false
+            case .partiallyOpen, .unknown:
+                return true
+            }
+        }
+        return true
     }
 
     /// The active vertical division that actually splits this container. A short region
