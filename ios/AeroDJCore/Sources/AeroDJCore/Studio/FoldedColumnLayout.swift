@@ -128,6 +128,36 @@ public enum FoldedColumnLayout {
         return .centredColumn
     }
 
+    /// Narrowest container that gets the rail column (`usesRailColumn`): a 320 pt column is the
+    /// art, the title and the scrubber beside the 56 pt rail.
+    public static let railColumnMinWidth: Double = 320
+
+    /// Build 51 (#542 follow-up, -Atlas): the open Duo with the Stations sidebar open. The
+    /// detail column is regular width and as tall as the open window, but the sidebar leaves it
+    /// too narrow for the two halves (820 − sidebar ≈ 500 pt), so `controlPlacement` gave the
+    /// phone column or the centred column, with the old Playing-from bar, Queue and Tune, and no
+    /// rail. The owner's rule is that every wide-layout control lives in the rail, so this
+    /// container gets the centred column beside the rail. Needs the regular width class and a
+    /// `landscapeDuoMinHeight` tall container, so iPhone landscape (430 pt tall at most) and every
+    /// compact-class phone window keep their layouts. Never true where `controlPlacement` already
+    /// gives `.duoHorizontal`.
+    public static func usesRailColumn(hasRegularWidth: Bool, containerWidth: Double,
+                                      containerHeight: Double) -> Bool {
+        guard hasRegularWidth, containerWidth.isFinite, containerHeight.isFinite else { return false }
+        guard controlPlacement(containerWidth: containerWidth, containerHeight: containerHeight) != .duoHorizontal
+        else { return false }
+        return containerWidth >= railColumnMinWidth && containerHeight >= landscapeDuoMinHeight
+    }
+
+    /// The height the layout gate should read: the reader's height plus its vertical safe-area
+    /// insets (status bar, navigation bar, home indicator). Build 51: the open Duo's 820 × 640
+    /// landscape window measured about 566 pt under its navigation bar, below
+    /// `landscapeDuoMinHeight`, so it got the centred column (transport off the bottom) instead
+    /// of the rail. The navigation bar is transparent over the player, so the window is the container.
+    public static func routingHeight(readerHeight: Double, safeAreaTop: Double, safeAreaBottom: Double) -> Double {
+        readerHeight + max(0, safeAreaTop) + max(0, safeAreaBottom)
+    }
+
     /// Horizontal Duo metrics. Phone widths do not call this.
     ///
     /// At 640 × 820 the content column is 234 pt: `640 − edge − bar − (mid + gutter / 2)`,
