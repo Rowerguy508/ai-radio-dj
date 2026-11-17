@@ -49,6 +49,10 @@ jobs:
             core:
               - 'ios/**'
               - '.github/workflows/ios.yml'
+              # Voice-gate test reads testflight.yml. A workflow-only edit must still run
+              # it. Kept off the ios filter so a dispatch-policy change does not rebuild
+              # the Release archive.
+              - '.github/workflows/testflight.yml'
               - 'docs/site/privacy.md'
               - 'docs/site/HOLD-pro.md'
               - 'docs/site/DRAFT-privacy-tester-voice.md'
@@ -64,6 +68,8 @@ jobs:
         with:
           # Self-hosted Mac persists between jobs: do not leave the job token in .git/config (#517 N1, -Sentinel).
           persist-credentials: false
+      - name: TestFlight voice gate refuses a default device-speech upload
+        run: bash ios/scripts/check-testflight-voice-dispatch-test.sh
       - name: Check Xcode 26.6 and Swift 6.3
         if: runner.environment == 'self-hosted'
         run: |
@@ -122,6 +128,8 @@ jobs:
     container: swift:6.2
     steps:
       - uses: actions/checkout@v4
+      - name: TestFlight voice gate refuses a default device-speech upload
+        run: bash ios/scripts/check-testflight-voice-dispatch-test.sh
       - name: Build tests
         run: swift build --build-tests
         working-directory: ios/AeroDJCore
@@ -518,8 +526,10 @@ jobs:
         working-directory: ios
       - name: Archive (Release, unsigned)
         # testflight.yml's archive command with signing switched off. The conditions script runs
-        # as for a plain TestFlight build (no p0_diag, owner_ab or tester_voice), so this compiles
-        # exactly what a default 2.0 upload compiles.
+        # as for an explicit device-speech upload (no p0_diag, owner_ab or tester_voice):
+        # confirm_device_voice=true and tester_voice left false. A dispatch that sets neither
+        # is refused before archive, so this is the plain Release those opt-in uploads compile,
+        # not an unattended default upload.
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/release-archive-logs"
