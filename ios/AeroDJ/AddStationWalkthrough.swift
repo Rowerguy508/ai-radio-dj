@@ -84,8 +84,10 @@ struct AddStationToolbarButton: View {
     var body: some View {
         Button(action: action) {
             Label("Add station", systemImage: "plus")
-                .modifier(OpenDuoToolbarTarget(enabled: expandsTarget))
         }
+        // On the Button, not the Label: XCUI measures the button, and a
+        // Label min-frame stays 36 pt inside a toolbar item (hosted #551).
+        .modifier(OpenDuoToolbarTarget(enabled: expandsTarget))
         .accessibilityLabel("Add station")
         .accessibilityHint("Build a new station from artists, a genre or a playlist")
         .accessibilityIdentifier("addStation.plus")

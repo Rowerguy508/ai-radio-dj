@@ -251,8 +251,10 @@ struct StationSplitRoot<Detail: View>: View {
                         leading: .topBarLeading, trailing: .topBarTrailing)) {
                         Button(action: onOpenSettings) {
                             Label("Settings", systemImage: "gearshape")
-                                .modifier(OpenDuoToolbarTarget(enabled: expandsToolbarTargets))
                         }
+                        // On the Button, not the Label: XCUI measures the button, and a
+                        // Label min-frame stays 36 pt inside a toolbar item (hosted #551).
+                        .modifier(OpenDuoToolbarTarget(enabled: expandsToolbarTargets))
                         .modifier(SplitMinimumTarget(enabled: insets != nil))
                         .accessibilityIdentifier("stations.settings")
                     }
@@ -265,8 +267,8 @@ struct StationSplitRoot<Detail: View>: View {
                             showSharedInbox = true
                         } label: {
                             Label("Shared Items", systemImage: "square.and.arrow.up")
-                                .modifier(OpenDuoToolbarTarget(enabled: expandsToolbarTargets))
                         }
+                        .modifier(OpenDuoToolbarTarget(enabled: expandsToolbarTargets))
                         // Identifier only (UI tests): no visual or VoiceOver change.
                         .accessibilityIdentifier("stations.sharedInbox")
                     }
