@@ -220,6 +220,8 @@ public final class StationQueueFeed<Item: Sendable> {
     private var spacingArtists: [String: String] = [:]
     private static var maxSpacingArtists: Int { 2048 }
     private var generation = 0
+    /// #418 (-Atlas): the running seed stream for `.stream` (tests); unused by every other source.
+    private var seedStream: SplitMix64
     /// The station the playing queue belongs to. `nil` before the first queue start, and for a
     /// queue started on a station with no seeds (see `queueStartReported`).
     public private(set) var playingKey: StationQueueKey?
@@ -273,6 +275,25 @@ public final class StationQueueFeed<Item: Sendable> {
         self.ratings = ratings
         self.songID = songID ?? { StationQueueSongID.of($0) }
         self.log = log
+        if case let .stream(start) = options.seedSource.kind { seedStream = SplitMix64(seed: start) } else { seedStream = SplitMix64(seed: 0) }
+    }
+
+    /// #418 (-Atlas): the shuffle seed for one build (a full queue or a first-song lookup). The app's
+    /// `.systemRandom` draws a fresh one every time; `.stream` draws the next from its stream.
+    private func nextBuildSeed(for key: StationQueueKey) -> UInt64 {
+        if case .stream = options.seedSource.kind {
+            return options.seedSource.seed(perDay: 0, using: &seedStream)
+        }
+        return options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
+    }
+
+    /// The builder options for one build: a fresh seed, and short lists spread over the queue when
+    /// every build gets its own seed (#418).
+    private func buildOptions(for key: StationQueueKey, seed: UInt64) -> StationPoolBuilder.Options {
+        var opts = options
+        opts.shuffleSeed = seed
+        opts.spreadShortLists = options.seedSource.isFreshPerBuild
+        return opts
     }
 
     /// Songs staged for the next hand-off (count only), `nil` when nothing is staged.
@@ -344,8 +365,7 @@ public final class StationQueueFeed<Item: Sendable> {
         let config = configuration.validated()
         let pool = await resolver.resolve(seeds: config.seeds, reach: config.reach, affinity: bias.affinityArtists)
         guard mine == generation else { return superseded() }
-        var opts = options
-        opts.shuffleSeed = options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
+        var opts = buildOptions(for: key, seed: nextBuildSeed(for: key))
         opts.excludedSongIDs = options.excludedSongIDs.union(recentlyPlayed())
         opts.ratings = bias
         let picks = StationPoolBuilder.build(pool, configuration: config, options: opts)
@@ -435,7 +455,7 @@ public final class StationQueueFeed<Item: Sendable> {
         if hasReadyFirstSong(for: key) { return readyFirstSong(for: key) }
         let config = configuration.validated()
         guard !config.seeds.isEmpty else { return nil }
-        let buildSeed = options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
+        let buildSeed = nextBuildSeed(for: key)
         let seedIndex = openerSeedIndex(for: key, seedCount: config.seeds.count, buildSeed: buildSeed)
         let seed = config.seeds[seedIndex]
         let bias = currentRatings(for: key)
@@ -443,9 +463,8 @@ public final class StationQueueFeed<Item: Sendable> {
         one.seeds = [seed]
         one.reach = .only
         let pool = await resolver.resolve(seeds: [seed], reach: .only, affinity: [])
-        var opts = options
+        var opts = buildOptions(for: key, seed: buildSeed)
         opts.limit = 3
-        opts.shuffleSeed = buildSeed
         opts.excludedSongIDs = options.excludedSongIDs.union(recentlyPlayed())
         opts.ratings = bias
         let picks = StationPoolBuilder.build(pool, configuration: one, options: opts)

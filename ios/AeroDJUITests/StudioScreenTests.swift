@@ -1394,15 +1394,75 @@ final class StudioScreenTests: XCTestCase {
         let undo = app.buttons["nowPlaying.rating.undo"]
         XCTAssertTrue(toast.waitForExistence(timeout: 5), "never toast:\n\(app.debugDescription)")
         XCTAssertTrue(shows(app, "Won't play on this station again."))
-        XCTAssertTrue(undo.isHittable)
-        // Dismiss is 6s. Wait for Undo again and tap it before another query or the screenshot. -Fry
+        XCTAssertTrue(undo.isHittable, "Undo is on screen and hittable")
+        XCTAssertEqual(undo.label, "Undo")
+        XCTAssertEqual(undo.identifier, "nowPlaying.rating.undo")
+        XCTAssertGreaterThan(undo.frame.width, 1, "Undo has a real hit target")
+        XCTAssertGreaterThan(undo.frame.height, 1, "Undo has a real hit target")
+        XCTAssertTrue(undo.frame.origin.x.isFinite && undo.frame.origin.y.isFinite, "Undo has a finite activation point")
+        let station = app.descendants(matching: .any)["station.title"]
+        XCTAssertTrue(station.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(station.label.contains("Morning Calm"), station.label)
+        let stationBefore = station.label
+        let state = app.descendants(matching: .any)["capture.ratingState"]
+        XCTAssertTrue(state.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(state.label.contains("Never play on this station"), state.label)
+        let scopeBefore = ratingScope(state.label)
+        XCTAssertFalse(scopeBefore.isEmpty, state.label)
+        let rated = ratingControl(app)
+        XCTAssertTrue(rated.waitForExistence(timeout: 5), "rating before Undo:\n\(app.debugDescription)")
+        XCTAssertTrue(rated.label.contains("Never play on this station"), rated.label)
+        closeRatingMenu(app)
+        XCTAssertTrue(undo.isHittable, "Undo is tappable after the rating check")
+        // ratingNever holds the toast. The tap is the next thing after this wait. #489
         XCTAssertTrue(undo.waitForExistence(timeout: 5))
         undo.tap()
         XCTAssertTrue(toast.waitForNonExistence(timeout: 3), "undo hides the toast")
+        XCTAssertEqual(app.descendants(matching: .any)["station.title"].label, stationBefore,
+                       "the station on screen is unchanged")
+        let likeIt = NSPredicate(format: "label CONTAINS %@", "Like it")
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: likeIt, object: state)], timeout: 5),
+                       .completed, "undo restores the prior rating: \(state.label)")
+        XCTAssertEqual(ratingScope(state.label), scopeBefore, "undo stays on the same station scope")
+        XCTAssertFalse(state.label.contains("Never"), state.label)
+        let restored = ratingControl(app)
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: likeIt, object: restored)], timeout: 5),
+                       .completed, "rating button shows the prior rating: \(restored.label)")
+        XCTAssertFalse(restored.label.contains("Never"), restored.label)
+        closeRatingMenu(app)
         save(app, "rating-never-undone")
     }
 
-    /// The never toast while it is still on screen. No Undo tap, so the 6s dismissal is not in this shot.
+    /// `capture.ratingState` is "Rate song, current: …|<scope key>".
+    private func ratingScope(_ label: String) -> String {
+        label.split(separator: "|", maxSplits: 1).dropFirst().first.map(String.init) ?? ""
+    }
+
+    /// The now-playing rating control. The closed reskin keeps it in ⋯ (#537).
+    @MainActor
+    private func ratingControl(_ app: XCUIApplication) -> XCUIElement {
+        if !isOpenLayout {
+            let item = closedMenuItem(app, "nowPlaying.rating", labelPrefix: "Rate song")
+            if !item.exists { openClosedMore(app) }
+        }
+        return isOpenLayout ? app.buttons["nowPlaying.rating"]
+                            : closedMenuItem(app, "nowPlaying.rating", labelPrefix: "Rate song")
+    }
+
+    /// Closes ⋯ after a rating-label check so the next tap can hit Undo, and so the
+    /// undone screenshot is the player rather than the open menu.
+    @MainActor
+    private func closeRatingMenu(_ app: XCUIApplication) {
+        guard !isOpenLayout else { return }
+        let more = app.buttons["folded.more"]
+        if more.exists && more.isHittable {
+            more.tap()
+            return
+        }
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.55)).tap()
+    }
+
+    /// The never toast while it is still on screen. The ratingNever fixture holds it, so this shot is not racing the 6s dismissal. No Undo tap.
     @MainActor
     func testRatingNeverToastScreenshot() throws {
         let app = launch(scenario: "ratingNever")
