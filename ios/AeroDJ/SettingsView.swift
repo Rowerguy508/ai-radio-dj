@@ -20,6 +20,16 @@ struct SettingsView: View {
                     TalkoverSettingsRow(isTestStation: isTestStation)
                     if let songRating { StationRatingsSettingsSection(controller: songRating) }
                     if let personalDataReset { PersonalDataResetSection(purger: personalDataReset) }
+                    #if DEBUG
+                    // #526 S0a: DEBUG-only developer entry, live mode only (never in captures or
+                    // fixture runs). Release does not compile it.
+                    if !isTestStation {
+                        Section("Developer (DEBUG)") {
+                            NavigationLink("S0a AirPlay duck spike") { AirPlayDuckSpikeView() }
+                                .accessibilityIdentifier("settings.debug.s0aSpike")
+                        }
+                    }
+                    #endif
                 }
                 // A Form keeps a 16 pt row margin and lays that out from its own
                 // bounds, ignoring the host's safeAreaInset. Same as the split
