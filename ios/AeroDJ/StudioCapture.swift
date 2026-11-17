@@ -102,7 +102,9 @@ enum StudioCaptureScenario: String {
     case stationStartFailed
     /// The playing song rated Like it (plus.circle), label already seen.
     case ratingLiked
-    /// A queued song just rated Never: the Undo toast over the player (no skip in a capture).
+    /// The playing song was Like it, then Never: the Undo toast over the player. The fixture
+    /// holds that toast until Undo (no skip: the capture has no playing-song id). Production
+    /// still dismisses a never toast after six seconds.
     case ratingNever
     /// #465 item 3: the tent pose with the DJ on air (`breakReady` then `playbackStarted`), in
     /// an 820 × 640 pt container. The hinge is forced to partially open at 100° and fed to the
@@ -232,6 +234,13 @@ struct StudioCaptureView: View {
         .preferredColorScheme(UserDefaults.standard.bool(forKey: StudioCapture.darkKey) ? .dark : nil)
         // Replaces the app root's controller: nil outside the rating scenarios.
         .environment(\.songRating, captureRating)
+        .overlay(alignment: .bottomLeading) {
+            // ratingNever only: the playing song's rating and its station scope, for the Undo test.
+            // One point, not hittable, so it does not cover Undo or move the player.
+            if loaded, scenario == .ratingNever, let captureRating {
+                RatingCaptureReadout(controller: captureRating, songID: PlaybackFixtures.songs[0].id)
+            }
+        }
         .task {
             // The app root's task starts Studio (b39d15f). Wait for that load to finish rather
             // than loading again: a second load would overwrite the scenario's edits below.
@@ -301,8 +310,9 @@ struct StudioCaptureView: View {
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
                 studio.dj.send(.playbackStarted(afterTrack: 0))
             case .ratingNever:
-                let rating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id, labelSeen: true)
-                await rating.rate(.never, songID: PlaybackFixtures.songs[1].id, artistName: PlaybackFixtures.songs[1].artistName)
+                let song = PlaybackFixtures.songs[0]
+                let rating = await SongRatingController.fixture(rated: .like, songID: song.id, labelSeen: true, holdToast: true)
+                await rating.rate(.never, songID: song.id, artistName: song.artistName)
                 captureRating = rating
             default:
                 break
@@ -712,6 +722,23 @@ extension MusicSearch {
     /// Capture only: the real search UI with no Apple Music behind it. Searching reports
     /// "isn't available" instead of inventing results.
     static let captureOffline = MusicSearch(search: { _ in throw CancellationError() }, play: { _, _ in })
+}
+
+/// The playing song's rating and the fixture station scope. UI tests read it; it is not a control.
+private struct RatingCaptureReadout: View {
+    let controller: SongRatingController
+    let songID: String
+
+    var body: some View {
+        let rating = SongRatingPresentation.accessibilityLabel(controller.rating(for: songID))
+        let scope = controller.fixtureScopeKey ?? ""
+        Text(rating)
+            .font(.system(size: 1))
+            .frame(width: 1, height: 1)
+            .accessibilityIdentifier("capture.ratingState")
+            .accessibilityLabel("\(rating)|\(scope)")
+            .allowsHitTesting(false)
+    }
 }
 
 /// The segment a capture run starts on, read by `PlayingScreen` once.
