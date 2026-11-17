@@ -158,8 +158,9 @@ struct ClosedVerticalRail<More: View>: View {
 // MARK: - Glass (local to this rail)
 
 /// One glass column. Reduce Transparency and Increase Contrast use an opaque fill.
+/// Internal (not private) so the open-Duo Stations rail (`DuoStationsRail`) draws the same glass.
 /// Nothing here animates, so Reduce Motion has no transition to remove.
-private struct DuoRailGlass: ViewModifier {
+struct DuoRailGlass: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -202,7 +203,7 @@ private struct DuoRailGlass: ViewModifier {
 
 // MARK: - Controls
 
-private struct DuoRailIconButton: View {
+struct DuoRailIconButton: View {
     let systemImage: String
     let label: String
     let hint: String
@@ -227,7 +228,7 @@ private struct DuoRailIconButton: View {
 
 /// The same tap policy as `TransportRow`, sized to the rail's 44 pt plate so it fits
 /// in `duoBarWidth`. Identifiers stay `transport.playPause` / `transport.skip`.
-private struct DuoRailPlayPauseButton: View {
+struct DuoRailPlayPauseButton: View {
     let transport: TransportState
     let startTimedOut: Bool
     let pause: () -> Void

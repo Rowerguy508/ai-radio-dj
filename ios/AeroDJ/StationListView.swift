@@ -28,6 +28,9 @@ struct StationListView: View {
             // #465 item 10: the app-wide captures have their own scenario names.
             if let appWide = AppWideCaptureScenario.requested() {
                 AppWideCaptureView(scenario: appWide, dependencies: dependencies)
+            } else if let layouts = StationsLayoutCaptureScenario.requested() {
+                // Open-Duo Stations designs and the Settings picker (-Nova).
+                StationsLayoutCaptureView(scenario: layouts)
             } else {
                 StudioCaptureView(dependencies: dependencies)
             }
@@ -46,7 +49,12 @@ struct StationListView: View {
                          showSharedInbox: $showSharedInbox,
                          onUserOpenedStation: { id in await openStation(id) },
                          onAddStation: addStationAction,
-                         onOpenSettings: { showSettings = true }) { station in
+                         onOpenSettings: { showSettings = true },
+                         // Open Duo only (`DuoStationsLayout.usesOpenDuoStations`): the three
+                         // Stations designs and Rail D's now-playing thumbnail. Same player and
+                         // actions as `PlayerView` (`.live`). Phones never draw it.
+                         duoStations: DuoStationsSource(music: dependencies.playback,
+                                                        actions: DuoStationsRailActions(.live(dependencies.playback)))) { station in
             PlayerView(station: station, music: dependencies.playback, interlude: dependencies.interlude,
                        djSession: dependencies.djSession, studio: dependencies.studio,
                        isTestStation: dependencies.mode == .testStation,
@@ -151,6 +159,10 @@ struct StationSplitRoot<Detail: View>: View {
     var onAddStation: (() -> Void)? = nil
     /// Opens Settings. Nil hides the gear (StudioCapture passes none).
     var onOpenSettings: (() -> Void)? = nil
+    /// Open-Duo Stations (owner, 2026-11-17): the three designs and Rail D's now-playing
+    /// thumbnail (`DuoStationsScreen`). Nil, the default, keeps today's picker everywhere; even
+    /// when set, only the open Duo (`DuoStationsLayout.usesOpenDuoStations`) draws it.
+    var duoStations: DuoStationsSource? = nil
     private let detail: (Station) -> Detail
 
     /// The one source of truth for both layouts: the selected station, whether restore has
@@ -169,11 +181,14 @@ struct StationSplitRoot<Detail: View>: View {
     @Environment(\.colorScheme) private var systemColorScheme
     /// #465 item 10: nil on every phone and narrow split, so compact keeps the carousel.
     @Environment(\.appWideLayout) private var appWide
+    /// The whole window (safe area included), for the open-Duo Stations gate only.
+    @State private var windowSize: CGSize = .zero
 
     init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
          onUserOpenedStation: ((Station.ID) async -> Void)? = nil,
          onAddStation: (() -> Void)? = nil,
          onOpenSettings: (() -> Void)? = nil,
+         duoStations: DuoStationsSource? = nil,
          @ViewBuilder detail: @escaping (Station) -> Detail) {
         self.stations = stations
         self.showsSharedInbox = showsSharedInbox
@@ -181,6 +196,7 @@ struct StationSplitRoot<Detail: View>: View {
         self.onUserOpenedStation = onUserOpenedStation
         self.onAddStation = onAddStation
         self.onOpenSettings = onOpenSettings
+        self.duoStations = duoStations
         self.detail = detail
     }
 
@@ -221,6 +237,50 @@ struct StationSplitRoot<Detail: View>: View {
         SplitBarHost(preferred: .leading) { insets in
             columns(insets)
         }
+        // Open Duo only: the Stations screen sits over the split while no station is open,
+        // so the player push, the back gesture, restore and the sheets are the split's own.
+        // Hidden from VoiceOver underneath. Every other window: false, nothing drawn.
+        .accessibilityHidden(showsDuoStations)
+        .overlay { duoStationsOverlay }
+        .onGeometryChange(for: CGSize.self) { proxy in
+            CGSize(width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
+                   height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom)
+        } action: { size in
+            if size != windowSize { windowSize = size }
+        }
+    }
+
+    /// The open Duo, compact class, with a source. Never an iPhone or the closed Duo.
+    private var usesDuoStations: Bool {
+        duoStations != nil && isCompact
+            && DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: false,
+                                                     containerWidth: Double(windowSize.width),
+                                                     containerHeight: Double(windowSize.height))
+    }
+
+    /// The Stations screen is up: the open Duo with no station pushed.
+    private var showsDuoStations: Bool { usesDuoStations && !navigation.isStationVisible }
+
+    @ViewBuilder
+    private var duoStationsOverlay: some View {
+        if showsDuoStations, let duoStations {
+            DuoStationsHost(source: duoStations, stations: stations,
+                            // A tile or row: the list's own setter, so it opens and starts (#454).
+                            onSelect: { selection.wrappedValue = $0 },
+                            onOpenPlayer: openPlayer,
+                            onOpenSettings: onOpenSettings,
+                            onAddStation: onAddStation,
+                            onSharedInbox: showsSharedInbox ? { showSharedInbox = true } : nil)
+        }
+    }
+
+    /// The rail's now-playing thumbnail and C's Open player: show that station's player
+    /// without starting it again. Navigation only, never `onUserOpenedStation`.
+    private func openPlayer(_ id: Station.ID) {
+        withAnimation {
+            navigation.select(id)
+        }
+        storedStationID = id.uuidString
     }
 
     /// `insets` nil keeps the sidebar on the leading edge and the gear where it is.
@@ -357,7 +417,12 @@ struct StationSplitRoot<Detail: View>: View {
         if isCompact {
             // A card tap goes through the list's own setter: same push, same one-time
             // authorization request, same stored id. Scrolling the carousel selects nothing.
-            if let appWide, appWide.columns > 1 {
+            if usesDuoStations {
+                // Open Duo: `DuoStationsScreen` draws Stations over the split; #551's
+                // carousel is gone here. The column is only the backdrop under it.
+                FoldedStyle.background.ignoresSafeArea()
+                    .accessibilityHidden(true)
+            } else if let appWide, appWide.columns > 1 {
                 // #465 item 10: the unfolded Duo (compact class, 640 pt) shows every station
                 // as a grid. Same cards and the same selection path as the carousel.
                 StationGrid(stations: stations, selectedID: selectedStationID, layout: appWide) { id in
