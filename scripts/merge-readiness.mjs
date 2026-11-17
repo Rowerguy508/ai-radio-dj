@@ -247,17 +247,11 @@ function signatureOnLastLine(text) {
   return null
 }
 
-// The author line may sit above a Cursor HTML footer. A real line is one that
-// ends in `-Name` and is not markup. No such line means fail closed.
+// The author is the last real line, after blank lines and the Cursor HTML
+// footer are skipped. A flag such as `-Werror` earlier in the body does not
+// count. If that last line is not `-Name`, fail closed.
 export function authorFromBody(body) {
-  if (!body) return null
-  let found = null
-  for (const line of String(body).split(/\r?\n/)) {
-    if (isHtmlOrCursorFooter(line)) continue
-    const match = line.match(SIGNATURE_AT_END)
-    if (match) found = match[1]
-  }
-  return found
+  return signatureOnLastLine(body)
 }
 
 export function hasDeviceLine(body) {
@@ -629,6 +623,16 @@ jobs:
     '<div><a href="https://cursor.com/agents/bc-4075b6b5?cursor_ref=pr_footer&cursor_cta=open_in_web"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cursor.com/assets/images/open-in-web-dark.png"><img alt="Open in Web" src="https://cursor.com/assets/images/open-in-web-dark.png"></picture></a>&nbsp;<a href="https://cursor.com/background-agent?bcId=bc-4075b6b5&cursor_cta=open_in_cursor"><img alt="Open in Cursor" src="https://cursor.com/assets/images/open-in-cursor-dark.png"></a>&nbsp;</div>',
   ].join('\n')
   assert(authorFromBody(cursorFooterBody) === 'Grok', 'author is read above the Cursor Open in Web footer', failures)
+  assert(
+    authorFromBody('Build with -Werror\n\nDevice: NOT TESTED\n\nThanks all') === null,
+    'a -Werror flag with no signature line must fail closed',
+    failures,
+  )
+  assert(
+    authorFromBody('Build with -Werror\n\nDevice: NOT TESTED\n\n-Nova\n\n<div><a href="https://cursor.com/agents/bc-1?cursor_cta=open_in_web">Open in Web</a></div>') === 'Nova',
+    'a flag mid-body does not override the last real signature above the footer',
+    failures,
+  )
   assert(terminalSignature('still the pass-through\n') === null, 'a hyphenated word is not a signature', failures)
 
   const echoSignedOld = {
