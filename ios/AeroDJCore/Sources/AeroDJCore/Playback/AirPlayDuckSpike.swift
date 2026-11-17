@@ -129,6 +129,20 @@ public struct AirPlayDuckSpikeReport: Equatable, Sendable {
     }
 }
 
+/// After the one clip stops. If `setActive(false)` threw, the session may still be live:
+/// skip the category restore so we don't re-category it.
+public enum AirPlayDuckSpikeTeardown {
+    /// Restore today's normal category only when deactivate did not fail.
+    public static func shouldRestoreCategory(deactivateFailed: Bool) -> Bool {
+        !deactivateFailed
+    }
+
+    /// Codes only. Logged when `setActive(false)` throws, instead of restoring the category.
+    public static func deactivateFailedLog(code: Int) -> String {
+        "S0a setActive(false) failed code=\(code); skipped category restore (session may still be live)"
+    }
+}
+
 /// The spike's only audio: a 2 s 440 Hz tone, 16-bit mono PCM WAV, with 100 ms fades. It stands
 /// in for the DJ voice so the spike needs no voice provider, no network and no paid service.
 public enum AirPlayDuckSpikeClip {

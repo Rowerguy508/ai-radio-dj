@@ -100,18 +100,26 @@ final class AirPlayDuckSpikeRunner: NSObject, ObservableObject, AVAudioPlayerDel
         player?.stop()
         player = nil
 
+        var deactivateFailed = false
         if report.setActiveOK {
-            do { try session.setActive(false, options: .notifyOthersOnDeactivation) } catch {
-                log.error("S0a setActive(false) failed code=\((error as NSError).code, privacy: .public)")
+            do {
+                try session.setActive(false, options: .notifyOthersOnDeactivation)
+            } catch {
+                deactivateFailed = true
+                let code = (error as NSError).code
+                log.error("\(AirPlayDuckSpikeTeardown.deactivateFailedLog(code: code), privacy: .public)")
             }
         }
-        // Today's normal category, on the inactive session (as `DJRouteSession.endGapBreak`).
-        do {
-            let normal: AVAudioSession.CategoryOptions = AppAudioSessionConfig.mixesWithOthers ? [.mixWithOthers] : []
-            try session.setCategory(.playback, mode: .default, policy: .default, options: normal)
-            report.restoreOK = true
-        } catch {
-            log.error("S0a restore failed code=\((error as NSError).code, privacy: .public)")
+        // Today's normal category, only on an inactive session (as `DJRouteSession.endGapBreak`).
+        // If setActive(false) threw, skip the restore so we don't re-category a live session.
+        if AirPlayDuckSpikeTeardown.shouldRestoreCategory(deactivateFailed: deactivateFailed) {
+            do {
+                let normal: AVAudioSession.CategoryOptions = AppAudioSessionConfig.mixesWithOthers ? [.mixWithOthers] : []
+                try session.setCategory(.playback, mode: .default, policy: .default, options: normal)
+                report.restoreOK = true
+            } catch {
+                log.error("S0a restore failed code=\((error as NSError).code, privacy: .public)")
+            }
         }
         try? await Task.sleep(nanoseconds: 1_000_000_000)
         report.musicAfter = Self.status(ApplicationMusicPlayer.shared.state.playbackStatus)

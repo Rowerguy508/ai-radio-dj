@@ -94,6 +94,22 @@ final class AirPlayDuckSpikeTests: XCTestCase {
         }
     }
 
+    /// If `setActive(false)` throws, the runner must log it and skip the category restore so a
+    /// still-live session is not re-categoried.
+    func testAFailedDeactivateSkipsTheCategoryRestore() throws {
+        let text = try String(contentsOf: Self.ios.appendingPathComponent("AeroDJ/AirPlayDuckSpike.swift"), encoding: .utf8)
+        XCTAssertTrue(text.contains("deactivateFailed = true"))
+        XCTAssertTrue(text.contains("AirPlayDuckSpikeTeardown.deactivateFailedLog(code:"))
+        XCTAssertTrue(text.contains("AirPlayDuckSpikeTeardown.shouldRestoreCategory(deactivateFailed: deactivateFailed)"))
+        let deactivate = try XCTUnwrap(text.range(of: "session.setActive(false, options: .notifyOthersOnDeactivation)"))
+        let restoreGate = try XCTUnwrap(text.range(of: "AirPlayDuckSpikeTeardown.shouldRestoreCategory(deactivateFailed: deactivateFailed)"))
+        XCTAssertLessThan(deactivate.lowerBound, restoreGate.lowerBound)
+        let afterGate = text[restoreGate.upperBound...]
+        let restore = try XCTUnwrap(afterGate.range(of: "session.setCategory(.playback, mode: .default, policy: .default, options: normal)"))
+        let close = afterGate[restore.upperBound...].range(of: "}")
+        XCTAssertNotNil(close, "the category restore stays inside the shouldRestoreCategory gate")
+    }
+
     #if DEBUG
     func testTheGateNeverRunsDuringABreakOrNearASongEnd() {
         func refusal(running: Bool = false, airPlay: Bool = true, playing: Bool = true, idle: Bool = true,
@@ -170,6 +186,13 @@ final class AirPlayDuckSpikeTests: XCTestCase {
         XCTAssertEqual(String(decoding: wav[8..<12], as: UTF8.self), "WAVE")
         XCTAssertEqual(wav.count, 44 + AirPlayDuckSpikeClip.sampleRate * 2 * 2, "2 s, 16-bit mono at 44.1 kHz")
         XCTAssertEqual(AirPlayDuckSpikeClip.seconds, 2)
+    }
+
+    func testAFailedDeactivateDoesNotRestoreTheCategory() {
+        XCTAssertTrue(AirPlayDuckSpikeTeardown.shouldRestoreCategory(deactivateFailed: false))
+        XCTAssertFalse(AirPlayDuckSpikeTeardown.shouldRestoreCategory(deactivateFailed: true))
+        XCTAssertEqual(AirPlayDuckSpikeTeardown.deactivateFailedLog(code: 560),
+                       "S0a setActive(false) failed code=560; skipped category restore (session may still be live)")
     }
     #endif
 }
