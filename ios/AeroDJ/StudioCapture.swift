@@ -116,6 +116,28 @@ enum StudioCaptureScenario: String {
     /// sidebar open beside the player. The detail is regular width and ~500 pt wide: it keeps
     /// the rail (`FoldedColumnLayout.usesRailColumn`).
     case duoSidebar
+    /// Mockup D (-Nova): the full trailing rail with the vertical song-position bar. A playing,
+    /// seekable song with a break ready (the DJ chip), one scenario per mock frame:
+    /// the iPhone (the plain capture path), the closed Duo (390 × 844 compact), the open Duo
+    /// upright (640 × 820) with and without the 290 pt Stations sidebar, and sideways
+    /// (820 × 640) as the L1 book spread, the L2 centred layout and with the 320 pt sidebar.
+    /// `RailDCaptureContainer` draws every frame but the iPhone's.
+    case railDPhone
+    case railDDuoClosed
+    case railDPortrait
+    case railDPortraitSidebar
+    case railDLandscapeSpread
+    case railDLandscapeCentred
+    case railDLandscapeSidebar
+
+    /// The mockup D frames drawn in `RailDCaptureContainer`.
+    var isRailDContainer: Bool {
+        switch self {
+        case .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
+             .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar: true
+        default: false
+        }
+    }
 
     var access: PlaybackAccess {
         switch self {
@@ -132,7 +154,9 @@ enum StudioCaptureScenario: String {
             return PlaybackFixtures.stopped
         case .error:
             return PlaybackFixtures.recoverableError
-        case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir, .duoLandscape, .duoSidebar:
+        case .duoWideReady, .duoWideSpeaking, .duoArrangement, .duoWideOnAir, .duoLandscape, .duoSidebar,
+             .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
+             .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
             // A playing song the listener can seek. The shared fixture leaves canSeek false,
             // which draws the scrubber as a non-interactive element.
             var playing = PlaybackFixtures.playing
@@ -203,6 +227,8 @@ struct StudioCaptureView: View {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .duoLandscape || scenario == .duoSidebar {
                 DuoOpenCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario.isRailDContainer {
+                RailDCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .splitView {
                 SplitViewCapture(studio: dependencies.studio)
             } else if scenario == .duoContinuity {
@@ -277,7 +303,9 @@ struct StudioCaptureView: View {
                 await studio.connections.perform(.revoke, onSource: .calendar)
             case .playbackFailed:
                 studio.dj.send(.playbackFailed(afterTrack: 0))
-            case .breakReady, .duoWideReady, .duoArrangement, .duoLandscape, .duoSidebar:
+            case .breakReady, .duoWideReady, .duoArrangement, .duoLandscape, .duoSidebar,
+                 .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
+                 .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
             case .duoWideSpeaking, .onAir, .duoWideOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.

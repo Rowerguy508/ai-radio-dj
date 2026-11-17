@@ -1,0 +1,101 @@
+#if DEBUG
+import AeroDJCore
+import SwiftUI
+
+/// Mockup D's Studio shots (owner: "Yes, build it"). One fixed container per frame, on the same
+/// neutral backdrop and outline as `DuoWideCaptureContainer`, so each PNG shows exactly the
+/// frame the mock draws. The landscape shots force the hinge and fold the SDK never reports in
+/// the simulator (`FoldPoseOverride`): book pose for the L1 spread, flat for L2. The player is
+/// the real `PlayingScreen`; nothing here changes playback. `capture.railDContainer` lets the
+/// UI test wait for the final size before it reads frames. -Nova
+struct RailDCaptureContainer: View {
+    let scenario: StudioCaptureScenario
+    let studio: StudioPresentationModel
+
+    @State private var columns = NavigationSplitViewVisibility.all
+
+    struct Frame {
+        let size: CGSize
+        let sizeClass: UserInterfaceSizeClass
+        /// Stations sidebar width, nil for the player alone.
+        let sidebar: CGFloat?
+        let fold: FoldPoseOverride?
+    }
+
+    /// The fold band at 820 pt: 396…424, the same as `FoldedColumnLayout.duoHorizontal`.
+    static let foldBand = FoldAwareness.Division(minX: 396, minY: 0, width: 28, height: 640, isActive: true)
+
+    static func frame(for scenario: StudioCaptureScenario) -> Frame {
+        let portrait = StudioCapture.duoWideContainerSize
+        let landscape = StudioCapture.duoTentContainerSize
+        switch scenario {
+        case .railDDuoClosed:
+            return Frame(size: CGSize(width: 390, height: 844), sizeClass: .compact, sidebar: nil, fold: nil)
+        case .railDPortraitSidebar:
+            return Frame(size: portrait, sizeClass: .regular, sidebar: 290, fold: nil)
+        case .railDLandscapeSpread:
+            return Frame(size: landscape, sizeClass: .regular, sidebar: nil,
+                         fold: FoldPoseOverride(hinge: .init(status: .partiallyOpen, angleDegrees: 150),
+                                                divisions: [foldBand]))
+        case .railDLandscapeCentred:
+            return Frame(size: landscape, sizeClass: .regular, sidebar: nil,
+                         fold: FoldPoseOverride(hinge: .init(status: .fullyOpen, angleDegrees: 180), divisions: []))
+        case .railDLandscapeSidebar:
+            return Frame(size: landscape, sizeClass: .regular, sidebar: 320, fold: nil)
+        default:
+            // `railDPortrait`: the unfolded Duo upright, as `duoWideReady`.
+            return Frame(size: portrait, sizeClass: .compact, sidebar: nil, fold: nil)
+        }
+    }
+
+    var body: some View {
+        let frame = Self.frame(for: scenario)
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack {
+            Color(white: 0.14)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+            Group {
+                if let sidebar = frame.sidebar {
+                    NavigationSplitView(columnVisibility: $columns) {
+                        List {
+                            Text(PlaybackFixtures.station.name)
+                            Text("Late Night")
+                        }
+                        .navigationTitle("Stations")
+                        .navigationSplitViewColumnWidth(sidebar)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("split.sidebar")
+                    } detail: {
+                        NavigationStack { player }
+                    }
+                    .navigationSplitViewStyle(.balanced)
+                } else {
+                    NavigationStack { player }
+                }
+            }
+            .environment(\.horizontalSizeClass, frame.sizeClass)
+            .environment(\.foldPoseOverride, frame.fold)
+            .frame(width: frame.size.width, height: frame.size.height)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("capture.railDContainer")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var player: some View {
+        PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                      snapshot: scenario.snapshot, actions: .preview,
+                      search: .captureOffline,
+                      studio: studio, isTestStation: true,
+                      timeSource: .fixture,
+                      stationStops: [
+                          DuoStationSwitch.Stop(id: PlaybackFixtures.station.id, name: PlaybackFixtures.station.name),
+                          DuoStationSwitch.Stop(id: "late-night", name: "Late Night"),
+                      ],
+                      onOpenStation: { _ in })
+    }
+}
+#endif
