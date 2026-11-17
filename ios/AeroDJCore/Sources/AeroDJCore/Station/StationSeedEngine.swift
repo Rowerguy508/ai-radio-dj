@@ -477,23 +477,32 @@ public enum StationPoolBuilder {
 /// #418 (-Fry): where a station build's shuffle seed comes from. Privacy (Sentinel): the default
 /// seed is drawn from `SystemRandomNumberGenerator` only, never from user, device, account or
 /// listening data, and it is never logged or stored (`StationQueueEvent` has no seed).
-public enum StationShuffleSeedSource: Equatable, Sendable {
-    /// A fresh seed per build from the system generator (the app's default).
-    case systemRandom
+public struct StationShuffleSeedSource: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case systemRandom
+        case perDay
+        case fixed(UInt64)
+        case stream(UInt64)
+    }
+
+    let kind: Kind
+
+    /// A fresh seed per build from the system generator (the app's default and the only public source).
+    public static let systemRandom = StationShuffleSeedSource(kind: .systemRandom)
     /// The pre-#418 seed: the station key and the day, so a rebuild that day repeats the order.
-    /// Tests that predict a feed's order use it.
-    case perDay
-    /// One fixed seed for every build (tests).
-    case fixed(UInt64)
+    /// Internal: only tests reach it (`@testable import`); the app can't select it.
+    static let perDay = StationShuffleSeedSource(kind: .perDay)
+    /// One fixed seed for every build. Internal, for tests only.
+    static func fixed(_ value: UInt64) -> StationShuffleSeedSource { StationShuffleSeedSource(kind: .fixed(value)) }
     /// #418 (-Atlas): a fresh seed per build like `.systemRandom`, drawn from a `SplitMix64` stream
     /// started at this value, so tests can replay a run of station starts. `StationQueueFeed` keeps
-    /// the stream; `seed(perDay:)` alone returns its first draw.
-    case stream(UInt64)
+    /// the stream; `seed(perDay:)` alone returns its first draw. Internal, for tests only.
+    static func stream(_ value: UInt64) -> StationShuffleSeedSource { StationShuffleSeedSource(kind: .stream(value)) }
 
     /// True when every build gets its own seed (`.systemRandom`, `.stream`). The feed spreads short
     /// lists only then (`Options.spreadShortLists`): `.perDay` and `.fixed` keep their exact orders.
     public var isFreshPerBuild: Bool {
-        switch self {
+        switch kind {
         case .systemRandom, .stream: true
         case .perDay, .fixed: false
         }
@@ -501,13 +510,13 @@ public enum StationShuffleSeedSource: Equatable, Sendable {
 
     /// The seed for one build. `perDay` is evaluated only for `.perDay`.
     public func seed(perDay: @autoclosure () -> UInt64) -> UInt64 {
-        if case let .stream(start) = self { return Self.firstDraw(start) }
+        if case let .stream(start) = kind { return Self.firstDraw(start) }
         var system = SystemRandomNumberGenerator()
         return seed(perDay: perDay(), using: &system)
     }
 
     func seed<G: RandomNumberGenerator>(perDay: @autoclosure () -> UInt64, using generator: inout G) -> UInt64 {
-        switch self {
+        switch kind {
         case .systemRandom: generator.next()
         case .stream: generator.next()   // the feed passes its own running stream
         case .perDay: perDay()

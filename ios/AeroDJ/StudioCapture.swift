@@ -281,17 +281,18 @@ struct StudioCaptureView: View {
                 DuoContinuityCapture(studio: dependencies.studio, loads: continuityLoads)
             } else if scenario == .duoArrangement {
                 ArrangementCaptureContainer(studio: dependencies.studio)
+            } else if showsProbe {
+                // The probe owns its NavigationStack inside its fixed column (#552), like a
+                // window or a split-view detail column. No window-wide stack above it.
+                LayoutResizeProbe(wide: $probeWide, scenario: scenario, studio: dependencies.studio)
+                    .modifier(SongRatingToastHost())
             } else {
                 NavigationStack {
-                    if showsProbe {
-                        LayoutResizeProbe(wide: $probeWide, scenario: scenario, studio: dependencies.studio)
-                    } else {
-                        PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
-                                      snapshot: scenario.snapshot, actions: .preview,
-                                      search: scenario == .empty ? .counting : .captureOffline,
-                                      studio: dependencies.studio, isTestStation: true,
-                                      timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
-                    }
+                    PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                                  snapshot: scenario.snapshot, actions: .preview,
+                                  search: scenario == .empty ? .counting : .captureOffline,
+                                  studio: dependencies.studio, isTestStation: true,
+                                  timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
                 }
                 .modifier(SongRatingToastHost())
             }
@@ -798,6 +799,12 @@ enum DisplayContinuityLaunch {
 
 /// Narrow (compact) then wide (regular) around one `PlayingScreen`, so `@State` survives.
 /// The fold control lives on `ProbeChrome`, not in this column.
+///
+/// The column is a window of its own (#552): its `NavigationStack` and bar sit inside the fixed
+/// frame, as in `DuoOpenCaptureContainer`, so the real layout gate
+/// (`FoldedColumnLayout.routingHeight`) counts only this column's bar. Under a window-wide stack
+/// the gate also counted the window's bar and home-indicator insets on iPad (CI run
+/// 44024149188: 652 × 680 routed as 652 × 818), and the widened column became the rail.
 private struct LayoutResizeProbe: View {
     @Binding var wide: Bool
     let scenario: StudioCaptureScenario
@@ -817,13 +824,22 @@ private struct LayoutResizeProbe: View {
     }
 
     var body: some View {
-        PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
-                      snapshot: scenario.snapshot, actions: .counting, search: .counting,
-                      studio: studio, isTestStation: true,
-                      timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
-            .environment(\.horizontalSizeClass, wide ? .regular : .compact)
-            .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // The column hangs off a window-sized base, so a column wider than an iPhone window
+        // cannot widen the capture root and push `ProbeChrome` (top-trailing) off screen
+        // (CI run 44073668790: probe.widen landed at x 469, past the iPhone window).
+        Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topLeading) {
+                NavigationStack {
+                    // Set on the player, inside the stack, so the stack's own traits cannot override it.
+                    PlayingScreen(station: PlaybackFixtures.station, access: scenario.access,
+                                  snapshot: scenario.snapshot, actions: .counting, search: .counting,
+                                  studio: studio, isTestStation: true,
+                                  timeSource: scenario.snapshot.transport == .playing ? .fixture : nil)
+                        .environment(\.horizontalSizeClass, wide ? .regular : .compact)
+                }
+                .frame(width: columnWidth, height: columnHeight, alignment: .topLeading)
+            }
     }
 }
 

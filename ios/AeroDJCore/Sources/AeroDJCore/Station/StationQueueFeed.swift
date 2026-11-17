@@ -275,13 +275,13 @@ public final class StationQueueFeed<Item: Sendable> {
         self.ratings = ratings
         self.songID = songID ?? { StationQueueSongID.of($0) }
         self.log = log
-        if case let .stream(start) = options.seedSource { seedStream = SplitMix64(seed: start) } else { seedStream = SplitMix64(seed: 0) }
+        if case let .stream(start) = options.seedSource.kind { seedStream = SplitMix64(seed: start) } else { seedStream = SplitMix64(seed: 0) }
     }
 
     /// #418 (-Atlas): the shuffle seed for one build (a full queue or a first-song lookup). The app's
     /// `.systemRandom` draws a fresh one every time; `.stream` draws the next from its stream.
     private func nextBuildSeed(for key: StationQueueKey) -> UInt64 {
-        if case .stream = options.seedSource {
+        if case .stream = options.seedSource.kind {
             return options.seedSource.seed(perDay: 0, using: &seedStream)
         }
         return options.seedSource.seed(perDay: key.shuffleSeed(day: day()))
