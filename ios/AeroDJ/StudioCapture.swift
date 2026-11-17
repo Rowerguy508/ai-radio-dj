@@ -67,6 +67,10 @@ enum StudioCaptureScenario: String {
     /// the station and records the id it would start (`capture.startedStation`), and Now Playing
     /// shows that station's "Starting <name>…". Nothing searches or plays.
     case stationTap
+    /// #454 (-Nova): the same tap-routed split as `stationTap`, inside the 640 × 820 pt
+    /// compact-class Duo container (`StationTapDuoContainer`), so the opened station's detail is
+    /// the unfolded player and draws the dial. Needs an iPad window, like `duoWideReady`.
+    case stationTapDuo
     /// The listen player with a break ready (`breakReady`) in a 640 × 820 pt compact-class
     /// container: below the Studio switch but wider than any phone in portrait, like the
     /// unfolded Duo's split-view detail (owner, build 25). Needs a window at least that big.
@@ -119,7 +123,7 @@ enum StudioCaptureScenario: String {
         switch self {
         case .loading: .checking
         case .denied: .denied
-        case .stations, .resize, .resizeTune, .shell, .stationTap: .authorized
+        case .stations, .resize, .resizeTune, .shell, .stationTap, .stationTapDuo: .authorized
         default: .authorized
         }
     }
@@ -147,7 +151,7 @@ enum StudioCaptureScenario: String {
         case .revoked: .connections
         case .config, .resizeTune: .tune
         case .resize: .queue
-        case .stations, .shell, .stationTap: nil
+        case .stations, .shell, .stationTap, .stationTapDuo: nil
         default: nil
         }
     }
@@ -197,6 +201,8 @@ struct StudioCaptureView: View {
                 CaptureStationSplit(dependencies: dependencies, routesTaps: scenario == .stationTap)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("capture.shell")
+            } else if scenario == .stationTapDuo {
+                StationTapDuoContainer(dependencies: dependencies)
             } else if scenario == .duoWideReady || scenario == .duoWideEmpty || scenario == .duoWideSpeaking || scenario == .duoWideOnAir {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .splitView {
@@ -327,7 +333,7 @@ struct StudioCaptureView: View {
             // Shell observes authState. Settle the non-prompting status before flipping
             // `loaded`, so CaptureStationSplit's first frame is Allow / denied / ready —
             // never the bare Connecting spinner, and never blocked on MusicKit request().
-            if chosen == .shell || chosen == .stationTap {
+            if chosen == .shell || chosen == .stationTap || chosen == .stationTapDuo {
                 await dependencies.playback.refreshAuthorizationStatus()
             }
             loaded = true
@@ -381,6 +387,33 @@ private struct DuoWideCaptureContainer: View {
             .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("capture.duoContainer")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+/// #454 (-Nova, `stationTapDuo`): the tap-routed station split in the same 640 × 820 pt
+/// compact-class container, backdrop, clip and outline as `DuoWideCaptureContainer`. Compact
+/// width collapses the split to one column, so a row tap opens the detail at the container's
+/// full width: the unfolded player, with the Duo dial wired to the split's own tap route.
+/// `capture.duoContainer` lets the UI test wait for the final size before it taps.
+private struct StationTapDuoContainer: View {
+    let dependencies: AppDependencies
+
+    var body: some View {
+        let size = StudioCapture.duoWideContainerSize
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack {
+            Color(white: 0.14)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+            CaptureStationSplit(dependencies: dependencies, routesTaps: true)
+                .environment(\.horizontalSizeClass, .compact)
+                .frame(width: size.width, height: size.height)
+                .clipShape(shape)
+                .overlay { shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("capture.duoContainer")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
