@@ -137,13 +137,34 @@ final class StudioScreenTests: XCTestCase {
                       "Tune in ⋯\n\(app.debugDescription)")
         save(app, "closed-more-menu")
         // Close the menu, then use the rail's Queue.
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).tap()
+        closeClosedMore(app, row: closedMenuItem(app, "transport.tune", labelPrefix: "Tune station"))
         let queue = app.buttons["queue.affordance"].firstMatch
         XCTAssertTrue(queue.waitForExistence(timeout: 5))
         queue.tap()
         XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
         XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
         save(app, "closed-queue-sheet")
+    }
+
+    /// Mockup D (-Nova, Fry's #558 nit 3): closes the closed ⋯ menu without a blind coordinate.
+    /// Taps the system's popover dismiss region when there is one, else the title (a static,
+    /// non-interactive element outside the menu), then waits for `row` to go away.
+    @MainActor
+    private func closeClosedMore(_ app: XCUIApplication, row: XCUIElement,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        let any = app.descendants(matching: .any)
+        let dismissRegion = any["PopoverDismissRegion"]
+        let title = any["folded.titleBlock"]
+        if dismissRegion.exists && dismissRegion.isHittable {
+            dismissRegion.tap()
+        } else if title.exists && title.isHittable {
+            title.tap()
+        } else {
+            any["station.title"].tap()
+        }
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: row)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed,
+                       "⋯ did not close\n\(app.debugDescription)", file: file, line: line)
     }
 
     /// #537: ⋯ on the closed reskin. Opens the menu; the caller checks its rows.
@@ -160,8 +181,9 @@ final class StudioScreenTests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "identifier == %@ OR label BEGINSWITH %@", identifier, labelPrefix)).firstMatch
     }
 
-    /// Opens the queue from a closed layout: ⋯ → Queue on the reskin (#537). Phone layouts that
-    /// still draw the toolbar (landscape centred column) keep their Queue button.
+    /// Opens the queue from a closed layout: the rail's Queue on the reskin (mockup D; it was
+    /// ⋯ → Queue in #537, which stays as the fallback). Phone layouts that still draw the
+    /// toolbar (landscape centred column) keep their Queue button.
     @MainActor
     private func openClosedQueue(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let direct = app.buttons["queue.affordance"]
@@ -328,7 +350,7 @@ final class StudioScreenTests: XCTestCase {
         try XCTSkipIf(isOpenLayout, "Closed layout is checked on an iPhone-width simulator")
         let app = launch(dark: true)
         XCTAssertTrue(app.otherElements["layout.compact"].waitForExistence(timeout: 15))
-        openClosedQueue(app)  // #537: Queue is in ⋯ on the closed reskin
+        openClosedQueue(app)  // Mockup D: the rail's Queue on the closed reskin
         XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
         XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
         save(app, "closed-queue-sheet-dark")
@@ -1445,7 +1467,7 @@ final class StudioScreenTests: XCTestCase {
         // #542: open is the rail layout, so the queue (and search) is the sheet there too.
         let layout = "layout.compact"
         XCTAssertTrue(app.descendants(matching: .any)[layout].waitForExistence(timeout: 15))
-        openClosedQueue(app)  // #537/#542: ⋯ → Queue on the closed reskin; the rail's Queue when open
+        openClosedQueue(app)  // Mockup D / #542: the rail's Queue, closed and open
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         replaceText(field, with: "violet")
@@ -1737,7 +1759,7 @@ final class StudioScreenTests: XCTestCase {
         pause()
         app.buttons["transport.playPause"].tap(); pause()
         app.buttons["transport.playPause"].tap(); pause()
-        openClosedQueue(app)  // #537/#542: ⋯ → Queue on the closed reskin; the rail's Queue when open
+        openClosedQueue(app)  // Mockup D / #542: the rail's Queue, closed and open
         XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
         pause()
         let segments = app.segmentedControls["workspace.segment"]

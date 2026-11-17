@@ -28,7 +28,7 @@ struct RailDCaptureContainer: View {
     static func frame(for scenario: StudioCaptureScenario) -> Frame {
         let portrait = StudioCapture.duoWideContainerSize
         let landscape = StudioCapture.duoTentContainerSize
-        switch scenario {
+        switch scenario.railDFrame {
         case .railDDuoClosed:
             return Frame(size: CGSize(width: 390, height: 844), sizeClass: .compact, sidebar: nil, fold: nil)
         case .railDPortraitSidebar:

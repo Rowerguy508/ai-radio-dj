@@ -352,6 +352,8 @@ struct FoldedPlayer: View {
 
     /// iPhone landscape: one centred column, the layout this width had before the Duo rail.
     /// ⋯ is in the column header. Controls sit under the art. No fold gutter, no top clearance.
+    /// Mockup D (-Nova, Fry's #558 nit 4): no rail at this width, so the horizontal scrubber
+    /// stays; D has no iPhone-landscape frame.
     private func centredColumnBody(in size: CGSize) -> some View {
         let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
         let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
@@ -719,7 +721,8 @@ struct FoldedPlayer: View {
                     VStack(alignment: .leading, spacing: 0) {
                         RailDStationHeader(name: heading.header.name)
                         upper(artSide: art, centered: false,
-                              titleSize: openTitleSize(column: Double(column)), compactStatus: true)
+                              titleSize: openTitleSize(column: Double(column)), compactStatus: true,
+                              statusWithoutTrack: true)
                     }
                     .frame(width: column)
                 }
@@ -753,6 +756,10 @@ struct FoldedPlayer: View {
     /// (scrubber, Play/Skip, the station bar) pinned at the bottom; only the art and title between
     /// them scroll. The scrolling `centredColumnBody` (iPhone landscape) put the transport below
     /// the 820 × 640 window and centred ⋯ halfway down the screen.
+    ///
+    /// Mockup D (-Nova, Fry's #558 nit 4): deliberately keeps the horizontal scrubber. Collapse
+    /// hides the rail, so there is no rail for the vertical bar; Atlas's #552 guarantee is that
+    /// Play/Skip and the scrubber stay on screen here. Not one of D's frames.
     private func pinnedColumnBody(in size: CGSize) -> some View {
         let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
         let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
@@ -785,7 +792,7 @@ struct FoldedPlayer: View {
             .frame(height: CGFloat(FoldedColumnLayout.headerHeight))
             .padding(.horizontal, CGFloat(FoldedColumnLayout.duoEdgeInset))
             ScrollView(.vertical, showsIndicators: false) {
-                upper(artSide: CGFloat(m.artSide), centered: true)
+                upper(artSide: CGFloat(m.artSide), centered: true, statusWithoutTrack: true)
                     .padding(.top, CGFloat(Gap.headerToArt))
                     .frame(width: column)
                     .frame(maxWidth: .infinity)
@@ -890,7 +897,7 @@ struct FoldedPlayer: View {
     private func upper(artSide: CGFloat, centered: Bool, includesStatus: Bool = true,
                        includesArt: Bool = true, keepArtVisible: Bool = false,
                        includesSearch: Bool = true, titleSize: CGFloat? = nil,
-                       compactStatus: Bool = false) -> some View {
+                       compactStatus: Bool = false, statusWithoutTrack: Bool = false) -> some View {
         VStack(alignment: centered ? .center : .leading, spacing: 0) {
             switch content {
             case .track(let track):
@@ -914,6 +921,7 @@ struct FoldedPlayer: View {
                 testTag
                 NowPlayingPlaceholder(content: content, actions: actions)
                     .padding(.top, 24)
+                idleStatus(statusWithoutTrack, compact: compactStatus)
                 // #454: search is never a station's empty state; it sits behind an explicit
                 // button that opens the Queue workspace (where `StartListeningView` lives).
                 if includesSearch, search != nil {
@@ -924,10 +932,21 @@ struct FoldedPlayer: View {
                 testTag
                 NowPlayingPlaceholder(content: content, actions: actions)
                     .padding(.top, 24)
+                idleStatus(statusWithoutTrack, compact: compactStatus)
             }
             if continuityProbe { continuityRows }
         }
         .scrollTargetLayout()
+    }
+
+    /// Echo (#558): with no track the rail column and the collapsed pinned column still show
+    /// the DJ chip, as `wideContent` does when `heroTrack == nil`. Off everywhere else.
+    @ViewBuilder
+    private func idleStatus(_ shows: Bool, compact: Bool) -> some View {
+        if shows {
+            FoldedDJStatus(dj: dj, fitsOneLine: compact)
+                .padding(.top, 16)
+        }
     }
 
     @ViewBuilder

@@ -131,13 +131,47 @@ enum StudioCaptureScenario: String {
     case railDLandscapeSpread
     case railDLandscapeCentred
     case railDLandscapeSidebar
+    /// Echo (#558): the three landscape frames with the DJ on air (`breakReady` then
+    /// `playbackStarted`, the pill's timer frozen as in `onAir`) and with the voice unavailable
+    /// (the `speechFailed` caption, music playing). Debug-only extra shots, not required in CI.
+    case railDLandscapeSpreadOnAir
+    case railDLandscapeCentredOnAir
+    case railDLandscapeSidebarOnAir
+    case railDLandscapeSpreadVoiceUnavailable
+    case railDLandscapeCentredVoiceUnavailable
+    case railDLandscapeSidebarVoiceUnavailable
 
     /// The mockup D frames drawn in `RailDCaptureContainer`.
     var isRailDContainer: Bool {
         switch self {
         case .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
              .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar: true
+        default: isRailDOnAir || isRailDVoiceUnavailable
+        }
+    }
+
+    var isRailDOnAir: Bool {
+        switch self {
+        case .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir: true
         default: false
+        }
+    }
+
+    var isRailDVoiceUnavailable: Bool {
+        switch self {
+        case .railDLandscapeSpreadVoiceUnavailable, .railDLandscapeCentredVoiceUnavailable,
+             .railDLandscapeSidebarVoiceUnavailable: true
+        default: false
+        }
+    }
+
+    /// The mock frame an On Air or voice-unavailable variant is drawn in.
+    var railDFrame: StudioCaptureScenario {
+        switch self {
+        case .railDLandscapeSpreadOnAir, .railDLandscapeSpreadVoiceUnavailable: .railDLandscapeSpread
+        case .railDLandscapeCentredOnAir, .railDLandscapeCentredVoiceUnavailable: .railDLandscapeCentred
+        case .railDLandscapeSidebarOnAir, .railDLandscapeSidebarVoiceUnavailable: .railDLandscapeSidebar
+        default: self
         }
     }
 
@@ -164,6 +198,16 @@ enum StudioCaptureScenario: String {
             var playing = PlaybackFixtures.playing
             playing.canSeek = true
             return playing
+        case .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir:
+            var playing = PlaybackFixtures.playing
+            playing.canSeek = true
+            return playing
+        case .railDLandscapeSpreadVoiceUnavailable, .railDLandscapeCentredVoiceUnavailable,
+             .railDLandscapeSidebarVoiceUnavailable:
+            // The song plays on; the DJ line could not (speechFailed, the caption style).
+            var failed = PlaybackFixtures.recoverableError
+            failed.canSeek = true
+            return failed
         default:
             return PlaybackFixtures.playing
         }
@@ -316,7 +360,8 @@ struct StudioCaptureView: View {
                  .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
                  .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
-            case .duoWideSpeaking, .onAir, .duoWideOnAir:
+            case .duoWideSpeaking, .onAir, .duoWideOnAir,
+                 .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
                 StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))

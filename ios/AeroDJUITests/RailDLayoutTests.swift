@@ -40,6 +40,7 @@ final class RailDLayoutTests: XCTestCase {
         if let window = settledFrame(of: app.windows.firstMatch, "window") {
             XCTAssertEqual(rail.maxX, window.maxX - 8, accuracy: 1.5, "the rail sits 8 pt in from the trailing edge")
         }
+        try assertClosedChip(app, rail: rail)
         save(app, "rail-d-iphone")
     }
 
@@ -53,6 +54,7 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail), "rail \(rail) left the container \(box)")
         XCTAssertEqual(rail.maxX, box.maxX - 8, accuracy: 1.5, "the rail sits 8 pt in from the trailing edge")
         assertNoHorizontalBar(app)
+        try assertClosedChip(app, rail: rail)
         save(app, "rail-d-duo-closed")
     }
 
@@ -135,7 +137,89 @@ final class RailDLayoutTests: XCTestCase {
         save(app, "rail-d-duo-open-landscape-sidebar")
     }
 
+    // MARK: DJ states (Echo, #558): debug-only extra shots, not required in ios.yml
+
+    @MainActor
+    func testOpenLandscapeSpreadOnAir() throws {
+        try assertDJState("railDLandscapeSpreadOnAir", layout: .spread, onAir: true,
+                          shot: "rail-d-duo-open-landscape-spread-onair")
+    }
+
+    @MainActor
+    func testOpenLandscapeCentredOnAir() throws {
+        try assertDJState("railDLandscapeCentredOnAir", layout: .centred, onAir: true,
+                          shot: "rail-d-duo-open-landscape-centred-onair")
+    }
+
+    @MainActor
+    func testOpenLandscapeSidebarOnAir() throws {
+        try assertDJState("railDLandscapeSidebarOnAir", layout: .sidebar, onAir: true,
+                          shot: "rail-d-duo-open-landscape-sidebar-onair")
+    }
+
+    @MainActor
+    func testOpenLandscapeSpreadVoiceUnavailable() throws {
+        try assertDJState("railDLandscapeSpreadVoiceUnavailable", layout: .spread, onAir: false,
+                          shot: "rail-d-duo-open-landscape-spread-voice-unavailable")
+    }
+
+    @MainActor
+    func testOpenLandscapeCentredVoiceUnavailable() throws {
+        try assertDJState("railDLandscapeCentredVoiceUnavailable", layout: .centred, onAir: false,
+                          shot: "rail-d-duo-open-landscape-centred-voice-unavailable")
+    }
+
+    @MainActor
+    func testOpenLandscapeSidebarVoiceUnavailable() throws {
+        try assertDJState("railDLandscapeSidebarVoiceUnavailable", layout: .sidebar, onAir: false,
+                          shot: "rail-d-duo-open-landscape-sidebar-voice-unavailable")
+    }
+
+    private enum LandscapeLayout { case spread, centred, sidebar }
+
+    /// The rail, no horizontal bar, and the DJ state (the On Air pill, or the "DJ voice
+    /// unavailable" caption) inside the frame, leading of the rail and off the fold.
+    @MainActor
+    private func assertDJState(_ scenario: String, layout: LandscapeLayout, onAir: Bool, shot: String) throws {
+        let app = try launch(scenario, container: Self.landscape, orientation: .landscapeLeft)
+        let box = try settledContainer(app, size: Self.landscape)
+        let any = app.descendants(matching: .any)
+        if layout == .sidebar {
+            XCTAssertTrue(any["split.sidebar"].waitForExistence(timeout: 10), "the Stations sidebar is not open\n\(app.debugDescription)")
+            XCTAssertTrue(any["folded.railColumn"].waitForExistence(timeout: 10),
+                          "the sidebar-open detail is not the rail column\n\(app.debugDescription)")
+        }
+        let rail = try assertRail(app, id: "folded.systemBar", hasCollapse: true)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail))
+        assertNoHorizontalBar(app)
+        let state = onAir
+            ? any["dj.onAir"]
+            : any.matching(NSPredicate(format: "label CONTAINS[c] %@", "DJ voice unavailable")).firstMatch
+        XCTAssertTrue(state.waitForExistence(timeout: 10),
+                      "\(onAir ? "On Air" : "voice unavailable") missing\n\(app.debugDescription)")
+        let frame = try XCTUnwrap(settledFrame(of: state, "DJ state"))
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(frame), "DJ state \(frame) left the container \(box)")
+        XCTAssertLessThanOrEqual(frame.maxX, rail.minX + 1, "DJ state \(frame) runs under the rail \(rail)")
+        if layout != .sidebar {
+            let foldMin = box.minX + Self.foldMinX
+            let foldMax = box.minX + Self.foldMaxX
+            XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin, "DJ state \(frame) sits on the fold")
+        }
+        save(app, shot)
+    }
+
     // MARK: Checks
+
+    /// Echo (#558): the closed rail keeps the DJ chip in the content column, lined up with the
+    /// title, one line, leading of the rail.
+    @MainActor
+    private func assertClosedChip(_ app: XCUIApplication, rail: CGRect,
+                                  file: StaticString = #filePath, line: UInt = #line) throws {
+        try assertChipLinesUpWithTitle(app, file: file, line: line)
+        let chip = try XCTUnwrap(settledFrame(of: app.descendants(matching: .any)["dj.ready"], "chip"), file: file, line: line)
+        XCTAssertLessThanOrEqual(chip.maxX, rail.minX + 1, "the chip \(chip) runs under the rail \(rail)", file: file, line: line)
+        XCTAssertLessThan(chip.height, 44, "the DJ chip wrapped: \(chip)", file: file, line: line)
+    }
 
     /// Every rail control hittable, at least 44 × 44 and inside the rail; the vertical bar in
     /// the rail, under Sleep and above the live dot, taller than wide.

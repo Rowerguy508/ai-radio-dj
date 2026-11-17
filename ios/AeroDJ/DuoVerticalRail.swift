@@ -144,7 +144,6 @@ struct ClosedVerticalRail<More: View>: View {
         .padding(.vertical, CGFloat(DuoRailLayout.verticalPadding))
         .frame(width: CGFloat(FoldedOuterLayout.closedRailWidth))
         .frame(maxHeight: .infinity)
-        .accessibilityElement(children: .contain)
         .modifier(DuoRailGlass())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folded.closedRail")
