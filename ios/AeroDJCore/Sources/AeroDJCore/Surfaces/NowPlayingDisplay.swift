@@ -25,6 +25,18 @@ public struct NowPlayingDisplay: Codable, Equatable, Hashable, Sendable {
         case starting
         case playing
         case paused
+
+        /// Short state caption. Nil while playing: the art and title already say that.
+        /// Lock-screen presentation uses `.playing` while system Now Playing owns transport,
+        /// so this line is not a second Pause/Starting control (#539).
+        public var caption: String? {
+            switch self {
+            case .playing: nil
+            case .paused: "Paused"
+            case .starting: "Starting"
+            case .stopped: "Not playing"
+            }
+        }
     }
 
     /// Generated cover (gradient and monogram) from `StationArtStyle`. No URL and no image data:
@@ -87,6 +99,45 @@ public struct NowPlayingDisplay: Codable, Equatable, Hashable, Sendable {
 
     /// Nothing to show (no station and no song).
     public var isEmpty: Bool { station == nil && track == nil }
+
+    /// The system Now Playing card (MPNowPlayingInfoCenter / remote commands) is the lock-screen
+    /// player: audio is playing, or it is paused on a song or station the system card keeps.
+    /// `.starting` is not included. MusicKit has not confirmed playback yet, so this activity
+    /// may be the only card and still has to show the song.
+    public var systemNowPlayingOwnsLockScreen: Bool {
+        switch state {
+        case .playing:
+            return !isEmpty
+        case .paused:
+            return track != nil || station != nil
+        case .starting, .stopped:
+            return false
+        }
+    }
+
+    /// Title, artist, artwork, station and the transport caption. False while system Now Playing
+    /// is already that player, so the lock screen does not draw them again.
+    public var lockScreenShowsPlaybackChrome: Bool { !systemNowPlayingOwnsLockScreen }
+
+    /// What the lock screen (and StandBy, which uses the same view) may draw.
+    /// While system Now Playing owns the lock screen this drops title, artist, artwork, station
+    /// and transport and keeps only DJ state (On Air / "DJ break after this song"). The value
+    /// stored on the activity is unchanged, so the Dynamic Island still reads the song.
+    public var lockScreenPresentation: NowPlayingDisplay {
+        guard systemNowPlayingOwnsLockScreen else { return self }
+        return NowPlayingDisplay(station: nil, track: nil, artist: nil, art: nil,
+                                 state: .playing, onAirLabel: onAirLabel, readyLabel: readyLabel)
+    }
+
+    /// The one line the stripped lock screen draws. On Air, then the ready line, then the app
+    /// name when the DJ is quiet. Most songs have no break, and an empty card would be a blank
+    /// tinted box on the lock screen and in StandBy. The name is `AppName.display`, already
+    /// published, and it is not stored on the payload.
+    public var lockScreenLine: String {
+        if let onAirLabel { return onAirLabel }
+        if let readyLabel { return readyLabel }
+        return AppName.display
+    }
 
     /// The surfaces' view of the playback snapshot and the DJ state. Reads only the station
     /// name, the current song's title and artist, the transport and `dj.onAirLabel`. The
@@ -181,6 +232,74 @@ public enum LiveActivityPlan {
         }
         guard wantsActivity, activitiesEnabled, appInForeground, display.state == .playing else { return .none }
         return .start(display)
+    }
+}
+
+/// One running Live Activity and the content it is actually showing.
+/// The id is ActivityKit's activity id. It is never logged.
+public struct LiveActivityRecord: Equatable, Sendable {
+    public let id: String
+    public let content: NowPlayingDisplay
+
+    public init(id: String, content: NowPlayingDisplay) {
+        self.id = id
+        self.content = content
+    }
+}
+
+/// One ActivityKit call. Built without ActivityKit so the rules run on Linux.
+public enum LiveActivityCommand: Equatable, Sendable {
+    case start(NowPlayingDisplay)
+    case update(id: String, display: NowPlayingDisplay)
+    case end(id: String)
+}
+
+/// Turns the running activities and the display the app wants into ActivityKit calls.
+///
+/// #539: `LiveActivityPlan.action` remembers a single previous display and the app used to
+/// apply `.update` only to `activities.first`. A second activity (a start that landed before
+/// the first request showed up in `activities`, or one left from an earlier launch) kept the
+/// song it was created with. Once the remembered display matched `.first`, later track changes
+/// returned `.none` and that other card never moved. This reconciler reads every activity's
+/// content, updates every one that differs, and ends every id after the first.
+public enum LiveActivityReconciler {
+    /// Ends whatever is still running at process start, before the first display is applied.
+    public static func startupCommands(running: [LiveActivityRecord]) -> [LiveActivityCommand] {
+        running.map { .end(id: $0.id) }
+    }
+
+    /// - Parameters:
+    ///   - running: every activity ActivityKit currently lists, with the content it is showing.
+    ///     Empty when none are running. Order is the system's order; the first id is the one kept.
+    public static func commands(display: NowPlayingDisplay, running: [LiveActivityRecord],
+                                appInForeground: Bool, activitiesEnabled: Bool) -> [LiveActivityCommand] {
+        let decision = LiveActivityPlan.action(for: display, previous: running.first?.content,
+                                               isActive: !running.isEmpty,
+                                               appInForeground: appInForeground,
+                                               activitiesEnabled: activitiesEnabled)
+        switch decision {
+        case .start(let display):
+            // A non-empty list must not grow a second activity. Update and fold instead.
+            guard running.isEmpty else { return sync(running, to: display) }
+            return [.start(display)]
+        case .end:
+            return running.map { .end(id: $0.id) }
+        case .none, .update:
+            return sync(running, to: display)
+        }
+    }
+
+    /// Push `display` onto every activity that is showing something else, then end the extras
+    /// so a stale song cannot stay on screen if the end is what the system actually applies.
+    private static func sync(_ running: [LiveActivityRecord], to display: NowPlayingDisplay) -> [LiveActivityCommand] {
+        var commands: [LiveActivityCommand] = []
+        for record in running where record.content != display {
+            commands.append(.update(id: record.id, display: display))
+        }
+        for record in running.dropFirst() {
+            commands.append(.end(id: record.id))
+        }
+        return commands
     }
 }
 

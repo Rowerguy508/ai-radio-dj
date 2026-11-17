@@ -218,9 +218,12 @@ so the compact layout and its sheet keep their radii.
   art, Play/Pause on the centre line. The unfolded Duo is wide and at least that tall
   (`controlPlacement` is `.duoHorizontal`): artwork and the title stay in the
   left half, an empty gutter sits on the centre fold, and the right half is a content
-  column (horizontal scrubber, play/pause, skip, station, DJ chip, and Search Apple
-  Music when nothing is playing, fitted to the column width) plus a thin symbol
-  bar (back, more, queue, tune). Controls start below `duoStatusClearance`. Below 500 pt
+  column (horizontal scrubber, station, DJ chip, and Search Apple
+  Music when nothing is playing, fitted to the column width) plus a glass rail
+  (collapse, more, play/pause, skip, queue, sleep timer, and a live dot). The
+  content column has no transport row. The dot is lit only while
+  the DJ state is `.speaking`. Collapse shows this centred column and does not
+  change playback. Controls start below `duoStatusClearance`. Below 500 pt
   wide (every iPhone in portrait) the compact player is unchanged.
 - **Regular-width arrangement:** when the width class is regular and the container is
   the tall listen layout (`controlPlacement` is `.duoHorizontal`), artwork and the
@@ -273,6 +276,12 @@ so the compact layout and its sheet keep their radii.
 - Artwork and the background may ignore the safe area.
 - Compact: transport and queue affordance sit in `.safeAreaInset(edge: .bottom)`,
   so the home indicator never covers them.
+- **Split View** (`SplitViewLayout`): compact narrow, half, two-thirds and full.
+  The leading and trailing safe areas are read separately. The larger one is the
+  outer edge, and the Now Playing symbol bar, the station sidebar, and the Library
+  and Settings bar buttons sit on that side. Equal insets keep the current side.
+  A full-screen iPhone, including landscape, does not take this path. Hit targets
+  stay at least 44 pt, and controls stay inside the container.
 - Scroll only where content can exceed the container: the queue list, the Tune and
   Connections segments, and the whole layout at accessibility sizes. Zone A itself
   does not scroll in Studio.

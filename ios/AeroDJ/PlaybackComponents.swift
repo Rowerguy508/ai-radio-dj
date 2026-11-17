@@ -1189,7 +1189,7 @@ private extension View {
 }
 #endif
 
-private struct SymbolReplace: ViewModifier {
+struct SymbolReplace: ViewModifier {
     var enabled: Bool
 
     @ViewBuilder

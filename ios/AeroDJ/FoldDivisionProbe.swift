@@ -17,7 +17,7 @@ struct FoldDivisionProbe: View {
             Color.clear
                 .modifier(HingeObserver(hinge: $hinge))
                 .onChange(of: FoldDivisionReading.regions(in: proxy), initial: true) { _, next in
-                    divisions = next
+                    if next != divisions { divisions = next }
                 }
         }
         .allowsHitTesting(false)
@@ -32,10 +32,10 @@ private enum FoldDivisionReading {
         if #available(iOS 27.1, *) {
             return proxy.reservedRegions(kind: .division).map { region in
                 FoldAwareness.Division(
-                    minX: Double(region.frame.minX),
-                    minY: Double(region.frame.minY),
-                    width: Double(region.frame.width),
-                    height: Double(region.frame.height),
+                    minX: half(region.frame.minX),
+                    minY: half(region.frame.minY),
+                    width: half(region.frame.width),
+                    height: half(region.frame.height),
                     isActive: region.isActive)
             }
             .sorted { lhs, rhs in
@@ -46,6 +46,12 @@ private enum FoldDivisionReading {
         }
         #endif
         return []
+    }
+
+    /// #538: rounds to 0.5pt so sub-point jitter in the reported frames cannot
+    /// rewrite `divisions` on every layout pass.
+    private static func half(_ value: CGFloat) -> Double {
+        (Double(value) * 2).rounded() / 2
     }
 }
 
@@ -62,19 +68,24 @@ private struct HingeObserver: ViewModifier {
     private func hingeBody(_ content: Content) -> some View {
         #if compiler(>=6.4.2)
         if #available(iOS 27.1, *) {
-            content.onHingeChange(isEnabled: true) { _, newContext in
-                guard let device = newContext.hinge else {
-                    hinge = nil
-                    return
+            // #538: the SDK may call this off the main thread. A plain closure here is
+            // inferred @MainActor and Swift 6 traps on that executor check, so the
+            // closure is @Sendable (not isolated), maps the context to our value
+            // sample, and hops to the main actor to write state.
+            content.onHingeChange(isEnabled: true) { @Sendable [binding = $hinge] _, newContext in
+                let next: FoldAwareness.HingeSample? = newContext.hinge.map { device in
+                    let status: FoldAwareness.HingeStatus
+                    switch device.status {
+                    case .closed: status = .closed
+                    case .partiallyOpen: status = .partiallyOpen
+                    case .fullyOpen: status = .fullyOpen
+                    default: status = .unknown // Xcode 27.2 SDK adds hinge states; plain default keeps Release archive exhaustive
+                    }
+                    return FoldAwareness.HingeSample(status: status, angleDegrees: device.angle.degrees)
                 }
-                let status: FoldAwareness.HingeStatus
-                switch device.status {
-                case .closed: status = .closed
-                case .partiallyOpen: status = .partiallyOpen
-                case .fullyOpen: status = .fullyOpen
-                @unknown default: status = .unknown
+                Task { @MainActor in
+                    if binding.wrappedValue != next { binding.wrappedValue = next }
                 }
-                hinge = FoldAwareness.HingeSample(status: status, angleDegrees: device.angle.degrees)
             }
         } else {
             content

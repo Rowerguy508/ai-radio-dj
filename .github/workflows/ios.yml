@@ -456,6 +456,100 @@ jobs:
           test -n "$CONTROL" || { echo "::error::pinned libptts_ffi.a (ios-arm64) not found for the positive control"; exit 1; }
           ios/scripts/check-no-private-amx.sh "$DERIVED_DATA/Build/Products/Release-iphoneos/AeroDJ.app" "$CONTROL"
 
+  release-archive:
+    # Release-only compile errors (TestFlight build 49, #536: a non-exhaustive switch that only
+    # Xcode 27.2's Release archive rejects) must fail at PR time, not at the TestFlight cut.
+    # Same image, Xcode, SDK, XcodeGen pin and `xcodebuild archive` invocation as testflight.yml's
+    # "Archive (Release, manual signing)" step, with the same owner A/B compilation-condition
+    # rule. No signing material, no secrets, no export and no upload. Always GitHub-hosted. -Echo
+    name: Release archive (Xcode 27.2, unsigned)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      # sha256 of XcodeGen 2.46.0 xcodegen.zip (same pin as testflight.yml).
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Select Xcode 27.2
+        # Same pin as testflight.yml: fails fast, with no fallback.
+        env:
+          XCODE_PATH: /Applications/Xcode_27.2.app
+          REQUIRED_SDK: "27.2"
+        run: |
+          set -euo pipefail
+          if [ ! -d "$XCODE_PATH" ]; then
+            echo "::error::$XCODE_PATH not found on this runner. Installed: $(ls -d /Applications/Xcode*.app | tr '\n' ' ')"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_PATH"
+          xcodebuild -version
+          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          if [ "$SDK_VERSION" != "$REQUIRED_SDK" ]; then
+            echo "::error::iOS SDK is $SDK_VERSION; this job requires $REQUIRED_SDK"
+            exit 1
+          fi
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading component"
+            xcodebuild -downloadComponent MetalToolchain
+            if ! xcrun metal --version; then
+              echo "::error::Metal toolchain still unavailable after xcodebuild -downloadComponent MetalToolchain"
+              exit 1
+            fi
+          fi
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Archive (Release, unsigned)
+        # testflight.yml's archive command with signing switched off. The conditions script runs
+        # as for a plain TestFlight build (no p0_diag, owner_ab or tester_voice), so this compiles
+        # exactly what a default 2.0 upload compiles.
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/release-archive-logs"
+          EXTRA=()
+          CONDS="$(EVENT_NAME=workflow_dispatch OWNER_AB=false P0_DIAG=false TESTER_VOICE=false ios/scripts/testflight-swift-conditions.sh)"
+          if [ -n "$CONDS" ]; then EXTRA+=("SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited)$CONDS"); fi
+          ios/scripts/check-owner-ab-build-settings.sh absent "${EXTRA[@]}"
+          xcodebuild archive \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJ \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/AeroDJ.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            "${EXTRA[@]}" \
+            2>&1 | tee "$RUNNER_TEMP/release-archive-logs/archive.log"
+          APP_BUNDLE="$(find "$RUNNER_TEMP/AeroDJ.xcarchive/Products/Applications" -maxdepth 1 -name '*.app' | head -n 1)"
+          [ -n "$APP_BUNDLE" ] || { echo "::error::no app in the archive"; exit 1; }
+          test -f "$APP_BUNDLE/AeroDJ" || { echo "::error::$APP_BUNDLE/AeroDJ missing"; exit 1; }
+      - name: Upload archive log on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-archive-log
+          path: ${{ runner.temp }}/release-archive-logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   runtime-mode:
     name: Runtime mode on simulator (Debug vs Release)
     needs: changes
@@ -799,7 +893,9 @@ jobs:
         run: |
           ls -la "$SHOTS"
           ls "$SHOTS" | grep -q '^closed-compact_' || { echo "missing closed screenshot"; exit 1; }
-          ls "$SHOTS" | grep -q '^open-studio-queue_' || { echo "missing open screenshot"; exit 1; }
+          # #537: the decluttered closed player's ⋯ with Queue and Tune (and the star when rated). -Nova
+          ls "$SHOTS" | grep -q '^closed-more-menu_' || { echo "missing closed-more-menu screenshot"; exit 1; }
+          ls "$SHOTS" | grep -q '^open-rail-queue-sheet_' || { echo "missing open screenshot"; exit 1; }
           # #465 item 10: Library, Stations and Settings at Duo width, required like
           # duo-wide-ready (AppWideLayoutTests). -Nova
           for shot in duo-wide-library duo-wide-stations duo-wide-settings duo-wide-localarea; do
@@ -807,9 +903,9 @@ jobs:
           done
           for shot in closed-dark closed-state-empty closed-state-loading closed-state-error closed-state-denied \
                       closed-connections-revoked closed-tune-config-change closed-large-text \
-                      open-studio-tune-dark open-large-text open-connections-revoked open-tune-config-change \
-                      closed-queue-sheet-dark open-studio-queue-dark \
-                      closed-connections-dark open-studio-connections-dark \
+                      open-rail-tune-dark open-large-text open-connections-revoked open-tune-config-change \
+                      closed-queue-sheet-dark open-rail-queue-dark \
+                      closed-connections-dark open-rail-connections-dark \
                       closed-station-list-dark open-station-list-dark \
                       closed-state-empty-dark closed-state-loading-dark closed-state-error-dark \
                       closed-state-denied-dark closed-state-playbackFailed-dark \
@@ -818,10 +914,12 @@ jobs:
                       closed-ax5-dark open-ax5-dark \
                       closed-onair open-onair \
                       iphone-landscape iphone-landscape-dark ipad-landscape ipad-landscape-dark \
-                      duo-wide-ready duo-wide-onair duo-continuity-folded duo-continuity-unfolded; do
+                      duo-wide-ready duo-wide-speaking duo-wide-onair split-narrow split-half split-half-stations split-wide \
+                      duo-continuity-folded duo-continuity-unfolded; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
-          ls "$SHOTS" | grep -q '^duo-arrangement_' || { echo "missing duo-arrangement screenshot"; exit 1; }
+          # #542: the regular-width Duo draws the rail, not the two-pane arrangement (ArrangementPaneTests). -Atlas
+          ls "$SHOTS" | grep -q '^duo-regular-rail_' || { echo "missing duo-regular-rail screenshot"; exit 1; }
           # #465 item 3: the tent pose, required like duo-wide-ready (TentPoseTests). -Nova
           ls "$SHOTS" | grep -q '^duo-tent_' || { echo "missing duo-tent screenshot"; exit 1; }
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }

@@ -2,15 +2,19 @@ import AeroDJCore
 import SwiftUI
 import WidgetKit
 
-/// #465 item 7 / #486: the Live Activity (05). Lock screen, StandBy and the Dynamic Island
-/// show the station, the song, the generated art, the On Air tally and the Ready line,
-/// nothing else. The tally reads `onAirLabel` (confirmed `.speaking` only). The Ready line
-/// reads `readyLabel` ("DJ break after this song") and is never shown as On Air. This view
-/// only reads published state: the app starts, updates and ends the activity fire-and-forget,
-/// so it can never drive or delay playback.
+/// #465 item 7 / #486 / #539: the Live Activity (05). The Dynamic Island shows the station,
+/// the song, the generated art, the On Air tally and the Ready line. The lock screen and
+/// StandBy share one view: while system Now Playing already has the player, that view is DJ
+/// state only (On Air / "DJ break after this song") and does not repeat title, artist,
+/// artwork or transport. The tally reads `onAirLabel` (confirmed `.speaking` only). The Ready
+/// line reads `readyLabel` and is never shown as On Air. This view only reads published
+/// state: the app starts, updates and ends the activity fire-and-forget, so it can never
+/// drive or delay playback.
 struct OnAirLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: OnAirlyActivityAttributes.self) { context in
+            // `context.state` stays the full display for the Dynamic Island below.
+            // The lock-screen view decides what of it is safe to draw (#539).
             LockScreenActivityView(display: context.state)
                 .activityBackgroundTint(WidgetPalette.background.opacity(0.85))
                 .activitySystemActionForegroundColor(.white)
@@ -75,19 +79,54 @@ struct OnAirLiveActivity: Widget {
 
 /// Lock screen and StandBy presentation. Built from `LiveActivityLayout`, whose total stays
 /// under the 160 pt the system allows before truncating (NowPlayingDisplayTests).
+/// StandBy uses this same view. While system Now Playing owns the lock screen it shows only
+/// DJ state, so it does not repeat the song. The Now Playing widget remains the StandBy
+/// clock-radio face for the track. The Dynamic Island does not use this view.
 struct LockScreenActivityView: View {
     let display: NowPlayingDisplay
 
     var body: some View {
+        let shown = display.lockScreenPresentation
+        Group {
+            if display.lockScreenShowsPlaybackChrome {
+                playbackCard(shown)
+            } else {
+                djState(shown)
+            }
+        }
+    }
+
+    /// On Air, the ready line, or the app name when the DJ is quiet. No title, artist,
+    /// artwork, station or transport. The name is `lockScreenLine` (`AppName.display`).
+    private func djState(_ shown: NowPlayingDisplay) -> some View {
+        VStack(alignment: .leading, spacing: CGFloat(LiveActivityLayout.rowSpacing)) {
+            if let label = shown.onAirLabel {
+                OnAirTally(label: label)
+            } else if let ready = shown.readyLabel {
+                ReadyCaption(label: ready)
+                    .frame(height: CGFloat(LiveActivityLayout.readyLineHeight), alignment: .leading)
+            } else {
+                Text(shown.lockScreenLine)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(height: CGFloat(LiveActivityLayout.headerHeight), alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(CGFloat(LiveActivityLayout.padding))
+    }
+
+    /// The only card, used before system Now Playing is up (`.starting`).
+    private func playbackCard(_ shown: NowPlayingDisplay) -> some View {
         VStack(alignment: .leading, spacing: CGFloat(LiveActivityLayout.rowSpacing)) {
             HStack(spacing: 8) {
                 Text(AppName.display)
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(.white)
                 Spacer(minLength: 0)
-                if let label = display.onAirLabel {
+                if let label = shown.onAirLabel {
                     OnAirTally(label: label)
-                } else if let caption = display.state.caption {
+                } else if let caption = shown.state.caption {
                     Text(caption)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(WidgetPalette.secondaryText)
@@ -95,12 +134,12 @@ struct LockScreenActivityView: View {
             }
             .frame(height: CGFloat(LiveActivityLayout.headerHeight))
             HStack(spacing: 12) {
-                DisplayArtView(art: display.art, size: CGFloat(LiveActivityLayout.artSize)).privateField()
+                DisplayArtView(art: shown.art, size: CGFloat(LiveActivityLayout.artSize)).privateField()
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(display.track ?? "")
+                    Text(shown.track ?? "")
                         .font(.headline)
                         .foregroundStyle(.white)
-                    Text([display.artist, display.station].compactMap { $0 }.joined(separator: " · "))
+                    Text([shown.artist, shown.station].compactMap { $0 }.joined(separator: " · "))
                         .font(.subheadline)
                         .foregroundStyle(WidgetPalette.secondaryText)
                 }
@@ -109,7 +148,7 @@ struct LockScreenActivityView: View {
                 Spacer(minLength: 0)
             }
             .frame(height: CGFloat(LiveActivityLayout.artSize))
-            if let ready = display.readyLabel {
+            if let ready = shown.readyLabel {
                 ReadyCaption(label: ready)
                     .frame(height: CGFloat(LiveActivityLayout.readyLineHeight), alignment: .leading)
             }

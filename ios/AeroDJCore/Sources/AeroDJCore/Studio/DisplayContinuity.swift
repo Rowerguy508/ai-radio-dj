@@ -7,7 +7,8 @@ import Foundation
 /// `PlayingScreen` and `FoldedPlayer` both call `layout`. A missing width class
 /// is passed as `hasRegularWidth: false` (`horizontalSizeClass == .regular`),
 /// so it stays compact. The compact arm is `FoldedColumnLayout.controlPlacement`,
-/// so a phone portrait container stays `.phoneBottom`.
+/// so a phone portrait container stays `.phoneBottom`. Since #542 a wide-and-tall
+/// container is the rail layout whatever the width class.
 public enum DisplayContinuity {
     /// One result for both displays. The first three are the compact player.
     public enum Layout: Equatable, Sendable {
@@ -30,22 +31,51 @@ public enum DisplayContinuity {
         public var isCompactPlayer: Bool { controlPlacement != nil }
     }
 
-    /// Size class gates the Studio (`StudioLayoutMode`). Below that threshold the
-    /// compact arm picks the phone column, the centred column, or the horizontal Duo.
+    /// 2.0 rail routing (#542, after build 49). A wide-and-tall container
+    /// (`FoldedColumnLayout.controlPlacement == .duoHorizontal`) is the rail layout
+    /// (`FoldedPlayer` + `DuoVerticalRail`) at either size class: a regular width class no
+    /// longer swaps it for the two-zone Studio or the two-pane arrangement. Accessibility
+    /// text sizes keep `.studioStacked` wherever the Studio gate opens (regular, 716+), so
+    /// large text still gets one scrolling column. A regular container at 716+ that is not
+    /// wide-and-tall (shorter than the rail needs) keeps the Studio. Everything else is the
+    /// compact arm: the phone column, the centred column, or the horizontal Duo.
     public static func layout(hasRegularWidth: Bool, containerWidth: Double, containerHeight: Double,
                               accessibilityTextSize: Bool) -> Layout {
+        let placement = FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
+                                                            containerHeight: containerHeight)
         switch StudioLayoutMode.resolve(hasRegularWidth: hasRegularWidth,
                                         containerWidth: containerWidth,
                                         accessibilityTextSize: accessibilityTextSize) {
-        case .studio: return .studio
         case .studioStacked: return .studioStacked
+        case .studio:
+            return placement == .duoHorizontal ? .duoHorizontal : .studio
         case .compact:
-            switch FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
-                                                       containerHeight: containerHeight) {
+            switch placement {
             case .phoneBottom: return .phoneBottom
             case .centredColumn: return .centredColumn
             case .duoHorizontal: return .duoHorizontal
             }
+        }
+    }
+
+    /// The `PlayingScreen` branch for a layout. Only the two Studio results leave the
+    /// compact player; the rail layout is the compact branch (`FoldedPlayer`).
+    public static func screenMode(_ layout: Layout) -> StudioLayoutMode {
+        switch layout {
+        case .studio: .studio
+        case .studioStacked: .studioStacked
+        case .phoneBottom, .centredColumn, .duoHorizontal: .compact
+        }
+    }
+
+    /// Short, Release-safe name of a layout for the layout log. No user content.
+    public static func logName(_ layout: Layout) -> String {
+        switch layout {
+        case .phoneBottom: "phoneBottom"
+        case .centredColumn: "centredColumn"
+        case .duoHorizontal: "duoRail"
+        case .studio: "studio"
+        case .studioStacked: "studioStacked"
         }
     }
 
