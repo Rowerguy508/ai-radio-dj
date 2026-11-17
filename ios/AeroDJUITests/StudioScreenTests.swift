@@ -837,6 +837,134 @@ final class StudioScreenTests: XCTestCase {
         return nil
     }
 
+    // MARK: Build 51: the open Duo's landscape window and the sidebar-open detail (-Atlas)
+
+    /// Waits for the 820 × 640 pt open-Duo container and returns its settled frame.
+    @MainActor
+    private func openDuoContainer(_ app: XCUIApplication) -> (window: CGRect, box: CGRect)? {
+        let any = app.descendants(matching: .any)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window\n\(app.debugDescription)")
+        guard let windowFrame = settledFrame(of: window, "window") else { return nil }
+        let container = any["capture.duoOpenContainer"]
+        XCTAssertTrue(container.waitForExistence(timeout: 10), "open Duo container missing\n\(app.debugDescription)")
+        guard let box = settledFrame(of: container, "open Duo container", isFinal: {
+            abs($0.width - 820) <= 1 && abs($0.height - 640) <= 1
+        }) else { return nil }
+        XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box), "container \(box) outside window \(windowFrame)")
+        return (windowFrame, box)
+    }
+
+    /// Play/Pause, Skip and the scrubber are on screen: hittable, inside the window and inside
+    /// the 820 × 640 container. Play and Skip keep their 44 pt targets.
+    @MainActor
+    private func assertTransportOnScreen(_ app: XCUIApplication, window: CGRect, box: CGRect, _ context: String,
+                                         file: StaticString = #filePath, line: UInt = #line) {
+        let any = app.descendants(matching: .any)
+        let checks: [(String, XCUIElement)] = [("play", app.buttons["transport.playPause"]),
+                                                ("skip", app.buttons["transport.skip"]),
+                                                ("scrubber", any["playback.progress"])]
+        for (name, element) in checks {
+            XCTAssertTrue(element.waitForExistence(timeout: 8), "\(name) missing in \(context)\n\(app.debugDescription)",
+                          file: file, line: line)
+            guard let frame = settledFrame(of: element, "\(name) in \(context)") else { continue }
+            let detail = "\(context) \(name) \(frame) container \(box) window \(window)"
+            XCTAssertTrue(element.isHittable, "\(name) is not hittable: \(detail)", file: file, line: line)
+            XCTAssertTrue(window.insetBy(dx: -1, dy: -1).contains(frame), "\(name) is outside the window: \(detail)",
+                          file: file, line: line)
+            XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(frame), "\(name) is outside the container: \(detail)",
+                          file: file, line: line)
+            if name != "scrubber" {
+                XCTAssertGreaterThanOrEqual(frame.width, 44, "\(name) under 44 pt wide: \(detail)", file: file, line: line)
+                XCTAssertGreaterThanOrEqual(frame.height, 44, "\(name) under 44 pt tall: \(detail)", file: file, line: line)
+            }
+        }
+    }
+
+    /// Play and Skip sit in the rail, which is the container's trailing column.
+    @MainActor
+    private func assertTransportInRail(_ app: XCUIApplication, box: CGRect, _ context: String,
+                                       file: StaticString = #filePath, line: UInt = #line) {
+        let bar = app.descendants(matching: .any)["folded.systemBar"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 10), "the rail is missing in \(context)\n\(app.debugDescription)",
+                      file: file, line: line)
+        guard let barFrame = settledFrame(of: bar, "rail in \(context)") else { return }
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(barFrame), "rail \(barFrame) outside container \(box)",
+                      file: file, line: line)
+        XCTAssertGreaterThan(barFrame.midX, box.midX, "the rail is not on the trailing side: \(barFrame) in \(box)",
+                             file: file, line: line)
+        for identifier in ["transport.playPause", "transport.skip", "queue.affordance"] {
+            let frame = app.buttons[identifier].frame
+            XCTAssertTrue(frame.midX >= barFrame.minX - 4 && frame.midX <= barFrame.maxX + 4,
+                          "\(identifier) \(frame) is not in the rail \(barFrame) (\(context))", file: file, line: line)
+        }
+    }
+
+    /// Build 51 issue 1: the open Duo held sideways (820 × 640 pt with its navigation bar) showed
+    /// the centred column with the scrubber cut off and no Play/Skip. Now it is the rail; after
+    /// Collapse the transport is pinned on screen, ⋯ and Show rail sit in the top header row,
+    /// and Show rail brings the rail back.
+    @MainActor
+    func testOpenDuoLandscapeKeepsTheTransportOnScreenWithAndWithoutTheRail() throws {
+        try XCTSkipUnless(isOpenLayout, "The 820 × 640 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoLandscape")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        guard let found = openDuoContainer(app) else { return }
+        let (window, box) = found
+        XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10),
+                      "landscape is not the two-halves rail layout\n\(app.debugDescription)")
+        assertTransportInRail(app, box: box, "landscape rail")
+        assertTransportOnScreen(app, window: window, box: box, "landscape rail")
+        save(app, "open-landscape-rail")
+
+        let collapse = app.buttons["folded.collapse"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 5) && collapse.isHittable, app.debugDescription)
+        collapse.tap()
+        let bar = any["folded.systemBar"]
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "collapse left the rail up")
+        XCTAssertTrue(any["folded.wideColumn"].waitForExistence(timeout: 5), app.debugDescription)
+        assertTransportOnScreen(app, window: window, box: box, "landscape, rail collapsed")
+        let expand = app.buttons["folded.expandRail"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "no way back to the rail\n\(app.debugDescription)")
+        guard let expandFrame = settledFrame(of: expand, "Show rail") else { return }
+        XCTAssertTrue(expand.isHittable)
+        XCTAssertLessThan(expandFrame.midY, box.minY + box.height / 3, "Show rail is not in the top header row: \(expandFrame)")
+        XCTAssertGreaterThan(expandFrame.midX, box.midX, "Show rail is not on the trailing side: \(expandFrame)")
+        save(app, "open-rail-collapsed-landscape")
+
+        expand.tap()
+        XCTAssertTrue(bar.waitForExistence(timeout: 5), "Show rail did not bring the rail back\n\(app.debugDescription)")
+        app.terminate()
+    }
+
+    /// Build 51 issue 2: with the Stations sidebar open the player fell back to the old centred
+    /// layout (Playing-from bar, Queue and Tune buttons) and lost the rail. The ~500 pt detail now
+    /// keeps the rail, with Play, Skip and Queue on it, and the scrubber stays on screen.
+    @MainActor
+    func testOpenDuoWithTheSidebarOpenKeepsTheRail() throws {
+        try XCTSkipUnless(isOpenLayout, "The 820 × 640 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoSidebar")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        guard let found = openDuoContainer(app) else { return }
+        let (window, box) = found
+        let sidebar = any["split.sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 10), "the Stations sidebar is not open\n\(app.debugDescription)")
+        XCTAssertTrue(any["folded.railColumn"].waitForExistence(timeout: 10),
+                      "the sidebar-open detail is not the rail column\n\(app.debugDescription)")
+        XCTAssertFalse(any["folded.wideColumn"].exists, "the old centred layout is back")
+        assertTransportInRail(app, box: box, "sidebar open")
+        assertTransportOnScreen(app, window: window, box: box, "sidebar open")
+        if let sidebarFrame = settledFrame(of: sidebar, "sidebar"),
+           let barFrame = settledFrame(of: any["folded.systemBar"], "rail") {
+            XCTAssertGreaterThanOrEqual(barFrame.minX, sidebarFrame.maxX - 1, "the rail overlaps the sidebar")
+        }
+        save(app, "open-sidebar-rail")
+        app.terminate()
+    }
+
     /// 640 × 820, nothing playing and playing. Every control in the content column is
     /// hittable and its frame sits inside the window and inside that column.
     @MainActor
