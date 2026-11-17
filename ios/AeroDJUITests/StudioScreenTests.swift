@@ -140,27 +140,43 @@ final class StudioScreenTests: XCTestCase {
         closeClosedMore(app, row: closedMenuItem(app, "transport.tune", labelPrefix: "Tune station"))
         let queue = app.buttons["queue.affordance"].firstMatch
         XCTAssertTrue(queue.waitForExistence(timeout: 5))
+        // Nothing (a sheet, the menu) may sit over the rail's Queue, or the tap goes nowhere.
+        XCTAssertTrue(queue.isHittable, "the rail's Queue is covered: \(queue.frame)\n\(app.debugDescription)")
         queue.tap()
-        XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.segmentedControls["workspace.segment"].waitForExistence(timeout: 5),
+                      "Queue did not open the queue sheet\n\(app.debugDescription)")
         XCTAssertTrue(shows(app, "Slow Burn"), "Up Next shows the fixture queue")
         save(app, "closed-queue-sheet")
     }
 
     /// Mockup D (-Nova, Fry's #558 nit 3): closes the closed ⋯ menu without a blind coordinate.
-    /// Taps the system's popover dismiss region when there is one, else the title (a static,
-    /// non-interactive element outside the menu), then waits for `row` to go away.
+    /// Taps the system's popover dismiss region when there is one. Otherwise it taps an
+    /// existing, non-interactive anchor (the title block, then the station title) that sits
+    /// below the menu's rows. While the menu is up nothing under it is hittable, so the anchor
+    /// is picked by frame and tapped by coordinate; the tap lands on the menu's dismiss layer.
+    /// #558 Studio (iPhone 16e): the station title sat under "Tune station", so tapping it
+    /// chose that row and opened the Tune sheet over the rail's Queue. Fry: the last fallback
+    /// now checks the anchor exists. Then waits for `row` to go away.
     @MainActor
     private func closeClosedMore(_ app: XCUIApplication, row: XCUIElement,
                                  file: StaticString = #filePath, line: UInt = #line) {
         let any = app.descendants(matching: .any)
         let dismissRegion = any["PopoverDismissRegion"]
-        let title = any["folded.titleBlock"]
         if dismissRegion.exists && dismissRegion.isHittable {
             dismissRegion.tap()
-        } else if title.exists && title.isHittable {
-            title.tap()
         } else {
-            any["station.title"].tap()
+            // The lowest edge of the menu: its rows (the caller's row, Tune, Connections, the star).
+            let rows = app.buttons.matching(NSPredicate(
+                format: "label BEGINSWITH %@ OR label BEGINSWITH %@ OR label BEGINSWITH %@",
+                "Tune station", "Connections", "Rate")).allElementsBoundByIndex + [row]
+            let menuMaxY = rows.filter(\.exists).map(\.frame).filter { !$0.isEmpty }.map(\.maxY).max() ?? 0
+            let anchors = [any["folded.titleBlock"], any["station.title"]]
+            guard let anchor = anchors.first(where: { $0.exists && !$0.frame.isEmpty && $0.frame.minY > menuMaxY + 8 }) else {
+                XCTFail("no anchor clear of the ⋯ menu (rows end at \(menuMaxY))\n\(app.debugDescription)",
+                        file: file, line: line)
+                return
+            }
+            anchor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         }
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: row)
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed,

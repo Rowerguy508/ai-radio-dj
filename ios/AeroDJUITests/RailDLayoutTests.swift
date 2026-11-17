@@ -16,6 +16,9 @@ final class RailDLayoutTests: XCTestCase {
     /// `RailDCaptureContainer.foldBand`, in container points.
     private static let foldMinX: CGFloat = 396
     private static let foldMaxX: CGFloat = 424
+    /// `RailDLayout.railWidth` and `RailDLayout.trailingInset` (spec D: 56 pt glass, 8 pt in).
+    private static let railGlassWidth: CGFloat = 56
+    private static let railEdgeInset: CGFloat = 8
 
     override func setUp() {
         continueAfterFailure = false
@@ -38,7 +41,7 @@ final class RailDLayoutTests: XCTestCase {
         let rail = try assertRail(app, id: "folded.closedRail", hasCollapse: false)
         assertNoHorizontalBar(app)
         if let window = settledFrame(of: app.windows.firstMatch, "window") {
-            XCTAssertEqual(rail.maxX, window.maxX - 8, accuracy: 1.5, "the rail sits 8 pt in from the trailing edge")
+            assertRailEdgeInset(rail, trailingEdge: window.maxX)
         }
         try assertClosedChip(app, rail: rail)
         save(app, "rail-d-iphone")
@@ -52,7 +55,7 @@ final class RailDLayoutTests: XCTestCase {
         let box = try settledContainer(app, size: Self.closed)
         let rail = try assertRail(app, id: "folded.closedRail", hasCollapse: false)
         XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail), "rail \(rail) left the container \(box)")
-        XCTAssertEqual(rail.maxX, box.maxX - 8, accuracy: 1.5, "the rail sits 8 pt in from the trailing edge")
+        assertRailEdgeInset(rail, trailingEdge: box.maxX)
         assertNoHorizontalBar(app)
         try assertClosedChip(app, rail: rail)
         save(app, "rail-d-duo-closed")
@@ -266,6 +269,21 @@ final class RailDLayoutTests: XCTestCase {
         return rail
     }
 
+    /// The rail's 8 pt trailing inset, read from its centre. `folded.closedRail` is an
+    /// `.accessibilityElement(children: .contain)`, so its frame is the union of its children
+    /// (the 52 pt scrubber, the 44 pt plates), not the 56 pt glass: 2 pt in on each side, which
+    /// made a maxX check read 10 pt on a rail drawn at 8. The centre is the same for both. -Nova
+    @MainActor
+    private func assertRailEdgeInset(_ rail: CGRect, trailingEdge: CGFloat,
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        let expectedMidX = trailingEdge - Self.railEdgeInset - Self.railGlassWidth / 2
+        XCTAssertEqual(rail.midX, expectedMidX, accuracy: 1.5,
+                       "the 56 pt rail sits 8 pt in from the trailing edge: rail \(rail), edge \(trailingEdge)",
+                       file: file, line: line)
+        XCTAssertLessThanOrEqual(rail.width, Self.railGlassWidth + 1, "rail \(rail) is wider than the glass",
+                                 file: file, line: line)
+    }
+
     /// No horizontal progress bar anywhere: only the rail's bar carries `playback.progress`,
     /// and the horizontal scrubber's container (`playback.scrubber`) is gone.
     @MainActor
@@ -347,22 +365,31 @@ final class RailDLayoutTests: XCTestCase {
     }
 
     /// The container's frame once it has its final size, polled, never a fixed sleep.
+    ///
+    /// Read inside the window: `capture.railDContainer` is a `.contain` element, so its frame
+    /// is the union of its children, which the clip shape does not clip. When the frame is the
+    /// whole window (closed Duo, 390 x 844, on an iPhone 16e), the container is centred in the
+    /// safe area, not the window, and a child reaches the window's top, so the raw frame read
+    /// (0, 0, 390, 850.67) and never matched. What the shot shows is the part in the window. -Nova
     @MainActor
     private func settledContainer(_ app: XCUIApplication, size: CGSize) throws -> CGRect {
         let container = app.descendants(matching: .any)["capture.railDContainer"]
         XCTAssertTrue(container.waitForExistence(timeout: 10), "container missing\n\(app.debugDescription)")
-        return try XCTUnwrap(settledFrame(of: container, "container") {
+        let window = app.windows.firstMatch.frame
+        return try XCTUnwrap(settledFrame(of: container, "container", clippedTo: window) {
             abs($0.width - size.width) <= 1 && abs($0.height - size.height) <= 1
-        }, "container never settled at \(size): \(container.frame)")
+        }, "container never settled at \(size) in window \(window): \(container.frame)")
     }
 
     @MainActor
     private func settledFrame(of element: XCUIElement, _ name: String, timeout: TimeInterval = 10,
+                              clippedTo clip: CGRect? = nil,
                               isFinal: (CGRect) -> Bool = { _ in true }) -> CGRect? {
         let deadline = Date().addingTimeInterval(timeout)
         var last: CGRect?
         while Date() < deadline {
-            let frame = element.exists ? element.frame : .null
+            var frame = element.exists ? element.frame : .null
+            if let clip, !clip.isNull, !clip.isEmpty, !frame.isNull { frame = frame.intersection(clip) }
             if !frame.isNull, !frame.isEmpty, isFinal(frame), let last,
                abs(last.minX - frame.minX) <= 0.5, abs(last.minY - frame.minY) <= 0.5,
                abs(last.width - frame.width) <= 0.5, abs(last.height - frame.height) <= 0.5 {
