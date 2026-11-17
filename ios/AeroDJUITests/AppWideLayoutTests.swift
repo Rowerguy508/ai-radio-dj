@@ -116,12 +116,49 @@ final class AppWideLayoutTests: XCTestCase {
         let carousel = any["stations.carousel"]
         XCTAssertTrue(carousel.waitForExistence(timeout: 10), "carousel missing\n\(app.debugDescription)")
         XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(carousel.frame), "carousel \(carousel.frame) left \(box)")
-        let settings = app.buttons["stations.settings"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 10), app.debugDescription)
-        assertTarget(settings, in: box, "Settings")
-        XCTAssertGreaterThanOrEqual(settings.frame.width, 44, "Settings \(settings.frame)")
+        // The trailing toolbar. A missing button fails here; it never skips.
+        let controls: [(name: String, id: String)] = [("Settings", "stations.settings"),
+                                                      ("Shared Items", "stations.sharedInbox"),
+                                                      ("Add station (+)", "addStation.plus")]
+        var buttonFrames: [(String, CGRect)] = []
+        for control in controls {
+            let button = app.buttons[control.id]
+            guard button.waitForExistence(timeout: 10) else {
+                XCTFail("\(control.name) button (\(control.id)) not found in the Stations toolbar\n\(app.debugDescription)")
+                return
+            }
+            XCTAssertTrue(button.isHittable, "\(control.name) is not hittable: \(button.frame)")
+            XCTAssertGreaterThanOrEqual(button.frame.width, 44, "\(control.name) \(button.frame)")
+            XCTAssertGreaterThanOrEqual(button.frame.height, 44, "\(control.name) \(button.frame)")
+            buttonFrames.append((control.name, button.frame))
+        }
+
+        // Every card on screen (`stations.card.<uuid>`, StationCarousel.swift) stays clear of
+        // all three buttons, 0.5 pt tolerance. The row is clipped to the carousel's frame on the
+        // open Duo, so a card draws only inside it: check what is drawn (card ∩ carousel) and,
+        // stricter, the carousel itself.
+        let tolerance: CGFloat = 0.5
+        func overlaps(_ a: CGRect, _ b: CGRect) -> Bool {
+            let shared = a.insetBy(dx: tolerance, dy: tolerance).intersection(b.insetBy(dx: tolerance, dy: tolerance))
+            return !shared.isNull && shared.width > 0 && shared.height > 0
+        }
+        for (name, frame) in buttonFrames {
+            XCTAssertFalse(overlaps(carousel.frame, frame), "carousel \(carousel.frame) runs under \(name) \(frame)")
+        }
         let cards = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'stations.card.'"))
         XCTAssertGreaterThanOrEqual(cards.count, 1, app.debugDescription)
+        var checked = 0
+        for index in 0..<cards.count {
+            let card = cards.element(boundBy: index)
+            let drawn = card.frame.intersection(carousel.frame).intersection(box)
+            guard !drawn.isNull, drawn.width > tolerance, drawn.height > tolerance else { continue }
+            checked += 1
+            for (name, frame) in buttonFrames {
+                XCTAssertFalse(overlaps(drawn, frame),
+                               "\(card.identifier) \(card.frame) (drawn \(drawn)) overlaps \(name) \(frame)")
+            }
+        }
+        XCTAssertGreaterThanOrEqual(checked, 1, "no card on screen to check\n\(app.debugDescription)")
         save(app, "duo-open-stations-carousel")
     }
 

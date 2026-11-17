@@ -255,6 +255,8 @@ struct StationSplitRoot<Detail: View>: View {
                         } label: {
                             Label("Shared Items", systemImage: "square.and.arrow.up")
                         }
+                        // Identifier only (UI tests): no visual or VoiceOver change.
+                        .accessibilityIdentifier("stations.sharedInbox")
                     }
                 }
                 if let onAddStation {
