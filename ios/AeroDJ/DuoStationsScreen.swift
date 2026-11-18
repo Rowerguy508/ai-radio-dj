@@ -189,12 +189,17 @@ struct DuoStationsScreen: View {
                     .accessibilityHidden(true)
                 content(geometry, pageHeight: Double(pageHeight))
                     .padding(.top, inset)
-                DuoStationsRail(nowPlaying: nowPlaying, playing: playingStation, actions: actions,
-                                dj: dj, scrubber: railScrubber, isShown: isShown, moreOpen: $moreOpen,
-                                onOpenPlayer: onOpenPlayer, onOpenWorkspace: openWorkspace)
-                    .frame(width: CGFloat(RailDLayout.railWidth), height: pageHeight)
-                    .padding(.leading, CGFloat(geometry.railMinX))
-                    .padding(.top, inset)
+                // Not built while the player is pushed over Stations: nothing of the rail stays
+                // in the accessibility tree under the player, and its sleep timer goes with it,
+                // which is the Off that `DuoRailSleepTimerState.setShown(false)` gives. -Nova
+                if isShown {
+                    DuoStationsRail(nowPlaying: nowPlaying, playing: playingStation, actions: actions,
+                                    dj: dj, scrubber: railScrubber, isShown: isShown, moreOpen: $moreOpen,
+                                    onOpenPlayer: onOpenPlayer, onOpenWorkspace: openWorkspace)
+                        .frame(width: CGFloat(RailDLayout.railWidth), height: pageHeight)
+                        .padding(.leading, CGFloat(geometry.railMinX))
+                        .padding(.top, inset)
+                }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             .overlay {

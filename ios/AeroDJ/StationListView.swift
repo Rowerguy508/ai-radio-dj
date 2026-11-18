@@ -297,6 +297,10 @@ struct StationSplitRoot<Detail: View>: View {
                             isShown: showsDuoStations)
                 .opacity(showsDuoStations ? 1 : 0)
                 .allowsHitTesting(showsDuoStations)
+                // iOS 44274149637: `.accessibilityHidden` alone left `stations.rail.nowPlaying`
+                // in the tree under the pushed player for 8 s. Hidden, the host is also one
+                // childless element, so none of its controls is reachable. -Nova
+                .accessibilityElement(children: showsDuoStations ? .contain : .ignore)
                 .accessibilityHidden(!showsDuoStations)
         }
     }
