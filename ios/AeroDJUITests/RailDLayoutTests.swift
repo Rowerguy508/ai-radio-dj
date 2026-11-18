@@ -7,7 +7,8 @@ import UIKit
 /// is a capture (`RailDCaptureContainer`, or the plain capture path on the iPhone), checked and
 /// saved here. Required in ios.yml: rail-d-iphone, rail-d-duo-closed, rail-d-duo-open-portrait,
 /// rail-d-duo-open-portrait-sidebar, rail-d-duo-open-landscape-spread,
-/// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar.
+/// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar. Not required:
+/// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed).
 /// A frame bigger than the simulator window is skipped, as in `AppWideLayoutTests`.
 final class RailDLayoutTests: XCTestCase {
     private static let closed = CGSize(width: 390, height: 844)
@@ -138,6 +139,55 @@ final class RailDLayoutTests: XCTestCase {
         let box = try settledContainer(app, size: Self.landscape)
         try assertSidebarRailColumn(app, box: box)
         save(app, "rail-d-duo-open-landscape-sidebar")
+    }
+
+    /// #548, owner's Nov 17 9:53 AM call: the open Duo in book pose with the rail collapsed
+    /// keeps Rail D. The column moves to the leading side of the fold with the closed screen's
+    /// rail (`folded.closedRail`) beside it; the song position is the rail's vertical bar and the
+    /// column has no progress bar. Same frame as the spread (820 x 640, fold 396…424), then
+    /// Collapse. Show rail brings the full rail back. -Nova
+    @MainActor
+    func testOpenLandscapeBookPoseCollapsed() throws {
+        let app = try launch("railDLandscapeSpread", container: Self.landscape, orientation: .landscapeLeft)
+        let box = try settledContainer(app, size: Self.landscape)
+        let any = app.descendants(matching: .any)
+        let collapse = app.buttons["folded.collapse"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 10), "Collapse missing\n\(app.debugDescription)")
+        collapse.tap()
+        XCTAssertTrue(any["folded.bookColumn"].waitForExistence(timeout: 10),
+                      "the collapsed book pose is not the book column\n\(app.debugDescription)")
+        XCTAssertFalse(any["folded.systemBar"].exists, "the full rail is still up")
+        let rail = try assertRail(app, id: "folded.closedRail", hasCollapse: false)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail))
+        assertNoHorizontalBar(app)
+        let column = try XCTUnwrap(settledFrame(of: any["folded.wideColumn"], "book column"))
+        let bar = any["playback.progress"].frame
+        XCTAssertGreaterThanOrEqual(bar.minX, column.maxX - 1, "the song-position bar \(bar) is in the column \(column)")
+        XCTAssertGreaterThanOrEqual(rail.minX, column.maxX - 1, "the rail is trailing of the column")
+        let foldMin = box.minX + Self.foldMinX
+        let foldMax = box.minX + Self.foldMaxX
+        XCTAssertLessThanOrEqual(column.maxX, foldMin + 1, "the column ends before the fold")
+        XCTAssertLessThanOrEqual(rail.maxX, foldMin + 1, "the rail ends before the fold")
+        let expand = app.buttons["folded.expandRail"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "Show rail missing\n\(app.debugDescription)")
+        XCTAssertTrue(expand.isHittable)
+        XCTAssertGreaterThanOrEqual(expand.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(expand.frame.height, 44)
+        // Nothing interactive on the fold.
+        var checked = 0
+        for element in app.buttons.allElementsBoundByIndex + [any["playback.progress"]] where element.exists {
+            let frame = element.frame
+            guard !frame.isEmpty, box.intersects(frame), element.isHittable else { continue }
+            checked += 1
+            XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin,
+                           "\(element.identifier) \(element.label) \(frame) sits on the fold \(foldMin)…\(foldMax)")
+        }
+        XCTAssertGreaterThan(checked, 5, "the fold check saw too few controls")
+        save(app, "rail-d-duo-open-landscape-book-collapsed")
+        // Show rail: back to the L1 spread with the full rail.
+        expand.tap()
+        XCTAssertTrue(any["folded.systemBar"].waitForExistence(timeout: 10), "Show rail did not bring the rail back")
+        XCTAssertFalse(any["folded.bookColumn"].exists)
     }
 
     // MARK: DJ states (Echo, #558): debug-only extra shots, not required in ios.yml

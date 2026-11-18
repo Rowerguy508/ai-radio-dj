@@ -764,8 +764,10 @@ struct FoldedPlayer: View {
     /// Play/Skip and the scrubber stay on screen here. Not one of D's frames.
     ///
     /// `foldAware` is true only on the two `.duoHorizontal` collapsed branches (#507 / #548). In
-    /// book pose the column then moves to one side of the fold (`FoldAwareness.bookColumn`), so
-    /// no control spans the crease. The sidebar-open detail passes false and is unchanged.
+    /// book pose (`FoldAwareness.bookColumn`) the column moves to one side of the fold and, per
+    /// the owner's Nov 17 call, carries the closed screen's Rail D with the song position in the
+    /// rail (`bookRailColumnBody`). Outside book pose, and on the sidebar-open detail (false),
+    /// this is integration's pinned column unchanged.
     private func pinnedColumnBody(in size: CGSize, foldAware: Bool = false) -> some View {
         let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
         let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
@@ -779,8 +781,25 @@ struct FoldedPlayer: View {
                                        hinge: effectiveFoldHinge, divisions: effectiveFoldDivisions,
                                        column: m.column, artSide: m.artSide)
             : nil
-        let column = CGFloat(book?.width ?? m.column)
-        let artSide = CGFloat(book?.artSide ?? m.artSide)
+        let split = book.flatMap { FoldAwareness.bookRailColumn($0) }
+        return Group {
+            if let split {
+                bookRailColumnBody(in: size, split: split)
+            } else {
+                centredPinnedColumn(in: size, metrics: m)
+            }
+        }
+        .background {
+            if foldAware {
+                FoldDivisionProbe(hinge: $foldHinge, divisions: $foldDivisions)
+            }
+        }
+    }
+
+    /// Integration's pinned column (build 51, #552): header row, scrolling art and title, then
+    /// the horizontal scrubber, Play/Skip and the station bar pinned at the bottom.
+    private func centredPinnedColumn(in size: CGSize, metrics m: (artSide: Double, column: Double)) -> some View {
+        let column = CGFloat(m.column)
         typealias Gap = FoldedColumnLayout.Spacing
         return VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -789,28 +808,16 @@ struct FoldedPlayer: View {
                     FoldedMoreMenu(reviewCount: moreMenu.reviewCount, onConnections: moreMenu.onConnections)
                 }
                 if let onExpandRail {
-                    Button(action: onExpandRail) {
-                        Image(systemName: "sidebar.trailing")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Show rail")
-                    .accessibilityHint("Shows the controls rail. Music continues.")
-                    .accessibilityIdentifier("folded.expandRail")
+                    expandRailButton(onExpandRail)
                 }
             }
             .frame(height: CGFloat(FoldedColumnLayout.headerHeight))
             .padding(.horizontal, CGFloat(FoldedColumnLayout.duoEdgeInset))
             ScrollView(.vertical, showsIndicators: false) {
-                upper(artSide: artSide, centered: true, statusWithoutTrack: true)
+                upper(artSide: CGFloat(m.artSide), centered: true, statusWithoutTrack: true)
                     .padding(.top, CGFloat(Gap.headerToArt))
                     .frame(width: column)
-                    // Book pose: the column's leading edge at `book.minX`, off the fold.
-                    .padding(.leading, CGFloat(book?.minX ?? 0))
-                    .frame(maxWidth: .infinity, alignment: book == nil ? .center : .leading)
+                    .frame(maxWidth: .infinity)
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollContentBackground(.hidden)
@@ -819,17 +826,84 @@ struct FoldedPlayer: View {
                      spacing: CGFloat(Gap.betweenControls), balancesTransport: true)
                 .padding(.top, 8)
                 .frame(width: column)
-                .padding(.leading, CGFloat(book?.minX ?? 0))
-                .frame(maxWidth: .infinity, alignment: book == nil ? .center : .leading)
         }
         .frame(width: size.width, height: size.height)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folded.wideColumn")
-        .background {
-            if foldAware {
-                FoldDivisionProbe(hinge: $foldHinge, divisions: $foldDivisions)
+    }
+
+    /// #548, owner's Nov 17 9:53 AM call: the open Duo in book pose with the rail collapsed. The
+    /// column sits on one side of the fold (`FoldAwareness.bookColumn`) with the closed screen's
+    /// Rail D (`ClosedVerticalRail`: ⋯, Play/Pause, Skip, Queue, Sleep, the vertical song-position
+    /// bar, the live dot) on its trailing side, inside the same span. No horizontal scrubber,
+    /// transport row or station bar in the column: the rail carries them, and Tune is in the
+    /// rail's ⋯ as on the closed screen. Show rail stays in the column's header. -Nova
+    private func bookRailColumnBody(in size: CGSize, split: FoldAwareness.BookRailColumn) -> some View {
+        typealias Gap = FoldedColumnLayout.Spacing
+        let column = CGFloat(split.columnWidth)
+        return HStack(alignment: .top, spacing: CGFloat(split.railMinX - split.columnMaxX)) {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    if let onExpandRail {
+                        expandRailButton(onExpandRail)
+                    }
+                }
+                .frame(height: CGFloat(FoldedColumnLayout.headerHeight))
+                ScrollView(.vertical, showsIndicators: false) {
+                    upper(artSide: CGFloat(split.artSide), centered: true, statusWithoutTrack: true)
+                        .padding(.top, CGFloat(Gap.headerToArt))
+                        .frame(width: column)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollContentBackground(.hidden)
+                .scrollPosition(id: scrollAnchor)
+                PlaybackErrorBanner(error: snapshot.error, actions: actions)
+                    .padding(.vertical, 12)
             }
+            .frame(width: column, height: size.height, alignment: .top)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("folded.wideColumn")
+            .accessibilitySortPriority(1)
+            ClosedVerticalRail(dj: dj, upNext: snapshot.upNext,
+                               transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
+                               showsTransport: content.showsTransport,
+                               pause: { actions.pause() },
+                               cancelStart: { actions.cancelStart() },
+                               resume: { await actions.resume() },
+                               skip: { await actions.skip() },
+                               onQueue: onQueue,
+                               scrubber: railScrubber) {
+                if let moreMenu {
+                    FoldedMoreMenu(reviewCount: moreMenu.reviewCount, onConnections: moreMenu.onConnections,
+                                   closedItems: closedMoreItems)
+                } else {
+                    Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
+                }
+            }
+            .padding(.vertical, CGFloat(RailDLayout.closedVerticalInset))
+            .frame(width: CGFloat(split.railWidth), height: size.height)
+            .accessibilitySortPriority(0)
         }
+        .padding(.leading, CGFloat(split.columnMinX))
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("folded.bookColumn")
+    }
+
+    /// Show rail (build 51, -Atlas): brings the rail back after Collapse. 44 × 44.
+    private func expandRailButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "sidebar.trailing")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show rail")
+        .accessibilityHint("Shows the controls rail. Music continues.")
+        .accessibilityIdentifier("folded.expandRail")
     }
 
     /// Horizontal scrubber, station, and the DJ chip. Play/pause and skip live on the

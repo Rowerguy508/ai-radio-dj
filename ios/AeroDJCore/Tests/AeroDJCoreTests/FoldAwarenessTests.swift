@@ -277,6 +277,78 @@ final class FoldAwarenessTests: XCTestCase {
         XCTAssertNil(bookColumn(width: .nan, divisions: [fold]))
     }
 
+    // MARK: - #548 book pose: the collapsed column carries the closed Rail D (owner, Nov 17)
+
+    /// The Studio landscape capture (820 x 640, fold 396…424, `RailDCaptureContainer.foldBand`)
+    /// and the 640 x 820 centred fold: the column and the rail both sit inside the book span,
+    /// off the fold, rail on the trailing side, 56 pt wide, 12 pt from the column.
+    func testTheBookColumnCarriesTheClosedRailOffTheFold() throws {
+        let frames: [(width: Double, height: Double, fold: FoldAwareness.Division)] = [
+            (820, 640, vertical(minX: 396, width: 28, height: 640)),
+            (640, 820, vertical(minX: 306, width: 28, height: 820)),
+            (640, 820, vertical(minX: 200, width: 48, height: 820)),
+            (640, 820, vertical(minX: 440, width: 48, height: 820)),
+        ]
+        for frame in frames {
+            let label = "\(frame.width)x\(frame.height) fold \(frame.fold.minX)"
+            let book = try XCTUnwrap(bookColumn(width: frame.width, height: frame.height, divisions: [frame.fold]), label)
+            let split = try XCTUnwrap(FoldAwareness.bookRailColumn(book), label)
+            XCTAssertEqual(split.railWidth, FoldedOuterLayout.closedRailWidth, label)
+            XCTAssertEqual(split.railWidth, RailDLayout.railWidth, "the closed screen's rail")
+            XCTAssertEqual(split.columnMinX, book.minX, accuracy: 0.001, label)
+            XCTAssertEqual(split.railMaxX, book.maxX, accuracy: 0.001, "the rail closes the book span: \(label)")
+            XCTAssertEqual(split.railMinX - split.columnMaxX, FoldAwareness.bookRailGap, accuracy: 0.001, label)
+            XCTAssertGreaterThan(split.railMinX, split.columnMaxX, "rail trailing of the column: \(label)")
+            XCTAssertLessThanOrEqual(split.artSide, split.columnWidth, label)
+            for (minX, maxX) in [(split.columnMinX, split.columnMaxX), (split.railMinX, split.railMaxX)] {
+                XCTAssertFalse(rangesOverlap(minX, maxX, frame.fold.minX, frame.fold.maxX), "on the fold: \(label)")
+                XCTAssertGreaterThanOrEqual(minX, FoldedColumnLayout.duoEdgeInset - 0.001, label)
+                XCTAssertLessThanOrEqual(maxX, frame.width - FoldedColumnLayout.duoEdgeInset + 0.001, label)
+            }
+        }
+    }
+
+    /// The book rail is the closed rail with no Collapse: every 44 pt plate and at least a
+    /// 44 pt song-position track fit at the open Duo's heights, so the bar is in the rail.
+    func testTheBookRailFitsEveryPlateAndTheSongPositionBar() {
+        let slots = RailDLayout.slots(hasCollapse: false, showsTransport: true, showsScrubber: true)
+        XCTAssertEqual(slots, [.more, .playPause, .skip, .queue, .sleepTimer, .scrubber, .liveDot])
+        XCTAssertGreaterThanOrEqual(RailDLayout.controlSize, StudioLayoutMetrics.touchTargetMin)
+        XCTAssertGreaterThanOrEqual(RailDLayout.minTrackLength, StudioLayoutMetrics.touchTargetMin)
+        for height in [640.0, 820.0] {
+            let rail = RailDLayout.closedRailHeight(containerHeight: height)
+            XCTAssertTrue(RailDLayout.fits(railHeight: rail, slots: slots), "\(height)")
+            XCTAssertGreaterThanOrEqual(RailDLayout.trackLength(railHeight: rail, slots: slots),
+                                        RailDLayout.minTrackLength, "\(height)")
+        }
+    }
+
+    /// At the 260 pt minimum side the content column keeps 260 - 56 - 12 = 192 pt. A span with
+    /// no room for a column beside the rail gives no split (the caller keeps the centred column).
+    func testTheBookRailColumnAtTheMinimumAndBelow() throws {
+        let atMin = vertical(minX: 580 / 2 - 14, width: 28, height: height)
+        let book = try XCTUnwrap(bookColumn(width: 580, divisions: [atMin]))
+        let split = try XCTUnwrap(FoldAwareness.bookRailColumn(book))
+        XCTAssertEqual(split.columnWidth, 192, accuracy: 0.001)
+
+        let gap = FoldAwareness.bookRailGap
+        let rail = FoldedOuterLayout.closedRailWidth
+        XCTAssertNil(FoldAwareness.bookRailColumn(.init(minX: 16, width: rail + gap, artSide: 100)))
+        let sliver = try XCTUnwrap(FoldAwareness.bookRailColumn(.init(minX: 16, width: rail + gap + 1, artSide: 100)))
+        XCTAssertEqual(sliver.columnWidth, 1, accuracy: 0.001)
+        XCTAssertEqual(sliver.artSide, 1, accuracy: 0.001, "the art is clamped to the column")
+        XCTAssertNil(FoldAwareness.bookRailColumn(.init(minX: 16, width: .nan, artSide: 100)))
+    }
+
+    /// Full open (flat, `railDLandscapeCentred`) and no fold reading: no book column, so the
+    /// collapsed Duo keeps integration's pinned column.
+    func testOutsideBookPoseThereIsNoBookRail() {
+        let band = vertical(minX: 396, width: 28, height: 640)
+        XCTAssertNil(bookColumn(width: 820, height: 640, status: .fullyOpen, divisions: []))
+        XCTAssertNil(bookColumn(width: 820, height: 640, status: .fullyOpen, divisions: [band]))
+        XCTAssertNil(bookColumn(width: 820, height: 640, status: .partiallyOpen, divisions: []))
+    }
+
     private func centredColumn(width: Double, height: Double) -> (artSide: Double, column: Double) {
         FoldedColumnLayout.metrics(containerWidth: width, containerHeight: height, reserveBelowArt: 380,
                                    artMin: artMin, artMax: artMax)

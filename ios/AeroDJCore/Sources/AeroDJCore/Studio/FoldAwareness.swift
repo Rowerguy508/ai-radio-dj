@@ -131,6 +131,49 @@ public enum FoldAwareness {
                           artSide: max(0, min(artSide, width)))
     }
 
+    /// Owner (Nov 17, 9:53 AM): the open Duo, book pose included, gets the same Rail D as the
+    /// closed screen, with the song position inside the rail and no progress bar in the middle
+    /// column. So the book-pose collapsed column (`bookColumn`) splits into the content column
+    /// and the closed screen's rail (`FoldedOuterLayout.closedRailWidth`, ⋯, Play/Pause, Skip,
+    /// Queue, Sleep, the vertical bar, the live dot) on its trailing side, `bookRailGap` apart.
+    /// Both stay inside `book`'s span, so neither reaches the fold. `minX` values are container
+    /// points. -Nova
+    public struct BookRailColumn: Equatable, Sendable {
+        public var columnMinX: Double
+        public var columnWidth: Double
+        public var artSide: Double
+        public var railMinX: Double
+        public var railWidth: Double
+
+        public init(columnMinX: Double, columnWidth: Double, artSide: Double,
+                    railMinX: Double, railWidth: Double) {
+            self.columnMinX = columnMinX
+            self.columnWidth = columnWidth
+            self.artSide = artSide
+            self.railMinX = railMinX
+            self.railWidth = railWidth
+        }
+
+        public var columnMaxX: Double { columnMinX + columnWidth }
+        public var railMaxX: Double { railMinX + railWidth }
+    }
+
+    /// Between the book column and its rail: the sidebar-open rail column's gutter.
+    public static var bookRailGap: Double { RailDLayout.railColumnGutter }
+
+    /// `book` split into the content column and the closed rail. Nil when the column would
+    /// have no width (it cannot at `bookColumnMinSideWidth`: 260 - 56 - 12 = 192 pt).
+    public static func bookRailColumn(_ book: BookColumn,
+                                      railWidth: Double = FoldedOuterLayout.closedRailWidth,
+                                      gap: Double = bookRailGap) -> BookRailColumn? {
+        guard book.width.isFinite, railWidth.isFinite, gap.isFinite else { return nil }
+        let column = book.width - railWidth - gap
+        guard column > 0 else { return nil }
+        return BookRailColumn(columnMinX: book.minX, columnWidth: column,
+                              artSide: max(0, min(book.artSide, column)),
+                              railMinX: book.minX + column + gap, railWidth: railWidth)
+    }
+
     /// The gates `resolve` applies before it looks for a fold.
     private static func isBookPose(containerWidth: Double, containerHeight: Double, hinge: HingeSample?) -> Bool {
         guard containerWidth.isFinite, containerHeight.isFinite,
