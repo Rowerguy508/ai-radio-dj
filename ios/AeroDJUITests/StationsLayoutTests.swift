@@ -154,7 +154,8 @@ final class StationsLayoutTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(row.frame.minX, box.minX + 59, "inset to the readable width: \(row.frame)")
             XCTAssertLessThanOrEqual(row.frame.maxX, box.maxX - 59, "inset to the readable width: \(row.frame)")
         }
-        save(app, "settings-stations-layout-duo")
+        save(app, "settings-stations-layout-duo",
+             container: app.descendants(matching: .any)["capture.stationsLayoutContainer"])
     }
 
     // MARK: Helpers
@@ -273,7 +274,7 @@ final class StationsLayoutTests: XCTestCase {
                 XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin, "\(name) is on the fold")
             }
         }
-        save(app, shot)
+        save(app, shot, container: app.descendants(matching: .any)["capture.stationsLayoutContainer"])
         return (app, box)
     }
 
@@ -361,9 +362,12 @@ final class StationsLayoutTests: XCTestCase {
         XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(element.frame), "\(name) left the container")
     }
 
+    /// `container` set (the open-Duo frames only): the shot is that element's own capture, the
+    /// 820 × 640 or 640 × 820 frame upright and whole, not the screen around it. Nil (the
+    /// iPhone-sized Settings frame) keeps the app screenshot, so those PNGs do not change.
     @MainActor
-    private func save(_ app: XCUIApplication, _ name: String) {
-        let shot = app.screenshot()
+    private func save(_ app: XCUIApplication, _ name: String, container: XCUIElement? = nil) {
+        let shot = container.map { $0.screenshot() } ?? app.screenshot()
         let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name
         attachment.lifetime = .keepAlways
