@@ -267,15 +267,21 @@ public enum StationPoolBuilder {
         /// itself never reads it. Default `.systemRandom`: every build (a switch, a refill, a rating
         /// rebuild) gets a fresh order.
         public var seedSource: StationShuffleSeedSource
+        /// #418 (-Atlas): spread a list too short for its share over the whole queue instead of
+        /// front-loading it (`pacedShares`). Off: the weave exactly as before. `StationQueueFeed`
+        /// turns it on for a source that gives every build a fresh seed (`isFreshPerBuild`).
+        public var spreadShortLists: Bool
 
         public init(limit: Int = 50, artistGap: Int = 2, excludedSongIDs: Set<String> = [], shuffleSeed: UInt64? = nil,
-                    ratings: StationRatingBias = .none, seedSource: StationShuffleSeedSource = .systemRandom) {
+                    ratings: StationRatingBias = .none, seedSource: StationShuffleSeedSource = .systemRandom,
+                    spreadShortLists: Bool = false) {
             self.limit = limit
             self.artistGap = artistGap
             self.excludedSongIDs = excludedSongIDs
             self.shuffleSeed = shuffleSeed
             self.ratings = ratings
             self.seedSource = seedSource
+            self.spreadShortLists = spreadShortLists
         }
     }
 
@@ -284,6 +290,10 @@ public enum StationPoolBuilder {
     /// is never more than `1 + weaveJitter` songs off its share while every list has songs left, and
     /// never runs more than `ceil(share / (1 - share)) + 3` in a row (`StationWeaveJitterTests`).
     static let weaveJitter: Double = 1.0
+
+    /// #418 (-Atlas): with `Options.spreadShortLists`, a short list is spread over this share of the
+    /// queue's `limit` (`pacedShares`).
+    static let spreadWindow: Double = 0.8
 
     /// `discovery` is `StationConfiguration.discovery`: 0 = familiar only (new songs are used
     /// only once familiar ones run out), 1 = mostly new.
@@ -300,7 +310,7 @@ public enum StationPoolBuilder {
         //    songs and tired songs in their hold are left out like recently played ones.
         var seenIDs = options.excludedSongIDs.union(ratings.excludedSongIDs)
         var seenTitles = Set<String>()
-        var tierLists: [[StationCandidate]] = []
+        var buckets: [(familiar: [StationCandidate], fresh: [StationCandidate])] = []
         var weights: [Double] = []
         for tier in reach.tiers {
             var familiar: [StationCandidate] = []
@@ -323,14 +333,65 @@ public enum StationPoolBuilder {
                 familiar = reranked(familiar, ratings)
                 fresh = reranked(fresh, ratings)
             }
-            // 2. Discovery: familiar vs new within the tier.
-            tierLists.append(weave([familiar, fresh], weights: [1 - newShare, newShare], jitter: &jitter))
+            buckets.append((familiar, fresh))
             weights.append(reach.tierWeights[tier] ?? 0)
+        }
+        // #418 (-Atlas): with `spreadShortLists`, a tier (or a familiar/new bucket) with fewer songs
+        // than its share of the queue is spread over the queue instead of filling its opening. Per
+        // tier the song counts are unchanged; only where the songs land. Spread over the first
+        // `spreadWindow` of the queue, so the jitter and the artist spacing never push a short list's
+        // last song past `limit`.
+        let slots = max(1, Int(Double(options.limit) * spreadWindow))
+        if options.spreadShortLists {
+            weights = pacedShares(counts: buckets.map { $0.familiar.count + $0.fresh.count }, weights: weights, slots: slots)
+        }
+        // 2. Discovery: familiar vs new within the tier.
+        var tierLists: [[StationCandidate]] = []
+        for (t, bucket) in buckets.enumerated() {
+            var mix = [1 - newShare, newShare]
+            if options.spreadShortLists {
+                let tierCount = bucket.familiar.count + bucket.fresh.count
+                let tierSlots = min(tierCount, max(1, Int((weights[t] * Double(slots)).rounded())))
+                mix = pacedShares(counts: [bucket.familiar.count, bucket.fresh.count], weights: mix, slots: tierSlots)
+            }
+            tierLists.append(weave([bucket.familiar, bucket.fresh], weights: mix, jitter: &jitter))
         }
         // 3. Reach: tiers by their share.
         let merged = weave(tierLists, weights: weights, jitter: &jitter)
         // 4. Artist spacing, then the limit.
         return spaced(merged, gap: options.artistGap, limit: options.limit)
+    }
+
+    /// #418 (-Atlas): the share each list gets in a `slots`-long queue when a list may not run out
+    /// early. Before, a list shorter than its share filled the opening and was gone: Morning Calm's
+    /// 8 seed songs (seed tier 0.6) were all in the first 13 songs of every start, and an artist
+    /// station's 5 top songs (familiar) in its first 8. Water-filling: a list whose share would
+    /// need more songs than it has gets `count / slots` (one song every `slots / count`); the rest
+    /// is split among the others by their weights, repeated until no other list is short. Lists
+    /// with weight 0 stay 0 (they still play only after the others run out). When every weighted
+    /// list is short, shares follow the counts. Never moves a song between lists.
+    static func pacedShares(counts: [Int], weights: [Double], slots: Int) -> [Double] {
+        precondition(counts.count == weights.count)
+        guard slots > 0 else { return weights }
+        var shares = Array(repeating: 0.0, count: weights.count)
+        var free = weights.indices.filter { weights[$0] > 0 && counts[$0] > 0 }
+        guard !free.isEmpty else { return weights }
+        var remaining = 1.0
+        while !free.isEmpty {
+            let sum = free.reduce(0.0) { $0 + weights[$1] }
+            let short = free.filter { remaining * weights[$0] / sum * Double(slots) > Double(counts[$0]) + 1e-9 }
+            if short.isEmpty {
+                for i in free { shares[i] = remaining * weights[i] / sum }
+                return shares
+            }
+            for i in short {
+                shares[i] = Double(counts[i]) / Double(slots)
+                remaining -= shares[i]
+            }
+            free.removeAll { short.contains($0) }
+        }
+        // Every weighted list is short of its share: the weave normalizes, so this is by count.
+        return shares
     }
 
     /// Each song moves up (positive score) or down by `round(score × maxMoveShare × length)` places:
@@ -416,27 +477,56 @@ public enum StationPoolBuilder {
 /// #418 (-Fry): where a station build's shuffle seed comes from. Privacy (Sentinel): the default
 /// seed is drawn from `SystemRandomNumberGenerator` only, never from user, device, account or
 /// listening data, and it is never logged or stored (`StationQueueEvent` has no seed).
-public enum StationShuffleSeedSource: Equatable, Sendable {
-    /// A fresh seed per build from the system generator (the app's default).
-    case systemRandom
+public struct StationShuffleSeedSource: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case systemRandom
+        case perDay
+        case fixed(UInt64)
+        case stream(UInt64)
+    }
+
+    let kind: Kind
+
+    /// A fresh seed per build from the system generator (the app's default and the only public source).
+    public static let systemRandom = StationShuffleSeedSource(kind: .systemRandom)
     /// The pre-#418 seed: the station key and the day, so a rebuild that day repeats the order.
-    /// Tests that predict a feed's order use it.
-    case perDay
-    /// One fixed seed for every build (tests).
-    case fixed(UInt64)
+    /// Internal: only tests reach it (`@testable import`); the app can't select it.
+    static let perDay = StationShuffleSeedSource(kind: .perDay)
+    /// One fixed seed for every build. Internal, for tests only.
+    static func fixed(_ value: UInt64) -> StationShuffleSeedSource { StationShuffleSeedSource(kind: .fixed(value)) }
+    /// #418 (-Atlas): a fresh seed per build like `.systemRandom`, drawn from a `SplitMix64` stream
+    /// started at this value, so tests can replay a run of station starts. `StationQueueFeed` keeps
+    /// the stream; `seed(perDay:)` alone returns its first draw. Internal, for tests only.
+    static func stream(_ value: UInt64) -> StationShuffleSeedSource { StationShuffleSeedSource(kind: .stream(value)) }
+
+    /// True when every build gets its own seed (`.systemRandom`, `.stream`). The feed spreads short
+    /// lists only then (`Options.spreadShortLists`): `.perDay` and `.fixed` keep their exact orders.
+    public var isFreshPerBuild: Bool {
+        switch kind {
+        case .systemRandom, .stream: true
+        case .perDay, .fixed: false
+        }
+    }
 
     /// The seed for one build. `perDay` is evaluated only for `.perDay`.
     public func seed(perDay: @autoclosure () -> UInt64) -> UInt64 {
+        if case let .stream(start) = kind { return Self.firstDraw(start) }
         var system = SystemRandomNumberGenerator()
         return seed(perDay: perDay(), using: &system)
     }
 
     func seed<G: RandomNumberGenerator>(perDay: @autoclosure () -> UInt64, using generator: inout G) -> UInt64 {
-        switch self {
+        switch kind {
         case .systemRandom: generator.next()
+        case .stream: generator.next()   // the feed passes its own running stream
         case .perDay: perDay()
         case let .fixed(value): value
         }
+    }
+
+    static func firstDraw(_ start: UInt64) -> UInt64 {
+        var stream = SplitMix64(seed: start)
+        return stream.next()
     }
 }
 

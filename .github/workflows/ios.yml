@@ -49,6 +49,10 @@ jobs:
             core:
               - 'ios/**'
               - '.github/workflows/ios.yml'
+              # Voice-gate test reads testflight.yml. A workflow-only edit must still run
+              # it. Kept off the ios filter so a dispatch-policy change does not rebuild
+              # the Release archive.
+              - '.github/workflows/testflight.yml'
               - 'docs/site/privacy.md'
               - 'docs/site/HOLD-pro.md'
               - 'docs/site/DRAFT-privacy-tester-voice.md'
@@ -70,6 +74,8 @@ jobs:
         if: runner.environment == 'self-hosted'
         timeout-minutes: 3
         run: ios/scripts/ci-selfhosted-prep.sh --check-disk
+      - name: TestFlight voice gate refuses a default device-speech upload
+        run: bash ios/scripts/check-testflight-voice-dispatch-test.sh
       - name: Check Xcode 26.6 and Swift 6.3
         if: runner.environment == 'self-hosted'
         run: |
@@ -128,6 +134,8 @@ jobs:
     container: swift:6.2
     steps:
       - uses: actions/checkout@v4
+      - name: TestFlight voice gate refuses a default device-speech upload
+        run: bash ios/scripts/check-testflight-voice-dispatch-test.sh
       - name: Build tests
         run: swift build --build-tests
         working-directory: ios/AeroDJCore
@@ -528,8 +536,10 @@ jobs:
         working-directory: ios
       - name: Archive (Release, unsigned)
         # testflight.yml's archive command with signing switched off. The conditions script runs
-        # as for a plain TestFlight build (no p0_diag, owner_ab or tester_voice), so this compiles
-        # exactly what a default 2.0 upload compiles.
+        # as for an explicit device-speech upload (no p0_diag, owner_ab or tester_voice):
+        # confirm_device_voice=true and tester_voice left false. A dispatch that sets neither
+        # is refused before archive, so this is the plain Release those opt-in uploads compile,
+        # not an unattended default upload.
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/release-archive-logs"
@@ -937,10 +947,21 @@ jobs:
                       duo-continuity-folded duo-continuity-unfolded; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
+          # #454: a station tap (and the Duo dial tap) lands on that station starting, never search (StudioScreenTests). -Nova
+          for shot in iphone-station-tap ipad-station-tap ipad-station-tap-dial; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
           # #542: the regular-width Duo draws the rail, not the two-pane arrangement (ArrangementPaneTests). -Atlas
           ls "$SHOTS" | grep -q '^duo-regular-rail_' || { echo "missing duo-regular-rail screenshot"; exit 1; }
           # #465 item 3: the tent pose, required like duo-wide-ready (TentPoseTests). -Nova
           ls "$SHOTS" | grep -q '^duo-tent_' || { echo "missing duo-tent screenshot"; exit 1; }
+          # Mockup D: the full trailing rail with the vertical song-position bar, one shot per
+          # frame of the mock (RailDLayoutTests), required as in #551's pattern. -Nova
+          for shot in rail-d-iphone rail-d-duo-closed rail-d-duo-open-portrait rail-d-duo-open-portrait-sidebar \
+                      rail-d-duo-open-landscape-spread rail-d-duo-open-landscape-centred \
+                      rail-d-duo-open-landscape-sidebar; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
           if [ ! -s "$SHOTS/walkthrough-closed.mp4" ]; then
             size=$(stat -f%z "$SHOTS/walkthrough-closed.mp4" 2>/dev/null || echo 0)
             echo "::error::RUNNER INFRA: walkthrough-closed.mp4 is missing or empty (source size: ${size} bytes). This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
