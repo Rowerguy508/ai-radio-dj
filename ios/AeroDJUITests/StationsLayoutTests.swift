@@ -6,8 +6,8 @@ import UIKit
 /// rail with the now-playing thumbnail in Collapse's place), and
 /// Settings > Stations layout on the iPhone and the Duo (`StationsLayoutCaptureScenario`).
 /// The Duo-sized frames need an iPad window: on an iPad they fail, never skip, if the window is
-/// too small, and ios.yml requires every shot. Main-actor work runs inside
-/// `MainActor.assumeIsolated` (no class-level @MainActor). -Nova
+/// too small, and ios.yml requires every shot. Each test and helper is @MainActor, as in
+/// RailDLayoutTests and StudioScreenTests (Swift 6). -Nova
 final class StationsLayoutTests: XCTestCase {
     private static let book = CGSize(width: 820, height: 640)
     private static let portrait = CGSize(width: 640, height: 820)
@@ -22,144 +22,135 @@ final class StationsLayoutTests: XCTestCase {
 
     // MARK: A tile grid
 
+    @MainActor
     func testLayoutABookPose() throws {
-        try MainActor.assumeIsolated {
-            let (app, _) = try checkStations("stationsLayoutABook", style: "tiles", size: Self.book,
-                                             rowPrefix: "stations.tile.", rows: 8,
-                                             shot: "stations-layout-a-duo-open-book")
-            // A tile starts that station through the split's selection: the player opens.
-            let late = stationButton(app, prefix: "stations.tile.", named: "Late Night")
-            XCTAssertTrue(late.isHittable, "Late Night tile")
-            late.tap()
-            assertPlayerOpened(app, station: "Late Night")
-        }
+        let (app, _) = try checkStations("stationsLayoutABook", style: "tiles", size: Self.book,
+                                         rowPrefix: "stations.tile.", rows: 8,
+                                         shot: "stations-layout-a-duo-open-book")
+        // A tile starts that station through the split's selection: the player opens.
+        let late = stationButton(app, prefix: "stations.tile.", named: "Late Night")
+        XCTAssertTrue(late.isHittable, "Late Night tile")
+        late.tap()
+        assertPlayerOpened(app, station: "Late Night")
     }
 
     /// ⋯ on the Stations rail: Rail D's own panel, inward of the rail, on the trailing page and
     /// off the fold. Tune opens the playing station's player on its Tune segment.
+    @MainActor
     func testLayoutABookPoseMoreMenu() throws {
-        try MainActor.assumeIsolated {
-            let (app, box) = try launch("stationsLayoutABook", size: Self.book, needsPad: true)
-            let any = app.descendants(matching: .any)
-            XCTAssertTrue(any["stations.duo.tiles"].waitForExistence(timeout: 10), app.debugDescription)
-            let rail = any["stations.rail"]
-            app.buttons["folded.more"].tap()
-            let menu = any["folded.moreMenu"]
-            XCTAssertTrue(menu.waitForExistence(timeout: 5), "⋯ panel missing\n\(app.debugDescription)")
-            XCTAssertLessThanOrEqual(menu.frame.maxX, rail.frame.minX, "the panel opens inward of the rail")
-            XCTAssertGreaterThanOrEqual(menu.frame.minX, box.minX + Self.foldMaxX, "the panel stays off the fold")
-            for id in ["more.connections", "transport.tune"] {
-                let row = any[id]
-                XCTAssertTrue(row.exists, "\(id) missing\n\(app.debugDescription)")
-                XCTAssertGreaterThanOrEqual(row.frame.height, 44, "\(id) \(row.frame)")
-            }
-            any["transport.tune"].tap()
-            assertPlayerOpened(app, station: "Morning Calm")
-            XCTAssertTrue(any["capture.stationsLayout.player"].label.hasSuffix(", tune"),
-                          "Tune asks the player for its Tune segment: \(any["capture.stationsLayout.player"].label)")
+        let (app, box) = try launch("stationsLayoutABook", size: Self.book, needsPad: true)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["stations.duo.tiles"].waitForExistence(timeout: 10), app.debugDescription)
+        let rail = any["stations.rail"]
+        app.buttons["folded.more"].tap()
+        let menu = any["folded.moreMenu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5), "⋯ panel missing\n\(app.debugDescription)")
+        XCTAssertLessThanOrEqual(menu.frame.maxX, rail.frame.minX, "the panel opens inward of the rail")
+        XCTAssertGreaterThanOrEqual(menu.frame.minX, box.minX + Self.foldMaxX, "the panel stays off the fold")
+        for id in ["more.connections", "transport.tune"] {
+            let row = any[id]
+            XCTAssertTrue(row.exists, "\(id) missing\n\(app.debugDescription)")
+            XCTAssertGreaterThanOrEqual(row.frame.height, 44, "\(id) \(row.frame)")
         }
+        any["transport.tune"].tap()
+        assertPlayerOpened(app, station: "Morning Calm")
+        XCTAssertTrue(any["capture.stationsLayout.player"].label.hasSuffix(", tune"),
+                      "Tune asks the player for its Tune segment: \(any["capture.stationsLayout.player"].label)")
     }
 
+    @MainActor
     func testLayoutAPortrait() throws {
-        try MainActor.assumeIsolated {
-            let (app, _) = try checkStations("stationsLayoutAPortrait", style: "tiles", size: Self.portrait,
-                                             rowPrefix: "stations.tile.", rows: 8,
-                                             shot: "stations-layout-a-duo-open-portrait")
-            // The rail's top slot opens the playing station's player.
-            app.buttons["stations.rail.nowPlaying"].tap()
-            assertPlayerOpened(app, station: "Morning Calm")
-        }
+        let (app, _) = try checkStations("stationsLayoutAPortrait", style: "tiles", size: Self.portrait,
+                                         rowPrefix: "stations.tile.", rows: 8,
+                                         shot: "stations-layout-a-duo-open-portrait")
+        // The rail's top slot opens the playing station's player.
+        app.buttons["stations.rail.nowPlaying"].tap()
+        assertPlayerOpened(app, station: "Morning Calm")
     }
 
     // MARK: B Daytime / After dark
 
+    @MainActor
     func testLayoutBBookPose() throws {
-        try MainActor.assumeIsolated {
-            let (app, box) = try checkStations("stationsLayoutBBook", style: "editorial", size: Self.book,
-                                               rowPrefix: "stations.listRow.", rows: 8,
-                                               shot: "stations-layout-b-duo-open-book")
-            let any = app.descendants(matching: .any)
-            let day = any["stations.section.daytime"]
-            let night = any["stations.section.afterDark"]
-            XCTAssertTrue(day.exists && night.exists, app.debugDescription)
-            // Daytime on the leading page, After dark on the trailing one.
-            XCTAssertLessThan(day.frame.maxX, box.minX + Self.foldMinX + 1)
-            XCTAssertGreaterThan(night.frame.minX, box.minX + Self.foldMaxX - 1)
-        }
+        let (app, box) = try checkStations("stationsLayoutBBook", style: "editorial", size: Self.book,
+                                           rowPrefix: "stations.listRow.", rows: 8,
+                                           shot: "stations-layout-b-duo-open-book")
+        let any = app.descendants(matching: .any)
+        let day = any["stations.section.daytime"]
+        let night = any["stations.section.afterDark"]
+        XCTAssertTrue(day.exists && night.exists, app.debugDescription)
+        // Daytime on the leading page, After dark on the trailing one.
+        XCTAssertLessThan(day.frame.maxX, box.minX + Self.foldMinX + 1)
+        XCTAssertGreaterThan(night.frame.minX, box.minX + Self.foldMaxX - 1)
     }
 
+    @MainActor
     func testLayoutBPortrait() throws {
-        try MainActor.assumeIsolated {
-            let (app, _) = try checkStations("stationsLayoutBPortrait", style: "editorial", size: Self.portrait,
-                                             rowPrefix: "stations.listRow.", rows: 8,
-                                             shot: "stations-layout-b-duo-open-portrait")
-            let any = app.descendants(matching: .any)
-            XCTAssertLessThan(any["stations.section.daytime"].frame.minY, any["stations.section.afterDark"].frame.minY,
-                              "Daytime above After dark")
-        }
+        let (app, _) = try checkStations("stationsLayoutBPortrait", style: "editorial", size: Self.portrait,
+                                         rowPrefix: "stations.listRow.", rows: 8,
+                                         shot: "stations-layout-b-duo-open-portrait")
+        let any = app.descendants(matching: .any)
+        XCTAssertLessThan(any["stations.section.daytime"].frame.minY, any["stations.section.afterDark"].frame.minY,
+                          "Daytime above After dark")
     }
 
     // MARK: C featured + Switch to
 
+    @MainActor
     func testLayoutCBookPose() throws {
-        try MainActor.assumeIsolated {
-            let (app, box) = try checkStations("stationsLayoutCBook", style: "featured", size: Self.book,
-                                               rowPrefix: "stations.switchRow.", rows: 7,
-                                               shot: "stations-layout-c-duo-open-book")
-            let featured = app.descendants(matching: .any)["stations.featured"]
-            XCTAssertTrue(featured.exists, app.debugDescription)
-            XCTAssertLessThan(featured.frame.maxX, box.minX + Self.foldMinX + 1, "the card stays on the leading page")
-            XCTAssertFalse(stationButton(app, prefix: "stations.switchRow.", named: "Morning Calm").exists,
-                           "the playing station is the card, not a row")
-            let open = app.buttons["stations.featured.openPlayer"]
-            assertTarget(open, in: box, "Open player")
-            open.tap()
-            assertPlayerOpened(app, station: "Morning Calm")
-        }
+        let (app, box) = try checkStations("stationsLayoutCBook", style: "featured", size: Self.book,
+                                           rowPrefix: "stations.switchRow.", rows: 7,
+                                           shot: "stations-layout-c-duo-open-book")
+        let featured = app.descendants(matching: .any)["stations.featured"]
+        XCTAssertTrue(featured.exists, app.debugDescription)
+        XCTAssertLessThan(featured.frame.maxX, box.minX + Self.foldMinX + 1, "the card stays on the leading page")
+        XCTAssertFalse(stationButton(app, prefix: "stations.switchRow.", named: "Morning Calm").exists,
+                       "the playing station is the card, not a row")
+        let open = app.buttons["stations.featured.openPlayer"]
+        assertTarget(open, in: box, "Open player")
+        open.tap()
+        assertPlayerOpened(app, station: "Morning Calm")
     }
 
+    @MainActor
     func testLayoutCPortrait() throws {
-        try MainActor.assumeIsolated {
-            let (app, _) = try checkStations("stationsLayoutCPortrait", style: "featured", size: Self.portrait,
-                                             rowPrefix: "stations.switchRow.", rows: 7,
-                                             shot: "stations-layout-c-duo-open-portrait")
-            // Queue on the Stations rail opens the playing station's player on its queue.
-            let queue = app.buttons["queue.affordance"]
-            XCTAssertEqual(queue.label, "Up next: Salt Lines by Paper Lanterns")
-            queue.tap()
-            assertPlayerOpened(app, station: "Morning Calm")
-            let player = app.descendants(matching: .any)["capture.stationsLayout.player"]
-            XCTAssertTrue(player.label.hasSuffix(", queue"), "Queue asks for the queue: \(player.label)")
-        }
+        let (app, _) = try checkStations("stationsLayoutCPortrait", style: "featured", size: Self.portrait,
+                                         rowPrefix: "stations.switchRow.", rows: 7,
+                                         shot: "stations-layout-c-duo-open-portrait")
+        // Queue on the Stations rail opens the playing station's player on its queue.
+        let queue = app.buttons["queue.affordance"]
+        XCTAssertEqual(queue.label, "Up next: Salt Lines by Paper Lanterns")
+        queue.tap()
+        assertPlayerOpened(app, station: "Morning Calm")
+        let player = app.descendants(matching: .any)["capture.stationsLayout.player"]
+        XCTAssertTrue(player.label.hasSuffix(", queue"), "Queue asks for the queue: \(player.label)")
     }
 
     // MARK: Settings > Stations layout
 
+    @MainActor
     func testSettingsPickerOnIPhone() throws {
-        try MainActor.assumeIsolated {
-            let (app, box) = try launch("stationsLayoutSettingsPhone", size: Self.phone, needsPad: false)
-            let rows = try settingsRows(app, box: box)
-            XCTAssertTrue(app.switches["settings.talkoverToggle"].exists, "the existing rows stay")
-            save(app, "settings-stations-layout-iphone")
-            // A tap picks that design; the default comes back with a tap on A.
-            rows[1].tap()
-            waitSelected(rows[1])
-            XCTAssertFalse(rows[0].isSelected)
-            rows[0].tap()
-            waitSelected(rows[0])
-        }
+        let (app, box) = try launch("stationsLayoutSettingsPhone", size: Self.phone, needsPad: false)
+        let rows = try settingsRows(app, box: box)
+        XCTAssertTrue(app.switches["settings.talkoverToggle"].exists, "the existing rows stay")
+        save(app, "settings-stations-layout-iphone")
+        // A tap picks that design; the default comes back with a tap on A.
+        rows[1].tap()
+        waitSelected(rows[1])
+        XCTAssertFalse(rows[0].isSelected)
+        rows[0].tap()
+        waitSelected(rows[0])
     }
 
+    @MainActor
     func testSettingsPickerOnTheDuo() throws {
-        try MainActor.assumeIsolated {
-            let (app, box) = try launch("stationsLayoutSettingsDuo", size: Self.portrait, needsPad: true)
-            let rows = try settingsRows(app, box: box)
-            for row in rows {
-                XCTAssertGreaterThanOrEqual(row.frame.minX, box.minX + 59, "inset to the readable width: \(row.frame)")
-                XCTAssertLessThanOrEqual(row.frame.maxX, box.maxX - 59, "inset to the readable width: \(row.frame)")
-            }
-            save(app, "settings-stations-layout-duo")
+        let (app, box) = try launch("stationsLayoutSettingsDuo", size: Self.portrait, needsPad: true)
+        let rows = try settingsRows(app, box: box)
+        for row in rows {
+            XCTAssertGreaterThanOrEqual(row.frame.minX, box.minX + 59, "inset to the readable width: \(row.frame)")
+            XCTAssertLessThanOrEqual(row.frame.maxX, box.maxX - 59, "inset to the readable width: \(row.frame)")
         }
+        save(app, "settings-stations-layout-duo")
     }
 
     // MARK: Helpers
