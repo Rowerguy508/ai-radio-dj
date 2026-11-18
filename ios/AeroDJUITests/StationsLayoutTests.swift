@@ -179,18 +179,38 @@ final class StationsLayoutTests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 20), .completed, "capture still loading")
         let container = app.descendants(matching: .any)["capture.stationsLayoutContainer"]
         XCTAssertTrue(container.waitForExistence(timeout: 10), "container missing\n\(app.debugDescription)")
-        let deadline = Date().addingTimeInterval(10)
-        var last = CGRect.null
+        // Clip to the window before comparing size, as in RailDLayoutTests.settledContainer
+        // (lines 375-381): the container is `.contain`, so an unclipped child can make the
+        // raw frame (0, 0, 390, 850.67) on an iPhone 16e even when the visible box is 390 × 844.
+        let windowFrame = window.frame
+        let box = try XCTUnwrap(settledFrame(of: container, "container", clippedTo: windowFrame) {
+            abs($0.width - size.width) <= 1 && abs($0.height - size.height) <= 1
+        }, "container never settled at \(size) in window \(windowFrame): \(container.frame)")
+        return (app, box)
+    }
+
+    /// The element's frame once it is non-empty, equal (±0.5 pt) on two polls in a row and
+    /// accepted by `isFinal`; nil after `timeout`. When `clippedTo` is set, the frame is
+    /// intersected with that rect first, matching `RailDLayoutTests.settledFrame`.
+    @MainActor
+    private func settledFrame(of element: XCUIElement, _ name: String, timeout: TimeInterval = 10,
+                              clippedTo clip: CGRect? = nil,
+                              isFinal: (CGRect) -> Bool = { _ in true }) -> CGRect? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var last: CGRect?
         while Date() < deadline {
-            let frame = container.frame
-            if abs(frame.width - size.width) <= 1, abs(frame.height - size.height) <= 1, frame == last {
-                return (app, frame)
+            var frame = element.exists ? element.frame : .null
+            if let clip, !clip.isNull, !clip.isEmpty, !frame.isNull { frame = frame.intersection(clip) }
+            if !frame.isNull, !frame.isEmpty, isFinal(frame), let last,
+               abs(last.minX - frame.minX) <= 0.5, abs(last.minY - frame.minY) <= 0.5,
+               abs(last.width - frame.width) <= 0.5, abs(last.height - frame.height) <= 0.5 {
+                return frame
             }
-            last = frame
+            last = (frame.isNull || frame.isEmpty || !isFinal(frame)) ? nil : frame
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         }
-        XCTFail("container never settled at \(size): \(container.frame)")
-        return (app, last)
+        XCTFail("\(name) frame did not settle within \(timeout) s (last \(element.frame))")
+        return nil
     }
 
     /// Everything every design must do: no carousel, Rail D 56 pt wide and 8 pt from the
