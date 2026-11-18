@@ -327,6 +327,11 @@ final class StationQueuePlayer {
         // (committed seeds still equal the previous queue's) keeps the previous tag.
         let stationRef = StationQueueOwner.tag(owner: owner, playing: music.snapshot.station,
                                                committed: committed, previous: lastStartedStationKey)
+        // #568 (Echo's #571 review): the DJ tells two tags-only stations apart by id, and a
+        // tags-only station has no owner (no key). Fall back to the last applied recipe id, the
+        // same UUID string `PlayerView` passes as `station.id`, so the feed path neither drops
+        // the id nor resets it for a later tap-path switch. -Fry
+        let stationID = owner?.id ?? studio?.lastAppliedRecipeID?.uuidString
         do {
             try await TapPlaySequence.run(
             reserve: { djSession.reserveQueueSetup() },
@@ -341,7 +346,7 @@ final class StationQueuePlayer {
                 djSession.acceptStationAppends(generation: reservation.generation, queueEpoch: self.queueEpoch)
                 return djSession.beginQueueInBackground(reservation, djTracks,
                                                        briefing: offer.briefing, sources: offer.sources,
-                                                       stationName: stationRef?.name)
+                                                       stationName: stationRef?.name, stationID: stationID)
             },
             release: { djSession.releaseQueueSetup($0) })
             lastStartedStationKey = StationQueueKey(committed)

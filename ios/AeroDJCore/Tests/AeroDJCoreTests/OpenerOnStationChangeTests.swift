@@ -256,4 +256,47 @@ final class OpenerOnStationChangeTests: XCTestCase {
             await session.stop()
         }
     }
+
+    // (k) #568, Echo's #571 review: the Stations feed path (a reservation, then
+    // `beginQueueInBackground` with the id, as `StationQueuePlayer.start` does) records the
+    // tags-only station's id, so a later tap-path switch to another tags-only station with equal
+    // seeds re-greets once instead of reading "unknown previous". -Fry
+    func testFeedPathTagsOnlyStartThenTapPathSwitchReGreets() async {
+        for seed in UInt64(0)..<10 {
+            let (session, station) = await rig(seed: seed, tagsOnly: true)
+            let reservation = session.reserveQueueSetup()
+            await session.beginQueueInBackground(reservation, djTracks(30), stationName: "Jazz Hour",
+                                                 stationID: "station-a").value
+            await airTheOpener(session, "seed \(seed) feed start on A")
+
+            await save(session, station) { await station.setGenres(["house", "disco"]) }
+            XCTAssertNil(StationQueueKey(station.committedDisplayed), "seed \(seed): B is tags-only too")
+            XCTAssertEqual(station.committedDisplayed.seeds, [], "seed \(seed): equal seeds")
+            await session.beginQueueInBackground(djTracks(30), stationName: "Disco Night", stationID: "station-b").value
+            XCTAssertEqual(openers(session).count, 1, "seed \(seed): the tap-path switch to B opens the show once")
+            XCTAssertEqual(openers(session).first, session.plannedBoundaries.first, "seed \(seed): as its first break")
+            await session.stop()
+        }
+    }
+
+    // (l) #568: a feed-path start with id A, then a re-start with the same id A (the feed's
+    // reservation path, then a `queueStarted`), never re-greets. -Fry
+    func testFeedPathStartThenReStartWithTheSameIDDoesNotReGreet() async {
+        for seed in UInt64(0)..<10 {
+            let (session, _) = await rig(seed: seed, tagsOnly: true)
+            let first = session.reserveQueueSetup()
+            await session.beginQueueInBackground(first, djTracks(30), stationName: "Jazz Hour",
+                                                 stationID: "station-a").value
+            await airTheOpener(session, "seed \(seed) feed start on A")
+
+            let again = session.reserveQueueSetup()
+            await session.beginQueueInBackground(again, djTracks(30), stationName: "Jazz Hour",
+                                                 stationID: "station-a").value
+            XCTAssertEqual(openers(session), [], "seed \(seed): a feed re-start on A")
+
+            await session.queueStarted(djTracks(30), stationName: "Jazz Hour", stationID: "station-a")
+            XCTAssertEqual(openers(session), [], "seed \(seed): a tap-path re-start on A")
+            await session.stop()
+        }
+    }
 }

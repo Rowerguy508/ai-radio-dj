@@ -178,6 +178,10 @@ final class StationQueueOwnerTests: XCTestCase {
         XCTAssertTrue(code.contains("let stationRef = StationQueueOwner.tag(owner: owner, playing: music.snapshot.station,"))
         XCTAssertTrue(code.contains("committed: committed, previous: lastStartedStationKey)"))
         XCTAssertTrue(code.contains("try await music.play(tracks, station: stationRef)"))
+        // #568 (Echo's #571 review): the feed path passes the station id to the DJ too. -Fry
+        XCTAssertTrue(code.contains("let stationID = owner?.id ?? studio?.lastAppliedRecipeID?.uuidString"))
+        XCTAssertTrue(code.contains("stationName: stationRef?.name, stationID: stationID)"),
+                      "StationQueuePlayer passes stationID: to beginQueueInBackground")
         XCTAssertFalse(code.contains("let stationRef = music.snapshot.station"), "a new queue must not copy the old tag")
         XCTAssertFalse(code.contains("owner ?? playing"), "an unknown owner must not unconditionally keep the previous tag")
     }
