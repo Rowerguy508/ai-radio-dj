@@ -111,7 +111,8 @@ final class RailDLayoutTests: XCTestCase {
                            "\(element.identifier) \(element.label) \(frame) sits on the fold \(foldMin)…\(foldMax)")
         }
         XCTAssertGreaterThan(checked, 5, "the fold check saw too few controls")
-        save(app, "rail-d-duo-open-landscape-spread")
+        save(app, "rail-d-duo-open-landscape-spread",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
     @MainActor
@@ -130,7 +131,8 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertTrue(chip.waitForExistence(timeout: 5), "DJ chip missing\n\(app.debugDescription)")
         XCTAssertGreaterThanOrEqual(chip.frame.minX, box.minX + Self.foldMaxX - 1, "the chip sits after the fold")
         XCTAssertGreaterThanOrEqual(any["duo.upNext"].frame.minX, box.minX + Self.foldMaxX - 1)
-        save(app, "rail-d-duo-open-landscape-centred")
+        save(app, "rail-d-duo-open-landscape-centred",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
     @MainActor
@@ -138,7 +140,8 @@ final class RailDLayoutTests: XCTestCase {
         let app = try launch("railDLandscapeSidebar", container: Self.landscape, orientation: .landscapeLeft)
         let box = try settledContainer(app, size: Self.landscape)
         try assertSidebarRailColumn(app, box: box)
-        save(app, "rail-d-duo-open-landscape-sidebar")
+        save(app, "rail-d-duo-open-landscape-sidebar",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
     /// #548, owner's Nov 17 9:53 AM call: the open Duo in book pose with the rail collapsed
@@ -183,7 +186,8 @@ final class RailDLayoutTests: XCTestCase {
                            "\(element.identifier) \(element.label) \(frame) sits on the fold \(foldMin)…\(foldMax)")
         }
         XCTAssertGreaterThan(checked, 5, "the fold check saw too few controls")
-        save(app, "rail-d-duo-open-landscape-book-collapsed")
+        save(app, "rail-d-duo-open-landscape-book-collapsed",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
         // Show rail: back to the L1 spread with the full rail.
         expand.tap()
         XCTAssertTrue(any["folded.systemBar"].waitForExistence(timeout: 10), "Show rail did not bring the rail back")
@@ -258,7 +262,8 @@ final class RailDLayoutTests: XCTestCase {
             let foldMax = box.minX + Self.foldMaxX
             XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin, "DJ state \(frame) sits on the fold")
         }
-        save(app, shot)
+        save(app, shot,
+             container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
     // MARK: Checks
@@ -452,10 +457,29 @@ final class RailDLayoutTests: XCTestCase {
         return nil
     }
 
+    /// `container` set (the open-landscape frames only): the shot is that element's own
+    /// capture, the 820 × 640 frame upright and whole, not the screen around it. Nil (the
+    /// iPhone, closed Duo, and open-portrait frames) keeps the app screenshot, so those PNGs
+    /// do not change.
     @MainActor
-    private func save(_ app: XCUIApplication, _ name: String) {
-        let shot = app.screenshot()
-        let attachment = XCTAttachment(screenshot: shot)
+    private func save(_ app: XCUIApplication, _ name: String, container: XCUIElement? = nil) {
+        let shot = container.map { $0.screenshot() } ?? app.screenshot()
+        let png: Data
+        let attachment: XCTAttachment
+        // An element screenshot after `XCUIDevice.shared.orientation = .landscapeLeft` can
+        // still arrive taller than wide, or with a non-`.up` imageOrientation, because the
+        // hosted iPad sim keeps a portrait-origin framebuffer. The a903baba
+        // studio-screenshots were 2360 × 1640, status bar vertical on the right, and the
+        // 820 × 640 container cut off at the bottom. Normalise those so the PNG is the
+        // upright, wider-than-tall frame. Portrait and closed shots never enter this path.
+        if container != nil, XCUIDevice.shared.orientation.isLandscape {
+            let image = uprightOpenLandscapeImage(shot.image)
+            png = image.pngData() ?? shot.pngRepresentation
+            attachment = XCTAttachment(image: image)
+        } else {
+            png = shot.pngRepresentation
+            attachment = XCTAttachment(screenshot: shot)
+        }
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -463,7 +487,36 @@ final class RailDLayoutTests: XCTestCase {
             let device = UIDevice.current.name.replacingOccurrences(of: " ", with: "-")
             let url = URL(fileURLWithPath: dir).appendingPathComponent("\(name)_\(device).png")
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            try? shot.pngRepresentation.write(to: url)
+            try? png.write(to: url)
+        }
+    }
+
+    /// Bake a non-`.up` orientation into the pixels. If the bitmap is still taller than wide
+    /// (the landscape frame captured from a portrait framebuffer), rotate 90° counterclockwise:
+    /// that puts the right-edge status bar on top and yields the 820 × 640 frame.
+    private func uprightOpenLandscapeImage(_ image: UIImage) -> UIImage {
+        let baked = image.imageOrientation == .up ? image : drawnUpright(image)
+        guard baked.size.height > baked.size.width else { return baked }
+        return rotated90Counterclockwise(baked)
+    }
+
+    private func drawnUpright(_ image: UIImage) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = image.scale
+        let size = image.size
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+
+    private func rotated90Counterclockwise(_ image: UIImage) -> UIImage {
+        let size = CGSize(width: image.size.height, height: image.size.width)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = image.scale
+        return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            ctx.cgContext.translateBy(x: 0, y: size.height)
+            ctx.cgContext.rotate(by: -.pi / 2)
+            image.draw(in: CGRect(origin: .zero, size: image.size))
         }
     }
 }
