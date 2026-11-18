@@ -70,6 +70,12 @@ final class DuoOpenRailRouteTests: XCTestCase {
         XCTAssertEqual(m.column, 452)
     }
 
+    /// The centred column (and the collapsed-rail pinned column) reserve used by `metrics`.
+    func testCentredColumnReserveBelowArt() {
+        XCTAssertEqual(FoldedColumnLayout.centredColumnReserveBelowArt, 380)
+        XCTAssertEqual(FoldedColumnLayout.centredColumnReserveBelowArtAccessibility, 620)
+    }
+
     /// Phones keep their layouts with the routed height: iPhone landscape is at most 430 pt
     /// tall as a window, and phone portrait is under `wideMinWidth`.
     func testPhonesKeepTheirLayoutsWithTheRoutedHeight() {
