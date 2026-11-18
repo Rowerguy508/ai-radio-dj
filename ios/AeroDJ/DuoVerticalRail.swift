@@ -50,6 +50,9 @@ struct DuoVerticalRail: View {
     var resume: () async -> Void = {}
     var skip: () async -> Void = {}
     @Binding var moreOpen: Bool
+    /// Mockup D: the vertical song-position bar between the sleep timer and the live dot.
+    /// Nil (no track or no duration) keeps the spacer that holds the dot at the bottom.
+    var scrubber: RailScrubberInput? = nil
 
     /// Always false (#542). Build 49 (Xcode 27.2, iOS 27.1) took the system vertical toolbar
     /// here, a path no CI build or UI test has ever run, and the Duo lost the 2.0 rail. Every
@@ -76,7 +79,12 @@ struct DuoVerticalRail: View {
                               hint: "Opens the queue",
                               identifier: "queue.affordance", action: onQueue)
             DuoSleepTimerButton(pause: pause)
-            Spacer(minLength: CGFloat(DuoRailLayout.spacerMinLength))
+            if let scrubber {
+                // D: the bar fills the lower rail down to the live dot.
+                RailScrubber(input: scrubber)
+            } else {
+                Spacer(minLength: CGFloat(DuoRailLayout.spacerMinLength))
+            }
             DuoLiveDot(state: dj.state)
         }
         .padding(.vertical, CGFloat(DuoRailLayout.verticalPadding))
@@ -91,12 +99,15 @@ struct DuoVerticalRail: View {
     }
 }
 
-/// #537: the closed (phone-width) reskin's trailing rail. The #479 rail's own play/pause and
-/// skip plates (44 pt, `transport.playPause` / `transport.skip`) and its glass. Collapse, ⋯,
-/// Queue, the sleep timer and the live dot stay on the unfolded rail only: the closed header
-/// already has ⋯ (Queue and Tune are in it), and there is nothing to collapse.
-/// The plates sit at the bottom of the rail, in thumb reach and level with the scrubber.
-struct ClosedVerticalRail: View {
+/// Mockup D (owner: "Yes, build it"): the closed (phone-width) reskin's rail, shared by the
+/// iPhone and the closed Duo. One full-height glass column, top to bottom: ⋯ (`more`, the
+/// header's menu moved here, with Tune, the star and Connections), Play/Pause and Skip (the
+/// #479 plates, `transport.playPause` / `transport.skip`), Queue (`queue.affordance`,
+/// promoted from ⋯), the sleep timer, the vertical song-position bar and the live dot. No
+/// Collapse: the header keeps Back and there is nothing to collapse.
+struct ClosedVerticalRail<More: View>: View {
+    let dj: DJStatusPresentation
+    let upNext: [TrackInfo]
     let transport: TransportState
     let startTimedOut: Bool
     let showsTransport: Bool
@@ -104,29 +115,43 @@ struct ClosedVerticalRail: View {
     let cancelStart: () -> Void
     let resume: () async -> Void
     let skip: () async -> Void
+    let onQueue: () -> Void
+    var scrubber: RailScrubberInput? = nil
+    @ViewBuilder let more: () -> More
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
+        VStack(spacing: CGFloat(DuoRailLayout.spacing)) {
+            more()
             if showsTransport {
-                VStack(spacing: CGFloat(DuoRailLayout.spacing)) {
-                    DuoRailPlayPauseButton(transport: transport, startTimedOut: startTimedOut,
-                                           pause: pause, cancelStart: cancelStart, resume: resume)
-                    DuoRailIconButton(systemImage: "forward.fill", label: "Skip",
-                                      hint: "Skips this song.",
-                                      identifier: "transport.skip",
-                                      action: { Task { await skip() } })
-                }
-                .padding(.vertical, CGFloat(DuoRailLayout.verticalPadding))
-                .frame(width: CGFloat(FoldedOuterLayout.closedRailWidth))
-                .accessibilityElement(children: .contain)
-                .modifier(DuoRailGlass())
+                DuoRailPlayPauseButton(transport: transport, startTimedOut: startTimedOut,
+                                       pause: pause, cancelStart: cancelStart, resume: resume)
+                DuoRailIconButton(systemImage: "forward.fill", label: "Skip",
+                                  hint: "Skips this song.",
+                                  identifier: "transport.skip",
+                                  action: { Task { await skip() } })
             }
+            DuoRailIconButton(systemImage: "list.bullet", label: Self.queueLabel(upNext),
+                              hint: "Opens the queue",
+                              identifier: "queue.affordance", action: onQueue)
+            DuoSleepTimerButton(pause: pause)
+            if let scrubber {
+                RailScrubber(input: scrubber)
+            } else {
+                Spacer(minLength: CGFloat(DuoRailLayout.spacerMinLength))
+            }
+            DuoLiveDot(state: dj.state)
         }
+        .padding(.vertical, CGFloat(DuoRailLayout.verticalPadding))
         .frame(width: CGFloat(FoldedOuterLayout.closedRailWidth))
-        .frame(maxHeight: .infinity, alignment: .bottom)
+        .frame(maxHeight: .infinity)
+        .modifier(DuoRailGlass())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folded.closedRail")
+    }
+
+    /// The label the closed ⋯ row used ("Queue. Up next: …"), so VoiceOver reads the same.
+    static func queueLabel(_ upNext: [TrackInfo]) -> String {
+        upNext.first.map { "Queue. Up next: \($0.title) by \($0.artistName)" } ?? "Queue. Up next: nothing queued"
     }
 }
 
@@ -139,7 +164,7 @@ private struct DuoRailGlass: ViewModifier {
     @Environment(\.colorSchemeContrast) private var contrast
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 25, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: CGFloat(RailDLayout.railCornerRadius), style: .continuous)
         let strong = contrast == .increased
         if reduceTransparency || strong {
             content

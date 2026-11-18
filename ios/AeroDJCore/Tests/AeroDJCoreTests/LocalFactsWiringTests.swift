@@ -185,6 +185,8 @@ final class LocalFactsWiringTests: XCTestCase {
 
     // MARK: DJBreakSession writer injection
 
+    // Fixed clock: both sessions in a comparison must read the same now, or a time check written
+    // across a second boundary differs ("It's 5:10." vs "Just after 5:10."). -Echo
     private func session(extra: (any DJBreakExtraLineSource)?, passIt: Bool) async -> DJBreakSession {
         let config = StationConfiguration(commentary: .frequent)
         let station = StationConfigurationModel(
@@ -194,9 +196,10 @@ final class LocalFactsWiringTests: XCTestCase {
         let preparer = DJBreakPreparer(renderer: djRenderer(), userID: "u", stationID: "s", cadence: config.cadence())
         if passIt {
             return DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 7, hour: { 14 },
-                                  extraLineSource: extra)
+                                  now: { w0 }, extraLineSource: extra)
         }
-        return DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 7, hour: { 14 })
+        return DJBreakSession(preparer: preparer, station: station, dj: DJPresentationStore(), seed: 7, hour: { 14 },
+                              now: { w0 })
     }
 
     private func factCues(_ s: DJBreakSession) -> [NarrationCue] {

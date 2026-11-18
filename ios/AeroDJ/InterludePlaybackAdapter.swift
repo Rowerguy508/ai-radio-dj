@@ -869,10 +869,13 @@ final class InterludePlaybackAdapter: NSObject, ObservableObject, AVAudioPlayerD
         // now; a paused one is unchanged), or already ended (a stale copy: ignored).
         if beganForwarded <= beganSeen, !sessionInterrupted { return true }
         let action = interruption.interruptionBegan(at: ProcessInfo.processInfo.systemUptime)
-        switch action {
-        case .stopTalkover: return false
-        case .none: return interruption.isHolding
-        default:
+        // Core's policy (#377): a speaking gap break is paused, not halted. Talk-over still halts.
+        switch BreakTimelineStopPolicy.untaggedInterruption(action, isHolding: interruption.isHolding) {
+        case .halt:
+            return false
+        case .ignore:
+            return true
+        case .apply:
             applyInterruption(action)
             return true
         }
