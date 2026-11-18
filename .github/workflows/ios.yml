@@ -927,7 +927,9 @@ jobs:
           ls "$SHOTS" | grep -q '^open-rail-queue-sheet_' || { echo "missing open screenshot"; exit 1; }
           # #465 item 10: Library, Stations and Settings at Duo width, required like
           # duo-wide-ready (AppWideLayoutTests). -Nova
-          for shot in duo-wide-library duo-wide-stations duo-wide-settings duo-wide-localarea; do
+          # Build 51: Stations carousel on the open Duo (sideways) beside the toolbar. -Nova
+          for shot in duo-wide-library duo-wide-stations duo-wide-settings duo-wide-localarea \
+                      duo-open-stations-carousel; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
           for shot in closed-dark closed-state-empty closed-state-loading closed-state-error closed-state-denied \
