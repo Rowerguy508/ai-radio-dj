@@ -290,6 +290,50 @@ public enum DuoSleepTimer {
     }
 }
 
+/// One rail's sleep timer (per rail: the player's Rail D and the open-Duo Stations rail each
+/// own one). `DuoSleepTimerButton` keeps it in `@State`, waits `minutes` under a task keyed by
+/// `generation`, then asks `expire(generation:)` whether to pause.
+///
+/// A rail that is not on screen cannot pause playback: hiding it (the Stations rail while the
+/// player is pushed over it) turns its timer Off, and an expiry that arrives while it is hidden,
+/// or after a re-arm or Off, is ignored. Off never pauses.
+public struct DuoRailSleepTimerState: Equatable, Sendable {
+    /// Nil is Off.
+    public private(set) var minutes: Int?
+    /// Bumped by every arm, Off and hide that cancels, so a stale wait cannot fire.
+    public private(set) var generation: Int = 0
+    public private(set) var isShown: Bool
+
+    public init(isShown: Bool = true) {
+        self.isShown = isShown
+    }
+
+    /// The wait for the current arm, or nil when Off.
+    public var delaySeconds: Double? { minutes.map { Double($0 * 60) } }
+
+    /// A menu choice: minutes, or nil for Off. Restarts the wait.
+    public mutating func arm(_ minutes: Int?) {
+        self.minutes = isShown ? minutes : nil
+        generation &+= 1
+    }
+
+    /// The rail went off or on screen. Going off screen cancels an armed timer (back to Off).
+    public mutating func setShown(_ shown: Bool) {
+        isShown = shown
+        if !shown, minutes != nil {
+            minutes = nil
+            generation &+= 1
+        }
+    }
+
+    /// The wait armed at `armed` finished. True means pause now; the timer is then Off.
+    public mutating func expire(generation armed: Int) -> Bool {
+        guard armed == generation, minutes != nil, isShown else { return false }
+        minutes = nil
+        return true
+    }
+}
+
 
 /// The unfolded Duo's right rail (#465). Play/pause and skip sit on the rail, not in the
 /// content column's transport row. Phone portrait and the centred column are unchanged.
