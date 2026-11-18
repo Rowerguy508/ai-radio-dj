@@ -928,6 +928,10 @@ jobs:
                       duo-continuity-folded duo-continuity-unfolded; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
+          # #454: a station tap (and the Duo dial tap) lands on that station starting, never search (StudioScreenTests). -Nova
+          for shot in iphone-station-tap ipad-station-tap ipad-station-tap-dial; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
           # #542: the regular-width Duo draws the rail, not the two-pane arrangement (ArrangementPaneTests). -Atlas
           ls "$SHOTS" | grep -q '^duo-regular-rail_' || { echo "missing duo-regular-rail screenshot"; exit 1; }
           # #465 item 3: the tent pose, required like duo-wide-ready (TentPoseTests). -Nova

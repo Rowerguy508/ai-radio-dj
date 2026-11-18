@@ -1747,6 +1747,102 @@ final class StudioScreenTests: XCTestCase {
         }
     }
 
+    /// #454 (-Nova): a station tap (row or carousel card) goes through the split's one tap route: it
+    /// starts the tapped station's id, and Now Playing shows that station starting, with no search
+    /// field and no search button. The capture records the id it would start and never plays or
+    /// searches (`stationTap`). The Duo dial's tap is `testDuoDialTapStartsThatStationNotSearch`,
+    /// in the Duo frame, where the dial is drawn.
+    @MainActor
+    func testStationTapStartsThatStationNotSearch() {
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let app = launch(scenario: "stationTap", musicAuthStatus: "authorized")
+        let any = app.descendants(matching: .any)
+        let sidebar = any["split.sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 15), app.debugDescription)
+        let calm = stationRow(sidebar, named: "Morning Calm")
+        XCTAssertTrue(calm.waitForExistence(timeout: 5), app.debugDescription)
+        calm.tap()
+        let started = any["capture.startedStation"]
+        XCTAssertTrue(started.waitForExistence(timeout: 10), app.debugDescription)
+        waitLabel(started, morningCalm, "the tap starts the tapped station's id")
+        XCTAssertTrue(any["nowPlaying.stationStart"].waitForExistence(timeout: 10),
+                      "Now Playing shows the station starting\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Starting Morning Calm"), app.debugDescription)
+        XCTAssertFalse(app.textFields["search.field"].exists, "A station tap never shows search\n\(app.debugDescription)")
+        XCTAssertFalse(app.buttons["playback.searchAppleMusic"].exists, "No search button while starting")
+        XCTAssertEqual(callLabel(app), "0/0", "The capture never searches or plays\n\(app.debugDescription)")
+        save(app, isOpenLayout ? "ipad-station-tap" : "iphone-station-tap")
+    }
+
+    /// #454 (-Nova): the Duo dial's tap path, asserted rather than skipped. `stationTapDuo` puts the
+    /// same tap-routed station split (`stationTap`) in the 640 × 820 pt compact-class Duo container,
+    /// so the split shows the compact column and the opened station's detail is the unfolded
+    /// player, which draws the dial. A dial tap goes through the split's one tap route: it starts
+    /// the tapped station's id, the split selects that station, and Now Playing shows it starting,
+    /// never search. Open layout only, like every 640 × 820 capture; iPhone shots are untouched.
+    @MainActor
+    func testDuoDialTapStartsThatStationNotSearch() throws {
+        try XCTSkipUnless(isOpenLayout, "The 640 × 820 pt container needs an iPad-size simulator window")
+        let morningCalm = "7C2A1B10-4E5F-4A6B-8C9D-0E1F2A3B4C5D"
+        let lateNight = "8D3B2C21-5F60-4B7C-9D0E-1F2A3B4C5D6E"
+        let app = launch(scenario: "stationTapDuo", musicAuthStatus: "authorized")
+        let any = app.descendants(matching: .any)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window\n\(app.debugDescription)")
+        let windowFrame = try XCTUnwrap(settledFrame(of: window, "window"))
+        let container = any["capture.duoContainer"]
+        XCTAssertTrue(container.waitForExistence(timeout: 15), "Duo container missing\n\(app.debugDescription)")
+        let box = try XCTUnwrap(settledFrame(of: container, "Duo container") {
+            abs($0.width - 640) <= 1 && abs($0.height - 820) <= 1
+        }, "container never settled at 640 × 820 pt: \(container.frame)")
+        XCTAssertTrue(windowFrame.insetBy(dx: -1, dy: -1).contains(box),
+                      "container \(box) outside window \(windowFrame)")
+
+        // Open Morning Calm from the list, as a listener would, so the detail is the player.
+        let sidebar = any["split.sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 15), app.debugDescription)
+        let calm = stationRow(sidebar, named: "Morning Calm")
+        XCTAssertTrue(calm.waitForExistence(timeout: 5), app.debugDescription)
+        calm.tap()
+        let started = any["capture.startedStation"]
+        XCTAssertTrue(started.waitForExistence(timeout: 10), app.debugDescription)
+        waitLabel(started, morningCalm, "the row tap starts the tapped station's id")
+
+        // The dial must be there. No early return: a missing dial fails the test.
+        let dial = any["duo.stationDial"]
+        if !dial.waitForExistence(timeout: 10) {
+            XCTFail("duo.stationDial missing in the 640 × 820 Duo frame\n\(app.debugDescription)")
+        }
+        let stop = app.buttons["duo.station.\(lateNight)"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5), "Late Night dial stop missing\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(stop.frame.height, 44, "dial stop under 44 pt: \(stop.frame)")
+        stop.tap()
+        waitLabel(started, lateNight, "the dial starts the tapped station's id")
+        let title = any["station.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(title.label.contains("Late Night"), "the dial selects the station it starts: \(title.label)")
+        XCTAssertTrue(any["nowPlaying.stationStart"].waitForExistence(timeout: 10),
+                      "Now Playing shows the station starting\n\(app.debugDescription)")
+        XCTAssertTrue(shows(app, "Starting Late Night"), app.debugDescription)
+        XCTAssertFalse(app.textFields["search.field"].exists, "A dial tap never shows search\n\(app.debugDescription)")
+        XCTAssertFalse(app.buttons["playback.searchAppleMusic"].exists, "No search button while starting")
+        XCTAssertEqual(callLabel(app), "0/0", "The capture never searches or plays\n\(app.debugDescription)")
+        save(app, "ipad-station-tap-dial")
+
+        // The fixture is playing Morning Calm, so its stop is the playing station: a tap starts nothing.
+        let playingStop = app.buttons["duo.station.\(morningCalm)"]
+        XCTAssertTrue(playingStop.waitForExistence(timeout: 5), app.debugDescription)
+        playingStop.tap()
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertEqual(started.label, lateNight, "tapping the playing station's stop is a no-op")
+    }
+
+    @MainActor
+    private func waitLabel(_ element: XCUIElement, _ label: String, _ message: String) {
+        let match = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", label), object: element)
+        XCTAssertEqual(XCTWaiter().wait(for: [match], timeout: 10), .completed, "\(message): \(element.label)")
+    }
+
     /// Shared Items sheet always has Done and dismisses without force-quit.
     @MainActor
     func testShareSheetDismissesViaDone() throws {
