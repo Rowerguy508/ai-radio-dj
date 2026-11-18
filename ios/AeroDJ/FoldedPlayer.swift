@@ -355,7 +355,7 @@ struct FoldedPlayer: View {
     /// Mockup D (-Nova, Fry's #558 nit 4): no rail at this width, so the horizontal scrubber
     /// stays; D has no iPhone-landscape frame.
     private func centredColumnBody(in size: CGSize) -> some View {
-        let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
+        let reserve: Double = typeSize.isAccessibilitySize ? FoldedColumnLayout.centredColumnReserveBelowArtAccessibility : FoldedColumnLayout.centredColumnReserveBelowArt
         let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
                                            containerHeight: Double(size.height),
                                            reserveBelowArt: reserve,
@@ -763,7 +763,7 @@ struct FoldedPlayer: View {
     /// hides the rail, so there is no rail for the vertical bar; Atlas's #552 guarantee is that
     /// Play/Skip and the scrubber stay on screen here. Not one of D's frames.
     private func pinnedColumnBody(in size: CGSize) -> some View {
-        let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
+        let reserve: Double = typeSize.isAccessibilitySize ? FoldedColumnLayout.centredColumnReserveBelowArtAccessibility : FoldedColumnLayout.centredColumnReserveBelowArt
         let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
                                            containerHeight: Double(size.height),
                                            reserveBelowArt: reserve,
