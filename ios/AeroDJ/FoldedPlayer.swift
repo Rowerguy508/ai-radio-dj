@@ -218,7 +218,8 @@ struct FoldedPlayer: View {
                     } else {
                         // Build 51: the collapsed rail pins the transport; the scrolling centred
                         // column left Play and Skip below the 820 × 640 window.
-                        pinnedColumnBody(in: geo.size, foldAware: true)
+                        pinnedColumnBody(in: geo.size, foldAware: true,
+                                         placementHeight: (placementSize ?? geo.size).height)
                             .onAppear { moreOpen = false }
                     }
                 }
@@ -291,7 +292,7 @@ struct FoldedPlayer: View {
             if showsUnfoldedRail {
                 wideBody(in: size)
             } else {
-                pinnedColumnBody(in: size, foldAware: true)
+                pinnedColumnBody(in: size, foldAware: true, placementHeight: decision.height)
                     .onAppear { moreOpen = false }
             }
         }
@@ -768,7 +769,13 @@ struct FoldedPlayer: View {
     /// the owner's Nov 17 call, carries the closed screen's Rail D with the song position in the
     /// rail (`bookRailColumnBody`). Outside book pose, and on the sidebar-open detail (false),
     /// this is integration's pinned column unchanged.
-    private func pinnedColumnBody(in size: CGSize, foldAware: Bool = false) -> some View {
+    ///
+    /// `placementHeight` is the height the caller chose `.duoHorizontal` from (the route height,
+    /// `placementSize`). The reader under the navigation bar is shorter (820 x 576 in the 820 x 640
+    /// landscape window), and `FoldAwareness.bookColumn` re-checks `.duoHorizontal` on the height
+    /// it is given, so the drawn height made book pose fall back to the centred column. -Nova
+    private func pinnedColumnBody(in size: CGSize, foldAware: Bool = false,
+                                  placementHeight: CGFloat? = nil) -> some View {
         let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
         let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
                                            containerHeight: Double(size.height),
@@ -777,7 +784,7 @@ struct FoldedPlayer: View {
                                            artMax: Double(FoldedStyle.artMaxSide))
         let book: FoldAwareness.BookColumn? = foldAware
             ? FoldAwareness.bookColumn(containerWidth: Double(size.width),
-                                       containerHeight: Double(size.height),
+                                       containerHeight: Double(placementHeight ?? size.height),
                                        hinge: effectiveFoldHinge, divisions: effectiveFoldDivisions,
                                        column: m.column, artSide: m.artSide)
             : nil
