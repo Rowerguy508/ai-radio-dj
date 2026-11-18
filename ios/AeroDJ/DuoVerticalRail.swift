@@ -158,8 +158,9 @@ struct ClosedVerticalRail<More: View>: View {
 // MARK: - Glass (local to this rail)
 
 /// One glass column. Reduce Transparency and Increase Contrast use an opaque fill.
+/// Internal (not private) so the open-Duo Stations rail (`DuoStationsRail`) draws the same glass.
 /// Nothing here animates, so Reduce Motion has no transition to remove.
-private struct DuoRailGlass: ViewModifier {
+struct DuoRailGlass: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -202,7 +203,7 @@ private struct DuoRailGlass: ViewModifier {
 
 // MARK: - Controls
 
-private struct DuoRailIconButton: View {
+struct DuoRailIconButton: View {
     let systemImage: String
     let label: String
     let hint: String
@@ -227,7 +228,7 @@ private struct DuoRailIconButton: View {
 
 /// The same tap policy as `TransportRow`, sized to the rail's 44 pt plate so it fits
 /// in `duoBarWidth`. Identifiers stay `transport.playPause` / `transport.skip`.
-private struct DuoRailPlayPauseButton: View {
+struct DuoRailPlayPauseButton: View {
     let transport: TransportState
     let startTimedOut: Bool
     let pause: () -> Void
@@ -463,17 +464,21 @@ private struct RailHint: ViewModifier {
 }
 
 /// Pauses with the existing pause action after the chosen duration. Off does not pause.
-private struct DuoSleepTimerButton: View {
+/// Internal (not private) so the open-Duo Stations rail (`DuoStationsRail`) uses the same timer.
+/// The timer is per rail (`DuoRailSleepTimerState`). `isShown` false (the Stations rail while
+/// the player is pushed) turns it Off, so a rail that is not on screen never pauses playback.
+/// The player's rails leave it true.
+struct DuoSleepTimerButton: View {
     let pause: () -> Void
-    @State private var minutes: Int?
-    @State private var token = UUID()
+    var isShown: Bool = true
+    @State private var timer = DuoRailSleepTimerState()
 
     var body: some View {
         Menu {
-            Button("Off") { arm(nil) }
+            Button("Off") { timer.arm(nil) }
                 .accessibilityIdentifier("folded.sleepTimer.off")
             ForEach(DuoSleepTimer.minuteChoices, id: \.self) { choice in
-                Button("\(choice) minutes") { arm(choice) }
+                Button("\(choice) minutes") { timer.arm(choice) }
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("folded.sleepTimer.\(choice)")
             }
@@ -486,26 +491,24 @@ private struct DuoSleepTimerButton: View {
         }
         .accessibilityLabel("Sleep timer")
         .accessibilityHint("Pauses playback after the time you choose. Music continues until then.")
-        .accessibilityValue(DuoSleepTimer.accessibilityValue(minutes: minutes))
+        .accessibilityValue(DuoSleepTimer.accessibilityValue(minutes: timer.minutes))
         .accessibilityIdentifier("folded.sleepTimer")
-        .task(id: token) {
-            guard let minutes else { return }
-            let armed = token
-            do { try await Task.sleep(for: .seconds(Double(minutes * 60))) } catch { return }
-            guard !Task.isCancelled, token == armed else { return }
-            pause()
-            self.minutes = nil
+        .onChange(of: isShown, initial: true) { _, shown in
+            timer.setShown(shown)
         }
-    }
-
-    private func arm(_ minutes: Int?) {
-        self.minutes = minutes
-        token = UUID()
+        .task(id: timer.generation) {
+            guard let delay = timer.delaySeconds else { return }
+            let armed = timer.generation
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            guard !Task.isCancelled, timer.expire(generation: armed) else { return }
+            pause()
+        }
     }
 }
 
 /// Lit only from `DJStudioState.onAirLabel` (`.speaking`). Not a new on-air flag.
-private struct DuoLiveDot: View {
+/// Internal (not private) so the open-Duo Stations rail (`DuoStationsRail`) shows the same dot.
+struct DuoLiveDot: View {
     let state: DJStudioState
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
