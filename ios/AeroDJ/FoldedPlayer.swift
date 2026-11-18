@@ -554,7 +554,8 @@ struct FoldedPlayer: View {
                 DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
                     .padding(.top, gap)
                 if stationStops.count > 1, let onOpenStation {
-                    DuoStationDial(stops: stationStops, openedID: heading.opened.id, onOpen: onOpenStation)
+                    DuoStationDial(stops: stationStops, openedID: heading.opened.id,
+                                   playingID: StationTapRoute.dialPlayingID(snapshot), onOpen: onOpenStation)
                         .padding(.top, gap)
                 }
             }
@@ -602,7 +603,8 @@ struct FoldedPlayer: View {
                             .duoColumnWidth()
                         DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
                         if stationStops.count > 1, let onOpenStation {
-                            DuoStationDial(stops: stationStops, openedID: heading.opened.id, onOpen: onOpenStation)
+                            DuoStationDial(stops: stationStops, openedID: heading.opened.id,
+                                           playingID: StationTapRoute.dialPlayingID(snapshot), onOpen: onOpenStation)
                         }
                     }
                     .padding(.top, gap)
