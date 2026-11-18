@@ -128,6 +128,61 @@ public enum FoldedColumnLayout {
         return .centredColumn
     }
 
+    /// Narrowest container that gets the rail column (`usesRailColumn`): a 320 pt column is the
+    /// art, the title and the scrubber beside the 56 pt rail.
+    public static let railColumnMinWidth: Double = 320
+
+    /// Build 51 (#542 follow-up, -Atlas): the open Duo with the Stations sidebar open. The
+    /// detail column is regular width and as tall as the open window, but the sidebar leaves it
+    /// too narrow for the two halves (820 − sidebar ≈ 500 pt), so `controlPlacement` gave the
+    /// phone column or the centred column, with the old Playing-from bar, Queue and Tune, and no
+    /// rail. The owner's rule is that every wide-layout control lives in the rail, so this
+    /// container gets the centred column beside the rail. Needs the regular width class and a
+    /// `landscapeDuoMinHeight` tall container, so iPhone landscape (430 pt tall at most) and every
+    /// compact-class phone window keep their layouts. Never true where `controlPlacement` already
+    /// gives `.duoHorizontal`.
+    public static func usesRailColumn(hasRegularWidth: Bool, containerWidth: Double,
+                                      containerHeight: Double) -> Bool {
+        guard hasRegularWidth, containerWidth.isFinite, containerHeight.isFinite else { return false }
+        guard controlPlacement(containerWidth: containerWidth, containerHeight: containerHeight) != .duoHorizontal
+        else { return false }
+        return containerWidth >= railColumnMinWidth && containerHeight >= landscapeDuoMinHeight
+    }
+
+    /// What the rail column keeps under its art: title, DJ status, the pinned scrubber and the
+    /// station chip (`railColumnMetrics`). Larger at accessibility text sizes.
+    public static let railColumnReserveBelowArt: Double = 260
+    public static let railColumnReserveBelowArtAccessibility: Double = 500
+
+    /// The art side and column width for the rail column (the sidebar-open detail): the
+    /// container less `duoEdgeInset` at both edges, the rail (`barWidth`, 0 when the system
+    /// draws it) and one `duoEdgeInset` gutter. The art fits the column and the height less
+    /// `railColumnReserveBelowArt`, within `artMin`…`artMax`, never wider than the column.
+    public static func railColumnMetrics(containerWidth: Double, containerHeight: Double, barWidth: Double,
+                                         accessibilityTextSize: Bool,
+                                         artMin: Double, artMax: Double) -> (artSide: Double, column: Double) {
+        let column = max(0, containerWidth - duoEdgeInset * 3 - barWidth)
+        let reserve = accessibilityTextSize ? railColumnReserveBelowArtAccessibility : railColumnReserveBelowArt
+        let art = max(artMin, min(column, containerHeight - reserve, artMax))
+        return (min(art, column), column)
+    }
+
+    /// The height the layout gate should read: the reader's height plus its vertical safe-area
+    /// insets (status bar, navigation bar, home indicator). Build 51: the open Duo's 820 × 640
+    /// landscape window measured about 566 pt under its navigation bar, below
+    /// `landscapeDuoMinHeight`, so it got the centred column (transport off the bottom) instead
+    /// of the rail. The navigation bar is transparent over the player, so the window is the container.
+    ///
+    /// Only a reader that starts on screen (global origin not left of or above the window) counts
+    /// its insets. A fixed-size container larger than its window (the Studio resize probe's
+    /// 780 pt column on a 390 pt iPhone) is centred off screen, so its insets are the parts hidden
+    /// under the status and navigation bars, not room it can use: it keeps the reader height.
+    public static func routingHeight(readerHeight: Double, safeAreaTop: Double, safeAreaBottom: Double,
+                                     readerMinX: Double = 0, readerMinY: Double = 0) -> Double {
+        guard readerMinX >= -1, readerMinY >= -1 else { return readerHeight }
+        return readerHeight + max(0, safeAreaTop) + max(0, safeAreaBottom)
+    }
+
     /// Horizontal Duo metrics. Phone widths do not call this.
     ///
     /// At 640 × 820 the content column is 234 pt: `640 − edge − bar − (mid + gutter / 2)`,

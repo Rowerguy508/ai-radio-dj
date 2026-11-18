@@ -515,7 +515,8 @@ struct TentPosePlayer: View {
     @ViewBuilder
     private var dial: some View {
         if stationStops.count > 1, let onOpenStation {
-            TentStationDial(stops: stationStops, openedID: heading.opened.id, onOpen: onOpenStation)
+            TentStationDial(stops: stationStops, openedID: heading.opened.id,
+                            playingID: StationTapRoute.dialPlayingID(snapshot), onOpen: onOpenStation)
         }
     }
 
@@ -667,6 +668,8 @@ private struct TentTransport: View {
 private struct TentStationDial: View {
     let stops: [DuoStationSwitch.Stop]
     let openedID: String
+    /// #454: the station actually playing (`StationTapRoute.dialPlayingID`), "" when none.
+    let playingID: String
     let onOpen: (String) async -> Void
 
     @State private var flight = DuoStationSwitch.Flight(highlightID: "")
@@ -716,7 +719,7 @@ private struct TentStationDial: View {
 
     private func open(_ id: String) {
         highlighted = id
-        guard let token = flight.receive(.tap(id), playingID: openedID) else { return }
+        guard let token = flight.receive(.tap(id), playingID: playingID) else { return }
         openTask?.cancel()
         openTask = Task {
             guard flight.accepts(token), !Task.isCancelled else { return }
