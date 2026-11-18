@@ -936,6 +936,13 @@ jobs:
           ls "$SHOTS" | grep -q '^duo-regular-rail_' || { echo "missing duo-regular-rail screenshot"; exit 1; }
           # #465 item 3: the tent pose, required like duo-wide-ready (TentPoseTests). -Nova
           ls "$SHOTS" | grep -q '^duo-tent_' || { echo "missing duo-tent screenshot"; exit 1; }
+          # Mockup D: the full trailing rail with the vertical song-position bar, one shot per
+          # frame of the mock (RailDLayoutTests), required as in #551's pattern. -Nova
+          for shot in rail-d-iphone rail-d-duo-closed rail-d-duo-open-portrait rail-d-duo-open-portrait-sidebar \
+                      rail-d-duo-open-landscape-spread rail-d-duo-open-landscape-centred \
+                      rail-d-duo-open-landscape-sidebar; do
+            ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
+          done
           test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
       - name: Upload screenshots
         if: always()

@@ -237,7 +237,8 @@ final class FoldedOuterLayoutTests: XCTestCase {
         XCTAssertGreaterThan(short, shortNoRail)
     }
 
-    /// Transport is on the closed rail now; the bottom controls keep only the scrubber.
+    /// Transport is on the closed rail now. Mockup D (-Nova): the song position moved to the
+    /// rail too (a vertical bar), and so did ⋯ (the header has none now).
     func testClosedReskinTransportIsOnTheRail() throws {
         let iosRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -246,7 +247,7 @@ final class FoldedOuterLayoutTests: XCTestCase {
         let b = try XCTUnwrap(player.range(of: "private extension View", range: a.upperBound..<player.endIndex))
         let controls = player[a.lowerBound..<b.lowerBound]
         XCTAssertFalse(controls.contains("FoldedOuterTransport"), "play/skip moved to the rail")
-        XCTAssertTrue(controls.contains("PlaybackScrubber("), "the scrubber stays in the bottom controls")
+        XCTAssertFalse(controls.contains("PlaybackScrubber("), "mockup D: no horizontal scrubber when closed")
         XCTAssertTrue(player.contains("ClosedVerticalRail("))
         let rail = try String(contentsOf: iosRoot.appendingPathComponent("AeroDJ/DuoVerticalRail.swift"), encoding: .utf8)
         let r = try XCTUnwrap(rail.range(of: "struct ClosedVerticalRail"))
@@ -254,6 +255,14 @@ final class FoldedOuterLayoutTests: XCTestCase {
         let closed = rail[r.lowerBound..<end.lowerBound]
         XCTAssertTrue(closed.contains("DuoRailPlayPauseButton("), "the #479 play/pause (transport.playPause)")
         XCTAssertTrue(closed.contains("identifier: \"transport.skip\""))
-        XCTAssertFalse(closed.contains("folded.more"), "one ⋯ on the closed screen: the header's")
+        // The rail draws the ⋯ it is handed (the closed FoldedMoreMenu, `folded.more`); it does
+        // not build a second one of its own.
+        XCTAssertFalse(closed.contains("folded.more"), "one ⋯ on the closed screen: the one passed in")
+        XCTAssertTrue(closed.contains("more()"))
+        XCTAssertTrue(closed.contains("RailScrubber("), "mockup D: the vertical song-position bar")
+        XCTAssertTrue(closed.contains("\"queue.affordance\""), "mockup D: Queue is a rail button")
+        let h = try XCTUnwrap(player.range(of: "private struct FoldedOuterHeader"))
+        let hEnd = try XCTUnwrap(player.range(of: "private struct FoldedOuterTitleRow", range: h.upperBound..<player.endIndex))
+        XCTAssertFalse(player[h.lowerBound..<hEnd.lowerBound].contains("FoldedMoreMenu("), "⋯ moved to the rail")
     }
 }
