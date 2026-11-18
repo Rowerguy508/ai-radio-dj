@@ -15,6 +15,10 @@ final class StationsLayoutTests: XCTestCase {
     /// `RailDCaptureContainer.foldBand`, in container points.
     private static let foldMinX: CGFloat = 396
     private static let foldMaxX: CGFloat = 424
+    /// `RailDLayout.railWidth` and `RailDLayout.trailingInset` (spec D: 56 pt glass, 8 pt in),
+    /// as in `RailDLayoutTests.railGlassWidth` / `railEdgeInset`.
+    private static let railGlassWidth: CGFloat = 56
+    private static let railEdgeInset: CGFloat = 8
 
     override func setUp() {
         continueAfterFailure = false
@@ -228,8 +232,16 @@ final class StationsLayoutTests: XCTestCase {
 
         let rail = any["stations.rail"]
         XCTAssertTrue(rail.exists, "Rail D missing")
-        XCTAssertEqual(rail.frame.width, 56, accuracy: 1, "rail \(rail.frame)")
-        XCTAssertEqual(rail.frame.maxX, box.maxX - 8, accuracy: 1.5, "8 pt from the trailing edge")
+        // `stations.rail` is `.accessibilityElement(children: .contain)`, so its frame is the
+        // union of its children (the 52 pt song bar, the 44 pt plates), not the 56 pt glass the
+        // view draws (`.frame(width: RailDLayout.railWidth)`): 2 pt in on each side. Read it as
+        // RailDLayoutTests.assertRailEdgeInset does: no wider than the glass, centred 8 pt + 28 pt
+        // in from the trailing edge. -Nova
+        let railFrame = rail.frame
+        XCTAssertLessThanOrEqual(railFrame.width, Self.railGlassWidth + 1, "rail \(railFrame) is wider than the glass")
+        XCTAssertGreaterThanOrEqual(railFrame.width, 44, "rail \(railFrame) holds 44 pt plates")
+        XCTAssertEqual(railFrame.midX, box.maxX - Self.railEdgeInset - Self.railGlassWidth / 2, accuracy: 1.5,
+                       "the 56 pt rail sits 8 pt in from the trailing edge: rail \(railFrame), box \(box)")
 
         let thumb = app.buttons["stations.rail.nowPlaying"]
         XCTAssertTrue(thumb.exists, "thumbnail missing")
