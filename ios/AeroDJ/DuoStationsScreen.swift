@@ -101,8 +101,8 @@ struct DuoStationsHost: View {
     let onOpenSettings: (() -> Void)?
     let onAddStation: (() -> Void)?
     let onSharedInbox: (() -> Void)?
-    /// False while the player is pushed over Stations: the host stays (an armed sleep timer keeps
-    /// running) but drops the song bar's clock, so nothing ticks unseen.
+    /// False while the player is pushed over Stations: the host stays, drops the song bar's clock
+    /// so nothing ticks unseen, and turns the rail's sleep timer Off (it never pauses unseen).
     var isShown: Bool = true
 
     @AppStorage(StationsLayoutStyle.defaultsKey) private var storedStyle = StationsLayoutStyle.defaultStyle.rawValue
@@ -130,6 +130,7 @@ struct DuoStationsHost: View {
                           actions: source.actions,
                           dj: DJStatusPresentation(state: source.studio?.djState ?? source.fixtureDJ),
                           timeSource: isShown ? source.timeSource : nil,
+                          isShown: isShown,
                           daypart: source.daypart,
                           onSelect: onSelect, onOpenPlayer: onOpenPlayer, onOpenSettings: onOpenSettings,
                           onAddStation: onAddStation, onSharedInbox: onSharedInbox)
@@ -152,6 +153,9 @@ struct DuoStationsScreen: View {
     let actions: DuoStationsRailActions?
     var dj = DJStatusPresentation(state: .idle)
     var timeSource: PlaybackTimeSource? = nil
+    /// False while the player is pushed over Stations: the rail's sleep timer turns Off, so a
+    /// hidden Stations timer never pauses playback under the player's rail (which shows Off).
+    var isShown: Bool = true
     let daypart: (Station) -> DuoStationsLayout.Daypart?
     let onSelect: (Station.ID) -> Void
     let onOpenPlayer: (Station.ID) -> Void
@@ -186,7 +190,7 @@ struct DuoStationsScreen: View {
                 content(geometry, pageHeight: Double(pageHeight))
                     .padding(.top, inset)
                 DuoStationsRail(nowPlaying: nowPlaying, playing: playingStation, actions: actions,
-                                dj: dj, scrubber: railScrubber, moreOpen: $moreOpen,
+                                dj: dj, scrubber: railScrubber, isShown: isShown, moreOpen: $moreOpen,
                                 onOpenPlayer: onOpenPlayer, onOpenWorkspace: openWorkspace)
                     .frame(width: CGFloat(RailDLayout.railWidth), height: pageHeight)
                     .padding(.leading, CGFloat(geometry.railMinX))
@@ -871,6 +875,8 @@ struct DuoStationsRail: View {
     let actions: DuoStationsRailActions?
     let dj: DJStatusPresentation
     let scrubber: RailScrubberInput?
+    /// False while the player is pushed over Stations (see `DuoSleepTimerButton`).
+    var isShown: Bool = true
     @Binding var moreOpen: Bool
     let onOpenPlayer: (Station.ID) -> Void
     let onOpenWorkspace: (WorkspaceSegment) -> Void
@@ -899,7 +905,7 @@ struct DuoStationsRail: View {
                               hint: "Opens the queue",
                               identifier: "queue.affordance", action: { onOpenWorkspace(.queue) })
                 .disabled(!canOpenPlayer)
-            DuoSleepTimerButton(pause: actions?.pause ?? {})
+            DuoSleepTimerButton(pause: actions?.pause ?? {}, isShown: isShown)
             if slots.contains(.scrubber), let scrubber {
                 RailScrubber(input: scrubber)
             } else {

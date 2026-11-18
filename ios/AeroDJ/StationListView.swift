@@ -284,8 +284,8 @@ struct StationSplitRoot<Detail: View>: View {
 
     @ViewBuilder
     private var duoStationsOverlay: some View {
-        // Kept (hidden) while the player is pushed, so a sleep timer armed on the Stations rail
-        // still fires; hidden, it draws nothing, takes no touches and leaves VoiceOver.
+        // Kept (hidden) while the player is pushed; hidden, it draws nothing, takes no touches,
+        // leaves VoiceOver and turns its rail's sleep timer Off, so it never pauses playback.
         if usesDuoStations, let duoStations {
             DuoStationsHost(source: duoStations, stations: stations,
                             // A tile or row: the list's own setter, so it opens and starts (#454).

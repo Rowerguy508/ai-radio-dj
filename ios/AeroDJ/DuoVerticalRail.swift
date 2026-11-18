@@ -465,17 +465,20 @@ private struct RailHint: ViewModifier {
 
 /// Pauses with the existing pause action after the chosen duration. Off does not pause.
 /// Internal (not private) so the open-Duo Stations rail (`DuoStationsRail`) uses the same timer.
+/// The timer is per rail (`DuoRailSleepTimerState`). `isShown` false (the Stations rail while
+/// the player is pushed) turns it Off, so a rail that is not on screen never pauses playback.
+/// The player's rails leave it true.
 struct DuoSleepTimerButton: View {
     let pause: () -> Void
-    @State private var minutes: Int?
-    @State private var token = UUID()
+    var isShown: Bool = true
+    @State private var timer = DuoRailSleepTimerState()
 
     var body: some View {
         Menu {
-            Button("Off") { arm(nil) }
+            Button("Off") { timer.arm(nil) }
                 .accessibilityIdentifier("folded.sleepTimer.off")
             ForEach(DuoSleepTimer.minuteChoices, id: \.self) { choice in
-                Button("\(choice) minutes") { arm(choice) }
+                Button("\(choice) minutes") { timer.arm(choice) }
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("folded.sleepTimer.\(choice)")
             }
@@ -488,21 +491,18 @@ struct DuoSleepTimerButton: View {
         }
         .accessibilityLabel("Sleep timer")
         .accessibilityHint("Pauses playback after the time you choose. Music continues until then.")
-        .accessibilityValue(DuoSleepTimer.accessibilityValue(minutes: minutes))
+        .accessibilityValue(DuoSleepTimer.accessibilityValue(minutes: timer.minutes))
         .accessibilityIdentifier("folded.sleepTimer")
-        .task(id: token) {
-            guard let minutes else { return }
-            let armed = token
-            do { try await Task.sleep(for: .seconds(Double(minutes * 60))) } catch { return }
-            guard !Task.isCancelled, token == armed else { return }
-            pause()
-            self.minutes = nil
+        .onChange(of: isShown, initial: true) { _, shown in
+            timer.setShown(shown)
         }
-    }
-
-    private func arm(_ minutes: Int?) {
-        self.minutes = minutes
-        token = UUID()
+        .task(id: timer.generation) {
+            guard let delay = timer.delaySeconds else { return }
+            let armed = timer.generation
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            guard !Task.isCancelled, timer.expire(generation: armed) else { return }
+            pause()
+        }
     }
 }
 
