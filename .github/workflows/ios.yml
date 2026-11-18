@@ -68,6 +68,12 @@ jobs:
         with:
           # Self-hosted Mac persists between jobs: do not leave the job token in .git/config (#517 N1, -Sentinel).
           persist-credentials: false
+      - name: Self-hosted prep fails closed under 8 GiB
+        run: ios/scripts/ci-selfhosted-prep-test.sh
+      - name: Self-hosted disk check
+        if: runner.environment == 'self-hosted'
+        timeout-minutes: 3
+        run: ios/scripts/ci-selfhosted-prep.sh --check-disk
       - name: TestFlight voice gate refuses a default device-speech upload
         run: bash ios/scripts/check-testflight-voice-dispatch-test.sh
       - name: Check Xcode 26.6 and Swift 6.3
@@ -308,6 +314,10 @@ jobs:
         with:
           # Self-hosted Mac persists between jobs: do not leave the job token in .git/config (#517 N1, -Sentinel).
           persist-credentials: false
+      - name: Self-hosted disk check
+        if: runner.environment == 'self-hosted'
+        timeout-minutes: 3
+        run: ios/scripts/ci-selfhosted-prep.sh --check-disk
       - name: Check Xcode 26.6 and Swift 6.3
         if: runner.environment == 'self-hosted'
         run: |
@@ -608,7 +618,7 @@ jobs:
               exit 1
               ;;
           esac
-      - name: Self-hosted prep (volume check, DerivedData on the internal disk)
+      - name: Self-hosted prep (volume and disk checks, DerivedData on the internal disk)
         # See the script: simulator services stall or are denied on the removable work volume. -Orion
         if: runner.environment == 'self-hosted'
         timeout-minutes: 3
@@ -744,7 +754,7 @@ jobs:
               exit 1
               ;;
           esac
-      - name: Self-hosted prep (volume check, DerivedData on the internal disk)
+      - name: Self-hosted prep (volume and disk checks, DerivedData on the internal disk)
         # See the script: simulator services stall or are denied on the removable work volume. -Orion
         if: runner.environment == 'self-hosted'
         timeout-minutes: 3
@@ -834,7 +844,11 @@ jobs:
           REC=$!
           sleep 2
           # The recorder must still be running before the walkthrough starts.
-          kill -0 "$REC" 2>/dev/null || { echo "::error::simctl recordVideo exited before the walkthrough started (see its error above)"; exit 1; }
+          # A recorder that dies here is the Mac (disk, volume, simctl), not a Studio assertion.
+          kill -0 "$REC" 2>/dev/null || {
+            echo "::error::RUNNER INFRA: simctl recordVideo exited before writing a walkthrough video (see its error above). This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
+            exit 1
+          }
           ios/scripts/ui-launch-timeout-retry.sh --udid "$PHONE_UDID" -- \
             env TEST_RUNNER_STUDIO_WALKTHROUGH=1 xcodebuild test-without-building \
             -project ios/AeroDJ.xcodeproj \
@@ -844,7 +858,16 @@ jobs:
             -only-testing:AeroDJUITests/StudioScreenTests/testRecordedWalkthrough \
             CODE_SIGNING_ALLOWED=NO || STATUS=$?
           # The recorder may already have exited; that must not fail the step under bash -e.
-          # A missing or empty video still fails below and in "Require screenshots".
+          # A failed walkthrough is a Studio failure even when the video is also empty.
+          # RUNNER INFRA only when that test passed and the capture is missing or empty.
+          capture_or_test_failure() {
+            if [ "${STATUS:-0}" -ne 0 ]; then
+              echo "::error::walkthrough test failed (exit ${STATUS})"
+              exit "${STATUS}"
+            fi
+            echo "::error::RUNNER INFRA: $* This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
+            exit 1
+          }
           kill -INT "$REC" 2>/dev/null || true
           wait "$REC" || true
           if [ "$OUT" != "$SHOTS/walkthrough-closed.mp4" ]; then
@@ -869,17 +892,13 @@ jobs:
               sleep 3
             done
             if [ "$stable" -ne 1 ]; then
-              echo "::error::Walkthrough recording at $OUT never became a stable non-empty file within 30s (source size: ${size} bytes)"
-              exit 1
+              capture_or_test_failure "walkthrough-closed.mp4 is missing or empty (source size: ${size} bytes)."
             fi
             echo "Walkthrough recording stable at ${size} bytes: $OUT"
             ls -la "$OUT"
-            cp "$OUT" "$SHOTS/walkthrough-closed.mp4" || {
-              echo "::error::Could not copy the walkthrough video into \$SHOTS (walkthrough test exit status: ${STATUS:-0})"
-              exit 1
-            }
+            cp "$OUT" "$SHOTS/walkthrough-closed.mp4" || capture_or_test_failure "could not copy walkthrough-closed.mp4 into $SHOTS (source size: ${size} bytes)."
           fi
-          ls -la "$SHOTS"/*.mp4
+          ls -la "$SHOTS"/*.mp4 || capture_or_test_failure "walkthrough-closed.mp4 is missing or empty (source size: 0 bytes)."
           exit ${STATUS:-0}
       - name: UI tests on iPad (open, two-zone Studio)
         timeout-minutes: ${{ runner.environment == 'self-hosted' && 25 || 360 }}
@@ -943,7 +962,11 @@ jobs:
                       rail-d-duo-open-landscape-sidebar; do
             ls "$SHOTS" | grep -q "^${shot}_" || { echo "missing $shot screenshot"; exit 1; }
           done
-          test -s "$SHOTS/walkthrough-closed.mp4" || { echo "missing walkthrough recording"; exit 1; }
+          if [ ! -s "$SHOTS/walkthrough-closed.mp4" ]; then
+            size=$(stat -f%z "$SHOTS/walkthrough-closed.mp4" 2>/dev/null || echo 0)
+            echo "::error::RUNNER INFRA: walkthrough-closed.mp4 is missing or empty (source size: ${size} bytes). This is not a code failure. Ask the owner (via Orion) to free disk on the mini, or re-run on a clean runner; do not change product code."
+            exit 1
+          fi
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
