@@ -356,7 +356,7 @@ struct FoldedPlayer: View {
     /// Mockup D (-Nova, Fry's #558 nit 4): no rail at this width, so the horizontal scrubber
     /// stays; D has no iPhone-landscape frame.
     private func centredColumnBody(in size: CGSize) -> some View {
-        let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
+        let reserve: Double = typeSize.isAccessibilitySize ? FoldedColumnLayout.centredColumnReserveBelowArtAccessibility : FoldedColumnLayout.centredColumnReserveBelowArt
         let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
                                            containerHeight: Double(size.height),
                                            reserveBelowArt: reserve,
@@ -776,7 +776,7 @@ struct FoldedPlayer: View {
     /// it is given, so the drawn height made book pose fall back to the centred column. -Nova
     private func pinnedColumnBody(in size: CGSize, foldAware: Bool = false,
                                   placementHeight: CGFloat? = nil) -> some View {
-        let reserve: Double = typeSize.isAccessibilitySize ? 620 : 380
+        let reserve: Double = typeSize.isAccessibilitySize ? FoldedColumnLayout.centredColumnReserveBelowArtAccessibility : FoldedColumnLayout.centredColumnReserveBelowArt
         let m = FoldedColumnLayout.metrics(containerWidth: Double(size.width),
                                            containerHeight: Double(size.height),
                                            reserveBelowArt: reserve,
