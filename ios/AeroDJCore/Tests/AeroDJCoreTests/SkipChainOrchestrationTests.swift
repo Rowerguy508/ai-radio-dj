@@ -610,6 +610,89 @@ final class SkipChainOrchestrationTests: XCTestCase {
         XCTAssertEqual(player.position, 18)
     }
 
+    /// #453 issue order, with the checkpoints from the report. The interruption has already
+    /// bumped `generation` to 1 and the chain is `ending` (`isInFlight` is false). Next stores
+    /// `.beginWhenIdle`. Explicit Play of B at 18 s wins: the stored Next never runs, and B
+    /// keeps playing after the owed resume returns.
+    func testIssueOrderingNextThenPlayDuringOwedResumeStaysPlaying() async {
+        let player = Driver()
+        let running = await player.skipIntoSuspendedOwedResume()
+        XCTAssertFalse(player.coordinator.isInFlight)
+        XCTAssertEqual(player.coordinator.generation, 1)
+        let stored = await player.nextIntake()
+        XCTAssertEqual(stored, .beginWhenIdle)
+        player.landPlaying(at: 18)
+        player.userResume()
+        XCTAssertEqual(player.index, 1)
+        XCTAssertEqual(player.position, 18)
+        XCTAssertEqual(player.engine.snapshot.transport, .playing)
+        XCTAssertGreaterThan(player.coordinator.generation, 1, "Play cancels the stored Next")
+        player.releaseOwedResume()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.owedResumes, 1, "the owed resume still runs")
+        XCTAssertEqual(player.plays, [.advance], "the stored Next does not advance")
+        XCTAssertEqual(player.index, 1)
+        XCTAssertEqual(player.position, 18)
+        XCTAssertTrue(player.isAudible)
+        XCTAssertEqual(player.audibleID, "t1")
+        XCTAssertEqual(player.engine.snapshot.nowPlaying?.id, "t1")
+        XCTAssertEqual(player.engine.snapshot.transport, .playing)
+        XCTAssertTrue(player.surfaces.isEmpty)
+    }
+
+    /// Play arrives in the owed-resume window before any Next. Nothing is stored, and releasing
+    /// the resume does not advance. Explicit and remote Play both stay on B at 18 s, playing.
+    func testPlayBeforeAnyNextDuringTheOwedResumeKeepsTheSongPlaying() async {
+        for remote in [false, true] {
+            let player = Driver()
+            let running = await player.skipIntoSuspendedOwedResume()
+            XCTAssertEqual(player.coordinator.generation, 1, "remote=\(remote)")
+            player.landPlaying(at: 18)
+            if remote {
+                await player.remoteResume()
+            } else {
+                player.userResume()
+            }
+            XCTAssertEqual(player.index, 1, "remote=\(remote)")
+            XCTAssertEqual(player.position, 18, "remote=\(remote)")
+            XCTAssertEqual(player.engine.snapshot.transport, .playing, "remote=\(remote)")
+            player.releaseOwedResume()
+            await running.value
+            await player.untilIdle()
+            XCTAssertEqual(player.owedResumes, 1, "remote=\(remote)")
+            XCTAssertEqual(player.plays, [.advance], "remote=\(remote): no deferred Next")
+            XCTAssertEqual(player.index, 1, "remote=\(remote)")
+            XCTAssertEqual(player.position, 18, "remote=\(remote)")
+            XCTAssertTrue(player.isAudible, "remote=\(remote)")
+            XCTAssertEqual(player.engine.snapshot.transport, .playing, "remote=\(remote)")
+            XCTAssertEqual(player.engine.snapshot.nowPlaying?.id, "t1", "remote=\(remote)")
+        }
+    }
+
+    /// A Next that arrives after that Play is the later intent. It runs once when the owed
+    /// resume returns. Play came first, so there is no earlier stored Next to cancel.
+    func testNextAfterPlayDuringTheOwedResumeRunsOnceWhenPlayCameFirst() async {
+        let player = Driver()
+        let running = await player.skipIntoSuspendedOwedResume()
+        player.landPlaying(at: 18)
+        player.userResume()
+        XCTAssertEqual(player.index, 1)
+        XCTAssertEqual(player.position, 18)
+        let later = await player.nextIntake()
+        XCTAssertEqual(later, .beginWhenIdle, "the Next after Play is a new command")
+        player.releaseOwedResume()
+        await running.value
+        await player.untilIdle()
+        XCTAssertEqual(player.owedResumes, 1)
+        XCTAssertEqual(player.plays, [.advance, .advance], "the later Next runs once")
+        XCTAssertEqual(player.index, 2)
+        XCTAssertTrue(player.isAudible)
+        XCTAssertEqual(player.audibleID, "t2")
+        XCTAssertEqual(player.engine.snapshot.nowPlaying?.id, "t2")
+        XCTAssertTrue(player.surfaces.isEmpty)
+    }
+
     /// Control: a Next pressed after the newer Play is the user's latest intent. It runs once.
     func testNextAfterPlayDuringTheOwedResumeStillRunsOnce() async {
         let player = Driver()
