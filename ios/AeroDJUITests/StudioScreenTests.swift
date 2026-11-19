@@ -978,6 +978,8 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(expand.waitForExistence(timeout: 5), "no way back to the rail\n\(app.debugDescription)")
         guard let expandFrame = settledFrame(of: expand, "Show rail") else { return }
         XCTAssertTrue(expand.isHittable)
+        XCTAssertGreaterThanOrEqual(expandFrame.width, 44, "Show rail is under 44 pt wide: \(expandFrame)")
+        XCTAssertGreaterThanOrEqual(expandFrame.height, 44, "Show rail is under 44 pt tall: \(expandFrame)")
         XCTAssertLessThan(expandFrame.midY, box.minY + box.height / 3, "Show rail is not in the top header row: \(expandFrame)")
         XCTAssertGreaterThan(expandFrame.midX, box.midX, "Show rail is not on the trailing side: \(expandFrame)")
         save(app, "open-rail-collapsed-landscape")

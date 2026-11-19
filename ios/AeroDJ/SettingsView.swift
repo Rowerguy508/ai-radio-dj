@@ -2,7 +2,8 @@ import AeroDJCore
 import SwiftUI
 
 /// App settings sheet (-Fry), opened from the gear on the Stations list. Every build.
-/// DJ talk-over & fades (`TalkoverSettingsRow`), then station ratings' "Clear all ratings"
+/// DJ talk-over & fades (`TalkoverSettingsRow`), then "Stations layout" (the open Duo's three
+/// Stations designs, -Nova), then station ratings' "Clear all ratings"
 /// (-Nova, PR B; only when the app root set `\.songRating`), then "Delete DJ clips, ratings and
 /// location" (Sentinel's #410 n4, -Fry; the app's one purge-all, `PersonalDataReset`).
 struct SettingsView: View {
@@ -18,6 +19,7 @@ struct SettingsView: View {
             NavigationStack {
                 Form {
                     TalkoverSettingsRow(isTestStation: isTestStation)
+                    StationsLayoutSettingsSection()
                     if let songRating { StationRatingsSettingsSection(controller: songRating) }
                     if let personalDataReset { PersonalDataResetSection(purger: personalDataReset) }
                     #if DEBUG
@@ -47,6 +49,54 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// "Stations layout" (owner, 2026-11-17): which of the three open-Duo Stations designs to show.
+/// A plain `UserDefaults.standard` string under `StationsLayoutStyle.defaultsKey`, the same
+/// pattern as the talk-over toggle; never the App Group. Unset is A, the tile grid. iPhone and
+/// the closed Duo keep the station list whatever is picked (the footer says so).
+struct StationsLayoutSettingsSection: View {
+    @AppStorage private var raw: String
+
+    init(store: UserDefaults = .standard) {
+        _raw = AppStorage(wrappedValue: StationsLayoutStyle.defaultStyle.rawValue,
+                          StationsLayoutStyle.defaultsKey, store: store)
+    }
+
+    private var selected: StationsLayoutStyle { StationsLayoutStyle.resolve(raw: raw) }
+
+    var body: some View {
+        Section {
+            ForEach(StationsLayoutStyle.allCases) { style in
+                Button {
+                    raw = style.rawValue
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(style.title).foregroundStyle(.primary)
+                            Text(style.summary).font(.footnote).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "checkmark")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.tint)
+                            .opacity(style == selected ? 1 : 0)
+                            .accessibilityHidden(true)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(style == selected ? [.isButton, .isSelected] : .isButton)
+                .accessibilityIdentifier("settings.stationsLayout.\(style.rawValue)")
+            }
+        } header: {
+            Text("Stations layout")
+        } footer: {
+            Text("How Stations looks on the open Duo. iPhone and the closed Duo keep the station list.")
         }
     }
 }
