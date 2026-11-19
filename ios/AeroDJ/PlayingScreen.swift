@@ -38,6 +38,8 @@ struct PlayingScreen: View {
     #if DEBUG
     @SceneStorage("aerodj.continuity.station") private var continuityStation = ""
     @SceneStorage("aerodj.continuity.playback") private var continuityPlayback = ""
+    /// The scroll guard's phase, for the continuity test's adoption wait.
+    @SceneStorage("aerodj.continuity.anchorPhase") private var continuityAnchorPhase = ""
     #endif
     @State private var showWorkspace = false
     /// Collapse on the unfolded rail shows the centred column. The container size stays,
@@ -164,6 +166,9 @@ struct PlayingScreen: View {
             }
             .onChange(of: playbackToken, initial: true) { _, token in
                 continuityPlayback = token
+            }
+            .onChange(of: scrollAnchorMachine.phaseName, initial: true) { _, name in
+                continuityAnchorPhase = name
             }
             #endif
         }

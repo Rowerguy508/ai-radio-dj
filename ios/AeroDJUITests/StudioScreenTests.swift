@@ -665,6 +665,62 @@ final class StudioScreenTests: XCTestCase {
         save(app, "duo-continuity-unfolded")
     }
 
+    /// Atlas on 42a53bc6: once the rebuilt scroller holds the stored id, a real swipe must
+    /// release the guard and be stored, whether or not a drag gesture fires. iOS 18+ reads
+    /// `onScrollPhaseChange`, iOS 17 the drag, and a move to another id releases on any OS.
+    /// Unfold with row 4 stored, wait until the guard holds it (adopted, or armed if the
+    /// scroller has not echoed it yet), swipe the rail's scroller, and the stored-anchor
+    /// readout must leave row 4. Predicate waits only, no delay.
+    @MainActor
+    func testASwipeAfterUnfoldingReleasesTheHeldScrollAnchor() throws {
+        try XCTSkipUnless(isOpenLayout, "The unfolded 640 × 820 pt container needs an iPad-size simulator window")
+        let app = launch(scenario: "duoContinuity")
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        let unfold = app.buttons["continuity.unfold"]
+        let scrollTo = app.buttons["continuity.scrollToRow"]
+        XCTAssertTrue(unfold.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(scrollTo.waitForExistence(timeout: 5))
+        scrollTo.tap()
+        let anchor = any["continuity.anchor"]
+        let phase = any["continuity.anchorPhase"]
+        XCTAssertTrue(phase.waitForExistence(timeout: 5), "anchor phase readout missing\n\(app.debugDescription)")
+        let stored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "continuity.row.4"),
+                                               object: anchor)
+        XCTAssertEqual(XCTWaiter().wait(for: [stored], timeout: 5), .completed,
+                       "row 4 was not stored: \(anchor.label)")
+
+        unfold.tap()
+        XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10),
+                      "the unfolded Duo is the rail layout\n\(app.debugDescription)")
+        let scroller = any["continuity.scroller"]
+        XCTAssertTrue(scroller.waitForExistence(timeout: 5),
+                      "the rail layout has no continuity scroller\n\(app.debugDescription)")
+        // The fold arms the guard for the new scroller; adoption is the scroller echoing row 4.
+        let holding = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label IN %@", ["armed", "adopted"]),
+                                                object: phase)
+        XCTAssertEqual(XCTWaiter().wait(for: [holding], timeout: 5), .completed,
+                       "the guard is not holding row 4 after the fold: \(phase.label)")
+        let adopted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "adopted"), object: phase)
+        let adoptedResult = XCTWaiter().wait(for: [adopted], timeout: 5)
+        XCTContext.runActivity(named: "guard phase before the swipe: \(phase.label) (\(adoptedResult.rawValue))") { _ in }
+        XCTAssertEqual(anchor.label, "continuity.row.4", "the fold lost the stored anchor")
+
+        // Row 4 sits near the end of the rail column, so swipe toward the top: that
+        // always moves the top id, whatever the clamp at the bottom.
+        scroller.swipeDown()
+        let moved = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label != %@ AND label != %@", "continuity.row.4", "none"),
+            object: anchor)
+        XCTAssertEqual(XCTWaiter().wait(for: [moved], timeout: 5), .completed,
+                       "a swipe after the fold was dropped; anchor \(anchor.label), phase \(phase.label)")
+        let released = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "released"),
+                                                 object: phase)
+        XCTAssertEqual(XCTWaiter().wait(for: [released], timeout: 5), .completed,
+                       "the guard did not release after the swipe: \(phase.label)")
+        assertCallsStayZero(app, "scrolling the player must not search or play")
+    }
+
     @MainActor
     private func readout(_ app: XCUIApplication, _ identifier: String) -> String {
         let element = app.descendants(matching: .any)[identifier]

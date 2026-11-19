@@ -768,6 +768,7 @@ private struct DuoContinuityCapture: View {
     @SceneStorage("aerodj.player.scrollAnchor") private var storedScrollAnchor = ""
     @SceneStorage("aerodj.continuity.station") private var continuityStation = ""
     @SceneStorage("aerodj.continuity.playback") private var continuityPlayback = ""
+    @SceneStorage("aerodj.continuity.anchorPhase") private var continuityAnchorPhase = ""
     @ObservedObject private var calls = PlaybackCallLog.shared
 
     private var containerSize: CGSize {
@@ -835,7 +836,10 @@ private struct DuoContinuityCapture: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("continuity.unfold")
             }
+            // The phase readout overlays the anchor readout, so the chrome's layout and
+            // the duo-continuity screenshots do not move.
             readout("continuity.anchor", storedScrollAnchor.isEmpty ? "none" : storedScrollAnchor)
+                .overlay { readout("continuity.anchorPhase", continuityAnchorPhase.isEmpty ? "none" : continuityAnchorPhase) }
             readout("continuity.station", continuityStation)
             readout("continuity.playback", continuityPlayback)
             readout("continuity.loads", "\(loads.count)")

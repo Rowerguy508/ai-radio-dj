@@ -523,7 +523,7 @@ struct FoldedPlayer: View {
             FoldedArtCard(track: track, station: station, isOnAir: false,
                           side: side, namespace: artworkNamespace, speechLevel: speechLevel)
                 .frame(maxWidth: .infinity)
-                .id(DisplayContinuity.artAnchor)
+                .playerScrollAnchor(DisplayContinuity.artAnchor)
             Spacer(minLength: CGFloat(RailDLayout.spreadArtVerticalInset))
         }
         .frame(minHeight: height)
@@ -590,11 +590,11 @@ struct FoldedPlayer: View {
                         if let track = heroTrack {
                             FoldedArtCard(track: track, station: station, isOnAir: false,
                                           side: side, namespace: artworkNamespace, speechLevel: speechLevel)
-                                .id(DisplayContinuity.artAnchor)
+                                .playerScrollAnchor(DisplayContinuity.artAnchor)
                             FoldedTitleBlock(track: track, isTestStation: isTestStation, centered: true,
                                              displaySize: CGFloat(RailDLayout.openTitlePointSize))
                                 .padding(.top, CGFloat(FoldedColumnLayout.Spacing.artToTitle))
-                                .id(DisplayContinuity.titleAnchor)
+                                .playerScrollAnchor(DisplayContinuity.titleAnchor)
                         }
                     }
                     .frame(width: CGFloat(playerWidth))
@@ -1013,13 +1013,13 @@ struct FoldedPlayer: View {
                                   isOnAir: keepArtVisible ? false : dj.state.isOnAir,
                                   side: artSide, namespace: artworkNamespace, speechLevel: speechLevel)
                         .frame(maxWidth: .infinity)
-                        .id(DisplayContinuity.artAnchor)
+                        .playerScrollAnchor(DisplayContinuity.artAnchor)
                 }
                 FoldedTitleBlock(track: track, isTestStation: isTestStation, centered: centered,
                                  displaySize: titleSize)
                     .padding(.top, includesArt
                              ? (centered ? CGFloat(FoldedColumnLayout.Spacing.artToTitle) : 24) : 0)
-                    .id(DisplayContinuity.titleAnchor)
+                    .playerScrollAnchor(DisplayContinuity.titleAnchor)
                 if includesStatus {
                     FoldedDJStatus(dj: dj, fitsOneLine: compactStatus)
                         .padding(.top, centered ? CGFloat(FoldedColumnLayout.Spacing.titleToStatus) : 16)
@@ -1272,7 +1272,7 @@ extension FoldedPlayer {
             Text("Continuity row \(index)")
                 .font(.body)
                 .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
-                .id(DisplayContinuity.rowAnchor(index))
+                .playerScrollAnchor(DisplayContinuity.rowAnchor(index))
                 .accessibilityIdentifier(DisplayContinuity.rowAnchor(index))
         }
     }
