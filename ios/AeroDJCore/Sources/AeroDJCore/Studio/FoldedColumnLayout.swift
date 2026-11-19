@@ -152,6 +152,18 @@ public enum FoldedColumnLayout {
         return controlPlacement(containerWidth: containerWidth, containerHeight: containerHeight) == .duoHorizontal
     }
 
+    /// The player's open-Duo rail treatment (build 54 follow-up, -Nova): the rail 8 pt from the
+    /// window's trailing edge, its top level with the Stations rail, the now-playing thumbnail
+    /// in Collapse's place, no day-wash panel. Called only on a `.duoHorizontal` body (never an
+    /// iPhone or the closed Duo); the size cap keeps full-screen iPads on today's rail. The
+    /// player's reader is shorter than the window (the navigation bar), so this checks the
+    /// long side only, not `isOpenDuoWindow`.
+    public static func usesOpenDuoRail(containerWidth: Double, containerHeight: Double) -> Bool {
+        guard containerWidth.isFinite, containerHeight.isFinite,
+              containerWidth >= wideMinWidth, containerHeight > 0 else { return false }
+        return max(containerWidth, containerHeight) <= openDuoMaxSide
+    }
+
     /// Narrowest container that gets the rail column (`usesRailColumn`): a 320 pt column is the
     /// art, the title and the scrubber beside the 56 pt rail.
     public static let railColumnMinWidth: Double = 320

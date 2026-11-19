@@ -183,6 +183,17 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertTrue(rail.waitForExistence(timeout: 5), "the rail\n\(app.debugDescription)")
         XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail.frame), "rail \(rail.frame) in \(box)")
         XCTAssertGreaterThan(rail.frame.minX, box.midX, "the rail is on the trailing page")
+        // Build 54 follow-up: 8 pt from the window's trailing edge, as on Stations.
+        assertRailEdgeInset(rail.frame, trailingEdge: box.maxX)
+        // The now-playing thumbnail in the top slot, still Collapse (the chevron's action).
+        let thumb = app.buttons["folded.collapse"]
+        XCTAssertTrue(thumb.exists, "thumbnail missing\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(thumb.frame.width, 44, "thumbnail \(thumb.frame)")
+        XCTAssertGreaterThanOrEqual(thumb.frame.height, 44, "thumbnail \(thumb.frame)")
+        XCTAssertLessThanOrEqual(thumb.frame.minY, rail.frame.minY + 12, "the thumbnail is the top slot")
+        XCTAssertEqual(thumb.label, "Collapse")
+        XCTAssertTrue((thumb.value as? String)?.hasPrefix("Now playing") ?? false,
+                      "thumbnail value \(String(describing: thumb.value))")
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(play.exists)
         XCTAssertGreaterThanOrEqual(play.frame.height, 44)

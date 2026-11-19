@@ -181,8 +181,11 @@ struct DuoStationsScreen: View {
             // Build 54: the reader spans the window's width (see `ignoresSafeArea` below), so its
             // origin is the window's leading edge and a reported division needs no shift.
             let fold = verticalFold(leadingInset: 0)
+            // A status column on the leading edge (the Duo turned the other way) moves the
+            // leading page in; 0 in every capture.
             let geometry = DuoStationsLayout.geometry(containerWidth: width, containerHeight: height,
-                                                      foldMinX: fold?.minX, foldMaxX: fold?.maxX)
+                                                      foldMinX: fold?.minX, foldMaxX: fold?.maxX,
+                                                      leadingInset: Double(proxy.safeAreaInsets.leading))
             let inset = CGFloat(DuoStationsLayout.railVerticalInset)
             let pageHeight = max(0, proxy.size.height - inset * 2)
             // Below the trailing status column when there is one; `inset` everywhere else.
@@ -414,6 +417,34 @@ struct DuoStationMark: View {
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .fill(DuoStationsStyle.fill(station))
             DuoStationGlyph(station: station, size: side * 0.38)
+        }
+        .foregroundStyle(.white)
+        .frame(width: side, height: side)
+        .accessibilityHidden(true)
+    }
+}
+
+/// `DuoStationMark` from a `StationRef` (the player's snapshot has no `Station`): the same
+/// fill and monogram rules. The player rail's now-playing thumbnail (build 54 follow-up). -Nova
+struct DuoStationRefMark: View {
+    let ref: StationRef
+    let side: CGFloat
+    let radius: CGFloat
+
+    var body: some View {
+        let style = StationArtStyle.station(ref)
+        let glyph = side * 0.38
+        ZStack {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(AeroDJPalette.backing(forLightText: style.color(0)))
+            if style.monogram == "♪" {
+                Image(systemName: "music.note").font(.system(size: glyph * 1.1, weight: .bold))
+            } else {
+                Text(style.monogram)
+                    .font(.system(size: glyph, weight: .heavy, design: .rounded))
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+            }
         }
         .foregroundStyle(.white)
         .frame(width: side, height: side)

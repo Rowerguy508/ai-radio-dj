@@ -194,6 +194,9 @@ struct StationSplitRoot<Detail: View>: View {
     @State private var windowSize: CGSize = .zero
     /// Build 54: the window's safe-area insets, for the launch layout log only.
     @State private var windowInsets = OpenDuoGateLog.Insets()
+    /// The top of this root's safe area in global points: where the Stations rail's `railTop`
+    /// is measured from, so the pushed player's rail starts at the same y.
+    @State private var safeTopGlobal: CGFloat = 0
     /// Build 54: the system's hinge and fold divisions (`FoldDivisionProbe`), read only on a
     /// wide-and-tall window. An open Duo larger than `FoldedColumnLayout.openDuoMaxSide` is
     /// told from an iPad by these; no iPad reports a hinge. Empty on SDKs without the API.
@@ -286,6 +289,9 @@ struct StationSplitRoot<Detail: View>: View {
         // Build 54: a value, never an `if`, so crossing the open-Duo size keeps the split's state.
         // Off the open Duo it is the parent's own class (the iPhone and closed Duo are unchanged).
         .environment(\.horizontalSizeClass, effectiveSizeClass)
+        // The player's open-Duo rail reads the window from here. Nil off the open Duo (the
+        // default), so every other window's player is unchanged.
+        .environment(\.openDuoWindow, openDuoWindowMetrics)
         .onGeometryChange(for: CGSize.self) { proxy in
             CGSize(width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
                    height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom)
@@ -298,6 +304,11 @@ struct StationSplitRoot<Detail: View>: View {
                                   trailing: Double(proxy.safeAreaInsets.trailing))
         } action: { insets in
             if insets != windowInsets { windowInsets = insets }
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.frame(in: .global).minY
+        } action: { minY in
+            if minY != safeTopGlobal { safeTopGlobal = minY }
         }
         // Only a wide-and-tall window reads the hinge. On every iPhone and the closed Duo the
         // `if` is false and nothing is added.
@@ -315,6 +326,15 @@ struct StationSplitRoot<Detail: View>: View {
                                    window: windowSize, insets: windowInsets, scale: Double(displayScale),
                                    sizeClass: horizontalSizeClass)
         }
+    }
+
+    /// The window the player's open-Duo rail lines up with: the trailing unsafe column and the
+    /// Stations rail's top (`DuoStationsLayout.railTopInset`) in global points. Nil off the open Duo.
+    private var openDuoWindowMetrics: OpenDuoWindowMetrics? {
+        guard usesDuoStations else { return nil }
+        let top = DuoStationsLayout.railTopInset(trailingUnsafeWidth: windowInsets.trailing)
+        return OpenDuoWindowMetrics(trailingInset: CGFloat(windowInsets.trailing),
+                                    railTop: safeTopGlobal + CGFloat(top))
     }
 
     /// Wide and tall enough for the Duo layout (`.duoHorizontal`), measured. Never an iPhone or
@@ -731,6 +751,8 @@ enum OpenDuoGateLog {
         let safe = String(format: "t%.0f l%.0f b%.0f r%.0f", insets.top, insets.leading,
                           insets.bottom, insets.trailing)
         let scaleText = String(format: "%.1f", scale)
-        log.notice("stations gate duo \(usesDuoStations, privacy: .public) hinge \(hasFold, privacy: .public) size class \(sizeClassName, privacy: .public) window \(size, privacy: .public) scale \(scaleText, privacy: .public) safe \(safe, privacy: .public)")
+        // The rail's status-column clearance is estimated from the owner's shots, not measured.
+        let clearance = String(format: "%.0f", DuoStationsLayout.statusColumnClearance)
+        log.notice("stations gate duo \(usesDuoStations, privacy: .public) hinge \(hasFold, privacy: .public) size class \(sizeClassName, privacy: .public) window \(size, privacy: .public) scale \(scaleText, privacy: .public) safe \(safe, privacy: .public) rail clearance \(clearance, privacy: .public)")
     }
 }

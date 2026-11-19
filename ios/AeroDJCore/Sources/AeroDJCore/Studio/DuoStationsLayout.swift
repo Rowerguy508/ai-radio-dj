@@ -147,25 +147,31 @@ public enum DuoStationsLayout {
     /// `foldMinX` / `foldMaxX`: a reported vertical division, if any. Otherwise the book pose
     /// keeps the centred `defaultFoldWidth` band clear anyway, so a flat open Duo never puts a
     /// tile under the hinge either.
+    ///
+    /// `leadingInset` (build 54, -Nova): the window's leading unsafe width. The screen spans the
+    /// window's width, so a status column on the leading edge (the Duo turned the other way)
+    /// moves the leading page in by that much. 0 everywhere today, which is the old geometry.
     public static func geometry(containerWidth: Double, containerHeight: Double,
-                                foldMinX: Double? = nil, foldMaxX: Double? = nil) -> Geometry {
+                                foldMinX: Double? = nil, foldMaxX: Double? = nil,
+                                leadingInset: Double = 0) -> Geometry {
         let width = max(0, containerWidth.isFinite ? containerWidth : 0)
         let height = max(0, containerHeight.isFinite ? containerHeight : 0)
+        let lead = leadingGutter + (leadingInset.isFinite ? max(0, leadingInset) : 0)
         let railMinX = max(0, width - RailDLayout.trailingInset - RailDLayout.railWidth)
         let railMaxX = max(0, width - RailDLayout.trailingInset)
         if width > height {
             var fold = Page(minX: (width - defaultFoldWidth) / 2, maxX: (width + defaultFoldWidth) / 2)
             if let foldMinX, let foldMaxX, foldMinX.isFinite, foldMaxX.isFinite,
-               foldMaxX >= foldMinX, foldMinX > leadingGutter, foldMaxX < railMinX {
+               foldMaxX >= foldMinX, foldMinX > lead, foldMaxX < railMinX {
                 fold = Page(minX: foldMinX, maxX: foldMaxX)
             }
-            let leading = Page(minX: leadingGutter, maxX: max(leadingGutter, fold.minX - foldGutter))
+            let leading = Page(minX: lead, maxX: max(lead, fold.minX - foldGutter))
             let trailingMin = fold.maxX + foldGutter
             let trailing = Page(minX: trailingMin, maxX: max(trailingMin, railMinX - bookRailGutter))
             return Geometry(pose: .book, pages: [leading, trailing], fold: fold,
                             railMinX: railMinX, railMaxX: railMaxX)
         }
-        let page = Page(minX: leadingGutter, maxX: max(leadingGutter, railMinX - portraitRailGutter))
+        let page = Page(minX: lead, maxX: max(lead, railMinX - portraitRailGutter))
         return Geometry(pose: .portrait, pages: [page], fold: nil, railMinX: railMinX, railMaxX: railMaxX)
     }
 

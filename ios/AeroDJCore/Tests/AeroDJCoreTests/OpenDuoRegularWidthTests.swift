@@ -122,3 +122,32 @@ final class OpenDuoRegularWidthTests: XCTestCase {
         XCTAssertEqual(DuoStationsLayout.railTopInset(trailingUnsafeWidth: 73), 88)
     }
 }
+
+/// Build 54 follow-up (-Nova): the player's open-Duo rail and the leading status column.
+final class OpenDuoPlayerRailTests: XCTestCase {
+    func testOpenDuoRailOnlyOnOpenDuoSizedBodies() {
+        // The player's reader under the navigation bar on the open Duo.
+        for (w, h) in [(951.0, 619.0), (951, 669), (669, 901), (820, 576), (640, 770)] {
+            XCTAssertTrue(FoldedColumnLayout.usesOpenDuoRail(containerWidth: w, containerHeight: h), "\(w)×\(h)")
+        }
+        // Full-screen iPads keep today's rail; phone widths never reach the Duo body.
+        for (w, h) in [(1180.0, 770.0), (1194, 784), (1376, 982), (1024, 1316), (440, 900), (932, 0), (.nan, 600)] {
+            XCTAssertFalse(FoldedColumnLayout.usesOpenDuoRail(containerWidth: w, containerHeight: h), "\(w)×\(h)")
+        }
+    }
+
+    func testLeadingStatusColumnMovesTheLeadingPageOnly() {
+        let flat = DuoStationsLayout.geometry(containerWidth: 951, containerHeight: 669)
+        let turned = DuoStationsLayout.geometry(containerWidth: 951, containerHeight: 669, leadingInset: 73)
+        XCTAssertEqual(flat.pages[0].minX, DuoStationsLayout.leadingGutter)
+        XCTAssertEqual(turned.pages[0].minX, DuoStationsLayout.leadingGutter + 73)
+        XCTAssertEqual(turned.pages[1], flat.pages[1])
+        XCTAssertEqual(turned.railMinX, flat.railMinX)
+        // Upright too.
+        let upright = DuoStationsLayout.geometry(containerWidth: 669, containerHeight: 951, leadingInset: 40)
+        XCTAssertEqual(upright.pages[0].minX, DuoStationsLayout.leadingGutter + 40)
+        // The default is the old geometry.
+        XCTAssertEqual(DuoStationsLayout.geometry(containerWidth: 820, containerHeight: 640, leadingInset: 0),
+                       DuoStationsLayout.geometry(containerWidth: 820, containerHeight: 640))
+    }
+}
