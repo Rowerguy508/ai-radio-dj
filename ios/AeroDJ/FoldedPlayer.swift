@@ -166,7 +166,8 @@ struct FoldedPlayer: View {
             hasRegularWidth: horizontalSizeClass == .regular,
             containerWidth: Double(size.width),
             containerHeight: Double(size.height),
-            accessibilityTextSize: typeSize.isAccessibilitySize)
+            accessibilityTextSize: typeSize.isAccessibilitySize,
+            isPhoneIdiom: DeviceIdiom.isPhone)
         if let placement = decision.controlPlacement { return placement }
         return FoldedColumnLayout.controlPlacement(containerWidth: Double(size.width),
                                                    containerHeight: Double(size.height))
@@ -414,8 +415,10 @@ struct FoldedPlayer: View {
     /// thumbnail replaces the chevron, and the day-wash panel that stopped short of the rail is
     /// gone. Full-screen iPads and the split host keep the old body.
     private func wideBody(in readerSize: CGSize, readerMinY: CGFloat? = nil) -> some View {
+        // The phone idiom or a reported hinge (no iPad has either), at an open-Duo size.
         let openDuo = FoldedColumnLayout.usesOpenDuoRail(containerWidth: Double(readerSize.width),
                                                          containerHeight: Double(readerSize.height))
+            && (DeviceIdiom.isPhone || effectiveFoldHinge != nil)
         let window: OpenDuoWindowMetrics? = openDuo ? openDuoWindow : nil
         let extend: CGFloat = window.map { max(0, $0.trailingInset) } ?? 0
         let size = CGSize(width: readerSize.width + extend, height: readerSize.height)

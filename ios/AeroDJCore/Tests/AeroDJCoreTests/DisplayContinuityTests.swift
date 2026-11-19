@@ -66,9 +66,12 @@ final class DisplayContinuityTests: XCTestCase {
         let width = StudioLayoutMetrics.studioMinWidth
         XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: width,
                                                 containerHeight: 680, accessibilityTextSize: false), .duoHorizontal)
-        // Build 54: an open-Duo-sized window keeps the rail at AX sizes too (as compact does).
         XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: width,
-                                                containerHeight: 680, accessibilityTextSize: true), .duoHorizontal)
+                                                containerHeight: 680, accessibilityTextSize: true), .studioStacked)
+        // Build 54: the open Duo (phone idiom) keeps the rail at AX sizes too (as compact does).
+        XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: width,
+                                                containerHeight: 680, accessibilityTextSize: true,
+                                                isPhoneIdiom: true), .duoHorizontal)
         XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: width,
                                                 containerHeight: 599, accessibilityTextSize: false), .studio,
                        "wide but shorter than the landscape rail keeps the Studio")
@@ -151,17 +154,19 @@ final class DisplayContinuityTests: XCTestCase {
     }
 
     /// Accessibility text sizes keep the stacked Studio wherever the Studio gate opens
-    /// (regular, 716+), however tall, outside the open Duo's own window. Build 54: the open
-    /// Duo (820 × 640, 716 × 820, longest side up to `openDuoMaxSide`) keeps the rail at either
-    /// width class. Compact width at AX sizes is unchanged.
+    /// (regular, 716+), however tall, on every iPad window. Build 54: the open Duo (phone idiom)
+    /// keeps the rail at either width class. Compact width at AX sizes is unchanged.
     func testAccessibilitySizesStayStacked() {
-        for (width, height) in [(716.0, 820.0), (820, 640), (1000, 700)] {
+        for (width, height) in [(716.0, 820.0), (820, 640), (951, 669)] {
             XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: width,
-                                                    containerHeight: height, accessibilityTextSize: true),
+                                                    containerHeight: height, accessibilityTextSize: true,
+                                                    isPhoneIdiom: true),
                            .duoHorizontal, "open Duo \(width)×\(height)")
         }
-        let sizes: [(Double, Double)] = [(716, 599), (1032, 1376), (1366, 1024), (1001, 700), (1180, 820),
-                                         (820, 1180), (1133, 744), (744, 1133)]
+        XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: 716, containerHeight: 599,
+                                                accessibilityTextSize: true, isPhoneIdiom: true), .studioStacked)
+        let sizes: [(Double, Double)] = [(716, 599), (716, 820), (820, 640), (1032, 1376), (1366, 1024), (1001, 700),
+                                         (1180, 820), (820, 1180), (1133, 744), (744, 1133)]
         for (width, height) in sizes {
             XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: width,
                                                     containerHeight: height, accessibilityTextSize: true),

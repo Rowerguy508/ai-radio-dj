@@ -60,6 +60,19 @@ final class StationsLayoutTests: XCTestCase {
              container: app.descendants(matching: .any)["capture.stationsLayoutContainer"])
     }
 
+    /// The idiom-or-hinge gate: the same 951 × 669 regular window on an iPad (no phone idiom, no
+    /// hinge) keeps today's system split, never the Duo Stations.
+    @MainActor
+    func testRegularWidthIPadWindowKeepsTheSplit() throws {
+        let (app, _) = try launch("stationsLayoutARegularDevice", size: Self.device, needsPad: true,
+                                  orientation: .landscapeLeft, phoneIdiom: false)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(app.staticTexts["Late Night"].waitForExistence(timeout: 10),
+                      "the station list\n\(app.debugDescription)")
+        XCTAssertFalse(any["stations.duo.tiles"].exists, "an iPad window must not get the Duo Stations")
+        XCTAssertFalse(app.buttons["stations.rail.nowPlaying"].exists)
+    }
+
     /// The same window with the hinge and a centred fold forced: nothing on the fold band.
     @MainActor
     func testRegularWidthDeviceWindowFold() throws {
@@ -229,7 +242,8 @@ final class StationsLayoutTests: XCTestCase {
 
     @MainActor
     private func launch(_ scenario: String, size: CGSize, needsPad: Bool,
-                        orientation: UIDeviceOrientation = .portrait) throws -> (XCUIApplication, CGRect) {
+                        orientation: UIDeviceOrientation = .portrait,
+                        phoneIdiom: Bool? = nil) throws -> (XCUIApplication, CGRect) {
         let isPhone = UIDevice.current.userInterfaceIdiom == .phone
         if needsPad {
             try XCTSkipIf(isPhone, "open-Duo frame (\(size)) runs in the iPad step")
@@ -237,6 +251,11 @@ final class StationsLayoutTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
                                "-AeroDJStudioCaptureScenario", scenario, "-AeroDJReduceMotion", "YES"]
+        // Build 54: the regular-width frames stand in for the open Duo, a phone-idiom device
+        // (`DeviceIdiom`, debug-only override). Pass false to see what an iPad window gets.
+        if phoneIdiom ?? scenario.contains("Regular") {
+            app.launchArguments += ["-AeroDJForcePhoneIdiom", "YES"]
+        }
         XCUIDevice.shared.orientation = orientation
         app.launch()
         let window = app.windows.firstMatch

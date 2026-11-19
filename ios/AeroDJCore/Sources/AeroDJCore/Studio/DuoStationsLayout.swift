@@ -68,20 +68,21 @@ public enum DuoStationsLayout {
     ///
     /// Build 54 (owner: "I am not seeing any changes to the ui"): this used to need the compact
     /// class, so an open Duo that reports regular width never drew these Stations. The width
-    /// class no longer gates it. Compact is exactly the old rule. Regular also needs an
-    /// open-Duo-sized window (`FoldedColumnLayout.isOpenDuoWindow`, longest side at most
-    /// `openDuoMaxSide`), so a full-screen iPad keeps the sidebar list, or a fold the system
-    /// reports (`hasFold`: a hinge sample or an active division from `FoldDivisionProbe`, which
-    /// no iPad has), for an open Duo window longer than that. -Nova
+    /// class no longer gates it. Compact is exactly the old rule. Regular also needs the phone
+    /// idiom (`isPhoneIdiom`: only a foldable phone is ever this wide and tall) or a fold the
+    /// system reports (`hasFold`: a hinge sample or an active division from `FoldDivisionProbe`).
+    /// An iPad has neither, so every iPad window (full screen, Split View, Stage Manager) at
+    /// regular width keeps today's sidebar list. Size alone cannot tell them apart: an iPad
+    /// Split View slice (778 × 820, 790 × 834) is open-Duo sized. -Nova
     public static func usesOpenDuoStations(hasRegularWidth: Bool, containerWidth: Double,
-                                           containerHeight: Double, hasFold: Bool = false) -> Bool {
+                                           containerHeight: Double, hasFold: Bool = false,
+                                           isPhoneIdiom: Bool = false) -> Bool {
         guard containerWidth.isFinite, containerHeight.isFinite,
               containerWidth > 0, containerHeight > 0 else { return false }
         guard FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
                                                   containerHeight: containerHeight) == .duoHorizontal
         else { return false }
-        return !hasRegularWidth || hasFold
-            || FoldedColumnLayout.isOpenDuoWindow(containerWidth: containerWidth, containerHeight: containerHeight)
+        return !hasRegularWidth || hasFold || isPhoneIdiom
     }
 
     // MARK: Geometry

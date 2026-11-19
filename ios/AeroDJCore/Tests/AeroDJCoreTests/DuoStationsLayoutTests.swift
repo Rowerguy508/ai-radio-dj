@@ -80,9 +80,14 @@ final class DuoStationsLayoutTests: XCTestCase {
             XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: w, containerHeight: h),
                            "\(w) × \(h) regular")
         }
-        // Build 54: the open Duo at regular width gets them too (the width class no longer gates).
-        XCTAssertTrue(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 820, containerHeight: 640))
-        XCTAssertTrue(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 640, containerHeight: 820))
+        // Build 54: the open Duo (phone idiom) at regular width gets them too.
+        XCTAssertTrue(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 820, containerHeight: 640,
+                                                            isPhoneIdiom: true))
+        XCTAssertTrue(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 640, containerHeight: 820,
+                                                            isPhoneIdiom: true))
+        // The same sizes on an iPad (regular, no hinge) keep the sidebar list.
+        XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 820, containerHeight: 640))
+        XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 640, containerHeight: 820))
         // A full-screen iPad (regular) keeps the sidebar list.
         for (w, h) in [(744.0, 1133.0), (1133, 744), (820, 1180), (1180, 820), (1032, 1376), (1376, 1032)] {
             XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: w, containerHeight: h),

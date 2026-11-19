@@ -146,7 +146,8 @@ final class RailDLayoutTests: XCTestCase {
     @MainActor
     func testOpenLandscapeRegularAccessibilityTextKeepsTheRail() throws {
         let app = try launch("railDLandscapeCentred", container: Self.landscape, orientation: .landscapeLeft,
-                             extra: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"])
+                             extra: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL",
+                                     "-AeroDJForcePhoneIdiom", "YES"])
         let box = try settledContainer(app, size: Self.landscape)
         let any = app.descendants(matching: .any)
         XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
@@ -164,7 +165,7 @@ final class RailDLayoutTests: XCTestCase {
     private func assertDeviceWindowPlayer(_ scenario: String, shot: String) throws {
         let size = CGSize(width: 951, height: 669)
         let app = try launch(scenario, container: size, orientation: .landscapeLeft,
-                             extra: ["-AeroDJRailDDeviceWindow", "YES"])
+                             extra: ["-AeroDJRailDDeviceWindow", "YES", "-AeroDJForcePhoneIdiom", "YES"])
         let box = try settledContainer(app, size: size)
         let any = app.descendants(matching: .any)
         XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)

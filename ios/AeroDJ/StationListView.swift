@@ -1,6 +1,7 @@
 import AeroDJCore
 import os
 import SwiftUI
+import UIKit
 
 /// Station selection screen. Adaptive container sizing (no hardcoded device dims).
 /// The split root owns the selection and the one shared studio/playback session.
@@ -323,7 +324,7 @@ struct StationSplitRoot<Detail: View>: View {
                                           measured: windowSize.width > 0), initial: true) { _, key in
             guard key.measured else { return }
             OpenDuoGateLog.decided(usesDuoStations: key.usesDuoStations, hasFold: key.hasFold,
-                                   window: windowSize, insets: windowInsets, scale: Double(displayScale),
+                                   phone: DeviceIdiom.isPhone, window: windowSize, insets: windowInsets, scale: Double(displayScale),
                                    sizeClass: horizontalSizeClass)
         }
     }
@@ -360,7 +361,8 @@ struct StationSplitRoot<Detail: View>: View {
             && DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: horizontalSizeClass == .regular,
                                                      containerWidth: Double(windowSize.width),
                                                      containerHeight: Double(windowSize.height),
-                                                     hasFold: hasFold)
+                                                     hasFold: hasFold,
+                                                     isPhoneIdiom: DeviceIdiom.isPhone)
     }
 
     /// The Stations screen is up: the open Duo with no station pushed.
@@ -739,7 +741,7 @@ enum OpenDuoGateLog {
 
     private static let log = Logger(subsystem: "com.aerodj.app", category: "layout")
 
-    static func decided(usesDuoStations: Bool, hasFold: Bool, window: CGSize, insets: Insets,
+    static func decided(usesDuoStations: Bool, hasFold: Bool, phone: Bool, window: CGSize, insets: Insets,
                         scale: Double, sizeClass: UserInterfaceSizeClass?) {
         let sizeClassName: String
         switch sizeClass {
@@ -753,6 +755,24 @@ enum OpenDuoGateLog {
         let scaleText = String(format: "%.1f", scale)
         // The rail's status-column clearance is estimated from the owner's shots, not measured.
         let clearance = String(format: "%.0f", DuoStationsLayout.statusColumnClearance)
-        log.notice("stations gate duo \(usesDuoStations, privacy: .public) hinge \(hasFold, privacy: .public) size class \(sizeClassName, privacy: .public) window \(size, privacy: .public) scale \(scaleText, privacy: .public) safe \(safe, privacy: .public) rail clearance \(clearance, privacy: .public)")
+        log.notice("stations gate duo \(usesDuoStations, privacy: .public) phone idiom \(phone, privacy: .public) hinge \(hasFold, privacy: .public) size class \(sizeClassName, privacy: .public) window \(size, privacy: .public) scale \(scaleText, privacy: .public) safe \(safe, privacy: .public) rail clearance \(clearance, privacy: .public)")
+    }
+}
+
+/// Build 54 (-Nova, Orion's idiom-or-hinge gate): the open Duo is a foldable phone, so it reports
+/// the phone idiom; no iPad does. With a reported hinge, this is what tells the open Duo at the
+/// regular width class from an iPad window of the same size. Every iPhone is phone idiom too,
+/// but never wide and tall enough (`.duoHorizontal`) for anything gated on it.
+@MainActor
+enum DeviceIdiom {
+    /// Debug-only test override: `-AeroDJForcePhoneIdiom YES` lets the iPad-simulator UI tests
+    /// stand in for the open Duo at regular width. Release compiles it out.
+    static let forcePhoneKey = "AeroDJForcePhoneIdiom"
+
+    static var isPhone: Bool {
+        #if DEBUG
+        if UserDefaults.standard.bool(forKey: forcePhoneKey) { return true }
+        #endif
+        return UIDevice.current.userInterfaceIdiom == .phone
     }
 }

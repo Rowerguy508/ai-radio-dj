@@ -31,7 +31,11 @@ final class OpenDuoRegularWidthTests: XCTestCase {
             XCTAssertTrue(FoldedColumnLayout.isOpenDuoWindow(containerWidth: w, containerHeight: h), "\(w)×\(h)")
             for regular in [false, true] {
                 XCTAssertTrue(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: regular, containerWidth: w,
-                                                                    containerHeight: h), "\(w)×\(h) regular \(regular)")
+                                                                    containerHeight: h, isPhoneIdiom: true),
+                              "\(w)×\(h) regular \(regular)")
+                XCTAssertTrue(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: regular, containerWidth: w,
+                                                                    containerHeight: h, hasFold: true),
+                              "\(w)×\(h) regular \(regular) hinge")
             }
         }
     }
@@ -44,8 +48,10 @@ final class OpenDuoRegularWidthTests: XCTestCase {
             XCTAssertNotEqual(FoldedColumnLayout.controlPlacement(containerWidth: w, containerHeight: h), .duoHorizontal)
             for regular in [false, true] {
                 for fold in [false, true] {
+                    // Every iPhone is the phone idiom: still never the Duo Stations.
                     XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: regular, containerWidth: w,
-                                                                         containerHeight: h, hasFold: fold),
+                                                                         containerHeight: h, hasFold: fold,
+                                                                         isPhoneIdiom: true),
                                    "\(w)×\(h) regular \(regular) fold \(fold)")
                 }
                 for ax in [false, true] {
@@ -63,9 +69,12 @@ final class OpenDuoRegularWidthTests: XCTestCase {
                             }
                         }
                     }()
-                    XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: regular, containerWidth: w,
-                                                            containerHeight: h, accessibilityTextSize: ax),
-                                   old, "\(w)×\(h) regular \(regular) ax \(ax)")
+                    for phone in [false, true] {
+                        XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: regular, containerWidth: w,
+                                                                containerHeight: h, accessibilityTextSize: ax,
+                                                                isPhoneIdiom: phone),
+                                       old, "\(w)×\(h) regular \(regular) ax \(ax) phone \(phone)")
+                    }
                 }
             }
         }
@@ -91,11 +100,33 @@ final class OpenDuoRegularWidthTests: XCTestCase {
                                                 accessibilityTextSize: false), .studio)
     }
 
-    /// An open Duo window longer than `openDuoMaxSide` (the @2x reading, 1426 × 1003) is told from
-    /// an iPad only by a reported fold.
-    func testLargeOpenDuoNeedsTheFoldSignal() {
+    /// Orion's idiom-or-hinge gate: an iPad window at regular width with no hinge gets exactly
+    /// today's result at open-Duo sizes too (Split View slices 778 × 820 and 790 × 834, a
+    /// Stage Manager 900 × 700, the device's 951 × 669): no Duo Stations, the rail since #542,
+    /// the stacked Studio at AX sizes.
+    func testIPadWindowsWithoutHingeKeepTodaysResult() {
+        for (w, h) in [(790.0, 834.0), (778, 820), (900, 700), (951, 669), (669, 951), (820, 640), (640, 820)] {
+            XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: w,
+                                                                 containerHeight: h), "\(w)×\(h)")
+            let placement = FoldedColumnLayout.controlPlacement(containerWidth: w, containerHeight: h)
+            let studioOpen = w >= StudioLayoutMetrics.studioMinWidth
+            XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: w, containerHeight: h,
+                                                    accessibilityTextSize: true),
+                           studioOpen ? .studioStacked : (placement == .duoHorizontal ? .duoHorizontal : .centredColumn),
+                           "\(w)×\(h) AX")
+            XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: true, containerWidth: w, containerHeight: h,
+                                                    accessibilityTextSize: false),
+                           placement == .duoHorizontal ? .duoHorizontal : .studio, "\(w)×\(h)")
+        }
+    }
+
+    /// A large open Duo window (the @2x reading, 1426 × 1003) is told from a 13" iPad by the
+    /// phone idiom or a reported fold.
+    func testLargeOpenDuoNeedsIdiomOrFold() {
         XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 1426,
                                                              containerHeight: 1003))
+        XCTAssertTrue(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 1426,
+                                                            containerHeight: 1003, isPhoneIdiom: true))
         XCTAssertTrue(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 1426,
                                                             containerHeight: 1003, hasFold: true))
         // Compact is the old rule, fold or not.
@@ -108,7 +139,7 @@ final class OpenDuoRegularWidthTests: XCTestCase {
         for (w, h) in openDuo {
             for regular in [false, true] {
                 XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: regular, containerWidth: w, containerHeight: h,
-                                                        accessibilityTextSize: true), .duoHorizontal,
+                                                        accessibilityTextSize: true, isPhoneIdiom: true), .duoHorizontal,
                                "\(w)×\(h) regular \(regular)")
                 XCTAssertEqual(DisplayContinuity.layout(hasRegularWidth: regular, containerWidth: w, containerHeight: h,
                                                         accessibilityTextSize: false), .duoHorizontal)
