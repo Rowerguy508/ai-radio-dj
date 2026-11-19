@@ -135,6 +135,61 @@ final class RailDLayoutTests: XCTestCase {
              container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
+    // MARK: Build 54: regular width at the device window, accessibility text
+
+    /// The open Duo's measured window (951 × 669 pt, @3x shots) at the regular width class, as
+    /// the device reports it, flat (no fold): the rail player, never the Studio.
+    @MainActor
+    func testDeviceWindowRegularPlayer() throws {
+        try assertDeviceWindowPlayer("railDLandscapeCentred", shot: "rail-d-duo-open-regular-951x669")
+    }
+
+    /// The same window with the hinge and a centred fold band forced (book pose).
+    @MainActor
+    func testDeviceWindowRegularPlayerFold() throws {
+        try assertDeviceWindowPlayer("railDLandscapeSpread", shot: "rail-d-duo-open-regular-951x669-fold")
+    }
+
+    /// Accessibility text at 820 × 640, regular: still the rail player (`layout.compact` with
+    /// the rail), not `layout.studioStacked`, as compact already was.
+    @MainActor
+    func testOpenLandscapeRegularAccessibilityTextKeepsTheRail() throws {
+        let app = try launch("railDLandscapeCentred", container: Self.landscape, orientation: .landscapeLeft,
+                             extra: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"])
+        let box = try settledContainer(app, size: Self.landscape)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertFalse(any["layout.studioStacked"].exists, "no stacked Studio on the open Duo at AX sizes")
+        XCTAssertFalse(any["layout.studio"].exists)
+        // The rail player's route (`DisplayContinuity` .duoHorizontal is `layout.compact`); Play stays reachable.
+        let play = app.buttons["transport.playPause"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5), "Play/Pause\n\(app.debugDescription)")
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(play.frame), "Play/Pause stays in the window")
+        save(app, "rail-d-duo-open-landscape-regular-ax",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
+    }
+
+    @MainActor
+    private func assertDeviceWindowPlayer(_ scenario: String, shot: String) throws {
+        let size = CGSize(width: 951, height: 669)
+        let app = try launch(scenario, container: size, orientation: .landscapeLeft,
+                             extra: ["-AeroDJRailDDeviceWindow", "YES"])
+        let box = try settledContainer(app, size: size)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(any["layout.compact"].waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertFalse(any["layout.studio"].exists, "no two-zone Studio")
+        XCTAssertFalse(any["layout.studioStacked"].exists)
+        let rail = any["folded.systemBar"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 5), "the rail\n\(app.debugDescription)")
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail.frame), "rail \(rail.frame) in \(box)")
+        XCTAssertGreaterThan(rail.frame.minX, box.midX, "the rail is on the trailing page")
+        let play = app.buttons["transport.playPause"]
+        XCTAssertTrue(play.exists)
+        XCTAssertGreaterThanOrEqual(play.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(play.frame.width, 44)
+        save(app, shot, container: app.descendants(matching: .any)["capture.railDContainer"])
+    }
+
     @MainActor
     func testOpenLandscapeWithTheSidebar() throws {
         let app = try launch("railDLandscapeSidebar", container: Self.landscape, orientation: .landscapeLeft)
@@ -396,10 +451,11 @@ final class RailDLayoutTests: XCTestCase {
     // MARK: Launch
 
     @MainActor
-    private func launch(_ scenario: String, container: CGSize?, orientation: UIDeviceOrientation) throws -> XCUIApplication {
+    private func launch(_ scenario: String, container: CGSize?, orientation: UIDeviceOrientation,
+                        extra: [String] = []) throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
-                               "-AeroDJStudioCaptureScenario", scenario]
+                               "-AeroDJStudioCaptureScenario", scenario] + extra
         XCUIDevice.shared.orientation = orientation
         app.launch()
         let window = app.windows.firstMatch

@@ -1,4 +1,5 @@
 import AeroDJCore
+import os
 import SwiftUI
 
 /// Station selection screen. Adaptive container sizing (no hardcoded device dims).
@@ -191,6 +192,16 @@ struct StationSplitRoot<Detail: View>: View {
     @Environment(\.appWideLayout) private var appWide
     /// The whole window (safe area included), for the open-Duo Stations gate only.
     @State private var windowSize: CGSize = .zero
+    /// Build 54: the window's safe-area insets, for the launch layout log only.
+    @State private var windowInsets = OpenDuoGateLog.Insets()
+    /// Build 54: the system's hinge and fold divisions (`FoldDivisionProbe`), read only on a
+    /// wide-and-tall window. An open Duo larger than `FoldedColumnLayout.openDuoMaxSide` is
+    /// told from an iPad by these; no iPad reports a hinge. Empty on SDKs without the API.
+    @State private var foldHinge: FoldAwareness.HingeSample?
+    @State private var foldDivisions: [FoldAwareness.Division] = []
+    /// Studio captures force a hinge and fold; nil in the app.
+    @Environment(\.foldPoseOverride) private var foldPoseOverride
+    @Environment(\.displayScale) private var displayScale
 
     init(stations: [Station], showsSharedInbox: Bool = false, showSharedInbox: Binding<Bool> = .constant(false),
          onUserOpenedStation: ((Station.ID) async -> Void)? = nil,
@@ -221,7 +232,16 @@ struct StationSplitRoot<Detail: View>: View {
         self.detail = stationDetail
     }
 
-    private var isCompact: Bool { horizontalSizeClass != .regular }
+    /// Build 54 (-Nova): the width class this split and its overlay use. The open Duo
+    /// (`usesDuoStations`, measured) is always compact here, so a device that reports regular
+    /// width draws the same Duo Stations, pushed player and rail as the compact open Duo, never
+    /// the system sidebar beside a detail. Every other window passes its own class through
+    /// unchanged, so the iPhone and the closed Duo see exactly the value they saw before.
+    private var effectiveSizeClass: UserInterfaceSizeClass? {
+        usesDuoStations ? .compact : horizontalSizeClass
+    }
+
+    private var isCompact: Bool { effectiveSizeClass != .regular }
 
     private var selectedStationID: Station.ID? { navigation.selectedID }
 
@@ -263,20 +283,64 @@ struct StationSplitRoot<Detail: View>: View {
         // Hidden from VoiceOver underneath. Every other window: false, nothing drawn.
         .accessibilityHidden(showsDuoStations)
         .overlay { duoStationsOverlay }
+        // Build 54: a value, never an `if`, so crossing the open-Duo size keeps the split's state.
+        // Off the open Duo it is the parent's own class (the iPhone and closed Duo are unchanged).
+        .environment(\.horizontalSizeClass, effectiveSizeClass)
         .onGeometryChange(for: CGSize.self) { proxy in
             CGSize(width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
                    height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom)
         } action: { size in
             if size != windowSize { windowSize = size }
         }
+        .onGeometryChange(for: OpenDuoGateLog.Insets.self) { proxy in
+            OpenDuoGateLog.Insets(top: Double(proxy.safeAreaInsets.top), leading: Double(proxy.safeAreaInsets.leading),
+                                  bottom: Double(proxy.safeAreaInsets.bottom),
+                                  trailing: Double(proxy.safeAreaInsets.trailing))
+        } action: { insets in
+            if insets != windowInsets { windowInsets = insets }
+        }
+        // Only a wide-and-tall window reads the hinge. On every iPhone and the closed Duo the
+        // `if` is false and nothing is added.
+        .background {
+            if isWideAndTallWindow {
+                FoldDivisionProbe(hinge: $foldHinge, divisions: $foldDivisions)
+            }
+        }
+        // Release-safe: one line when the gate's answer or its fold input changes. Points, the
+        // screen scale, the width class and two booleans; no station, track or user data.
+        .onChange(of: OpenDuoGateLog.Key(usesDuoStations: usesDuoStations, hasFold: hasFold,
+                                          measured: windowSize.width > 0), initial: true) { _, key in
+            guard key.measured else { return }
+            OpenDuoGateLog.decided(usesDuoStations: key.usesDuoStations, hasFold: key.hasFold,
+                                   window: windowSize, insets: windowInsets, scale: Double(displayScale),
+                                   sizeClass: horizontalSizeClass)
+        }
     }
 
-    /// The open Duo, compact class, with a source. Never an iPhone or the closed Duo.
+    /// Wide and tall enough for the Duo layout (`.duoHorizontal`), measured. Never an iPhone or
+    /// the closed Duo.
+    private var isWideAndTallWindow: Bool {
+        FoldedColumnLayout.controlPlacement(containerWidth: Double(windowSize.width),
+                                            containerHeight: Double(windowSize.height)) == .duoHorizontal
+    }
+
+    /// The system reports a fold: a hinge sample or an active division (or a capture's override).
+    private var hasFold: Bool {
+        let hinge = foldPoseOverride.map { $0.hinge } ?? foldHinge
+        let divisions = foldPoseOverride?.divisions ?? foldDivisions
+        return hinge != nil || divisions.contains { $0.isActive }
+    }
+
+    /// The open Duo, with a source, measured at either width class (build 54: the device reports
+    /// regular width, so the old compact-only gate never drew these Stations). Never an iPhone,
+    /// the closed Duo or a full-screen iPad (`DuoStationsLayout.usesOpenDuoStations`). Reads the
+    /// parent's class, not `effectiveSizeClass`, which is derived from this.
     private var usesDuoStations: Bool {
-        duoStations != nil && isCompact
-            && DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: false,
+        duoStations != nil
+            && DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: horizontalSizeClass == .regular,
                                                      containerWidth: Double(windowSize.width),
-                                                     containerHeight: Double(windowSize.height))
+                                                     containerHeight: Double(windowSize.height),
+                                                     hasFold: hasFold)
     }
 
     /// The Stations screen is up: the open Duo with no station pushed.
@@ -395,7 +459,7 @@ struct StationSplitRoot<Detail: View>: View {
         // Regular is both columns. Compact leaves the visible column to
         // `preferredCompactColumn`, which `navigation` derives from the selection, so a fold,
         // rotation or Split View change shows the same open station. Never writes the selection.
-        .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
+        .onChange(of: effectiveSizeClass, initial: true) { _, sizeClass in
             navigation.setRegularWidth(sizeClass == .regular)
             // Nil insets is the phone: both columns or the compact column, unchanged.
             // An adapting split with nothing selected opens `.all` (this split is two
@@ -417,7 +481,7 @@ struct StationSplitRoot<Detail: View>: View {
     /// phone, and nothing after a station is picked. Compact width (the narrow split)
     /// keeps `.automatic`, which is already the sidebar column.
     private func showStationListIfUnselected(_ insets: SplitInsets?) {
-        guard insets != nil, selectedStationID == nil, horizontalSizeClass == .regular else { return }
+        guard insets != nil, selectedStationID == nil, effectiveSizeClass == .regular else { return }
         if columnVisibility != Self.openListVisibility {
             columnVisibility = Self.openListVisibility
         }
@@ -635,4 +699,38 @@ struct SharedInboxSheet<Content: View>: View {
 
 #Preview {
     StationListView(dependencies: AppDependencies.make())
+}
+
+/// Build 54 -> 55 (-Nova): what the open-Duo Stations gate saw, so the device confirms the
+/// window size, scale, width class and hinge. Release-safe: numbers and booleans only.
+enum OpenDuoGateLog {
+    struct Key: Equatable {
+        var usesDuoStations: Bool
+        var hasFold: Bool
+        var measured: Bool
+    }
+
+    struct Insets: Equatable, Sendable {
+        var top: Double = 0
+        var leading: Double = 0
+        var bottom: Double = 0
+        var trailing: Double = 0
+    }
+
+    private static let log = Logger(subsystem: "com.aerodj.app", category: "layout")
+
+    static func decided(usesDuoStations: Bool, hasFold: Bool, window: CGSize, insets: Insets,
+                        scale: Double, sizeClass: UserInterfaceSizeClass?) {
+        let sizeClassName: String
+        switch sizeClass {
+        case .regular: sizeClassName = "regular"
+        case .compact: sizeClassName = "compact"
+        default: sizeClassName = "none"
+        }
+        let size = String(format: "%.0fx%.0f", Double(window.width), Double(window.height))
+        let safe = String(format: "t%.0f l%.0f b%.0f r%.0f", insets.top, insets.leading,
+                          insets.bottom, insets.trailing)
+        let scaleText = String(format: "%.1f", scale)
+        log.notice("stations gate duo \(usesDuoStations, privacy: .public) hinge \(hasFold, privacy: .public) size class \(sizeClassName, privacy: .public) window \(size, privacy: .public) scale \(scaleText, privacy: .public) safe \(safe, privacy: .public)")
+    }
 }

@@ -134,6 +134,24 @@ public enum FoldedColumnLayout {
         return .centredColumn
     }
 
+    /// Longest side an open-Duo window may have (build 54 fix, -Nova). The sim bands are 820 pt
+    /// on the long side (640 × 820, 820 × 640); the owner's build 54 shots (2853 × 2007 px, the
+    /// 44 pt sidebar button ≈ 140 px, so @3x) are a ≈ 951 × 669 pt window. Every full-screen
+    /// iPad is at least 1133 pt (iPad mini) on its long side. Used only where the regular width class used
+    /// to switch the open Duo off; compact containers never read it.
+    public static let openDuoMaxSide: Double = 1000
+
+    /// The open Duo's window, measured, whatever the width class: wide and tall enough for the
+    /// Duo layout (`controlPlacement == .duoHorizontal`) and no longer than `openDuoMaxSide` on
+    /// either side. False for every iPhone and the closed Duo (they are never `.duoHorizontal`:
+    /// under 500 pt wide upright, at most 440 pt tall sideways) and for a full-screen iPad.
+    public static func isOpenDuoWindow(containerWidth: Double, containerHeight: Double) -> Bool {
+        guard containerWidth.isFinite, containerHeight.isFinite,
+              containerWidth > 0, containerHeight > 0 else { return false }
+        guard max(containerWidth, containerHeight) <= openDuoMaxSide else { return false }
+        return controlPlacement(containerWidth: containerWidth, containerHeight: containerHeight) == .duoHorizontal
+    }
+
     /// Narrowest container that gets the rail column (`usesRailColumn`): a 320 pt column is the
     /// art, the title and the scrubber beside the 56 pt rail.
     public static let railColumnMinWidth: Double = 320

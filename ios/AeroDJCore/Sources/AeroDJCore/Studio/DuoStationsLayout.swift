@@ -60,17 +60,28 @@ public enum StationsLayoutStyle: String, CaseIterable, Equatable, Sendable, Iden
 public enum DuoStationsLayout {
     // MARK: Gate
 
-    /// True only on the open Duo: compact width class and the same container test the player
-    /// uses for its Duo layout (`FoldedColumnLayout.controlPlacement == .duoHorizontal`), the
-    /// unfolded display upright (640 × 820) or sideways (820 × 640). Every iPhone (portrait or
-    /// landscape, Plus and Max included), the closed Duo and regular width are false, so they
-    /// keep today's Stations screen. Sizes are the whole container, safe area included.
+    /// True only on the open Duo: the same container test the player uses for its Duo layout
+    /// (`FoldedColumnLayout.controlPlacement == .duoHorizontal`), the unfolded display upright
+    /// (640 × 820) or sideways (820 × 640). Every iPhone (portrait or landscape, Plus and Max
+    /// included) and the closed Duo are false at either width class, so they keep today's
+    /// Stations screen. Sizes are the whole container, safe area included.
+    ///
+    /// Build 54 (owner: "I am not seeing any changes to the ui"): this used to need the compact
+    /// class, so an open Duo that reports regular width never drew these Stations. The width
+    /// class no longer gates it. Compact is exactly the old rule. Regular also needs an
+    /// open-Duo-sized window (`FoldedColumnLayout.isOpenDuoWindow`, longest side at most
+    /// `openDuoMaxSide`), so a full-screen iPad keeps the sidebar list, or a fold the system
+    /// reports (`hasFold`: a hinge sample or an active division from `FoldDivisionProbe`, which
+    /// no iPad has), for an open Duo window longer than that. -Nova
     public static func usesOpenDuoStations(hasRegularWidth: Bool, containerWidth: Double,
-                                           containerHeight: Double) -> Bool {
-        guard !hasRegularWidth, containerWidth.isFinite, containerHeight.isFinite,
+                                           containerHeight: Double, hasFold: Bool = false) -> Bool {
+        guard containerWidth.isFinite, containerHeight.isFinite,
               containerWidth > 0, containerHeight > 0 else { return false }
-        return FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
-                                                   containerHeight: containerHeight) == .duoHorizontal
+        guard FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
+                                                  containerHeight: containerHeight) == .duoHorizontal
+        else { return false }
+        return !hasRegularWidth || hasFold
+            || FoldedColumnLayout.isOpenDuoWindow(containerWidth: containerWidth, containerHeight: containerHeight)
     }
 
     // MARK: Geometry
@@ -116,6 +127,22 @@ public enum DuoStationsLayout {
     public static var defaultFoldWidth: Double { FoldedColumnLayout.duoFoldGutter }
     /// Gap above and below the rail glass (Rail D's closed screen: 8).
     public static var railVerticalInset: Double { RailDLayout.closedVerticalInset }
+
+    /// Build 54 (-Nova): on the device the status cluster (time, battery ring) is a column on
+    /// the trailing edge, a trailing safe-area inset (≈ 73 pt in the owner's @3x shots), and the
+    /// rail sat inside it, ≈ 90 pt from the window edge. The screen now spans the window's width
+    /// (`ignoresSafeArea` horizontally), so the rail is `RailDLayout.trailingInset` from the
+    /// window edge. Where that column exists the rail starts below the cluster: the cluster ends
+    /// ≈ 107 pt from the window top in the shots, ≈ 83 pt under a ≈ 24 pt top inset, so 88 pt
+    /// from the top of the safe area. Not measured on a device yet; build 55 logs the insets.
+    public static let statusColumnClearance: Double = 88
+
+    /// Gap from the top of the safe area to the rail glass. `railVerticalInset` (8) with no
+    /// trailing unsafe column: every simulator capture and every window today, unchanged.
+    public static func railTopInset(trailingUnsafeWidth: Double) -> Double {
+        guard trailingUnsafeWidth.isFinite, trailingUnsafeWidth > 0.5 else { return railVerticalInset }
+        return max(railVerticalInset, statusColumnClearance)
+    }
 
     /// `foldMinX` / `foldMaxX`: a reported vertical division, if any. Otherwise the book pose
     /// keeps the centred `defaultFoldWidth` band clear anyway, so a flat open Duo never puts a

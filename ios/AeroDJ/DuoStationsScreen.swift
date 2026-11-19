@@ -178,11 +178,17 @@ struct DuoStationsScreen: View {
         GeometryReader { proxy in
             let width = Double(proxy.size.width)
             let height = Double(proxy.size.height)
-            let fold = verticalFold(leadingInset: Double(proxy.safeAreaInsets.leading))
+            // Build 54: the reader spans the window's width (see `ignoresSafeArea` below), so its
+            // origin is the window's leading edge and a reported division needs no shift.
+            let fold = verticalFold(leadingInset: 0)
             let geometry = DuoStationsLayout.geometry(containerWidth: width, containerHeight: height,
                                                       foldMinX: fold?.minX, foldMaxX: fold?.maxX)
             let inset = CGFloat(DuoStationsLayout.railVerticalInset)
             let pageHeight = max(0, proxy.size.height - inset * 2)
+            // Below the trailing status column when there is one; `inset` everywhere else.
+            let railTop = CGFloat(DuoStationsLayout.railTopInset(
+                trailingUnsafeWidth: Double(proxy.safeAreaInsets.trailing)))
+            let railHeight = max(0, proxy.size.height - railTop - inset)
             ZStack(alignment: .topLeading) {
                 FoldedStyle.background
                     .ignoresSafeArea()
@@ -196,16 +202,19 @@ struct DuoStationsScreen: View {
                     DuoStationsRail(nowPlaying: nowPlaying, playing: playingStation, actions: actions,
                                     dj: dj, scrubber: railScrubber, isShown: isShown, moreOpen: $moreOpen,
                                     onOpenPlayer: onOpenPlayer, onOpenWorkspace: openWorkspace)
-                        .frame(width: CGFloat(RailDLayout.railWidth), height: pageHeight)
+                        .frame(width: CGFloat(RailDLayout.railWidth), height: railHeight)
                         .padding(.leading, CGFloat(geometry.railMinX))
-                        .padding(.top, inset)
+                        .padding(.top, railTop)
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             .overlay {
-                if moreOpen { morePanel(geometry, width: width, height: Double(pageHeight), top: inset) }
+                if moreOpen { morePanel(geometry, width: width, height: Double(railHeight), top: railTop) }
             }
         }
+        // Build 54 (-Nova): flush to the window's trailing edge, not the safe area's. Vertical
+        // safe areas still apply. In every capture the horizontal insets are 0, so nothing moves.
+        .ignoresSafeArea(.container, edges: .horizontal)
         .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("stations.duo.\(style.rawValue)")
