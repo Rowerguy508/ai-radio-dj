@@ -578,6 +578,9 @@ final class StudioScreenTests: XCTestCase {
     /// container (compact) and unfolds to the 640×820 Duo (regular), which since #542 is the
     /// 2.0 rail layout. Playback, the selected station, the stored scroll anchor and the load
     /// count stay. Row 4 on screen is checked while folded; unfolded, row 4 must exist.
+    /// The stored-anchor readout is a predicate wait, not a delay: `ScrollAnchorMachine`
+    /// holds the id until the new scroller adopts it or the user scrolls, with no
+    /// main-queue turn. Unfold in this capture also disables the 0.45s animation.
     @MainActor
     func testOpeningThePhoneKeepsPlaybackScrollAndStation() throws {
         try XCTSkipUnless(isOpenLayout, "The unfolded 640 × 820 pt container needs an iPad-size simulator window")

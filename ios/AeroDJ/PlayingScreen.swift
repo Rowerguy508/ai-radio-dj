@@ -43,11 +43,9 @@ struct PlayingScreen: View {
     /// Collapse on the unfolded rail shows the centred column. The container size stays,
     /// and nothing starts or stops. A real fold clears it.
     @State private var duoCollapsed = false
-    /// Set when the layout decision changes and a scroll id is already stored. The
-    /// rebuilt scroller's first layout reports the art; those writes are ignored
-    /// until this is cleared (the stored id is adopted, or this turn's layout ends).
-    @State private var protectingScrollAnchor: String? = nil
-    @State private var scrollGuardGeneration = 0
+    /// Lives above the placement switch. Each scroller names itself, so a fold
+    /// arms the machine on the first `scrollPosition` write, with no clock.
+    @State private var scrollAnchorMachine = DisplayContinuity.ScrollAnchorMachine()
     /// One search session above the compact/Studio switch so a fold cannot wipe results.
     @StateObject private var studioSearch = StudioSearchModel()
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -83,23 +81,15 @@ struct PlayingScreen: View {
         return CGSize(width: splitMeasure.containerWidth, height: splitMeasure.containerHeight)
     }
 
-    private var scrollAnchor: Binding<String?> {
+    private var scrollAnchorStored: Binding<String?> {
         Binding(
             get: { storedScrollAnchor.isEmpty ? nil : storedScrollAnchor },
-            set: { next in
-                let incoming = next ?? ""
-                // Release and Debug: a fold rebuilds the scroller, which reports
-                // the art first. Keep the stored title, row, or other id (#492).
-                switch DisplayContinuity.scrollAnchorWrite(protecting: protectingScrollAnchor,
-                                                           incoming: incoming) {
-                case .ignore:
-                    return
-                case .accept:
-                    protectingScrollAnchor = nil
-                    if incoming != storedScrollAnchor { storedScrollAnchor = incoming }
-                }
-            }
+            set: { storedScrollAnchor = $0 ?? "" }
         )
+    }
+
+    private var scrollHandle: PlayerScrollAnchorHandle {
+        PlayerScrollAnchorHandle(stored: scrollAnchorStored, machine: $scrollAnchorMachine)
     }
 
     #if DEBUG
@@ -132,22 +122,6 @@ struct PlayingScreen: View {
                 .onChange(of: decision, initial: true) { _, chosen in
                     PlayingLayoutLog.chose(chosen, sizeClass: horizontalSizeClass,
                                            width: width, height: Double(routeHeight))
-                    // Protect a stored scroll id across this layout switch. First-layout
-                    // art writes are ignored in `scrollAnchor`. Clear the guard after
-                    // this turn so a later user scroll back to the art is kept.
-                    scrollGuardGeneration += 1
-                    let generation = scrollGuardGeneration
-                    let held = storedScrollAnchor
-                    if held.isEmpty {
-                        protectingScrollAnchor = nil
-                    } else {
-                        protectingScrollAnchor = held
-                        DispatchQueue.main.async {
-                            if generation == scrollGuardGeneration, protectingScrollAnchor == held {
-                                protectingScrollAnchor = nil
-                            }
-                        }
-                    }
                 }
             // Open-Duo Stations' rail (Queue, Tune, Connections): open the workspace on that
             // segment, as `openQueue` / `openTune` / `openConnections` do. Nil everywhere else.
@@ -305,7 +279,7 @@ struct PlayingScreen: View {
                          splitBarEdge: barEdge,
                          layoutSize: splitCanvas,
                          splitHost: splitCanvas == nil ? nil : splitMeasure,
-                         scrollAnchor: scrollAnchor)
+                         scrollHandle: scrollHandle)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
                 .foldedToolbar(heading.header, reviewCount: dj.reviewCount,

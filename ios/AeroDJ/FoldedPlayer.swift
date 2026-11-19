@@ -131,8 +131,11 @@ struct FoldedPlayer: View {
     /// readers never see a split measurement.
     var splitHost: SplitMeasure? = nil
     /// Owned by `PlayingScreen`, above the layout switch. A placement change
-    /// rebuilds the scroll view and reads this same anchor back.
-    var scrollAnchor: Binding<String?> = .constant(Optional<String>.none)
+    /// rebuilds the scroll view; the handle arms on that scroller's first write.
+    var scrollHandle = PlayerScrollAnchorHandle(
+        stored: .constant(Optional<String>.none),
+        machine: .constant(DisplayContinuity.ScrollAnchorMachine())
+    )
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -347,7 +350,7 @@ struct FoldedPlayer: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
-        .scrollPosition(id: scrollAnchor)
+        .playerScrollPosition(scrollHandle, scrollerID: "compactUpper")
         .modifier(ContinuityScrollerID(enabled: continuityProbe))
     }
 
@@ -388,7 +391,7 @@ struct FoldedPlayer: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
-        .scrollPosition(id: scrollAnchor)
+        .playerScrollPosition(scrollHandle, scrollerID: "centredColumn")
         .frame(width: size.width, height: size.height)
     }
 
@@ -466,7 +469,7 @@ struct FoldedPlayer: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollContentBackground(.hidden)
-                .scrollPosition(id: scrollAnchor)
+                .playerScrollPosition(scrollHandle, scrollerID: "openHalves")
                 .modifier(ContinuityScrollerID(enabled: continuityProbe))
                 .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
                 .background { dayWash.accessibilityHidden(true) }
@@ -622,7 +625,7 @@ struct FoldedPlayer: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollContentBackground(.hidden)
-            .scrollPosition(id: scrollAnchor)
+            .playerScrollPosition(scrollHandle, scrollerID: "openCentred")
             .frame(width: CGFloat(playerWidth), height: size.height, alignment: .top)
             .background { dayWash.accessibilityHidden(true) }
 
@@ -731,7 +734,7 @@ struct FoldedPlayer: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollContentBackground(.hidden)
-                .scrollPosition(id: scrollAnchor)
+                .playerScrollPosition(scrollHandle, scrollerID: "railColumn")
                 .modifier(ContinuityScrollerID(enabled: continuityProbe))
                 PlaybackErrorBanner(error: snapshot.error, actions: actions)
                     .padding(.vertical, 12)
@@ -828,7 +831,7 @@ struct FoldedPlayer: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollContentBackground(.hidden)
-            .scrollPosition(id: scrollAnchor)
+            .playerScrollPosition(scrollHandle, scrollerID: "centredPinned")
             controls(contentInset: 0, toolbarInset: 0,
                      spacing: CGFloat(Gap.betweenControls), balancesTransport: true)
                 .padding(.top, 8)
@@ -864,7 +867,7 @@ struct FoldedPlayer: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollContentBackground(.hidden)
-                .scrollPosition(id: scrollAnchor)
+                .playerScrollPosition(scrollHandle, scrollerID: "bookRailColumn")
                 PlaybackErrorBanner(error: snapshot.error, actions: actions)
                     .padding(.vertical, 12)
             }
@@ -1288,7 +1291,7 @@ extension FoldedPlayer {
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
-        .scrollPosition(id: scrollAnchor)
+        .playerScrollPosition(scrollHandle, scrollerID: "outerUpper")
         .modifier(ContinuityScrollerID(enabled: continuityProbe))
     }
 

@@ -87,23 +87,99 @@ public enum DisplayContinuity {
     public static let artAnchor = "player.art"
     public static let titleAnchor = "player.title"
 
-    /// A rebuilt scroller's first layout reports the art (or nothing) before it
-    /// adopts the stored id. Ignore that write so a fold cannot jump the scroll
-    /// to the top. Accepting the stored id, or any other non-art id, is a real
-    /// update. This runs in Release: the previous guard lived in `#if DEBUG` and
-    /// only protected `continuity.row.*` probe ids (Atlas's #493 nit).
+    /// A `scrollPosition` write: keep the incoming id, or ignore it so a
+    /// rebuilt scroller cannot jump the stored spot to the top.
     public enum ScrollAnchorWrite: Equatable, Sendable {
         case ignore
         case accept
     }
 
-    public static func scrollAnchorWrite(protecting: String?, incoming: String?) -> ScrollAnchorWrite {
-        let current = protecting ?? ""
-        let next = incoming ?? ""
-        if current.isEmpty { return .accept }
-        if next == current { return .accept }
-        if next.isEmpty || next == artAnchor { return .ignore }
-        return .accept
+    /// Deterministic guard for a stored scroll id when a scroller is rebuilt
+    /// (opening the phone). Never uses a clock or a main-queue turn.
+    ///
+    /// Phases: `idle` → `armed` (a stored id and a new scroller) → `adopted`
+    /// (the scroller reported the held id) or `userScrolled` (the user dragged)
+    /// → `released`. An art write that arrives before `arm`, or after the 0.45s
+    /// layout animation, is ignored until adoption or a user scroll. A user
+    /// scroll back to the art is then kept. While armed or adopted, any id
+    /// other than the held one is ignored; that is the old DEBUG probe guard,
+    /// for every stored id, in Release too.
+    public struct ScrollAnchorMachine: Equatable, Sendable {
+        public enum Phase: Equatable, Sendable {
+            case idle
+            case armed
+            case adopted
+            case userScrolled
+            case released
+        }
+
+        public private(set) var phase: Phase = .idle
+        public private(set) var held: String = ""
+        /// Identity of the scroller this cycle is tracking. Empty means none.
+        public private(set) var layout: String = ""
+
+        public init() {}
+
+        /// Arm for a (re)built scroller. A new `layout` always starts a cycle:
+        /// a non-empty stored id arms, an empty one is idle. Calls for the same
+        /// layout after adoption, a user scroll, or release are no-ops, so a
+        /// later user scroll back to the art is not re-armed away.
+        public mutating func arm(held stored: String, layout: String) {
+            if !layout.isEmpty, layout == self.layout {
+                switch phase {
+                case .adopted, .userScrolled, .released:
+                    return
+                case .armed, .idle:
+                    break
+                }
+            }
+            self.layout = layout
+            if stored.isEmpty {
+                held = ""
+                phase = .idle
+            } else {
+                held = stored
+                phase = .armed
+            }
+        }
+
+        /// A scrollPosition write. Passing `layout` arms first when this is a
+        /// new scroller, so an art write that lands before a separate `arm`
+        /// call cannot overwrite the stored id.
+        public mutating func write(_ incoming: String?, stored: String = "",
+                                   layout: String? = nil) -> ScrollAnchorWrite {
+            if let layout, !layout.isEmpty {
+                let seed = stored.isEmpty ? held : stored
+                arm(held: seed, layout: layout)
+            }
+            let next = incoming ?? ""
+            switch phase {
+            case .idle, .released:
+                return .accept
+            case .userScrolled:
+                phase = .released
+                return .accept
+            case .armed:
+                if !held.isEmpty, next == held {
+                    phase = .adopted
+                    return .accept
+                }
+                return .ignore
+            case .adopted:
+                if !held.isEmpty, next == held { return .accept }
+                return .ignore
+            }
+        }
+
+        /// The user is dragging the scroller. Later writes, including the art, are kept.
+        public mutating func noteUserScrolled() {
+            switch phase {
+            case .armed, .adopted:
+                phase = .userScrolled
+            case .idle, .released, .userScrolled:
+                break
+            }
+        }
     }
 
     /// `playing|track-id`. Empty track id when nothing is loaded. A fold must

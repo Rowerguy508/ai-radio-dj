@@ -241,36 +241,91 @@ final class DisplayContinuityTests: XCTestCase {
         XCTAssertEqual(DisplayContinuity.playbackToken(transport: .stopped, trackID: nil), "stopped|")
     }
 
-    /// Release and Debug share this: a fold rebuilds the scroller, which reports
-    /// the art first. The stored title, row, or any other id must win.
-    func testRebuiltScrollerDoesNotReplaceAStoredAnchorWithTheArt() {
-        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: nil, incoming: DisplayContinuity.artAnchor),
-                       .accept, "nothing was stored")
-        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: "", incoming: DisplayContinuity.artAnchor),
-                       .accept, "an empty protect is nothing stored")
-        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.titleAnchor,
-                                                          incoming: DisplayContinuity.artAnchor),
-                       .ignore)
-        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.rowAnchor(4),
-                                                          incoming: DisplayContinuity.artAnchor),
-                       .ignore)
-        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.rowAnchor(4),
-                                                          incoming: nil),
-                       .ignore)
-        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.rowAnchor(4),
-                                                          incoming: ""),
-                       .ignore)
-        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.titleAnchor,
-                                                          incoming: DisplayContinuity.titleAnchor),
-                       .accept, "the new view adopted the stored id")
-        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.titleAnchor,
-                                                          incoming: DisplayContinuity.rowAnchor(2)),
-                       .accept, "a later scroll to another real id is kept")
-        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.artAnchor,
-                                                          incoming: DisplayContinuity.artAnchor),
-                       .accept)
-        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.artAnchor,
-                                                          incoming: DisplayContinuity.titleAnchor),
-                       .accept, "scrolling down from the art is kept")
+    /// An art write can land before a separate arm() call. Passing the new
+    /// scroller's layout on the write arms first, then ignores the art.
+    func testArtWriteBeforeArmingDoesNotReplaceTheStoredId() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        XCTAssertEqual(machine.phase, .idle)
+        let result = machine.write(DisplayContinuity.artAnchor,
+                                   stored: DisplayContinuity.titleAnchor,
+                                   layout: "duoRail")
+        XCTAssertEqual(result, .ignore)
+        XCTAssertEqual(machine.phase, .armed)
+        XCTAssertEqual(machine.held, DisplayContinuity.titleAnchor)
+        XCTAssertEqual(machine.layout, "duoRail")
+    }
+
+    /// The 0.45s layout animation is not a release. Later art writes stay ignored
+    /// until the scroller adopts the held id or the user scrolls. No clock.
+    func testArtWriteAfterTheLayoutAnimationStaysIgnoredUntilAdoptionOrUserScroll() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        machine.arm(held: DisplayContinuity.rowAnchor(4), layout: "phoneBottom")
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor), .ignore)
+        XCTAssertEqual(machine.phase, .armed)
+        // A later frame, as after the 0.45s mode animation, still reports the art.
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor), .ignore)
+        XCTAssertEqual(machine.write(DisplayContinuity.titleAnchor), .ignore,
+                       "a first-layout title is not a user scroll")
+        XCTAssertEqual(machine.write(""), .ignore)
+        XCTAssertEqual(machine.write(nil), .ignore)
+        XCTAssertEqual(machine.phase, .armed)
+        XCTAssertEqual(machine.held, DisplayContinuity.rowAnchor(4))
+    }
+
+    func testScrollerAdoptionAcceptsTheHeldIdAndStillIgnoresALaterArtWrite() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        machine.arm(held: DisplayContinuity.rowAnchor(4), layout: "duoRail")
+        XCTAssertEqual(machine.write(DisplayContinuity.rowAnchor(4)), .accept)
+        XCTAssertEqual(machine.phase, .adopted)
+        XCTAssertEqual(machine.write(DisplayContinuity.rowAnchor(4)), .accept)
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor), .ignore,
+                       "adoption is not a release; a late art write cannot jump")
+        XCTAssertEqual(machine.phase, .adopted)
+    }
+
+    func testUserScrollBackToTheArtIsKept() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        machine.arm(held: DisplayContinuity.titleAnchor, layout: "duoRail")
+        XCTAssertEqual(machine.write(DisplayContinuity.titleAnchor), .accept)
+        XCTAssertEqual(machine.phase, .adopted)
+        machine.noteUserScrolled()
+        XCTAssertEqual(machine.phase, .userScrolled)
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor), .accept)
+        XCTAssertEqual(machine.phase, .released)
+        XCTAssertEqual(machine.write(DisplayContinuity.titleAnchor), .accept,
+                       "after release, later writes stay accepted")
+    }
+
+    func testUserScrollWhileArmedReleasesWithoutWaitingForAdoption() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        machine.arm(held: DisplayContinuity.titleAnchor, layout: "duoRail")
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor), .ignore)
+        machine.noteUserScrolled()
+        XCTAssertEqual(machine.phase, .userScrolled)
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor), .accept)
+        XCTAssertEqual(machine.phase, .released)
+    }
+
+    func testANewLayoutRearmsAFreshStoredIdAndTheSameLayoutDoesNot() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        machine.arm(held: DisplayContinuity.titleAnchor, layout: "phoneBottom")
+        XCTAssertEqual(machine.write(DisplayContinuity.titleAnchor), .accept)
+        machine.noteUserScrolled()
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor), .accept)
+        XCTAssertEqual(machine.phase, .released)
+        machine.arm(held: DisplayContinuity.artAnchor, layout: "phoneBottom")
+        XCTAssertEqual(machine.phase, .released, "same layout stays released")
+        machine.arm(held: DisplayContinuity.rowAnchor(4), layout: "duoRail")
+        XCTAssertEqual(machine.phase, .armed)
+        XCTAssertEqual(machine.held, DisplayContinuity.rowAnchor(4))
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor, stored: DisplayContinuity.rowAnchor(4),
+                                     layout: "duoRail"), .ignore)
+    }
+
+    func testNothingStoredStaysIdleAndAcceptsWrites() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        machine.arm(held: "", layout: "duoRail")
+        XCTAssertEqual(machine.phase, .idle)
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor), .accept)
     }
 }
