@@ -38,11 +38,16 @@ struct PlayingScreen: View {
     #if DEBUG
     @SceneStorage("aerodj.continuity.station") private var continuityStation = ""
     @SceneStorage("aerodj.continuity.playback") private var continuityPlayback = ""
+    /// The scroll guard's phase, for the continuity test's adoption wait.
+    @SceneStorage("aerodj.continuity.anchorPhase") private var continuityAnchorPhase = ""
     #endif
     @State private var showWorkspace = false
     /// Collapse on the unfolded rail shows the centred column. The container size stays,
     /// and nothing starts or stops. A real fold clears it.
     @State private var duoCollapsed = false
+    /// Lives above the placement switch. Each scroller names itself, so a fold
+    /// arms the machine on the first `scrollPosition` write, with no clock.
+    @State private var scrollAnchorMachine = DisplayContinuity.ScrollAnchorMachine()
     /// One search session above the compact/Studio switch so a fold cannot wipe results.
     @StateObject private var studioSearch = StudioSearchModel()
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -78,22 +83,15 @@ struct PlayingScreen: View {
         return CGSize(width: splitMeasure.containerWidth, height: splitMeasure.containerHeight)
     }
 
-    private var scrollAnchor: Binding<String?> {
+    private var scrollAnchorStored: Binding<String?> {
         Binding(
             get: { storedScrollAnchor.isEmpty ? nil : storedScrollAnchor },
-            set: { next in
-                let stored = next ?? ""
-                #if DEBUG
-                // The continuity probe scrolls to a row, then the placement switch
-                // builds a new scroll view. That view's first layout pass reports
-                // the art id. Keep the row so the new view scrolls back to it.
-                if storedScrollAnchor.hasPrefix("continuity.row."), !stored.hasPrefix("continuity.row.") {
-                    return
-                }
-                #endif
-                if stored != storedScrollAnchor { storedScrollAnchor = stored }
-            }
+            set: { storedScrollAnchor = $0 ?? "" }
         )
+    }
+
+    private var scrollHandle: PlayerScrollAnchorHandle {
+        PlayerScrollAnchorHandle(stored: scrollAnchorStored, machine: $scrollAnchorMachine)
     }
 
     #if DEBUG
@@ -168,6 +166,9 @@ struct PlayingScreen: View {
             }
             .onChange(of: playbackToken, initial: true) { _, token in
                 continuityPlayback = token
+            }
+            .onChange(of: scrollAnchorMachine.phaseName, initial: true) { _, name in
+                continuityAnchorPhase = name
             }
             #endif
         }
@@ -283,7 +284,7 @@ struct PlayingScreen: View {
                          splitBarEdge: barEdge,
                          layoutSize: splitCanvas,
                          splitHost: splitCanvas == nil ? nil : splitMeasure,
-                         scrollAnchor: scrollAnchor)
+                         scrollHandle: scrollHandle)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("layout.compact")
                 .foldedToolbar(heading.header, reviewCount: dj.reviewCount,
