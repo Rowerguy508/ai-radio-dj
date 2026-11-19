@@ -972,7 +972,7 @@ final class StudioScreenTests: XCTestCase {
         let bar = any["folded.systemBar"]
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "collapse left the rail up")
-        XCTAssertTrue(any["folded.bookColumn"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(any["folded.wideColumn"].waitForExistence(timeout: 5), app.debugDescription)
         assertTransportOnScreen(app, window: window, box: box, "landscape, rail collapsed")
         let expand = app.buttons["folded.expandRail"]
         XCTAssertTrue(expand.waitForExistence(timeout: 5), "no way back to the rail\n\(app.debugDescription)")
