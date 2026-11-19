@@ -240,4 +240,37 @@ final class DisplayContinuityTests: XCTestCase {
         XCTAssertEqual(DisplayContinuity.playbackToken(transport: .paused, trackID: nil), "paused|")
         XCTAssertEqual(DisplayContinuity.playbackToken(transport: .stopped, trackID: nil), "stopped|")
     }
+
+    /// Release and Debug share this: a fold rebuilds the scroller, which reports
+    /// the art first. The stored title, row, or any other id must win.
+    func testRebuiltScrollerDoesNotReplaceAStoredAnchorWithTheArt() {
+        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: nil, incoming: DisplayContinuity.artAnchor),
+                       .accept, "nothing was stored")
+        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: "", incoming: DisplayContinuity.artAnchor),
+                       .accept, "an empty protect is nothing stored")
+        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.titleAnchor,
+                                                          incoming: DisplayContinuity.artAnchor),
+                       .ignore)
+        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.rowAnchor(4),
+                                                          incoming: DisplayContinuity.artAnchor),
+                       .ignore)
+        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.rowAnchor(4),
+                                                          incoming: nil),
+                       .ignore)
+        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.rowAnchor(4),
+                                                          incoming: ""),
+                       .ignore)
+        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.titleAnchor,
+                                                          incoming: DisplayContinuity.titleAnchor),
+                       .accept, "the new view adopted the stored id")
+        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.titleAnchor,
+                                                          incoming: DisplayContinuity.rowAnchor(2)),
+                       .accept, "a later scroll to another real id is kept")
+        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.artAnchor,
+                                                          incoming: DisplayContinuity.artAnchor),
+                       .accept)
+        XCTAssertEqual(DisplayContinuity.scrollAnchorWrite(protecting: DisplayContinuity.artAnchor,
+                                                          incoming: DisplayContinuity.titleAnchor),
+                       .accept, "scrolling down from the art is kept")
+    }
 }

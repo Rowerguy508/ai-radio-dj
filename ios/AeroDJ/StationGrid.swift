@@ -12,13 +12,23 @@ import SwiftUI
 ///
 /// TODO(#465 item 4): with `arrangement == .twoPane`, show this grid beside the detail.
 /// TODO(#465 item 2): with a `foldDivision`, keep the column gap on the fold.
-/// On forward-merge of #493, scroll to its stored `aerodj.stations.scrollAnchor` before the
-/// selected station, like the carousel.
+/// Same SceneStorage key as `StationCarousel`: a fold destroys the compact
+/// carousel and this grid must restore the focused card before falling back
+/// to the selected station (#492, #493).
 struct StationGrid: View {
     let stations: [Station]
     let selectedID: Station.ID?
     let layout: AppWideLayout.Decision
     let onSelect: (Station.ID) -> Void
+
+    @SceneStorage("aerodj.stations.scrollAnchor") private var storedFocus = ""
+
+    private var focusBinding: Binding<Station.ID?> {
+        Binding(
+            get: { storedFocus.isEmpty ? nil : UUID(uuidString: storedFocus) },
+            set: { storedFocus = $0?.uuidString ?? "" }
+        )
+    }
 
     var body: some View {
         ScrollViewReader { reader in
@@ -39,14 +49,30 @@ struct StationGrid: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("stations.grid")
             }
+            .scrollPosition(id: focusBinding)
             .scrollContentBackground(.hidden)
             .background(FoldedStyle.background.ignoresSafeArea())
             .environment(\.colorScheme, .dark)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .onAppear {
-                // A restored or carried-over selection is brought into view; no animation,
-                // so Reduce Motion needs no branch. Scrolling never selects.
-                if let selectedID { reader.scrollTo(selectedID, anchor: .center) }
+                // A stored carousel/grid focus wins. The selected station is only
+                // the default when nothing was scrolled, same as the carousel.
+                let session = DisplayContinuity.Session(
+                    selectedStationID: selectedID?.uuidString,
+                    scrollAnchor: storedFocus.isEmpty ? nil : storedFocus,
+                    playbackToken: "",
+                    loadCount: 0
+                ).appeared(defaultAnchor: selectedID?.uuidString)
+                if let anchor = session.scrollAnchor, anchor != storedFocus {
+                    storedFocus = anchor
+                }
+                if let id = UUID(uuidString: storedFocus) ?? selectedID {
+                    reader.scrollTo(id, anchor: .center)
+                }
+            }
+            .onChange(of: selectedID) { _, id in
+                guard let id, id.uuidString != storedFocus else { return }
+                storedFocus = id.uuidString
             }
         }
     }

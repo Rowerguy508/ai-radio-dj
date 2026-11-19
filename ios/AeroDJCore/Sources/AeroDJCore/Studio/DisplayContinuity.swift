@@ -87,6 +87,25 @@ public enum DisplayContinuity {
     public static let artAnchor = "player.art"
     public static let titleAnchor = "player.title"
 
+    /// A rebuilt scroller's first layout reports the art (or nothing) before it
+    /// adopts the stored id. Ignore that write so a fold cannot jump the scroll
+    /// to the top. Accepting the stored id, or any other non-art id, is a real
+    /// update. This runs in Release: the previous guard lived in `#if DEBUG` and
+    /// only protected `continuity.row.*` probe ids (Atlas's #493 nit).
+    public enum ScrollAnchorWrite: Equatable, Sendable {
+        case ignore
+        case accept
+    }
+
+    public static func scrollAnchorWrite(protecting: String?, incoming: String?) -> ScrollAnchorWrite {
+        let current = protecting ?? ""
+        let next = incoming ?? ""
+        if current.isEmpty { return .accept }
+        if next == current { return .accept }
+        if next.isEmpty || next == artAnchor { return .ignore }
+        return .accept
+    }
+
     /// `playing|track-id`. Empty track id when nothing is loaded. A fold must
     /// leave this string alone.
     public static func playbackToken(transport: TransportState, trackID: String?) -> String {
