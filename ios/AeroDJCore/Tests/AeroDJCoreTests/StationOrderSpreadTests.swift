@@ -262,14 +262,29 @@ final class StationOrderSpreadFeedTests: XCTestCase {
         }
     }
 
-    /// The app's default (`.systemRandom`) spreads too.
+    /// The app default's spread path, pinned to the same SplitMix64 replay the other
+    /// spread tests in this file use (`.stream(0x418)`). Same bounds as before: at most
+    /// one of 40 starts has every seed song in the first 13, and the mean seed position
+    /// is at least 12. The unseeded `.systemRandom` version of this could flake in CI.
     func testTheAppDefaultSpreads() async throws {
-        let f = feed(.systemRandom)
+        let f = feed(.stream(0x418))
         var orders: [[String]] = []
         for _ in 0..<40 { orders.append(try await start(f)) }
         let allSeedsEarly = orders.filter { o in seedSongs.allSatisfy { (o.firstIndex(of: $0) ?? .max) < 13 } }.count
         XCTAssertLessThanOrEqual(allSeedsEarly, 1)
         XCTAssertGreaterThanOrEqual(mean(positions(of: seedSongs, in: orders)), 12)
+    }
+
+    /// Smoke check that the live `.systemRandom` default is still a fresh-per-build
+    /// source and actually varies. This does not re-assert the spread bounds: those
+    /// are statistical on an unseeded RNG and could flake. 40 identical orders would
+    /// mean the default is stuck, not a flaky shuffle.
+    func testTheAppDefaultSystemRandomVaries() async throws {
+        XCTAssertTrue(StationShuffleSeedSource.systemRandom.isFreshPerBuild)
+        let f = feed(.systemRandom)
+        var orders: [[String]] = []
+        for _ in 0..<40 { orders.append(try await start(f)) }
+        XCTAssertGreaterThan(Set(orders).count, 1, "40 starts under .systemRandom must not all be the same order")
     }
 
     /// `.perDay` (the tests' predictable order) is unchanged: it does not spread.

@@ -48,6 +48,12 @@ public enum FoldedColumnLayout {
         return (min(art, column), column)
     }
 
+    /// What the centred column keeps under its art (iPhone landscape, and the collapsed-rail
+    /// pinned column): title, DJ status, the scrubber and transport (`metrics`). Larger at
+    /// accessibility text sizes.
+    public static let centredColumnReserveBelowArt: Double = 380
+    public static let centredColumnReserveBelowArtAccessibility: Double = 620
+
     /// Shortest container that gets the horizontal Duo split.
     ///
     /// The split uses the full width, so controls sit at both edges. A wide compact
@@ -174,9 +180,13 @@ public enum FoldedColumnLayout {
     /// of the rail. The navigation bar is transparent over the player, so the window is the container.
     ///
     /// Only a reader that starts on screen (global origin not left of or above the window) counts
-    /// its insets. A fixed-size container larger than its window (the Studio resize probe's
-    /// 780 pt column on a 390 pt iPhone) is centred off screen, so its insets are the parts hidden
-    /// under the status and navigation bars, not room it can use: it keeps the reader height.
+    /// its insets. A reader whose origin is off screen to the left or above keeps the reader
+    /// height: those insets are the parts hidden under the bars, not room it can use.
+    ///
+    /// The Studio resize probe (`LayoutResizeProbe` in StudioCapture) is a fixed-size
+    /// `NavigationStack` drawn in an overlay (alignment `.topLeading`) on a window-sized
+    /// `Color.clear` base, so a column wider than an iPhone window cannot widen the capture
+    /// root. That column starts on screen, so `routingHeight` still adds its safe-area insets.
     public static func routingHeight(readerHeight: Double, safeAreaTop: Double, safeAreaBottom: Double,
                                      readerMinX: Double = 0, readerMinY: Double = 0) -> Double {
         guard readerMinX >= -1, readerMinY >= -1 else { return readerHeight }
@@ -277,6 +287,50 @@ public enum DuoSleepTimer {
     public static func accessibilityValue(minutes: Int?) -> String {
         guard let minutes else { return "Off" }
         return "\(minutes) minutes"
+    }
+}
+
+/// One rail's sleep timer (per rail: the player's Rail D and the open-Duo Stations rail each
+/// own one). `DuoSleepTimerButton` keeps it in `@State`, waits `minutes` under a task keyed by
+/// `generation`, then asks `expire(generation:)` whether to pause.
+///
+/// A rail that is not on screen cannot pause playback: hiding it (the Stations rail while the
+/// player is pushed over it) turns its timer Off, and an expiry that arrives while it is hidden,
+/// or after a re-arm or Off, is ignored. Off never pauses.
+public struct DuoRailSleepTimerState: Equatable, Sendable {
+    /// Nil is Off.
+    public private(set) var minutes: Int?
+    /// Bumped by every arm, Off and hide that cancels, so a stale wait cannot fire.
+    public private(set) var generation: Int = 0
+    public private(set) var isShown: Bool
+
+    public init(isShown: Bool = true) {
+        self.isShown = isShown
+    }
+
+    /// The wait for the current arm, or nil when Off.
+    public var delaySeconds: Double? { minutes.map { Double($0 * 60) } }
+
+    /// A menu choice: minutes, or nil for Off. Restarts the wait.
+    public mutating func arm(_ minutes: Int?) {
+        self.minutes = isShown ? minutes : nil
+        generation &+= 1
+    }
+
+    /// The rail went off or on screen. Going off screen cancels an armed timer (back to Off).
+    public mutating func setShown(_ shown: Bool) {
+        isShown = shown
+        if !shown, minutes != nil {
+            minutes = nil
+            generation &+= 1
+        }
+    }
+
+    /// The wait armed at `armed` finished. True means pause now; the timer is then Off.
+    public mutating func expire(generation armed: Int) -> Bool {
+        guard armed == generation, minutes != nil, isShown else { return false }
+        minutes = nil
+        return true
     }
 }
 

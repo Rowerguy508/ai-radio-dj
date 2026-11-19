@@ -103,9 +103,14 @@ public final class DJBreakSession {
     /// discovery are tuning sliders on the same station, so their new queue keeps the show going.
     /// A refill, a re-queue or restart on the same station, a skip, or a genre, mood, personality,
     /// energy or briefing edit never re-greets (none is in the key; the feed starts no new queue for
-    /// them). A tags-only station has no key (nil); switching between two tags-only stations does
-    /// not re-greet (known gap until stations have a real id).
+    /// them). A tags-only station has no key (nil): two of them are told apart by the station id the
+    /// caller passes (`openedStationID`, #568).
     private var openedStation: StationQueueKey??
+    /// #568: the station id (`StationRef.id`) the last queue was started for, nil when the caller
+    /// passed none. Only read when both the last and the new queue are tags-only (no key): two
+    /// known, different ids re-greet; the same id (a re-tap, a re-queue, a tag edit) or an unknown
+    /// one does not. Keyed stations still compare seeds only.
+    private var openedStationID: String?
     /// Station intro (#442). One chain at a time: a new station cancels the render already
     /// in flight and does not start another until that render's voice reservation is released.
     private var stationIntroID: String?
@@ -223,8 +228,10 @@ public final class DJBreakSession {
     /// `mayBeNarrated` before they are planned.
     @discardableResult
     public func beginQueueInBackground(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
-                                       sources: [ConnectionItem] = [], stationName: String? = nil) -> Task<Void, Never> {
-        beginQueueInBackground(reserveQueueSetup(), tracks, briefing: briefing, sources: sources, stationName: stationName)
+                                       sources: [ConnectionItem] = [], stationName: String? = nil,
+                                       stationID: String? = nil) -> Task<Void, Never> {
+        beginQueueInBackground(reserveQueueSetup(), tracks, briefing: briefing, sources: sources,
+                               stationName: stationName, stationID: stationID)
     }
 
     /// #116 (-Atlas): marks a new queue as pending *before* `music.play` is called, so a
@@ -256,13 +263,15 @@ public final class DJBreakSession {
     public func beginQueueInBackground(_ reservation: QueueSetupReservation, _ tracks: [DJTrack],
                                        briefing: NarrationHandoff? = nil,
                                        sources: [ConnectionItem] = [],
-                                       stationName: String? = nil) -> Task<Void, Never> {
+                                       stationName: String? = nil,
+                                       stationID: String? = nil) -> Task<Void, Never> {
         let generation = reservation.generation
         guard generation == queueSetupGeneration, queueSetupPending else { return Task {} }
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
-            await self.queueStarted(tracks, briefing: briefing, sources: sources, stationName: stationName)
+            await self.queueStarted(tracks, briefing: briefing, sources: sources, stationName: stationName,
+                                    stationID: stationID)
             guard !Task.isCancelled, generation == self.queueSetupGeneration else { return }
             self.queueSetupPending = false
             if let pending = self.pendingSongStart {
@@ -368,9 +377,12 @@ public final class DJBreakSession {
     /// A new queue: everything prepared for the old one is dropped, then the queue is planned
     /// with the active station's cadence. `briefing` is approved narration (may be nil);
     /// `sources` are the items its personal cues come from. A personal cue whose source is
-    /// missing from `sources` or not narratable now is left out (fails closed).
+    /// missing from `sources` or not narratable now is left out (fails closed). `stationID` is the
+    /// queue's station (`StationRef.id`), nil when unknown; it only tells two tags-only stations
+    /// apart for the show opener (#568).
     public func queueStarted(_ tracks: [DJTrack], briefing: NarrationHandoff? = nil,
-                             sources: [ConnectionItem] = [], stationName: String? = nil) async {
+                             sources: [ConnectionItem] = [], stationName: String? = nil,
+                             stationID: String? = nil) async {
         if let hook = testBeforeQueueStarted {
             await hook()
             guard !Task.isCancelled else { return }
@@ -442,9 +454,15 @@ public final class DJBreakSession {
         // keep it, including a refill that passes no name. Set before the re-greet.
         let spokenName = stationName.flatMap(EditorialStationName.usable)
         let seedsChanged = openedStation.map { $0?.seeds != committed?.seeds } ?? false
+        // #568: two tags-only stations (no key on either side) differ by their known station ids.
+        let tagsOnlyStationChanged = openedStation.map { opened in
+            opened == nil && committed == nil && stationID != nil && openedStationID != nil
+                && stationID != openedStationID
+        } ?? false
+        let stationChanged = seedsChanged || tagsOnlyStationChanged
         if let spokenName {
             writer.stationName = spokenName
-        } else if seedsChanged {
+        } else if stationChanged {
             writer.stationName = DJScriptWriter.builtInStationName
         }
         // A different station opens the show again (#358). Its old queue's opener, if it already
@@ -452,8 +470,9 @@ public final class DJBreakSession {
         // would start with no opener. Anti-repeat memory is kept (#472): the new opener won't
         // echo the last one, and a re-queue of the same seeds does not greet again. A time check
         // still inside 30 minutes is left out of that opener and reported as `.spacing`.
-        if seedsChanged { writer.greetAgain() }
+        if stationChanged { writer.greetAgain() }
         openedStation = .some(committed)
+        openedStationID = stationID
         replan(from: 0, keepingThrough: -1)
         let queuedAppend = stationAppendPending
         stationAppendPending = []
