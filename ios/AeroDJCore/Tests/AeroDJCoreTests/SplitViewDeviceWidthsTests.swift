@@ -199,4 +199,70 @@ final class SplitViewDeviceWidthsTests: XCTestCase {
         XCTAssertTrue(slice.adapts)
         XCTAssertEqual(slice.barEdge, .leading)
     }
+
+    /// The #574 capture slices: before (pre-#499 guard) keeps the preferred side, after
+    /// moves the bar to the outer, leading edge.
+    func testTheDuoLandscapeCaptureSlices() {
+        XCTAssertEqual(SplitViewLayout.samples.map(\.name), ["narrow", "half", "wide", "full"])
+        let expected: [(SplitViewLayout.Sample, SplitViewLayout.Span)] = [
+            (SplitViewLayout.duoLandscape320, .compactNarrow),
+            (SplitViewLayout.duoLandscape410, .compactNarrow),
+            (SplitViewLayout.duoLandscape500, .half),
+        ]
+        XCTAssertEqual(SplitViewLayout.duoLandscapeSamples, expected.map(\.0))
+        for (sample, span) in expected {
+            XCTAssertEqual(SplitViewLayout.sample(named: sample.name), sample)
+            XCTAssertEqual(sample.height, 640)
+            XCTAssertFalse(sample.hasRegularWidth)
+            XCTAssertGreaterThan(sample.leading, sample.trailing)
+            let after = SplitViewLayout.chrome(widthClass: .compact, containerWidth: sample.width,
+                                               containerHeight: sample.height, leadingInset: sample.leading,
+                                               trailingInset: sample.trailing, preferredBarEdge: .trailing)
+            XCTAssertTrue(after.adapts, sample.name)
+            XCTAssertEqual(after.barEdge, .leading, sample.name)
+            XCTAssertEqual(after.span, span, sample.name)
+            #if DEBUG
+            let before = SplitViewLayout.chromeWithPre499Guard(
+                widthClass: .compact, containerWidth: sample.width, containerHeight: sample.height,
+                leadingInset: sample.leading, trailingInset: sample.trailing, preferredBarEdge: .trailing)
+            XCTAssertFalse(before.adapts, sample.name)
+            XCTAssertEqual(before.barEdge, .trailing, sample.name)
+            XCTAssertEqual(before.span, span, sample.name)
+            #endif
+        }
+    }
+
+    #if DEBUG
+    /// The capture-only "before" is exactly the guard at 74414959.
+    func testThePre499CaptureGuardMatchesTheOldRule() {
+        func old(_ regular: Bool, _ width: Double, _ height: Double, _ lead: Double, _ trail: Double,
+                 _ preferred: SplitViewLayout.BarEdge) -> (Bool, SplitViewLayout.BarEdge) {
+            let landscapePhone = height < FoldedColumnLayout.duoMinHeight
+            let adapts = abs(lead - trail) > 0.5 && !landscapePhone && width > 0 && height > 0
+            let edge = adapts ? SplitViewLayout.barEdge(leading: lead, trailing: trail, preferred: preferred)
+                : preferred
+            return (adapts, edge)
+        }
+        let widths: [Double] = [0, 320, 410, 500, 540, 640, 680, 820, 932, 1376]
+        let heights: [Double] = [0, 390, 640, 715, 716, 760, 820, 1032]
+        let insets: [(Double, Double)] = [(0, 0), (28, 0), (0, 28), (20, 8), (59, 59)]
+        for width in widths {
+            for height in heights {
+                for (lead, trail) in insets {
+                    for widthClass in [SplitViewLayout.WidthClass.compact, .regular, nil] {
+                        for preferred in [SplitViewLayout.BarEdge.leading, .trailing] {
+                            let got = SplitViewLayout.chromeWithPre499Guard(
+                                widthClass: widthClass, containerWidth: width, containerHeight: height,
+                                leadingInset: lead, trailingInset: trail, preferredBarEdge: preferred)
+                            let want = old(widthClass == .regular, width, height, lead, trail, preferred)
+                            let label = "\(width)x\(height) \(lead)/\(trail)"
+                            XCTAssertEqual(got.adapts, want.0, label)
+                            XCTAssertEqual(got.barEdge, want.1, label)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #endif
 }

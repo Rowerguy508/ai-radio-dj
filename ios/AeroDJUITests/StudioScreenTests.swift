@@ -22,14 +22,15 @@ final class StudioScreenTests: XCTestCase {
                         restoreStationID: String? = nil,
                         musicAuthStatus: String? = nil,
                         orientation: UIDeviceOrientation = .portrait,
-                        splitExample: String? = nil) -> XCUIApplication {
+                        splitExample: String? = nil, splitPre499Guard: Bool = false) -> XCUIApplication {
         // Probe the layout before this test's own launch: the probe launches and terminates
         // its own app, so it must never run while the test's app is up.
         _ = isOpenLayout
         return startApp(segment: segment, scenario: scenario, largeText: largeText, dark: dark,
                         contentSize: contentSize, reduceMotion: reduceMotion,
                         restoreStationID: restoreStationID, musicAuthStatus: musicAuthStatus,
-                        orientation: orientation, splitExample: splitExample)
+                        orientation: orientation, splitExample: splitExample,
+                        splitPre499Guard: splitPre499Guard)
     }
 
     @MainActor
@@ -38,7 +39,7 @@ final class StudioScreenTests: XCTestCase {
                           restoreStationID: String? = nil,
                           musicAuthStatus: String? = nil,
                           orientation: UIDeviceOrientation = .portrait,
-                          splitExample: String? = nil) -> XCUIApplication {
+                          splitExample: String? = nil, splitPre499Guard: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
                                "-AeroDJResetContinuity", "YES"]
@@ -60,6 +61,10 @@ final class StudioScreenTests: XCTestCase {
         }
         if let splitExample {
             app.launchArguments += ["-AeroDJSplitExample", splitExample]
+        }
+        // DEBUG capture only (#574 review): the "before" shot uses the pre-#499 guard.
+        if splitPre499Guard {
+            app.launchArguments += ["-AeroDJSplitPre499Guard", "YES"]
         }
         XCUIDevice.shared.orientation = orientation
         app.launch()
@@ -2044,6 +2049,59 @@ final class StudioScreenTests: XCTestCase {
         ]
         for width in widths {
             try assertSplit(width)
+        }
+    }
+
+    /// #574 review shots: the Duo in landscape (820 × 640) split into 320, 410 and 500 pt
+    /// slices, outer edge leading (28 pt) and inner edge 0. "before" is the pre-#499 guard,
+    /// so the bar stays on the preferred (inner) side; "after" is the shipped decision.
+    /// Shots for the owner. The only assertion is the after shot's decision readout, the same
+    /// one `testSplitViewKeepsEveryScreenInsideTheWindow` reads.
+    @MainActor
+    func testDuoLandscapeSplitSlicesBeforeAndAfter() throws {
+        try XCTSkipUnless(isOpenLayout, "Split widths need an iPad-size simulator window")
+        let slices: [(example: String, width: CGFloat, span: String)] = [
+            ("duoLandscape320", 320, "compactNarrow"),
+            ("duoLandscape410", 410, "compactNarrow"),
+            ("duoLandscape500", 500, "half"),
+        ]
+        for slice in slices {
+            for before in [true, false] {
+                try shootDuoLandscapeSlice(slice.example, width: slice.width, span: slice.span, before: before)
+            }
+        }
+    }
+
+    @MainActor
+    private func shootDuoLandscapeSlice(_ example: String, width: CGFloat, span: String, before: Bool) throws {
+        let height: CGFloat = 640
+        let app = launch(scenario: "splitView", splitExample: example, splitPre499Guard: before)
+        defer { app.terminate() }
+        let any = app.descendants(matching: .any)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5), "no window")
+        if window.frame.width + 8 < width || window.frame.height + 8 < height {
+            throw XCTSkip("window \(window.frame) cannot hold \(width) × \(height)")
+        }
+        XCTAssertTrue(any["split.container"].waitForExistence(timeout: 15), app.debugDescription)
+        let suffix = before ? "before" : "after"
+        let base = "split-duo-landscape-\(Int(width))x\(Int(height))"
+        // Now Playing is the capture's first screen. Wait for the transport, never a timer;
+        // a miss still saves the shot rather than failing the job.
+        _ = app.buttons["transport.playPause"].waitForExistence(timeout: 8)
+        if !before {
+            let decision = any["split.decision"]
+            let matched = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label == %@", "\(span) leading"), object: decision)
+            XCTAssertEqual(XCTWaiter().wait(for: [matched], timeout: 8), .completed,
+                           "\(example) after: decision \(decision.label), expected \(span) leading")
+        }
+        save(app, "\(base)-\(suffix)")
+        let stations = app.buttons["split.show.stations"]
+        if stations.waitForExistence(timeout: 5) {
+            stations.tap()
+            _ = app.buttons["stations.settings"].waitForExistence(timeout: 8)
+            save(app, "\(base)-stations-\(suffix)")
         }
     }
 

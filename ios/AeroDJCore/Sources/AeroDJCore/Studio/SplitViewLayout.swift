@@ -98,8 +98,20 @@ public enum SplitViewLayout {
 
     public static let samples = [narrow, half, wide, full]
 
+    /// Split slices of the Duo in landscape (820 × 640, compact class), outer edge leading.
+    /// Shorter than `FoldedColumnLayout.duoMinHeight` but taller than wide, so they adapt
+    /// (#499). Capture shots only (#574 review); not part of `samples`.
+    public static let duoLandscape320 = Sample(name: "duoLandscape320", width: 320, height: 640,
+                                               leading: 28, trailing: 0, hasRegularWidth: false)
+    public static let duoLandscape410 = Sample(name: "duoLandscape410", width: 410, height: 640,
+                                               leading: 28, trailing: 0, hasRegularWidth: false)
+    public static let duoLandscape500 = Sample(name: "duoLandscape500", width: 500, height: 640,
+                                               leading: 28, trailing: 0, hasRegularWidth: false)
+
+    public static let duoLandscapeSamples = [duoLandscape320, duoLandscape410, duoLandscape500]
+
     public static func sample(named name: String) -> Sample? {
-        samples.first { $0.name == name }
+        (samples + duoLandscapeSamples).first { $0.name == name }
     }
 
     public struct Chrome: Equatable, Sendable {
@@ -194,6 +206,25 @@ public enum SplitViewLayout {
                containerHeight: containerHeight, leadingInset: leadingInset,
                trailingInset: trailingInset, preferredBarEdge: preferredBarEdge)
     }
+
+    #if DEBUG
+    /// Capture-only "before" for the #574 screenshots: the decision with the pre-#499
+    /// landscape guard (`height < duoMinHeight` alone), so a tall landscape slice of the
+    /// Duo does not adapt and the bar stays on the preferred side. Release compiles this
+    /// out; production always uses `chrome(widthClass:...)`.
+    public static func chromeWithPre499Guard(widthClass: WidthClass?, containerWidth: Double,
+                                             containerHeight: Double, leadingInset: Double,
+                                             trailingInset: Double, preferredBarEdge: BarEdge) -> Chrome {
+        var result = chrome(widthClass: widthClass, containerWidth: containerWidth,
+                            containerHeight: containerHeight, leadingInset: leadingInset,
+                            trailingInset: trailingInset, preferredBarEdge: preferredBarEdge)
+        if finite(containerHeight) < FoldedColumnLayout.duoMinHeight {
+            result.adapts = false
+            result.barEdge = preferredBarEdge
+        }
+        return result
+    }
+    #endif
 
     /// Padding for one side each. `applied` is the inset SwiftUI has already used, so a
     /// view that is already inside the safe area does not add it again. A symmetric pair
