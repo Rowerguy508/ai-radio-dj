@@ -25,7 +25,28 @@ struct RailDCaptureContainer: View {
     /// The fold band at 820 pt: 396…424, the same as `FoldedColumnLayout.duoHorizontal`.
     static let foldBand = FoldAwareness.Division(minX: 396, minY: 0, width: 28, height: 640, isActive: true)
 
+    /// Build 54 (-Nova): `-AeroDJRailDDeviceWindow YES` draws the landscape frames at the open
+    /// Duo's measured window (951 × 669 pt, the owner's @3x shots) with a centred fold band.
+    static let deviceWindowKey = "AeroDJRailDDeviceWindow"
+    static let deviceWindowSize = CGSize(width: 951, height: 669)
+
     static func frame(for scenario: StudioCaptureScenario) -> Frame {
+        let frame = baseFrame(for: scenario)
+        guard UserDefaults.standard.bool(forKey: deviceWindowKey),
+              frame.size == StudioCapture.duoTentContainerSize else { return frame }
+        let size = deviceWindowSize
+        let band = FoldedColumnLayout.duoFoldGutter
+        let fold = frame.fold.map { pose in
+            FoldPoseOverride(hinge: pose.hinge,
+                             divisions: pose.divisions.isEmpty ? [] : [
+                                FoldAwareness.Division(minX: (Double(size.width) - band) / 2, minY: 0, width: band,
+                                                       height: Double(size.height), isActive: true),
+                             ])
+        }
+        return Frame(size: size, sizeClass: frame.sizeClass, sidebar: frame.sidebar, fold: fold)
+    }
+
+    private static func baseFrame(for scenario: StudioCaptureScenario) -> Frame {
         let portrait = StudioCapture.duoWideContainerSize
         let landscape = StudioCapture.duoTentContainerSize
         switch scenario.railDFrame {

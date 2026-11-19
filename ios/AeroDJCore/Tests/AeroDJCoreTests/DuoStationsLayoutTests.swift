@@ -80,9 +80,19 @@ final class DuoStationsLayoutTests: XCTestCase {
             XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: w, containerHeight: h),
                            "\(w) × \(h) regular")
         }
-        // Regular width (iPad, the sidebar-open Duo) keeps the sidebar list.
+        // Build 54: the open Duo (phone idiom) at regular width gets them too.
+        XCTAssertTrue(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 820, containerHeight: 640,
+                                                            isPhoneIdiom: true))
+        XCTAssertTrue(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 640, containerHeight: 820,
+                                                            isPhoneIdiom: true))
+        // The same sizes on an iPad (regular, no hinge) keep the sidebar list.
         XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 820, containerHeight: 640))
         XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: 640, containerHeight: 820))
+        // A full-screen iPad (regular) keeps the sidebar list.
+        for (w, h) in [(744.0, 1133.0), (1133, 744), (820, 1180), (1180, 820), (1032, 1376), (1376, 1032)] {
+            XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: true, containerWidth: w, containerHeight: h),
+                           "\(w) × \(h) regular iPad")
+        }
         // Narrow Split View and the 652 × 680 resize probe stay on the phone path.
         XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: false, containerWidth: 340, containerHeight: 760))
         XCTAssertFalse(DuoStationsLayout.usesOpenDuoStations(hasRegularWidth: false, containerWidth: 652, containerHeight: 680))
