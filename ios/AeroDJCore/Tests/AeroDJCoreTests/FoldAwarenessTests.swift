@@ -197,7 +197,7 @@ final class FoldAwarenessTests: XCTestCase {
     /// `TransportRow` (app target) draws Play at 68 and Skip at 52, with a 52 pt balancing
     /// slot when there is no Tune; those literals are the AeroDJCore constants
     /// `FoldedOuterLayout.playSide` / `skipSide` (pinned by LiquidGlassTransportTests).
-    func testTheOpenDuoColumnIsAbout290AndHoldsTheTransportTargets() throws {
+    func testTheOpenDuoBookColumnIsExactly290AndFitsABalancedTransportRow() throws {
         let fold = vertical(minX: width / 2 - 14, width: 28, height: height)
         let column = try XCTUnwrap(bookColumn(divisions: [fold]))
         XCTAssertEqual(column.width, 290, accuracy: 0.001)

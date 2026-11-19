@@ -101,16 +101,7 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertTrue(any["duo.upNext"].exists, "Up next in the trailing half")
         XCTAssertGreaterThanOrEqual(any["duo.upNext"].frame.minX, foldMax - 1)
         // Nothing interactive on the fold.
-        let top = track.minY
-        var checked = 0
-        for element in app.buttons.allElementsBoundByIndex + [any["playback.progress"]] where element.exists {
-            let frame = element.frame
-            guard !frame.isEmpty, frame.minY >= top - 1, box.intersects(frame), element.isHittable else { continue }
-            checked += 1
-            XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin,
-                           "\(element.identifier) \(element.label) \(frame) sits on the fold \(foldMin)…\(foldMax)")
-        }
-        XCTAssertGreaterThan(checked, 5, "the fold check saw too few controls")
+        assertNothingInteractiveOnTheFold(app, box: box, foldMin: foldMin, foldMax: foldMax, top: track.minY)
         save(app, "rail-d-duo-open-landscape-spread",
              container: app.descendants(matching: .any)["capture.railDContainer"])
     }
@@ -163,7 +154,7 @@ final class RailDLayoutTests: XCTestCase {
         let rail = try assertRail(app, id: "folded.closedRail", hasCollapse: false)
         XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail))
         assertNoHorizontalBar(app)
-        let column = try XCTUnwrap(settledFrame(of: any["folded.wideColumn"], "book column"))
+        let column = try XCTUnwrap(settledFrame(of: any["folded.bookColumn.column"], "book column"))
         let bar = any["playback.progress"].frame
         XCTAssertGreaterThanOrEqual(bar.minX, column.maxX - 1, "the song-position bar \(bar) is in the column \(column)")
         XCTAssertGreaterThanOrEqual(rail.minX, column.maxX - 1, "the rail is trailing of the column")
@@ -177,15 +168,7 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(expand.frame.width, 44)
         XCTAssertGreaterThanOrEqual(expand.frame.height, 44)
         // Nothing interactive on the fold.
-        var checked = 0
-        for element in app.buttons.allElementsBoundByIndex + [any["playback.progress"]] where element.exists {
-            let frame = element.frame
-            guard !frame.isEmpty, box.intersects(frame), element.isHittable else { continue }
-            checked += 1
-            XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin,
-                           "\(element.identifier) \(element.label) \(frame) sits on the fold \(foldMin)…\(foldMax)")
-        }
-        XCTAssertGreaterThan(checked, 5, "the fold check saw too few controls")
+        assertNothingInteractiveOnTheFold(app, box: box, foldMin: foldMin, foldMax: foldMax)
         save(app, "rail-d-duo-open-landscape-book-collapsed",
              container: app.descendants(matching: .any)["capture.railDContainer"])
         // Show rail: back to the L1 spread with the full rail.
@@ -337,6 +320,27 @@ final class RailDLayoutTests: XCTestCase {
                        file: file, line: line)
         XCTAssertLessThanOrEqual(rail.width, Self.railGlassWidth + 1, "rail \(rail) is wider than the glass",
                                  file: file, line: line)
+    }
+
+    /// Nothing interactive on the fold: every existing, non-empty, hittable button (and the
+    /// song-position bar) inside the container stays off `foldMin…foldMax`, and more than five
+    /// controls were checked. With `top`, controls above it (the header row) are skipped.
+    @MainActor
+    private func assertNothingInteractiveOnTheFold(_ app: XCUIApplication, box: CGRect,
+                                                   foldMin: CGFloat, foldMax: CGFloat, top: CGFloat? = nil,
+                                                   file: StaticString = #filePath, line: UInt = #line) {
+        let any = app.descendants(matching: .any)
+        var checked = 0
+        for element in app.buttons.allElementsBoundByIndex + [any["playback.progress"]] where element.exists {
+            let frame = element.frame
+            guard !frame.isEmpty, top.map({ frame.minY >= $0 - 1 }) ?? true,
+                  box.intersects(frame), element.isHittable else { continue }
+            checked += 1
+            XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin,
+                           "\(element.identifier) \(element.label) \(frame) sits on the fold \(foldMin)…\(foldMax)",
+                           file: file, line: line)
+        }
+        XCTAssertGreaterThan(checked, 5, "the fold check saw too few controls", file: file, line: line)
     }
 
     /// No horizontal progress bar anywhere: only the rail's bar carries `playback.progress`,

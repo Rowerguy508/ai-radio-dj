@@ -870,7 +870,7 @@ struct FoldedPlayer: View {
             }
             .frame(width: column, height: size.height, alignment: .top)
             .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("folded.wideColumn")
+            .accessibilityIdentifier("folded.bookColumn.column")
             .accessibilitySortPriority(1)
             ClosedVerticalRail(dj: dj, upNext: snapshot.upNext,
                                transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
