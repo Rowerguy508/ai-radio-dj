@@ -208,7 +208,11 @@ final class RailDLayoutTests: XCTestCase {
         // Build 54 (5): the title, chip and Up next share one leading edge; the star sits right
         // after the title block (8 pt in the layout; asserted within 24 pt), top-aligned with it.
         let title = try assertChipLinesUpWithTitle(app)
-        XCTAssertEqual(next.minX, title.minX, accuracy: 1, "Up next \(next) lines up with the title \(title)")
+        // XCUI reports Up next's frame at its text, which sits the card's 12 pt horizontal
+        // padding (DuoUpNextList) inside the glass; the card's edge is what lines up with the title.
+        let upNextCardInset: CGFloat = 12
+        XCTAssertEqual(next.minX - upNextCardInset, title.minX, accuracy: 1,
+                       "Up next's card (text \(next) less \(upNextCardInset) pt) lines up with the title \(title)")
         let star = app.buttons["nowPlaying.rating"]
         XCTAssertTrue(star.waitForExistence(timeout: 5), "the star is missing\n\(app.debugDescription)")
         let gap = star.frame.minX - title.maxX
