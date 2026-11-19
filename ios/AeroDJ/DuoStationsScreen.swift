@@ -550,8 +550,14 @@ struct DuoStationsTiles: View {
                 shape.fill(DuoStationsStyle.fill(station))
                 HStack(alignment: .top) {
                     DuoStationGlyph(station: station, size: 30)
+                        .frame(minWidth: 0, alignment: .leading)
                     Spacer(minLength: 8)
-                    if isPlaying { DuoStationsPlayingChip() }
+                    // Keep "Playing" whole; the monogram scales down when the tile is tight. -Nova
+                    if isPlaying {
+                        DuoStationsPlayingChip()
+                            .fixedSize()
+                            .layoutPriority(1)
+                    }
                 }
                 .padding(18)
                 VStack(alignment: .leading, spacing: 5) {
