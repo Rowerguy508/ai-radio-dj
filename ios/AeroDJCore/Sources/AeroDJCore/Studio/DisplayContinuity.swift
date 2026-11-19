@@ -143,14 +143,15 @@ public enum DisplayContinuity {
 
         /// Arm for a (re)built scroller. A new `layout` always starts a cycle:
         /// a non-empty stored id arms, an empty one is idle. Calls for the same
-        /// layout after adoption, a user scroll, or release are no-ops, so a
-        /// later user scroll back to the art is not re-armed away.
+        /// layout while idle, after adoption, a user scroll, or release are
+        /// no-ops: an idle scroller's own writes must never arm on the id it
+        /// just stored, and a later user scroll back to the art is not re-armed away.
         public mutating func arm(held stored: String, layout: String) {
             if !layout.isEmpty, layout == self.layout {
                 switch phase {
-                case .adopted, .userScrolled, .released:
+                case .idle, .adopted, .userScrolled, .released:
                     return
-                case .armed, .idle:
+                case .armed:
                     break
                 }
             }

@@ -425,6 +425,22 @@ final class DisplayContinuityTests: XCTestCase {
         XCTAssertEqual(machine.phase, .released)
     }
 
+    /// Echo's repro: an idle scroller (nothing stored) keeps every write on the
+    /// same layout. It must never re-arm on the id it just stored.
+    func testAnIdleScrollerKeepsThreeWritesOnTheSameLayout() {
+        for withIDs in [false, true] {
+            var machine = DisplayContinuity.ScrollAnchorMachine()
+            var stored = ""
+            for id in ["a", "b", "c"] {
+                if withIDs { machine.noteScrollerIDs(["a", "b", "c"], stored: stored, layout: "openHalves") }
+                XCTAssertEqual(machine.write(id, stored: stored, layout: "openHalves"), .accept)
+                stored = id
+            }
+            XCTAssertEqual(stored, "c")
+            XCTAssertEqual(machine.phase, .idle)
+        }
+    }
+
     /// A stored id set outside the scroller while it is held: hold the new id.
     func testAStoredIdChangedOutsideTheScrollerIsHeld() {
         var machine = DisplayContinuity.ScrollAnchorMachine()
