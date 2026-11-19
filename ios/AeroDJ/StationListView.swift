@@ -324,7 +324,8 @@ struct StationSplitRoot<Detail: View>: View {
                                           measured: windowSize.width > 0), initial: true) { _, key in
             guard key.measured else { return }
             OpenDuoGateLog.decided(usesDuoStations: key.usesDuoStations, hasFold: key.hasFold,
-                                   phone: DeviceIdiom.isPhone, modelIPhone: DeviceIdiom.isPhoneModel,
+                                   phone: DeviceIdiom.isPhone, idiomPhone: DeviceIdiom.isPhoneIdiomRaw,
+                                   modelIPhone: DeviceIdiom.isPhoneModel,
                                    window: windowSize, insets: windowInsets, scale: Double(displayScale),
                                    sizeClass: horizontalSizeClass)
         }
@@ -742,7 +743,7 @@ enum OpenDuoGateLog {
 
     private static let log = Logger(subsystem: "com.aerodj.app", category: "layout")
 
-    static func decided(usesDuoStations: Bool, hasFold: Bool, phone: Bool, modelIPhone: Bool,
+    static func decided(usesDuoStations: Bool, hasFold: Bool, phone: Bool, idiomPhone: Bool, modelIPhone: Bool,
                         window: CGSize, insets: Insets,
                         scale: Double, sizeClass: UserInterfaceSizeClass?) {
         let sizeClassName: String
@@ -757,7 +758,7 @@ enum OpenDuoGateLog {
         let scaleText = String(format: "%.1f", scale)
         // The rail's status-column clearance is estimated from the owner's shots, not measured.
         let clearance = String(format: "%.0f", DuoStationsLayout.statusColumnClearance)
-        log.notice("stations gate duo \(usesDuoStations, privacy: .public) phone idiom \(phone, privacy: .public) model iPhone \(modelIPhone, privacy: .public) hinge \(hasFold, privacy: .public) size class \(sizeClassName, privacy: .public) window \(size, privacy: .public) scale \(scaleText, privacy: .public) safe \(safe, privacy: .public) rail clearance \(clearance, privacy: .public)")
+        log.notice("stations gate duo \(usesDuoStations, privacy: .public) phone gate \(phone, privacy: .public) idiom phone \(idiomPhone, privacy: .public) model iPhone \(modelIPhone, privacy: .public) hinge \(hasFold, privacy: .public) size class \(sizeClassName, privacy: .public) window \(size, privacy: .public) scale \(scaleText, privacy: .public) safe \(safe, privacy: .public) rail clearance \(clearance, privacy: .public)")
     }
 }
 
@@ -790,6 +791,9 @@ enum DeviceIdiom {
     /// Whether the hardware model is an iPhone. Sentinel: only this boolean is logged, never the
     /// model identifier itself.
     static var isPhoneModel: Bool { DeviceModel.isPhoneModel(identifier: modelIdentifier) }
+
+    /// Atlas: the raw UIKit idiom, no debug override and no model signal, for the launch log.
+    static var isPhoneIdiomRaw: Bool { UIDevice.current.userInterfaceIdiom == .phone }
 
     /// The phone idiom, or (Orion) an iPhone hardware model that reports the pad idiom. The
     /// debug override still wins in the UI tests; the iPad simulator's model is "iPad…".
