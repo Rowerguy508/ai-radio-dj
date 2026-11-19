@@ -320,12 +320,35 @@ final class AirPlayGapHandoffTraceTests: XCTestCase {
         }
         // Armed after startTrack(.started) records nextPlay, so a pre-play leftover cannot close the row.
         let started = try XCTUnwrap(Self.block(around: "startTrack(.started", in: source, window: 6))
-        XCTAssertTrue(started.contains("armAirPlayGapMusicPlayingStamp()"), started)
-        for name in ["stampAirPlayGapMusicPlayingIfReady", "armAirPlayGapMusicPlayingStamp"] {
+        XCTAssertTrue(started.contains("armAirPlayGapMusicPlayingStamp(for: attempt)"), started)
+        for name in ["stampAirPlayGapMusicPlayingIfReady", "armAirPlayGapMusicPlayingStamp",
+                     "cancelAirPlayGapMusicPlayingStamp"] {
             let fnHits = Self.unguardedLines(in: source, token: name, also: ["DEBUG", "AERODJ_P0_DIAG"])
             XCTAssertTrue(fnHits.isEmpty, "\(name) must be inside a DIAG/DEBUG gate; unguarded \(fnHits)")
         }
         XCTAssertTrue(source.contains("#if DEBUG || AERODJ_P0_DIAG"), "MusicKitService hunk must use the DEBUG || DIAG gate")
+        // Atlas's #580 nit: capture the start's attempt, bail if it is no longer
+        // current, and cancel the sampler on pause, stop, and a new start.
+        let stampFn = try XCTUnwrap(Self.functionBody(named: "stampAirPlayGapMusicPlayingIfReady", in: source))
+        XCTAssertTrue(stampFn.contains("attempts.isCurrent(attempt)"), stampFn)
+        let armFn = try XCTUnwrap(Self.functionBody(named: "armAirPlayGapMusicPlayingStamp", in: source))
+        XCTAssertTrue(armFn.contains("attempts.isCurrent(attempt)"), armFn)
+        XCTAssertTrue(armFn.contains("cancelAirPlayGapMusicPlayingStamp()"), armFn)
+        let pauseFn = try XCTUnwrap(Self.functionBody(named: "pause", in: source))
+        XCTAssertTrue(pauseFn.contains("cancelAirPlayGapMusicPlayingStamp()"), pauseFn)
+        let stopBlock = try XCTUnwrap(Self.block(around: "player.stop()", in: source, window: 6))
+        XCTAssertTrue(stopBlock.contains("cancelAirPlayGapMusicPlayingStamp()"), stopBlock)
+        let beginFn = try XCTUnwrap(Self.functionBody(named: "beginAttempt", in: source))
+        XCTAssertTrue(beginFn.contains("cancelAirPlayGapMusicPlayingStamp()"), beginFn)
+    }
+
+    /// A pause and resume starts a new attempt. The sampler from the first start
+    /// must not stamp the resume, even if MusicKit is already `.playing`.
+    func testSamplerDoesNotStampASupersededAttemptEvenIfPlaying() {
+        XCTAssertEqual(AirPlayGapMusicPlayingSampler.step(isCurrent: true, playbackIsPlaying: true), .stamp)
+        XCTAssertEqual(AirPlayGapMusicPlayingSampler.step(isCurrent: true, playbackIsPlaying: false), .wait)
+        XCTAssertEqual(AirPlayGapMusicPlayingSampler.step(isCurrent: false, playbackIsPlaying: true), .cancel)
+        XCTAssertEqual(AirPlayGapMusicPlayingSampler.step(isCurrent: false, playbackIsPlaying: false), .cancel)
     }
 
     // MARK: Scanner
@@ -403,6 +426,29 @@ final class AirPlayGapHandoffTraceTests: XCTestCase {
         let start = max(0, i - window)
         let end = min(lines.count, i + window + 1)
         return lines[start..<end].joined(separator: "\n")
+    }
+
+    /// Body of the first `func <name>` / `func <name>(` through its closing brace
+    /// at the same indent as `func`.
+    static func functionBody(named name: String, in source: String) -> String? {
+        let lines = source.components(separatedBy: "\n")
+        guard let i = lines.firstIndex(where: { line in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            // Allow `private func`, `func`, etc.
+            guard let range = t.range(of: "func \(name)") else { return false }
+            let after = t[range.upperBound...]
+            return after.hasPrefix("(") || after.hasPrefix(" ") || after.hasPrefix("{")
+        }) else { return nil }
+        let indent = lines[i].prefix { $0 == " " }.count
+        var end = i
+        for j in (i + 1)..<lines.count {
+            end = j
+            let t = lines[j]
+            if t.trimmingCharacters(in: .whitespaces) == "}", (t.prefix { $0 == " " }.count) == indent {
+                break
+            }
+        }
+        return lines[i...end].joined(separator: "\n")
     }
 }
 #endif

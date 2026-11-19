@@ -307,6 +307,9 @@ final class MusicKitService: ObservableObject {
         skipCoordinator.invalidate(.userPause)
         boundaries.setSkipLoadInFlight(false)
         cancelPlaybackConfirmTimeout()
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
         _ = sessionPolicy.userPause()
         boundaries.pausedByApp(.userPause)
         player.pause()
@@ -419,6 +422,9 @@ final class MusicKitService: ObservableObject {
 
     /// Pauses the player for a DJ break. Not a user action: the user's intent is unchanged.
     func pausePlayerForBreak() {
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
         boundaries.pausedByApp()
         player.pause()
         isPlaying = false
@@ -548,6 +554,9 @@ final class MusicKitService: ObservableObject {
             guard queue.indices.contains(next) else {
                 boundaries.setSkipLoadInFlight(false)
                 noteLoadedTargetStale()
+                #if DEBUG || AERODJ_P0_DIAG
+                cancelAirPlayGapMusicPlayingStamp()
+                #endif
                 player.stop()
                 isPlaying = false
                 send(.queueFinished)
@@ -655,6 +664,9 @@ final class MusicKitService: ObservableObject {
         noteLoadedTargetStale()
         // The MusicKit queue may still be the song we left. Stop it so that song is not audible
         // under the new index, and so the next poll cannot treat it as the song that failed.
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
         player.pause()
         isPlaying = false
         boundaries.pausedByApp(.userPause)
@@ -754,7 +766,7 @@ final class MusicKitService: ObservableObject {
         #if DEBUG || AERODJ_P0_DIAG
         // After nextPlay is recorded: stamp `.playing` now if MusicKit already shows it,
         // otherwise keep reading the real status until it does, without waiting for beginPoll.
-        armAirPlayGapMusicPlayingStamp()
+        armAirPlayGapMusicPlayingStamp(for: attempt)
         #endif
         noteSongStarted(index: index, duration: song.duration)
     }
@@ -1159,7 +1171,7 @@ final class MusicKitService: ObservableObject {
         guard attempts.isCurrent(attempt) else { return }
         // MusicKit is playing: a deferred .began was our own start's, so it is discarded. -Atlas
         #if DEBUG || AERODJ_P0_DIAG
-        stampAirPlayGapMusicPlayingIfReady()
+        stampAirPlayGapMusicPlayingIfReady(attempt: attempt)
         #endif
         selfStartGate.startConfirmed(attempt)
         send(.playbackConfirmed)
@@ -1177,36 +1189,68 @@ final class MusicKitService: ObservableObject {
 #if DEBUG || AERODJ_P0_DIAG
     /// Stamps MusicKit `.playing` as soon as the real status is visible, before and
     /// independently of `beginPoll`. Synchronous; at most once per start (first stamp
-    /// wins). No playback, session or confirm change, and no async work.
-    private func stampAirPlayGapMusicPlayingIfReady() {
-        guard player.state.playbackStatus == .playing else { return }
-        #if AERODJ_P0_DIAG
-        P0EventTraceHost.shared.talkover { trace, t in
-            _ = trace.airPlayGapHandoffMark(.musicPlaying, at: t)
+    /// wins). No playback, session or confirm change, and no async work. Bails when
+    /// `attempt` is no longer current, so a pause and resume cannot stamp the resume.
+    private func stampAirPlayGapMusicPlayingIfReady(attempt: PlaybackAttemptID) {
+        switch AirPlayGapMusicPlayingSampler.step(
+            isCurrent: attempts.isCurrent(attempt),
+            playbackIsPlaying: player.state.playbackStatus == .playing
+        ) {
+        case .cancel:
+            cancelAirPlayGapMusicPlayingStamp()
+        case .wait:
+            return
+        case .stamp:
+            #if AERODJ_P0_DIAG
+            P0EventTraceHost.shared.talkover { trace, t in
+                _ = trace.airPlayGapHandoffMark(.musicPlaying, at: t)
+            }
+            #endif
+            cancelAirPlayGapMusicPlayingStamp()
         }
-        #endif
     }
 
-    /// Called after `startTrack(.started)` records `nextPlay`. If MusicKit is not yet
-    /// `.playing`, a DIAG-only read of the same status continues until it is, or for
-    /// at most two seconds, so the gap path does not wait for the 1 s playback poll.
-    /// The task is cancelled and replaced on the next start. It never calls
-    /// `confirmStart`, never touches the session, and is compiled out of Release.
-    private func armAirPlayGapMusicPlayingStamp() {
-        airPlayGapMusicPlayingStampTask?.cancel()
-        stampAirPlayGapMusicPlayingIfReady()
-        guard player.state.playbackStatus != .playing else { return }
+    /// Called after `startTrack(.started)` records `nextPlay`. Captures this start's
+    /// attempt and, if MusicKit is not yet `.playing`, keeps reading the same status
+    /// until it is, or for at most two seconds, so the gap path does not wait for
+    /// the 1 s playback poll. The task is cancelled and replaced on the next start,
+    /// and cancelled on pause or stop. Each sample bails if the attempt is no
+    /// longer current. It never calls `confirmStart`, never touches the session,
+    /// and is compiled out of Release.
+    private func armAirPlayGapMusicPlayingStamp(for attempt: PlaybackAttemptID) {
+        cancelAirPlayGapMusicPlayingStamp()
+        stampAirPlayGapMusicPlayingIfReady(attempt: attempt)
+        guard AirPlayGapMusicPlayingSampler.step(
+            isCurrent: attempts.isCurrent(attempt),
+            playbackIsPlaying: player.state.playbackStatus == .playing
+        ) == .wait else { return }
         #if AERODJ_P0_DIAG
         airPlayGapMusicPlayingStampTask = Task { @MainActor [weak self] in
             let nanos: UInt64 = 50_000_000
             for _ in 0..<40 {
                 try? await Task.sleep(nanoseconds: nanos)
                 guard let self, !Task.isCancelled else { return }
-                self.stampAirPlayGapMusicPlayingIfReady()
-                if self.player.state.playbackStatus == .playing { return }
+                switch AirPlayGapMusicPlayingSampler.step(
+                    isCurrent: self.attempts.isCurrent(attempt),
+                    playbackIsPlaying: self.player.state.playbackStatus == .playing
+                ) {
+                case .cancel:
+                    self.cancelAirPlayGapMusicPlayingStamp()
+                    return
+                case .wait:
+                    continue
+                case .stamp:
+                    self.stampAirPlayGapMusicPlayingIfReady(attempt: attempt)
+                    return
+                }
             }
         }
         #endif
+    }
+
+    private func cancelAirPlayGapMusicPlayingStamp() {
+        airPlayGapMusicPlayingStampTask?.cancel()
+        airPlayGapMusicPlayingStampTask = nil
     }
 #endif
 
@@ -1215,6 +1259,9 @@ final class MusicKitService: ObservableObject {
         let attempt = attempts.beginStart()
         selfStartGate.startBegan(attempt)
         confirmReportedAttempt = nil
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
         return attempt
     }
 
@@ -1433,6 +1480,9 @@ final class MusicKitService: ObservableObject {
     /// The selected song cannot be played, and the player may still hold the previous one.
     private func reportResumeTargetFailure(_ attempt: PlaybackAttemptID) {
         cancelPlaybackConfirmTimeout()
+        #if DEBUG || AERODJ_P0_DIAG
+        cancelAirPlayGapMusicPlayingStamp()
+        #endif
         player.pause()
         isPlaying = false
         let failure: SkipTerminalFailure = (queue.indices.contains(queueIndex) && queue[queueIndex].song == nil)
