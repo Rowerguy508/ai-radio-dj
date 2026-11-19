@@ -104,6 +104,10 @@ final class MusicKitService: ObservableObject {
     private var sessionMonitor: AudioSessionMonitor?
     /// TEMPORARY: waits for MusicKit `.playing` after a start; cancelled on confirm or pause.
     private var playbackConfirmTask: Task<Void, Never>?
+    /// #526 S2 (-Echo): DIAG-only sampler for the AirPlay gap `musicPlaying` stamp.
+    #if DEBUG || AERODJ_P0_DIAG
+    private var airPlayGapMusicPlayingStampTask: Task<Void, Never>?
+    #endif
     /// Build 9 P0 (-Atlas): attempt and queue generations. A late result of an older start
     /// (watchdog, throw, refusal) and a stale boundary's `startNextTrack` do nothing.
     private var attempts = PlaybackAttempts()
@@ -747,6 +751,11 @@ final class MusicKitService: ObservableObject {
         #if AERODJ_P0_DIAG
         P0EventTraceHost.shared.startTrack(.started, index: index, queueCount: queue.count, userInitiated: userInitiated, gates: p0Gates)
         #endif
+        #if DEBUG || AERODJ_P0_DIAG
+        // After nextPlay is recorded: stamp `.playing` now if MusicKit already shows it,
+        // otherwise keep reading the real status until it does, without waiting for beginPoll.
+        armAirPlayGapMusicPlayingStamp()
+        #endif
         noteSongStarted(index: index, duration: song.duration)
     }
 
@@ -1150,13 +1159,7 @@ final class MusicKitService: ObservableObject {
         guard attempts.isCurrent(attempt) else { return }
         // MusicKit is playing: a deferred .began was our own start's, so it is discarded. -Atlas
         #if DEBUG || AERODJ_P0_DIAG
-        // #526 S0b (-Echo): plain synchronous stamp of MusicKit `.playing` on the record clock.
-        // No await, no throw, no session call. First stamp wins, so a later beginPoll cannot move it.
-        #if AERODJ_P0_DIAG
-        P0EventTraceHost.shared.talkover { trace, t in
-            _ = trace.airPlayGapHandoffMark(.musicPlaying, at: t)
-        }
-        #endif
+        stampAirPlayGapMusicPlayingIfReady()
         #endif
         selfStartGate.startConfirmed(attempt)
         send(.playbackConfirmed)
@@ -1168,6 +1171,44 @@ final class MusicKitService: ObservableObject {
             send(.errorCleared)
         }
     }
+
+    // MARK: #526 S2 (-Echo): DIAG-only musicPlaying stamp (Atlas reviews this hunk)
+
+#if DEBUG || AERODJ_P0_DIAG
+    /// Stamps MusicKit `.playing` as soon as the real status is visible, before and
+    /// independently of `beginPoll`. Synchronous; at most once per start (first stamp
+    /// wins). No playback, session or confirm change, and no async work.
+    private func stampAirPlayGapMusicPlayingIfReady() {
+        guard player.state.playbackStatus == .playing else { return }
+        #if AERODJ_P0_DIAG
+        P0EventTraceHost.shared.talkover { trace, t in
+            _ = trace.airPlayGapHandoffMark(.musicPlaying, at: t)
+        }
+        #endif
+    }
+
+    /// Called after `startTrack(.started)` records `nextPlay`. If MusicKit is not yet
+    /// `.playing`, a DIAG-only read of the same status continues until it is, or for
+    /// at most two seconds, so the gap path does not wait for the 1 s playback poll.
+    /// The task is cancelled and replaced on the next start. It never calls
+    /// `confirmStart`, never touches the session, and is compiled out of Release.
+    private func armAirPlayGapMusicPlayingStamp() {
+        airPlayGapMusicPlayingStampTask?.cancel()
+        stampAirPlayGapMusicPlayingIfReady()
+        guard player.state.playbackStatus != .playing else { return }
+        #if AERODJ_P0_DIAG
+        airPlayGapMusicPlayingStampTask = Task { @MainActor [weak self] in
+            let nanos: UInt64 = 50_000_000
+            for _ in 0..<40 {
+                try? await Task.sleep(nanoseconds: nanos)
+                guard let self, !Task.isCancelled else { return }
+                self.stampAirPlayGapMusicPlayingIfReady()
+                if self.player.state.playbackStatus == .playing { return }
+            }
+        }
+        #endif
+    }
+#endif
 
     private func beginAttempt(userChangedQueue: Bool) -> PlaybackAttemptID {
         if userChangedQueue { attempts.userChangedQueue() }

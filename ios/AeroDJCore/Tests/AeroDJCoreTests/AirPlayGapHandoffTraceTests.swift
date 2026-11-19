@@ -104,6 +104,50 @@ final class AirPlayGapHandoffTraceTests: XCTestCase {
         XCTAssertEqual(trace.rows.filter { $0.detail.contains("kind=handoff") }.count, 1)
     }
 
+    /// #526 S2: on the gap path, `musicPlaying` is stamped from the real `.playing`
+    /// signal after `startTrack(.started)` records `nextPlay`, independently of
+    /// `beginPoll`. A later poll that sees `.playing` must not emit again or move it.
+    func testGapPathMusicPlayingStampIndependentOfBeginPollIsKept() throws {
+        var trace = P0EventTrace()
+        _ = trace.airPlayGapHandoffBegin(afterTrack: 2, at: 0)
+        _ = trace.airPlayGapHandoffMark(.firstPlay, at: 0.040)
+        _ = trace.airPlayGapHandoffMark(.lastFinish, at: 1.000)
+        _ = trace.airPlayGapHandoffMark(.sessionOff, at: 1.005)
+        let gates = P0EventTrace.Gates(mayAutoResume: true, pausedBySystem: false, userWantsPlayback: true)
+        _ = trace.startTrack(.started, index: 3, queueCount: 5, userInitiated: false, gates: gates, at: 1.050)
+        let row = try XCTUnwrap(trace.airPlayGapHandoffMark(.musicPlaying, at: 1.080))
+        XCTAssertTrue(row.detail.contains("result=complete"), row.detail)
+        XCTAssertTrue(row.detail.contains("nextPlay=1050"), row.detail)
+        XCTAssertTrue(row.detail.contains("musicPlaying=1080"), row.detail)
+        let observation = PlaybackObservation(entryID: "n", isPlaying: true, position: 0.2, duration: 200, uptime: 1.900)
+        let before = P0DetectorState(furthest: nil, wasPlaying: false, userChangePending: false, noProgressEndPending: false)
+        _ = trace.beginPoll(observation, before: before, queueIndex: 3, queueCount: 5, at: 1.900)
+        XCTAssertNil(trace.airPlayGapHandoffMark(.musicPlaying, at: 1.900), "beginPoll must not emit or move the earlier stamp")
+        let handoffs = trace.rows.filter { $0.detail.contains("kind=handoff") }
+        XCTAssertEqual(handoffs.count, 1)
+        XCTAssertTrue(handoffs[0].detail.contains("musicPlaying=1080"), handoffs[0].detail)
+        XCTAssertFalse(handoffs[0].detail.contains("musicPlaying=1900"), handoffs[0].detail)
+    }
+
+    /// Fallback: if no earlier stamp ran, `beginPoll` still records `musicPlaying`
+    /// when the sample is `.playing` after `nextPlay`.
+    func testBeginPollStillStampsMusicPlayingWhenThereWasNoEarlierStamp() throws {
+        var trace = P0EventTrace()
+        _ = trace.airPlayGapHandoffBegin(afterTrack: 2, at: 0)
+        _ = trace.airPlayGapHandoffMark(.firstPlay, at: 0.040)
+        _ = trace.airPlayGapHandoffMark(.lastFinish, at: 1.000)
+        _ = trace.airPlayGapHandoffMark(.sessionOff, at: 1.005)
+        _ = trace.airPlayGapHandoffMark(.nextPlay, at: 1.050)
+        let observation = PlaybackObservation(entryID: "n", isPlaying: true, position: 0.2, duration: 200, uptime: 1.900)
+        let before = P0DetectorState(furthest: nil, wasPlaying: false, userChangePending: false, noProgressEndPending: false)
+        _ = trace.beginPoll(observation, before: before, queueIndex: 3, queueCount: 5, at: 1.900)
+        let handoffs = trace.rows.filter { $0.detail.contains("kind=handoff") }
+        XCTAssertEqual(handoffs.count, 1)
+        XCTAssertTrue(handoffs[0].detail.contains("musicPlaying=1900"), handoffs[0].detail)
+        XCTAssertTrue(handoffs[0].detail.contains("nextPlay=1050"), handoffs[0].detail)
+        XCTAssertTrue(handoffs[0].detail.contains("result=complete"), handoffs[0].detail)
+    }
+
     /// A new begin finalizes a still-open break so it is never silently dropped.
     func testBeginFlushesAnOpenBreakWithMissingSteps() throws {
         var trace = AirPlayGapHandoffTrace()
@@ -252,23 +296,36 @@ final class AirPlayGapHandoffTraceTests: XCTestCase {
     }
 
     /// Any MusicKitService hook (needed only for MusicKit `.playing`) must also be gated.
+    /// #526 S2: the stamp is behind `#if DEBUG || AERODJ_P0_DIAG`, synchronous, and
+    /// at most once per start. Atlas reviews this hunk.
     func testMusicKitPlayingHookIsGatedIfPresent() throws {
         let source = try String(contentsOf: Self.ios.appendingPathComponent("AeroDJ/MusicKitService.swift"),
                                 encoding: .utf8)
-        XCTAssertTrue(source.contains("airPlayGapHandoffMark(.musicPlaying"), "confirmStart hook missing")
+        XCTAssertTrue(source.contains("airPlayGapHandoffMark(.musicPlaying"), "musicPlaying stamp hook missing")
+        XCTAssertTrue(source.contains("stampAirPlayGapMusicPlayingIfReady"), "S2 helper missing")
+        XCTAssertTrue(source.contains("armAirPlayGapMusicPlayingStamp"), "S2 arm missing")
         let gate = try XCTUnwrap(Self.block(around: "airPlayGapHandoffMark(.musicPlaying", in: source, window: 8))
-        XCTAssertTrue(gate.contains("#if DEBUG || AERODJ_P0_DIAG"), "same gate as the adapter hooks")
+        XCTAssertTrue(gate.contains("#if DEBUG || AERODJ_P0_DIAG") || gate.contains("#if AERODJ_P0_DIAG"),
+                      "same gate as the adapter hooks")
         for forbidden in ["try ", "throw "] {
             XCTAssertFalse(gate.contains(forbidden), forbidden)
         }
         let hits = Self.unguardedLines(in: source, token: "airPlayGapHandoffMark(.musicPlaying",
                                        also: ["DEBUG", "AERODJ_P0_DIAG"])
-        XCTAssertTrue(hits.isEmpty, "confirmStart hook must be inside a DIAG/DEBUG gate; unguarded \(hits)")
-        // The hook only records a timestamp: no new session call or await next to it.
+        XCTAssertTrue(hits.isEmpty, "musicPlaying hook must be inside a DIAG/DEBUG gate; unguarded \(hits)")
+        // The stamp itself only records a timestamp: no new session call or await next to it.
         let block = try XCTUnwrap(Self.block(around: "airPlayGapHandoffMark(.musicPlaying", in: source, window: 8))
         for forbidden in ["setActive", "setCategory", "await "] {
             XCTAssertFalse(block.contains(forbidden), forbidden)
         }
+        // Armed after startTrack(.started) records nextPlay, so a pre-play leftover cannot close the row.
+        let started = try XCTUnwrap(Self.block(around: "startTrack(.started", in: source, window: 6))
+        XCTAssertTrue(started.contains("armAirPlayGapMusicPlayingStamp()"), started)
+        for name in ["stampAirPlayGapMusicPlayingIfReady", "armAirPlayGapMusicPlayingStamp"] {
+            let fnHits = Self.unguardedLines(in: source, token: name, also: ["DEBUG", "AERODJ_P0_DIAG"])
+            XCTAssertTrue(fnHits.isEmpty, "\(name) must be inside a DIAG/DEBUG gate; unguarded \(fnHits)")
+        }
+        XCTAssertTrue(source.contains("#if DEBUG || AERODJ_P0_DIAG"), "MusicKitService hunk must use the DEBUG || DIAG gate")
     }
 
     // MARK: Scanner
