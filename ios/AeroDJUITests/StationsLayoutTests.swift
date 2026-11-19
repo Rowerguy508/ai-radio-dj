@@ -54,7 +54,7 @@ final class StationsLayoutTests: XCTestCase {
         for id in ["more.connections", "transport.tune"] {
             let row = any[id]
             XCTAssertTrue(row.exists, "\(id) missing\n\(app.debugDescription)")
-            XCTAssertGreaterThanOrEqual(row.frame.height, 44, "\(id) \(row.frame)")
+            assertAtLeastPoints(row.frame.height, 44, "\(id) \(row.frame)")
         }
         any["transport.tune"].tap()
         assertPlayerOpened(app, station: "Morning Calm")
@@ -240,15 +240,15 @@ final class StationsLayoutTests: XCTestCase {
         // in from the trailing edge. -Nova
         let railFrame = rail.frame
         XCTAssertLessThanOrEqual(railFrame.width, Self.railGlassWidth + 1, "rail \(railFrame) is wider than the glass")
-        XCTAssertGreaterThanOrEqual(railFrame.width, 44, "rail \(railFrame) holds 44 pt plates")
+        assertAtLeastPoints(railFrame.width, 44, "rail \(railFrame) holds 44 pt plates")
         XCTAssertEqual(railFrame.midX, box.maxX - Self.railEdgeInset - Self.railGlassWidth / 2, accuracy: 1.5,
                        "the 56 pt rail sits 8 pt in from the trailing edge: rail \(railFrame), box \(box)")
 
         let thumb = app.buttons["stations.rail.nowPlaying"]
         XCTAssertTrue(thumb.exists, "thumbnail missing")
         XCTAssertEqual(thumb.label, "Open player, now playing Morning Calm")
-        XCTAssertGreaterThanOrEqual(thumb.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(thumb.frame.height, 44)
+        assertAtLeastPoints(thumb.frame.width, 44)
+        assertAtLeastPoints(thumb.frame.height, 44)
         XCTAssertTrue(rail.frame.insetBy(dx: -1, dy: -1).contains(thumb.frame), "thumbnail sits in the rail")
         XCTAssertLessThanOrEqual(thumb.frame.minY, rail.frame.minY + 12, "the thumbnail is the top slot")
         assertFullRail(app, rail: rail, thumb: thumb, box: box, bookPose: size.width > size.height)
@@ -263,8 +263,8 @@ final class StationsLayoutTests: XCTestCase {
             guard control.isHittable else { continue }
             let frame = control.frame
             let name = "\(control.identifier) \(frame)"
-            XCTAssertGreaterThanOrEqual(frame.height, 44, name)
-            XCTAssertGreaterThanOrEqual(frame.width, 44, name)
+            assertAtLeastPoints(frame.height, 44, name)
+            assertAtLeastPoints(frame.width, 44, name)
             if !rail.frame.insetBy(dx: -1, dy: -1).contains(frame) {
                 XCTAssertLessThanOrEqual(frame.maxX, rail.frame.minX, "\(name) runs under the rail")
             }
@@ -301,8 +301,8 @@ final class StationsLayoutTests: XCTestCase {
             XCTAssertTrue(element.exists, "\(name) missing from the Stations rail\n\(app.debugDescription)")
             let frame = element.frame
             XCTAssertTrue(rail.frame.insetBy(dx: -1, dy: -1).contains(frame), "\(name) \(frame) is outside the rail \(rail.frame)")
-            XCTAssertGreaterThanOrEqual(frame.width, 44, "\(name) \(frame)")
-            XCTAssertGreaterThanOrEqual(frame.height, 44, "\(name) \(frame)")
+            assertAtLeastPoints(frame.width, 44, "\(name) \(frame)")
+            assertAtLeastPoints(frame.height, 44, "\(name) \(frame)")
             XCTAssertEqual(frame.midX, rail.frame.midX, accuracy: 1.5, "\(name) is centred in the rail")
             if let previous {
                 XCTAssertGreaterThanOrEqual(frame.minY - previous.1.maxY, 10 - 1, "\(name) sits 10 pt under \(previous.0)")
@@ -310,7 +310,7 @@ final class StationsLayoutTests: XCTestCase {
             previous = (name, frame)
         }
         XCTAssertEqual(any["playback.progress"].value as? String, "1:12 of 3:45", "the song bar and its times")
-        XCTAssertGreaterThanOrEqual(any["playback.progress"].frame.height, 44 + 36, "a 44 pt track plus both times")
+        assertAtLeastPoints(any["playback.progress"].frame.height, 44 + 36, "a 44 pt track plus both times")
         XCTAssertEqual(any["folded.liveDot"].label, "DJ live dot")
         XCTAssertFalse(any["folded.collapse"].exists, "the thumbnail replaces Collapse on Stations")
         if bookPose {
@@ -358,7 +358,7 @@ final class StationsLayoutTests: XCTestCase {
 
     @MainActor
     private func assertTarget(_ element: XCUIElement, in box: CGRect, _ name: String) {
-        XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(name) \(element.frame)")
+        assertAtLeastPoints(element.frame.height, 44, "\(name) \(element.frame)")
         XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(element.frame), "\(name) left the container")
     }
 

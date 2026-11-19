@@ -165,8 +165,8 @@ final class RailDLayoutTests: XCTestCase {
         let expand = app.buttons["folded.expandRail"]
         XCTAssertTrue(expand.waitForExistence(timeout: 5), "Show rail missing\n\(app.debugDescription)")
         XCTAssertTrue(expand.isHittable)
-        XCTAssertGreaterThanOrEqual(expand.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(expand.frame.height, 44)
+        assertAtLeastPoints(expand.frame.width, 44)
+        assertAtLeastPoints(expand.frame.height, 44)
         // Nothing interactive on the fold.
         assertNothingInteractiveOnTheFold(app, box: box, foldMin: foldMin, foldMax: foldMax)
         save(app, "rail-d-duo-open-landscape-book-collapsed",
@@ -284,8 +284,8 @@ final class RailDLayoutTests: XCTestCase {
             let frame = element.frame
             let detail = "\(name) \(frame) rail \(rail)"
             XCTAssertTrue(element.isHittable, "\(detail) is not hittable", file: file, line: line)
-            XCTAssertGreaterThanOrEqual(frame.width, 44, detail, file: file, line: line)
-            XCTAssertGreaterThanOrEqual(frame.height, 44, detail, file: file, line: line)
+            assertAtLeastPoints(frame.width, 44, detail, file: file, line: line)
+            assertAtLeastPoints(frame.height, 44, detail, file: file, line: line)
             XCTAssertTrue(rail.insetBy(dx: -4, dy: -4).contains(CGPoint(x: frame.midX, y: frame.midY)),
                           "\(detail) left the rail", file: file, line: line)
         }
@@ -297,8 +297,8 @@ final class RailDLayoutTests: XCTestCase {
         let barFrame = bar.frame
         let detail = "bar \(barFrame) rail \(rail) sleep \(app.buttons["folded.sleepTimer"].frame) dot \(dot.frame)"
         XCTAssertGreaterThan(barFrame.height, barFrame.width, "the bar is vertical: \(detail)", file: file, line: line)
-        XCTAssertGreaterThanOrEqual(barFrame.width, 44, "the bar is a 44 pt target: \(detail)", file: file, line: line)
-        XCTAssertGreaterThanOrEqual(barFrame.height, 44 + 36, "a 44 pt track plus the times: \(detail)", file: file, line: line)
+        assertAtLeastPoints(barFrame.width, 44, "the bar is a 44 pt target: \(detail)", file: file, line: line)
+        assertAtLeastPoints(barFrame.height, 44 + 36, "a 44 pt track plus the times: \(detail)", file: file, line: line)
         XCTAssertTrue(rail.insetBy(dx: -4, dy: -4).contains(barFrame), "the bar is in the rail: \(detail)", file: file, line: line)
         XCTAssertGreaterThanOrEqual(barFrame.minY, app.buttons["folded.sleepTimer"].frame.maxY - 1, detail, file: file, line: line)
         XCTAssertLessThanOrEqual(barFrame.maxY, dot.frame.minY + 1, detail, file: file, line: line)
