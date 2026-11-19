@@ -98,12 +98,19 @@ public enum DisplayContinuity {
     /// (opening the phone). Never uses a clock or a main-queue turn.
     ///
     /// Phases: `idle` → `armed` (a stored id and a new scroller) → `adopted`
-    /// (the scroller reported the held id) or `userScrolled` (the user dragged)
-    /// → `released`. An art write that arrives before `arm`, or after the 0.45s
-    /// layout animation, is ignored until adoption or a user scroll. A user
-    /// scroll back to the art is then kept. While armed or adopted, any id
-    /// other than the held one is ignored; that is the old DEBUG probe guard,
-    /// for every stored id, in Release too.
+    /// (the scroller reported the held id) → `released`, or `userScrolled`
+    /// (a scroll phase or drag) → `released`.
+    ///
+    /// - Armed: only the held id is kept. The first-layout art or title, nil and
+    ///   any other id are ignored, so the art cannot replace the stored spot.
+    /// - Adopted: the held id echo is kept. The scroller's settle ids (the art
+    ///   and the scroller's first id) are ignored, so a write of the top while the
+    ///   0.45s animation settles is not stored. Any other id is a real scroll
+    ///   (VoiceOver, trackpad, mouse, `scrollTo`, a pan): release and keep it.
+    /// - A user scroll phase (iOS 18+) or a drag (iOS 17) releases from either
+    ///   state, so a scroll back to the art is kept too.
+    /// - The scroller's ids (`noteScrollerIDs`): if the held id is not among
+    ///   them, the scroller can never adopt it, so the guard releases at once.
     public struct ScrollAnchorMachine: Equatable, Sendable {
         public enum Phase: Equatable, Sendable {
             case idle
@@ -117,8 +124,22 @@ public enum DisplayContinuity {
         public private(set) var held: String = ""
         /// Identity of the scroller this cycle is tracking. Empty means none.
         public private(set) var layout: String = ""
+        /// Ids a rebuilt scroller writes on its own while it settles: the art and
+        /// the scroller's first id. Never a release after adoption.
+        public private(set) var settleIDs: Set<String> = [DisplayContinuity.artAnchor]
 
         public init() {}
+
+        /// Short name for the DEBUG phase readout. No user content.
+        public var phaseName: String {
+            switch phase {
+            case .idle: "idle"
+            case .armed: "armed"
+            case .adopted: "adopted"
+            case .userScrolled: "userScrolled"
+            case .released: "released"
+            }
+        }
 
         /// Arm for a (re)built scroller. A new `layout` always starts a cycle:
         /// a non-empty stored id arms, an empty one is idle. Calls for the same
@@ -133,6 +154,7 @@ public enum DisplayContinuity {
                     break
                 }
             }
+            if layout != self.layout { settleIDs = [DisplayContinuity.artAnchor] }
             self.layout = layout
             if stored.isEmpty {
                 held = ""
@@ -152,6 +174,7 @@ public enum DisplayContinuity {
                 let seed = stored.isEmpty ? held : stored
                 arm(held: seed, layout: layout)
             }
+            retarget(stored: stored)
             let next = incoming ?? ""
             switch phase {
             case .idle, .released:
@@ -166,17 +189,54 @@ public enum DisplayContinuity {
                 }
                 return .ignore
             case .adopted:
-                if !held.isEmpty, next == held { return .accept }
-                return .ignore
+                if next == held { return .accept }
+                // Nil, or the scroller's own top/art while it settles: not a scroll.
+                if next.isEmpty || settleIDs.contains(next) { return .ignore }
+                phase = .released
+                return .accept
             }
         }
 
-        /// The user is dragging the scroller. Later writes, including the art, are kept.
+        /// The user is scrolling: a user scroll phase (iOS 18+) or a drag (iOS 17).
+        /// Later writes, including the art, are kept.
         public mutating func noteUserScrolled() {
             switch phase {
             case .armed, .adopted:
                 phase = .userScrolled
             case .idle, .released, .userScrolled:
+                break
+            }
+        }
+
+        /// The anchor ids this scroller lays out, top first. An empty list is a
+        /// scroller with nothing laid out yet and changes nothing. Otherwise the
+        /// first id joins the settle ids, and a held id that is not in the list
+        /// releases: the scroller can never adopt it, so it must not stay armed.
+        public mutating func noteScrollerIDs(_ ids: [String], stored: String = "", layout: String? = nil) {
+            if let layout, !layout.isEmpty {
+                let seed = stored.isEmpty ? held : stored
+                arm(held: seed, layout: layout)
+            }
+            retarget(stored: stored)
+            guard let first = ids.first else { return }
+            settleIDs = [DisplayContinuity.artAnchor, first]
+            switch phase {
+            case .armed, .adopted:
+                if !ids.contains(held) { phase = .released }
+            case .idle, .userScrolled, .released:
+                break
+            }
+        }
+
+        /// The stored id was changed outside the scroller (a programmatic jump
+        /// that sets the stored id). Hold the new id and wait for its adoption.
+        private mutating func retarget(stored: String) {
+            guard !stored.isEmpty, stored != held else { return }
+            switch phase {
+            case .armed, .adopted:
+                held = stored
+                phase = .armed
+            case .idle, .userScrolled, .released:
                 break
             }
         }

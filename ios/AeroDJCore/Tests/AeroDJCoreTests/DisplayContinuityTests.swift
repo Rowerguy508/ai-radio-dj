@@ -328,4 +328,125 @@ final class DisplayContinuityTests: XCTestCase {
         XCTAssertEqual(machine.phase, .idle)
         XCTAssertEqual(machine.write(DisplayContinuity.artAnchor), .accept)
     }
+    // MARK: Release whatever the input (#492, Atlas on 42a53bc6)
+
+    /// The rebuilt scroller writes the held id back (its own adoption echo), then
+    /// the art while the 0.45s animation settles. Neither is a release, and the
+    /// art is not stored.
+    func testAdoptionEchoAndASettleArtWriteDoNotRelease() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        let held = DisplayContinuity.rowAnchor(4)
+        XCTAssertEqual(machine.write(held, stored: held, layout: "openHalves"), .accept)
+        XCTAssertEqual(machine.phase, .adopted)
+        XCTAssertEqual(machine.write(held, stored: held, layout: "openHalves"), .accept, "echo")
+        XCTAssertEqual(machine.phase, .adopted, "the echo is not a release")
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor, stored: held, layout: "openHalves"), .ignore,
+                       "a settle art write is not stored")
+        XCTAssertEqual(machine.write(nil, stored: held, layout: "openHalves"), .ignore)
+        XCTAssertEqual(machine.phase, .adopted)
+        XCTAssertEqual(machine.held, held)
+    }
+
+    /// The scroller's first id (the title when the art is not drawn) is a settle id too.
+    func testTheScrollersFirstIdIsASettleWriteAfterAdoption() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        let held = DisplayContinuity.rowAnchor(4)
+        machine.noteScrollerIDs([DisplayContinuity.titleAnchor, held], stored: held, layout: "compactUpper")
+        XCTAssertEqual(machine.phase, .armed)
+        XCTAssertEqual(machine.write(held, stored: held, layout: "compactUpper"), .accept)
+        XCTAssertEqual(machine.write(DisplayContinuity.titleAnchor, stored: held, layout: "compactUpper"), .ignore)
+        XCTAssertEqual(machine.phase, .adopted)
+    }
+
+    /// VoiceOver, trackpad, mouse and `scrollTo` send no drag. After adoption a move
+    /// to another id releases and is kept, on every OS.
+    func testAPositionChangeAfterAdoptionReleasesWithoutADrag() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        let held = DisplayContinuity.rowAnchor(4)
+        XCTAssertEqual(machine.write(held, stored: held, layout: "openHalves"), .accept)
+        XCTAssertEqual(machine.write(DisplayContinuity.rowAnchor(5), stored: held, layout: "openHalves"), .accept)
+        XCTAssertEqual(machine.phase, .released)
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor, stored: DisplayContinuity.rowAnchor(5),
+                                     layout: "openHalves"), .accept,
+                       "after release a scroll back to the art is kept")
+    }
+
+    /// A user scroll phase (iOS 18+) or drag (iOS 17) after adoption: the art is kept.
+    func testAUserScrollPhaseAfterAdoptionKeepsTheArt() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        let held = DisplayContinuity.rowAnchor(4)
+        XCTAssertEqual(machine.write(held, stored: held, layout: "openHalves"), .accept)
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor, stored: held, layout: "openHalves"), .ignore)
+        machine.noteUserScrolled()
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor, stored: held, layout: "openHalves"), .accept)
+        XCTAssertEqual(machine.phase, .released)
+    }
+
+    /// The held id is not in the new scroller: it can never adopt, so release
+    /// instead of staying armed. No clock.
+    func testAHeldIdMissingFromTheNewScrollerReleases() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        let held = DisplayContinuity.rowAnchor(4)
+        machine.noteScrollerIDs([DisplayContinuity.artAnchor, DisplayContinuity.titleAnchor],
+                                stored: held, layout: "centredColumn")
+        XCTAssertEqual(machine.phase, .released)
+        XCTAssertEqual(machine.write(DisplayContinuity.titleAnchor, stored: held, layout: "centredColumn"), .accept)
+    }
+
+    func testAHeldIdThatDisappearsAfterAdoptionReleases() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        let held = DisplayContinuity.rowAnchor(4)
+        machine.noteScrollerIDs([DisplayContinuity.artAnchor, held], stored: held, layout: "openHalves")
+        XCTAssertEqual(machine.write(held, stored: held, layout: "openHalves"), .accept)
+        XCTAssertEqual(machine.phase, .adopted)
+        machine.noteScrollerIDs([DisplayContinuity.artAnchor], stored: held, layout: "openHalves")
+        XCTAssertEqual(machine.phase, .released)
+    }
+
+    /// A scroller that has laid out nothing yet reports no ids. That is not a miss.
+    func testAnEmptyIdListDoesNotRelease() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        let held = DisplayContinuity.rowAnchor(4)
+        machine.noteScrollerIDs([], stored: held, layout: "openHalves")
+        XCTAssertEqual(machine.phase, .armed)
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor, stored: held, layout: "openHalves"), .ignore)
+    }
+
+    /// Echo's fix stays: the same scroller does not re-arm after release, even when
+    /// its ids arrive again.
+    func testTheSameLayoutDoesNotRearmOnItsIds() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        let held = DisplayContinuity.rowAnchor(4)
+        XCTAssertEqual(machine.write(held, stored: held, layout: "openHalves"), .accept)
+        machine.noteUserScrolled()
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor, stored: held, layout: "openHalves"), .accept)
+        machine.noteScrollerIDs([DisplayContinuity.artAnchor, held], stored: DisplayContinuity.artAnchor,
+                                layout: "openHalves")
+        XCTAssertEqual(machine.phase, .released)
+    }
+
+    /// A stored id set outside the scroller while it is held: hold the new id.
+    func testAStoredIdChangedOutsideTheScrollerIsHeld() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        machine.arm(held: DisplayContinuity.titleAnchor, layout: "outerUpper")
+        let jump = DisplayContinuity.rowAnchor(4)
+        XCTAssertEqual(machine.write(DisplayContinuity.artAnchor, stored: jump, layout: "outerUpper"), .ignore)
+        XCTAssertEqual(machine.held, jump)
+        XCTAssertEqual(machine.write(jump, stored: jump, layout: "outerUpper"), .accept)
+        XCTAssertEqual(machine.phase, .adopted)
+    }
+
+    func testPhaseNamesForTheReadout() {
+        var machine = DisplayContinuity.ScrollAnchorMachine()
+        XCTAssertEqual(machine.phaseName, "idle")
+        machine.arm(held: DisplayContinuity.titleAnchor, layout: "openHalves")
+        XCTAssertEqual(machine.phaseName, "armed")
+        _ = machine.write(DisplayContinuity.titleAnchor)
+        XCTAssertEqual(machine.phaseName, "adopted")
+        machine.noteUserScrolled()
+        XCTAssertEqual(machine.phaseName, "userScrolled")
+        _ = machine.write(DisplayContinuity.artAnchor)
+        XCTAssertEqual(machine.phaseName, "released")
+    }
 }
+
