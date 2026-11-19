@@ -182,3 +182,26 @@ final class OpenDuoPlayerRailTests: XCTestCase {
                        DuoStationsLayout.geometry(containerWidth: 820, containerHeight: 640))
     }
 }
+
+/// Build 54 (Orion, -Nova): the hardware-model signal folded into `isPhoneIdiom`.
+final class DeviceModelTests: XCTestCase {
+    func testPhoneModels() {
+        for id in ["iPhone17,3", "iPhone18,1", "iPhone"] {
+            XCTAssertTrue(DeviceModel.isPhoneModel(identifier: id), id)
+        }
+        for id in ["iPad14,8", "iPad16,3", "arm64", "x86_64", "", "iphone17,3", "Watch7,1"] {
+            XCTAssertFalse(DeviceModel.isPhoneModel(identifier: id), id)
+        }
+    }
+
+    func testSimulatorReadsTheSimulatedModel() {
+        XCTAssertEqual(DeviceModel.resolvedIdentifier(machine: "arm64", simulatorModel: "iPad16,3"), "iPad16,3")
+        XCTAssertEqual(DeviceModel.resolvedIdentifier(machine: "x86_64", simulatorModel: "iPhone17,3"), "iPhone17,3")
+        XCTAssertEqual(DeviceModel.resolvedIdentifier(machine: "arm64", simulatorModel: nil), "arm64")
+        XCTAssertEqual(DeviceModel.resolvedIdentifier(machine: "arm64", simulatorModel: ""), "arm64")
+        // On a device the machine wins, whatever the environment says.
+        XCTAssertEqual(DeviceModel.resolvedIdentifier(machine: "iPhone17,3", simulatorModel: "iPad16,3"), "iPhone17,3")
+        XCTAssertFalse(DeviceModel.isPhoneModel(identifier:
+            DeviceModel.resolvedIdentifier(machine: "arm64", simulatorModel: "iPad16,3")))
+    }
+}

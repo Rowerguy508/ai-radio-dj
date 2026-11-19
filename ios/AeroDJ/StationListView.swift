@@ -324,7 +324,8 @@ struct StationSplitRoot<Detail: View>: View {
                                           measured: windowSize.width > 0), initial: true) { _, key in
             guard key.measured else { return }
             OpenDuoGateLog.decided(usesDuoStations: key.usesDuoStations, hasFold: key.hasFold,
-                                   phone: DeviceIdiom.isPhone, window: windowSize, insets: windowInsets, scale: Double(displayScale),
+                                   phone: DeviceIdiom.isPhone, model: DeviceIdiom.modelIdentifier,
+                                   window: windowSize, insets: windowInsets, scale: Double(displayScale),
                                    sizeClass: horizontalSizeClass)
         }
     }
@@ -741,7 +742,8 @@ enum OpenDuoGateLog {
 
     private static let log = Logger(subsystem: "com.aerodj.app", category: "layout")
 
-    static func decided(usesDuoStations: Bool, hasFold: Bool, phone: Bool, window: CGSize, insets: Insets,
+    static func decided(usesDuoStations: Bool, hasFold: Bool, phone: Bool, model: String,
+                        window: CGSize, insets: Insets,
                         scale: Double, sizeClass: UserInterfaceSizeClass?) {
         let sizeClassName: String
         switch sizeClass {
@@ -755,7 +757,7 @@ enum OpenDuoGateLog {
         let scaleText = String(format: "%.1f", scale)
         // The rail's status-column clearance is estimated from the owner's shots, not measured.
         let clearance = String(format: "%.0f", DuoStationsLayout.statusColumnClearance)
-        log.notice("stations gate duo \(usesDuoStations, privacy: .public) phone idiom \(phone, privacy: .public) hinge \(hasFold, privacy: .public) size class \(sizeClassName, privacy: .public) window \(size, privacy: .public) scale \(scaleText, privacy: .public) safe \(safe, privacy: .public) rail clearance \(clearance, privacy: .public)")
+        log.notice("stations gate duo \(usesDuoStations, privacy: .public) phone idiom \(phone, privacy: .public) model \(model, privacy: .public) hinge \(hasFold, privacy: .public) size class \(sizeClassName, privacy: .public) window \(size, privacy: .public) scale \(scaleText, privacy: .public) safe \(safe, privacy: .public) rail clearance \(clearance, privacy: .public)")
     }
 }
 
@@ -769,10 +771,25 @@ enum DeviceIdiom {
     /// stand in for the open Duo at regular width. Release compiles it out.
     static let forcePhoneKey = "AeroDJForcePhoneIdiom"
 
+    /// The hardware model ("iPhone17,3"; on the simulator the simulated model, since
+    /// `utsname.machine` is the host CPU there). A model string, not personal data. Read once.
+    static let modelIdentifier: String = {
+        var info = utsname()
+        uname(&info)
+        let machine = withUnsafeBytes(of: &info.machine) { raw in
+            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+        return DeviceModel.resolvedIdentifier(
+            machine: machine, simulatorModel: ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"])
+    }()
+
+    /// The phone idiom, or (Orion) an iPhone hardware model that reports the pad idiom. The
+    /// debug override still wins in the UI tests; the iPad simulator's model is "iPad…".
     static var isPhone: Bool {
         #if DEBUG
         if UserDefaults.standard.bool(forKey: forcePhoneKey) { return true }
         #endif
         return UIDevice.current.userInterfaceIdiom == .phone
+            || DeviceModel.isPhoneModel(identifier: modelIdentifier)
     }
 }

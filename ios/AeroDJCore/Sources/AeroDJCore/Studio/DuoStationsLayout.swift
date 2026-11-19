@@ -357,3 +357,22 @@ public enum DuoStationsLayout {
     public static let thumbnailArtSide: Double = 38
     public static let thumbnailArtRadius: Double = 12
 }
+
+/// Build 54 (Orion, -Nova): the hardware-model signal behind the app's `DeviceIdiom`. A device
+/// whose model identifier starts with "iPhone" counts as a phone even if it reports the pad
+/// idiom (the open Duo at the regular width class). Pure, so Linux tests it. The identifier is a
+/// hardware model string ("iPhone17,3"), not personal data.
+public enum DeviceModel {
+    /// "iPhone17,3" true; "iPad14,8", "arm64", "x86_64" and "" false.
+    public static func isPhoneModel(identifier: String) -> Bool {
+        identifier.hasPrefix("iPhone")
+    }
+
+    /// The simulator's `utsname.machine` is the host CPU ("arm64", "x86_64"), so there the
+    /// simulated model (`SIMULATOR_MODEL_IDENTIFIER`) is the identifier. On a device, `machine`.
+    public static func resolvedIdentifier(machine: String, simulatorModel: String?) -> String {
+        let hostCPUs: Set<String> = ["arm64", "x86_64", "i386"]
+        guard hostCPUs.contains(machine), let simulatorModel, !simulatorModel.isEmpty else { return machine }
+        return simulatorModel
+    }
+}
