@@ -280,7 +280,9 @@ so the compact layout and its sheet keep their radii.
   The leading and trailing safe areas are read separately. The larger one is the
   outer edge, and the Now Playing symbol bar, the station sidebar, and the Library
   and Settings bar buttons sit on that side. Equal insets keep the current side.
-  A full-screen iPhone, including landscape, does not take this path. Hit targets
+  A full-screen iPhone, including landscape, does not take this path. A split slice
+  that is taller than it is wide (the Duo in landscape) still does. A missing width
+  class is compact (`SplitViewLayout.chrome(widthClass: nil, ...)`). Hit targets
   stay at least 44 pt, and controls stay inside the container.
 - Scroll only where content can exceed the container: the queue list, the Tune and
   Connections segments, and the whole layout at accessibility sizes. Zone A itself
