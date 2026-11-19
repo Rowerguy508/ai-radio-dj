@@ -1149,11 +1149,14 @@ final class MusicKitService: ObservableObject {
     private func confirmStart(_ attempt: PlaybackAttemptID) {
         guard attempts.isCurrent(attempt) else { return }
         // MusicKit is playing: a deferred .began was our own start's, so it is discarded. -Atlas
+        #if DEBUG || AERODJ_P0_DIAG
+        // #526 S0b (-Echo): plain synchronous stamp of MusicKit `.playing` on the record clock.
+        // No await, no throw, no session call. First stamp wins, so a later beginPoll cannot move it.
         #if AERODJ_P0_DIAG
-        // #526 S0b: stamp MusicKit `.playing` on the existing record clock. No session call.
         P0EventTraceHost.shared.talkover { trace, t in
             _ = trace.airPlayGapHandoffMark(.musicPlaying, at: t)
         }
+        #endif
         #endif
         selfStartGate.startConfirmed(attempt)
         send(.playbackConfirmed)

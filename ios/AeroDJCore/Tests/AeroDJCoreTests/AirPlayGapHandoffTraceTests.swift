@@ -89,6 +89,21 @@ final class AirPlayGapHandoffTraceTests: XCTestCase {
         XCTAssertEqual(row.milliseconds[.firstPlay], 100)
     }
 
+    /// The confirmStart `.playing` stamp is kept when beginPoll sees `.playing` later:
+    /// one row per start, with the earlier time.
+    func testConfirmStartPlayingStampIsKeptWhenThePollStampsLater() throws {
+        var trace = P0EventTrace()
+        _ = trace.airPlayGapHandoffBegin(afterTrack: 1, at: 0)
+        _ = trace.airPlayGapHandoffMark(.firstPlay, at: 0.040)
+        _ = trace.airPlayGapHandoffMark(.lastFinish, at: 1.000)
+        _ = trace.airPlayGapHandoffMark(.sessionOff, at: 1.005)
+        _ = trace.airPlayGapHandoffMark(.nextPlay, at: 1.050)
+        let row = try XCTUnwrap(trace.airPlayGapHandoffMark(.musicPlaying, at: 1.100))
+        XCTAssertTrue(row.detail.contains("musicPlaying=1100"), row.detail)
+        XCTAssertNil(trace.airPlayGapHandoffMark(.musicPlaying, at: 1.900), "a later poll stamp must not emit or move it")
+        XCTAssertEqual(trace.rows.filter { $0.detail.contains("kind=handoff") }.count, 1)
+    }
+
     /// A new begin finalizes a still-open break so it is never silently dropped.
     func testBeginFlushesAnOpenBreakWithMissingSteps() throws {
         var trace = AirPlayGapHandoffTrace()
@@ -240,8 +255,11 @@ final class AirPlayGapHandoffTraceTests: XCTestCase {
     func testMusicKitPlayingHookIsGatedIfPresent() throws {
         let source = try String(contentsOf: Self.ios.appendingPathComponent("AeroDJ/MusicKitService.swift"),
                                 encoding: .utf8)
-        guard source.contains("airPlayGapHandoffMark(.musicPlaying") else {
-            return // no hook in this file is also allowed
+        XCTAssertTrue(source.contains("airPlayGapHandoffMark(.musicPlaying"), "confirmStart hook missing")
+        let gate = try XCTUnwrap(Self.block(around: "airPlayGapHandoffMark(.musicPlaying", in: source, window: 8))
+        XCTAssertTrue(gate.contains("#if DEBUG || AERODJ_P0_DIAG"), "same gate as the adapter hooks")
+        for forbidden in ["try ", "throw "] {
+            XCTAssertFalse(gate.contains(forbidden), forbidden)
         }
         let hits = Self.unguardedLines(in: source, token: "airPlayGapHandoffMark(.musicPlaying",
                                        also: ["DEBUG", "AERODJ_P0_DIAG"])
