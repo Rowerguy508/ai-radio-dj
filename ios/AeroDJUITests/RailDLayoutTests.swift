@@ -114,10 +114,10 @@ final class RailDLayoutTests: XCTestCase {
         let rail = try assertRail(app, id: "folded.systemBar", hasCollapse: true)
         XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail))
         assertNoHorizontalBar(app)
-        // L2: the art and title centred over the player area; the chip and Up next after the fold.
+        // Build 54 (4), -Nova: the open Duo (a hinge is reported) is the L1 spread even flat. L2
+        // centred the art and title across the fold and pushed Up next past the bottom edge.
         let track = try XCTUnwrap(settledFrame(of: any["folded.trackColumn"], "track column"))
-        XCTAssertLessThan(track.minX, box.minX + Self.foldMinX)
-        XCTAssertGreaterThan(track.maxX, box.minX + Self.foldMaxX)
+        XCTAssertLessThanOrEqual(track.maxX, box.minX + Self.foldMinX + 1, "the art column ends before the fold")
         let chip = any["dj.ready"]
         XCTAssertTrue(chip.waitForExistence(timeout: 5), "DJ chip missing\n\(app.debugDescription)")
         XCTAssertGreaterThanOrEqual(chip.frame.minX, box.minX + Self.foldMaxX - 1, "the chip sits after the fold")
@@ -190,6 +190,34 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertTrue(play.exists)
         XCTAssertGreaterThanOrEqual(play.frame.height, 44)
         XCTAssertGreaterThanOrEqual(play.frame.width, 44)
+        // Build 54 (4): Up next on the second page, opposite the art, wholly inside the window
+        // (never clipped at the bottom edge), leading of the rail, under the DJ-break pill.
+        let track = try XCTUnwrap(settledFrame(of: any["folded.trackColumn"], "track column"))
+        let upNext = any["duo.upNext"]
+        XCTAssertTrue(upNext.waitForExistence(timeout: 5), "Up next missing\n\(app.debugDescription)")
+        let next = try XCTUnwrap(settledFrame(of: upNext, "Up next"))
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(next), "Up next \(next) is not fully inside \(box)")
+        XCTAssertGreaterThanOrEqual(next.minX, track.maxX - 1, "Up next \(next) is opposite the art \(track)")
+        XCTAssertGreaterThanOrEqual(next.minX, box.midX, "Up next \(next) is on the second page")
+        XCTAssertLessThanOrEqual(next.maxX, rail.frame.minX + 1, "Up next \(next) runs under the rail")
+        XCTAssertGreaterThanOrEqual(next.height, 44)
+        let pill = any["dj.ready"]
+        XCTAssertTrue(pill.waitForExistence(timeout: 5), "the DJ-break pill is gone\n\(app.debugDescription)")
+        XCTAssertGreaterThanOrEqual(next.minY, pill.frame.maxY - 1, "Up next sits under the DJ-break pill")
+        XCTAssertGreaterThanOrEqual(pill.frame.minX, box.midX, "the pill is on the second page")
+        // Build 54 (5): the title, chip and Up next share one leading edge; the star sits right
+        // after the title block (8 pt in the layout; asserted within 24 pt), top-aligned with it.
+        let title = try assertChipLinesUpWithTitle(app)
+        XCTAssertEqual(next.minX, title.minX, accuracy: 1, "Up next \(next) lines up with the title \(title)")
+        let star = app.buttons["nowPlaying.rating"]
+        XCTAssertTrue(star.waitForExistence(timeout: 5), "the star is missing\n\(app.debugDescription)")
+        let gap = star.frame.minX - title.maxX
+        XCTAssertGreaterThanOrEqual(gap, -1, "the star \(star.frame) overlaps the title \(title)")
+        XCTAssertLessThanOrEqual(gap, 24, "the star \(star.frame) is not beside the title \(title)")
+        XCTAssertLessThan(star.frame.minY, title.maxY, "the star is level with the title block")
+        XCTAssertGreaterThanOrEqual(star.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(star.frame.height, 44)
+        XCTAssertLessThanOrEqual(star.frame.maxX, rail.frame.minX + 1)
         save(app, shot, container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
