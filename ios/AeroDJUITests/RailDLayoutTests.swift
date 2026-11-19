@@ -7,7 +7,8 @@ import UIKit
 /// is a capture (`RailDCaptureContainer`, or the plain capture path on the iPhone), checked and
 /// saved here. Required in ios.yml: rail-d-iphone, rail-d-duo-closed, rail-d-duo-open-portrait,
 /// rail-d-duo-open-portrait-sidebar, rail-d-duo-open-landscape-spread,
-/// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar.
+/// rail-d-duo-open-landscape-centred, rail-d-duo-open-landscape-sidebar. Not required:
+/// rail-d-duo-open-landscape-book-collapsed (#548, the spread's frame with the rail collapsed).
 /// A frame bigger than the simulator window is skipped, as in `AppWideLayoutTests`.
 final class RailDLayoutTests: XCTestCase {
     private static let closed = CGSize(width: 390, height: 844)
@@ -110,7 +111,8 @@ final class RailDLayoutTests: XCTestCase {
                            "\(element.identifier) \(element.label) \(frame) sits on the fold \(foldMin)…\(foldMax)")
         }
         XCTAssertGreaterThan(checked, 5, "the fold check saw too few controls")
-        save(app, "rail-d-duo-open-landscape-spread")
+        save(app, "rail-d-duo-open-landscape-spread",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
     @MainActor
@@ -129,7 +131,8 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertTrue(chip.waitForExistence(timeout: 5), "DJ chip missing\n\(app.debugDescription)")
         XCTAssertGreaterThanOrEqual(chip.frame.minX, box.minX + Self.foldMaxX - 1, "the chip sits after the fold")
         XCTAssertGreaterThanOrEqual(any["duo.upNext"].frame.minX, box.minX + Self.foldMaxX - 1)
-        save(app, "rail-d-duo-open-landscape-centred")
+        save(app, "rail-d-duo-open-landscape-centred",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
     @MainActor
@@ -137,7 +140,58 @@ final class RailDLayoutTests: XCTestCase {
         let app = try launch("railDLandscapeSidebar", container: Self.landscape, orientation: .landscapeLeft)
         let box = try settledContainer(app, size: Self.landscape)
         try assertSidebarRailColumn(app, box: box)
-        save(app, "rail-d-duo-open-landscape-sidebar")
+        save(app, "rail-d-duo-open-landscape-sidebar",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
+    }
+
+    /// #548, owner's Nov 17 9:53 AM call: the open Duo in book pose with the rail collapsed
+    /// keeps Rail D. The column moves to the leading side of the fold with the closed screen's
+    /// rail (`folded.closedRail`) beside it; the song position is the rail's vertical bar and the
+    /// column has no progress bar. Same frame as the spread (820 x 640, fold 396…424), then
+    /// Collapse. Show rail brings the full rail back. -Nova
+    @MainActor
+    func testOpenLandscapeBookPoseCollapsed() throws {
+        let app = try launch("railDLandscapeSpread", container: Self.landscape, orientation: .landscapeLeft)
+        let box = try settledContainer(app, size: Self.landscape)
+        let any = app.descendants(matching: .any)
+        let collapse = app.buttons["folded.collapse"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 10), "Collapse missing\n\(app.debugDescription)")
+        collapse.tap()
+        XCTAssertTrue(any["folded.bookColumn"].waitForExistence(timeout: 10),
+                      "the collapsed book pose is not the book column\n\(app.debugDescription)")
+        XCTAssertFalse(any["folded.systemBar"].exists, "the full rail is still up")
+        let rail = try assertRail(app, id: "folded.closedRail", hasCollapse: false)
+        XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(rail))
+        assertNoHorizontalBar(app)
+        let column = try XCTUnwrap(settledFrame(of: any["folded.wideColumn"], "book column"))
+        let bar = any["playback.progress"].frame
+        XCTAssertGreaterThanOrEqual(bar.minX, column.maxX - 1, "the song-position bar \(bar) is in the column \(column)")
+        XCTAssertGreaterThanOrEqual(rail.minX, column.maxX - 1, "the rail is trailing of the column")
+        let foldMin = box.minX + Self.foldMinX
+        let foldMax = box.minX + Self.foldMaxX
+        XCTAssertLessThanOrEqual(column.maxX, foldMin + 1, "the column ends before the fold")
+        XCTAssertLessThanOrEqual(rail.maxX, foldMin + 1, "the rail ends before the fold")
+        let expand = app.buttons["folded.expandRail"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "Show rail missing\n\(app.debugDescription)")
+        XCTAssertTrue(expand.isHittable)
+        XCTAssertGreaterThanOrEqual(expand.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(expand.frame.height, 44)
+        // Nothing interactive on the fold.
+        var checked = 0
+        for element in app.buttons.allElementsBoundByIndex + [any["playback.progress"]] where element.exists {
+            let frame = element.frame
+            guard !frame.isEmpty, box.intersects(frame), element.isHittable else { continue }
+            checked += 1
+            XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin,
+                           "\(element.identifier) \(element.label) \(frame) sits on the fold \(foldMin)…\(foldMax)")
+        }
+        XCTAssertGreaterThan(checked, 5, "the fold check saw too few controls")
+        save(app, "rail-d-duo-open-landscape-book-collapsed",
+             container: app.descendants(matching: .any)["capture.railDContainer"])
+        // Show rail: back to the L1 spread with the full rail.
+        expand.tap()
+        XCTAssertTrue(any["folded.systemBar"].waitForExistence(timeout: 10), "Show rail did not bring the rail back")
+        XCTAssertFalse(any["folded.bookColumn"].exists)
     }
 
     // MARK: DJ states (Echo, #558): debug-only extra shots, not required in ios.yml
@@ -208,7 +262,8 @@ final class RailDLayoutTests: XCTestCase {
             let foldMax = box.minX + Self.foldMaxX
             XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin, "DJ state \(frame) sits on the fold")
         }
-        save(app, shot)
+        save(app, shot,
+             container: app.descendants(matching: .any)["capture.railDContainer"])
     }
 
     // MARK: Checks
@@ -402,10 +457,29 @@ final class RailDLayoutTests: XCTestCase {
         return nil
     }
 
+    /// `container` set (the open-landscape frames only): the shot is that element's own
+    /// capture, the 820 × 640 frame upright and whole, not the screen around it. Nil (the
+    /// iPhone, closed Duo, and open-portrait frames) keeps the app screenshot, so those PNGs
+    /// do not change.
     @MainActor
-    private func save(_ app: XCUIApplication, _ name: String) {
-        let shot = app.screenshot()
-        let attachment = XCTAttachment(screenshot: shot)
+    private func save(_ app: XCUIApplication, _ name: String, container: XCUIElement? = nil) {
+        let shot = container.map { $0.screenshot() } ?? app.screenshot()
+        let png: Data
+        let attachment: XCTAttachment
+        // An element screenshot after `XCUIDevice.shared.orientation = .landscapeLeft` can
+        // still arrive taller than wide, or with a non-`.up` imageOrientation, because the
+        // hosted iPad sim keeps a portrait-origin framebuffer. The a903baba
+        // studio-screenshots were 2360 × 1640, status bar vertical on the right, and the
+        // 820 × 640 container cut off at the bottom. Normalise those so the PNG is the
+        // upright, wider-than-tall frame. Portrait and closed shots never enter this path.
+        if container != nil, XCUIDevice.shared.orientation.isLandscape {
+            let image = uprightOpenLandscapeImage(shot.image)
+            png = image.pngData() ?? shot.pngRepresentation
+            attachment = XCTAttachment(image: image)
+        } else {
+            png = shot.pngRepresentation
+            attachment = XCTAttachment(screenshot: shot)
+        }
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -413,7 +487,36 @@ final class RailDLayoutTests: XCTestCase {
             let device = UIDevice.current.name.replacingOccurrences(of: " ", with: "-")
             let url = URL(fileURLWithPath: dir).appendingPathComponent("\(name)_\(device).png")
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            try? shot.pngRepresentation.write(to: url)
+            try? png.write(to: url)
+        }
+    }
+
+    /// Bake a non-`.up` orientation into the pixels. If the bitmap is still taller than wide
+    /// (the landscape frame captured from a portrait framebuffer), rotate 90° counterclockwise:
+    /// that puts the right-edge status bar on top and yields the 820 × 640 frame.
+    private func uprightOpenLandscapeImage(_ image: UIImage) -> UIImage {
+        let baked = image.imageOrientation == .up ? image : drawnUpright(image)
+        guard baked.size.height > baked.size.width else { return baked }
+        return rotated90Counterclockwise(baked)
+    }
+
+    private func drawnUpright(_ image: UIImage) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = image.scale
+        let size = image.size
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+
+    private func rotated90Counterclockwise(_ image: UIImage) -> UIImage {
+        let size = CGSize(width: image.size.height, height: image.size.width)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = image.scale
+        return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            ctx.cgContext.translateBy(x: 0, y: size.height)
+            ctx.cgContext.rotate(by: -.pi / 2)
+            image.draw(in: CGRect(origin: .zero, size: image.size))
         }
     }
 }

@@ -74,25 +74,123 @@ public enum FoldAwareness {
             containerWidth: containerWidth, containerHeight: containerHeight,
             artMin: artMin, artMax: artMax)
         let unchanged = Decision(isBookPose: false, metrics: ordinary)
-        guard containerWidth.isFinite, containerHeight.isFinite,
-              containerWidth > 0, containerHeight > 0 else { return unchanged }
-        guard FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
-                                                  containerHeight: containerHeight) == .duoHorizontal else {
-            return unchanged
-        }
-        if let hinge {
-            switch hinge.status {
-            case .closed, .fullyOpen:
-                return unchanged
-            case .partiallyOpen, .unknown:
-                break
-            }
-        }
+        guard isBookPose(containerWidth: containerWidth, containerHeight: containerHeight,
+                         hinge: hinge) else { return unchanged }
         guard let fold = bookFold(in: divisions, containerWidth: containerWidth,
                                   containerHeight: containerHeight) else { return unchanged }
         return Decision(isBookPose: true, metrics: bookMetrics(
             containerWidth: containerWidth, containerHeight: containerHeight,
             fold: fold, artMin: artMin, artMax: artMax))
+    }
+
+    /// Narrowest side of the fold (after the `duoEdgeInset`s) that takes the collapsed-rail
+    /// column. Under it, `bookColumn` is nil and the column stays centred as before (#548).
+    public static let bookColumnMinSideWidth: Double = 260
+
+    /// The single centred column the Duo shows once its rail is collapsed (#479), in book pose.
+    /// `minX` and `width` are container points; `artSide` is clamped to the column.
+    public struct BookColumn: Equatable, Sendable {
+        public var minX: Double
+        public var width: Double
+        public var artSide: Double
+
+        public init(minX: Double, width: Double, artSide: Double) {
+            self.minX = minX
+            self.width = width
+            self.artSide = artSide
+        }
+
+        public var maxX: Double { minX + width }
+    }
+
+    /// #507: with the rail collapsed, the wide Duo draws one centred column (art, transport,
+    /// scrubber, toolbar). Centred on a 640 pt display it spans the crease. In book pose the
+    /// whole column moves to one side of the fold: the leading side, unless the trailing side
+    /// is wider. That side must be at least `bookColumnMinSideWidth`. It keeps its preferred width when that fits, otherwise it takes the side's
+    /// width (`duoEdgeInset` from the edge, flush with the fold), and stays centred in the side.
+    ///
+    /// Nil when the chosen side is narrower than `bookColumnMinSideWidth`, and whenever `resolve` is not book pose (no fold, flat or closed hinge, laptop pose,
+    /// a phone or the iPhone-landscape centred column): the caller keeps today's centred column.
+    public static func bookColumn(containerWidth: Double, containerHeight: Double,
+                                  hinge: HingeSample?, divisions: [Division],
+                                  column: Double, artSide: Double) -> BookColumn? {
+        guard column.isFinite, artSide.isFinite, column > 0 else { return nil }
+        guard isBookPose(containerWidth: containerWidth, containerHeight: containerHeight, hinge: hinge),
+              let fold = bookFold(in: divisions, containerWidth: containerWidth,
+                                  containerHeight: containerHeight) else { return nil }
+        let edge = FoldedColumnLayout.duoEdgeInset
+        let innerEnd = max(edge, containerWidth - edge)
+        let foldMin = min(max(fold.minX, edge), innerEnd)
+        let foldMax = min(max(fold.maxX, foldMin), innerEnd)
+        let leading = (start: edge, width: foldMin - edge)
+        let trailing = (start: foldMax, width: innerEnd - foldMax)
+        let side = trailing.width > leading.width ? trailing : leading
+        guard side.width >= bookColumnMinSideWidth else { return nil }
+        let width = min(column, side.width)
+        return BookColumn(minX: side.start + (side.width - width) / 2, width: width,
+                          artSide: max(0, min(artSide, width)))
+    }
+
+    /// Owner (Nov 17, 9:53 AM): the open Duo, book pose included, gets the same Rail D as the
+    /// closed screen, with the song position inside the rail and no progress bar in the middle
+    /// column. So the book-pose collapsed column (`bookColumn`) splits into the content column
+    /// and the closed screen's rail (`FoldedOuterLayout.closedRailWidth`, ⋯, Play/Pause, Skip,
+    /// Queue, Sleep, the vertical bar, the live dot) on its trailing side, `bookRailGap` apart.
+    /// Both stay inside `book`'s span, so neither reaches the fold. `minX` values are container
+    /// points. -Nova
+    public struct BookRailColumn: Equatable, Sendable {
+        public var columnMinX: Double
+        public var columnWidth: Double
+        public var artSide: Double
+        public var railMinX: Double
+        public var railWidth: Double
+
+        public init(columnMinX: Double, columnWidth: Double, artSide: Double,
+                    railMinX: Double, railWidth: Double) {
+            self.columnMinX = columnMinX
+            self.columnWidth = columnWidth
+            self.artSide = artSide
+            self.railMinX = railMinX
+            self.railWidth = railWidth
+        }
+
+        public var columnMaxX: Double { columnMinX + columnWidth }
+        public var railMaxX: Double { railMinX + railWidth }
+    }
+
+    /// Between the book column and its rail: the sidebar-open rail column's gutter.
+    public static var bookRailGap: Double { RailDLayout.railColumnGutter }
+
+    /// `book` split into the content column and the closed rail. Nil when the column would
+    /// have no width (it cannot at `bookColumnMinSideWidth`: 260 - 56 - 12 = 192 pt).
+    public static func bookRailColumn(_ book: BookColumn,
+                                      railWidth: Double = FoldedOuterLayout.closedRailWidth,
+                                      gap: Double = bookRailGap) -> BookRailColumn? {
+        guard book.width.isFinite, railWidth.isFinite, gap.isFinite else { return nil }
+        let column = book.width - railWidth - gap
+        guard column > 0 else { return nil }
+        return BookRailColumn(columnMinX: book.minX, columnWidth: column,
+                              artSide: max(0, min(book.artSide, column)),
+                              railMinX: book.minX + column + gap, railWidth: railWidth)
+    }
+
+    /// The gates `resolve` applies before it looks for a fold.
+    private static func isBookPose(containerWidth: Double, containerHeight: Double, hinge: HingeSample?) -> Bool {
+        guard containerWidth.isFinite, containerHeight.isFinite,
+              containerWidth > 0, containerHeight > 0 else { return false }
+        guard FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
+                                                  containerHeight: containerHeight) == .duoHorizontal else {
+            return false
+        }
+        if let hinge {
+            switch hinge.status {
+            case .closed, .fullyOpen:
+                return false
+            case .partiallyOpen, .unknown:
+                return true
+            }
+        }
+        return true
     }
 
     /// The active vertical division that actually splits this container. A short region
