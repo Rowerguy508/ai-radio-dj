@@ -78,6 +78,9 @@ public enum P0TraceKey: String, Equatable, Sendable, CaseIterable {
     case cur1, cur2, curN
     // Fry's #527 B1: where `.normal` was (re)applied and which attempt
     case site, attempt
+    // #526 S0b (-Echo): AirPlay gap-break handoff timestamps (ms on the record clock) and
+    // the route's outputLatency in milliseconds. Codes and milliseconds only.
+    case songEnd, firstPlay, lastFinish, sessionOff, nextPlay, musicPlaying, latency, missing
 }
 
 extension P0TraceCode {
@@ -143,6 +146,8 @@ public enum P0TraceCode: String, Equatable, Sendable, CaseIterable {
     case restore, restoreFailed
     case endGapBreak, beforeClip, beforePlay
     case failed, recovered, latched, cleared
+    /// #526 S0b (-Echo): the handoff row kind, its steps, and how the break ended.
+    case handoff, songEnd, firstPlay, lastFinish, sessionOff, nextPlay, complete, skipped, incomplete
     case newDeviceAvailable, oldDeviceUnavailable, categoryChange, override, wakeFromSleep
     case noSuitableRouteForCategory, routeConfigurationChange, otherReason
 }
@@ -155,6 +160,8 @@ public enum P0TraceValue: Equatable, Sendable {
     case deci(Int)
     /// The value was not reported (for example no position yet).
     case missing
+    /// Several reason codes, rendered as `a+b` or `-` when empty (S0b missing steps).
+    case joinedCodes([P0TraceCode])
 
     /// Seconds, rounded to whole seconds.
     public static func seconds(_ value: TimeInterval?) -> P0TraceValue {
@@ -175,6 +182,8 @@ public enum P0TraceValue: Equatable, Sendable {
         case .deci(let t): return String(format: "%.1f", Double(t) / 10)
         case .code(let c): return c.rawValue
         case .missing: return "-"
+        case .joinedCodes(let codes):
+            return codes.isEmpty ? "-" : codes.map(\.rawValue).joined(separator: "+")
         }
     }
 }
@@ -300,12 +309,15 @@ public struct P0EventTrace: Sendable {
     private var lastInterruption: (reason: InterruptionReason, t: TimeInterval)?
     private var nextID = 0
     private var sampler = P0PollSampler()
+    /// #526 S0b: in-flight AirPlay gap-break handoff, if any.
+    private var airPlayHandoff = AirPlayGapHandoffTrace()
 
     public init() {}
 
     public mutating func clear() {
         rows.removeAll()
         lastPolls.removeAll()
+        airPlayHandoff = AirPlayGapHandoffTrace()
     }
 
     @discardableResult
@@ -339,6 +351,9 @@ public struct P0EventTrace: Sendable {
         let change = sampler.consume(observation, at: t)
         pending = PendingPoll(observation: observation, before: before, change: change,
                               queueIndex: queueIndex, queueCount: queueCount, t: t)
+        if observation.isPlaying {
+            _ = airPlayGapHandoffMark(.musicPlaying, at: t)
+        }
         guard let gap = change.gap else { return [] }
         return [record(.pollGap, at: t, queueIndex: queueIndex, queueCount: queueCount, [(.gap, .tenths(gap))])]
     }
@@ -462,6 +477,11 @@ public struct P0EventTrace: Sendable {
         case .naturalEnd: kind = .naturalEnd
         case .queueFinished: kind = .queueFinished
         }
+        // #526 S0b: start one handoff on the AirPlay gap route only. Headphones are untouched.
+        // `!talkoverAllowed` is the same rule the #527/#553 path uses.
+        if !DJLongFormRouteState.shared.talkoverAllowed {
+            _ = airPlayGapHandoffBegin(afterTrack: finishedIndex, at: t)
+        }
         return record(.onBoundary, at: t, [(.result, .code(kind)), (.finished, .int(finishedIndex))])
     }
 
@@ -477,8 +497,10 @@ public struct P0EventTrace: Sendable {
         case .breakPrepared:
             return record(.naturalBoundary, at: t, [(.result, .code(.breakPrepared)), (.after, .int(afterTrack))])
         case .interludeSpeaking:
+            airPlayGapHandoffNote(.skipped)
             return record(.naturalBoundary, at: t, [(.result, .code(.interludeSpeaking)), (.after, .int(afterTrack))])
         case let .noBreak(reason, planned):
+            airPlayGapHandoffNote(.skipped)
             let why: P0TraceValue = reason.map { .code(P0TraceCode(skip: $0)) } ?? .missing
             return record(.naturalBoundary, at: t, [(.result, .code(.noBreak)), (.reason, why),
                                                      (.plan, .bool(planned)), (.after, .int(afterTrack))])
@@ -513,8 +535,12 @@ public struct P0EventTrace: Sendable {
         var pairs: [(P0TraceKey, P0TraceValue)] = [(.after, .int(index))]
         switch stage {
         case .called: pairs.append((.outcome, .code(.called)))
-        case .takeNext(let ok): pairs.append((.takeNext, .bool(ok)))
-        case .indexOK(let ok): pairs.append((.indexOK, .bool(ok)))
+        case .takeNext(let ok):
+            pairs.append((.takeNext, .bool(ok)))
+            if !ok { _ = airPlayGapHandoffFinalize(at: t) }
+        case .indexOK(let ok):
+            pairs.append((.indexOK, .bool(ok)))
+            if !ok { _ = airPlayGapHandoffFinalize(at: t) }
         }
         return record(.startNextTrack, at: t, queueIndex: index, queueCount: queueCount, pairs + gates.pairs)
     }
@@ -543,6 +569,11 @@ public struct P0EventTrace: Sendable {
         case .error(let e):
             code = .error
             extra = [(.code, .int(e.code))]
+        }
+        if outcome == .started {
+            _ = airPlayGapHandoffMark(.nextPlay, at: t)
+        } else {
+            _ = airPlayGapHandoffFinalize(at: t)
         }
         return record(.startTrack, at: t, queueIndex: index, queueCount: queueCount,
                       [(.index, .int(index)), (.outcome, .code(code))] + extra
@@ -878,6 +909,66 @@ extension P0EventTrace {
                                       (.route, .code(P0TraceCode(rawValue: route.rawValue) ?? .unknown))]
                + Self.portPairs(sessionPorts, first: .cur1, second: .cur2, count: .curN)
                + Self.portPairs(probePorts, first: .port1, second: .port2, count: .ports))
+    }
+}
+
+// MARK: #526 S0b AirPlay gap-break handoff (-Echo)
+
+extension P0EventTrace {
+    /// One hook for the S0b handoff row. `t` is the same monotonic clock `record(_:at:)`
+    /// already uses. Marks a step; emits one row when MusicKit `.playing` arrives.
+    @discardableResult
+    public mutating func airPlayGapHandoffMark(_ step: AirPlayGapHandoffTrace.Step,
+                                               outputLatency: TimeInterval? = nil,
+                                               at t: TimeInterval) -> P0TraceRow? {
+        guard let row = airPlayHandoff.mark(step, outputLatency: outputLatency, at: t) else { return nil }
+        return emitAirPlayHandoff(row, at: t)
+    }
+
+    /// Notes a skip, timeout or failed start without emitting; later steps still record.
+    public mutating func airPlayGapHandoffNote(_ outcome: AirPlayGapHandoffTrace.Outcome) {
+        airPlayHandoff.note(outcome)
+    }
+
+    /// Starts a handoff for `afterTrack`. Emits a still-open previous break first, with
+    /// every missing step reported.
+    @discardableResult
+    public mutating func airPlayGapHandoffBegin(afterTrack: Int, outputLatency: TimeInterval? = nil,
+                                                at t: TimeInterval) -> P0TraceRow? {
+        guard let row = airPlayHandoff.begin(afterTrack: afterTrack, outputLatency: outputLatency, at: t) else {
+            return nil
+        }
+        return emitAirPlayHandoff(row, at: t)
+    }
+
+    /// Emits the open break now, with missing steps listed. Nil when nothing is open.
+    @discardableResult
+    public mutating func airPlayGapHandoffFinalize(at t: TimeInterval) -> P0TraceRow? {
+        guard let row = airPlayHandoff.finalize() else { return nil }
+        return emitAirPlayHandoff(row, at: t)
+    }
+
+    private mutating func emitAirPlayHandoff(_ row: AirPlayGapHandoffTrace.Row, at t: TimeInterval) -> P0TraceRow {
+        func ms(_ step: AirPlayGapHandoffTrace.Step) -> P0TraceValue {
+            row.milliseconds[step].map { .int($0) } ?? .missing
+        }
+        func code(_ step: AirPlayGapHandoffTrace.Step) -> P0TraceCode {
+            P0TraceCode(rawValue: step.rawValue) ?? .unknown
+        }
+        let missing = row.missing.map { code($0) }
+        return record(.sessionRoute, at: t, [
+            (.kind, .code(.handoff)),
+            (.after, row.afterTrack.map { .int($0) } ?? .missing),
+            (.result, .code(P0TraceCode(rawValue: row.outcome.rawValue) ?? .unknown)),
+            (.songEnd, ms(.songEnd)),
+            (.firstPlay, ms(.firstPlay)),
+            (.lastFinish, ms(.lastFinish)),
+            (.sessionOff, ms(.sessionOff)),
+            (.nextPlay, ms(.nextPlay)),
+            (.musicPlaying, ms(.musicPlaying)),
+            (.latency, row.outputLatencyMs.map { .int($0) } ?? .missing),
+            (.missing, missing.isEmpty ? .missing : .joinedCodes(missing)),
+        ])
     }
 }
 #endif
