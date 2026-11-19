@@ -98,10 +98,17 @@ struct AddStationWalkthroughView: View {
     @State private var typedName = ""
     @State private var query = ""
     @State private var browsingLibrary = false
+    @State private var searchAttempt = 0
     @State private var forward = true
     @State private var savedName: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AccessibilityFocusState private var headingFocused: Bool
+    /// #465 item 10: nil on every phone and narrow split, which keeps the 20 pt gutter and
+    /// one results column exactly as before.
+    @Environment(\.appWideLayout) private var appWide
+
+    /// Extra side inset that holds the step at the readable width. Zero on the phone path.
+    private var wideInset: CGFloat { CGFloat(appWide?.sideInset ?? 0) }
 
     init(studio: StudioPresentationModel, creation: StationCreationModel,
          initialStep: AddStationStep = .kind, initialKind: StationCreationKind? = nil,
@@ -120,6 +127,14 @@ struct AddStationWalkthroughView: View {
     }
 
     var body: some View {
+        SplitBarHost(preferred: .leading) { insets in
+            libraryBrowser(insets)
+        }
+    }
+
+    /// Library playlists are one step of this walkthrough. `insets` nil keeps Cancel
+    /// on the leading edge.
+    private func libraryBrowser(_ insets: SplitInsets?) -> some View {
         NavigationStack {
             VStack(spacing: 0) {
                 StepIndicator(current: step, complete: { AddStationWalkthrough.isComplete($0, progress) })
@@ -134,7 +149,7 @@ struct AddStationWalkthroughView: View {
                             .accessibilityFocused($headingFocused)
                         stepContent
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, 20 + wideInset)
                     .padding(.vertical, 18)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     // New identity per step, so the transition and pop-ins rerun.
@@ -147,9 +162,12 @@ struct AddStationWalkthroughView: View {
             }
             .background(AddStationStyle.canvas.ignoresSafeArea())
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: SplitToolbar.placement(
+                    preferred: .leading, edge: insets?.barEdge,
+                    leading: .cancellationAction, trailing: .topBarTrailing)) {
                     Button(savedName == nil ? "Cancel" : "Done") { onClose() }
                         .disabled(creation.isSaving)
+                        .modifier(SplitMinimumTarget(enabled: insets != nil))
                         .accessibilityIdentifier("addStation.cancel")
                 }
             }
@@ -252,14 +270,15 @@ struct AddStationWalkthroughView: View {
             }
             resultsList
         }
-        // Genres list on arrival; library playlists load when that tab is chosen. Catalog search
+        // Genres list on arrival (fetched once through `GenreProviding`, then filtered on the
+        // device as you type); library playlists load when that tab is chosen. Catalog search
         // waits 300 ms after typing stops. All through `StationCreationModel`, never a new route.
-        .task(id: SearchKey(kind: kind, query: query, library: browsingLibrary)) {
+        .task(id: SearchKey(kind: kind, query: query, library: browsingLibrary, attempt: searchAttempt)) {
             if kind == .playlist && browsingLibrary {
                 await creation.loadLibraryPlaylists()
                 return
             }
-            if kind != .genre || !query.isEmpty {
+            if kind != .genre {
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -271,6 +290,8 @@ struct AddStationWalkthroughView: View {
         let kind: StationCreationKind
         let query: String
         let library: Bool
+        /// Bumped by "Try again" so a failed load reruns with the same query.
+        let attempt: Int
     }
 
     private func searchField(_ kind: StationCreationKind) -> some View {
@@ -323,16 +344,55 @@ struct AddStationWalkthroughView: View {
         case .idle:
             EmptyView()
         case .searching where creation.results.isEmpty:
-            ProgressView().frame(maxWidth: .infinity).padding(.vertical, 20)
-                .accessibilityLabel("Searching")
+            Group {
+                if creation.isLoadingGenres { ProgressView("Loading genres") } else { ProgressView() }
+            }
+                .tint(.white).foregroundStyle(AddStationStyle.secondary)
+                .frame(maxWidth: .infinity).padding(.vertical, 20)
+                .accessibilityLabel(creation.isLoadingGenres ? "Loading genres" : "Searching")
         case .empty:
-            Text("No matches. Try another name.")
+            Text(creation.kind == .genre
+                 ? (query.isEmpty ? "No genres are available right now." : "No genres match. Try another word.")
+                 : "No matches. Try another name.")
                 .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
+                .accessibilityIdentifier("addStation.empty")
         case .failed(let message):
             if let message {
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    // Genres: one explicit refetch (typing never refetches after a failure).
+                    Button("Try again") {
+                        if creation.kind == .genre {
+                            Task { await creation.retryGenres(matching: query) }
+                        } else {
+                            searchAttempt += 1
+                        }
+                    }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .accessibilityIdentifier("addStation.retry")
+                }
+            }
+        case .notAuthorized:
+            // Never prompts here: access is granted from a station (Allow) or Settings.
+            Text(GenrePickerCopy.connectAppleMusic)
+                .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("addStation.genres.connect")
+        case .searching where wideColumns > 1, .results where wideColumns > 1:
+            // #465 item 10: the Duo, iPad and Split View half and wider. The same rows, in
+            // reading order across then down, so VoiceOver order is unchanged.
+            VStack(spacing: 8) {
+                if creation.resultsSource == .libraryPlaylists { libraryHeader }
+                LazyVGrid(columns: appWide?.gridColumns ?? [], alignment: .leading, spacing: 8) {
+                    ForEach(Array(creation.results.enumerated()), id: \.element.id) { index, row in
+                        resultRow(row).popIn(min(index, 6) + 2)
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("addStation.results.grid")
             }
         case .searching, .results:
             VStack(spacing: 8) {
@@ -347,6 +407,17 @@ struct AddStationWalkthroughView: View {
                 }
             }
         }
+    }
+
+    /// Results columns: 1 (the phone list) unless `AppWideLayout` gives more.
+    private var wideColumns: Int { appWide?.columns ?? 1 }
+
+    /// The wide grid's copy of the phone header above the rows.
+    private var libraryHeader: some View {
+        Text("Your playlists").font(.footnote.weight(.semibold))
+            .foregroundStyle(AddStationStyle.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
     }
 
     private func resultRow(_ row: StationSeedSearchResult) -> some View {
@@ -492,7 +563,7 @@ struct AddStationWalkthroughView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Image(systemName: "checkmark.circle.fill").font(.system(size: 44)).foregroundStyle(.white)
                     .accessibilityHidden(true)
-                Text("\u{201C}\(savedName)\u{201D} is in your station recipes. Open Tune and tap Apply when you want it. Nothing that's playing changed.")
+                Text("\u{201C}\(savedName)\u{201D} is in your Stations list. Open it there when you want it. Nothing that's playing changed.")
                     .font(.subheadline).foregroundStyle(AddStationStyle.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -544,13 +615,13 @@ struct AddStationWalkthroughView: View {
             } else if step == .review {
                 primaryButton(creation.isSaving ? "Saving…" : "Save station", id: "addStation.save",
                               enabled: AddStationWalkthrough.canSave(on: step, progress)) { save() }
-                    .accessibilityHint("Saves it to your station recipes. What's playing doesn't change.")
+                    .accessibilityHint("Adds it to your Stations list. What's playing doesn't change.")
             } else {
                 primaryButton("Next", id: "addStation.next",
                               enabled: AddStationWalkthrough.canGoNext(from: step, progress)) { goNext() }
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 20 + wideInset)
         .padding(.top, 10)
         .padding(.bottom, 14)
         .background(AddStationStyle.canvas)
@@ -608,6 +679,8 @@ private struct StepIndicator: View {
     let current: AddStationStep
     let complete: (AddStationStep) -> Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// #465 item 10: lines the indicator up with the capped step. Nil (0 pt) on phones.
+    @Environment(\.appWideLayout) private var appWide
 
     var body: some View {
         HStack(spacing: 6) {
@@ -621,6 +694,7 @@ private struct StepIndicator: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(AddStationStyle.secondary)
         }
+        .padding(.horizontal, CGFloat(appWide?.sideInset ?? 0))
         .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.8), value: current)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(current.accessibilityLabel)
@@ -696,7 +770,7 @@ struct AddStationSummaryCard: View {
             row("DJ", personality)
             row("DJ talk", talk)
             row("Voice", AddStationTuning.voiceNote)
-            Text("Saved to your station recipes. It won't change what's playing.")
+            Text("Adds it to your Stations list. It won't change what's playing.")
                 .font(.caption)
                 .foregroundStyle(AddStationStyle.secondary)
                 .fixedSize(horizontal: false, vertical: true)

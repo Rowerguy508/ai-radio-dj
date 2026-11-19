@@ -1,6 +1,11 @@
 // AI DJ Commentary Generator using MiniMax API
 
 import type { Station, Track } from '@/lib/store/radio';
+import {
+  PaidInferenceRefusal,
+  measureCommentaryInput,
+  reservePaidCharacters,
+} from '@/lib/llm/paid-inference';
 
 export interface CommentaryContext {
   station: Station;
@@ -29,8 +34,12 @@ function getTimeOfDay(): string {
 export { getTimeOfDay };
 
 export async function generateCommentary(context: CommentaryContext): Promise<CommentaryResponse> {
+  const chars = measureCommentaryInput(context);
   const apiKey = process.env.MINIMAX_API_KEY;
   if (!apiKey) return generateFallback(context);
+  if (!reservePaidCharacters(chars)) {
+    throw new PaidInferenceRefusal(429, 'budget_exceeded');
+  }
 
   const system = buildSystemPrompt(context);
   const user = buildUserPrompt(context);
@@ -50,7 +59,10 @@ export async function generateCommentary(context: CommentaryContext): Promise<Co
       }),
     });
 
-    if (!res.ok) throw new Error(`MiniMax ${res.status}`);
+    if (!res.ok) {
+      console.error('Commentary generation failed:', { status: res.status });
+      return generateFallback(context);
+    }
     const data = await res.json();
     const raw = data.choices?.[0]?.message?.content || '';
     const text = raw.replace(/[*"]/g, '').trim();
@@ -60,8 +72,9 @@ export async function generateCommentary(context: CommentaryContext): Promise<Co
       ssml: addNaturalPauses(text),
       estimatedDuration: estimateDuration(text),
     };
-  } catch (e) {
-    console.error('Commentary generation failed:', e);
+  } catch (error) {
+    if (error instanceof PaidInferenceRefusal) throw error;
+    console.error('Commentary generation failed');
     return generateFallback(context);
   }
 }

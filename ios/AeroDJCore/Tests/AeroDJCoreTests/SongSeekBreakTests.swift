@@ -293,4 +293,34 @@ final class SongSeekBreakTests: XCTestCase {
         XCTAssertEqual(r.log.preparing(0), 2)
         await r.session.stop()
     }
+
+    // MARK: cancelAll(except:) clears re-arm state for every boundary it drops (Fry's #167 note)
+
+    func testASeekThatResumesAfterANarrowedCancelStartsNoRenderForADroppedBoundary() async {
+        let r = await rig()
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        let preparer = r.preparer
+        r.session.testSeekResumed = { await preparer.cancelAll(except: [3]) }  // station change dropped 0
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))
+        XCTAssertEqual(r.log.preparing(0), 1, "no orphan render for a dropped boundary")
+        let reopened = await r.preparer.mayRearm(afterTrack: 0)
+        XCTAssertFalse(reopened, "closed until song 0 starts again")
+        await r.session.stop()
+    }
+
+    func testANarrowedCancelKeepsTheReArmStateOfAKeptBoundary() async {
+        let r = await rig()
+        await r.session.songStarted(index: 0, remaining: .seconds(180))
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.preparer.cancelAll(except: [0])
+        let open = await r.preparer.mayRearm(afterTrack: 0)
+        XCTAssertTrue(open, "a kept boundary keeps its one re-arm")
+        await r.session.songSeeked(index: 0, remaining: .seconds(150))     // spends it
+        await r.preparer.testRecord(.skipped(.timedOut), afterTrack: 0)
+        await r.preparer.cancelAll(except: [0])
+        let spent = await r.preparer.mayRearm(afterTrack: 0)
+        XCTAssertFalse(spent, "a narrowed cancel never buys a second re-arm")
+        await r.session.stop()
+    }
 }

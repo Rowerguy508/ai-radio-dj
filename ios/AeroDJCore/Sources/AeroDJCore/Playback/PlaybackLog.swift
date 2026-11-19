@@ -89,6 +89,11 @@ public enum PlaybackLog {
     public static func songDeferred(index: Int) -> String {
         "song deferred index=\(index)"
     }
+
+    /// #204: a station hand-off's start failed at a boundary; the old queue's next song loads.
+    public static func stationHandOffFallback(next: Int) -> String {
+        "boundary stationHandOffFailed fallbackNext=\(next)"
+    }
 }
 
 extension BreakPlayerOutcome {

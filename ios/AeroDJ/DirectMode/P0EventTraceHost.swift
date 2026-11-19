@@ -152,6 +152,11 @@ final class P0EventTraceHost: ObservableObject {
         apply { _ = $0.scenePhase(mapped, at: $1) }
     }
 
+    /// DJ talk-over rows (`TalkoverCoordinator`): decisions, misses, cancels, latency. Codes only.
+    func talkover(_ body: (inout P0EventTrace, TimeInterval) -> Void) {
+        apply(body)
+    }
+
     private func apply(_ body: (inout P0EventTrace, TimeInterval) -> Void) {
         let before = trace.rows.last?.id
         let pollsBefore = trace.lastPolls.last?.id

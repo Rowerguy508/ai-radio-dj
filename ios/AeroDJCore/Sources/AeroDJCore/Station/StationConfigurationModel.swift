@@ -251,6 +251,13 @@ public final class StationConfigurationModel {
         if playbackActivity == .idle { await applyPendingBecauseIdle() }
     }
 
+    /// #454 (-Atlas): a station row tap switches now. Promotes the pending change the tap's recipe
+    /// just made (and any other already-saved pending change) at once, as an idle player would.
+    /// Only `CreatedStationStarter` calls this, for a row tap; Tune edits keep the boundary rules.
+    public func applyPendingForStationSwitch() async {
+        await applyPendingBecauseIdle()
+    }
+
     /// Commits the unsaved Tune draft: schedules it for the next safe boundary, persists, and
     /// when playback is idle applies it immediately. Never stops the current song or a DJ break.
     /// No-op when there is nothing unsaved.
@@ -303,7 +310,7 @@ public final class StationConfigurationModel {
     /// like revoke: active updates now, Discard cannot undo them. Any other draft edits are
     /// kept, with those fields pinned to the committed off so a later Save cannot turn them
     /// back on. Turning commentary or the briefing *on* stays drafted until Save.
-    private func draftTune(_ transform: (inout StationConfiguration) -> Void) async {
+    private func draftTune(_ transform: @escaping (inout StationConfiguration) -> Void) async {
         switch loadState {
         case .notLoaded, .loading:
             for s in StationSetting.tuning { errors[s] = .notLoaded }
@@ -347,14 +354,14 @@ public final class StationConfigurationModel {
         await handle(.playbackIdle)
     }
 
-    private func edit(_ setting: StationSetting, _ transform: (inout StationConfiguration) -> Void) async {
+    private func edit(_ setting: StationSetting, _ transform: @escaping (inout StationConfiguration) -> Void) async {
         await edit([setting], transform)
     }
 
     /// One edit that may touch several controls (a recipe). Same rules as single edits:
     /// privacy reductions apply now, everything else waits for its boundary, and a failed
     /// save rolls back only what was not a reduction.
-    private func edit(_ settings: Set<StationSetting>, _ transform: (inout StationConfiguration) -> Void) async {
+    private func edit(_ settings: Set<StationSetting>, _ transform: @escaping (inout StationConfiguration) -> Void) async {
         guard !settings.isEmpty else { return }
         switch loadState {
         case .notLoaded, .loading: for s in settings { errors[s] = .notLoaded }; return
