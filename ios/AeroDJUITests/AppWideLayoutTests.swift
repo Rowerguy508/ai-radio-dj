@@ -128,6 +128,50 @@ final class AppWideLayoutTests: XCTestCase {
         XCTAssertTrue(first.isSelected, "a tap uses the split's selection path")
     }
 
+    /// #492: scrolling the inner-display grid writes `aerodj.stations.scrollAnchor`
+    /// (via `scrollTargetLayout`), and folding back to the phone carousel keeps that card.
+    /// Waits on the stored-focus readout, not a delay.
+    @MainActor
+    func testFoldingBackFromTheStationsGridRestoresTheScrolledCard() throws {
+        let (app, _) = try launch("duoWideStationsFold", size: Self.duo)
+        let any = app.descendants(matching: .any)
+        let grid = any["stations.grid"]
+        XCTAssertTrue(grid.waitForExistence(timeout: 10), "grid missing\n\(app.debugDescription)")
+        XCTAssertFalse(any["stations.carousel"].exists, "the grid is showing at Duo width")
+        let anchor = any["stations.scrollAnchor"]
+        XCTAssertTrue(anchor.waitForExistence(timeout: 5), "focus readout missing")
+        let fold = app.buttons["stations.fold"]
+        XCTAssertTrue(fold.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(fold.frame.height, 44 - 0.01)
+
+        // Swipe the grid so `scrollPosition` writes the stored focus. The fixture
+        // cards sit below the first row; a swipe that does not update the readout
+        // means `scrollTargetLayout` is still missing.
+        let before = anchor.label
+        var after = before
+        for _ in 0..<4 {
+            grid.swipeUp()
+            let moved = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label != %@ AND label != %@", before, "none"),
+                object: anchor)
+            if XCTWaiter().wait(for: [moved], timeout: 2) == .completed {
+                after = anchor.label
+                break
+            }
+        }
+        XCTAssertFalse(after.isEmpty || after == "none" || after == before,
+                       "scrolling the grid did not update stations.scrollAnchor (was \(before))\n\(app.debugDescription)")
+
+        fold.tap()
+        _ = try settledContainer(app, size: CGSize(width: 390, height: 844))
+        XCTAssertTrue(any["stations.carousel"].waitForExistence(timeout: 10),
+                      "the phone path is the carousel\n\(app.debugDescription)")
+        XCTAssertFalse(any["stations.grid"].exists, "the grid must go away on the phone path")
+        XCTAssertEqual(anchor.label, after, "folding back dropped the scrolled card")
+        let focused = app.buttons["stations.card.\(after)"]
+        XCTAssertTrue(focused.waitForExistence(timeout: 5), "the scrolled card is missing from the carousel")
+    }
+
     @MainActor
     func testDuoWideSettingsIsOneReadableColumnWithDoneInTheBar() throws {
         let (app, box) = try launch("duoWideSettings", size: Self.duo)

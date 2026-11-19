@@ -48,6 +48,9 @@ struct StationGrid: View {
                 // column's scroll view is exposed as `split.sidebar`, which drops an id here.
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("stations.grid")
+                // Same as the carousel: without this, `scrollPosition` never
+                // writes `aerodj.stations.scrollAnchor` when the user scrolls.
+                .scrollTargetLayout()
             }
             .scrollPosition(id: focusBinding)
             .scrollContentBackground(.hidden)
