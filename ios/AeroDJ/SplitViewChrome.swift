@@ -120,7 +120,11 @@ struct SplitBarHost<Content: View>: View {
         let width = measure?.containerWidth
             ?? (Double(reading.width) + appliedLeading + appliedTrailing)
         let height = measure?.containerHeight ?? Double(reading.height)
-        let chrome = SplitViewLayout.chrome(hasRegularWidth: horizontalSizeClass == .regular,
+        // A missing size class is passed as nil and stays compact (#499).
+        let widthClass: SplitViewLayout.WidthClass? = horizontalSizeClass.map {
+            $0 == .regular ? SplitViewLayout.WidthClass.regular : SplitViewLayout.WidthClass.compact
+        }
+        let chrome = SplitViewLayout.chrome(widthClass: widthClass,
                                             containerWidth: width, containerHeight: height,
                                             leadingInset: lead, trailingInset: trail,
                                             preferredBarEdge: preferred)
