@@ -412,6 +412,12 @@ struct StudioCaptureView: View {
             default:
                 break
             }
+            // Build 54 (5), -Nova: the open-Duo device-window player shows the rating star, so
+            // the UI test can check it sits beside the title.
+            if captureRating == nil, defaults.bool(forKey: RailDCaptureContainer.deviceWindowKey) {
+                captureRating = await SongRatingController.fixture(songID: PlaybackFixtures.songs[0].id,
+                                                                    labelSeen: true)
+            }
             if let segment = defaults.string(forKey: StudioCapture.segmentKey).flatMap(WorkspaceSegment.init) ?? scenario.segment {
                 StudioCaptureSegment.initial = segment
             }

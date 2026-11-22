@@ -178,11 +178,20 @@ struct DuoStationsScreen: View {
         GeometryReader { proxy in
             let width = Double(proxy.size.width)
             let height = Double(proxy.size.height)
-            let fold = verticalFold(leadingInset: Double(proxy.safeAreaInsets.leading))
+            // Build 54: the reader spans the window's width (see `ignoresSafeArea` below), so its
+            // origin is the window's leading edge and a reported division needs no shift.
+            let fold = verticalFold(leadingInset: 0)
+            // A status column on the leading edge (the Duo turned the other way) moves the
+            // leading page in; 0 in every capture.
             let geometry = DuoStationsLayout.geometry(containerWidth: width, containerHeight: height,
-                                                      foldMinX: fold?.minX, foldMaxX: fold?.maxX)
+                                                      foldMinX: fold?.minX, foldMaxX: fold?.maxX,
+                                                      leadingInset: Double(proxy.safeAreaInsets.leading))
             let inset = CGFloat(DuoStationsLayout.railVerticalInset)
             let pageHeight = max(0, proxy.size.height - inset * 2)
+            // Below the trailing status column when there is one; `inset` everywhere else.
+            let railTop = CGFloat(DuoStationsLayout.railTopInset(
+                trailingUnsafeWidth: Double(proxy.safeAreaInsets.trailing)))
+            let railHeight = max(0, proxy.size.height - railTop - inset)
             ZStack(alignment: .topLeading) {
                 FoldedStyle.background
                     .ignoresSafeArea()
@@ -196,16 +205,19 @@ struct DuoStationsScreen: View {
                     DuoStationsRail(nowPlaying: nowPlaying, playing: playingStation, actions: actions,
                                     dj: dj, scrubber: railScrubber, isShown: isShown, moreOpen: $moreOpen,
                                     onOpenPlayer: onOpenPlayer, onOpenWorkspace: openWorkspace)
-                        .frame(width: CGFloat(RailDLayout.railWidth), height: pageHeight)
+                        .frame(width: CGFloat(RailDLayout.railWidth), height: railHeight)
                         .padding(.leading, CGFloat(geometry.railMinX))
-                        .padding(.top, inset)
+                        .padding(.top, railTop)
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             .overlay {
-                if moreOpen { morePanel(geometry, width: width, height: Double(pageHeight), top: inset) }
+                if moreOpen { morePanel(geometry, width: width, height: Double(railHeight), top: railTop) }
             }
         }
+        // Build 54 (-Nova): flush to the window's trailing edge, not the safe area's. Vertical
+        // safe areas still apply. In every capture the horizontal insets are 0, so nothing moves.
+        .ignoresSafeArea(.container, edges: .horizontal)
         .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("stations.duo.\(style.rawValue)")
@@ -405,6 +417,34 @@ struct DuoStationMark: View {
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .fill(DuoStationsStyle.fill(station))
             DuoStationGlyph(station: station, size: side * 0.38)
+        }
+        .foregroundStyle(.white)
+        .frame(width: side, height: side)
+        .accessibilityHidden(true)
+    }
+}
+
+/// `DuoStationMark` from a `StationRef` (the player's snapshot has no `Station`): the same
+/// fill and monogram rules. The player rail's now-playing thumbnail (build 54 follow-up). -Nova
+struct DuoStationRefMark: View {
+    let ref: StationRef
+    let side: CGFloat
+    let radius: CGFloat
+
+    var body: some View {
+        let style = StationArtStyle.station(ref)
+        let glyph = side * 0.38
+        ZStack {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(AeroDJPalette.backing(forLightText: style.color(0)))
+            if style.monogram == "♪" {
+                Image(systemName: "music.note").font(.system(size: glyph * 1.1, weight: .bold))
+            } else {
+                Text(style.monogram)
+                    .font(.system(size: glyph, weight: .heavy, design: .rounded))
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+            }
         }
         .foregroundStyle(.white)
         .frame(width: side, height: side)
