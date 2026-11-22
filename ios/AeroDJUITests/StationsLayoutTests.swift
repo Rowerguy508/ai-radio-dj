@@ -20,8 +20,88 @@ final class StationsLayoutTests: XCTestCase {
     private static let railGlassWidth: CGFloat = 56
     private static let railEdgeInset: CGFloat = 8
 
+    /// The open Duo window from the owner's build 54 shots (@3x): 951 × 669 pt.
+    private static let device = CGSize(width: 951, height: 669)
+
     override func setUp() {
         continueAfterFailure = false
+    }
+
+    /// The regular-width device frames launch sideways; leave the simulator upright.
+    override func tearDown() async throws {
+        await MainActor.run { XCUIDevice.shared.orientation = .portrait }
+        try await super.tearDown()
+    }
+
+    /// The centred 28 pt fold band for a container (`StationsLayoutCaptureScenario.foldBand`):
+    /// 396…424 at 820 pt.
+    private static func foldBand(_ size: CGSize) -> (min: CGFloat, max: CGFloat) {
+        ((size.width - 28) / 2, (size.width + 28) / 2)
+    }
+
+    // MARK: Regular width (build 54: the device reports regular on the open Duo)
+
+    /// The primary build 54 check: the device's 951 × 669 window at the regular width class, no
+    /// fold override. Duo Stations (not the system split), Rail D with the 44 pt thumbnail, every
+    /// target 44 pt, and a tile pushes the player over the whole window (no sidebar beside it).
+    @MainActor
+    func testRegularWidthDeviceWindow() throws {
+        let (app, box) = try checkStations("stationsLayoutARegularDevice", style: "tiles", size: Self.device,
+                                           rowPrefix: "stations.tile.", rows: 8,
+                                           shot: "stations-layout-a-duo-open-regular-951x669",
+                                           orientation: .landscapeLeft)
+        assertNoSystemSplit(app)
+        let late = stationButton(app, prefix: "stations.tile.", named: "Late Night")
+        XCTAssertTrue(late.isHittable, "Late Night tile")
+        late.tap()
+        assertPlayerOpened(app, station: "Late Night")
+        assertPlayerFillsTheWindow(app, box: box)
+        save(app, "stations-layout-a-duo-open-regular-951x669-player",
+             container: app.descendants(matching: .any)["capture.stationsLayoutContainer"])
+    }
+
+    /// The idiom-or-hinge gate: the same 951 × 669 regular window on an iPad (no phone idiom, no
+    /// hinge) keeps today's system split, never the Duo Stations.
+    @MainActor
+    func testRegularWidthIPadWindowKeepsTheSplit() throws {
+        let (app, _) = try launch("stationsLayoutARegularDevice", size: Self.device, needsPad: true,
+                                  orientation: .landscapeLeft, phoneIdiom: false)
+        let any = app.descendants(matching: .any)
+        XCTAssertTrue(app.staticTexts["Late Night"].waitForExistence(timeout: 10),
+                      "the station list\n\(app.debugDescription)")
+        XCTAssertFalse(any["stations.duo.tiles"].exists, "an iPad window must not get the Duo Stations")
+        XCTAssertFalse(app.buttons["stations.rail.nowPlaying"].exists)
+    }
+
+    /// The same window with the hinge and a centred fold forced: nothing on the fold band.
+    @MainActor
+    func testRegularWidthDeviceWindowFold() throws {
+        let (app, _) = try checkStations("stationsLayoutARegularDeviceFold", style: "tiles", size: Self.device,
+                                         rowPrefix: "stations.tile.", rows: 8,
+                                         shot: "stations-layout-a-duo-open-regular-951x669-fold",
+                                         orientation: .landscapeLeft)
+        assertNoSystemSplit(app)
+    }
+
+    /// The sim bands at regular width: book (820 × 640, fold forced) and upright (640 × 820).
+    @MainActor
+    func testRegularWidthBookPose() throws {
+        let (app, box) = try checkStations("stationsLayoutABookRegular", style: "tiles", size: Self.book,
+                                           rowPrefix: "stations.tile.", rows: 8,
+                                           shot: "stations-layout-a-duo-open-regular-book",
+                                           orientation: .landscapeLeft)
+        assertNoSystemSplit(app)
+        app.buttons["stations.rail.nowPlaying"].tap()
+        assertPlayerOpened(app, station: "Morning Calm")
+        assertPlayerFillsTheWindow(app, box: box)
+    }
+
+    @MainActor
+    func testRegularWidthPortrait() throws {
+        let (app, _) = try checkStations("stationsLayoutAPortraitRegular", style: "tiles", size: Self.portrait,
+                                         rowPrefix: "stations.tile.", rows: 8,
+                                         shot: "stations-layout-a-duo-open-regular-portrait")
+        assertNoSystemSplit(app)
     }
 
     // MARK: A tile grid
@@ -161,7 +241,9 @@ final class StationsLayoutTests: XCTestCase {
     // MARK: Helpers
 
     @MainActor
-    private func launch(_ scenario: String, size: CGSize, needsPad: Bool) throws -> (XCUIApplication, CGRect) {
+    private func launch(_ scenario: String, size: CGSize, needsPad: Bool,
+                        orientation: UIDeviceOrientation = .portrait,
+                        phoneIdiom: Bool? = nil) throws -> (XCUIApplication, CGRect) {
         let isPhone = UIDevice.current.userInterfaceIdiom == .phone
         if needsPad {
             try XCTSkipIf(isPhone, "open-Duo frame (\(size)) runs in the iPad step")
@@ -169,7 +251,12 @@ final class StationsLayoutTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES",
                                "-AeroDJStudioCaptureScenario", scenario, "-AeroDJReduceMotion", "YES"]
-        XCUIDevice.shared.orientation = .portrait
+        // Build 54: the regular-width frames stand in for the open Duo, a phone-idiom device
+        // (`DeviceIdiom`, debug-only override). Pass false to see what an iPad window gets.
+        if phoneIdiom ?? scenario.contains("Regular") {
+            app.launchArguments += ["-AeroDJForcePhoneIdiom", "YES"]
+        }
+        XCUIDevice.shared.orientation = orientation
         app.launch()
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10), "no window\n\(app.debugDescription)")
@@ -223,8 +310,10 @@ final class StationsLayoutTests: XCTestCase {
     /// every visible control at least 44 pt, left of the rail and clear of the fold.
     @MainActor
     private func checkStations(_ scenario: String, style: String, size: CGSize, rowPrefix: String, rows: Int,
-                               shot: String) throws -> (XCUIApplication, CGRect) {
-        let (app, box) = try launch(scenario, size: size, needsPad: true)
+                               shot: String,
+                               orientation: UIDeviceOrientation = .portrait) throws -> (XCUIApplication, CGRect) {
+        let (app, box) = try launch(scenario, size: size, needsPad: true, orientation: orientation)
+        let band = Self.foldBand(size)
         let any = app.descendants(matching: .any)
         XCTAssertTrue(any["stations.duo.\(style)"].waitForExistence(timeout: 10),
                       "design \(style) missing\n\(app.debugDescription)")
@@ -251,7 +340,8 @@ final class StationsLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(thumb.frame.height, 44)
         XCTAssertTrue(rail.frame.insetBy(dx: -1, dy: -1).contains(thumb.frame), "thumbnail sits in the rail")
         XCTAssertLessThanOrEqual(thumb.frame.minY, rail.frame.minY + 12, "the thumbnail is the top slot")
-        assertFullRail(app, rail: rail, thumb: thumb, box: box, bookPose: size.width > size.height)
+        assertFullRail(app, rail: rail, thumb: thumb, box: box, bookPose: size.width > size.height,
+                       foldMaxX: band.max)
 
         let stationButtons = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", rowPrefix))
         XCTAssertEqual(stationButtons.count, rows, "every station is drawn\n\(app.debugDescription)")
@@ -269,8 +359,8 @@ final class StationsLayoutTests: XCTestCase {
                 XCTAssertLessThanOrEqual(frame.maxX, rail.frame.minX, "\(name) runs under the rail")
             }
             if size.width > size.height {
-                let foldMin = box.minX + Self.foldMinX
-                let foldMax = box.minX + Self.foldMaxX
+                let foldMin = box.minX + band.min
+                let foldMax = box.minX + band.max
                 XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin, "\(name) is on the fold")
             }
         }
@@ -284,7 +374,7 @@ final class StationsLayoutTests: XCTestCase {
     /// the rail itself is right of the fold band in the book pose.
     @MainActor
     private func assertFullRail(_ app: XCUIApplication, rail: XCUIElement, thumb: XCUIElement, box: CGRect,
-                                bookPose: Bool) {
+                                bookPose: Bool, foldMaxX: CGFloat? = nil) {
         let any = app.descendants(matching: .any)
         let items: [(String, XCUIElement)] = [
             ("thumbnail", thumb),
@@ -314,8 +404,26 @@ final class StationsLayoutTests: XCTestCase {
         XCTAssertEqual(any["folded.liveDot"].label, "DJ live dot")
         XCTAssertFalse(any["folded.collapse"].exists, "the thumbnail replaces Collapse on Stations")
         if bookPose {
-            XCTAssertGreaterThan(rail.frame.minX, box.minX + Self.foldMaxX, "the rail is clear of the fold band")
+            XCTAssertGreaterThan(rail.frame.minX, box.minX + (foldMaxX ?? Self.foldMaxX), "the rail is clear of the fold band")
         }
+    }
+
+    /// Build 54: the open Duo at regular width is not the system split. No "Choose a station"
+    /// detail, no two-zone Studio, no regular sidebar list beside the Stations screen.
+    @MainActor
+    private func assertNoSystemSplit(_ app: XCUIApplication) {
+        let any = app.descendants(matching: .any)
+        XCTAssertFalse(any["split.placeholder"].exists, "the system split's detail is showing\n\(app.debugDescription)")
+        XCTAssertFalse(any["layout.studio"].exists, "no two-zone Studio")
+        XCTAssertFalse(any["layout.studioStacked"].exists, "no stacked Studio")
+    }
+
+    /// The pushed player covers the container: no sidebar column beside it.
+    @MainActor
+    private func assertPlayerFillsTheWindow(_ app: XCUIApplication, box: CGRect) {
+        let player = app.descendants(matching: .any)["capture.stationsLayout.player"]
+        let frame = player.frame.intersection(box)
+        XCTAssertEqual(frame.width, box.width, accuracy: 1.5, "player \(player.frame) beside a sidebar in \(box)")
     }
 
     @MainActor

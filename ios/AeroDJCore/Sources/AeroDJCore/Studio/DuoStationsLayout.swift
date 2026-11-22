@@ -60,17 +60,29 @@ public enum StationsLayoutStyle: String, CaseIterable, Equatable, Sendable, Iden
 public enum DuoStationsLayout {
     // MARK: Gate
 
-    /// True only on the open Duo: compact width class and the same container test the player
-    /// uses for its Duo layout (`FoldedColumnLayout.controlPlacement == .duoHorizontal`), the
-    /// unfolded display upright (640 × 820) or sideways (820 × 640). Every iPhone (portrait or
-    /// landscape, Plus and Max included), the closed Duo and regular width are false, so they
-    /// keep today's Stations screen. Sizes are the whole container, safe area included.
+    /// True only on the open Duo: the same container test the player uses for its Duo layout
+    /// (`FoldedColumnLayout.controlPlacement == .duoHorizontal`), the unfolded display upright
+    /// (640 × 820) or sideways (820 × 640). Every iPhone (portrait or landscape, Plus and Max
+    /// included) and the closed Duo are false at either width class, so they keep today's
+    /// Stations screen. Sizes are the whole container, safe area included.
+    ///
+    /// Build 54 (owner: "I am not seeing any changes to the ui"): this used to need the compact
+    /// class, so an open Duo that reports regular width never drew these Stations. The width
+    /// class no longer gates it. Compact is exactly the old rule. Regular also needs the phone
+    /// idiom (`isPhoneIdiom`: only a foldable phone is ever this wide and tall) or a fold the
+    /// system reports (`hasFold`: a hinge sample or an active division from `FoldDivisionProbe`).
+    /// An iPad has neither, so every iPad window (full screen, Split View, Stage Manager) at
+    /// regular width keeps today's sidebar list. Size alone cannot tell them apart: an iPad
+    /// Split View slice (778 × 820, 790 × 834) is open-Duo sized. -Nova
     public static func usesOpenDuoStations(hasRegularWidth: Bool, containerWidth: Double,
-                                           containerHeight: Double) -> Bool {
-        guard !hasRegularWidth, containerWidth.isFinite, containerHeight.isFinite,
+                                           containerHeight: Double, hasFold: Bool = false,
+                                           isPhoneIdiom: Bool = false) -> Bool {
+        guard containerWidth.isFinite, containerHeight.isFinite,
               containerWidth > 0, containerHeight > 0 else { return false }
-        return FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
-                                                   containerHeight: containerHeight) == .duoHorizontal
+        guard FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
+                                                  containerHeight: containerHeight) == .duoHorizontal
+        else { return false }
+        return !hasRegularWidth || hasFold || isPhoneIdiom
     }
 
     // MARK: Geometry
@@ -117,28 +129,50 @@ public enum DuoStationsLayout {
     /// Gap above and below the rail glass (Rail D's closed screen: 8).
     public static var railVerticalInset: Double { RailDLayout.closedVerticalInset }
 
+    /// Build 54 (-Nova): on the device the status cluster (time, battery ring) is a column on
+    /// the trailing edge, a trailing safe-area inset (≈ 73 pt in the owner's @3x shots), and the
+    /// rail sat inside it, ≈ 90 pt from the window edge. The screen now spans the window's width
+    /// (`ignoresSafeArea` horizontally), so the rail is `RailDLayout.trailingInset` from the
+    /// window edge. Where that column exists the rail starts below the cluster: the cluster ends
+    /// ≈ 107 pt from the window top in the shots, ≈ 83 pt under a ≈ 24 pt top inset, so 88 pt
+    /// from the top of the safe area. Not measured on a device yet; build 55 logs the insets.
+    public static let statusColumnClearance: Double = 88
+
+    /// Gap from the top of the safe area to the rail glass. `railVerticalInset` (8) with no
+    /// trailing unsafe column: every simulator capture and every window today, unchanged.
+    public static func railTopInset(trailingUnsafeWidth: Double) -> Double {
+        guard trailingUnsafeWidth.isFinite, trailingUnsafeWidth > 0.5 else { return railVerticalInset }
+        return max(railVerticalInset, statusColumnClearance)
+    }
+
     /// `foldMinX` / `foldMaxX`: a reported vertical division, if any. Otherwise the book pose
     /// keeps the centred `defaultFoldWidth` band clear anyway, so a flat open Duo never puts a
     /// tile under the hinge either.
+    ///
+    /// `leadingInset` (build 54, -Nova): the window's leading unsafe width. The screen spans the
+    /// window's width, so a status column on the leading edge (the Duo turned the other way)
+    /// moves the leading page in by that much. 0 everywhere today, which is the old geometry.
     public static func geometry(containerWidth: Double, containerHeight: Double,
-                                foldMinX: Double? = nil, foldMaxX: Double? = nil) -> Geometry {
+                                foldMinX: Double? = nil, foldMaxX: Double? = nil,
+                                leadingInset: Double = 0) -> Geometry {
         let width = max(0, containerWidth.isFinite ? containerWidth : 0)
         let height = max(0, containerHeight.isFinite ? containerHeight : 0)
+        let lead = leadingGutter + (leadingInset.isFinite ? max(0, leadingInset) : 0)
         let railMinX = max(0, width - RailDLayout.trailingInset - RailDLayout.railWidth)
         let railMaxX = max(0, width - RailDLayout.trailingInset)
         if width > height {
             var fold = Page(minX: (width - defaultFoldWidth) / 2, maxX: (width + defaultFoldWidth) / 2)
             if let foldMinX, let foldMaxX, foldMinX.isFinite, foldMaxX.isFinite,
-               foldMaxX >= foldMinX, foldMinX > leadingGutter, foldMaxX < railMinX {
+               foldMaxX >= foldMinX, foldMinX > lead, foldMaxX < railMinX {
                 fold = Page(minX: foldMinX, maxX: foldMaxX)
             }
-            let leading = Page(minX: leadingGutter, maxX: max(leadingGutter, fold.minX - foldGutter))
+            let leading = Page(minX: lead, maxX: max(lead, fold.minX - foldGutter))
             let trailingMin = fold.maxX + foldGutter
             let trailing = Page(minX: trailingMin, maxX: max(trailingMin, railMinX - bookRailGutter))
             return Geometry(pose: .book, pages: [leading, trailing], fold: fold,
                             railMinX: railMinX, railMaxX: railMaxX)
         }
-        let page = Page(minX: leadingGutter, maxX: max(leadingGutter, railMinX - portraitRailGutter))
+        let page = Page(minX: lead, maxX: max(lead, railMinX - portraitRailGutter))
         return Geometry(pose: .portrait, pages: [page], fold: nil, railMinX: railMinX, railMaxX: railMaxX)
     }
 
@@ -322,4 +356,23 @@ public enum DuoStationsLayout {
     public static var thumbnailSide: Double { RailDLayout.controlSize }
     public static let thumbnailArtSide: Double = 38
     public static let thumbnailArtRadius: Double = 12
+}
+
+/// Build 54 (Orion, -Nova): the hardware-model signal behind the app's `DeviceIdiom`. A device
+/// whose model identifier starts with "iPhone" counts as a phone even if it reports the pad
+/// idiom (the open Duo at the regular width class). Pure, so Linux tests it. The identifier is a
+/// hardware model string ("iPhone17,3"), not personal data.
+public enum DeviceModel {
+    /// "iPhone17,3" true; "iPad14,8", "arm64", "x86_64" and "" false.
+    public static func isPhoneModel(identifier: String) -> Bool {
+        identifier.hasPrefix("iPhone")
+    }
+
+    /// The simulator's `utsname.machine` is the host CPU ("arm64", "x86_64"), so there the
+    /// simulated model (`SIMULATOR_MODEL_IDENTIFIER`) is the identifier. On a device, `machine`.
+    public static func resolvedIdentifier(machine: String, simulatorModel: String?) -> String {
+        let hostCPUs: Set<String> = ["arm64", "x86_64", "i386"]
+        guard hostCPUs.contains(machine), let simulatorModel, !simulatorModel.isEmpty else { return machine }
+        return simulatorModel
+    }
 }

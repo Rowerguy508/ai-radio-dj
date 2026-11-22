@@ -53,6 +53,10 @@ struct DuoVerticalRail: View {
     /// Mockup D: the vertical song-position bar between the sleep timer and the live dot.
     /// Nil (no track or no duration) keeps the spacer that holds the dot at the bottom.
     var scrubber: RailScrubberInput? = nil
+    /// Build 54 follow-up (-Nova): on the open Duo the top slot is the now-playing thumbnail (the
+    /// Stations rail's), still Collapse (`folded.collapse`, same action, label and hint). Nil
+    /// keeps the chevron: every other rail is unchanged.
+    var thumbnail: StationRef? = nil
 
     /// Always false (#542). Build 49 (Xcode 27.2, iOS 27.1) took the system vertical toolbar
     /// here, a path no CI build or UI test has ever run, and the Duo lost the 2.0 rail. Every
@@ -63,9 +67,13 @@ struct DuoVerticalRail: View {
 
     var body: some View {
         VStack(spacing: CGFloat(DuoRailLayout.spacing)) {
-            DuoRailIconButton(systemImage: "chevron.down", label: "Collapse",
-                              hint: "Shows the folded player. Music continues.",
-                              identifier: "folded.collapse", action: onCollapse)
+            if let thumbnail {
+                DuoRailNowPlayingButton(station: thumbnail, action: onCollapse)
+            } else {
+                DuoRailIconButton(systemImage: "chevron.down", label: "Collapse",
+                                  hint: "Shows the folded player. Music continues.",
+                                  identifier: "folded.collapse", action: onCollapse)
+            }
             DuoRailMoreButton(open: $moreOpen, reviewCount: reviewCount)
             if showsTransport {
                 DuoRailPlayPauseButton(transport: transport, startTimedOut: startTimedOut,
@@ -225,6 +233,36 @@ struct DuoRailIconButton: View {
     }
 }
 
+
+/// The player rail's top slot on the open Duo: the Stations rail's 44 pt now-playing thumbnail
+/// (`DuoStationsLayout.thumbnailSide`, the 38 pt mark with the accent ring). It keeps the
+/// chevron's job, Collapse: the rail folds away to the pinned column, music continues, and
+/// `folded.expandRail` brings it back. Back to Stations stays the navigation bar's Back. -Nova
+struct DuoRailNowPlayingButton: View {
+    let station: StationRef
+    let action: () -> Void
+
+    var body: some View {
+        let side = CGFloat(DuoStationsLayout.thumbnailSide)
+        let art = CGFloat(DuoStationsLayout.thumbnailArtSide)
+        let radius = CGFloat(DuoStationsLayout.thumbnailArtRadius)
+        Button(action: action) {
+            ZStack {
+                DuoStationRefMark(ref: station, side: art - 4, radius: radius - 2)
+                RoundedRectangle(cornerRadius: radius + 1, style: .continuous)
+                    .strokeBorder(DuoStationsStyle.accent, lineWidth: 2)
+                    .frame(width: art + 2, height: art + 2)
+            }
+            .frame(width: side, height: side)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Collapse")
+        .accessibilityValue(station.name.isEmpty ? "" : "Now playing \(station.name)")
+        .accessibilityHint("Shows the folded player. Music continues.")
+        .accessibilityIdentifier("folded.collapse")
+    }
+}
 
 /// The same tap policy as `TransportRow`, sized to the rail's 44 pt plate so it fits
 /// in `duoBarWidth`. Identifiers stay `transport.playPause` / `transport.skip`.
