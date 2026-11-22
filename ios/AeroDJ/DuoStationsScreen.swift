@@ -524,14 +524,17 @@ struct DuoStationsTiles: View {
     let header: DuoStationsHeaderActions
     let onSelect: (Station.ID) -> Void
 
-    /// Title (52) plus the subtitle line (40), as the mock.
-    private static let headerBlock: Double = 92
+    /// Title (52) plus the subtitle line (40), as the mock (`DuoStationsLayout.tileHeaderBlock`).
+    private static var headerBlock: Double { DuoStationsLayout.tileHeaderBlock }
 
     var body: some View {
         let pages = DuoStationsLayout.pageSplit(stations, pose: geometry.pose)
         let columns = DuoStationsLayout.tileColumns(pose: geometry.pose)
         let rows = geometry.pose == .book ? 2 : 3
-        let tileHeight = DuoStationsLayout.tileHeight(available: pageHeight - Self.headerBlock, rows: rows)
+        // Build 56 (-Nova): two rows (three upright) plus the 24 pt side gutter under the last
+        // row fit the window; the 951 × 669 shots ran the second row into the bottom edge.
+        let tileHeight = DuoStationsLayout.fittedTileHeight(pageHeight: pageHeight, headerBlock: Self.headerBlock,
+                                                            rows: rows)
         ZStack(alignment: .topLeading) {
             ForEach(Array(geometry.pages.enumerated()), id: \.offset) { index, page in
                 VStack(alignment: .leading, spacing: 0) {
@@ -546,10 +549,11 @@ struct DuoStationsTiles: View {
                             }
                         }
                         // Room for the playing ring, which sits outside the tile.
-                        .padding(6)
-                        .padding(.bottom, 8)
+                        .padding(CGFloat(DuoStationsLayout.tileRingInset))
+                        // Scrolled to its end, the last row keeps the 24 pt bottom margin too.
+                        .padding(.bottom, CGFloat(DuoStationsLayout.tileGridBottomPadding))
                     }
-                    .padding(.horizontal, -6)
+                    .padding(.horizontal, -CGFloat(DuoStationsLayout.tileRingInset))
                     .scrollIndicators(.hidden)
                 }
                 .duoPage(page, height: pageHeight)
