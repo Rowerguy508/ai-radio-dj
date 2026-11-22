@@ -256,7 +256,24 @@ struct FoldedPlayer: View {
             let placement = FoldedColumnLayout.controlPlacement(
                 containerWidth: Double(container.width),
                 containerHeight: Double(container.height))
-            if placement == .duoHorizontal, let measure = splitHost {
+            if let measure = splitHost, heroTrack != nil,
+               SplitViewLayout.keepsRailD(containerWidth: Double(container.width),
+                                          containerHeight: Double(container.height),
+                                          leadingInset: measure.leading, trailingInset: measure.trailing) {
+                // #574 rework (owner: no compact player on the Duo's landscape split): the
+                // 320 / 410 / 500 × 640 slices keep Rail D, framed inside the host's insets like
+                // the Duo rail below, with the rail on the outer edge and the open-Duo title.
+                let rail = SplitViewLayout.railFrame(containerWidth: Double(container.width),
+                                                     leadingInset: measure.leading,
+                                                     trailingInset: measure.trailing)
+                let fitted = CGSize(width: CGFloat(rail.width), height: height)
+                foldedOuterBody(in: fitted, railOnLeadingEdge: splitBarEdge == .leading)
+                    .environment(\.railDSliceTitle, SplitViewLayout.sliceTitle(bodyWidth: rail.width))
+                    .frame(width: fitted.width, height: fitted.height, alignment: .top)
+                    .padding(.leading, CGFloat(rail.leading))
+                    .padding(.trailing, CGFloat(rail.trailing))
+                    .frame(width: container.width, height: height, alignment: .topLeading)
+            } else if placement == .duoHorizontal, let measure = splitHost {
                 let rail = SplitViewLayout.railFrame(containerWidth: Double(container.width),
                                                      leadingInset: measure.leading,
                                                      trailingInset: measure.trailing)
@@ -1242,7 +1259,11 @@ extension FoldedPlayer {
     /// Play/Pause, Skip, Queue, Sleep, the vertical song-position bar, the live dot). The
     /// horizontal scrubber is gone; the header (Back, station) and the column sit beside the
     /// rail, and the freed row goes to a bigger title (40 / 17).
-    private func foldedOuterBody(in size: CGSize) -> some View {
+    ///
+    /// `railOnLeadingEdge` (#574 rework, Duo landscape split slices only): the rail moves to the
+    /// leading (outer) edge, the same right-to-left flip `wideBody` uses (`SplitLeadingBar`), with
+    /// the column and the rail drawn left-to-right inside it. False everywhere else.
+    private func foldedOuterBody(in size: CGSize, railOnLeadingEdge: Bool = false) -> some View {
         let inset = CGFloat(FoldedOuterLayout.contentInset)
         let accessibilityText = typeSize.isAccessibilitySize
         let art = outerArtSide(in: size)
@@ -1271,6 +1292,7 @@ extension FoldedPlayer {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .modifier(SplitColumnText(enabled: railOnLeadingEdge))
             .accessibilitySortPriority(1)
             ClosedVerticalRail(dj: dj, upNext: snapshot.upNext,
                                transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
@@ -1289,11 +1311,14 @@ extension FoldedPlayer {
                     Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
                 }
             }
+            .modifier(SplitColumnText(enabled: railOnLeadingEdge))
+            // Under the flip, .trailing is the leading (outer) edge.
             .padding(.vertical, railInset)
             .padding(.trailing, CGFloat(RailDLayout.trailingInset))
             .accessibilitySortPriority(0)
         }
         .frame(width: size.width, height: size.height)
+        .modifier(SplitLeadingBar(enabled: railOnLeadingEdge))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folded.outer")
     }
@@ -1510,6 +1535,18 @@ private struct FoldedOuterTitleRow: View {
     // Mockup D (-Nova): 40 / 17, up from #537's 34 / 15; the scrubber row's height went to the type.
     @ScaledMetric(relativeTo: .largeTitle) private var titleSize = CGFloat(RailDLayout.closedTitlePointSize)
     @ScaledMetric(relativeTo: .subheadline) private var artistSize = CGFloat(RailDLayout.closedArtistPointSize)
+    /// #574 rework: set only on the Duo's landscape split slices; nil keeps the closed 40 pt line.
+    @Environment(\.railDSliceTitle) private var sliceTitle
+    @ScaledMetric(relativeTo: .largeTitle) private var sliceOpenTitleSize = CGFloat(RailDLayout.openTitlePointSize)
+    @ScaledMetric(relativeTo: .largeTitle) private var sliceColumnTitleSize = CGFloat(RailDLayout.railColumnTitlePointSize)
+
+    private var resolvedTitleSize: CGFloat {
+        switch sliceTitle {
+        case nil: return titleSize
+        case .open?: return sliceOpenTitleSize
+        case .railColumn?: return sliceColumnTitleSize
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1519,10 +1556,10 @@ private struct FoldedOuterTitleRow: View {
                 FoldedTestStationTag().padding(.bottom, 2)
             }
             Text(track.title)
-                .font(.system(size: titleSize, weight: .heavy))
+                .font(.system(size: resolvedTitleSize, weight: .heavy))
                 .tracking(-0.6)
                 .foregroundStyle(.white)
-                .lineLimit(FoldedOuterLayout.titleLineLimit)
+                .lineLimit(sliceTitle == nil ? FoldedOuterLayout.titleLineLimit : SplitViewLayout.sliceTitleLineLimit)
                 .truncationMode(.tail)
             Text(track.artistName)
                 .font(.system(size: artistSize, weight: .semibold))
@@ -1826,6 +1863,19 @@ private struct FoldedTitleBlock: View {
         .accessibilityAddTraits(.isHeader)
         // Mockup D (-Nova): new id so the UI tests can line the DJ chip up with the title.
         .accessibilityIdentifier("folded.titleBlock")
+    }
+}
+
+/// #574 rework: the Rail D title on the Duo's landscape split slices (`SplitViewLayout.sliceTitle`).
+/// Nil everywhere else, so the iPhone and the closed Duo keep the 40 pt single line.
+private struct RailDSliceTitleKey: EnvironmentKey {
+    static let defaultValue: SplitViewLayout.SliceTitle? = nil
+}
+
+extension EnvironmentValues {
+    var railDSliceTitle: SplitViewLayout.SliceTitle? {
+        get { self[RailDSliceTitleKey.self] }
+        set { self[RailDSliceTitleKey.self] = newValue }
     }
 }
 

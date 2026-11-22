@@ -96,8 +96,13 @@ final class SplitViewDeviceWidthsTests: XCTestCase {
                 let pad = SplitViewLayout.sidePadding(measuredLeading: lead, measuredTrailing: trail,
                                                       appliedLeading: 0, appliedTrailing: 0,
                                                       designInset: FoldedColumnLayout.duoEdgeInset)
-                // A narrow split keeps the phone column and has no symbol bar.
-                let bar = result.span == .compactNarrow ? 0 : FoldedColumnLayout.duoBarWidth
+                // A narrow split keeps the phone column and has no symbol bar, except the Duo's
+                // landscape slices, which keep Rail D (#574 rework): its rail and edge inset count.
+                let railD = SplitViewLayout.keepsRailD(containerWidth: window.width, containerHeight: window.height,
+                                                       leadingInset: lead, trailingInset: trail)
+                let bar = railD
+                    ? FoldedOuterLayout.closedRailWidth + FoldedOuterLayout.closedRailEdgeInset
+                    : (result.span == .compactNarrow ? 0 : FoldedColumnLayout.duoBarWidth)
                 let room = window.width - pad.leading - pad.trailing - bar
                 XCTAssertGreaterThanOrEqual(room, SplitViewLayout.touchTarget, window.name)
                 let rail = SplitViewLayout.railFrame(containerWidth: window.width,
@@ -230,6 +235,100 @@ final class SplitViewDeviceWidthsTests: XCTestCase {
             XCTAssertEqual(before.span, span, sample.name)
             #endif
         }
+    }
+
+    // MARK: #574 rework: Rail D on the Duo's landscape split slices
+
+    /// Owner (relayed by Orion): the 320 / 410 / 500 × 640 slices keep Rail D, never the
+    /// compact phone column. Each slice adapts, is never `.duoHorizontal`, and keeps Rail D on
+    /// either outer edge.
+    func testTheDuoLandscapeSlicesKeepRailD() {
+        for sample in SplitViewLayout.duoLandscapeSamples {
+            XCTAssertNotEqual(FoldedColumnLayout.controlPlacement(containerWidth: sample.width,
+                                                                  containerHeight: sample.height),
+                              .duoHorizontal, sample.name)
+            XCTAssertTrue(SplitViewLayout.keepsRailD(containerWidth: sample.width, containerHeight: sample.height,
+                                                     leadingInset: sample.leading, trailingInset: sample.trailing),
+                          sample.name)
+            XCTAssertTrue(SplitViewLayout.keepsRailD(containerWidth: sample.width, containerHeight: sample.height,
+                                                     leadingInset: sample.trailing, trailingInset: sample.leading),
+                          "\(sample.name) mirrored")
+        }
+        for window in splits where window.name.hasPrefix("DuoL") {
+            XCTAssertTrue(SplitViewLayout.keepsRailD(containerWidth: window.width, containerHeight: window.height,
+                                                     leadingInset: 28, trailingInset: 0), window.name)
+        }
+    }
+
+    /// The Rail D body fits each slice: the rail inside the host's insets, a column beside it
+    /// with room for the title and a 44 pt target, and a title that steps down (34 → 28 pt, up
+    /// to two lines) instead of the closed screen's 40 pt single line in the 320 slice.
+    func testTheRailDSliceBodyFitsEachSliceWidth() {
+        let expected: [(SplitViewLayout.Sample, SplitViewLayout.SliceTitle)] = [
+            (SplitViewLayout.duoLandscape320, .railColumn),
+            (SplitViewLayout.duoLandscape410, .open),
+            (SplitViewLayout.duoLandscape500, .open),
+        ]
+        XCTAssertEqual(SplitViewLayout.sliceTitleLineLimit, 2)
+        XCTAssertGreaterThan(SplitViewLayout.sliceTitleLineLimit, FoldedOuterLayout.titleLineLimit)
+        for (sample, title) in expected {
+            let frame = SplitViewLayout.railFrame(containerWidth: sample.width, leadingInset: sample.leading,
+                                                  trailingInset: sample.trailing)
+            XCTAssertEqual(frame.width, sample.width - 28, accuracy: 0.001, sample.name)
+            let column = FoldedOuterLayout.columnWidthBesideRail(containerWidth: frame.width)
+            XCTAssertEqual(column, frame.width - 64, accuracy: 0.001, sample.name)
+            XCTAssertGreaterThanOrEqual(column - FoldedOuterLayout.contentInset * 2, 3 * SplitViewLayout.touchTarget,
+                                        sample.name)
+            XCTAssertEqual(SplitViewLayout.sliceTitle(bodyWidth: frame.width), title, sample.name)
+            XCTAssertLessThan(title.pointSize, RailDLayout.closedTitlePointSize, sample.name)
+            let art = RailDLayout.closedArtSide(containerWidth: frame.width, containerHeight: sample.height,
+                                                minSide: 120, maxSide: 360)
+            XCTAssertLessThanOrEqual(art, column - FoldedOuterLayout.artInsetBesideRail * 2 + 0.001, sample.name)
+            XCTAssertGreaterThan(RailDLayout.closedRailHeight(containerHeight: sample.height), 0, sample.name)
+        }
+        XCTAssertEqual(SplitViewLayout.SliceTitle.open.pointSize, RailDLayout.openTitlePointSize)
+        XCTAssertEqual(SplitViewLayout.SliceTitle.railColumn.pointSize, RailDLayout.railColumnTitlePointSize)
+    }
+
+    /// Nothing else keeps Rail D through the split path: every iPhone (any inset pair), the
+    /// Duo's portrait split and full screens, every iPad split and full screen, an even-inset
+    /// slice, a slice narrower than the rail column, and non-finite sizes.
+    func testOnlyTheDuoLandscapeSlicesKeepRailDInASplit() {
+        let phones: [(Double, Double)] = [(375, 667), (667, 375), (390, 844), (844, 390), (430, 932), (932, 430)]
+        let insetPairs: [(Double, Double)] = [(0, 0), (47, 47), (59, 59), (59, 0), (0, 59), (59, 20)]
+        for (width, height) in phones {
+            for (lead, trail) in insetPairs {
+                // A portrait phone has no horizontal insets (as in testAFullScreenIPhoneKeepsTodaysLayout).
+                if height > width, lead != 0 || trail != 0 { continue }
+                XCTAssertFalse(SplitViewLayout.keepsRailD(containerWidth: width, containerHeight: height,
+                                                          leadingInset: lead, trailingInset: trail),
+                               "phone \(width)x\(height) \(lead)/\(trail)")
+            }
+        }
+        for window in splits + fullScreens where !window.name.hasPrefix("DuoL ") || window.name == "DuoL full" {
+            for (lead, trail) in [(28.0, 0.0), (0.0, 28.0), (20.0, 8.0), (0.0, 0.0)] {
+                XCTAssertFalse(SplitViewLayout.keepsRailD(containerWidth: window.width, containerHeight: window.height,
+                                                          leadingInset: lead, trailingInset: trail),
+                               "\(window.name) \(lead)/\(trail)")
+            }
+        }
+        // #542: the full-screen iPads that get the rail are untouched.
+        for (width, height) in [(1180.0, 820.0), (1194.0, 834.0), (1024.0, 1366.0)] {
+            XCTAssertFalse(SplitViewLayout.keepsRailD(containerWidth: width, containerHeight: height,
+                                                      leadingInset: 20, trailingInset: 0))
+        }
+        XCTAssertFalse(SplitViewLayout.keepsRailD(containerWidth: 410, containerHeight: 640,
+                                                  leadingInset: 0, trailingInset: 0), "even insets do not adapt")
+        XCTAssertFalse(SplitViewLayout.keepsRailD(containerWidth: 300, containerHeight: 640,
+                                                  leadingInset: 28, trailingInset: 0), "under railColumnMinWidth")
+        XCTAssertFalse(SplitViewLayout.keepsRailD(containerWidth: 410, containerHeight: 599,
+                                                  leadingInset: 28, trailingInset: 0), "under landscapeDuoMinHeight")
+        XCTAssertFalse(SplitViewLayout.keepsRailD(containerWidth: 410, containerHeight: FoldedColumnLayout.duoMinHeight,
+                                                  leadingInset: 28, trailingInset: 0), "duoMinHeight tall")
+        XCTAssertFalse(SplitViewLayout.keepsRailD(containerWidth: .infinity, containerHeight: 640,
+                                                  leadingInset: 28, trailingInset: 0))
+        XCTAssertFalse(SplitViewLayout.keepsRailD(containerWidth: 410, containerHeight: .nan,
+                                                  leadingInset: 28, trailingInset: 0))
     }
 
     #if DEBUG

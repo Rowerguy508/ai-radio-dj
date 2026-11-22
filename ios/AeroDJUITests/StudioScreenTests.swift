@@ -2055,8 +2055,10 @@ final class StudioScreenTests: XCTestCase {
     /// #574 review shots: the Duo in landscape (820 × 640) split into 320, 410 and 500 pt
     /// slices, outer edge leading (28 pt) and inner edge 0. "before" is the pre-#499 guard,
     /// so the bar stays on the preferred (inner) side; "after" is the shipped decision.
-    /// Shots for the owner. The only assertion is the after shot's decision readout, the same
-    /// one `testSplitViewKeepsEveryScreenInsideTheWindow` reads.
+    /// Shots for the owner. The after shot asserts the decision readout, the same one
+    /// `testSplitViewKeepsEveryScreenInsideTheWindow` reads, and (#574 rework, owner: no compact
+    /// player here) that Now Playing keeps Rail D: the reskin with its rail on the leading outer
+    /// edge, inside the 28 pt inset, with Play/Pause on the rail.
     @MainActor
     func testDuoLandscapeSplitSlicesBeforeAndAfter() throws {
         try XCTSkipUnless(isOpenLayout, "Split widths need an iPad-size simulator window")
@@ -2095,6 +2097,7 @@ final class StudioScreenTests: XCTestCase {
                 predicate: NSPredicate(format: "label == %@", "\(span) leading"), object: decision)
             XCTAssertEqual(XCTWaiter().wait(for: [matched], timeout: 8), .completed,
                            "\(example) after: decision \(decision.label), expected \(span) leading")
+            try assertDuoLandscapeSliceKeepsRailD(app, example: example, leading: 28)
         }
         save(app, "\(base)-\(suffix)")
         let stations = app.buttons["split.show.stations"]
@@ -2103,6 +2106,31 @@ final class StudioScreenTests: XCTestCase {
             _ = app.buttons["stations.settings"].waitForExistence(timeout: 8)
             save(app, "\(base)-stations-\(suffix)")
         }
+    }
+
+    /// #574 rework: the slice's Now Playing is Rail D (`folded.outer` + `folded.closedRail`), not
+    /// the phone column, with the rail on the leading (outer) edge inside the host's inset.
+    @MainActor
+    private func assertDuoLandscapeSliceKeepsRailD(_ app: XCUIApplication, example: String,
+                                                   leading: CGFloat) throws {
+        let any = app.descendants(matching: .any)
+        let container = any["split.container"]
+        XCTAssertTrue(any["folded.outer"].waitForExistence(timeout: 8),
+                      "\(example): Rail D reskin, not the phone column\n\(app.debugDescription)")
+        let rail = any["folded.closedRail"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 5), "\(example): Rail D's rail")
+        let box = container.frame
+        try assertOuterEdge(rail, box: box, edge: "leading", name: "\(example) rail")
+        if let frame = settledFrame(of: rail, "\(example) rail") {
+            XCTAssertGreaterThanOrEqual(frame.minX, box.minX + leading - 2,
+                                        "\(example): rail \(frame) under the \(leading) pt inset of \(box)")
+            XCTAssertTrue(box.insetBy(dx: -2, dy: -2).contains(frame), "\(example): rail \(frame) clipped by \(box)")
+        }
+        let play = rail.buttons["transport.playPause"]
+        if play.waitForExistence(timeout: 5) {
+            try assertInside(play, box: box, leading: leading, trailing: 0, name: "\(example) play")
+        }
+        XCTAssertTrue(any["folded.titleBlock"].exists, "\(example): the title beside the rail")
     }
 
     @MainActor

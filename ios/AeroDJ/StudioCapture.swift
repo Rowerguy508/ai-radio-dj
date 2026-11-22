@@ -1080,7 +1080,7 @@ private struct SplitViewCapture: View {
                         .accessibilityIdentifier("split.container")
                     if isDuoLandscape(sample) {
                         Text("\(Int(sample.width))×\(Int(sample.height)) · outer edge leading · "
-                             + (before ? "BEFORE (pre-#499 guard)" : "AFTER (#499)"))
+                             + (before ? "BEFORE (pre-#499 guard)" : "AFTER (#499, Rail D kept)"))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.white)
                             .accessibilityIdentifier("split.captureCaption")

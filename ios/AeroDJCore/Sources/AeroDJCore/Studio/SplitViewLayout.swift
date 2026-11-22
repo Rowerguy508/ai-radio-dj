@@ -257,6 +257,61 @@ public enum SplitViewLayout {
         }
     }
 
+    // MARK: Rail D on the Duo's landscape split slices (#574 rework)
+
+    /// Owner (relayed by Orion): no compact player on the open Duo's landscape split. #499 made
+    /// those slices (820 × 640 split into 320, 410 or 500 pt, taller than wide) adapt, and the
+    /// split host then drew the phone column, with the horizontal scrubber and no rail. They keep
+    /// Rail D instead: the column beside the trailing 56 pt rail (`FoldedPlayer.foldedOuterBody`),
+    /// with the rail on the slice's outer edge.
+    ///
+    /// Only the split host asks, and the slice must adapt (`chrome(...).adapts`: uneven side
+    /// insets, so a phone or a full-screen window with matching insets is never one). The
+    /// container is the whole slice, safe area included. True only for a slice that is
+    /// taller than wide, at least `FoldedColumnLayout.landscapeDuoMinHeight` (600) tall, under
+    /// `FoldedColumnLayout.duoMinHeight` (716), and at least `FoldedColumnLayout.railColumnMinWidth`
+    /// (320) wide. So every iPhone keeps today's player (it is never an adapting split), the
+    /// Duo's portrait split (320 × 820) keeps its column, and every iPad split slice (at least
+    /// 744 pt tall) is unchanged. Never a `.duoHorizontal` container: both sides are under 716.
+    public static func keepsRailD(containerWidth: Double, containerHeight: Double,
+                                  leadingInset: Double, trailingInset: Double) -> Bool {
+        guard containerWidth.isFinite, containerHeight.isFinite,
+              containerWidth > 0, containerHeight > 0 else { return false }
+        guard chrome(hasRegularWidth: false, containerWidth: containerWidth, containerHeight: containerHeight,
+                     leadingInset: leadingInset, trailingInset: trailingInset,
+                     preferredBarEdge: .trailing).adapts else { return false }
+        guard containerWidth <= containerHeight else { return false }
+        guard containerHeight >= FoldedColumnLayout.landscapeDuoMinHeight,
+              containerHeight < FoldedColumnLayout.duoMinHeight else { return false }
+        return containerWidth >= FoldedColumnLayout.railColumnMinWidth
+    }
+
+    /// The title on a Rail D slice. The closed screen's 40 pt single line truncates a normal
+    /// title to a few letters in a 228 pt column (the 320 slice less its 28 pt outer inset and
+    /// the rail), so the slice uses the open Duo's sizes: 34 pt (`RailDLayout.openTitlePointSize`)
+    /// when the column beside the rail is at least `RailDLayout.largeTitleMinColumn`, else 28 pt
+    /// (`RailDLayout.railColumnTitlePointSize`), and up to `sliceTitleLineLimit` lines.
+    public enum SliceTitle: Equatable, Sendable {
+        case open
+        case railColumn
+
+        public var pointSize: Double {
+            switch self {
+            case .open: return RailDLayout.openTitlePointSize
+            case .railColumn: return RailDLayout.railColumnTitlePointSize
+            }
+        }
+    }
+
+    public static let sliceTitleLineLimit = 2
+
+    /// `bodyWidth` is the width the player draws in: the slice less the host's insets
+    /// (`railFrame(...).width`). The column is that less the rail and its edge inset.
+    public static func sliceTitle(bodyWidth: Double) -> SliceTitle {
+        let column = FoldedOuterLayout.columnWidthBesideRail(containerWidth: finite(bodyWidth))
+        return column >= RailDLayout.largeTitleMinColumn ? .open : .railColumn
+    }
+
     public static func railFrame(containerWidth: Double, leadingInset: Double,
                                  trailingInset: Double) -> RailFrame {
         let width = finite(containerWidth)
