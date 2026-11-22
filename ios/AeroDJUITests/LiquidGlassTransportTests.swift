@@ -51,8 +51,8 @@ final class LiquidGlassTransportTests: XCTestCase {
     private func check(_ mode: Mode) {
         let app = XCUIApplication()
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"] + mode.launchArguments
-        app.launch()
-        defer { app.terminate() }
+        app.launchAfterTerminatingIfRunning()
+        defer { app.terminateIfRunning() }
 
         let loading = app.descendants(matching: .any)["capture.loading"]
         let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: loading)

@@ -62,7 +62,7 @@ final class StudioScreenTests: XCTestCase {
             app.launchArguments += ["-AeroDJSplitExample", splitExample]
         }
         XCUIDevice.shared.orientation = orientation
-        app.launch()
+        app.launchAfterTerminatingIfRunning()
         // The capture view loads the station before rendering. Never screenshot on a timer:
         // wait for loading to end, and fail by name if the capture could not set up.
         let scenarioName = scenario ?? "playing"
@@ -100,7 +100,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(either.waitForExistence(timeout: 15),
                       "Neither layout.studio nor layout.compact appeared\n\(visibleIdentifiers(app))")
         let open = any["layout.studio"].exists || any["folded.systemBar"].waitForExistence(timeout: 5)
-        app.terminate()
+        app.terminateIfRunning()
         Self.probedOpenLayout = open
         return open
     }
@@ -329,7 +329,7 @@ final class StudioScreenTests: XCTestCase {
             XCTAssertEqual(app.buttons["transport.playPause"].exists, c.transport, c.scenario)
             if c.scenario == "denied" { XCTAssertTrue(app.buttons["Open Settings"].exists) }
             save(app, "closed-state-\(c.scenario)")
-            app.terminate()
+            app.terminateIfRunning()
         }
     }
 
@@ -444,7 +444,7 @@ final class StudioScreenTests: XCTestCase {
             XCTAssertEqual(app.buttons["transport.playPause"].exists, c.transport, c.scenario)
             if c.scenario == "denied" { XCTAssertTrue(app.buttons["Open Settings"].exists) }
             save(app, "\(prefix)-\(c.scenario)-dark")
-            app.terminate()
+            app.terminateIfRunning()
         }
     }
 
@@ -689,7 +689,7 @@ final class StudioScreenTests: XCTestCase {
             XCTAssertTrue(dot.waitForExistence(timeout: 15), "\(scenario) live dot missing\n\(app.debugDescription)")
             XCTAssertEqual(dot.value as? String, "Off", "\(scenario) lit the dot: \(dot.label)")
             XCTAssertFalse(dot.label.localizedCaseInsensitiveContains("on air"), "\(scenario) \(dot.label)")
-            app.terminate()
+            app.terminateIfRunning()
         }
         let app = launch(scenario: "duoWideSpeaking")
         let any = app.descendants(matching: .any)
@@ -986,7 +986,7 @@ final class StudioScreenTests: XCTestCase {
 
         expand.tap()
         XCTAssertTrue(bar.waitForExistence(timeout: 5), "Show rail did not bring the rail back\n\(app.debugDescription)")
-        app.terminate()
+        app.terminateIfRunning()
     }
 
     /// Build 51 issue 2: with the Stations sidebar open the player fell back to the old centred
@@ -1012,7 +1012,7 @@ final class StudioScreenTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(barFrame.minX, sidebarFrame.maxX - 1, "the rail overlaps the sidebar")
         }
         save(app, "open-sidebar-rail")
-        app.terminate()
+        app.terminateIfRunning()
     }
 
     /// 640 × 820, nothing playing and playing. Every control in the content column is
@@ -1091,7 +1091,7 @@ final class StudioScreenTests: XCTestCase {
                                "\(name) is still in the content column in \(scenario)")
             }
         }
-        app.terminate()
+        app.terminateIfRunning()
     }
 
     /// The column id names one container. More than one match means the id was copied onto its controls.
@@ -1546,7 +1546,7 @@ final class StudioScreenTests: XCTestCase {
             XCTAssertFalse(closedMenuItem(plain, "nowPlaying.rating", labelPrefix: "Rate song").exists,
                            "no rating controller, no ⋯ rating row")
         }
-        plain.terminate()
+        plain.terminateIfRunning()
 
         let app = launch(scenario: "ratingFirstTime")
         if !isOpenLayout {
@@ -1586,7 +1586,7 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(button.waitForExistence(timeout: 10))
         XCTAssertTrue(button.label.contains("Like it"), button.label)
         save(liked, "rating-liked")
-        liked.terminate()
+        liked.terminateIfRunning()
 
         let app = launch(scenario: "ratingNever")
         let toast = app.descendants(matching: .any)["nowPlaying.ratingToast"]
@@ -2088,7 +2088,7 @@ final class StudioScreenTests: XCTestCase {
                                   sideBar: sample.name != "narrow")
         }
         save(app, sample.shot)
-        app.terminate()
+        app.terminateIfRunning()
     }
 
     @MainActor
