@@ -693,7 +693,9 @@ final class StudioScreenTests: XCTestCase {
         unfold.tap()
         XCTAssertTrue(any["folded.trackColumn"].waitForExistence(timeout: 10),
                       "the unfolded Duo is the rail layout\n\(app.debugDescription)")
-        let scroller = any["continuity.scroller"]
+        // The id lands on the ScrollView and on a wrapping Other, so `any` matches twice
+        // and a swipe needs one element: query the scroll view itself.
+        let scroller = app.scrollViews["continuity.scroller"].firstMatch
         XCTAssertTrue(scroller.waitForExistence(timeout: 5),
                       "the rail layout has no continuity scroller\n\(app.debugDescription)")
         // The fold arms the guard for the new scroller; adoption is the scroller echoing row 4.
