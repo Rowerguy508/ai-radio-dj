@@ -90,7 +90,7 @@ final class ArrangementPaneTests: XCTestCase {
         app.launchArguments = ["-AeroDJTestStation", "YES", "-AeroDJStudioCapture", "YES"]
         if let scenario { app.launchArguments += ["-AeroDJStudioCaptureScenario", scenario] }
         if let contentSize { app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSize] }
-        app.launchAfterTerminatingIfRunning()
+        app.launchAfterLeftoverExits()
         let loading = app.descendants(matching: .any)["capture.loading"]
         let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: loading)
         XCTAssertEqual(XCTWaiter().wait(for: [done], timeout: 20), .completed,

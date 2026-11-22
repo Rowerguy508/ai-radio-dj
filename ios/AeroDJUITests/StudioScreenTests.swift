@@ -62,7 +62,7 @@ final class StudioScreenTests: XCTestCase {
             app.launchArguments += ["-AeroDJSplitExample", splitExample]
         }
         XCUIDevice.shared.orientation = orientation
-        app.launchAfterTerminatingIfRunning()
+        app.launchAfterLeftoverExits()
         // The capture view loads the station before rendering. Never screenshot on a timer:
         // wait for loading to end, and fail by name if the capture could not set up.
         let scenarioName = scenario ?? "playing"

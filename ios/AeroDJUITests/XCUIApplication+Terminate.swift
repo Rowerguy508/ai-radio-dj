@@ -1,58 +1,38 @@
 import XCTest
 
 extension XCUIApplication {
-    /// How long to wait for the process to leave after each terminate. Long enough
-    /// for a clean exit, short enough that a stuck process fails in a bounded time
-    /// instead of XCTest's ~60 s un-retried "Failed to terminate" path.
-    private static let terminateWait: TimeInterval = 10
+    /// How long to wait for a leftover or just-terminated process to leave.
+    private static let exitWait: TimeInterval = 10
 
-    /// Terminates only when the app is still running, waits for `.notRunning`,
-    /// retries terminate once, and fails with a clear message only if it is still
-    /// running. Use this in place of `terminate()`.
+    /// Terminates only when the app is still running, then waits up to 10 s for
+    /// `.notRunning` so the next `launch()` does not find a leftover process.
+    /// Use this in place of `terminate()`. It does not retry: XCTest records a
+    /// stuck terminate as a failure inside `terminate()` itself.
     @MainActor
-    func terminateIfRunning(file: StaticString = #filePath, line: UInt = #line) {
+    func terminateIfRunning() {
         guard state != .notRunning else { return }
         terminate()
-        if waitUntilNotRunning() { return }
-        if state != .notRunning {
-            terminate()
-        }
-        if waitUntilNotRunning() { return }
-        XCTFail(
-            "Failed to terminate com.aerodj.app: still \(describe(state)) after terminate and one retry",
-            file: file,
-            line: line
-        )
+        _ = waitUntilNotRunning()
     }
 
-    /// Makes sure any leftover process is gone (with one retry) before `launch()`,
-    /// so launch does not hit XCTest's un-retried "Failed to terminate" path.
+    /// Waits up to 10 s for any leftover process to exit on its own, then calls
+    /// `launch()`. It never calls `terminate()` first, so a process that is
+    /// slow to leave gets time to go before `launch()` would hit XCTest's
+    /// un-retried ~60 s "Failed to terminate" path. If it is still running after
+    /// the wait, `launch()` behaves exactly as it did before this helper.
     @MainActor
-    func launchAfterTerminatingIfRunning(file: StaticString = #filePath, line: UInt = #line) {
-        terminateIfRunning(file: file, line: line)
-        guard state == .notRunning else { return }
+    func launchAfterLeftoverExits() {
+        _ = waitUntilNotRunning()
         launch()
     }
 
     @MainActor
     private func waitUntilNotRunning() -> Bool {
-        if state == .notRunning { return true }
-        let deadline = Date().addingTimeInterval(Self.terminateWait)
-        while Date() < deadline {
-            if state == .notRunning { return true }
+        let deadline = Date().addingTimeInterval(Self.exitWait)
+        while state != .notRunning {
+            if Date() >= deadline { return false }
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
-        return state == .notRunning
-    }
-
-    private func describe(_ state: State) -> String {
-        switch state {
-        case .notRunning: return "notRunning"
-        case .runningForeground: return "runningForeground"
-        case .runningBackground: return "runningBackground"
-        case .runningBackgroundSuspended: return "runningBackgroundSuspended"
-        case .unknown: return "unknown"
-        @unknown default: return "state(\(state.rawValue))"
-        }
+        return true
     }
 }
