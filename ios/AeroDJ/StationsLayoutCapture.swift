@@ -18,6 +18,13 @@ enum StationsLayoutCaptureScenario: String, CaseIterable {
     case stationsLayoutCPortrait
     case stationsLayoutSettingsPhone
     case stationsLayoutSettingsDuo
+    /// Build 54 (-Nova): A at the regular width class, as the device reports it. The device
+    /// window from the owner's @3x shots (951 × 669, no fold override, then with one), and the
+    /// sim bands (820 × 640 book, 640 × 820 upright).
+    case stationsLayoutARegularDevice
+    case stationsLayoutARegularDeviceFold
+    case stationsLayoutABookRegular
+    case stationsLayoutAPortraitRegular
 
     static func requested(defaults: UserDefaults = .standard) -> StationsLayoutCaptureScenario? {
         defaults.string(forKey: StudioCapture.scenarioKey).flatMap(Self.init(rawValue:))
@@ -26,20 +33,47 @@ enum StationsLayoutCaptureScenario: String, CaseIterable {
     var style: StationsLayoutStyle? {
         switch self {
         case .stationsLayoutABook, .stationsLayoutAPortrait: .tiles
+        case .stationsLayoutARegularDevice, .stationsLayoutARegularDeviceFold,
+             .stationsLayoutABookRegular, .stationsLayoutAPortraitRegular: .tiles
         case .stationsLayoutBBook, .stationsLayoutBPortrait: .editorial
         case .stationsLayoutCBook, .stationsLayoutCPortrait: .featured
         case .stationsLayoutSettingsPhone, .stationsLayoutSettingsDuo: nil
         }
     }
 
+    /// Forces the hinge and a centred fold band (`FoldPoseOverride`).
     var isBook: Bool {
         self == .stationsLayoutABook || self == .stationsLayoutBBook || self == .stationsLayoutCBook
+            || self == .stationsLayoutARegularDeviceFold || self == .stationsLayoutABookRegular
+    }
+
+    /// The width class the device reports on the open Duo (build 54). The others force compact.
+    var isRegular: Bool {
+        switch self {
+        case .stationsLayoutARegularDevice, .stationsLayoutARegularDeviceFold,
+             .stationsLayoutABookRegular, .stationsLayoutAPortraitRegular: true
+        default: false
+        }
+    }
+
+    /// The open Duo window measured from the owner's build 54 shots (2853 × 2007 px at @3x).
+    static let deviceWindowSize = CGSize(width: 951, height: 669)
+
+    /// A centred 28 pt band for this container: 396…424 at 820 pt (`RailDCaptureContainer.foldBand`).
+    var foldBand: FoldAwareness.Division {
+        let width = Double(size.width)
+        let band = FoldedColumnLayout.duoFoldGutter
+        return FoldAwareness.Division(minX: (width - band) / 2, minY: 0, width: band,
+                                      height: Double(size.height), isActive: true)
     }
 
     var size: CGSize {
         switch self {
         case .stationsLayoutSettingsPhone: CGSize(width: 390, height: 844)
         case .stationsLayoutSettingsDuo: StudioCapture.duoWideContainerSize
+        case .stationsLayoutARegularDevice, .stationsLayoutARegularDeviceFold: Self.deviceWindowSize
+        case .stationsLayoutABookRegular: StudioCapture.duoTentContainerSize
+        case .stationsLayoutAPortraitRegular: StudioCapture.duoWideContainerSize
         default: isBook ? StudioCapture.duoTentContainerSize : StudioCapture.duoWideContainerSize
         }
     }
@@ -98,10 +132,10 @@ struct StationsLayoutCaptureView: View {
             Color(white: 0.14).ignoresSafeArea().accessibilityHidden(true)
             if ready {
                 screen
-                    .environment(\.horizontalSizeClass, .compact)
+                    .environment(\.horizontalSizeClass, scenario.isRegular ? .regular : .compact)
                     .environment(\.foldPoseOverride, scenario.isBook
                                  ? FoldPoseOverride(hinge: .init(status: .partiallyOpen, angleDegrees: 150),
-                                                    divisions: [RailDCaptureContainer.foldBand])
+                                                    divisions: [scenario.foldBand])
                                  : nil)
                     .frame(width: size.width, height: size.height)
                     .clipShape(shape)
