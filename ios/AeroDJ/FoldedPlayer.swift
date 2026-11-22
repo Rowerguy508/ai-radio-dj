@@ -148,6 +148,9 @@ struct FoldedPlayer: View {
     @State private var foldDivisions: [FoldAwareness.Division] = []
     /// Studio capture only (mockup D shots): a forced hinge and fold. Nil in the app.
     @Environment(\.foldPoseOverride) private var foldPoseOverride
+    /// Build 54 follow-up: the open-Duo window as `StationSplitRoot` measured it (nil elsewhere,
+    /// including every capture without the split).
+    @Environment(\.openDuoWindow) private var openDuoWindow
 
     private var effectiveFoldHinge: FoldAwareness.HingeSample? {
         foldPoseOverride.map { $0.hinge } ?? foldHinge
@@ -166,7 +169,8 @@ struct FoldedPlayer: View {
             hasRegularWidth: horizontalSizeClass == .regular,
             containerWidth: Double(size.width),
             containerHeight: Double(size.height),
-            accessibilityTextSize: typeSize.isAccessibilitySize)
+            accessibilityTextSize: typeSize.isAccessibilitySize,
+            isPhoneIdiom: DeviceIdiom.isPhone)
         if let placement = decision.controlPlacement { return placement }
         return FoldedColumnLayout.controlPlacement(containerWidth: Double(size.width),
                                                    containerHeight: Double(size.height))
@@ -217,7 +221,7 @@ struct FoldedPlayer: View {
                     centredColumnBody(in: geo.size)
                 case .duoHorizontal:
                     if showsUnfoldedRail {
-                        wideBody(in: geo.size)
+                        wideBody(in: geo.size, readerMinY: geo.frame(in: .global).minY)
                     } else {
                         // Build 51: the collapsed rail pins the transport; the scrolling centred
                         // column left Play and Skip below the 820 × 640 window.
@@ -405,33 +409,74 @@ struct FoldedPlayer: View {
     /// with a track is the L1 book spread (art leading; title, artist, DJ chip and Up next
     /// trailing, left-aligned) unless the Duo is known to be flat, which gets L2
     /// (`RailDLayout.openArrangement`).
-    private func wideBody(in size: CGSize) -> some View {
-        let layout = FoldAwareness.resolve(containerWidth: Double(size.width),
-                                           containerHeight: Double(size.height),
-                                           hinge: effectiveFoldHinge,
-                                           divisions: effectiveFoldDivisions,
-                                           artMin: Double(FoldedStyle.artMinSide),
-                                           artMax: Double(FoldedStyle.artMaxSide)).metrics
+    ///
+    /// Open Duo (`FoldedColumnLayout.usesOpenDuoRail`, build 54 follow-up, -Nova): the body spans
+    /// the window's trailing unsafe column (`openDuoWindow.trailingInset`), so the fold sits on the
+    /// window's centre and the rail is `RailDLayout.trailingInset` (8 pt) from the window edge, as
+    /// on Stations. The content column takes the 8 pt the rail gives back, so nothing sits under
+    /// the rail. The rail's top is the Stations rail's (`openDuoWindow.railTop`, global), the
+    /// thumbnail replaces the chevron, and the day-wash panel that stopped short of the rail is
+    /// gone. Full-screen iPads and the split host keep the old body.
+    private func wideBody(in readerSize: CGSize, readerMinY: CGFloat? = nil) -> some View {
+        // The phone idiom or a reported hinge (no iPad has either), at an open-Duo size.
+        let openDuo = FoldedColumnLayout.usesOpenDuoRail(containerWidth: Double(readerSize.width),
+                                                         containerHeight: Double(readerSize.height))
+            && (DeviceIdiom.isPhone || effectiveFoldHinge != nil)
+        let window: OpenDuoWindowMetrics? = openDuo ? openDuoWindow : nil
+        let extend: CGFloat = window.map { max(0, $0.trailingInset) } ?? 0
+        let size = CGSize(width: readerSize.width + extend, height: readerSize.height)
+        let base = FoldAwareness.resolve(containerWidth: Double(size.width),
+                                         containerHeight: Double(size.height),
+                                         hinge: effectiveFoldHinge,
+                                         divisions: effectiveFoldDivisions,
+                                         artMin: Double(FoldedStyle.artMinSide),
+                                         artMax: Double(FoldedStyle.artMaxSide)).metrics
+        let layout = openDuo
+            ? FoldedColumnLayout.DuoHorizontal(edgeInset: base.edgeInset, leftWidth: base.leftWidth,
+                                               foldGutter: base.foldGutter,
+                                               contentWidth: max(0, base.contentWidth + base.edgeInset
+                                                                 - RailDLayout.trailingInset),
+                                               barWidth: base.barWidth, topClearance: base.topClearance,
+                                               artSide: base.artSide)
+            : base
+        let trailingInset = CGFloat(openDuo ? RailDLayout.trailingInset : layout.edgeInset)
+        let railTop: CGFloat = {
+            guard let window, let readerMinY else { return CGFloat(layout.topClearance) }
+            return max(0, window.railTop - readerMinY)
+        }()
+        let thumbnail: StationRef? = openDuo ? heading.nowPlaying : nil
         let gap = CGFloat(FoldedColumnLayout.Spacing.betweenControls)
         // 27.1 draws the rail as the system vertical bar, outside this width.
         // 26.5 keeps the custom rail in `layout.barWidth`.
         let systemBar = DuoVerticalRail.usesSystemBar
         let contentWidth = layout.contentWidth + (systemBar ? layout.barWidth : 0)
-        let arrangement: RailDLayout.OpenArrangement = heroTrack == nil
+        let found: RailDLayout.OpenArrangement = heroTrack == nil
             ? .portrait
             : RailDLayout.openArrangement(containerWidth: Double(size.width),
                                           containerHeight: Double(size.height),
                                           hinge: effectiveFoldHinge,
                                           divisions: effectiveFoldDivisions)
+        // Build 54 (4), -Nova: the open Duo in landscape is always the L1 spread, art on the
+        // leading page and the type, DJ pill and Up next opposite it. L2 centred the art and
+        // title across the fold and pushed Up next below the window's bottom edge (owner shots).
+        let arrangement: RailDLayout.OpenArrangement = openDuo && found == .centred ? .spread : found
         return Group {
             if arrangement == .centred {
-                openCentredBody(in: size, layout: layout, systemBar: systemBar, gap: gap)
+                openCentredBody(in: size, layout: layout, systemBar: systemBar, gap: gap,
+                                trailingInset: trailingInset, railTop: railTop, thumbnail: thumbnail,
+                                showsWash: !openDuo)
             } else {
                 openHalvesBody(in: size, layout: layout, systemBar: systemBar, gap: gap,
-                               contentWidth: contentWidth, spread: arrangement == .spread)
+                               contentWidth: contentWidth, spread: arrangement == .spread,
+                               trailingInset: trailingInset, railTop: railTop, thumbnail: thumbnail,
+                               showsWash: !openDuo, openDuo: openDuo)
             }
         }
+        // Build 54 (5): the star beside the title, open Duo only (false is today's block).
+        .environment(\.foldedStarBesideTitle, openDuo)
         .frame(width: size.width, height: size.height)
+        // Open Duo: into the trailing unsafe column (0 everywhere else, so nothing moves).
+        .padding(.trailing, -extend)
         .overlay {
             if moreOpen, !systemBar, layout.barWidth > 0 {
                 railMorePanel(in: size)
@@ -445,7 +490,9 @@ struct FoldedPlayer: View {
 
     /// Portrait and the L1 spread: track column, fold gutter, content column, rail.
     private func openHalvesBody(in size: CGSize, layout: FoldedColumnLayout.DuoHorizontal, systemBar: Bool,
-                                gap: CGFloat, contentWidth: Double, spread: Bool) -> some View {
+                                gap: CGFloat, contentWidth: Double, spread: Bool,
+                                trailingInset: CGFloat, railTop: CGFloat, thumbnail: StationRef?,
+                                showsWash: Bool, openDuo: Bool = false) -> some View {
         HStack(alignment: .top, spacing: 0) {
             if layout.leftWidth > 0 {
                 ScrollView(.vertical, showsIndicators: false) {
@@ -472,7 +519,7 @@ struct FoldedPlayer: View {
                 .playerScrollPosition(scrollHandle, scrollerID: "openHalves")
                 .modifier(ContinuityScrollerID(enabled: continuityProbe))
                 .frame(width: CGFloat(layout.leftWidth), height: size.height, alignment: .topLeading)
-                .background { dayWash.accessibilityHidden(true) }
+                .background { if showsWash { dayWash.accessibilityHidden(true) } }
                 // .contain first, then the identifier. An identifier on a container without
                 // .contain is copied onto every control inside it. The element is the column,
                 // not a clear layer over the rating button. The ScrollView is not the element:
@@ -491,10 +538,12 @@ struct FoldedPlayer: View {
 
             if contentWidth > 0 {
                 Group {
-                    if spread {
+                    if spread, openDuo {
+                        openDuoSpreadContent(gap: gap, height: size.height)
+                    } else if spread {
                         spreadContent(gap: gap, height: size.height)
                     } else {
-                        wideContent(gap: gap, top: CGFloat(layout.topClearance))
+                        wideContent(gap: gap, top: CGFloat(layout.topClearance), upNextFirst: openDuo)
                     }
                 }
                 .frame(width: CGFloat(contentWidth), height: size.height, alignment: .top)
@@ -506,10 +555,11 @@ struct FoldedPlayer: View {
 
             if !systemBar, layout.barWidth > 0 {
                 unfoldedRail(width: CGFloat(layout.barWidth), height: size.height,
-                             top: CGFloat(layout.topClearance))
+                             top: railTop, thumbnail: thumbnail)
             }
         }
-        .padding(.horizontal, CGFloat(layout.edgeInset))
+        .padding(.leading, CGFloat(layout.edgeInset))
+        .padding(.trailing, trailingInset)
     }
 
     /// L1: the station header, then the art centred in the leading half. No control here.
@@ -569,11 +619,60 @@ struct FoldedPlayer: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    /// Build 54 (4)/(5), -Nova: the open Duo's L1 trailing page. Title (star beside it), artist,
+    /// the DJ-break pill, then Up next straight under the pill, so it is never the item pushed
+    /// past the bottom edge; the banner, the on-air orb and the dial follow. Centred in the page
+    /// when it fits (as `spreadContent`), in a vertical scroll view at least the page tall: a
+    /// taller stack (accessibility text) scrolls instead of clipping at the window's bottom edge.
+    private func openDuoSpreadContent(gap: CGFloat, height: CGFloat) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                Color.clear
+                    .frame(height: CGFloat(RailDLayout.openHeaderHeight))
+                    .accessibilityHidden(true)
+                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 0) {
+                    if let track = heroTrack {
+                        FoldedTitleBlock(track: track, isTestStation: isTestStation,
+                                         displaySize: CGFloat(RailDLayout.openTitlePointSize))
+                    }
+                    FoldedDJStatus(dj: dj, fitsOneLine: true)
+                        .padding(.top, CGFloat(FoldedColumnLayout.Spacing.titleToStatus))
+                    DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
+                        .padding(.top, gap)
+                    PlaybackErrorBanner(error: snapshot.error, actions: actions)
+                        .duoColumnWidth()
+                        .padding(.top, gap)
+                    if DuoPresentation.showsVisualizer(isOnAir: dj.state.isOnAir), let track = heroTrack {
+                        DJLavaOrb(track: track, station: station, levels: speechLevel)
+                            .frame(width: 120, height: 120)
+                            .accessibilityHidden(true)
+                            .accessibilityIdentifier("folded.visualizer")
+                            .padding(.top, gap)
+                    }
+                    if stationStops.count > 1, let onOpenStation {
+                        DuoStationDial(stops: stationStops, openedID: heading.opened.id,
+                                       playingID: StationTapRoute.dialPlayingID(snapshot), onOpen: onOpenStation)
+                            .padding(.top, gap)
+                    }
+                }
+                Spacer(minLength: gap)
+            }
+            .padding(.leading, CGFloat(RailDLayout.spreadTrailingInset))
+            .frame(maxWidth: .infinity, minHeight: height, alignment: .leading)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollContentBackground(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
     /// L2 (fold inactive: the Duo is flat): art and title centred across the player area, the
     /// DJ chip, Up next, the banner and the dial shifted into the trailing half, after the fold
     /// band, so even here no control sits on the centre line.
     private func openCentredBody(in size: CGSize, layout: FoldedColumnLayout.DuoHorizontal,
-                                 systemBar: Bool, gap: CGFloat) -> some View {
+                                 systemBar: Bool, gap: CGFloat,
+                                 trailingInset: CGFloat, railTop: CGFloat, thumbnail: StationRef?,
+                                 showsWash: Bool) -> some View {
         let playerWidth = layout.leftWidth + layout.foldGutter + layout.contentWidth
             + (systemBar ? layout.barWidth : 0)
         let side = CGFloat(RailDLayout.centredArtSide(playerWidth: playerWidth, containerHeight: Double(size.height),
@@ -627,14 +726,15 @@ struct FoldedPlayer: View {
             .scrollContentBackground(.hidden)
             .playerScrollPosition(scrollHandle, scrollerID: "openCentred")
             .frame(width: CGFloat(playerWidth), height: size.height, alignment: .top)
-            .background { dayWash.accessibilityHidden(true) }
+            .background { if showsWash { dayWash.accessibilityHidden(true) } }
 
             if !systemBar, layout.barWidth > 0 {
                 unfoldedRail(width: CGFloat(layout.barWidth), height: size.height,
-                             top: CGFloat(layout.topClearance))
+                             top: railTop, thumbnail: thumbnail)
             }
         }
-        .padding(.horizontal, CGFloat(layout.edgeInset))
+        .padding(.leading, CGFloat(layout.edgeInset))
+        .padding(.trailing, trailingInset)
     }
 
     /// 34 pt in a two-halves column, 28 pt where the column is narrow (D's sidebar frame).
@@ -676,7 +776,8 @@ struct FoldedPlayer: View {
     }
 
     /// The unfolded rail itself, the same in `railColumnBody` as in `wideBody`. Sorts last.
-    private func unfoldedRail(width: CGFloat, height: CGFloat, top: CGFloat) -> some View {
+    private func unfoldedRail(width: CGFloat, height: CGFloat, top: CGFloat,
+                              thumbnail: StationRef? = nil) -> some View {
         DuoVerticalRail(dj: dj, reviewCount: moreMenu?.reviewCount, upNext: snapshot.upNext,
                         onCollapse: onCollapseRail,
                         onConnections: moreMenu?.onConnections ?? {},
@@ -687,7 +788,8 @@ struct FoldedPlayer: View {
                         resume: { await actions.resume() },
                         skip: { await actions.skip() },
                         moreOpen: $moreOpen,
-                        scrubber: railScrubber)
+                        scrubber: railScrubber,
+                        thumbnail: thumbnail)
             .padding(.top, top)
             .padding(.bottom, 8)
             .frame(width: width, height: height, alignment: .top)
@@ -922,8 +1024,13 @@ struct FoldedPlayer: View {
     /// non-rail control is allowed. Each control takes the column width and may grow
     /// downward, so an ideal width cannot centre itself off the column.
     /// The orb appears here only while the DJ is actually on air, and it does not cover the artwork.
-    private func wideContent(gap: CGFloat, top: CGFloat) -> some View {
+    /// Build 54 (4): `upNextFirst` (the open Duo, portrait) puts Up next at the top of the
+    /// column, before the orb and the dial, so it never clips at the bottom edge.
+    private func wideContent(gap: CGFloat, top: CGFloat, upNextFirst: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: gap) {
+            if upNextFirst {
+                DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
+            }
             if DuoPresentation.showsVisualizer(isOnAir: dj.state.isOnAir), let track = heroTrack {
                 DJLavaOrb(track: track, station: station, levels: speechLevel)
                     .frame(width: 120, height: 120)
@@ -953,7 +1060,9 @@ struct FoldedPlayer: View {
                 DuoStationDial(stops: stationStops, openedID: heading.opened.id,
                                playingID: StationTapRoute.dialPlayingID(snapshot), onOpen: onOpenStation)
             }
-            DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
+            if !upNextFirst {
+                DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
+            }
             Spacer(minLength: gap)
         }
         .padding(.top, top)
@@ -1652,6 +1761,8 @@ private struct FoldedTitleBlock: View {
     var displaySize: CGFloat? = nil
     /// Station ratings (-Nova, PR B). Nil or unavailable: the block is exactly the labels, as before.
     @Environment(\.songRating) private var songRating
+    /// Build 54 (5), open Duo only: the star right after the title block, not at the column's edge.
+    @Environment(\.foldedStarBesideTitle) private var starBesideTitle
     @ScaledMetric(relativeTo: .largeTitle) private var displayScale: CGFloat = 1
 
     private var titleFont: Font {
@@ -1671,6 +1782,14 @@ private struct FoldedTitleBlock: View {
                 if centered {
                     labels
                     SongRatingButton(controller: songRating, track: track, ink: FoldedStyle.secondaryInk)
+                } else if starBesideTitle {
+                    // Build 54 (5): the labels take their own width first (priority), the star
+                    // follows 8 pt after them, top-aligned with the title's first line.
+                    HStack(alignment: .top, spacing: 8) {
+                        labels.layoutPriority(1)
+                        SongRatingButton(controller: songRating, track: track, ink: FoldedStyle.secondaryInk)
+                        Spacer(minLength: 0)
+                    }
                 } else {
                     HStack(alignment: .foldedRatingArtistLine, spacing: 8) {
                         labels.frame(maxWidth: .infinity, alignment: .leading)
@@ -1710,6 +1829,19 @@ private struct FoldedTitleBlock: View {
         .accessibilityAddTraits(.isHeader)
         // Mockup D (-Nova): new id so the UI tests can line the DJ chip up with the title.
         .accessibilityIdentifier("folded.titleBlock")
+    }
+}
+
+/// Build 54 (5), -Nova: set on the open-Duo player body only. False everywhere else keeps the
+/// rated title block exactly as before (the star at the column's trailing edge).
+private struct FoldedStarBesideTitleKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var foldedStarBesideTitle: Bool {
+        get { self[FoldedStarBesideTitleKey.self] }
+        set { self[FoldedStarBesideTitleKey.self] = newValue }
     }
 }
 
@@ -2540,5 +2672,25 @@ private struct ArtCardTestExposure: ViewModifier {
         #else
         content.accessibilityHidden(true).accessibilityIdentifier(identifier)
         #endif
+    }
+}
+
+/// Build 54 follow-up (-Nova): the open-Duo window as `StationSplitRoot` measured it, for the
+/// player's rail. `trailingInset` is the window's trailing unsafe width (the device's status
+/// column); `railTop` is the Stations rail glass's top in global points, so the player's rail
+/// starts at the same y. Nil on every other window and in captures without the split.
+struct OpenDuoWindowMetrics: Equatable, Sendable {
+    var trailingInset: CGFloat
+    var railTop: CGFloat
+}
+
+private struct OpenDuoWindowKey: EnvironmentKey {
+    static let defaultValue: OpenDuoWindowMetrics? = nil
+}
+
+extension EnvironmentValues {
+    var openDuoWindow: OpenDuoWindowMetrics? {
+        get { self[OpenDuoWindowKey.self] }
+        set { self[OpenDuoWindowKey.self] = newValue }
     }
 }

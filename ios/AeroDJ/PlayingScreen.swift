@@ -239,7 +239,8 @@ struct PlayingScreen: View {
                 hasRegularWidth: horizontalSizeClass == .regular,
                 containerWidth: width,
                 containerHeight: Double(routeHeight),
-                accessibilityTextSize: typeSize.isAccessibilitySize
+                accessibilityTextSize: typeSize.isAccessibilitySize,
+                isPhoneIdiom: DeviceIdiom.isPhone
             ).controlPlacement ?? .phoneBottom
             // Build 51 (-Atlas): the Stations sidebar open on the open Duo leaves a regular,
             // window-tall detail too narrow for the two halves. It keeps the rail: the centred
@@ -331,7 +332,8 @@ struct PlayingScreen: View {
         DisplayContinuity.layout(hasRegularWidth: horizontalSizeClass == .regular,
                                  containerWidth: containerWidth,
                                  containerHeight: containerHeight,
-                                 accessibilityTextSize: typeSize.isAccessibilitySize)
+                                 accessibilityTextSize: typeSize.isAccessibilitySize,
+                                 isPhoneIdiom: DeviceIdiom.isPhone)
     }
 
     private var studioIdentity: String {

@@ -36,17 +36,22 @@ public enum DisplayContinuity {
     /// (`FoldedPlayer` + `DuoVerticalRail`) at either size class: a regular width class no
     /// longer swaps it for the two-zone Studio or the two-pane arrangement. Accessibility
     /// text sizes keep `.studioStacked` wherever the Studio gate opens (regular, 716+), so
-    /// large text still gets one scrolling column. A regular container at 716+ that is not
+    /// large text still gets one scrolling column, except on the open Duo (`isPhoneIdiom`: a
+    /// foldable phone, the only phone this wide), which keeps the rail as compact does. A regular container at 716+ that is not
     /// wide-and-tall (shorter than the rail needs) keeps the Studio. Everything else is the
     /// compact arm: the phone column, the centred column, or the horizontal Duo.
     public static func layout(hasRegularWidth: Bool, containerWidth: Double, containerHeight: Double,
-                              accessibilityTextSize: Bool) -> Layout {
+                              accessibilityTextSize: Bool, isPhoneIdiom: Bool = false) -> Layout {
         let placement = FoldedColumnLayout.controlPlacement(containerWidth: containerWidth,
                                                             containerHeight: containerHeight)
         switch StudioLayoutMode.resolve(hasRegularWidth: hasRegularWidth,
                                         containerWidth: containerWidth,
                                         accessibilityTextSize: accessibilityTextSize) {
-        case .studioStacked: return .studioStacked
+        case .studioStacked:
+            // Build 54 (-Nova): the open Duo keeps the rail at accessibility text sizes at either
+            // width class, as compact already did. Every iPad window (not the phone idiom) and a
+            // regular container too short for the rail keep the stack.
+            return placement == .duoHorizontal && isPhoneIdiom ? .duoHorizontal : .studioStacked
         case .studio:
             return placement == .duoHorizontal ? .duoHorizontal : .studio
         case .compact:
