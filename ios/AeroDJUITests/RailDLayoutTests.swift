@@ -180,16 +180,16 @@ final class RailDLayoutTests: XCTestCase {
         // The now-playing thumbnail in the top slot, still Collapse (the chevron's action).
         let thumb = app.buttons["folded.collapse"]
         XCTAssertTrue(thumb.exists, "thumbnail missing\n\(app.debugDescription)")
-        XCTAssertGreaterThanOrEqual(thumb.frame.width, 44, "thumbnail \(thumb.frame)")
-        XCTAssertGreaterThanOrEqual(thumb.frame.height, 44, "thumbnail \(thumb.frame)")
+        assertAtLeastPoints(thumb.frame.width, 44, "thumbnail \(thumb.frame)")
+        assertAtLeastPoints(thumb.frame.height, 44, "thumbnail \(thumb.frame)")
         XCTAssertLessThanOrEqual(thumb.frame.minY, rail.frame.minY + 12, "the thumbnail is the top slot")
         XCTAssertEqual(thumb.label, "Collapse")
         XCTAssertTrue((thumb.value as? String)?.hasPrefix("Now playing") ?? false,
                       "thumbnail value \(String(describing: thumb.value))")
         let play = app.buttons["transport.playPause"]
         XCTAssertTrue(play.exists)
-        XCTAssertGreaterThanOrEqual(play.frame.height, 44)
-        XCTAssertGreaterThanOrEqual(play.frame.width, 44)
+        assertAtLeastPoints(play.frame.height, 44)
+        assertAtLeastPoints(play.frame.width, 44)
         // Build 54 (4): Up next on the second page, opposite the art, wholly inside the window
         // (never clipped at the bottom edge), leading of the rail, under the DJ-break pill.
         let track = try XCTUnwrap(settledFrame(of: any["folded.trackColumn"], "track column"))
@@ -200,7 +200,7 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(next.minX, track.maxX - 1, "Up next \(next) is opposite the art \(track)")
         XCTAssertGreaterThanOrEqual(next.minX, box.midX, "Up next \(next) is on the second page")
         XCTAssertLessThanOrEqual(next.maxX, rail.frame.minX + 1, "Up next \(next) runs under the rail")
-        XCTAssertGreaterThanOrEqual(next.height, 44)
+        assertAtLeastPoints(next.height, 44)
         let pill = any["dj.ready"]
         XCTAssertTrue(pill.waitForExistence(timeout: 5), "the DJ-break pill is gone\n\(app.debugDescription)")
         XCTAssertGreaterThanOrEqual(next.minY, pill.frame.maxY - 1, "Up next sits under the DJ-break pill")
@@ -219,8 +219,8 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(gap, -1, "the star \(star.frame) overlaps the title \(title)")
         XCTAssertLessThanOrEqual(gap, 24, "the star \(star.frame) is not beside the title \(title)")
         XCTAssertLessThan(star.frame.minY, title.maxY, "the star is level with the title block")
-        XCTAssertGreaterThanOrEqual(star.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(star.frame.height, 44)
+        assertAtLeastPoints(star.frame.width, 44)
+        assertAtLeastPoints(star.frame.height, 44)
         XCTAssertLessThanOrEqual(star.frame.maxX, rail.frame.minX + 1)
         save(app, shot, container: app.descendants(matching: .any)["capture.railDContainer"])
     }
