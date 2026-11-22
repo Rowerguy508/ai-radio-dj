@@ -213,6 +213,12 @@ final class RailDLayoutTests: XCTestCase {
         let upNextCardInset: CGFloat = 12
         XCTAssertEqual(next.minX - upNextCardInset, title.minX, accuracy: 1,
                        "Up next's card (text \(next) less \(upNextCardInset) pt) lines up with the title \(title)")
+        // Build 56 (951 × 669 shots, -Nova): the right column stops at least 16 pt
+        // (`RailDLayout.openSpreadRailGutter`) short of the rail glass; it ran into it (≈ 2 pt).
+        // The glass is 56 pt, 8 pt in from the window edge (asserted above); `folded.systemBar` is
+        // `.contain`, so its own frame is its children's union, not the glass.
+        try assertRightColumnClearsTheRail(app, upNextText: next, cardInset: upNextCardInset,
+                                           railGlassMinX: box.maxX - Self.railEdgeInset - Self.railGlassWidth)
         let star = app.buttons["nowPlaying.rating"]
         XCTAssertTrue(star.waitForExistence(timeout: 5), "the star is missing\n\(app.debugDescription)")
         let gap = star.frame.minX - title.maxX
@@ -223,6 +229,33 @@ final class RailDLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(star.frame.height, 44)
         XCTAssertLessThanOrEqual(star.frame.maxX, rail.frame.minX + 1)
         save(app, shot, container: app.descendants(matching: .any)["capture.railDContainer"])
+    }
+
+    /// The open Duo's L1 trailing page against the rail: the Up next card (XCUI reports it at its
+    /// text, `cardInset` inside the glass card, `DuoUpNextList .padding(.horizontal, 12)`) and the
+    /// station chips row ending in Tune both end at least `minimumGap` before the rail glass.
+    @MainActor
+    private func assertRightColumnClearsTheRail(_ app: XCUIApplication, upNextText: CGRect, cardInset: CGFloat,
+                                                railGlassMinX: CGFloat, minimumGap: CGFloat = 16,
+                                                file: StaticString = #filePath, line: UInt = #line) throws {
+        let cardMaxX = upNextText.maxX + cardInset
+        XCTAssertGreaterThanOrEqual(railGlassMinX - cardMaxX, minimumGap - 0.5,
+                                    "Up next's card ends at \(cardMaxX) (text \(upNextText) plus \(cardInset) pt), "
+                                        + "the rail glass starts at \(railGlassMinX)", file: file, line: line)
+        // Typed and `.firstMatch`: one button, one dial, never an ambiguous match.
+        let tune = app.buttons.matching(identifier: "duo.stationTune").firstMatch
+        XCTAssertTrue(tune.waitForExistence(timeout: 5), "Tune missing\n\(app.debugDescription)", file: file, line: line)
+        let tuneFrame = try XCTUnwrap(settledFrame(of: tune, "Tune"), file: file, line: line)
+        XCTAssertGreaterThanOrEqual(tuneFrame.width, 44, "Tune \(tuneFrame)", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(tuneFrame.height, 44, "Tune \(tuneFrame)", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(railGlassMinX - tuneFrame.maxX, minimumGap - 0.5,
+                                    "Tune \(tuneFrame) ends within \(minimumGap) pt of the rail glass at \(railGlassMinX)",
+                                    file: file, line: line)
+        let dial = app.descendants(matching: .any).matching(identifier: "duo.stationDial").firstMatch
+        XCTAssertTrue(dial.exists, "the station chips row\n\(app.debugDescription)", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(railGlassMinX - dial.frame.maxX, minimumGap - 0.5,
+                                    "the chips row \(dial.frame) ends within \(minimumGap) pt of the rail glass at \(railGlassMinX)",
+                                    file: file, line: line)
     }
 
     @MainActor

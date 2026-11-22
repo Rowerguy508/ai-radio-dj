@@ -621,6 +621,7 @@ struct FoldedPlayer: View {
     /// past the bottom edge; the banner, the on-air orb and the dial follow. Centred in the page
     /// when it fits (as `spreadContent`), in a vertical scroll view at least the page tall: a
     /// taller stack (accessibility text) scrolls instead of clipping at the window's bottom edge.
+    /// The page keeps `RailDLayout.openSpreadRailGutter` (16) clear before the rail.
     private func openDuoSpreadContent(gap: CGFloat, height: CGFloat) -> some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
@@ -656,6 +657,9 @@ struct FoldedPlayer: View {
                 Spacer(minLength: gap)
             }
             .padding(.leading, CGFloat(RailDLayout.spreadTrailingInset))
+            // Build 56 (951 × 669 shots, -Nova): Up next and the chips row (ending in Tune) stop
+            // 16 pt short of the rail glass instead of running into its leading edge.
+            .padding(.trailing, CGFloat(RailDLayout.openSpreadRailGutter))
             .frame(maxWidth: .infinity, minHeight: height, alignment: .leading)
         }
         .scrollBounceBehavior(.basedOnSize)
