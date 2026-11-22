@@ -984,19 +984,48 @@ jobs:
             studio-screenshots/*.png
             studio-screenshots/*.mp4
           if-no-files-found: warn
+      - name: Collect filtered simulator logs (failure or cancel)
+        # The repo is public, so artifacts are downloadable: no full `log collect` archive.
+        # Only SpringBoard, testmanagerd and our own subsystem, last 2 h, as text. No secrets
+        # are in this job's env. Each `log show` is capped at 120 s and never fails the job,
+        # so a wedged simulator can't hang cleanup (#577's SpringBoard idle stall). -Atlas
+        if: (failure() || cancelled()) && runner.environment != 'self-hosted'
+        timeout-minutes: 6
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/sim-logs"
+          for pair in "phone:$PHONE_UDID" "pad:$PAD_UDID"; do
+            name="${pair%%:*}"; udid="${pair#*:}"
+            [ -n "$udid" ] || continue
+            perl -e 'alarm shift; exec @ARGV' 120 \
+              xcrun simctl spawn "$udid" log show --last 2h --style compact \
+              --predicate 'process == "SpringBoard" OR process == "testmanagerd" OR subsystem == "com.aerodj.app"' \
+              > "$RUNNER_TEMP/sim-logs/$name.log" 2>&1 || echo "log show for $name exited $?" >> "$RUNNER_TEMP/sim-logs/$name.log"
+          done
+          ls -la "$RUNNER_TEMP/sim-logs" || true
+      - name: Upload filtered simulator logs
+        if: (failure() || cancelled()) && runner.environment != 'self-hosted'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-logs-filtered
+          path: ${{ runner.temp }}/sim-logs
+          retention-days: 5
+          if-no-files-found: ignore
       - name: Upload iPhone UI result
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: phone-xcresult
           path: ${{ runner.temp }}/phone.xcresult
+          retention-days: 5
           if-no-files-found: warn
       - name: Upload iPad UI result
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: pad-xcresult
           path: ${{ runner.temp }}/pad.xcresult
+          retention-days: 5
           if-no-files-found: warn
       - name: Self-hosted cleanup (stop tests and simulators)
         if: always() && runner.environment == 'self-hosted'
