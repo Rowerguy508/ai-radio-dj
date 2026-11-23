@@ -1060,6 +1060,8 @@ jobs:
     if: needs.changes.outputs.ios == 'true'
     runs-on: xcode-27
     timeout-minutes: 150
+    # Non-required while the hosted image is unproven (runner-images#15334); the result still shows on every run.
+    continue-on-error: true
     env:
       XCODEGEN_VERSION: 2.46.0
       XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
