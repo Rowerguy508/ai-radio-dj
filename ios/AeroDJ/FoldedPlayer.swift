@@ -2140,8 +2140,14 @@ private struct DuoStationDial: View {
                     .padding(.horizontal, 8)
                     .foregroundStyle(.white)
                     .foldedGlass(Capsule(), role: .control)
+                    // #584 QA hold, -Nova: the whole capsule (at least 44 x 44) is the hit area.
+                    .contentShape(Capsule())
             }
             .buttonStyle(.plain)
+            // One element at the button's own frame: with the Text as a child, XCUI reported
+            // the word "Tune" (35.5 x 18) instead of the 44 pt capsule.
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
             .accessibilityLabel("Tune \(highlightedName)")
             .accessibilityHint("Plays the highlighted station.")
             .accessibilityIdentifier("duo.stationTune")
