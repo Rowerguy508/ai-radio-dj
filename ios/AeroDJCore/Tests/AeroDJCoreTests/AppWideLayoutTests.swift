@@ -221,11 +221,11 @@ final class AppWideLayoutTests: XCTestCase {
         }
     }
 
-    /// Item 2 and item 4 plug in here. Until they land, the slots default to nil and a value
-    /// in them changes nothing, on the phone path or the wide one.
-    func testFoldAndArrangementSlotsDefaultToNilAndChangeNothingYet() {
+    /// Item 2 plugs in here. Until it lands, the slot defaults to nil and a value in it
+    /// changes nothing, on the phone path or the wide one. The unused item 4 arrangement
+    /// input is gone; see `testDecideInputHasNoArrangementSlot`.
+    func testFoldSlotDefaultsToNilAndChangesNothingYet() {
         XCTAssertNil(AppWideLayout.duoWide.foldDivision)
-        XCTAssertNil(AppWideLayout.duoWide.arrangement)
         // Same shape as #510's `FoldAwareness.Division`, so the forward-merge is a typealias.
         let fold = AppWideLayout.FoldDivision(minX: 306, minY: 0, width: 28, height: 820, isActive: true)
         XCTAssertTrue(fold.isVertical)
@@ -236,11 +236,137 @@ final class AppWideLayoutTests: XCTestCase {
         for base in [AppWideLayout.duoWide, AppWideLayout.splitNarrow] {
             var seamed = base
             seamed.foldDivision = AppWideLayout.FoldDivision(minX: 306, minY: 0, width: 28, height: 820, isActive: true)
-            seamed.arrangement = .twoPane
             for screen in AppWideLayout.Screen.allCases {
                 XCTAssertEqual(AppWideLayout.decide(seamed, for: screen), AppWideLayout.decide(base, for: screen),
-                               "\(screen): TODO(#465 item 2/4) is a no-op until those PRs land")
+                               "\(screen): TODO(#465 item 2) is a no-op until that PR lands")
             }
         }
+    }
+
+    /// Pins today's `decide` output across the containers item 10 covers: iPhone,
+    /// the closed Duo, the open Duo (portrait and landscape), iPad, and Split View
+    /// widths. This is a behaviour pin, not a fail-first assertion: `decide` already
+    /// ignores `arrangement`, so the numbers must stay the same after that unused
+    /// input is removed. iPhone, the closed Duo, and narrow Split View stay the
+    /// phone path, so iPhone snapshots stay byte-identical. -Nova
+    func testDecideOutputIsPinnedAcrossTheContainerMatrix() {
+        struct Pin: Equatable {
+            var mode: AppWideLayout.Mode
+            var sideInset: Double
+            var readableWidth: Double
+            var columns: Int
+            var gutter: Double
+        }
+        func phone(_ width: Double) -> Pin {
+            Pin(mode: .phone, sideInset: 0, readableWidth: width, columns: 1, gutter: 0)
+        }
+        func wide(_ inset: Double, _ readable: Double, _ columns: Int, _ gutter: Double) -> Pin {
+            Pin(mode: .wide, sideInset: inset, readableWidth: readable, columns: columns, gutter: gutter)
+        }
+        func pin(_ decision: AppWideLayout.Decision) -> Pin {
+            Pin(mode: decision.mode, sideInset: decision.sideInset, readableWidth: decision.readableWidth,
+                columns: decision.columns, gutter: decision.gutter)
+        }
+
+        let cases: [(String, AppWideLayout.Input, [AppWideLayout.Screen: Pin])] = [
+            ("iPhone SE portrait",
+             .init(hasRegularWidth: false, containerWidth: 375, containerHeight: 667, hasRegularHeight: true),
+             [.library: phone(375), .stations: phone(375), .settings: phone(375), .onboarding: phone(375)]),
+            ("iPhone portrait",
+             .init(hasRegularWidth: false, containerWidth: 393, containerHeight: 852, hasRegularHeight: true),
+             [.library: phone(393), .stations: phone(393), .settings: phone(393), .onboarding: phone(393)]),
+            ("Pro Max portrait",
+             .init(hasRegularWidth: false, containerWidth: 440, containerHeight: 956, hasRegularHeight: true),
+             [.library: phone(440), .stations: phone(440), .settings: phone(440), .onboarding: phone(440)]),
+            ("iPhone landscape",
+             .init(hasRegularWidth: false, containerWidth: 852, containerHeight: 393, hasRegularHeight: false),
+             [.library: phone(852), .stations: phone(852), .settings: phone(852), .onboarding: phone(852)]),
+            ("Pro Max landscape",
+             .init(hasRegularWidth: true, containerWidth: 956, containerHeight: 440, hasRegularHeight: false),
+             [.library: phone(956), .stations: phone(956), .settings: phone(956), .onboarding: phone(956)]),
+            ("closed Duo",
+             .init(hasRegularWidth: false, containerWidth: 390, containerHeight: 844, hasRegularHeight: true),
+             [.library: phone(390), .stations: phone(390), .settings: phone(390), .onboarding: phone(390)]),
+            ("open Duo portrait, compact width",
+             AppWideLayout.duoWide,
+             [.library: wide(40, 560, 2, 16), .stations: wide(0, 640, 3, 16),
+              .settings: wide(40, 560, 1, 0), .onboarding: wide(40, 560, 1, 0)]),
+            ("open Duo portrait, regular width",
+             .init(hasRegularWidth: true, containerWidth: 640, containerHeight: 820, hasRegularHeight: true),
+             [.library: wide(40, 560, 2, 16), .stations: wide(0, 640, 3, 16),
+              .settings: wide(40, 560, 1, 0), .onboarding: wide(40, 560, 1, 0)]),
+            ("open Duo landscape, regular height",
+             .init(hasRegularWidth: true, containerWidth: 820, containerHeight: 640, hasRegularHeight: true),
+             [.library: wide(130, 560, 2, 16), .stations: wide(0, 820, 4, 16),
+              .settings: wide(130, 560, 1, 0), .onboarding: wide(130, 560, 1, 0)]),
+            ("open Duo landscape, no vertical class",
+             .init(hasRegularWidth: true, containerWidth: 820, containerHeight: 640),
+             [.library: phone(820), .stations: phone(820), .settings: phone(820), .onboarding: phone(820)]),
+            ("open Duo landscape, compact width",
+             .init(hasRegularWidth: false, containerWidth: 820, containerHeight: 640, hasRegularHeight: true),
+             [.library: phone(820), .stations: phone(820), .settings: phone(820), .onboarding: phone(820)]),
+            ("iPad portrait",
+             .init(hasRegularWidth: true, containerWidth: 1024, containerHeight: 1366, hasRegularHeight: true),
+             [.library: wide(232, 560, 2, 16), .stations: wide(32, 960, 4, 16),
+              .settings: wide(232, 560, 1, 0), .onboarding: wide(232, 560, 1, 0)]),
+            ("iPad landscape",
+             .init(hasRegularWidth: true, containerWidth: 1366, containerHeight: 1024, hasRegularHeight: true),
+             [.library: wide(403, 560, 2, 16), .stations: wide(203, 960, 4, 16),
+              .settings: wide(403, 560, 1, 0), .onboarding: wide(403, 560, 1, 0)]),
+            ("iPad form sheet",
+             .init(hasRegularWidth: true, containerWidth: 540, containerHeight: 620, hasRegularHeight: true),
+             [.library: wide(0, 540, 2, 16), .stations: wide(0, 540, 2, 16),
+              .settings: wide(0, 540, 1, 0), .onboarding: wide(0, 540, 1, 0)]),
+            ("split narrow",
+             AppWideLayout.splitNarrow,
+             [.library: phone(340), .stations: phone(340), .settings: phone(340), .onboarding: phone(340)]),
+            ("split half",
+             .init(hasRegularWidth: true, containerWidth: 540, containerHeight: 760, hasRegularHeight: true),
+             [.library: wide(0, 540, 2, 16), .stations: wide(0, 540, 2, 16),
+              .settings: wide(0, 540, 1, 0), .onboarding: wide(0, 540, 1, 0)]),
+            ("split two-thirds",
+             .init(hasRegularWidth: true, containerWidth: 680, containerHeight: 760, hasRegularHeight: true),
+             [.library: wide(60, 560, 2, 16), .stations: wide(0, 680, 3, 16),
+              .settings: wide(60, 560, 1, 0), .onboarding: wide(60, 560, 1, 0)]),
+            ("split full",
+             .init(hasRegularWidth: true, containerWidth: 1024, containerHeight: 1366, hasRegularHeight: true),
+             [.library: wide(232, 560, 2, 16), .stations: wide(32, 960, 4, 16),
+              .settings: wide(232, 560, 1, 0), .onboarding: wide(232, 560, 1, 0)]),
+        ]
+
+        XCTAssertEqual(cases.count, 18, "the matrix lists every container the pin covers")
+        for (name, input, expected) in cases {
+            XCTAssertEqual(Set(expected.keys), Set(AppWideLayout.Screen.allCases), name)
+            for screen in AppWideLayout.Screen.allCases {
+                XCTAssertEqual(pin(AppWideLayout.decide(input, for: screen)), expected[screen]!,
+                               "\(name) \(screen)")
+            }
+            // Accessibility keeps the same mode, inset and readable width; columns collapse to 1.
+            var accessible = input
+            accessible.accessibilityTextSize = true
+            for screen in AppWideLayout.Screen.allCases {
+                let decision = AppWideLayout.decide(accessible, for: screen)
+                let base = expected[screen]!
+                XCTAssertEqual(decision.mode, base.mode, "\(name) \(screen) a11y mode")
+                XCTAssertEqual(decision.sideInset, base.sideInset, accuracy: 0.001, "\(name) \(screen) a11y inset")
+                XCTAssertEqual(decision.readableWidth, base.readableWidth, accuracy: 0.001,
+                               "\(name) \(screen) a11y readable")
+                XCTAssertEqual(decision.columns, 1, "\(name) \(screen) a11y columns")
+                XCTAssertEqual(decision.gutter, 0, "\(name) \(screen) a11y gutter")
+            }
+        }
+    }
+
+    /// Fail-first API-shape check: `Input` still carries the unused `arrangement`
+    /// slot today, so this fails on the pre-change tree and passes once the seam
+    /// is removed. `foldDivision` (item 2) stays. -Nova
+    func testDecideInputHasNoArrangementSlot() {
+        let labels = Mirror(reflecting: AppWideLayout.Input(
+            hasRegularWidth: false, containerWidth: 640, containerHeight: 820
+        )).children.compactMap(\.label)
+        XCTAssertFalse(labels.contains("arrangement"),
+                       "decide must not take an arrangement; the item 4 seam is unused")
+        XCTAssertTrue(labels.contains("foldDivision"),
+                      "the item 2 fold seam stays until that wiring lands")
     }
 }
