@@ -1048,6 +1048,9 @@ jobs:
   # 45102693288 (runner group "GitHub Actions"). This job fails closed if that
   # Xcode, simulator SDK, or device is missing. It does not substitute another
   # image, SDK, or device. It is not continue-on-error, so a failure stays red.
+  # 55cf35ae set continue-on-error to keep a green workflow. That marks a failed
+  # run successful, so the flag is removed. The required set stays as it is
+  # because this check is not added to branch protection.
   # Branch protection is not changed here, so the check is not required.
   # Scheme AeroDJStudioUI is the existing AeroDJUITests suite, run once.
   # A phone-idiom simulator still skips the tests that skip on iPhone today
@@ -1060,8 +1063,6 @@ jobs:
     if: needs.changes.outputs.ios == 'true'
     runs-on: xcode-27
     timeout-minutes: 150
-    # Non-required while the hosted image is unproven (runner-images#15334); the result still shows on every run.
-    continue-on-error: true
     env:
       XCODEGEN_VERSION: 2.46.0
       XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
