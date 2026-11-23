@@ -188,6 +188,12 @@ public enum RailDLayout {
     /// The landscape spread's leading inset into the trailing half: the type starts this far
     /// after the fold (fold.maxX + 24, the mock's 448 pt at 820 × 640).
     public static let spreadTrailingInset: Double = 24
+    /// Build 56 (951 × 669 CI shots, -Nova): the open Duo's L1 trailing page stops this far short
+    /// of the rail glass, so Up next and the station chips (ending in Tune) no longer run into
+    /// the rail's leading edge (≈ 2 pt in the shots). The Stations trailing page's gap to the
+    /// same rail (`DuoStationsLayout.bookRailGutter`, 16), so both screens end their content at
+    /// the same x.
+    public static var openSpreadRailGutter: Double { DuoStationsLayout.bookRailGutter }
     /// Header row (station name) above the art in every open arrangement.
     public static let openHeaderHeight: Double = 52
     /// Vertical breathing room around the spread art.

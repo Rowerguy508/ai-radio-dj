@@ -252,6 +252,42 @@ public enum DuoStationsLayout {
         return max(minTileHeight, fit.rounded(.down))
     }
 
+    // MARK: A's grid at the window's bottom edge (build 56, 951 × 669 CI shots, -Nova)
+
+    /// A's header above the grid: the title row (52) and the subtitle line (40), as the mock.
+    public static let tileHeaderBlock: Double = 92
+    /// A's `.padding(6)` round the grid: room for the playing ring, which sits outside the tile.
+    public static let tileRingInset: Double = 6
+    /// Gap from the last tile row to the window's bottom edge: the side gutter (24), so the grid
+    /// has the same margin at the bottom as at the leading edge. Build 56 ran the second row to
+    /// 3 pt from the edge of the 951 × 669 window and the scroll view clipped it.
+    public static var tileGridBottomMargin: Double { leadingGutter }
+
+    /// A's tile height on a page `pageHeight` tall (the window less `railVerticalInset` above and
+    /// below, as `DuoStationsScreen` draws it) under a `headerBlock` header: `rows` rows from the
+    /// ring inset under the header down to `tileGridBottomMargin` above the window's bottom edge,
+    /// never under `minTileHeight`. 951 × 669 (page 653, header 92): 261, the rows end at 644 of
+    /// 669. 820 × 640: 247. Upright 640 × 820, three rows: 219.
+    public static func fittedTileHeight(pageHeight: Double, headerBlock: Double, rows: Int) -> Double {
+        guard pageHeight.isFinite, headerBlock.isFinite else { return minTileHeight }
+        let below = max(0, tileGridBottomMargin - railVerticalInset)
+        return tileHeight(available: pageHeight - headerBlock - tileRingInset - below, rows: rows)
+    }
+
+    /// The grid's padding under its ring inset, inside the scroll view: the page ends
+    /// `railVerticalInset` above the window's bottom edge, so a grid scrolled to its end also
+    /// keeps `tileGridBottomMargin` under the last row (8 + 6 + 10 = 24).
+    public static var tileGridBottomPadding: Double {
+        max(0, tileGridBottomMargin - railVerticalInset - tileRingInset)
+    }
+
+    /// The last row's bottom edge in window points: the page's top inset, the header, the ring
+    /// inset and `rows` rows with `tileGap` between them.
+    public static func lastTileRowMaxY(headerBlock: Double, tileHeight: Double, rows: Int) -> Double {
+        let count = Double(max(0, rows))
+        return railVerticalInset + headerBlock + tileRingInset + tileHeight * count + tileGap * max(0, count - 1)
+    }
+
     // MARK: Daytime / After dark (B)
 
     public enum Daypart: String, CaseIterable, Equatable, Sendable {

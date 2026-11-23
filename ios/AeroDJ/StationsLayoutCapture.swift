@@ -88,18 +88,34 @@ enum StationsLayoutCaptureScenario: String, CaseIterable {
     }
 }
 
-/// Fictional stations for the captures (the mock's eight). Fresh ids every launch, so the
-/// split's stored station id (`@SceneStorage`) from an earlier run can never restore one and
-/// push a player over the screen. UI tests find a station by its name in the label.
+/// Fictional stations for the captures (the mock's eight). UI tests find a station by its name
+/// in the label.
+///
+/// Build 56 (-Nova): fixed ids. A tile's colour is the station's own palette, seeded by its id
+/// (`StationArtStyle.station`, FNV-1a, stable across launches), and these ids used to be fresh
+/// `UUID()`s every launch, so each shot drew a different palette (Morning Calm green in one
+/// 951 × 669 shot, purple in the next). The fresh ids also kept an earlier run's stored station
+/// (`@SceneStorage`) from restoring and pushing a player over the screen; `noRestoreID` keeps
+/// that guarantee with fixed ids (see `StationsLayoutCaptureView`).
 enum StationsLayoutFixtures {
     struct Entry {
         let station: Station
         let daypart: DuoStationsLayout.Daypart
     }
 
-    private static let ids: [UUID] = (0..<8).map { _ in UUID() }
+    private static let ids: [UUID] = [
+        "5A7E1A70-0000-4000-8000-000000000001", "5A7E1A70-0000-4000-8000-000000000002",
+        "5A7E1A70-0000-4000-8000-000000000003", "5A7E1A70-0000-4000-8000-000000000004",
+        "5A7E1A70-0000-4000-8000-000000000005", "5A7E1A70-0000-4000-8000-000000000006",
+        "5A7E1A70-0000-4000-8000-000000000007", "5A7E1A70-0000-4000-8000-000000000008",
+    ].map { UUID(uuidString: $0)! }
 
     static func id(_ n: Int) -> UUID { ids[n - 1] }
+
+    /// Debug restore id (`-AeroDJRestoreStationID`, read by `StationSplitRoot.storedStationRaw`)
+    /// registered for these captures: a valid id that is no fixture station, so the split never
+    /// restores a stored station here, whatever an earlier run stored. A tap still opens one.
+    static let noRestoreID = "5A7E1A70-0000-4000-8000-000000000000"
 
     static let entries: [Entry] = [
         Entry(station: Station(id: id(1), name: "Morning Calm", description: "The Slow Start · with Ada"), daypart: .daytime),
@@ -161,6 +177,9 @@ struct StationsLayoutCaptureView: View {
             if scenario.style == nil {
                 UserDefaults.standard.removeObject(forKey: StationsLayoutStyle.defaultsKey)
             }
+            // Before the split exists: fixed fixture ids must never be restored from an earlier
+            // run. The registration domain only, never written to disk; a launch argument still wins.
+            UserDefaults.standard.register(defaults: ["AeroDJRestoreStationID": StationsLayoutFixtures.noRestoreID])
             ready = true
         }
     }

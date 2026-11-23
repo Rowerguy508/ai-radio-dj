@@ -401,8 +401,33 @@ final class StationsLayoutTests: XCTestCase {
                 XCTAssertFalse(frame.minX < foldMax && frame.maxX > foldMin, "\(name) is on the fold")
             }
         }
+        if rowPrefix == "stations.tile." {
+            assertLastTileRowClearsTheBottom(app, box: box)
+        }
         save(app, shot, container: app.descendants(matching: .any)["capture.stationsLayoutContainer"])
         return (app, box)
+    }
+
+    /// `DuoStationsLayout.tileGridBottomMargin`: A's last tile row ends the side gutter above the
+    /// window's bottom edge (build 56: the 951 × 669 second row ran into it and was clipped).
+    private static let tileBottomMargin: CGFloat = 24
+
+    /// Every tile is wholly drawn and the lowest row's maxY is at most the window's maxY less
+    /// `tileBottomMargin`. Typed query on the buttons, so a tile id never matches twice.
+    @MainActor
+    private func assertLastTileRowClearsTheBottom(_ app: XCUIApplication, box: CGRect,
+                                                  file: StaticString = #filePath, line: UInt = #line) {
+        let tiles = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "stations.tile."))
+        var lastRowMaxY: CGFloat = -.greatestFiniteMagnitude
+        for index in 0..<tiles.count {
+            let frame = tiles.element(boundBy: index).frame
+            XCTAssertGreaterThanOrEqual(frame.height, 44, "tile \(frame)", file: file, line: line)
+            lastRowMaxY = max(lastRowMaxY, frame.maxY)
+        }
+        XCTAssertGreaterThan(tiles.count, 0, "no tiles\n\(app.debugDescription)", file: file, line: line)
+        XCTAssertLessThanOrEqual(lastRowMaxY, box.maxY - Self.tileBottomMargin + 0.5,
+                                 "the last tile row ends at \(lastRowMaxY), within \(Self.tileBottomMargin) pt of the "
+                                     + "window's bottom edge \(box.maxY)", file: file, line: line)
     }
 
     /// The rest of Rail D's open-Duo rail under the thumbnail, in the player's order: ⋯,
