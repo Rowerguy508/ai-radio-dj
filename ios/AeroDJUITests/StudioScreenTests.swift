@@ -2056,8 +2056,9 @@ final class StudioScreenTests: XCTestCase {
     /// so the bar stays on the preferred (inner) side; "after" is the shipped decision.
     /// Shots for the owner. The after shot asserts the decision readout, the same one
     /// `testSplitViewKeepsEveryScreenInsideTheWindow` reads, and (#574 rework, owner: no compact
-    /// player here) that Now Playing keeps Rail D: the reskin with its rail on the leading outer
-    /// edge, inside the 28 pt inset, with Play/Pause on the rail.
+    /// player here) that Now Playing keeps Rail D: the reskin with its rail on the trailing (right)
+    /// edge as on the closed Duo (owner, Nov 23), the column clear of the 28 pt inset, with
+    /// Play/Pause on the rail.
     @MainActor
     func testDuoLandscapeSplitSlicesBeforeAndAfter() throws {
         try XCTSkipUnless(isOpenLayout, "Split widths need an iPad-size simulator window")
@@ -2108,7 +2109,8 @@ final class StudioScreenTests: XCTestCase {
     }
 
     /// #574 rework: the slice's Now Playing is Rail D (`folded.outer` + `folded.closedRail`), not
-    /// the phone column, with the rail on the leading (outer) edge inside the host's inset.
+    /// the phone column, with the rail on the trailing (right) edge as on the closed Duo (owner,
+    /// Nov 23: "flip it back to the right"), and the whole reskin inside the host's inset.
     @MainActor
     private func assertDuoLandscapeSliceKeepsRailD(_ app: XCUIApplication, example: String,
                                                    leading: CGFloat) throws {
@@ -2119,11 +2121,21 @@ final class StudioScreenTests: XCTestCase {
         let rail = any["folded.closedRail"]
         XCTAssertTrue(rail.waitForExistence(timeout: 5), "\(example): Rail D's rail")
         let box = container.frame
-        try assertOuterEdge(rail, box: box, edge: "leading", name: "\(example) rail")
+        try assertOuterEdge(rail, box: box, edge: "trailing", name: "\(example) rail")
         if let frame = settledFrame(of: rail, "\(example) rail") {
             XCTAssertGreaterThanOrEqual(frame.minX, box.minX + leading - 2,
                                         "\(example): rail \(frame) under the \(leading) pt inset of \(box)")
             XCTAssertTrue(box.insetBy(dx: -2, dy: -2).contains(frame), "\(example): rail \(frame) clipped by \(box)")
+            // Flush right like the closed Duo: within the rail's trailing inset plus slack.
+            XCTAssertLessThanOrEqual(box.maxX - frame.maxX, 24,
+                                     "\(example): rail \(frame) is not at the trailing edge of \(box)")
+            let title = any["folded.titleBlock"]
+            if title.exists {
+                XCTAssertLessThanOrEqual(title.frame.maxX, frame.minX + 2,
+                                         "\(example): title \(title.frame) is not left of the rail \(frame)")
+                XCTAssertGreaterThanOrEqual(title.frame.minX, box.minX + leading - 2,
+                                            "\(example): title \(title.frame) under the \(leading) pt inset")
+            }
         }
         let play = rail.buttons["transport.playPause"]
         if play.waitForExistence(timeout: 5) {

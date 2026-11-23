@@ -279,7 +279,8 @@ so the compact layout and its sheet keep their radii.
   that is taller than it is wide (the Duo in landscape) still does. A missing width
   class is compact (`SplitViewLayout.chrome(widthClass: nil, ...)`). On those Duo
   landscape slices (320, 410 and 500 × 640) Now Playing keeps Rail D, never the
-  compact phone column: the column beside the 56 pt rail, the rail on the outer edge,
+  compact phone column: the column beside the 56 pt rail, the rail on the trailing (right)
+  edge as on the closed Duo,
   and a 34 or 28 pt title on up to two lines (`SplitViewLayout.keepsRailD`). Hit targets
   stay at least 44 pt, and controls stay inside the container.
 - Scroll only where content can exceed the container: the queue list, the Tune and

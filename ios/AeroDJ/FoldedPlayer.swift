@@ -262,12 +262,13 @@ struct FoldedPlayer: View {
                                           leadingInset: measure.leading, trailingInset: measure.trailing) {
                 // #574 rework (owner: no compact player on the Duo's landscape split): the
                 // 320 / 410 / 500 × 640 slices keep Rail D, framed inside the host's insets like
-                // the Duo rail below, with the rail on the outer edge and the open-Duo title.
+                // the Duo rail below, with the open-Duo title. The rail stays on the trailing (right)
+                // edge, as on the closed Duo (owner, Nov 23: "flip it back to the right").
                 let rail = SplitViewLayout.railFrame(containerWidth: Double(container.width),
                                                      leadingInset: measure.leading,
                                                      trailingInset: measure.trailing)
                 let fitted = CGSize(width: CGFloat(rail.width), height: height)
-                foldedOuterBody(in: fitted, railOnLeadingEdge: splitBarEdge == .leading)
+                foldedOuterBody(in: fitted)
                     .environment(\.railDSliceTitle, SplitViewLayout.sliceTitle(bodyWidth: rail.width))
                     .frame(width: fitted.width, height: fitted.height, alignment: .top)
                     .padding(.leading, CGFloat(rail.leading))
@@ -1259,11 +1260,8 @@ extension FoldedPlayer {
     /// Play/Pause, Skip, Queue, Sleep, the vertical song-position bar, the live dot). The
     /// horizontal scrubber is gone; the header (Back, station) and the column sit beside the
     /// rail, and the freed row goes to a bigger title (40 / 17).
-    ///
-    /// `railOnLeadingEdge` (#574 rework, Duo landscape split slices only): the rail moves to the
-    /// leading (outer) edge, the same right-to-left flip `wideBody` uses (`SplitLeadingBar`), with
-    /// the column and the rail drawn left-to-right inside it. False everywhere else.
-    private func foldedOuterBody(in size: CGSize, railOnLeadingEdge: Bool = false) -> some View {
+    /// The Duo landscape split slices (#574) draw this too, rail on the trailing side.
+    private func foldedOuterBody(in size: CGSize) -> some View {
         let inset = CGFloat(FoldedOuterLayout.contentInset)
         let accessibilityText = typeSize.isAccessibilitySize
         let art = outerArtSide(in: size)
@@ -1292,7 +1290,6 @@ extension FoldedPlayer {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .modifier(SplitColumnText(enabled: railOnLeadingEdge))
             .accessibilitySortPriority(1)
             ClosedVerticalRail(dj: dj, upNext: snapshot.upNext,
                                transport: snapshot.transport, startTimedOut: snapshot.startTimedOut,
@@ -1311,14 +1308,11 @@ extension FoldedPlayer {
                     Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
                 }
             }
-            .modifier(SplitColumnText(enabled: railOnLeadingEdge))
-            // Under the flip, .trailing is the leading (outer) edge.
             .padding(.vertical, railInset)
             .padding(.trailing, CGFloat(RailDLayout.trailingInset))
             .accessibilitySortPriority(0)
         }
         .frame(width: size.width, height: size.height)
-        .modifier(SplitLeadingBar(enabled: railOnLeadingEdge))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folded.outer")
     }
