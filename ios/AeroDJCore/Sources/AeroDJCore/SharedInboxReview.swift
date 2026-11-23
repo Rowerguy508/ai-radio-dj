@@ -39,6 +39,11 @@ public enum SharedReviewError: Error, Equatable, Sendable {
     /// #426 (-Sentinel): the `Review/` folder could not be verified as excluded from backup, so
     /// nothing was written. The change is not applied; the user sees a plain-language alert.
     case backupExclusionUnverified
+    /// #426 Echo's blocker (-Sentinel): an exclude, delete or edit went ahead (those only reduce
+    /// what can be spoken, so a backup flag never blocks them), but the review file could not be
+    /// verified as excluded from backup. The file was removed instead and every item is back to
+    /// not included, in memory and on the next load.
+    case reviewChoicesResetUnverified
 }
 
 /// Review, redact and delete user-shared items, and expose them as
@@ -101,10 +106,15 @@ public actor SharedInboxReview: ContextSource {
     }
 
     public func setDecision(_ decision: SharedReviewDecision, for id: UUID) throws {
-        try update(id) {
+        let change: (inout SharedReviewEntry) -> Void = {
             if $0.decision != decision { $0.isReconfirmed = false }
             $0.decision = decision
         }
+        guard decision != .approved else { return try update(id, change) }
+        // #426 (-Sentinel): an exclude is never blocked by the backup flag.
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { throw SharedReviewError.unknownItem }
+        change(&entries[index])
+        try persistReducingExposure()
     }
 
     /// Records that the user re-confirmed an approved item the injection
@@ -132,7 +142,7 @@ public actor SharedInboxReview: ContextSource {
         entry.label = entries[index].label
         entry.redactedText = replaced.content
         entries[index] = entry
-        try persist()
+        try persistReducingExposure()
     }
 
     /// Deletes the item from disk and from review immediately.
@@ -140,7 +150,7 @@ public actor SharedInboxReview: ContextSource {
         guard entries.contains(where: { $0.id == id }) else { throw SharedReviewError.unknownItem }
         try reader.delete(id: id)
         entries.removeAll { $0.id == id }
-        try persist()
+        try persistReducingExposure()
     }
 
     public func fetchItems() async throws -> [ContextItem] {
@@ -193,6 +203,23 @@ public actor SharedInboxReview: ContextSource {
     }
 
     private func persist() throws { try persist(entries) }
+
+    /// #426 Echo's blocker (-Sentinel): saves after a change that has already been applied and only
+    /// reduces exposure (exclude, delete, edit). If the backup exclusion can't be verified, nothing
+    /// is written: the review file is removed and every entry drops to pending, not reconfirmed,
+    /// so a relaunch can't bring back an approval or a "Read it anyway" the change revoked.
+    private func persistReducingExposure() throws {
+        do {
+            try persist()
+        } catch SharedReviewError.backupExclusionUnverified {
+            for i in entries.indices {
+                entries[i].decision = .pending
+                entries[i].isReconfirmed = false
+            }
+            try store?.removeSavedChoices()
+            throw SharedReviewError.reviewChoicesResetUnverified
+        }
+    }
 
     private func persist(_ entries: [SharedReviewEntry]) throws {
         guard let store else { return }

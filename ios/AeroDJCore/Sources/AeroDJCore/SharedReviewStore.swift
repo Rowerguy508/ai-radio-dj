@@ -39,7 +39,9 @@ public struct SharedReviewRecord: Codable, Equatable, Sendable {
 /// `SharedReviewError.backupExclusionUnverified` before anything is written or moved. The caller
 /// keeps its previous state (`SharedInboxReview.update`), so the decision is not applied and the
 /// user is told; nothing new lands in a folder that may be backed up. A file already on disk is
-/// left as it was, and the next save tries the mark again.
+/// left as it was, and the next save tries the mark again. A change that only reduces exposure
+/// (exclude, delete, edit) is never blocked: `SharedInboxReview` removes the file instead
+/// (`removeSavedChoices`), so every item loads as pending.
 public struct SharedReviewStore: Sendable {
     public let file: URL
     let backupExclusion: any BackupExclusionMarking
@@ -92,6 +94,14 @@ public struct SharedReviewStore: Sendable {
         encoder.outputFormatting = .sortedKeys
         let keyed = Dictionary(uniqueKeysWithValues: records.map { ($0.key.uuidString, $0.value) })
         try ProtectedFile.write(encoder.encode(keyed), to: file)
+    }
+
+    /// #426 (-Sentinel): removes the saved choices so every item loads as pending. Used when a
+    /// change that reduces exposure can't be saved privately. Writes nothing. Set-aside
+    /// `.unreadable` copies are never loaded and are left alone.
+    public func removeSavedChoices() throws {
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        try FileManager.default.removeItem(at: file)
     }
 
     private func decodedFile() -> [String: SharedReviewRecord]? {
