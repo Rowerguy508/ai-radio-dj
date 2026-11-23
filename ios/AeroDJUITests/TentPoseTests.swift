@@ -26,7 +26,7 @@ final class TentPoseTests: XCTestCase {
         if holdControls { app.launchArguments += ["-AeroDJTentHoldControls", "YES"] }
         if reduceMotion { app.launchArguments += ["-AeroDJReduceMotion", "YES"] }
         XCUIDevice.shared.orientation = .landscapeLeft
-        app.launch()
+        app.launchAfterLeftoverExits()
         let loading = app.descendants(matching: .any)["capture.loading"]
         let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: loading)
         XCTAssertEqual(XCTWaiter().wait(for: [done], timeout: 20), .completed, "capture still loading\n\(app.debugDescription)")
