@@ -215,5 +215,48 @@ final class OnAirOrbPresentationTests: XCTestCase {
             XCTAssertFalse(card.contains(token), "no fixed mockup colour (\(token))")
         }
     }
+
+    // MARK: Starting ring motion (Orion, Nov 23: a stuck start must not look ready)
+
+    func testStartingRingTurnsSlowlyIdleAndReduceMotionStayStill() {
+        XCTAssertEqual(DJOrbPolicy.ringMotion(stage: .starting, reduceMotion: false, isCapture: false), .slow)
+        XCTAssertEqual(DJOrbPolicy.ringMotion(stage: .starting, reduceMotion: true, isCapture: false), .none,
+                       "Reduce Motion: the ring holds still; the Starting copy carries it")
+        XCTAssertEqual(DJOrbPolicy.ringMotion(stage: .idle, reduceMotion: false, isCapture: false), .none)
+        XCTAssertEqual(DJOrbPolicy.ringMotion(stage: .idle, reduceMotion: true, isCapture: false), .none)
+        for stage: ArtCardStage in [.artwork, .talking, .cleared] {
+            XCTAssertEqual(DJOrbPolicy.ringMotion(stage: stage, reduceMotion: false, isCapture: false), .none, "\(stage)")
+        }
+    }
+
+    func testCapturesDrawOneFixedRingFrame() {
+        XCTAssertEqual(DJOrbPolicy.ringMotion(stage: .starting, reduceMotion: false, isCapture: true), .none)
+        // A still ring sits at the same angle at any time, so a capture is the same PNG every run.
+        for t in [0.0, 1.3, 7.9, 1_000] {
+            XCTAssertEqual(DJOrbPolicy.ringRotationDegrees(motion: .none, elapsed: t), DJOrbPolicy.ringRestDegrees)
+        }
+    }
+
+    func testSlowRingIsASlowSteadyTurn() {
+        XCTAssertGreaterThanOrEqual(DJOrbPolicy.ringTurnSeconds, 6, "slow, not a spinner")
+        let rest = DJOrbPolicy.ringRestDegrees
+        XCTAssertEqual(DJOrbPolicy.ringRotationDegrees(motion: .slow, elapsed: 0), rest, accuracy: 1e-9)
+        XCTAssertEqual(DJOrbPolicy.ringRotationDegrees(motion: .slow, elapsed: DJOrbPolicy.ringTurnSeconds / 4),
+                       rest + 90, accuracy: 1e-6)
+        // Wraps inside one turn so the angle never grows without bound.
+        let late = DJOrbPolicy.ringRotationDegrees(motion: .slow, elapsed: DJOrbPolicy.ringTurnSeconds * 1_000 + 1)
+        XCTAssertLessThan(abs(late - rest), 360)
+        XCTAssertEqual(DJOrbPolicy.ringRotationDegrees(motion: .slow, elapsed: .nan), rest)
+    }
+
+    func testTheStartCardReadsTheRingMotionPolicy() throws {
+        let player = try appSource("AeroDJ/FoldedPlayer.swift")
+        let start = try XCTUnwrap(player.range(of: "private struct FoldedStartCard: View {"))
+        let end = try XCTUnwrap(player.range(of: "// MARK: - Art card", range: start.upperBound..<player.endIndex))
+        let card = String(player[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(card.contains("DJOrbPolicy.ringMotion(stage: stage"))
+        XCTAssertTrue(card.contains("DJOrbPolicy.ringRotationDegrees("))
+        XCTAssertTrue(card.contains("StudioCapture.defaultsKey"), "captures draw a fixed frame")
+    }
 }
 

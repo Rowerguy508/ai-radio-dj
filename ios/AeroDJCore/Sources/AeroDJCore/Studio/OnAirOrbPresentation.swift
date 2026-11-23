@@ -180,3 +180,30 @@ public enum DJOrbFill: Equatable, Sendable {
         }
     }
 }
+
+/// The starting ring's motion (Orion, Nov 23 2026): a slow steady turn, so a stuck start
+/// doesn't look ready. Idle and every other stage stay still. Reduce Motion: still, and the
+/// existing "Starting…" copy carries it. Studio captures: still, one fixed frame per run.
+public enum DJOrbRingMotion: Equatable, Sendable {
+    case none
+    case slow
+}
+
+extension DJOrbPolicy {
+    /// One full turn of the starting ring.
+    public static let ringTurnSeconds = 8.0
+    /// The ring's resting angle: the 120° opening at the top.
+    public static let ringRestDegrees = -30.0
+
+    public static func ringMotion(stage: ArtCardStage, reduceMotion: Bool, isCapture: Bool) -> DJOrbRingMotion {
+        guard stage == .starting, !reduceMotion, !isCapture else { return .none }
+        return .slow
+    }
+
+    /// The ring's rotation `elapsed` seconds after it appeared. Still: always the rest angle.
+    public static func ringRotationDegrees(motion: DJOrbRingMotion, elapsed: Double) -> Double {
+        guard motion == .slow, elapsed.isFinite, elapsed > 0 else { return ringRestDegrees }
+        let turn = elapsed.truncatingRemainder(dividingBy: ringTurnSeconds) / ringTurnSeconds
+        return ringRestDegrees + 360 * turn
+    }
+}

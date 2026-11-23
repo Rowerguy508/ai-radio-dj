@@ -1733,8 +1733,9 @@ private struct FoldedBackdrop: View {
 /// #434 (owner, Nov 23 2026): Idle and Starting in the folded player's art frame, the same
 /// frame and corner as the art card, so the words sit where a song's title will. Idle is a
 /// still, dimmed ember (~36% of the side, never under 44 pt). Starting is a still orb (~52%)
-/// with a 2 pt contrast ring 10% larger, a held 240° arc that never travels; under Reduce
-/// Motion it is a complete static circle. Colour (Orion, Nov 23): the talking orb's own
+/// with a 2 pt contrast ring 10% larger, a 240° arc that turns slowly (one turn in 8 s) so a
+/// stuck start doesn't look ready (`DJOrbPolicy.ringMotion`). Under Reduce Motion it is a
+/// complete static circle; Studio captures draw it still at its rest angle. Colour (Orion, Nov 23): the talking orb's own
 /// source (`DJOrbFill`, drawn by `DJOrbArtFill`): the track's art, or with no track the
 /// talking orb's neutral grey. No fixed palette, never amber. Decorative: hidden from
 /// VoiceOver; the placeholder under it carries the words. -Nova
@@ -1747,7 +1748,24 @@ private struct FoldedStartCard: View {
     let side: CGFloat
     var cornerRadius: CGFloat = FoldedStyle.artRadius
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    /// When the ring appeared; its turn is measured from here.
+    @State private var appeared = Date()
+
+    private var reduceMotion: Bool { FoldedReduceMotion.resolve(systemReduceMotion) }
+
+    /// Studio captures render one fixed frame (deterministic PNGs).
+    private var isCapture: Bool {
+        #if DEBUG
+        UserDefaults.standard.bool(forKey: StudioCapture.defaultsKey)
+        #else
+        false
+        #endif
+    }
+
+    private var ringMotion: DJOrbRingMotion {
+        DJOrbPolicy.ringMotion(stage: stage, reduceMotion: reduceMotion, isCapture: isCapture)
+    }
 
     /// The idle ember is the same fill, dimmed.
     private static let emberOpacity = 0.55
@@ -1778,22 +1796,30 @@ private struct FoldedStartCard: View {
                     .opacity(stage == .idle ? Self.emberOpacity : 1)
             }
             if stage == .starting {
-                let ring = orbSide * CGFloat(FoldedArtCardLayers.startingRingScale)
-                Circle()
-                    .trim(from: 0, to: CGFloat(DJOrbPolicy.startingRingArc(reduceMotion: reduceMotion)))
-                    // Contrast only: white, so no hue but the art's.
-                    .stroke(Color.white.opacity(0.7),
-                            style: StrokeStyle(lineWidth: CGFloat(FoldedArtCardLayers.startingRingLineWidth),
-                                               lineCap: .round))
-                    // The 120° opening sits at the top.
-                    .rotationEffect(.degrees(-30))
-                    .frame(width: ring, height: ring)
+                // `.none` pauses the timeline, so a still ring draws one frame and stops.
+                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: ringMotion == .none)) { context in
+                    startingRing(degrees: DJOrbPolicy.ringRotationDegrees(
+                        motion: ringMotion, elapsed: context.date.timeIntervalSince(appeared)))
+                }
             }
         }
         .frame(width: side, height: side)
         .frame(maxWidth: .infinity)
         .accessibilityHidden(true)
         .accessibilityIdentifier(stage == .idle ? "folded.startCard.idle" : "folded.startCard.starting")
+    }
+
+    private func startingRing(degrees: Double) -> some View {
+        let ring = orbSide * CGFloat(FoldedArtCardLayers.startingRingScale)
+        return Circle()
+            .trim(from: 0, to: CGFloat(DJOrbPolicy.startingRingArc(reduceMotion: reduceMotion)))
+            // Contrast only: white, so no hue but the art's.
+            .stroke(Color.white.opacity(0.7),
+                    style: StrokeStyle(lineWidth: CGFloat(FoldedArtCardLayers.startingRingLineWidth),
+                                       lineCap: .round))
+            // At rest the 120° opening sits at the top.
+            .rotationEffect(.degrees(degrees))
+            .frame(width: ring, height: ring)
     }
 }
 
