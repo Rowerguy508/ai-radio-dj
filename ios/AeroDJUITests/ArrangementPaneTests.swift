@@ -45,9 +45,9 @@ final class ArrangementPaneTests: XCTestCase {
         XCTAssertFalse(any["arrangement.primary"].exists)
         XCTAssertFalse(any["arrangement.secondary"].exists)
         XCTAssertFalse(any["layout.studio"].exists)
-        XCTAssertGreaterThanOrEqual(play.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(play.frame.height, 44)
-        XCTAssertGreaterThanOrEqual(skip.frame.width, 44)
+        assertAtLeastPoints(play.frame.width, 44)
+        assertAtLeastPoints(play.frame.height, 44)
+        assertAtLeastPoints(skip.frame.width, 44)
         save(app, "duo-regular-rail")
     }
 
