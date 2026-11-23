@@ -174,6 +174,20 @@ public enum FoldAwareness {
                               railMinX: book.minX + column + gap, railWidth: railWidth)
     }
 
+    /// #507 rest (-Nova): the fold `resolve` lays the player out around, for a screen that is not
+    /// the player (the open-Duo Stations). The active vertical division in book pose, with the
+    /// same gates: nil for a closed or fully open hinge, a horizontal division (laptop pose), an
+    /// inactive or short region, and any container that is not `.duoHorizontal` (every phone,
+    /// portrait or landscape, and the closed Duo). A missing hinge with an active vertical
+    /// division still returns it. The angle is never read.
+    public static func bookPoseFold(containerWidth: Double, containerHeight: Double,
+                                    hinge: HingeSample?, divisions: [Division]) -> Division? {
+        guard isBookPose(containerWidth: containerWidth, containerHeight: containerHeight, hinge: hinge) else {
+            return nil
+        }
+        return bookFold(in: divisions, containerWidth: containerWidth, containerHeight: containerHeight)
+    }
+
     /// The gates `resolve` applies before it looks for a fold.
     private static func isBookPose(containerWidth: Double, containerHeight: Double, hinge: HingeSample?) -> Bool {
         guard containerWidth.isFinite, containerHeight.isFinite,
