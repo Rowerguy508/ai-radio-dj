@@ -12,8 +12,19 @@ import type { Env } from './handler.js';
  */
 export const AIRPLAY_LONGFORM_FLAG = 'AERODJ_DJ_AIRPLAY_LONGFORM';
 
-export function appFlags(env: Env): { djAirPlayLongForm: boolean } {
-  return { djAirPlayLongForm: env[AIRPLAY_LONGFORM_FLAG] !== 'false' };
+/**
+ * - `onAirlyNowPlayingSession`: kill switch for the iOS 27 OnAirly lock-screen Now Playing session
+ *   (#539 follow-up, #600). Same rule: ON by default, `false` only when
+ *   `AERODJ_ONAIRLY_NOW_PLAYING_SESSION` is exactly `false`. The app fails open (missing key,
+ *   failed fetch or offline is on) and keeps the value in memory for that launch only.
+ */
+export const ONAIRLY_NOW_PLAYING_SESSION_FLAG = 'AERODJ_ONAIRLY_NOW_PLAYING_SESSION';
+
+export function appFlags(env: Env): { djAirPlayLongForm: boolean; onAirlyNowPlayingSession: boolean } {
+  return {
+    djAirPlayLongForm: env[AIRPLAY_LONGFORM_FLAG] !== 'false',
+    onAirlyNowPlayingSession: env[ONAIRLY_NOW_PLAYING_SESSION_FLAG] !== 'false',
+  };
 }
 
 export function handleFlags(request: Request, env: Env): Response {

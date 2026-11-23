@@ -57,6 +57,9 @@ final class MusicKitService: ObservableObject {
     /// Called with the index of the song the user skipped, so its prepared break is discarded.
     var onSongSkipped: (@MainActor (Int) -> Void)?
     private var queueIndex = 0
+    /// #539 follow-up (-Fry; Atlas asked for it): the OnAirly session's Next uses the same
+    /// `RemoteNextCommand` rule as `nextTrackCommand` below. Read-only.
+    var remoteNextPosition: (queueIndex: Int, queueCount: Int) { (queueIndex, queue.count) }
     /// Index and queue generation of the song `startTrack` actually put in the player.
     /// Nil after a skip load fails or is cut, even if the player still holds the previous song.
     private var loadedTarget: LoadedPlayerTarget?

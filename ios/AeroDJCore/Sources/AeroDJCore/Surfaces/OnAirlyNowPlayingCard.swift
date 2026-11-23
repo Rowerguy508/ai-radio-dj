@@ -42,7 +42,7 @@ public struct OnAirlyNowPlayingCard: Equatable, Sendable {
     public let duration: TimeInterval?
     /// Seek commands are offered only while `PlaybackSnapshot.canSeek` (never in a DJ break).
     public let canSeek: Bool
-    /// Next is offered only while a next song is queued (same rule as `RemoteNextCommand`).
+    /// `RemoteNextCommand.isEnabled(queueIndex:queueCount:)`, the MediaPlayer path's rule.
     public let nextEnabled: Bool
     /// True while the DJ is speaking. Elapsed time is not published then (a gap break holds the
     /// song, and a frozen clock reads better than one the system extrapolates past the song).
@@ -67,8 +67,10 @@ public struct OnAirlyNowPlayingCard: Equatable, Sendable {
     }
 
     /// Nil when stopped, or when there is neither a song nor a station to show.
-    public static func make(snapshot: PlaybackSnapshot, dj: DJStudioState,
-                            duration: TimeInterval? = nil) -> OnAirlyNowPlayingCard? {
+    /// `queueIndex`/`queueCount` are `MusicKitService`'s own, so Next follows `RemoteNextCommand`
+    /// exactly as the MediaPlayer path's `nextTrackCommand` does (through loads and DJ breaks).
+    public static func make(snapshot: PlaybackSnapshot, dj: DJStudioState, duration: TimeInterval? = nil,
+                            queueIndex: Int, queueCount: Int) -> OnAirlyNowPlayingCard? {
         let transport: Transport
         switch snapshot.transport {
         case .stopped: return nil
@@ -87,7 +89,7 @@ public struct OnAirlyNowPlayingCard: Equatable, Sendable {
             subtitle: subtitle(artist: track?.artistName, station: stationName, dj: dj),
             artworkURL: track?.artworkURL, transport: transport, duration: validDuration,
             canSeek: track != nil && snapshot.canSeek && !dj.isOnAir,
-            nextEnabled: track != nil && !snapshot.upNext.isEmpty,
+            nextEnabled: RemoteNextCommand.isEnabled(queueIndex: queueIndex, queueCount: queueCount),
             djOnAir: dj.isOnAir)
     }
 
@@ -123,9 +125,10 @@ public struct OnAirlyNowPlayingCard: Equatable, Sendable {
 /// `MPNowPlayingInfoCenter` / `MPRemoteCommandCenter` for local playback ("undefined behavior"),
 /// so exactly one of the two paths is on for a launch.
 public enum OnAirlyNowPlayingPolicy {
-    /// Kill switch for the iOS 27 OnAirly session. Off restores build 56 behaviour exactly
-    /// (MusicKit's card, MediaPlayer remote commands, the CarPlay info-center bridge).
-    public static let sessionEnabled = true
+    /// Kill switch for the iOS 27 OnAirly session: this launch's `onAirlyNowPlayingSession`, the
+    /// value cached by the previous launch's `GET /api/flags` fetch (`OnAirlySessionFlag`). Read
+    /// once per process; a fetch during this launch never changes it.
+    public static var sessionEnabled: Bool { OnAirlySessionFlag.launchValue }
     /// The NowPlaying framework's first release.
     public static let minimumOSMajor = 27
 
@@ -146,5 +149,90 @@ public enum OnAirlyNowPlayingPolicy {
                                                   isSystemPrimary: Bool) -> Bool {
         guard let card, appInForeground, !isSystemPrimary else { return false }
         return card.transport == .playing
+    }
+}
+
+/// Where the last fetched `onAirlyNowPlayingSession` value is kept between launches.
+public protocol OnAirlySessionFlagCache: AnyObject, Sendable {
+    /// The value the last successful fetch answered, or nil (never fetched, or the server had no key).
+    func cachedValue() -> Bool?
+    /// Nil removes it (next launch: the default, on).
+    func setCachedValue(_ value: Bool?)
+}
+
+/// The app's cache: one Bool in `UserDefaults` (no identifier, no timestamp, nothing else).
+public final class UserDefaultsOnAirlySessionFlagCache: OnAirlySessionFlagCache, @unchecked Sendable {
+    public static let key = "onAirlyNowPlayingSessionFlag"
+    public static let shared = UserDefaultsOnAirlySessionFlagCache(defaults: .standard)
+
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults) { self.defaults = defaults }
+
+    public func cachedValue() -> Bool? { defaults.object(forKey: Self.key) as? Bool }
+
+    public func setCachedValue(_ value: Bool?) {
+        if let value { defaults.set(value, forKey: Self.key) } else { defaults.removeObject(forKey: Self.key) }
+    }
+}
+
+/// #539 follow-up (Orion's condition on #600, Atlas's timing rule): the remote kill switch for the
+/// OnAirly Now Playing session, `onAirlyNowPlayingSession` in the aerodj-tts proxy's
+/// `GET /api/flags` (served from `AERODJ_ONAIRLY_NOW_PLAYING_SESSION`; only the exact string
+/// `false` turns it off).
+///
+/// - This launch uses the value CACHED BY AN EARLIER LAUNCH, read once and synchronously before
+///   anything installs remote commands, so a launch is wholly on the session path or wholly on
+///   the MediaPlayer path: never both, never neither. No cached value: ON.
+/// - This launch's fetch only updates the cache for the NEXT launch. A JSON `true`/`false` is
+///   cached; a 200 JSON object without the key clears the cache (next launch on); a failed fetch,
+///   a non-200, an unreadable body or being offline leaves the cache as it is.
+/// - The request is `DJAirPlayRouteFlag.request(baseURL:)`: a bare HTTPS GET with no token,
+///   cookie or identifier. Fetched once per launch, only on iOS 27 and later.
+public enum OnAirlySessionFlag {
+    public static let jsonKey = "onAirlyNowPlayingSession"
+    public static let defaultValue = true
+
+    /// This process's value, read once from the app's cache.
+    public static let launchValue: Bool = launchValue(cache: UserDefaultsOnAirlySessionFlagCache.shared)
+
+    /// The value a launch starts with: the cached value, else on.
+    public static func launchValue(cache: any OnAirlySessionFlagCache) -> Bool {
+        cache.cachedValue() ?? defaultValue
+    }
+
+    /// What one fetched body says.
+    public enum Answer: Equatable, Sendable {
+        case value(Bool)
+        /// A JSON object without the key: the server no longer serves it, so the default applies.
+        case missing
+        /// Not a small JSON object, or the key is not a JSON boolean: ignored.
+        case unreadable
+    }
+
+    public static func parse(_ body: Data) -> Answer {
+        guard !body.isEmpty, body.count <= 1024,
+              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return .unreadable }
+        guard object.keys.contains(jsonKey) else { return .missing }
+        guard let body = try? JSONDecoder().decode(Body.self, from: body) else { return .unreadable }
+        return .value(body.onAirlyNowPlayingSession)
+    }
+
+    private struct Body: Decodable { let onAirlyNowPlayingSession: Bool }
+
+    /// Fetches the flags and updates the cache for the next launch. Never changes `launchValue`.
+    /// Returns the value the next launch will start with.
+    @discardableResult
+    public static func refresh(transport: any HTTPTransport, baseURL: URL,
+                               cache: any OnAirlySessionFlagCache) async -> Bool {
+        if let request = DJAirPlayRouteFlag.request(baseURL: baseURL),
+           let (data, response) = try? await transport.send(request), response.statusCode == 200 {
+            switch parse(data) {
+            case .value(let value): cache.setCachedValue(value)
+            case .missing: cache.setCachedValue(nil)
+            case .unreadable: break
+            }
+        }
+        return launchValue(cache: cache)
     }
 }

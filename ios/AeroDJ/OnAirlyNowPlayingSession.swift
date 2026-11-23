@@ -8,19 +8,27 @@ import UIKit
 import NowPlaying
 #endif
 
-/// #539 follow-up (-Fry): which Now Playing API this launch uses. Decided once. iOS 27 and later
-/// use the OnAirly NowPlaying session; earlier systems (and `OnAirlyNowPlayingPolicy.sessionEnabled`
-/// off) keep build 56's path: MusicKit's card, `MPRemoteCommandCenter` targets, the CarPlay bridge.
+/// #539 follow-up (-Fry): which Now Playing API this launch uses. iOS 27 and later use the OnAirly
+/// NowPlaying session while the cached `onAirlyNowPlayingSession` flag (`GET /api/flags`) is on; earlier
+/// systems keep build 56's path: MusicKit's card, `MPRemoteCommandCenter` targets, the CarPlay bridge.
 /// Apple: don't mix the NowPlaying framework with `MPNowPlayingInfoCenter`/`MPRemoteCommandCenter`.
 enum OnAirlyNowPlaying {
-    static let usesSession: Bool = {
+    /// The system has the NowPlaying framework. Decided once.
+    static let osSupportsSession: Bool = {
         #if canImport(NowPlaying)
         guard #available(iOS 27.0, *) else { return false }
-        return OnAirlyNowPlayingPolicy.usesSession(osMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion)
+        return OnAirlyNowPlayingPolicy.usesSession(osMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+                                                   enabled: true)
         #else
         return false
         #endif
     }()
+
+    /// This launch's path, decided once: iOS 27 and the flag value cached by an earlier launch
+    /// (`OnAirlySessionFlag.launchValue`, no cache: on). `MusicKitService.installRemoteCommands()`,
+    /// the CarPlay bridge and the session all read this same value, so a launch never has both
+    /// APIs or neither. This launch's fetch only updates the cache for the next launch.
+    static let usesSession: Bool = osSupportsSession && OnAirlyNowPlayingPolicy.sessionEnabled
 }
 
 /// #539 follow-up (owner: "I just want the live player to replace the Apple Music one").
@@ -69,8 +77,21 @@ final class OnAirlyNowPlayingSession {
     private init() {}
 
     func start(_ dependencies: AppDependencies) {
-        guard !started, OnAirlyNowPlaying.usesSession else { return }
+        guard !started, OnAirlyNowPlaying.osSupportsSession else { return }
         started = true
+        // Pin this launch's path BEFORE the fetch can write the cache (both lets are lazy).
+        let usesSession = OnAirlyNowPlaying.usesSession
+        // Once per launch, off the main actor: a bare GET (no token, cookie or identifier). It only
+        // updates the cache the NEXT launch starts with; this launch's path is already fixed.
+        Task.detached(priority: .utility) {
+            await OnAirlySessionFlag.refresh(transport: DJAirPlayRouteFlag.makeTransport(),
+                                             baseURL: DJAirPlayRouteFlag.proxyBaseURL,
+                                             cache: UserDefaultsOnAirlySessionFlagCache.shared)
+        }
+        guard usesSession else {
+            log.notice("session off by cached flag")
+            return
+        }
         playback = dependencies.playback
         snapshot = dependencies.playback.snapshot
         dj = dependencies.dj.studioState
@@ -123,8 +144,10 @@ final class OnAirlyNowPlayingSession {
                 _ = try? await playback.resume()
             }
         case .next:
-            // Same rule as `RemoteNextCommand`: nothing queued, nothing to do.
-            guard !playback.snapshot.upNext.isEmpty else { return }
+            // Same rule as the MediaPlayer path's `nextTrackCommand`: `RemoteNextCommand.decide`.
+            let position = playback.remoteNextPosition
+            guard RemoteNextCommand.decide(queueIndex: position.queueIndex,
+                                           queueCount: position.queueCount) == .skip else { return }
             _ = try? await playback.skip()
         case .seek(let position):
             // Blocked (no player change) during a DJ break or a load, like the scrubber.
@@ -136,7 +159,10 @@ final class OnAirlyNowPlayingSession {
     private func publish() {
         #if canImport(NowPlaying)
         guard #available(iOS 27.0, *), let playback else { return }
-        guard let card = OnAirlyNowPlayingCard.make(snapshot: snapshot, dj: dj, duration: playback.currentDuration) else {
+        let position = playback.remoteNextPosition
+        guard let card = OnAirlyNowPlayingCard.make(snapshot: snapshot, dj: dj, duration: playback.currentDuration,
+                                                    queueIndex: position.queueIndex,
+                                                    queueCount: position.queueCount) else {
             if publisher != nil { log.notice("session removed") }
             publisher = nil
             return
