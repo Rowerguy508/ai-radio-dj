@@ -38,6 +38,10 @@ public enum ConfirmStep: Equatable, Sendable {
 public enum PlaybackConfirmPolicy {
     /// 16 polls x 0.5 s = the 8 s deadline from #109.
     public static let maxPolls = 16
+    /// Seconds between start-confirm polls (#109).
+    public static let pollInterval: TimeInterval = 0.5
+    /// `maxPolls` x `pollInterval`: the 8 s start-confirm deadline.
+    public static var deadlineSeconds: TimeInterval { Double(maxPolls) * pollInterval }
 
     /// `poll` is 1-based: the first check after the first sleep is poll 1.
     public static func step(status: ConfirmStatus, transportIsPreparing: Bool, poll: Int,
