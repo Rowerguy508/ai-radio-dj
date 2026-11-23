@@ -38,6 +38,8 @@ targets:
       - target: AeroDJWidgets # #465 item 7: embedded into AeroDJ.app/PlugIns (StandBy widget, Live Activity)
         embed: true
       - sdk: CarPlay.framework # templates; the audio entitlement is in the app entitlements files
+      - sdk: NowPlaying.framework # #539 follow-up: iOS 27 only; weak so iOS 17-26 still launch
+        weak: true
       # AeroDJPhonon is not embedded: build 12 failed App Store processing with ITMS-90755
       # (prohibited instructions) in AeroDJPhonon.framework. With no framework, dlopen returns nil
       # and speech falls back to AVSpeech, the same as AeroDJPhononEnabled off. Re-embed after the fix.

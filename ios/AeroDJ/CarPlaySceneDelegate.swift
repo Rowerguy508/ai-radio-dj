@@ -65,7 +65,10 @@ final class CarPlaySession {
         // A disconnect during startup bumped the generation. Leave the car UI down.
         guard watchGeneration == generation else { return }
         interfaceController = controller
-        MPRemoteCommandCenter.shared().previousTrackCommand.isEnabled = CarPlayTransport.previousTrackEnabled
+        // #539 follow-up: on the iOS 27 session path the session declares no Previous; no MediaPlayer calls.
+        if OnAirlyNowPlayingPolicy.installsMediaPlayerRemoteCommands(usesSession: OnAirlyNowPlaying.usesSession) {
+            MPRemoteCommandCenter.shared().previousTrackCommand.isEnabled = CarPlayTransport.previousTrackEnabled
+        }
         CPNowPlayingTemplate.shared.isAlbumArtistButtonEnabled = false
         watchPlayback()
         watchRecipes()
@@ -119,6 +122,9 @@ final class CarPlaySession {
         case .keep:
             break
         case .apply(let fields):
+            // #539 follow-up: on the iOS 27 session path the car reads the OnAirly session, like
+            // the lock screen; writing MPNowPlayingInfoCenter as well would mix the two APIs.
+            guard OnAirlyNowPlayingPolicy.carPlayBridgeWrites(usesSession: OnAirlyNowPlaying.usesSession) else { break }
             bridge.apply(fields)
         case .withdraw:
             // #449: the song is gone. A fetch still running for it must not set an image later.

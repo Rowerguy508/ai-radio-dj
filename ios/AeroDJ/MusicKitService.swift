@@ -1625,6 +1625,9 @@ final class MusicKitService: ObservableObject {
     /// goes through `seek(to:trackID:)` for the same reason.
     private func installRemoteCommands() {
         guard !remoteCommandsInstalled else { return }
+        // #539 follow-up (-Fry; Atlas's OK needed): on iOS 27 the OnAirly NowPlaying session owns
+        // these commands with the same gates. Apple: don't mix it with MPRemoteCommandCenter.
+        guard OnAirlyNowPlayingPolicy.installsMediaPlayerRemoteCommands(usesSession: OnAirlyNowPlaying.usesSession) else { return }
         remoteCommandsInstalled = true
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.isEnabled = true
