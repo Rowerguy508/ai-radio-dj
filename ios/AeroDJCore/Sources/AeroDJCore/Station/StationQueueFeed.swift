@@ -444,8 +444,9 @@ public final class StationQueueFeed<Item: Sendable> {
     }
 
     /// #454: one playable song to start `configuration` with, as fast as possible, or nil.
-    /// In order: the staged queue's first song; a song from this station's last build (no catalog
+    /// In order: a song from the staged queue; a song from this station's last build (no catalog
     /// call); else the FIRST seed alone, core songs only (`.only`), and a few picks made playable.
+    /// Staged and cached lookups both skip a recent opener when another song is available (#476).
     /// Screened against the current never/tired exclusions and the songs just played. Never touches
     /// playback, `staged` or `playingKey`; the full build runs separately (`prepare`).
     public func firstSong(for configuration: StationConfiguration) async -> Item? {
@@ -492,9 +493,14 @@ public final class StationQueueFeed<Item: Sendable> {
         return candidates[Int(rng.next() % UInt64(candidates.count))]
     }
 
+    /// The first song that is not one of the station's recent openers, else the first.
+    private func firstAvailableOpener(_ items: [Item], key: StationQueueKey) -> Item? {
+        items.first { !isRecentOpener($0, key: key) } ?? items.first
+    }
+
     /// The first screened song that is not one of the station's recent openers (else the first).
     private func pickOpener(_ items: [Item], key: StationQueueKey, seedIndex: Int) -> Item? {
-        guard let song = items.first(where: { !isRecentOpener($0, key: key) }) ?? items.first else { return nil }
+        guard let song = firstAvailableOpener(items, key: key) else { return nil }
         if let id = songID(song) { lookedUpOpenerSeed[key] = (id, seedIndex) }
         return song
     }
@@ -522,10 +528,16 @@ public final class StationQueueFeed<Item: Sendable> {
     }
 
     /// The first song available without a catalog call: the staged queue's, else a cached opener.
+    /// Both paths use `firstAvailableOpener`, so a recent opener is skipped when another song is
+    /// available, and a one-song (or all-recent) list still opens with the first.
     private func readyFirstSong(for key: StationQueueKey) -> Item? {
-        if let ready = staged, ready.key == key, let song = screened(ready.items, for: key).first { return song }
-        let allowed = cachedOpeners[key]?.filter { mayOpen(with: $0, key: key) } ?? []
-        return allowed.first { !isRecentOpener($0, key: key) } ?? allowed.first
+        let candidates: [Item]
+        if let ready = staged, ready.key == key {
+            candidates = screened(ready.items, for: key)
+        } else {
+            candidates = cachedOpeners[key]?.filter { mayOpen(with: $0, key: key) } ?? []
+        }
+        return firstAvailableOpener(candidates, key: key)
     }
 
     private func hasReadyFirstSong(for key: StationQueueKey) -> Bool { readyFirstSong(for: key) != nil }
@@ -725,6 +737,8 @@ public final class StationQueueFeed<Item: Sendable> {
     /// back: the playing queue keeps its own station (`playingKey`) and the station's songs are
     /// staged again (unless a newer build is already staged), so the next boundary or Play retries.
     /// `.started` and `.superseded` keep the hand-off. A queue start reported since (a tap) wins.
+    /// A failed start also drops the opener `take` just recorded (#476): that song never opened
+    /// the station, so a retry's `firstSong` can still start with it.
     public func handOffFinished(_ result: StationHandOffResult) {
         guard let handOff = pendingHandOff else { return }
         pendingHandOff = nil
@@ -732,7 +746,15 @@ public final class StationQueueFeed<Item: Sendable> {
         playingKey = handOff.previousKey
         queueStartReported = handOff.previousReported
         if staged == nil { staged = (handOff.key, handOff.revision, handOff.items) }
+        forgetOpened(handOff.items.first, key: handOff.key)
         log(.handOffFailed(handOff.trigger))
+    }
+
+    /// Drops `song` from opener memory when it is the most recent opener of `key`.
+    private func forgetOpened(_ song: Item?, key: StationQueueKey) {
+        guard let song, let id = songID(song), var recent = recentOpeners[key], recent.last == id else { return }
+        recent.removeLast()
+        recentOpeners[key] = recent.isEmpty ? nil : recent
     }
 
     private func keep(_ trigger: StationQueueTrigger, _ reason: StationQueueKeepReason) -> [Item]? {

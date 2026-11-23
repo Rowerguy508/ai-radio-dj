@@ -171,4 +171,42 @@ final class StationOpenerVarietyTests: XCTestCase {
         let next = try await open(feed, morning)
         XCTAssertNotEqual(next, opener, "Play's staged start counts as the station's opener")
     }
+
+    // MARK: staged firstSong skips a recent opener (#476 nit)
+
+    /// Fry's #476 nit: `readyFirstSong`'s staged path used `staged.items.first` and did not skip a
+    /// recent opener, though the cached path already did. After a fast start, the staged queue is
+    /// still there; the next first-song lookup must not open with the song that just started.
+    func testAStagedQueueSkipsARecentOpener() async throws {
+        let feed = feed(.perDay)
+        let built = await feed.prepare(morning)
+        guard case .ready = built else { return XCTFail("Morning Calm builds, got \(built)") }
+        let first = try await open(feed, morning)
+        XCTAssertEqual(feed.stagedKey, StationQueueKey(morning), "a fast start does not consume the staged queue")
+        let looked = await feed.firstSong(for: morning)
+        let next = try XCTUnwrap(looked)
+        let queued = try XCTUnwrap(feed.takeForIdleStart(active: morning))
+        let expected = try XCTUnwrap(queued.first { $0 != first })
+        XCTAssertNotEqual(next, first, "a staged queue whose first song just opened should start on a later song")
+        XCTAssertEqual(next, expected)
+        XCTAssertNotEqual(queued.first, expected, "the staged queue did start with the recent opener")
+    }
+
+    /// Same fallback as the cached path: if every staged song is a recent opener, still open with
+    /// the first, never with nothing.
+    func testAStagedQueueFallsBackWhenEverySongIsARecentOpener() async throws {
+        var config = StationConfiguration.default
+        config.seeds = [StationSeed(kind: .song, catalogID: "only-song", name: "Only")]
+        config.reach = .only
+        config = config.validated()
+        let feed = feed(.perDay, limit: 1)
+        let built = await feed.prepare(config)
+        guard case .ready = built else { return XCTFail("a one-song station builds, got \(built)") }
+        let first = try await open(feed, config)
+        XCTAssertEqual(first, "only-song")
+        XCTAssertEqual(feed.stagedKey, StationQueueKey(config))
+        let looked = await feed.firstSong(for: config)
+        let again = try XCTUnwrap(looked, "nothing else to open with: the same song, never nothing")
+        XCTAssertEqual(again, "only-song")
+    }
 }
