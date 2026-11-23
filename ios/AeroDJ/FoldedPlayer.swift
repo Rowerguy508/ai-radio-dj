@@ -206,10 +206,11 @@ struct FoldedPlayer: View {
             } else {
                 switch placement {
                 case .phoneBottom:
-                    // 01-folded reskin (iPhone and folded Duo) whenever a track is showing.
-                    // PlayingScreen.layout(mode:) uses the same rule to hide the system back
-                    // and move ⋯ in. Other states keep compactBody.
-                    if FoldedOuterLayout.usesOuterReskin(containerWidth: Double(geo.size.width), showsTrack: heroTrack != nil) {
+                    // 01-folded reskin (iPhone and folded Duo) whenever a track is showing, and
+                    // (#434) while idle or starting. PlayingScreen.layout(mode:) uses the same
+                    // rule to hide the system back and move ⋯ in. Other states keep compactBody.
+                    if FoldedOuterLayout.usesOuterReskin(containerWidth: Double(geo.size.width),
+                                                         showsTrack: FoldedOuterLayout.reskinShows(content)) {
                         foldedOuterBody(in: geo.size)
                     } else {
                         compactBody(in: geo.size)
@@ -490,7 +491,11 @@ struct FoldedPlayer: View {
                                 gap: CGFloat, contentWidth: Double, spread: Bool,
                                 trailingInset: CGFloat, railTop: CGFloat, thumbnail: StationRef?,
                                 showsWash: Bool, openDuo: Bool = false) -> some View {
-        HStack(alignment: .top, spacing: 0) {
+        // #434: the open Duo hides the art while the DJ talks, as iPhone does (one orb, in the
+        // art frame). iPad halves keep the art and the content-column orb.
+        let orb = OnAirOrbPresentation.resolve(content: content, isOnAir: dj.state.isOnAir,
+                                               pose: spread ? .openDuoSpread : (openDuo ? .openDuoHalves : .wideHalves))
+        return HStack(alignment: .top, spacing: 0) {
             if layout.leftWidth > 0 {
                 ScrollView(.vertical, showsIndicators: false) {
                     // An explicit column width. A vertical scroll view otherwise offers an
@@ -498,12 +503,14 @@ struct FoldedPlayer: View {
                     // overflow puts the leading edge off the column.
                     Group {
                         if spread, let track = heroTrack {
-                            spreadArtColumn(track: track, leftWidth: layout.leftWidth, height: size.height)
+                            spreadArtColumn(track: track, leftWidth: layout.leftWidth, height: size.height,
+                                            isOnAir: orb.card == .talking)
                         } else {
                             VStack(alignment: .leading, spacing: 0) {
                                 RailDStationHeader(name: heading.header.name)
                                 upper(artSide: CGFloat(min(layout.artSide, layout.leftWidth)), centered: false,
-                                      includesStatus: true, keepArtVisible: true, includesSearch: false,
+                                      includesStatus: true, keepArtVisible: orb.card != .talking,
+                                      includesSearch: false,
                                       titleSize: openTitleSize(column: layout.leftWidth), compactStatus: true)
                             }
                         }
@@ -536,11 +543,12 @@ struct FoldedPlayer: View {
             if contentWidth > 0 {
                 Group {
                     if spread, openDuo {
-                        openDuoSpreadContent(gap: gap, height: size.height)
+                        openDuoSpreadContent(gap: gap, height: size.height, showsOrb: orb.showsContentColumnOrb)
                     } else if spread {
-                        spreadContent(gap: gap, height: size.height)
+                        spreadContent(gap: gap, height: size.height, showsOrb: orb.showsContentColumnOrb)
                     } else {
-                        wideContent(gap: gap, top: CGFloat(layout.topClearance), upNextFirst: openDuo)
+                        wideContent(gap: gap, top: CGFloat(layout.topClearance), upNextFirst: openDuo,
+                                    showsOrb: orb.showsContentColumnOrb)
                     }
                 }
                 .frame(width: CGFloat(contentWidth), height: size.height, alignment: .top)
@@ -560,14 +568,16 @@ struct FoldedPlayer: View {
     }
 
     /// L1: the station header, then the art centred in the leading half. No control here.
-    private func spreadArtColumn(track: TrackInfo, leftWidth: Double, height: CGFloat) -> some View {
+    /// #434: `isOnAir` swaps the art for the orb in the same frame, as on iPhone.
+    private func spreadArtColumn(track: TrackInfo, leftWidth: Double, height: CGFloat,
+                                 isOnAir: Bool) -> some View {
         let side = CGFloat(RailDLayout.spreadArtSide(leftWidth: leftWidth, containerHeight: Double(height),
                                                      minSide: Double(FoldedStyle.artMinSide),
                                                      maxSide: Double(FoldedStyle.artMaxSide)))
         return VStack(spacing: 0) {
             RailDStationHeader(name: heading.header.name)
             Spacer(minLength: CGFloat(RailDLayout.spreadArtVerticalInset))
-            FoldedArtCard(track: track, station: station, isOnAir: false,
+            FoldedArtCard(track: track, station: station, isOnAir: isOnAir,
                           side: side, namespace: artworkNamespace, speechLevel: speechLevel)
                 .frame(maxWidth: .infinity)
                 .id(DisplayContinuity.artAnchor)
@@ -579,7 +589,7 @@ struct FoldedPlayer: View {
     /// L1 trailing half: title, artist, the DJ chip (left-aligned with the title, the mock's
     /// centred chip was wrong) and Up next, vertically centred to the art (the same header
     /// height above both). Then the error banner and the station dial.
-    private func spreadContent(gap: CGFloat, height: CGFloat) -> some View {
+    private func spreadContent(gap: CGFloat, height: CGFloat, showsOrb: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Color.clear
                 .frame(height: CGFloat(RailDLayout.openHeaderHeight))
@@ -592,7 +602,7 @@ struct FoldedPlayer: View {
                 }
                 FoldedDJStatus(dj: dj, fitsOneLine: true)
                     .padding(.top, CGFloat(FoldedColumnLayout.Spacing.titleToStatus))
-                if DuoPresentation.showsVisualizer(isOnAir: dj.state.isOnAir), let track = heroTrack {
+                if showsOrb, let track = heroTrack {
                     DJLavaOrb(track: track, station: station, levels: speechLevel)
                         .frame(width: 120, height: 120)
                         .accessibilityHidden(true)
@@ -621,7 +631,7 @@ struct FoldedPlayer: View {
     /// past the bottom edge; the banner, the on-air orb and the dial follow. Centred in the page
     /// when it fits (as `spreadContent`), in a vertical scroll view at least the page tall: a
     /// taller stack (accessibility text) scrolls instead of clipping at the window's bottom edge.
-    private func openDuoSpreadContent(gap: CGFloat, height: CGFloat) -> some View {
+    private func openDuoSpreadContent(gap: CGFloat, height: CGFloat, showsOrb: Bool) -> some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 Color.clear
@@ -640,7 +650,7 @@ struct FoldedPlayer: View {
                     PlaybackErrorBanner(error: snapshot.error, actions: actions)
                         .duoColumnWidth()
                         .padding(.top, gap)
-                    if DuoPresentation.showsVisualizer(isOnAir: dj.state.isOnAir), let track = heroTrack {
+                    if showsOrb, let track = heroTrack {
                         DJLavaOrb(track: track, station: station, levels: speechLevel)
                             .frame(width: 120, height: 120)
                             .accessibilityHidden(true)
@@ -676,6 +686,11 @@ struct FoldedPlayer: View {
                                                       minSide: Double(FoldedStyle.artMinSide),
                                                       maxSide: Double(FoldedStyle.artMaxSide)))
         let trailingStart = CGFloat(layout.leftWidth + layout.foldGutter + RailDLayout.spreadTrailingInset)
+        // #434: while the DJ talks the art hides and the one orb sits in the gap between the
+        // centred art and the trailing rail (the frame keeps its size, so nothing moves).
+        let orb = OnAirOrbPresentation.resolve(content: content, isOnAir: dj.state.isOnAir, pose: .centred)
+        let gapOrb = orb.railGapOrb(playerWidth: playerWidth, artSide: Double(side),
+                                    trailingReserve: systemBar ? layout.barWidth : 0)
         return HStack(alignment: .top, spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
@@ -684,8 +699,21 @@ struct FoldedPlayer: View {
                             .frame(width: CGFloat(layout.leftWidth), alignment: .leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if let track = heroTrack {
-                            FoldedArtCard(track: track, station: station, isOnAir: false,
-                                          side: side, namespace: artworkNamespace, speechLevel: speechLevel)
+                            FoldedArtCard(track: track, station: station, isOnAir: orb.card == .cleared,
+                                          side: side, namespace: artworkNamespace, speechLevel: speechLevel,
+                                          stage: orb.card)
+                                .overlay {
+                                    if let gapOrb {
+                                        DJLavaOrb(track: track, station: station, levels: speechLevel)
+                                            .frame(width: CGFloat(gapOrb.side), height: CGFloat(gapOrb.side))
+                                            .offset(x: CGFloat(gapOrb.offsetFromArtCentre))
+                                            .transition(.opacity)
+                                            .accessibilityHidden(true)
+                                            .accessibilityIdentifier("folded.railGapOrb")
+                                    }
+                                }
+                                .animation(.easeInOut(duration: FoldedArtCardLayers.crossfadeSeconds),
+                                           value: gapOrb != nil)
                                 .id(DisplayContinuity.artAnchor)
                             FoldedTitleBlock(track: track, isTestStation: isTestStation, centered: true,
                                              displaySize: CGFloat(RailDLayout.openTitlePointSize))
@@ -1023,12 +1051,14 @@ struct FoldedPlayer: View {
     /// The orb appears here only while the DJ is actually on air, and it does not cover the artwork.
     /// Build 54 (4): `upNextFirst` (the open Duo, portrait) puts Up next at the top of the
     /// column, before the orb and the dial, so it never clips at the bottom edge.
-    private func wideContent(gap: CGFloat, top: CGFloat, upNextFirst: Bool = false) -> some View {
+    /// #434: `showsOrb` false on the open Duo, where the orb is in the art frame instead.
+    private func wideContent(gap: CGFloat, top: CGFloat, upNextFirst: Bool = false,
+                             showsOrb: Bool) -> some View {
         VStack(alignment: .leading, spacing: gap) {
             if upNextFirst {
                 DuoUpNextList(dj: dj, track: heroTrack, queued: snapshot.upNext, onOpen: onQueue)
             }
-            if DuoPresentation.showsVisualizer(isOnAir: dj.state.isOnAir), let track = heroTrack {
+            if showsOrb, let track = heroTrack {
                 DJLavaOrb(track: track, station: station, levels: speechLevel)
                     .frame(width: 120, height: 120)
                     .frame(maxWidth: .infinity)
@@ -1365,6 +1395,29 @@ extension FoldedPlayer {
                             .padding(.top, 8)
                     }
                 }
+            } else if let stage = OnAirOrbPresentation.resolve(content: content, isOnAir: false, pose: .folded).card {
+                // #434 (owner, Nov 23 2026): Idle and Starting in the folded player. The art
+                // frame holds the ember or the warming orb; the placeholder keeps its copy and
+                // ids ("Nothing playing", "Starting <name>…", `nowPlaying.stationStart`) and
+                // drops the system spinner. Search stays behind its explicit button (#454).
+                if includesArt {
+                    FoldedStartCard(stage: stage, side: artSide,
+                                    cornerRadius: CGFloat(FoldedOuterLayout.artRadius))
+                        .padding(.top, 12)
+                        .padding(.horizontal, CGFloat(FoldedOuterLayout.artInsetBesideRail))
+                }
+                if isTestStation {
+                    FoldedTestStationTag()
+                        .padding(.top, includesArt ? 16 : 8)
+                }
+                NowPlayingPlaceholder(content: content, actions: actions, showsSpinner: false)
+                    .padding(.horizontal, inset)
+                    .padding(.top, includesArt ? 16 : 8)
+                if case .nothingPlaying = content, search != nil {
+                    SearchAppleMusicButton(action: onQueue)
+                        .padding(.horizontal, inset)
+                        .padding(.top, 16)
+                }
             }
         }
         .padding(.bottom, 8)
@@ -1675,6 +1728,79 @@ private struct FoldedBackdrop: View {
     }
 }
 
+// MARK: - Idle and Starting card (#434)
+
+/// #434 (owner, Nov 23 2026): Idle and Starting in the folded player's art frame, the same
+/// frame and corner as the art card, so the words sit where a song's title will. Idle is a
+/// static dim ember (~36% of the side, never under 44 pt). Starting is a warming orb (~52%)
+/// with a 2 pt contrast ring 10% larger, a held 240° arc that never travels; under Reduce
+/// Motion it is a complete static circle. Nothing moves, so Reduce Motion needs nothing else.
+/// Flat gradients with a light specular, no shadow, never amber (amber is the ON AIR pill's).
+/// Decorative: hidden from VoiceOver; the placeholder under it carries the words. -Nova
+private struct FoldedStartCard: View {
+    let stage: ArtCardStage
+    let side: CGFloat
+    var cornerRadius: CGFloat = FoldedStyle.artRadius
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    // Mockup tokens (/workspace/mockups/434-orb/SPEC.md).
+    private static let emberHighlight = Color(red: 0x8C / 255, green: 0x58 / 255, blue: 0x50 / 255)
+    private static let emberMid = Color(red: 0x5A / 255, green: 0x34 / 255, blue: 0x32 / 255)
+    private static let emberEdge = Color(red: 0x2A / 255, green: 0x1A / 255, blue: 0x1A / 255)
+    private static let orbHighlight = Color(red: 0xF8 / 255, green: 0xD8 / 255, blue: 0xCC / 255)
+    private static let orbMid = Color(red: 0xE0 / 255, green: 0x90 / 255, blue: 0x80 / 255)
+    private static let orbCore = Color(red: 0xC4 / 255, green: 0x70 / 255, blue: 0x6A / 255)
+    private static let orbEdge = Color(red: 0x7A / 255, green: 0x3A / 255, blue: 0x3A / 255)
+    private static let ringColor = Color(red: 0xF0 / 255, green: 0xC8 / 255, blue: 0xB8 / 255)
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+
+    private var orbSide: CGFloat {
+        CGFloat(FoldedArtCardLayers.orbSide(for: stage, cardSide: Double(side)))
+    }
+
+    private var colors: [Color] {
+        stage == .idle ? [Self.emberHighlight, Self.emberMid, Self.emberEdge]
+                       : [Self.orbHighlight, Self.orbMid, Self.orbCore, Self.orbEdge]
+    }
+
+    var body: some View {
+        ZStack {
+            shape.fill(Color.white.opacity(0.04))
+                .overlay(shape.strokeBorder(FoldedStyle.hairline, lineWidth: 1))
+            Circle()
+                .fill(RadialGradient(colors: colors, center: UnitPoint(x: 0.4, y: 0.36),
+                                     startRadius: 0, endRadius: orbSide * 0.62))
+                .overlay {
+                    // Light specular, at most 20% white.
+                    Circle()
+                        .fill(RadialGradient(colors: [Color.white.opacity(0.18), .clear],
+                                             center: UnitPoint(x: 0.36, y: 0.3),
+                                             startRadius: 0, endRadius: orbSide * 0.3))
+                }
+                .frame(width: orbSide, height: orbSide)
+            if stage == .starting {
+                let ring = orbSide * CGFloat(FoldedArtCardLayers.startingRingScale)
+                Circle()
+                    .trim(from: 0, to: CGFloat(DJOrbPolicy.startingRingArc(reduceMotion: reduceMotion)))
+                    .stroke(Self.ringColor,
+                            style: StrokeStyle(lineWidth: CGFloat(FoldedArtCardLayers.startingRingLineWidth),
+                                               lineCap: .round))
+                    // The 120° opening sits at the top.
+                    .rotationEffect(.degrees(-30))
+                    .frame(width: ring, height: ring)
+            }
+        }
+        .frame(width: side, height: side)
+        .frame(maxWidth: .infinity)
+        .accessibilityHidden(true)
+        .accessibilityIdentifier(stage == .idle ? "folded.startCard.idle" : "folded.startCard.starting")
+    }
+}
+
 // MARK: - Art card
 
 /// Album art (or station art) in a 24 pt card with one soft glow. While ON AIR the art and its
@@ -1690,12 +1816,15 @@ private struct FoldedArtCard: View {
     var speechLevel: DJPresentationStore? = nil
     /// Default is the compact-path 24 pt token. The 01-folded reskin passes 28.
     var cornerRadius: CGFloat = FoldedStyle.artRadius
+    /// #434: an explicit stage (L2's `.cleared`, art hidden for the rail-gap orb). Nil keeps
+    /// the shipping rule from `isOnAir`.
+    var stage: ArtCardStage? = nil
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
-    private var layers: FoldedArtCardLayers { .layers(isOnAir: isOnAir) }
+    private var layers: FoldedArtCardLayers { stage.map { .layers(stage: $0) } ?? .layers(isOnAir: isOnAir) }
 
     var body: some View {
         ZStack {

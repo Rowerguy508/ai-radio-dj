@@ -653,6 +653,9 @@ struct NowPlayingPlaceholder: View {
     let content: NowPlayingContent
     /// Required for `.needsAuthorization` so Allow calls `authorize()`, never a no-op.
     var actions: PlaybackActions? = nil
+    /// #434: the folded player draws its own starting orb and ring in the art frame, so it
+    /// drops the system spinner. Every other caller keeps it.
+    var showsSpinner: Bool = true
     @Environment(\.openURL) private var openURL
     @Environment(\.stationStart) private var stationStart
 
@@ -663,7 +666,7 @@ struct NowPlayingPlaceholder: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            if content.showsStartSpinner {
+            if showsSpinner, content.showsStartSpinner {
                 ProgressView()
                     .tint(ink)
                     .accessibilityHidden(true)

@@ -142,6 +142,10 @@ enum StudioCaptureScenario: String {
     /// Echo (#558): the three landscape frames with the DJ on air (`breakReady` then
     /// `playbackStarted`, the pill's timer frozen as in `onAir`) and with the voice unavailable
     /// (the `speechFailed` caption, music playing). Debug-only extra shots, not required in CI.
+    /// #434: the open Duo upright with the DJ on air. The art hides and the orb takes its
+    /// frame, as on iPhone. The capture reports a flat hinge so the player takes the open-Duo
+    /// path the device takes (an iPad simulator reports none). -Nova
+    case railDPortraitOnAir
     case railDLandscapeSpreadOnAir
     case railDLandscapeCentredOnAir
     case railDLandscapeSidebarOnAir
@@ -160,7 +164,8 @@ enum StudioCaptureScenario: String {
 
     var isRailDOnAir: Bool {
         switch self {
-        case .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir: true
+        case .railDPortraitOnAir,
+             .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir: true
         default: false
         }
     }
@@ -176,6 +181,7 @@ enum StudioCaptureScenario: String {
     /// The mock frame an On Air or voice-unavailable variant is drawn in.
     var railDFrame: StudioCaptureScenario {
         switch self {
+        case .railDPortraitOnAir: .railDPortrait
         case .railDLandscapeSpreadOnAir, .railDLandscapeSpreadVoiceUnavailable: .railDLandscapeSpread
         case .railDLandscapeCentredOnAir, .railDLandscapeCentredVoiceUnavailable: .railDLandscapeCentred
         case .railDLandscapeSidebarOnAir, .railDLandscapeSidebarVoiceUnavailable: .railDLandscapeSidebar
@@ -206,7 +212,8 @@ enum StudioCaptureScenario: String {
             var playing = PlaybackFixtures.playing
             playing.canSeek = true
             return playing
-        case .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir:
+        case .railDPortraitOnAir,
+             .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir:
             var playing = PlaybackFixtures.playing
             playing.canSeek = true
             return playing
@@ -371,7 +378,7 @@ struct StudioCaptureView: View {
                  .railDPhone, .railDDuoClosed, .railDPortrait, .railDPortraitSidebar,
                  .railDLandscapeSpread, .railDLandscapeCentred, .railDLandscapeSidebar:
                 studio.dj.send(.breakReady(afterTrack: 0, includesBriefing: false, seconds: 30))
-            case .duoWideSpeaking, .onAir, .duoWideOnAir,
+            case .duoWideSpeaking, .onAir, .duoWideOnAir, .railDPortraitOnAir,
                  .railDLandscapeSpreadOnAir, .railDLandscapeCentredOnAir, .railDLandscapeSidebarOnAir:
                 // Freeze the pill's timer before it appears, so the PNG is deterministic.
                 StudioCaptureOnAir.frozenElapsed = StudioCaptureOnAir.capturedElapsed
