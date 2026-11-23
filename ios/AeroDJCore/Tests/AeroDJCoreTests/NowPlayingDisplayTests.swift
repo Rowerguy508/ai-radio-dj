@@ -212,10 +212,12 @@ final class NowPlayingDisplayTests: XCTestCase {
 
     // MARK: Live Activity plan
 
-    func testLiveActivityStartsOnlyFromTheForegroundWhilePlaying() {
+    /// #539: system Now Playing is the one lock-screen player, so a foreground play no longer
+    /// starts a second card.
+    func testLiveActivityNeverStartsBesideSystemNowPlaying() {
         let playing = NowPlayingDisplay.make(snapshot: snapshot(), dj: .idle)
         XCTAssertEqual(LiveActivityPlan.action(for: playing, previous: nil, isActive: false,
-                                               appInForeground: true, activitiesEnabled: true), .start(playing))
+                                               appInForeground: true, activitiesEnabled: true), .none)
         XCTAssertEqual(LiveActivityPlan.action(for: playing, previous: nil, isActive: false,
                                                appInForeground: false, activitiesEnabled: true), .none)
         XCTAssertEqual(LiveActivityPlan.action(for: playing, previous: nil, isActive: false,
@@ -225,16 +227,18 @@ final class NowPlayingDisplayTests: XCTestCase {
                                                appInForeground: true, activitiesEnabled: true), .none)
     }
 
-    func testLiveActivityUpdatesOnChangeAndEndsOnStop() {
+    /// #539: On Air and the ready line no longer keep a running activity alive. It is ended,
+    /// whatever the DJ is doing, as well as on stop and when activities are turned off.
+    func testLiveActivityEndsOnAnyDisplayAndOnStop() {
         let idle = NowPlayingDisplay.make(snapshot: snapshot(), dj: .idle)
         let onAir = NowPlayingDisplay.make(snapshot: snapshot(), dj: .speaking(includesBriefing: false))
         XCTAssertEqual(LiveActivityPlan.action(for: onAir, previous: idle, isActive: true,
-                                               appInForeground: false, activitiesEnabled: true), .update(onAir))
+                                               appInForeground: false, activitiesEnabled: true), .end)
         let ready = NowPlayingDisplay.make(snapshot: snapshot(), dj: .ready(includesBriefing: false, seconds: 30))
         XCTAssertEqual(LiveActivityPlan.action(for: ready, previous: idle, isActive: true,
-                                               appInForeground: false, activitiesEnabled: true), .update(ready))
+                                               appInForeground: false, activitiesEnabled: true), .end)
         XCTAssertEqual(LiveActivityPlan.action(for: onAir, previous: onAir, isActive: true,
-                                               appInForeground: false, activitiesEnabled: true), .none)
+                                               appInForeground: false, activitiesEnabled: true), .end)
         let stopped = NowPlayingDisplay.make(snapshot: snapshot(.stopped), dj: .idle)
         XCTAssertEqual(LiveActivityPlan.action(for: stopped, previous: onAir, isActive: true,
                                                appInForeground: false, activitiesEnabled: true), .end)
@@ -325,34 +329,35 @@ final class NowPlayingDisplayTests: XCTestCase {
         XCTAssertEqual(ready.lockScreenPresentation.lockScreenLine, NowPlayingDisplay.readyLineCopy)
     }
 
-    func testReconcilerUpdatesEveryActivityOnTrackChange() {
+    /// #539: a running activity is ended on the next display (track change, pause, ready
+    /// line), not updated, and every activity is ended, not only `.first`.
+    func testReconcilerEndsEveryActivityOnTheNextDisplay() {
         let first = song("Tidewater")
         let next = song("Paper Satellites")
         XCTAssertNotEqual(first, next)
         XCTAssertEqual(LiveActivityReconciler.commands(display: next,
                                                        running: [LiveActivityRecord(id: "live", content: first)],
                                                        appInForeground: false, activitiesEnabled: true),
-                       [.update(id: "live", display: next)])
+                       [.end(id: "live")])
         let paused = NowPlayingDisplay.make(snapshot: snapshot(.paused), dj: .idle)
         XCTAssertEqual(LiveActivityReconciler.commands(display: paused,
                                                        running: [LiveActivityRecord(id: "live", content: first)],
                                                        appInForeground: false, activitiesEnabled: true),
-                       [.update(id: "live", display: paused)])
+                       [.end(id: "live")])
         let ready = NowPlayingDisplay.make(snapshot: snapshot(), dj: .ready(includesBriefing: false, seconds: 30))
         XCTAssertEqual(LiveActivityReconciler.commands(display: ready,
                                                        running: [LiveActivityRecord(id: "live", content: first)],
                                                        appInForeground: false, activitiesEnabled: true),
-                       [.update(id: "live", display: ready)])
-        // The song `.first` already shows is not a reason to skip the other activity.
+                       [.end(id: "live")])
         XCTAssertEqual(LiveActivityReconciler.commands(display: next,
                                                        running: [LiveActivityRecord(id: "shown", content: next),
                                                                  LiveActivityRecord(id: "stuck", content: first)],
                                                        appInForeground: false, activitiesEnabled: true),
-                       [.update(id: "stuck", display: next), .end(id: "stuck")])
+                       [.end(id: "shown"), .end(id: "stuck")])
         XCTAssertEqual(LiveActivityReconciler.commands(display: next,
                                                        running: [LiveActivityRecord(id: "live", content: next)],
                                                        appInForeground: true, activitiesEnabled: true),
-                       [])
+                       [.end(id: "live")])
     }
 
     func testReconcilerEndsOnStopAndAtStartup() {
@@ -381,12 +386,88 @@ final class NowPlayingDisplayTests: XCTestCase {
                        [])
         XCTAssertEqual(LiveActivityReconciler.commands(display: playing, running: [],
                                                        appInForeground: true, activitiesEnabled: true),
-                       [.start(playing)])
+                       [])
+        // Build 54's two full players: a resume (paused -> starting) redrew the full song card
+        // on the activity beside the system player. The activity is ended instead.
         let starting = NowPlayingDisplay.make(snapshot: snapshot(.preparing), dj: .idle)
         XCTAssertEqual(LiveActivityReconciler.commands(display: starting,
                                                        running: [LiveActivityRecord(id: "live", content: playing)],
                                                        appInForeground: true, activitiesEnabled: true),
-                       [.update(id: "live", display: starting)])
+                       [.end(id: "live")])
+    }
+
+    // MARK: #539 at most one lock-screen player, every state
+
+    /// What is left on the lock screen after the app applies the reconciler's commands: the
+    /// activities still running, plus the system Now Playing card when MusicKit has one up.
+    private func lockScreenPlayers(display: NowPlayingDisplay, systemCardUp: Bool,
+                                   running: [LiveActivityRecord], appInForeground: Bool,
+                                   activitiesEnabled: Bool) -> Int {
+        var live = running
+        for command in LiveActivityReconciler.commands(display: display, running: running,
+                                                       appInForeground: appInForeground,
+                                                       activitiesEnabled: activitiesEnabled) {
+            switch command {
+            case .start(let shown): live.append(LiveActivityRecord(id: "new-\(live.count)", content: shown))
+            case .update: break
+            case .end(let id): live.removeAll { $0.id == id }
+            }
+        }
+        return live.count + (systemCardUp ? 1 : 0)
+    }
+
+    /// Idle, starting, playing, paused, DJ ready and DJ on air, with zero, one or two activities
+    /// already running (this launch or an earlier one), foreground or not, activities on or off.
+    /// Whether the system card is up during `.starting` depends on whether it is a first start
+    /// or a resume, so both are checked. No combination leaves two players.
+    func testAtMostOneLockScreenPlayerInEveryState() {
+        let djStates: [DJStudioState] = [.idle, .ready(includesBriefing: false, seconds: 30),
+                                         .speaking(includesBriefing: false), .speaking(includesBriefing: true)]
+        let leftover = song("Left over")
+        let runningSets: [[LiveActivityRecord]] = [
+            [], [LiveActivityRecord(id: "a", content: leftover)],
+            [LiveActivityRecord(id: "a", content: leftover), LiveActivityRecord(id: "b", content: leftover)],
+        ]
+        for transport in [TransportState.stopped, .preparing, .playing, .paused] {
+            for dj in djStates {
+                let display = NowPlayingDisplay.make(snapshot: snapshot(transport), dj: dj)
+                let cardOptions: [Bool] = switch transport {
+                case .stopped: [false]
+                case .preparing: [false, true]
+                case .playing, .paused: [true]
+                }
+                for systemCardUp in cardOptions {
+                    for running in runningSets {
+                        for foreground in [true, false] {
+                            for enabled in [true, false] {
+                                let players = lockScreenPlayers(display: display, systemCardUp: systemCardUp,
+                                                                running: running, appInForeground: foreground,
+                                                                activitiesEnabled: enabled)
+                                let label = "\(transport) \(dj) card=\(systemCardUp) running=\(running.count) fg=\(foreground) on=\(enabled)"
+                                XCTAssertLessThanOrEqual(players, 1, label)
+                                XCTAssertEqual(players, systemCardUp ? 1 : 0, "no Live Activity is left: \(label)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The DJ states the draft exempted (ready line, On Air) are the ones the owner hears
+    /// during a break. They must not bring a second card back.
+    func testReadyAndOnAirDoNotStartOrKeepASecondCard() {
+        for dj in [DJStudioState.ready(includesBriefing: false, seconds: 30), .speaking(includesBriefing: false)] {
+            let display = NowPlayingDisplay.make(snapshot: snapshot(), dj: dj)
+            XCTAssertTrue(display.systemNowPlayingOwnsLockScreen)
+            XCTAssertFalse(LiveActivityPlan.wantsActivity(for: display))
+            XCTAssertEqual(LiveActivityReconciler.commands(display: display, running: [],
+                                                           appInForeground: true, activitiesEnabled: true), [])
+            XCTAssertEqual(LiveActivityReconciler.commands(display: display,
+                                                           running: [LiveActivityRecord(id: "live", content: display)],
+                                                           appInForeground: true, activitiesEnabled: true),
+                           [.end(id: "live")])
+        }
     }
 
     private func song(_ title: String, transport: TransportState = .playing) -> NowPlayingDisplay {
