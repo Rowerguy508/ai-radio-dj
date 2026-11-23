@@ -407,6 +407,14 @@ public final class StationQueueFeed<Item: Sendable> {
         }
     }
 
+    /// Testing only: set this station's cached openers. The app writes them through `prepare`,
+    /// which also replaces the staged list with the same build, so a test that needs a cached
+    /// song that is not in the current staged list uses this.
+    func seedCachedOpeners(_ items: [Item], for configuration: StationConfiguration) {
+        guard let key = StationQueueKey(configuration) else { return }
+        rememberOpeners(items, for: key)
+    }
+
     private func rememberArtists(of picks: [StationCandidate]) {
         if spacingArtists.count + picks.count > Self.maxSpacingArtists { spacingArtists = [:] }
         for pick in picks { spacingArtists[pick.id] = pick.artistKey }
@@ -527,13 +535,21 @@ public final class StationQueueFeed<Item: Sendable> {
         lookedUpOpenerSeed[key] = nil
     }
 
-    /// The first song available without a catalog call: the staged queue's, else a cached opener.
-    /// Both paths use `firstAvailableOpener`, so a recent opener is skipped when another song is
-    /// available, and a one-song (or all-recent) list still opens with the first.
+    /// The first song available without a catalog call: the staged queue when it still has a
+    /// song after screening, else a cached opener. Both paths use `firstAvailableOpener`, so a
+    /// recent opener is skipped when another song is available, and a one-song (or all-recent)
+    /// list still opens with the first. An empty screened staged list falls through to the cache
+    /// (#594), as it did before the paths were unified.
     private func readyFirstSong(for key: StationQueueKey) -> Item? {
-        let candidates: [Item]
+        let stagedSongs: [Item]
         if let ready = staged, ready.key == key {
-            candidates = screened(ready.items, for: key)
+            stagedSongs = screened(ready.items, for: key)
+        } else {
+            stagedSongs = []
+        }
+        let candidates: [Item]
+        if !stagedSongs.isEmpty {
+            candidates = stagedSongs
         } else {
             candidates = cachedOpeners[key]?.filter { mayOpen(with: $0, key: key) } ?? []
         }

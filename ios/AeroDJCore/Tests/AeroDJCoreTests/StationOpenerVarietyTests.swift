@@ -35,12 +35,14 @@ final class StationOpenerVarietyTests: XCTestCase {
     private let late = BuiltInStations.lateNight.configuration
 
     private func feed(_ source: StationShuffleSeedSource, limit: Int = 12,
-                      recentlyPlayed: @escaping @MainActor () -> Set<String> = { [] }) -> StationQueueFeed<String> {
+                      recentlyPlayed: @escaping @MainActor () -> Set<String> = { [] },
+                      ratings: @escaping @MainActor () -> StationRatingBias = { .none }) -> StationQueueFeed<String> {
         StationQueueFeed<String>(resolver: CatalogStationSeedResolver(catalog: OpenerFakeCatalog()),
                                  materialize: { $0.map(\.id) },
                                  options: .init(limit: limit, seedSource: source),
                                  day: { 42 },
-                                 recentlyPlayed: recentlyPlayed)
+                                 recentlyPlayed: recentlyPlayed,
+                                 ratings: ratings)
     }
 
     /// One tap's fast start on `config`: its first song, now playing.
@@ -209,4 +211,58 @@ final class StationOpenerVarietyTests: XCTestCase {
         let again = try XCTUnwrap(looked, "nothing else to open with: the same song, never nothing")
         XCTAssertEqual(again, "only-song")
     }
+
+    // MARK: Fry's #594 review
+
+    /// Regression on 3108c4e2: if the staged key matched but `screened` was empty, `readyFirstSong`
+    /// returned nil and skipped to the catalog. Before that, it fell through to `cachedOpeners`.
+    func testAScreenedOutStagedQueueFallsBackToACachedOpener() async throws {
+        let bias = OpenerBias()
+        let feed = feed(.perDay, ratings: { bias.value })
+        let built = await feed.prepare(morning)
+        guard case .ready = built else { return XCTFail("Morning Calm builds, got \(built)") }
+        let staged = try XCTUnwrap(feed.takeForIdleStart(active: morning))
+        feed.handOffFinished(.failed)
+        let cached = "cached-keep"
+        feed.seedCachedOpeners([cached], for: morning)
+        let key = try XCTUnwrap(StationQueueKey(morning))
+        bias.value = StationRatingBias(revision: StationRatingRevision(changes: 1, day: 42, scope: nil),
+                                       seedsFingerprint: key.seedsFingerprint,
+                                       excludedSongIDs: Set(staged))
+        let looked = await feed.firstSong(for: morning)
+        XCTAssertEqual(looked, cached, "an empty screened staged list should fall through to a cached opener")
+    }
+
+    /// `handOffFinished(.failed)` drops the opener `take` just recorded, and only when it is still
+    /// `recentOpeners.last`, so a retry can start with the same song.
+    func testAFailedStagedTakeLetsTheSameSongOpenAgain() async throws {
+        let feed = feed(.perDay)
+        let built = await feed.prepare(morning)
+        guard case .ready = built else { return XCTFail("Morning Calm builds, got \(built)") }
+        let staged = try XCTUnwrap(feed.takeForIdleStart(active: morning))
+        let opener = try XCTUnwrap(staged.first)
+        feed.handOffFinished(.failed)
+        XCTAssertEqual(feed.stagedKey, StationQueueKey(morning))
+        let looked = await feed.firstSong(for: morning)
+        XCTAssertEqual(looked, opener, "a failed start did not open the station, so a retry can start with the same song")
+    }
+
+    /// A fast start's pending hand-off has `items: []`, so `forgetOpened` is a no-op. A failed
+    /// fast start does not drop the opener it recorded.
+    func testAFailedFastStartDoesNotClearOpenerMemory() async throws {
+        let feed = feed(.perDay)
+        let built = await feed.prepare(morning)
+        guard case .ready = built else { return XCTFail("Morning Calm builds, got \(built)") }
+        let first = try await open(feed, morning)
+        feed.handOffFinished(.failed)
+        XCTAssertEqual(feed.stagedKey, StationQueueKey(morning), "a fast start does not consume the staged queue")
+        let looked = await feed.firstSong(for: morning)
+        let next = try XCTUnwrap(looked)
+        XCTAssertNotEqual(next, first, "a failed fast start leaves opener memory in place, so firstSong still skips it")
+    }
+}
+
+@MainActor
+private final class OpenerBias {
+    var value = StationRatingBias.none
 }
