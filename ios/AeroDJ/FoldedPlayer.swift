@@ -422,12 +422,13 @@ struct FoldedPlayer: View {
         let window: OpenDuoWindowMetrics? = openDuo ? openDuoWindow : nil
         let extend: CGFloat = window.map { max(0, $0.trailingInset) } ?? 0
         let size = CGSize(width: readerSize.width + extend, height: readerSize.height)
-        let base = FoldAwareness.resolve(containerWidth: Double(size.width),
+        let fold = FoldAwareness.resolve(containerWidth: Double(size.width),
                                          containerHeight: Double(size.height),
                                          hinge: effectiveFoldHinge,
                                          divisions: effectiveFoldDivisions,
                                          artMin: Double(FoldedStyle.artMinSide),
-                                         artMax: Double(FoldedStyle.artMaxSide)).metrics
+                                         artMax: Double(FoldedStyle.artMaxSide))
+        let base = fold.metrics
         let layout = openDuo
             ? FoldedColumnLayout.DuoHorizontal(edgeInset: base.edgeInset, leftWidth: base.leftWidth,
                                                foldGutter: base.foldGutter,
@@ -476,7 +477,9 @@ struct FoldedPlayer: View {
         .padding(.trailing, -extend)
         .overlay {
             if moreOpen, !systemBar, layout.barWidth > 0 {
-                railMorePanel(in: size)
+                // #507 rest: in book pose the panel grows inward no further than the content
+                // column, so a wrapped row (large text) never reaches the fold. Nil elsewhere.
+                railMorePanel(in: size, leadingLimit: fold.isBookPose ? layout.contentMinX : nil)
             }
         }
         .modifier(SplitLeadingBar(enabled: splitBarEdge == .leading))
@@ -752,8 +755,10 @@ struct FoldedPlayer: View {
     }
 
     /// The rail's ⋯ panel over the player, inside the safe box, inward of the rail.
-    private func railMorePanel(in size: CGSize) -> some View {
-        let menu = DuoMoreMenuLayout.resolve(safeWidth: Double(size.width), safeHeight: Double(size.height))
+    /// `leadingLimit`: the book-pose content column's leading edge (#507 rest); nil keeps today's width.
+    private func railMorePanel(in size: CGSize, leadingLimit: Double? = nil) -> some View {
+        let menu = DuoMoreMenuLayout.resolve(safeWidth: Double(size.width), safeHeight: Double(size.height),
+                                             leadingLimit: leadingLimit)
         return ZStack(alignment: .topTrailing) {
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

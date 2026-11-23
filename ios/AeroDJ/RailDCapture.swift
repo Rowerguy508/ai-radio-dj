@@ -30,7 +30,25 @@ struct RailDCaptureContainer: View {
     static let deviceWindowKey = "AeroDJRailDDeviceWindow"
     static let deviceWindowSize = CGSize(width: 951, height: 669)
 
+    /// #507 rest (-Nova): `-AeroDJRailDFoldMinX <pt> -AeroDJRailDFoldWidth <pt>` replace a book
+    /// frame's forced band with that one (the fold the system reports, margins included). Frames
+    /// with no forced division (flat, upright, sidebar, closed) ignore it.
+    static let foldMinXKey = "AeroDJRailDFoldMinX"
+    static let foldWidthKey = "AeroDJRailDFoldWidth"
+
     static func frame(for scenario: StudioCaptureScenario) -> Frame {
+        let frame = sizedFrame(for: scenario)
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: foldMinXKey) != nil, defaults.object(forKey: foldWidthKey) != nil,
+              let pose = frame.fold, !pose.divisions.isEmpty else { return frame }
+        let band = FoldAwareness.Division(minX: defaults.double(forKey: foldMinXKey), minY: 0,
+                                          width: defaults.double(forKey: foldWidthKey),
+                                          height: Double(frame.size.height), isActive: true)
+        return Frame(size: frame.size, sizeClass: frame.sizeClass, sidebar: frame.sidebar,
+                     fold: FoldPoseOverride(hinge: pose.hinge, divisions: [band]))
+    }
+
+    private static func sizedFrame(for scenario: StudioCaptureScenario) -> Frame {
         let frame = baseFrame(for: scenario)
         guard UserDefaults.standard.bool(forKey: deviceWindowKey),
               frame.size == StudioCapture.duoTentContainerSize else { return frame }
