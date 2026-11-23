@@ -489,7 +489,7 @@ final class StudioScreenTests: XCTestCase {
         let trackFrame = try XCTUnwrap(settledFrame(of: track, "track column"))
         let contentFrame = try XCTUnwrap(settledFrame(of: content, "content column"))
         let barFrame = try XCTUnwrap(settledFrame(of: bar, "system bar") {
-            $0.width >= 44 && $0.width <= 80
+            $0.width >= 44 - framePointNoise && $0.width <= 80
         }, "system bar never settled: \(bar.frame)")
         let foldFrame = try XCTUnwrap(settledFrame(of: fold, "fold"))
 
@@ -531,8 +531,8 @@ final class StudioScreenTests: XCTestCase {
                                 ("queue", queue), ("sleep", sleep), ("dot", dot)] {
             XCTAssertGreaterThanOrEqual(element.frame.midX, barFrame.minX - 4, "\(name) left the symbol bar: \(frames)")
             XCTAssertLessThanOrEqual(element.frame.midX, barFrame.maxX + 4, "\(name) left the symbol bar: \(frames)")
-            XCTAssertGreaterThanOrEqual(element.frame.width, 44, "\(name) is under 44 pt wide: \(frames)")
-            XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(name) is under 44 pt tall: \(frames)")
+            assertAtLeastPoints(element.frame.width, 44, "\(name) is under 44 pt wide: \(frames)")
+            assertAtLeastPoints(element.frame.height, 44, "\(name) is under 44 pt tall: \(frames)")
             XCTAssertFalse(contentFrame.insetBy(dx: -1, dy: -1).contains(element.frame),
                            "\(name) is still in the content column: \(frames)")
         }
@@ -542,8 +542,8 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertGreaterThan(scrubber.frame.height, scrubber.frame.width, "D: the scrubber is vertical: \(frames)")
         XCTAssertGreaterThan(scrubber.frame.minY, sleep.frame.maxY, "D: the bar sits under Sleep: \(frames)")
         XCTAssertLessThan(scrubber.frame.maxY, dot.frame.minY + 1, "D: the bar sits above the live dot: \(frames)")
-        XCTAssertGreaterThanOrEqual(play.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(collapse.frame.height, 44)
+        assertAtLeastPoints(play.frame.width, 44)
+        assertAtLeastPoints(collapse.frame.height, 44)
         XCTAssertGreaterThanOrEqual(more.frame.minY, barFrame.minY + 40, "chrome starts below the status clearance")
         let dial = any["duo.stationDial"]
         let late = app.buttons["duo.station.late-night"]
@@ -555,7 +555,7 @@ final class StudioScreenTests: XCTestCase {
         let tune = app.buttons["transport.tune"]
         XCTAssertTrue(tune.waitForExistence(timeout: 5), "Tune stays in More\n\(app.debugDescription)")
         XCTAssertTrue(tune.isHittable, "Tune in More is not hittable")
-        XCTAssertGreaterThanOrEqual(tune.frame.height, 44, "Tune in More is under 44 pt")
+        assertAtLeastPoints(tune.frame.height, 44, "Tune in More is under 44 pt")
         assertMoreMenuInsideWindow(app)
         // A tap on the artwork column closes it without tuning.
         track.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
@@ -606,9 +606,9 @@ final class StudioScreenTests: XCTestCase {
         let scrollTo = app.buttons["continuity.scrollToRow"]
         XCTAssertTrue(unfold.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(scrollTo.waitForExistence(timeout: 5))
-        XCTAssertGreaterThanOrEqual(unfold.frame.width, 44 - 0.01)
-        XCTAssertGreaterThanOrEqual(unfold.frame.height, 44 - 0.01)
-        XCTAssertGreaterThanOrEqual(scrollTo.frame.height, 44 - 0.01)
+        assertAtLeastPoints(unfold.frame.width, 44)
+        assertAtLeastPoints(unfold.frame.height, 44)
+        assertAtLeastPoints(scrollTo.frame.height, 44)
 
         let container = any["continuity.container"]
         XCTAssertTrue(container.waitForExistence(timeout: 5))
@@ -714,10 +714,10 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(skip.waitForExistence(timeout: 5), "skip missing from the speaking rail")
         XCTAssertGreaterThanOrEqual(play.frame.midX, barFrame.minX - 4, "play left the rail")
         XCTAssertGreaterThanOrEqual(skip.frame.midX, barFrame.minX - 4, "skip left the rail")
-        XCTAssertGreaterThanOrEqual(play.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(play.frame.height, 44)
-        XCTAssertGreaterThanOrEqual(skip.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(skip.frame.height, 44)
+        assertAtLeastPoints(play.frame.width, 44)
+        assertAtLeastPoints(play.frame.height, 44)
+        assertAtLeastPoints(skip.frame.width, 44)
+        assertAtLeastPoints(skip.frame.height, 44)
         if let content = settledFrame(of: any["folded.contentColumn"], "content column") {
             XCTAssertFalse(content.insetBy(dx: -1, dy: -1).contains(play.frame),
                            "play is still in the content column")
@@ -739,7 +739,7 @@ final class StudioScreenTests: XCTestCase {
         let app = launch(scenario: "duoWideSpeaking", largeText: true)
         let more = app.buttons["folded.more"]
         XCTAssertTrue(more.waitForExistence(timeout: 15), "More missing at large text\n\(app.debugDescription)")
-        XCTAssertGreaterThanOrEqual(more.frame.height, 44)
+        assertAtLeastPoints(more.frame.height, 44)
         more.tap()
         assertMoreMenuInsideWindow(app)
     }
@@ -754,8 +754,8 @@ final class StudioScreenTests: XCTestCase {
         let collapse = app.buttons["folded.collapse"]
         XCTAssertTrue(collapse.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(collapse.isHittable)
-        XCTAssertGreaterThanOrEqual(collapse.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(collapse.frame.height, 44)
+        assertAtLeastPoints(collapse.frame.width, 44)
+        assertAtLeastPoints(collapse.frame.height, 44)
         collapse.tap()
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed,
@@ -844,8 +844,8 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertFalse(rows.isEmpty, "More menu has no visible rows\n\(app.debugDescription)",
                        file: file, line: line)
         for row in rows {
-            XCTAssertGreaterThanOrEqual(row.frame.height, 44, "\(row.identifier) is under 44 pt",
-                                        file: file, line: line)
+            assertAtLeastPoints(row.frame.height, 44, "\(row.identifier) is under 44 pt",
+                                file: file, line: line)
             XCTAssertTrue(window.contains(row.frame),
                           "\(row.identifier) left the window \(row.frame) vs \(window)",
                           file: file, line: line)
@@ -928,8 +928,8 @@ final class StudioScreenTests: XCTestCase {
             XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(frame), "\(name) is outside the container: \(detail)",
                           file: file, line: line)
             if name != "scrubber" {
-                XCTAssertGreaterThanOrEqual(frame.width, 44, "\(name) under 44 pt wide: \(detail)", file: file, line: line)
-                XCTAssertGreaterThanOrEqual(frame.height, 44, "\(name) under 44 pt tall: \(detail)", file: file, line: line)
+                assertAtLeastPoints(frame.width, 44, "\(name) under 44 pt wide: \(detail)", file: file, line: line)
+                assertAtLeastPoints(frame.height, 44, "\(name) under 44 pt tall: \(detail)", file: file, line: line)
             }
         }
     }
@@ -983,8 +983,8 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(expand.waitForExistence(timeout: 5), "no way back to the rail\n\(app.debugDescription)")
         guard let expandFrame = settledFrame(of: expand, "Show rail") else { return }
         XCTAssertTrue(expand.isHittable)
-        XCTAssertGreaterThanOrEqual(expandFrame.width, 44, "Show rail is under 44 pt wide: \(expandFrame)")
-        XCTAssertGreaterThanOrEqual(expandFrame.height, 44, "Show rail is under 44 pt tall: \(expandFrame)")
+        assertAtLeastPoints(expandFrame.width, 44, "Show rail is under 44 pt wide: \(expandFrame)")
+        assertAtLeastPoints(expandFrame.height, 44, "Show rail is under 44 pt tall: \(expandFrame)")
         XCTAssertLessThan(expandFrame.midY, box.minY + box.height / 3, "Show rail is not in the top header row: \(expandFrame)")
         XCTAssertGreaterThan(expandFrame.midX, box.midX, "Show rail is not on the trailing side: \(expandFrame)")
         save(app, "open-rail-collapsed-landscape")
@@ -1090,8 +1090,8 @@ final class StudioScreenTests: XCTestCase {
                 XCTAssertTrue(element.isHittable, "\(name) is not hittable in the rail: \(scenario) \(frame)")
                 XCTAssertGreaterThanOrEqual(frame.midX, barFrame.minX - 4, "\(name) left the rail in \(scenario)")
                 XCTAssertLessThanOrEqual(frame.midX, barFrame.maxX + 4, "\(name) left the rail in \(scenario)")
-                XCTAssertGreaterThanOrEqual(frame.width, 44, "\(name) is under 44 pt wide in \(scenario)")
-                XCTAssertGreaterThanOrEqual(frame.height, 44, "\(name) is under 44 pt tall in \(scenario)")
+                assertAtLeastPoints(frame.width, 44, "\(name) is under 44 pt wide in \(scenario)")
+                assertAtLeastPoints(frame.height, 44, "\(name) is under 44 pt tall in \(scenario)")
                 XCTAssertFalse(columnFrame.insetBy(dx: -1, dy: -1).contains(frame),
                                "\(name) is still in the content column in \(scenario)")
             }
@@ -1565,9 +1565,8 @@ final class StudioScreenTests: XCTestCase {
         XCTAssertTrue(button.waitForExistence(timeout: 10), "rating button:\n\(app.debugDescription)")
         XCTAssertTrue(button.label.contains("not rated"), button.label)
         XCTAssertTrue(button.isHittable)
-        // Simulators report sub-point float noise (43.99999999999994 on iPhone Air), so allow 0.01 pt.
-        XCTAssertGreaterThanOrEqual(button.frame.width, 44 - 0.01, "44 pt tap target")
-        XCTAssertGreaterThanOrEqual(button.frame.height, 44 - 0.01, "44 pt tap target")
+        assertAtLeastPoints(button.frame.width, 44, "44 pt tap target")
+        assertAtLeastPoints(button.frame.height, 44, "44 pt tap target")
         XCTAssertTrue(shows(app, "Rate"), "first-time label")
         XCTAssertTrue(shows(app, "Morning Light, The Calm Collective"), "the labels stay one element")
         save(app, "rating-first-time")
@@ -1822,7 +1821,7 @@ final class StudioScreenTests: XCTestCase {
         }
         let stop = app.buttons["duo.station.\(lateNight)"]
         XCTAssertTrue(stop.waitForExistence(timeout: 5), "Late Night dial stop missing\n\(app.debugDescription)")
-        XCTAssertGreaterThanOrEqual(stop.frame.height, 44, "dial stop under 44 pt: \(stop.frame)")
+        assertAtLeastPoints(stop.frame.height, 44, "dial stop under 44 pt: \(stop.frame)")
         stop.tap()
         waitLabel(started, lateNight, "the dial starts the tapped station's id")
         let title = any["station.title"]
@@ -2156,8 +2155,8 @@ final class StudioScreenTests: XCTestCase {
         for screen in screens {
             let show = app.buttons["split.show.\(screen)"]
             XCTAssertTrue(show.waitForExistence(timeout: 5), screen)
-            XCTAssertGreaterThanOrEqual(show.frame.width, 44, screen)
-            XCTAssertGreaterThanOrEqual(show.frame.height, 44, screen)
+            assertAtLeastPoints(show.frame.width, 44, screen)
+            assertAtLeastPoints(show.frame.height, 44, screen)
             show.tap()
             let decision = any["split.decision"]
             XCTAssertTrue(decision.waitForExistence(timeout: 8), "\(screen) never resolved\n\(app.debugDescription)")
@@ -2258,8 +2257,8 @@ final class StudioScreenTests: XCTestCase {
                               name: String) throws {
         guard let frame = settledFrame(of: element, name) else { return }
         let detail = "\(name) \(frame) container \(box) insets \(leading),\(trailing)"
-        XCTAssertGreaterThanOrEqual(frame.width, 44, detail)
-        XCTAssertGreaterThanOrEqual(frame.height, 44, detail)
+        assertAtLeastPoints(frame.width, 44, detail)
+        assertAtLeastPoints(frame.height, 44, detail)
         XCTAssertGreaterThanOrEqual(frame.minX, box.minX + leading - 2, detail)
         XCTAssertLessThanOrEqual(frame.maxX, box.maxX - trailing + 2, detail)
         XCTAssertTrue(box.insetBy(dx: -2, dy: -2).contains(frame), "\(name) is clipped: \(detail)")
