@@ -116,13 +116,14 @@ public struct PlaybackBoundaryDetector: Sendable {
     /// #585 review (Echo, Atlas): a slow start looks the same as a rewind for a while. After our
     /// `play()` returns, MusicKit can report the song paused at 0:00 for seconds while it buffers
     /// (cellular, AirPlay, the #526 lag). So the stall has to outlast #109's start-confirm deadline
-    /// (`PlaybackConfirmPolicy.maxPolls` x 0.5 s = 8 s), the app's existing line between a slow start
+    /// (`PlaybackConfirmPolicy.deadlineSeconds`, 8 s), the app's existing line between a slow start
     /// and a failed one. A shorter stall that then plays is a slow start and nothing happens.
-    static let rewoundBeforePlayingStallSeconds: TimeInterval = Double(PlaybackConfirmPolicy.maxPolls) * 0.5
+    static let rewoundBeforePlayingStallSeconds: TimeInterval = PlaybackConfirmPolicy.deadlineSeconds
     /// #585 review (Atlas): one rewind-derived cut, then none until a song is seen playing (or a
     /// clear or mid-song stop proves a real Next). If every song stalls at 0:00, this gives at most the
-    /// one advance a real second press would, then leaves the stall to the start watchdog instead of
-    /// walking down the queue.
+    /// one advance a real second press would and then stops instead of walking down the queue. Known
+    /// gap: the skip path arms no start-confirm watchdog, so if the next song also stalls after the
+    /// capped cut, nothing reports it. Tracked in #586.
     private var rewindCutSpent = false
 
     // Build 18 P0 (-Fry): sticky per-entry facts that a system interruption cannot clear.

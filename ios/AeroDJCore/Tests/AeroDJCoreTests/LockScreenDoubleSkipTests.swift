@@ -1966,6 +1966,14 @@ extension LockScreenDoubleSkipTests {
         XCTAssertEqual(show.surfaces, 0)
     }
 
+    /// Atlas: the rewind window and #109's deadline come from one named constant and cannot drift.
+    func testRewindWindowIsTheStartConfirmDeadline() {
+        XCTAssertEqual(PlaybackConfirmPolicy.deadlineSeconds,
+                       Double(PlaybackConfirmPolicy.maxPolls) * PlaybackConfirmPolicy.pollInterval)
+        XCTAssertEqual(PlaybackBoundaryDetector.rewoundBeforePlayingStallSeconds, PlaybackConfirmPolicy.deadlineSeconds)
+        XCTAssertEqual(PlaybackConfirmPolicy.deadlineSeconds, 8, accuracy: 0.001)
+    }
+
     /// Atlas: a user skip resets the one-rewind-cut cap. After a capped cut (nothing seen playing),
     /// the user presses Next through the app's handler; a later rewind-type stall past the window on
     /// that new song cuts again, exactly once.
