@@ -1021,6 +1021,11 @@ final class MusicKitService: ObservableObject {
                 if skipCoordinator.isInFlight { return }
                 surfaceNoProgressEnd(stillPlaying: observation.isPlaying)
             }
+            if boundaries.takeSkipStartStalled(), let attempt = attempts.current {
+                // #586 (-Fry): the capped rewind cut's target stayed at 0:00 past #109's deadline.
+                // The skip path arms no confirm watchdog, so report it here the same way.
+                reportConfirmProblem(.confirmDeadline(last: .paused), attempt: attempt)
+            }
             return
         }
         isPlaying = observation.isPlaying
