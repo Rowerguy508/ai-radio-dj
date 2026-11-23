@@ -246,8 +246,8 @@ final class RailDLayoutTests: XCTestCase {
         let tune = app.buttons.matching(identifier: "duo.stationTune").firstMatch
         XCTAssertTrue(tune.waitForExistence(timeout: 5), "Tune missing\n\(app.debugDescription)", file: file, line: line)
         let tuneFrame = try XCTUnwrap(settledFrame(of: tune, "Tune"), file: file, line: line)
-        XCTAssertGreaterThanOrEqual(tuneFrame.width, 44, "Tune \(tuneFrame)", file: file, line: line)
-        XCTAssertGreaterThanOrEqual(tuneFrame.height, 44, "Tune \(tuneFrame)", file: file, line: line)
+        assertAtLeastPoints(tuneFrame.width, 44, "Tune \(tuneFrame)", file: file, line: line)
+        assertAtLeastPoints(tuneFrame.height, 44, "Tune \(tuneFrame)", file: file, line: line)
         XCTAssertGreaterThanOrEqual(railGlassMinX - tuneFrame.maxX, minimumGap - 0.5,
                                     "Tune \(tuneFrame) ends within \(minimumGap) pt of the rail glass at \(railGlassMinX)",
                                     file: file, line: line)
