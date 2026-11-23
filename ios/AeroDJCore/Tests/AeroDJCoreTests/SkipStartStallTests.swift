@@ -226,4 +226,88 @@ final class SkipStartStallTests: XCTestCase {
         XCTAssertTrue(effect.events.contains(.startConfirmTimedOut))
         XCTAssertNotNil(effect.message)
     }
+
+    /// Atlas's #587 blocker: on the skip path transport is still `.playing` when the stall is
+    /// reported, so a poll that confirms only from `.preparing` never clears the banner when C
+    /// starts. The poll must also confirm the attempt it reported once MusicKit plays past 0:00.
+    func testMusicKitServicePollConfirmsTheReportedSkipStartOutsidePreparing() throws {
+        let poll = try pollSource()
+        let gate = poll.split(separator: "if observation.isPlaying {").dropFirst().first
+            .flatMap { $0.split(separator: "let interpreted = boundaries.interpret(").first }.map(String.init) ?? ""
+        XCTAssertFalse(gate.isEmpty, "the poll's playing branch")
+        XCTAssertTrue(gate.contains("confirmStart(attempt)"), "the poll confirms through confirmStart")
+        XCTAssertTrue(gate.contains("PlaybackConfirmPolicy.pollConfirms("), "the poll's confirm goes through the Core seam")
+        XCTAssertTrue(gate.contains("reportedThisAttempt: confirmReportedAttempt == attempt"),
+                      "a reported start confirms from the poll, not only a .preparing one")
+        XCTAssertFalse(gate.contains("if snapshot.transport == .preparing, let attempt = attempts.current {\n"),
+                       "the confirm is no longer gated on .preparing alone")
+        // `confirmStart` is the one clear: only the reported attempt's error, then it forgets it.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("AeroDJ/MusicKitService.swift"), encoding: .utf8)
+        let confirm = source.split(separator: "private func confirmStart(").dropFirst().first
+            .flatMap { $0.split(separator: "private func beginAttempt(").first }.map(String.init) ?? ""
+        XCTAssertTrue(confirm.contains("if confirmReportedAttempt == attempt {"))
+        XCTAssertTrue(confirm.contains("confirmReportedAttempt = nil"))
+        XCTAssertTrue(confirm.contains("send(.errorCleared)"))
+        XCTAssertFalse(confirm.contains("pause()"), "confirming never pauses")
+    }
+
+    private func pollSource() throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("AeroDJ/MusicKitService.swift"), encoding: .utf8)
+        return source.split(separator: "private func pollPlaybackPosition()").dropFirst().first
+            .flatMap { $0.split(separator: "private func noteSkipLoadCut(").first }.map(String.init) ?? ""
+    }
+
+    /// The Core seam the poll uses, and the engine state it leads to: A playing, Next, the capped cut
+    /// to C, C's stall reported (banner up, transport still `.playing`), then C plays past 0:00. The
+    /// poll confirms, and `confirmStart` sends `.playbackConfirmed` and `.errorCleared`: no banner.
+    func testAReportedSkipStartThatThenPlaysClearsTheBanner() {
+        var engine = PlaybackEngine()
+        engine.apply(.queueStarted(tracks: Self.tracks, startIndex: 0, station: nil))
+        engine.apply(.playbackConfirmed)
+        engine.apply(.userSkipped(nextIndex: 1))
+        engine.apply(.userSkipped(nextIndex: 2))
+        let attempt = PlaybackAttemptID(number: 3)
+        let effect = StartFailurePolicy.effect(.confirmDeadline(last: .paused), attempt: attempt, current: attempt)
+        for event in effect.events { engine.apply(event) }
+        XCTAssertEqual(engine.snapshot.transport, .playing, "precondition: the skip path never moved to .preparing")
+        XCTAssertNotNil(engine.snapshot.error, "precondition: the slow-start banner is up")
+
+        // Still at 0:00: MusicKit's .playing alone is not a start yet.
+        XCTAssertFalse(PlaybackConfirmPolicy.pollConfirms(position: 0, transportIsPreparing: false,
+                                                          reportedThisAttempt: true))
+        XCTAssertFalse(PlaybackConfirmPolicy.pollConfirms(position: nil, transportIsPreparing: false,
+                                                          reportedThisAttempt: true))
+        // C plays past 0:00: confirmed, and the reported error is cleared.
+        XCTAssertTrue(PlaybackConfirmPolicy.pollConfirms(position: 0.5, transportIsPreparing: false,
+                                                         reportedThisAttempt: true),
+                      "a reported skip start that plays is confirmed, so the banner is cleared")
+        engine.apply(.playbackConfirmed)
+        engine.apply(.errorCleared)
+        XCTAssertNil(engine.snapshot.error, "the banner does not outlive a playing song")
+        XCTAssertEqual(engine.snapshot.transport, .playing)
+        XCTAssertEqual(engine.snapshot.nowPlaying, Self.tracks[2], "no advance")
+        // `confirmStart` drops `confirmReportedAttempt`, so later polls never confirm or clear again.
+        XCTAssertFalse(PlaybackConfirmPolicy.pollConfirms(position: 1.5, transportIsPreparing: false,
+                                                          reportedThisAttempt: false), "cleared once")
+    }
+
+    /// #109 unchanged: a `.preparing` start confirms on `.playing`; nothing else confirms from
+    /// `.playing` or `.paused` unless this attempt reported, so unrelated errors are never cleared.
+    func testThePollConfirmsOnlyAPreparingOrAReportedStart() {
+        for position: TimeInterval? in [nil, 0, 3] {
+            XCTAssertTrue(PlaybackConfirmPolicy.pollConfirms(position: position, transportIsPreparing: true,
+                                                             reportedThisAttempt: false))
+            XCTAssertFalse(PlaybackConfirmPolicy.pollConfirms(position: position, transportIsPreparing: false,
+                                                              reportedThisAttempt: false))
+        }
+    }
+
+    private static let tracks = (0..<6).map { TrackInfo(id: "t\($0)", title: "Song \($0)", artistName: "Artist") }
 }
