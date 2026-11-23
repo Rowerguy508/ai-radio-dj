@@ -53,7 +53,7 @@ final class AppWideLayoutTests: XCTestCase {
     @MainActor
     private func assertTarget(_ element: XCUIElement, in box: CGRect, _ name: String,
                               file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(name) \(element.frame)", file: file, line: line)
+        assertAtLeastPoints(element.frame.height, 44, "\(name) \(element.frame)", file: file, line: line)
         XCTAssertTrue(box.insetBy(dx: -1, dy: -1).contains(element.frame), "\(name) left the container", file: file, line: line)
     }
 
