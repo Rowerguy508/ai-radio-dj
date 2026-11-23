@@ -148,6 +148,9 @@ enum StudioCaptureScenario: String {
     case railDLandscapeSpreadVoiceUnavailable
     case railDLandscapeCentredVoiceUnavailable
     case railDLandscapeSidebarVoiceUnavailable
+    /// #426 (-Sentinel): the "Shared with" review with a store whose backup exclusion never
+    /// verifies, so the include toggle shows the fail-closed alert. Debug-only shot, not required.
+    case sharedInboxSaveFailed
 
     /// The mockup D frames drawn in `RailDCaptureContainer`.
     var isRailDContainer: Bool {
@@ -283,6 +286,8 @@ struct StudioCaptureView: View {
                 DuoWideCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .duoLandscape || scenario == .duoSidebar {
                 DuoOpenCaptureContainer(scenario: scenario, studio: dependencies.studio)
+            } else if scenario == .sharedInboxSaveFailed {
+                SharedInboxSaveFailedCapture()
             } else if scenario.isRailDContainer {
                 RailDCaptureContainer(scenario: scenario, studio: dependencies.studio)
             } else if scenario == .splitView {
