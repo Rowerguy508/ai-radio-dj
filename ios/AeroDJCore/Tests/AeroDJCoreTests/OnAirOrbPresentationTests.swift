@@ -178,5 +178,42 @@ final class OnAirOrbPresentationTests: XCTestCase {
         let placeholder = try appSource("AeroDJ/PlaybackComponents.swift")
         XCTAssertTrue(placeholder.contains("if showsSpinner, content.showsStartSpinner {"))
     }
+
+    // MARK: Colour (Orion, Nov 23: idle and starting take the talking orb's art-derived colour)
+
+    func testIdleAndStartingTakeTheTalkingOrbsArtDerivedColour() {
+        let talking = DJOrbFill.source(for: .talking, track: track)
+        XCTAssertEqual(talking, .artwork(track), "the talking orb is coloured by the track's art")
+        XCTAssertEqual(talking, DJOrbFill.source(track: track))
+        for stage: ArtCardStage in [.idle, .starting] {
+            XCTAssertEqual(DJOrbFill.source(for: stage, track: track), talking, "\(stage) uses the same source")
+        }
+    }
+
+    func testNoArtFallsBackToTheTalkingOrbsNeutralFill() {
+        XCTAssertEqual(DJOrbFill.source(track: nil), .neutral)
+        for stage: ArtCardStage in [.talking, .idle, .starting] {
+            XCTAssertEqual(DJOrbFill.source(for: stage, track: nil), .neutral, "\(stage)")
+        }
+        // The one neutral fallback the talking orb already drew (white 0.55 → 0.28); no new palette.
+        XCTAssertEqual(DJOrbFill.neutralWhites, [0.55, 0.28])
+        XCTAssertNil(DJOrbFill.source(for: .artwork, track: track), "the art card draws the art, not an orb")
+        XCTAssertNil(DJOrbFill.source(for: .cleared, track: track))
+    }
+
+    func testBothOrbViewsDrawTheSharedFillAndNoMockupPalette() throws {
+        let lava = try appSource("AeroDJ/DJLavaOrb.swift")
+        XCTAssertTrue(lava.contains("DJOrbFill.source("), "the talking orb reads the shared source")
+        XCTAssertTrue(lava.contains("struct DJOrbArtFill: View"))
+        let player = try appSource("AeroDJ/FoldedPlayer.swift")
+        let start = try XCTUnwrap(player.range(of: "private struct FoldedStartCard: View {"))
+        let end = try XCTUnwrap(player.range(of: "// MARK: - Art card", range: start.upperBound..<player.endIndex))
+        let card = String(player[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(card.contains("DJOrbFill.source(for: stage"))
+        XCTAssertTrue(card.contains("DJOrbArtFill("))
+        for token in ["0x8C", "0x5A", "0x2A", "0xF8", "0xE0", "0xC4", "0x7A", "0xF0", "Color(red:"] {
+            XCTAssertFalse(card.contains(token), "no fixed mockup colour (\(token))")
+        }
+    }
 }
 

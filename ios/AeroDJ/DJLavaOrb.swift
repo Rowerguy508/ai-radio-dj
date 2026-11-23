@@ -136,17 +136,8 @@ struct DJLavaOrb: View {
     }
 
     /// The art's own colours: heavily blurred so the cover reads as colour fields, not an image.
-    @ViewBuilder
     private func fill(side: CGFloat) -> some View {
-        if let track {
-            BleedArtwork(track: track, station: station)
-                .blur(radius: max(8, side * 0.10), opaque: true)
-                .saturation(1.15)
-        } else {
-            // Neutral fallback: no art and no track to derive a palette from.
-            LinearGradient(colors: [Color(white: 0.55), Color(white: 0.28)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-        }
+        DJOrbArtFill(fill: DJOrbFill.source(track: track), station: station, side: side)
     }
 
     /// The silhouette: metaballs, or one soft circle.
@@ -178,6 +169,28 @@ struct DJLavaOrb: View {
                                      center: .center, startRadius: 0, endRadius: max(1, r)))
                 .frame(width: r * 2, height: r * 2)
                 .frame(width: geo.size.width, height: geo.size.height)
+        }
+    }
+}
+
+/// The orb colour, shared by the talking lava orb and #434's idle and starting orbs
+/// (`DJOrbFill`): the track's art blurred into colour fields (`BleedArtwork` falls back to the
+/// station ident), or with no track the neutral grey. Never amber, never a fixed palette.
+struct DJOrbArtFill: View {
+    let fill: DJOrbFill
+    let station: StationRef?
+    let side: CGFloat
+
+    var body: some View {
+        switch fill {
+        case .artwork(let track):
+            BleedArtwork(track: track, station: station)
+                .blur(radius: max(8, side * 0.10), opaque: true)
+                .saturation(1.15)
+        case .neutral:
+            // Neutral fallback: no art and no track to derive a palette from.
+            LinearGradient(colors: DJOrbFill.neutralWhites.map { Color(white: $0) },
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
         }
     }
 }

@@ -1401,7 +1401,7 @@ extension FoldedPlayer {
                 // ids ("Nothing playing", "Starting <name>…", `nowPlaying.stationStart`) and
                 // drops the system spinner. Search stays behind its explicit button (#454).
                 if includesArt {
-                    FoldedStartCard(stage: stage, side: artSide,
+                    FoldedStartCard(stage: stage, track: heroTrack, station: station, side: artSide,
                                     cornerRadius: CGFloat(FoldedOuterLayout.artRadius))
                         .padding(.top, 12)
                         .padding(.horizontal, CGFloat(FoldedOuterLayout.artInsetBesideRail))
@@ -1732,27 +1732,25 @@ private struct FoldedBackdrop: View {
 
 /// #434 (owner, Nov 23 2026): Idle and Starting in the folded player's art frame, the same
 /// frame and corner as the art card, so the words sit where a song's title will. Idle is a
-/// static dim ember (~36% of the side, never under 44 pt). Starting is a warming orb (~52%)
+/// still, dimmed ember (~36% of the side, never under 44 pt). Starting is a still orb (~52%)
 /// with a 2 pt contrast ring 10% larger, a held 240° arc that never travels; under Reduce
-/// Motion it is a complete static circle. Nothing moves, so Reduce Motion needs nothing else.
-/// Flat gradients with a light specular, no shadow, never amber (amber is the ON AIR pill's).
-/// Decorative: hidden from VoiceOver; the placeholder under it carries the words. -Nova
+/// Motion it is a complete static circle. Colour (Orion, Nov 23): the talking orb's own
+/// source (`DJOrbFill`, drawn by `DJOrbArtFill`): the track's art, or with no track the
+/// talking orb's neutral grey. No fixed palette, never amber. Decorative: hidden from
+/// VoiceOver; the placeholder under it carries the words. -Nova
 private struct FoldedStartCard: View {
     let stage: ArtCardStage
+    /// The hero track, as the talking orb reads it. Nil while idle or starting (a previous
+    /// station's song never colours a new start), so these draw the neutral fill.
+    let track: TrackInfo?
+    let station: StationRef?
     let side: CGFloat
     var cornerRadius: CGFloat = FoldedStyle.artRadius
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    // Mockup tokens (/workspace/mockups/434-orb/SPEC.md).
-    private static let emberHighlight = Color(red: 0x8C / 255, green: 0x58 / 255, blue: 0x50 / 255)
-    private static let emberMid = Color(red: 0x5A / 255, green: 0x34 / 255, blue: 0x32 / 255)
-    private static let emberEdge = Color(red: 0x2A / 255, green: 0x1A / 255, blue: 0x1A / 255)
-    private static let orbHighlight = Color(red: 0xF8 / 255, green: 0xD8 / 255, blue: 0xCC / 255)
-    private static let orbMid = Color(red: 0xE0 / 255, green: 0x90 / 255, blue: 0x80 / 255)
-    private static let orbCore = Color(red: 0xC4 / 255, green: 0x70 / 255, blue: 0x6A / 255)
-    private static let orbEdge = Color(red: 0x7A / 255, green: 0x3A / 255, blue: 0x3A / 255)
-    private static let ringColor = Color(red: 0xF0 / 255, green: 0xC8 / 255, blue: 0xB8 / 255)
+    /// The idle ember is the same fill, dimmed.
+    private static let emberOpacity = 0.55
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -1762,31 +1760,29 @@ private struct FoldedStartCard: View {
         CGFloat(FoldedArtCardLayers.orbSide(for: stage, cardSide: Double(side)))
     }
 
-    private var colors: [Color] {
-        stage == .idle ? [Self.emberHighlight, Self.emberMid, Self.emberEdge]
-                       : [Self.orbHighlight, Self.orbMid, Self.orbCore, Self.orbEdge]
-    }
-
     var body: some View {
         ZStack {
             shape.fill(Color.white.opacity(0.04))
                 .overlay(shape.strokeBorder(FoldedStyle.hairline, lineWidth: 1))
-            Circle()
-                .fill(RadialGradient(colors: colors, center: UnitPoint(x: 0.4, y: 0.36),
-                                     startRadius: 0, endRadius: orbSide * 0.62))
-                .overlay {
-                    // Light specular, at most 20% white.
-                    Circle()
-                        .fill(RadialGradient(colors: [Color.white.opacity(0.18), .clear],
-                                             center: UnitPoint(x: 0.36, y: 0.3),
-                                             startRadius: 0, endRadius: orbSide * 0.3))
-                }
-                .frame(width: orbSide, height: orbSide)
+            if let fill = DJOrbFill.source(for: stage, track: track) {
+                DJOrbArtFill(fill: fill, station: station, side: orbSide)
+                    .frame(width: orbSide, height: orbSide)
+                    .clipShape(Circle())
+                    .overlay {
+                        // Neutral sheen, as on the talking orb: white, so the colour stays the art's.
+                        Circle()
+                            .fill(RadialGradient(colors: [Color.white.opacity(0.18), .clear],
+                                                 center: UnitPoint(x: 0.36, y: 0.3),
+                                                 startRadius: 0, endRadius: orbSide * 0.45))
+                    }
+                    .opacity(stage == .idle ? Self.emberOpacity : 1)
+            }
             if stage == .starting {
                 let ring = orbSide * CGFloat(FoldedArtCardLayers.startingRingScale)
                 Circle()
                     .trim(from: 0, to: CGFloat(DJOrbPolicy.startingRingArc(reduceMotion: reduceMotion)))
-                    .stroke(Self.ringColor,
+                    // Contrast only: white, so no hue but the art's.
+                    .stroke(Color.white.opacity(0.7),
                             style: StrokeStyle(lineWidth: CGFloat(FoldedArtCardLayers.startingRingLineWidth),
                                                lineCap: .round))
                     // The 120° opening sits at the top.

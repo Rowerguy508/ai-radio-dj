@@ -154,3 +154,29 @@ extension FoldedOuterLayout {
         }
     }
 }
+
+/// Where an orb's colour comes from (Orion, Nov 23 2026). One rule for the talking lava orb
+/// and the idle and starting orbs: the track's art (blurred `BleedArtwork`, which falls back
+/// to the station ident when the track has no artwork), or, with no track, the talking
+/// orb's neutral grey. No other palette. -Nova
+public enum DJOrbFill: Equatable, Sendable {
+    /// The track's art (or its station ident) as colour fields.
+    case artwork(TrackInfo)
+    /// No track: the neutral grey gradient the talking orb draws.
+    case neutral
+
+    /// The neutral gradient's two whites, top-leading to bottom-trailing.
+    public static let neutralWhites: [Double] = [0.55, 0.28]
+
+    public static func source(track: TrackInfo?) -> DJOrbFill {
+        track.map { .artwork($0) } ?? .neutral
+    }
+
+    /// The fill for an orb drawn in this card stage. Nil: the stage draws no orb in the card.
+    public static func source(for stage: ArtCardStage, track: TrackInfo?) -> DJOrbFill? {
+        switch stage {
+        case .talking, .idle, .starting: source(track: track)
+        case .artwork, .cleared: nil
+        }
+    }
+}
