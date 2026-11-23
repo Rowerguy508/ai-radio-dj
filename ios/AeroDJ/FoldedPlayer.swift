@@ -1405,7 +1405,7 @@ extension FoldedPlayer {
                 // ids ("Nothing playing", "Starting <name>…", `nowPlaying.stationStart`) and
                 // drops the system spinner. Search stays behind its explicit button (#454).
                 if includesArt {
-                    FoldedStartCard(stage: stage, track: heroTrack, station: station, side: artSide,
+                    FoldedStartCard(stage: stage, track: heroTrack, station: heading.opened, side: artSide,
                                     cornerRadius: CGFloat(FoldedOuterLayout.artRadius))
                         .padding(.top, 12)
                         .padding(.horizontal, CGFloat(FoldedOuterLayout.artInsetBesideRail))
@@ -1740,14 +1740,16 @@ private struct FoldedBackdrop: View {
 /// with a 2 pt contrast ring 10% larger, a 240° arc that turns slowly (one turn in 8 s) so a
 /// stuck start doesn't look ready (`DJOrbPolicy.ringMotion`). Under Reduce Motion it is a
 /// complete static circle; Studio captures draw it still at its rest angle. Colour (Orion, Nov 23): the talking orb's own
-/// source (`DJOrbFill`, drawn by `DJOrbArtFill`): the track's art, or with no track the
-/// talking orb's neutral grey. No fixed palette, never amber. Decorative: hidden from
+/// source (`DJOrbFill`, drawn by `DJOrbArtFill`): the track's art, else idle is the talking
+/// orb's neutral grey and starting is the starting station's ident (grey with no station).
+/// No fixed palette, never amber. Decorative: hidden from
 /// VoiceOver; the placeholder under it carries the words. -Nova
 private struct FoldedStartCard: View {
     let stage: ArtCardStage
     /// The hero track, as the talking orb reads it. Nil while idle or starting (a previous
     /// station's song never colours a new start), so these draw the neutral fill.
     let track: TrackInfo?
+    /// The opened station (the one starting). Starting draws its ident; idle ignores it.
     let station: StationRef?
     let side: CGFloat
     var cornerRadius: CGFloat = FoldedStyle.artRadius
@@ -1786,7 +1788,7 @@ private struct FoldedStartCard: View {
         ZStack {
             shape.fill(Color.white.opacity(0.04))
                 .overlay(shape.strokeBorder(FoldedStyle.hairline, lineWidth: 1))
-            if let fill = DJOrbFill.source(for: stage, track: track) {
+            if let fill = DJOrbFill.source(for: stage, track: track, station: station) {
                 DJOrbArtFill(fill: fill, station: station, side: orbSide)
                     .frame(width: orbSide, height: orbSide)
                     .clipShape(Circle())

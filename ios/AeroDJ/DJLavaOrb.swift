@@ -175,7 +175,7 @@ struct DJLavaOrb: View {
 
 /// The orb colour, shared by the talking lava orb and #434's idle and starting orbs
 /// (`DJOrbFill`): the track's art blurred into colour fields (`BleedArtwork` falls back to the
-/// station ident), or with no track the neutral grey. Never amber, never a fixed palette.
+/// station ident), the starting station's ident (#434 starting only), or the neutral grey. Never amber, never a fixed palette.
 struct DJOrbArtFill: View {
     let fill: DJOrbFill
     let station: StationRef?
@@ -185,6 +185,11 @@ struct DJOrbArtFill: View {
         switch fill {
         case .artwork(let track):
             BleedArtwork(track: track, station: station)
+                .blur(radius: max(8, side * 0.10), opaque: true)
+                .saturation(1.15)
+        case .stationIdent(let ident):
+            // #434 starting: the station's own ident (BleedArtwork with no track), blurred the same way.
+            BleedArtwork(track: nil, station: ident)
                 .blur(radius: max(8, side * 0.10), opaque: true)
                 .saturation(1.15)
         case .neutral:

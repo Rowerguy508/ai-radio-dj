@@ -162,6 +162,9 @@ extension FoldedOuterLayout {
 public enum DJOrbFill: Equatable, Sendable {
     /// The track's art (or its station ident) as colour fields.
     case artwork(TrackInfo)
+    /// Starting with no track (Orion, Nov 23): the starting station's ident, so the start
+    /// reads as that station rather than a dead grey.
+    case stationIdent(StationRef)
     /// No track: the neutral grey gradient the talking orb draws.
     case neutral
 
@@ -173,9 +176,13 @@ public enum DJOrbFill: Equatable, Sendable {
     }
 
     /// The fill for an orb drawn in this card stage. Nil: the stage draws no orb in the card.
-    public static func source(for stage: ArtCardStage, track: TrackInfo?) -> DJOrbFill? {
+    /// Talking and idle ignore `station` (art, else grey). Starting with no track uses the
+    /// starting station's ident; with no station either, grey.
+    public static func source(for stage: ArtCardStage, track: TrackInfo?, station: StationRef? = nil) -> DJOrbFill? {
         switch stage {
-        case .talking, .idle, .starting: source(track: track)
+        case .talking, .idle: source(track: track)
+        case .starting:
+            if let track { .artwork(track) } else if let station { .stationIdent(station) } else { .neutral }
         case .artwork, .cleared: nil
         }
     }

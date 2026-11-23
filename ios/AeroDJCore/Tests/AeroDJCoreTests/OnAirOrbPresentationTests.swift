@@ -258,5 +258,40 @@ final class OnAirOrbPresentationTests: XCTestCase {
         XCTAssertTrue(card.contains("DJOrbPolicy.ringRotationDegrees("))
         XCTAssertTrue(card.contains("StudioCapture.defaultsKey"), "captures draw a fixed frame")
     }
+
+    // MARK: Starting uses the station ident (Orion, Nov 23: grey looks dead while starting)
+
+    func testStartingWithAStationUsesThatStationsIdent() {
+        let calm = StationRef(id: "calm", name: "Morning Calm")
+        XCTAssertEqual(DJOrbFill.source(for: .starting, track: nil, station: calm), .stationIdent(calm))
+    }
+
+    func testStartingWithoutAnIdentFallsBackToGrey() {
+        XCTAssertEqual(DJOrbFill.source(for: .starting, track: nil, station: nil), .neutral)
+    }
+
+    func testIdleStaysGreyEvenWithAStation() {
+        let calm = StationRef(id: "calm", name: "Morning Calm")
+        XCTAssertEqual(DJOrbFill.source(for: .idle, track: nil, station: calm), .neutral)
+        XCTAssertEqual(DJOrbFill.source(for: .idle, track: nil, station: nil), .neutral)
+    }
+
+    func testTheTalkingOrbIsUnchangedByTheStation() {
+        let calm = StationRef(id: "calm", name: "Morning Calm")
+        XCTAssertEqual(DJOrbFill.source(for: .talking, track: track, station: calm), .artwork(track))
+        XCTAssertEqual(DJOrbFill.source(for: .talking, track: nil, station: calm), .neutral,
+                       "talking with no track keeps its neutral grey")
+        XCTAssertEqual(DJOrbFill.source(for: .talking, track: nil, station: calm), DJOrbFill.source(track: nil))
+        let lava = try? appSource("AeroDJ/DJLavaOrb.swift")
+        XCTAssertTrue(lava?.contains("DJOrbFill.source(track: track)") ?? false, "the lava orb ignores the station")
+    }
+
+    func testTheStartCardPassesTheOpenedStation() throws {
+        let player = try appSource("AeroDJ/FoldedPlayer.swift")
+        XCTAssertTrue(player.contains("DJOrbFill.source(for: stage, track: track, station: station)"))
+        XCTAssertTrue(player.contains("FoldedStartCard(stage: stage, track: heroTrack, station: heading.opened"))
+        let lava = try appSource("AeroDJ/DJLavaOrb.swift")
+        XCTAssertTrue(lava.contains("case .stationIdent(let ident):"))
+    }
 }
 
