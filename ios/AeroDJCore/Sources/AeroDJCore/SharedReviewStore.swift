@@ -32,9 +32,14 @@ public struct SharedReviewRecord: Codable, Equatable, Sendable {
 /// no longer in the inbox are pruned, so retention follows the inbox.
 ///
 /// Sentinel's n2 (-Nova): the store's folder (`Review/`) is marked excluded from backup on every
-/// save, the same marker and read-back `FileAudioCache` uses (`BackupExclusionMarking`). If the
-/// mark fails or reads back unset, a content-free line is logged and the save still goes ahead:
-/// review decisions are never dropped because of the flag, and the next save tries again.
+/// save, the same marker and read-back `FileAudioCache` uses (`BackupExclusionMarking`).
+///
+/// #426 (-Sentinel): fails closed, like the voice cache (#416). If the mark throws or reads back
+/// unset, one content-free line is logged and the save throws
+/// `SharedReviewError.backupExclusionUnverified` before anything is written or moved. The caller
+/// keeps its previous state (`SharedInboxReview.update`), so the decision is not applied and the
+/// user is told; nothing new lands in a folder that may be backed up. A file already on disk is
+/// left as it was, and the next save tries the mark again.
 public struct SharedReviewStore: Sendable {
     public let file: URL
     let backupExclusion: any BackupExclusionMarking
@@ -55,7 +60,7 @@ public struct SharedReviewStore: Sendable {
     }
 
     /// Marks the folder excluded and reads it back. False (after the log line) on a throw or an
-    /// unset read-back; a nil read-back (Linux) counts as excluded. Never blocks the save.
+    /// unset read-back; a nil read-back (Linux) counts as excluded. A false result blocks the save (#426).
     @discardableResult
     func markFolderExcludedFromBackup() -> Bool {
         let directory = file.deletingLastPathComponent()
@@ -81,7 +86,7 @@ public struct SharedReviewStore: Sendable {
 
     public func save(_ records: [UUID: SharedReviewRecord]) throws {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        markFolderExcludedFromBackup()
+        guard markFolderExcludedFromBackup() else { throw SharedReviewError.backupExclusionUnverified }
         try setAsideUnreadableFile()
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys

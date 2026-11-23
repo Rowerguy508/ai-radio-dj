@@ -36,6 +36,9 @@ public enum SharedReviewError: Error, Equatable, Sendable {
     case unknownItem
     case emptyRedaction
     case notApproved
+    /// #426 (-Sentinel): the `Review/` folder could not be verified as excluded from backup, so
+    /// nothing was written. The change is not applied; the user sees a plain-language alert.
+    case backupExclusionUnverified
 }
 
 /// Review, redact and delete user-shared items, and expose them as
@@ -85,7 +88,11 @@ public actor SharedInboxReview: ContextSource {
             }
             return entry
         }
-        if store != nil, Set(saved.keys) != Set(entries.map(\.id)) || saved.count != entries.count { try persist() }
+        if store != nil, Set(saved.keys) != Set(entries.map(\.id)) || saved.count != entries.count {
+            // #426 (-Sentinel): pruning only removes records, so a load must not fail because the
+            // folder could not be verified as excluded. The prune waits for the next verified save.
+            do { try persist() } catch SharedReviewError.backupExclusionUnverified {}
+        }
         return result
     }
 

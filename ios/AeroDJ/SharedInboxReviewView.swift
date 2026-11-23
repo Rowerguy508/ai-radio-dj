@@ -129,6 +129,7 @@ extension SharedInboxReviewView {
         case .emptyRedaction: return "The edited text can't be empty."
         case .unknownItem: return "That item is no longer in your inbox."
         case .notApproved: return "Include the item in your briefing first."
+        case .backupExclusionUnverified: return "Couldn't save that change privately, so nothing changed. Please try again."
         case nil: return "Something went wrong. Please try again."
         }
     }
