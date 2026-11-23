@@ -154,7 +154,11 @@ final class RailDLayoutTests: XCTestCase {
         let foldMinX: CGFloat = 352
         let foldWidth: CGFloat = 64
         let app = try launch("railDLandscapeSpread", container: Self.landscape, orientation: .landscapeLeft,
-                             extra: ["-AeroDJRailDFoldMinX", "\(Int(foldMinX))", "-AeroDJRailDFoldWidth", "\(Int(foldWidth))"])
+                             extra: ["-AeroDJRailDFoldMinX", "\(Int(foldMinX))", "-AeroDJRailDFoldWidth", "\(Int(foldWidth))",
+                                     // The open Duo is the phone idiom. On the iPad simulator the player sits under
+                                     // the nav bar (576 pt), which is not the open-Duo placement, so the forced fold
+                                     // was never read (run 45117022603). No iPad reports a hinge.
+                                     "-AeroDJForcePhoneIdiom", "YES"])
         let box = try settledContainer(app, size: Self.landscape)
         let any = app.descendants(matching: .any)
         let rail = try assertRail(app, id: "folded.systemBar", hasCollapse: true)
