@@ -250,8 +250,9 @@ struct PlayingScreen: View {
                                                      containerHeight: Double(routeHeight))
             // The 01-folded reskin draws back and ⋯ itself. FoldedPlayer.body picks its body
             // with the same rule (FoldedOuterLayout.usesOuterReskin: phone width and a track,
-            // never height), so the bar and the body cannot disagree.
-            let showsTrack: Bool = { if case .track = content { return true } else { return false } }()
+            // never height), so the bar and the body cannot disagree. #434: Idle and Starting
+            // are in the folded player too (`FoldedOuterLayout.reskinShows`).
+            let showsTrack = FoldedOuterLayout.reskinShows(content)
             // A split host draws FoldedPlayer.splitMeasured, which has no reskin, so it keeps the bar.
             // #574 rework (owner: no compact player on the Duo's landscape split): the 320 / 410 /
             // 500 × 640 slices are the exception. splitMeasured draws the reskin's Rail D there
