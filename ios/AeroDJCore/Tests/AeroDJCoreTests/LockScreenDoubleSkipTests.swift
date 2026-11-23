@@ -1557,8 +1557,7 @@ extension LockScreenDoubleSkipTests {
         await show.untilIdle()
         show.assertPlaying(index: 1)
         show.markHistory()
-        show.feed(show.rewound())
-        show.feed(show.rewound())
+        show.feedRewoundStallPastTheStartDeadline()
         await show.untilIdle()
         show.assertOwnerOutcome(index: 2)
         XCTAssertEqual(show.loadCuts, 1, "the rewind of B is reported once, as a cut of B")
@@ -1580,8 +1579,7 @@ extension LockScreenDoubleSkipTests {
         await show.untilIdle()
         show.assertPlaying(index: 1)
         show.markHistory()
-        show.feed(show.rewound())
-        show.feed(show.rewound())
+        show.feedRewoundStallPastTheStartDeadline()
         await show.untilIdle()
         show.assertOwnerOutcome(index: 2)
         XCTAssertEqual(show.loadCuts, 1)
@@ -1601,8 +1599,7 @@ extension LockScreenDoubleSkipTests {
         await show.untilIdle()
         show.assertPlaying(index: 1)
         show.markHistory()
-        show.feed(show.rewound())
-        show.feed(show.rewound())
+        show.feedRewoundStallPastTheStartDeadline()
         await show.untilIdle()
         show.assertOwnerOutcome(index: 2)
         XCTAssertNil(show.unexpectedBoundary, "A's entry going away is not a natural end")
@@ -1610,21 +1607,25 @@ extension LockScreenDoubleSkipTests {
     }
 
     /// Three Nexts, each rewinding the song the previous one loaded before a poll saw it play.
-    func testThreeNextsThatEachRewindAnUnplayedSkipSongLandThreeSongsOn() async {
+    /// #585 review (Atlas): rewind-derived cuts are capped at one until a song is seen playing, so
+    /// the third press (C stalled at 0:00, never seen playing) is not taken: it ends on C. A stall
+    /// and a rewind look the same there, and walking down the queue is the worse failure.
+    /// `testAfterCPlaysTheNextRewindIsTakenAgain` covers the press once C has played.
+    func testThreeNextsThatEachRewindAnUnplayedSkipSongAreCappedAtOneRewindCut() async {
         let show = Show()
         show.primePlaying()
         show.feed(show.cleared())
         await show.untilLoadSuspended()
         show.finishLoad()
         await show.untilIdle()
-        show.feed(show.rewound())
-        show.feed(show.rewound())
+        show.feedRewoundStallPastTheStartDeadline()
         await show.untilIdle()
         show.assertPlaying(index: 2)
-        show.feed(show.rewound())
-        show.feed(show.rewound())
+        show.feedRewoundStallPastTheStartDeadline()
         await show.untilIdle()
-        show.assertPlaying(index: 3)
+        show.assertPlaying(index: 2)
+        XCTAssertEqual(show.loadCuts, 1, "one rewind-derived cut")
+        XCTAssertEqual(show.advances, 2)
         XCTAssertEqual(show.reloads, 0)
         XCTAssertEqual(show.surfaces, 0)
     }
@@ -1641,8 +1642,7 @@ extension LockScreenDoubleSkipTests {
         show.assertPlaying(index: 1)
         await show.startSongAndPrepareItsBreak()
         XCTAssertTrue(show.breakIsReady(afterTrack: 1), "B's break is ready before the second Next")
-        show.feed(show.rewound())
-        show.feed(show.rewound())
+        show.feedRewoundStallPastTheStartDeadline()
         await show.untilIdle()
         await show.untilDropsSettle()
         await show.assertBreakNotAiring(advancedTo: 2)
@@ -1681,8 +1681,7 @@ extension LockScreenDoubleSkipTests {
         show.finishLoad()
         await show.untilIdle()
         show.pause()
-        show.feed(show.rewound())
-        show.feed(show.rewound())
+        show.feedRewoundStallPastTheStartDeadline()
         await show.untilIdle()
         XCTAssertEqual(show.index, 1)
         XCTAssertEqual(show.loadCuts, 0)
@@ -1718,7 +1717,7 @@ extension LockScreenDoubleSkipTests {
             skipLoaded(&b)
             XCTAssertNil(atStart(&b, t))
             XCTAssertFalse(b.takeSkipLoadCut(), "one sample may be MusicKit's status lagging our play()")
-            t += 1
+            t += PlaybackBoundaryDetector.rewoundBeforePlayingStallSeconds
             XCTAssertNil(atStart(&b, t))
             XCTAssertEqual(b.pendingSkipLoadCut, SkipLoadCut(shape: .rewind, targetSeenPlaying: false))
             XCTAssertTrue(b.takeSkipLoadCut())
@@ -1739,7 +1738,7 @@ extension LockScreenDoubleSkipTests {
             b.noteOwnPlayReturned()
             XCTAssertNil(atStart(&b, t))
             XCTAssertFalse(b.takeSkipLoadCut())
-            t += 1
+            t += PlaybackBoundaryDetector.rewoundBeforePlayingStallSeconds
             XCTAssertNil(atStart(&b, t))
             XCTAssertTrue(b.takeSkipLoadCut())
         }
@@ -1793,7 +1792,7 @@ extension LockScreenDoubleSkipTests {
             XCTAssertNil(atStart(&b, t))
             XCTAssertNil(atStart(&b, t + 0.1))
             XCTAssertFalse(b.takeSkipLoadCut())
-            XCTAssertNil(atStart(&b, t + 1))
+            XCTAssertNil(atStart(&b, t + PlaybackBoundaryDetector.rewoundBeforePlayingStallSeconds))
             XCTAssertTrue(b.takeSkipLoadCut())
         }
         // A user pause or route loss after our play() returned: the hold wins, no cut.
@@ -1836,5 +1835,226 @@ extension LockScreenDoubleSkipTests {
             XCTAssertNil(atStart(&b, t))
             XCTAssertFalse(b.takeSkipLoadCut())
         }
+    }
+}
+
+// MARK: - #585 review (Echo, Atlas): a slow start is not a rewind
+
+/// After our `play()` returns, MusicKit can keep reporting B paused at 0:00 for a few polls while
+/// the catalog item buffers (cellular, AirPlay, the #526 lag). That is one Next and a slow start,
+/// not a second Next: no cut, no reload, no skip, and B's prepared break stays.
+extension LockScreenDoubleSkipTests {
+    /// One Next, then B stalled at 0:00 on `stalled` polls 1 s apart, then B plays.
+    private func assertSlowStartIsNotANext(stalled: Int, file: StaticString = #filePath, line: UInt = #line) async {
+        let show = Show()
+        show.primePlaying()
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        show.finishLoad()
+        await show.untilIdle()
+        show.assertPlaying(index: 1, file: file, line: line)
+        show.markHistory()
+        for _ in 0..<stalled {
+            show.feed(show.rewound())
+            await show.untilIdle()
+        }
+        for position in 1...3 {
+            show.feed(show.sample(playing: true, position: TimeInterval(position)))
+            await show.untilIdle()
+        }
+        show.assertPlaying(index: 1, file: file, line: line)
+        XCTAssertEqual(show.loadCuts, 0, "\(stalled) stalled polls: no cut", file: file, line: line)
+        XCTAssertEqual(show.advances, 1, "\(stalled) stalled polls: one Next is one advance", file: file, line: line)
+        XCTAssertEqual(show.reloads, 0, "\(stalled) stalled polls: no reload", file: file, line: line)
+        XCTAssertEqual(show.surfaces, 0, file: file, line: line)
+        XCTAssertFalse(show.everPaused, file: file, line: line)
+        XCTAssertFalse(show.nowPlayingHistory.contains("t2"), "C never plays", file: file, line: line)
+    }
+
+    func testSlowStartWithTwoStalledPollsAfterOurPlayReturnedIsNotANext() async {
+        await assertSlowStartIsNotANext(stalled: 2)
+    }
+
+    /// Atlas's control (a): a single Next, 3 stalled samples at 0:00, then B plays. Index 1, no cut.
+    func testSlowStartWithThreeStalledPollsAfterOurPlayReturnedIsNotANext() async {
+        await assertSlowStartIsNotANext(stalled: 3)
+    }
+
+    /// The window boundary: B stalled at 0:00 from the first poll after our `play()` until just
+    /// under the start-confirm deadline (#109, 8 s), then it plays. Still a slow start.
+    func testSlowStartJustUnderTheStartConfirmDeadlineIsNotANext() async {
+        let polls = Int(PlaybackBoundaryDetector.rewoundBeforePlayingStallSeconds)  // 8 polls span 7 s
+        await assertSlowStartIsNotANext(stalled: polls)
+    }
+
+    /// DJ variant: B's break is prepared, B is slow to start (3 stalled polls), then plays. The
+    /// break is kept: no `songCut(afterTrack: 1)`, still ready after track 1.
+    func testSlowStartKeepsTheSkipSongsPreparedBreak() async {
+        let show = await Show.preparedBreak(commentary: .chatty)
+        show.primePlaying()
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        show.finishLoad()
+        await show.untilIdle()
+        show.assertPlaying(index: 1)
+        await show.startSongAndPrepareItsBreak()
+        XCTAssertTrue(show.breakIsReady(afterTrack: 1))
+        for _ in 0..<3 {
+            show.feed(show.rewound())
+            await show.untilIdle()
+        }
+        for position in 1...3 {
+            show.feed(show.sample(playing: true, position: TimeInterval(position)))
+            await show.untilIdle()
+        }
+        await show.untilDropsSettle()
+        show.assertPlaying(index: 1)
+        XCTAssertEqual(show.loadCuts, 0)
+        XCTAssertEqual(show.reloads, 0)
+        XCTAssertFalse(show.cutBreaks.contains(1), "B's break is not cut")
+        XCTAssertTrue(show.breakIsReady(afterTrack: 1), "B's prepared break is kept")
+    }
+
+    /// Atlas's control (b): every song stays paused at 0:00 after its `play()`. At most the one
+    /// advance a real second press would give, then the start watchdog's path: never a walk down
+    /// the queue.
+    func testEverySongStallingAtTheStartNeverChainsDownTheQueue() async {
+        let show = Show()
+        show.primePlaying()
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        show.finishLoad()
+        await show.untilIdle()
+        show.assertPlaying(index: 1)
+        for _ in 0..<40 {
+            show.feed(show.rewound())
+            await show.untilIdle()
+        }
+        XCTAssertLessThanOrEqual(show.index, 2, "at most one rewind-derived advance")
+        XCTAssertLessThanOrEqual(show.advances, 2)
+        XCTAssertLessThanOrEqual(show.loadCuts, 1)
+        XCTAssertEqual(show.reloads, 0)
+    }
+}
+
+// MARK: - #585 review: the cap resets once a song plays, and a long stall has one outcome
+
+extension LockScreenDoubleSkipTests {
+    /// After the capped rewind cut lands on C, C is seen playing. That resets the cap: the next
+    /// Next (a rewind of C after it played) is taken, and so is a later stall-past-window of D.
+    func testAfterCPlaysTheNextRewindIsTakenAgain() async {
+        let show = Show()
+        show.primePlaying()
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        show.finishLoad()
+        await show.untilIdle()
+        show.feedRewoundStallPastTheStartDeadline()
+        await show.untilIdle()
+        show.assertPlaying(index: 2)
+        show.feed(show.sample(playing: true, position: 0.5))
+        show.feed(show.rewound())
+        await show.untilIdle()
+        show.assertPlaying(index: 3)
+        show.feedRewoundStallPastTheStartDeadline()
+        await show.untilIdle()
+        show.assertPlaying(index: 4)
+        XCTAssertEqual(show.loadCuts, 3)
+        XCTAssertEqual(show.advances, 4)
+        XCTAssertEqual(show.reloads, 0)
+        XCTAssertEqual(show.surfaces, 0)
+    }
+
+    /// Echo: a stall that crosses the 8 s window has exactly one outcome. The skip path never arms
+    /// #109's start confirm (only a queue start and the resumes do; a skip's new attempt supersedes
+    /// any running one), so the capped rewind cut is the only thing that fires: one cut, one extra
+    /// advance, one `songCut` for B, no failed start, no surfaced error, no reload, and nothing more
+    /// however long the stall lasts afterwards on C.
+    func testAStallCrossingTheWindowHasExactlyOneOutcome() async {
+        let show = await Show.preparedBreak(commentary: .chatty)
+        show.primePlaying()
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        show.finishLoad()
+        await show.untilIdle()
+        show.assertPlaying(index: 1)
+        let window = PlaybackBoundaryDetector.rewoundBeforePlayingStallSeconds
+        // Polls 1 s apart from 0 s: nothing at 7 s (just under), the cut on the poll at 8 s.
+        for _ in 0..<Int(window) {
+            show.feed(show.rewound())
+            await show.untilIdle()
+        }
+        XCTAssertEqual(show.loadCuts, 0, "just under the window: still a slow start")
+        XCTAssertEqual(show.index, 1)
+        show.feed(show.rewound())
+        await show.untilIdle()
+        await show.untilDropsSettle()
+        XCTAssertEqual(show.loadCuts, 1, "crossing the window: one cut")
+        XCTAssertEqual(show.index, 2)
+        // The stall goes on (now on C): no second outcome.
+        for _ in 0..<20 {
+            show.feed(show.rewound())
+            await show.untilIdle()
+        }
+        await show.untilDropsSettle()
+        XCTAssertEqual(show.loadCuts, 1)
+        XCTAssertEqual(show.advances, 2, "one advance for the press, one for the cut")
+        XCTAssertEqual(show.cutBreaks.filter { $0 == 1 }.count, 1, "one songCut for B")
+        XCTAssertEqual(show.noProgressEnds, 0, "no failed start")
+        XCTAssertFalse(show.pausedByNoProgress)
+        XCTAssertEqual(show.surfaces, 0, "no surfaced error")
+        XCTAssertEqual(show.reloads, 0)
+        XCTAssertEqual(show.index, 2)
+    }
+
+    /// The exclusivity above rests on the app: the skip load does not arm #109's confirm watchdog.
+    func testTheSkipLoadDoesNotArmTheStartConfirmWatchdog() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("AeroDJ/MusicKitService.swift"), encoding: .utf8)
+        let skipPath = source.split(separator: "private func oneSkip(").dropFirst().first
+            .flatMap { $0.split(separator: "private func stopSkipForPlay(").first }.map(String.init) ?? ""
+        let startTrack = source.split(separator: "func startTrack(at index: Int").dropFirst().first
+            .flatMap { $0.split(separator: "func startNextTrack(").first }.map(String.init) ?? ""
+        XCTAssertFalse(skipPath.isEmpty)
+        XCTAssertFalse(startTrack.isEmpty)
+        XCTAssertFalse(skipPath.contains("armPlaybackConfirmTimeout"))
+        XCTAssertFalse(startTrack.contains("armPlaybackConfirmTimeout"))
+    }
+
+    /// Detector level: a stall far past the window reports one rewind cut and nothing else.
+    func testDetectorReportsOneRewindCutForAStallFarPastTheWindow() {
+        var b = BoundaryInterpreter()
+        var t: TimeInterval = 100
+        for position in stride(from: 0.0, through: 30.0, by: 1.0) {
+            _ = b.interpret(PlaybackObservation(entryID: "song-0", isPlaying: true, position: position,
+                                                duration: 200, uptime: t), queueIndex: 0, queueCount: 4)
+            t += 1
+        }
+        b.setSkipLoadInFlight(true)
+        b.userRequestedChange()
+        b.noteOwnPlayReturned()
+        var cuts = 0
+        for _ in 0..<30 {
+            XCTAssertNil(b.interpret(PlaybackObservation(entryID: "song-1", isPlaying: false, position: 0,
+                                                         duration: 200, uptime: t), queueIndex: 1, queueCount: 4))
+            if b.takeSkipLoadCut() { cuts += 1 }
+            XCTAssertFalse(b.takeNoProgressEnd())
+            XCTAssertFalse(b.takeRemoteSkip())
+            t += 1
+        }
+        XCTAssertEqual(cuts, 1)
+    }
+}
+
+/// #585 review: MusicKit's rewind of the skip's song, held at 0:00 past the start-confirm deadline
+/// (polls 1 s apart), so it is told apart from a slow start.
+private extension Show {
+    func feedRewoundStallPastTheStartDeadline() {
+        let polls = Int(PlaybackBoundaryDetector.rewoundBeforePlayingStallSeconds) + 1
+        for _ in 0..<polls { feed(rewound()) }
     }
 }
