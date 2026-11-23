@@ -1039,3 +1039,232 @@ jobs:
         if: always() && runner.environment == 'self-hosted'
         timeout-minutes: 3
         run: ios/scripts/ci-selfhosted-cleanup.sh
+
+  # Hosted Duo UI, separate from the Studio UI job above. Fry owns ios.yml; Orion
+  # assigned this job. runs-on is the literal GitHub-hosted label xcode-27 (image
+  # xcode-27-arm64, readme 20261104.0337.1: Xcode 27.2 build 27B52 at
+  # /Applications/Xcode_27.2.app, simulator SDK iphonesimulator27.2, and one
+  # "iPhone Duo" on iOS 27.2). The same label archived successfully on run
+  # 45102693288 (runner group "GitHub Actions"). This job fails closed if that
+  # Xcode, simulator SDK, or device is missing. It does not substitute another
+  # image, SDK, or device. It is not continue-on-error, so a failure stays red.
+  # Branch protection is not changed here, so the check is not required.
+  # Scheme AeroDJStudioUI is the existing AeroDJUITests suite, run once.
+  # A phone-idiom simulator still skips the tests that skip on iPhone today
+  # (TentPoseTests, StationsLayoutTests needsPad). runner-images#15334 (simulator
+  # shutdown, fix #15342) may still be in this image; a dead simulator fails this
+  # job. -Echo
+  duo-ui-xcode-27:
+    name: Duo UI tests (Xcode 27.2, iOS 27.2)
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    runs-on: xcode-27
+    timeout-minutes: 150
+    env:
+      XCODEGEN_VERSION: 2.46.0
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+      DERIVED_DATA: ios/build/DerivedData-duo-ui
+      SHOTS: ${{ github.workspace }}/duo-ui-screenshots
+    steps:
+      - name: Require a GitHub-hosted runner
+        env:
+          RUNNER_ENV: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          echo "runner.environment=${RUNNER_ENV:-unset}"
+          if [ "${RUNNER_ENV:-}" != "github-hosted" ]; then
+            echo "::error::Duo UI tests require a GitHub-hosted runner (runner.environment=${RUNNER_ENV:-unset})."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned XcodeGen
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Select Xcode 27.2
+        env:
+          XCODE_PATH: /Applications/Xcode_27.2.app
+          REQUIRED_SDK: "27.2"
+        run: |
+          set -euo pipefail
+          echo "Installed Xcode apps:"
+          ls -d /Applications/Xcode*.app
+          if [ ! -d "$XCODE_PATH" ]; then
+            echo "::error::$XCODE_PATH not found on this runner."
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_PATH"
+          echo "xcode-select -p: $(xcode-select -p)"
+          xcode_out="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_out"
+          swift --version
+          xcode_ver="$(printf '%s\n' "$xcode_out" | awk 'NR==1 { print $2 }')"
+          case "$xcode_ver" in
+            27.2|27.2.*) ;;
+            *)
+              echo "::error::Xcode is ${xcode_ver:-unknown}; this job requires Xcode 27.2"
+              exit 1
+              ;;
+          esac
+          DEVICE_SDK="$(xcrun --sdk iphoneos --show-sdk-version)"
+          SIM_SDK="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          echo "iphoneos SDK: $DEVICE_SDK"
+          echo "iphonesimulator SDK: $SIM_SDK"
+          if [ "$DEVICE_SDK" != "$REQUIRED_SDK" ] || [ "$SIM_SDK" != "$REQUIRED_SDK" ]; then
+            echo "::error::Need iOS SDK $REQUIRED_SDK for iphoneos and iphonesimulator (got iphoneos=$DEVICE_SDK iphonesimulator=$SIM_SDK)"
+            exit 1
+          fi
+          {
+            echo "### Duo UI toolchain"
+            echo "- Runner: GitHub-hosted \`xcode-27\`"
+            echo "- Xcode: \`$XCODE_PATH\` ($(printf '%s' "$xcode_out" | tr '\n' ' '))"
+            echo "- iphoneos: \`$DEVICE_SDK\`"
+            echo "- iphonesimulator: \`$SIM_SDK\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Ensure Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1 && xcrun metal --version; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading component"
+            xcodebuild -downloadComponent MetalToolchain
+            if ! xcrun metal --version; then
+              echo "::error::Metal toolchain still unavailable after xcodebuild -downloadComponent MetalToolchain"
+              exit 1
+            fi
+          fi
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Pick the iPhone Duo simulator on iOS 27.2
+        # Image readme: "iPhone Duo" is installed on iOS 27.2 (and also on 27.1).
+        # This step accepts only an available device whose name is exactly
+        # "iPhone Duo" on com.apple.CoreSimulator.SimRuntime.iOS-27-2, with that
+        # runtime's version 27.2. Zero matches, two matches, a different OS, or a
+        # longer name all fail. There is no fallback device.
+        run: |
+          set -euo pipefail
+          RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-27-2
+          NAME='iPhone Duo'
+          DEVICES_JSON="$(xcrun simctl list devices available -j)"
+          RUNTIMES_JSON="$(xcrun simctl list runtimes -j)"
+          VERSION="$(printf '%s' "$RUNTIMES_JSON" | jq -r --arg rt "$RUNTIME" '
+            [.runtimes[] | select(.identifier == $rt) | select(.isAvailable != false)]
+            | if length == 1 then .[0].version else empty end')"
+          case "$VERSION" in
+            27.2|27.2.*) ;;
+            *)
+              echo "::error::iOS 27.2 runtime $RUNTIME is not available (version=${VERSION:-missing}). Not substituting another runtime."
+              echo "Runtimes:"
+              xcrun simctl list runtimes
+              exit 1
+              ;;
+          esac
+          PICK="$(printf '%s' "$DEVICES_JSON" | jq -r --arg rt "$RUNTIME" --arg name "$NAME" '
+            [.devices[$rt] // [] | .[]
+              | select(.name == $name)
+              | select(.isAvailable != false)]
+            | if length == 1 then .[0] | "\(.udid)\t\(.name)\t\(.deviceTypeIdentifier // "")" else empty end')"
+          if [ -z "$PICK" ]; then
+            COUNT="$(printf '%s' "$DEVICES_JSON" | jq -r --arg rt "$RUNTIME" --arg name "$NAME" '
+              [.devices[$rt] // [] | .[] | select(.name == $name) | select(.isAvailable != false)] | length')"
+            echo "::error::Need exactly one available '$NAME' on $RUNTIME (found ${COUNT:-0}). Not substituting another simulator."
+            echo "Available devices:"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          IFS=$'\t' read -r UDID PICKED_NAME DEVICE_TYPE <<<"$PICK"
+          if [ "$PICKED_NAME" != "$NAME" ] || [ -z "$UDID" ]; then
+            echo "::error::Picker returned name='$PICKED_NAME' udid='$UDID'; expected '$NAME'."
+            exit 1
+          fi
+          echo "Picked simulator: name=$PICKED_NAME udid=$UDID runtime=$RUNTIME version=$VERSION deviceType=${DEVICE_TYPE:-unknown}"
+          {
+            echo "### Duo UI simulator"
+            echo "- Name: \`$PICKED_NAME\`"
+            echo "- Runtime: \`$RUNTIME\` ($VERSION)"
+            echo "- UDID: \`$UDID\`"
+            echo "- Device type: \`${DEVICE_TYPE:-unknown}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "DUO_UDID=$UDID" >> "$GITHUB_ENV"
+          echo "DUO_RUNTIME=$RUNTIME" >> "$GITHUB_ENV"
+      - name: Xcode must list that iPhone Duo destination
+        run: |
+          set -euo pipefail
+          dests="$(xcodebuild -project ios/AeroDJ.xcodeproj -scheme AeroDJStudioUI -showdestinations 2>&1)" || {
+            echo "::error::xcodebuild -showdestinations failed"
+            printf '%s\n' "$dests"
+            exit 1
+          }
+          printf '%s\n' "$dests"
+          printf '%s\n' "$dests" | awk -v id="$DUO_UDID" '
+            $0 ~ ("id:" id) && $0 ~ /OS:27\.2([^0-9]|$)/ && $0 ~ /name:iPhone Duo[[:space:]]*(\}|$)/ { found=1 }
+            END { exit found ? 0 : 1 }
+          ' || {
+            echo "::error::AeroDJStudioUI destinations do not include id:$DUO_UDID OS:27.2 name:iPhone Duo. Not substituting another destination."
+            exit 1
+          }
+      - name: Build Duo UI tests
+        timeout-minutes: 40
+        run: |
+          xcodebuild build-for-testing \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -destination "id=$DUO_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Boot the iPhone Duo simulator
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          xcrun simctl boot "$DUO_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DUO_UDID" -b
+      - name: Run AeroDJStudioUI on iPhone Duo
+        # One pass of the existing UI suite. Per-test allowance matches the Studio UI job
+        # (10 min). testRecordedWalkthrough skips unless STUDIO_WALKTHROUGH=1, which this
+        # job does not set. -Echo
+        timeout-minutes: 100
+        run: |
+          set -euo pipefail
+          mkdir -p "$SHOTS"
+          xcrun simctl boot "$DUO_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DUO_UDID" -b
+          ios/scripts/ui-launch-timeout-retry.sh --udid "$DUO_UDID" -- \
+            env TEST_RUNNER_STUDIO_SCREENSHOT_DIR="$SHOTS" xcodebuild test-without-building \
+            -project ios/AeroDJ.xcodeproj \
+            -scheme AeroDJStudioUI \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 600 \
+            -destination "id=$DUO_UDID" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -resultBundlePath "$RUNNER_TEMP/duo-ui.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/duo-ui.log"
+      - name: AeroDJUITests actually ran (at least 1 executed, skips excluded)
+        # Same hole as the StoreKit guard: xcodebuild exits 0 when a scheme runs 0 tests.
+        # The floor is 1 because phone-idiom skips depend on the Duo window, which this
+        # job does not know ahead of the run. -Echo
+        run: |
+          ios/scripts/check-xcresult-test-count.sh --bundle AeroDJUITests --min 1 \
+            --xcresult "$RUNNER_TEMP/duo-ui.xcresult" --log "$RUNNER_TEMP/duo-ui.log"
+      - name: Upload Duo UI screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: duo-ui-screenshots
+          path: duo-ui-screenshots/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Upload Duo UI result
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: duo-ui-xcresult
+          path: ${{ runner.temp }}/duo-ui.xcresult
+          retention-days: 5
+          if-no-files-found: ignore
