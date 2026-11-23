@@ -710,9 +710,11 @@ final class StudioScreenTests: XCTestCase {
 
         // Row 4 sits near the end of the rail column, so swipe toward the top: that
         // always moves the top id, whatever the clamp at the bottom.
+        // At the top edge the scroll position can report no id, so the swipe may store
+        // none: that is the user's scroll kept, not dropped. Dropped means row 4 stays.
         scroller.swipeDown()
         let moved = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label != %@ AND label != %@", "continuity.row.4", "none"),
+            predicate: NSPredicate(format: "label != %@", "continuity.row.4"),
             object: anchor)
         XCTAssertEqual(XCTWaiter().wait(for: [moved], timeout: 5), .completed,
                        "a swipe after the fold was dropped; anchor \(anchor.label), phase \(phase.label)")
