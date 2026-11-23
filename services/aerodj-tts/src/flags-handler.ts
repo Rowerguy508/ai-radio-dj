@@ -15,8 +15,10 @@ export const AIRPLAY_LONGFORM_FLAG = 'AERODJ_DJ_AIRPLAY_LONGFORM';
 /**
  * - `onAirlyNowPlayingSession`: kill switch for the iOS 27 OnAirly lock-screen Now Playing session
  *   (#539 follow-up, #600). Same rule: ON by default, `false` only when
- *   `AERODJ_ONAIRLY_NOW_PLAYING_SESSION` is exactly `false`. The app fails open (missing key,
- *   failed fetch or offline is on) and keeps the value in memory for that launch only.
+ *   `AERODJ_ONAIRLY_NOW_PLAYING_SESSION` is exactly `false`. Unlike `djAirPlayLongForm` (kept in
+ *   memory for that launch only), the app CACHES this value for the NEXT launch: each launch uses
+ *   the value an earlier launch fetched, and a fetch never changes the running launch. It fails
+ *   open: no cached value, a missing key, a failed fetch or offline is on.
  */
 export const ONAIRLY_NOW_PLAYING_SESSION_FLAG = 'AERODJ_ONAIRLY_NOW_PLAYING_SESSION';
 
