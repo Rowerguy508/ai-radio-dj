@@ -1963,6 +1963,13 @@ final class StudioScreenTests: XCTestCase {
         )
         let result = XCTWaiter().wait(for: [changed], timeout: 1)
         XCTAssertEqual(result, .timedOut, "\(message): \(badge.label)")
+        // The window must end on a real reading, so an empty label the whole time cannot pass.
+        let readable = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label != %@", ""),
+            object: badge
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [readable], timeout: 10), .completed, "\(message): playback call counter label")
+        XCTAssertEqual(badge.label, "0/0", "\(message): \(badge.label)")
     }
 
     /// The selectable list row, not the title text inside it.
