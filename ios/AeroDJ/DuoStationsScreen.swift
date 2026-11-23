@@ -164,6 +164,11 @@ struct DuoStationsScreen: View {
     let onSharedInbox: (() -> Void)?
 
     @Environment(\.foldPoseOverride) private var foldOverride
+    /// #507 rest: the system's hinge and divisions in this screen's own points
+    /// (`FoldDivisionProbe`). Empty on SDKs without the API. Only the open Duo draws this screen,
+    /// so no iPhone or closed-Duo layout reads them.
+    @State private var foldHinge: FoldAwareness.HingeSample?
+    @State private var foldDivisions: [FoldAwareness.Division] = []
     /// The rail's ⋯ panel, as on the player (`FoldedPlayer.moreOpen`).
     @State private var moreOpen = false
 
@@ -180,12 +185,14 @@ struct DuoStationsScreen: View {
             let height = Double(proxy.size.height)
             // Build 54: the reader spans the window's width (see `ignoresSafeArea` below), so its
             // origin is the window's leading edge and a reported division needs no shift.
-            let fold = verticalFold(leadingInset: 0)
-            // A status column on the leading edge (the Duo turned the other way) moves the
+            // #507 rest: the player's book-pose gates (`FoldAwareness.bookPoseFold`) on the
+            // capture's forced pose or the probe's reading. No book-pose fold is today's centred
+            // band. A status column on the leading edge (the Duo turned the other way) moves the
             // leading page in; 0 in every capture.
-            let geometry = DuoStationsLayout.geometry(containerWidth: width, containerHeight: height,
-                                                      foldMinX: fold?.minX, foldMaxX: fold?.maxX,
-                                                      leadingInset: Double(proxy.safeAreaInsets.leading))
+            let geometry = DuoStationsLayout.bookGeometry(containerWidth: width, containerHeight: height,
+                                                          hinge: effectiveFoldHinge,
+                                                          divisions: effectiveFoldDivisions,
+                                                          leadingInset: Double(proxy.safeAreaInsets.leading))
             let inset = CGFloat(DuoStationsLayout.railVerticalInset)
             let pageHeight = max(0, proxy.size.height - inset * 2)
             // Below the trailing status column when there is one; `inset` everywhere else.
@@ -213,6 +220,10 @@ struct DuoStationsScreen: View {
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             .overlay {
                 if moreOpen { morePanel(geometry, width: width, height: Double(railHeight), top: railTop) }
+            }
+            // Same frame as the pages, so a division arrives in the points `geometry` uses.
+            .background {
+                FoldDivisionProbe(hinge: $foldHinge, divisions: $foldDivisions)
             }
         }
         // Build 54 (-Nova): flush to the window's trailing edge, not the safe area's. Vertical
@@ -264,12 +275,14 @@ struct DuoStationsScreen: View {
         }
     }
 
-    /// A reported vertical division in this view's points (Studio captures force one; the
-    /// device's comes through the same environment once the probe reports it). Nil keeps the
-    /// centred band.
-    private func verticalFold(leadingInset: Double) -> DuoStationsLayout.Page? {
-        guard let division = foldOverride?.divisions.first(where: { $0.isActive && $0.isVertical }) else { return nil }
-        return DuoStationsLayout.Page(minX: division.minX - leadingInset, maxX: division.maxX - leadingInset)
+    /// The capture's forced pose (`FoldPoseOverride`), else the probe's reading. Nil and empty on
+    /// this SDK, which keeps the centred band.
+    private var effectiveFoldHinge: FoldAwareness.HingeSample? {
+        foldOverride.map { $0.hinge } ?? foldHinge
+    }
+
+    private var effectiveFoldDivisions: [FoldAwareness.Division] {
+        foldOverride?.divisions ?? foldDivisions
     }
 
     @ViewBuilder

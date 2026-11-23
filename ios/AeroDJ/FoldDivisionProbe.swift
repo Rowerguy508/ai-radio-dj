@@ -7,7 +7,8 @@ import SwiftUI
 /// empty, so the wide player keeps the centred gutter. The iOS 27.1 calls are
 /// compiled only with a newer compiler, and only run on that OS. The probe does
 /// not take taps and is not an accessibility element. It is attached to the wide
-/// player only, so the compact phone body is unchanged.
+/// player, the open-Duo Stations screen (#507 rest) and the Stations root's open-Duo gate
+/// (wide-and-tall windows only), so the compact phone body is unchanged.
 struct FoldDivisionProbe: View {
     @Binding var hinge: FoldAwareness.HingeSample?
     @Binding var divisions: [FoldAwareness.Division]
