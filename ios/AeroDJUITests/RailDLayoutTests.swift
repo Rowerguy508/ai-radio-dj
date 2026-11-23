@@ -146,19 +146,18 @@ final class RailDLayoutTests: XCTestCase {
     }
 
     /// #507 rest (-Nova): book pose with the fold the system reports, margins included: wider than
-    /// the centred band and off the centre (352…416 at 820 × 640, `RailDCaptureContainer.foldMinXKey`).
+    /// the centred band and off the centre (352…416 at 820 × 640, `railDLandscapeSpreadReportedFold`).
     /// The player (art) ends before it; the title, the DJ chip, Up next, the star and the full rail
     /// start after it; nothing hittable sits on it; the targets stay 44 pt.
     @MainActor
     func testOpenLandscapeSpreadReportedFold() throws {
         let foldMinX: CGFloat = 352
         let foldWidth: CGFloat = 64
-        let app = try launch("railDLandscapeSpread", container: Self.landscape, orientation: .landscapeLeft,
-                             extra: ["-AeroDJRailDFoldMinX", "\(Int(foldMinX))", "-AeroDJRailDFoldWidth", "\(Int(foldWidth))",
-                                     // The open Duo is the phone idiom. On the iPad simulator the player sits under
-                                     // the nav bar (576 pt), which is not the open-Duo placement, so the forced fold
-                                     // was never read (run 45117022603). No iPad reports a hinge.
-                                     "-AeroDJForcePhoneIdiom", "YES"])
+        // The band is the scenario's (`RailDCaptureContainer.reportedFoldBand`); the launch-argument
+        // override never reached the player on iOS CI (runs 45117022603, 45154494478).
+        XCTAssertEqual(foldMinX + foldWidth, 416)
+        let app = try launch("railDLandscapeSpreadReportedFold", container: Self.landscape,
+                             orientation: .landscapeLeft, extra: ["-AeroDJForcePhoneIdiom", "YES"])
         let box = try settledContainer(app, size: Self.landscape)
         let any = app.descendants(matching: .any)
         let rail = try assertRail(app, id: "folded.systemBar", hasCollapse: true)
@@ -212,9 +211,8 @@ final class RailDLayoutTests: XCTestCase {
     @MainActor
     func testOpenLandscapeBookPoseMoreMenuAtAccessibilityTextStaysOffTheFold() throws {
         let foldMax: CGFloat = 416
-        let app = try launch("railDLandscapeSpread", container: Self.landscape, orientation: .landscapeLeft,
-                             extra: ["-AeroDJRailDFoldMinX", "352", "-AeroDJRailDFoldWidth", "64",
-                                     "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL",
+        let app = try launch("railDLandscapeSpreadReportedFold", container: Self.landscape, orientation: .landscapeLeft,
+                             extra: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL",
                                      "-AeroDJForcePhoneIdiom", "YES"])
         let box = try settledContainer(app, size: Self.landscape)
         let any = app.descendants(matching: .any)
