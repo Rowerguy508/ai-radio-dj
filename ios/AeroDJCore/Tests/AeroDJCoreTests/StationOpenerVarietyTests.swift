@@ -247,9 +247,10 @@ final class StationOpenerVarietyTests: XCTestCase {
         XCTAssertEqual(looked, opener, "a failed start did not open the station, so a retry can start with the same song")
     }
 
-    /// A fast start's pending hand-off has `items: []`, so `forgetOpened` is a no-op. A failed
-    /// fast start does not drop the opener it recorded.
-    func testAFailedFastStartDoesNotClearOpenerMemory() async throws {
+    /// A failed fast start recorded an opener, but because its pending `items` were empty,
+    /// `forgetOpened` used to be a no-op. A retry must be able to open with the same song
+    /// (this replaces `testAFailedFastStartDoesNotClearOpenerMemory`, which encoded the bug).
+    func testAFailedFastStartLetsTheSameSongOpenAgain() async throws {
         let feed = feed(.perDay)
         let built = await feed.prepare(morning)
         guard case .ready = built else { return XCTFail("Morning Calm builds, got \(built)") }
@@ -257,8 +258,29 @@ final class StationOpenerVarietyTests: XCTestCase {
         feed.handOffFinished(.failed)
         XCTAssertEqual(feed.stagedKey, StationQueueKey(morning), "a fast start does not consume the staged queue")
         let looked = await feed.firstSong(for: morning)
+        XCTAssertEqual(looked, first, "a failed fast start did not open the station, so a retry can start with the same song")
+    }
+
+    /// `takeForRefill` never calls `rememberOpened`, but used to pass `items: allowed` into a
+    /// failed hand-off. If that list started with the station's real last opener, `forgetOpened`
+    /// dropped it. A failed refill must leave the prior opener in memory, so `firstSong` still skips it.
+    func testAFailedRefillKeepsThePriorOpener() async throws {
+        let feed = feed(.perDay)
+        let built = await feed.prepare(morning)
+        guard case .ready = built else { return XCTFail("Morning Calm builds, got \(built)") }
+        let opener = try await open(feed, morning)
+        feed.handOffFinished(.started)
+        XCTAssertEqual(feed.stagedKey, StationQueueKey(morning))
+        let refill = try XCTUnwrap(feed.takeForRefill(lastSong: "refill-seam", queue: ["refill-seam"],
+                                                      active: morning, playbackMayStart: true,
+                                                      sameSong: { $0 == $1 }))
+        XCTAssertEqual(refill.first, "refill-seam")
+        XCTAssertEqual(refill.dropFirst().first, opener,
+                       "the refill's first station song is the prior opener, the case that used to drop it")
+        feed.handOffFinished(.failed)
+        let looked = await feed.firstSong(for: morning)
         let next = try XCTUnwrap(looked)
-        XCTAssertNotEqual(next, first, "a failed fast start leaves opener memory in place, so firstSong still skips it")
+        XCTAssertNotEqual(next, opener, "a failed refill must not drop the prior opener, so firstSong still skips it")
     }
 }
 

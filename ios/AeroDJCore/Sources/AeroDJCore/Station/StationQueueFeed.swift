@@ -244,6 +244,9 @@ public final class StationQueueFeed<Item: Sendable> {
         let items: [Item]
         let previousKey: StationQueueKey?
         let previousReported: Bool
+        /// The opener this hand-off recorded, if any. `take` and `fastStartBegan` set it;
+        /// a refill leaves it nil (it does not call `rememberOpened`).
+        let openerID: String?
     }
 
     /// - Parameters:
@@ -565,7 +568,8 @@ public final class StationQueueFeed<Item: Sendable> {
     public func fastStartBegan(with song: Item, active: StationConfiguration) -> Bool {
         guard let key = StationQueueKey(active) else { return false }
         pendingHandOff = PendingHandOff(trigger: .idleStart, key: key, revision: currentRatings(for: key).revision,
-                                        items: [], previousKey: playingKey, previousReported: queueStartReported)
+                                        items: [], previousKey: playingKey, previousReported: queueStartReported,
+                                        openerID: songID(song))
         playingKey = key
         queueStartReported = true
         rememberOpened(song, key: key)
@@ -676,7 +680,8 @@ public final class StationQueueFeed<Item: Sendable> {
         }
         // Fry nit 1 (PR B): a failed start restores the screened list, never the unscreened build.
         pendingHandOff = PendingHandOff(trigger: .refill, key: key, revision: ready.revision, items: allowed,
-                                        previousKey: playingKey, previousReported: queueStartReported)
+                                        previousKey: playingKey, previousReported: queueStartReported,
+                                        openerID: nil)
         staged = nil
         playingKey = key
         // Echo (PR B): the last song is NOT screened. It is the song the DJ's break at this boundary
@@ -741,7 +746,8 @@ public final class StationQueueFeed<Item: Sendable> {
         }
         // Fry nit 1 (PR B): a failed start restores the screened list, never the unscreened build.
         pendingHandOff = PendingHandOff(trigger: trigger, key: key, revision: ready.revision, items: items,
-                                        previousKey: playingKey, previousReported: queueStartReported)
+                                        previousKey: playingKey, previousReported: queueStartReported,
+                                        openerID: items.first.flatMap { songID($0) })
         staged = nil
         playingKey = key
         if let first = items.first { rememberOpened(first, key: key) }
@@ -753,8 +759,9 @@ public final class StationQueueFeed<Item: Sendable> {
     /// back: the playing queue keeps its own station (`playingKey`) and the station's songs are
     /// staged again (unless a newer build is already staged), so the next boundary or Play retries.
     /// `.started` and `.superseded` keep the hand-off. A queue start reported since (a tap) wins.
-    /// A failed start also drops the opener `take` just recorded (#476): that song never opened
-    /// the station, so a retry's `firstSong` can still start with it.
+    /// A failed start also drops `openerID` when it is still `recentOpeners.last` (#476 / #594):
+    /// that song never opened the station, so a retry's `firstSong` can still start with it.
+    /// A refill leaves `openerID` nil, so a failed refill does not evict the real last opener.
     public func handOffFinished(_ result: StationHandOffResult) {
         guard let handOff = pendingHandOff else { return }
         pendingHandOff = nil
@@ -762,13 +769,15 @@ public final class StationQueueFeed<Item: Sendable> {
         playingKey = handOff.previousKey
         queueStartReported = handOff.previousReported
         if staged == nil { staged = (handOff.key, handOff.revision, handOff.items) }
-        forgetOpened(handOff.items.first, key: handOff.key)
+        forgetOpened(handOff.openerID, key: handOff.key)
         log(.handOffFailed(handOff.trigger))
     }
 
-    /// Drops `song` from opener memory when it is the most recent opener of `key`.
-    private func forgetOpened(_ song: Item?, key: StationQueueKey) {
-        guard let song, let id = songID(song), var recent = recentOpeners[key], recent.last == id else { return }
+    /// Drops `id` from opener memory only when it is still the most recent opener of `key`.
+    /// Safer than removing that ID wherever it sits: if a newer opener was recorded while this
+    /// hand-off was pending, memory is left alone rather than pulled from the middle.
+    private func forgetOpened(_ id: String?, key: StationQueueKey) {
+        guard let id, var recent = recentOpeners[key], recent.last == id else { return }
         recent.removeLast()
         recentOpeners[key] = recent.isEmpty ? nil : recent
     }
