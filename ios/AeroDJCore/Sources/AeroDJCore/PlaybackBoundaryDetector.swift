@@ -227,6 +227,12 @@ public struct PlaybackBoundaryDetector: Sendable {
         endReportedSinceLoad = false
     }
 
+    /// #444 (Atlas): a user skip (the app's Next intake) is a new press, so the one-rewind-cut cap
+    /// resets with it. Not called for the advance a rewind-derived cut itself causes.
+    public mutating func noteUserSkip() {
+        rewindCutSpent = false
+    }
+
     /// #444 (-Echo): the app's skip is loading a song that has not yet played past the failed-start
     /// window. While this is set, a mid-song clear or rewind of that load is `takeSkipLoadCut()`,
     /// not a failed start and not a second natural end. Cleared by the caller, or here once a

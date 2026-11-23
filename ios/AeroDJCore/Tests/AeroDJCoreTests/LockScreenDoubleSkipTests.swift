@@ -1111,6 +1111,7 @@ private final class Show {
     /// Same intake as `MusicKitService.skip()`.
     func skip() async {
         installGate()
+        boundaries.noteUserSkip()
         await startSkip(coordinator.requestAdvance())
     }
 
@@ -1961,6 +1962,35 @@ extension LockScreenDoubleSkipTests {
         show.assertPlaying(index: 4)
         XCTAssertEqual(show.loadCuts, 3)
         XCTAssertEqual(show.advances, 4)
+        XCTAssertEqual(show.reloads, 0)
+        XCTAssertEqual(show.surfaces, 0)
+    }
+
+    /// Atlas: a user skip resets the one-rewind-cut cap. After a capped cut (nothing seen playing),
+    /// the user presses Next through the app's handler; a later rewind-type stall past the window on
+    /// that new song cuts again, exactly once.
+    func testAUserSkipResetsTheRewindCutCap() async {
+        let show = Show()
+        show.primePlaying()
+        show.feed(show.cleared())
+        await show.untilLoadSuspended()
+        show.finishLoad()
+        await show.untilIdle()
+        show.feedRewoundStallPastTheStartDeadline()
+        await show.untilIdle()
+        show.assertPlaying(index: 2)
+        XCTAssertEqual(show.loadCuts, 1, "cap engaged after one rewind cut")
+        await show.skip()
+        await show.untilIdle()
+        show.assertPlaying(index: 3)
+        show.feedRewoundStallPastTheStartDeadline()
+        await show.untilIdle()
+        show.assertPlaying(index: 4)
+        XCTAssertEqual(show.loadCuts, 2, "the user skip reset the cap: one more rewind cut")
+        show.feedRewoundStallPastTheStartDeadline()
+        await show.untilIdle()
+        show.assertPlaying(index: 4)
+        XCTAssertEqual(show.loadCuts, 2, "and the cap holds again after it")
         XCTAssertEqual(show.reloads, 0)
         XCTAssertEqual(show.surfaces, 0)
     }

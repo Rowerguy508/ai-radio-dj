@@ -474,6 +474,7 @@ final class MusicKitService: ObservableObject {
     /// chain so a stored advance or a reload cannot clear that hold.
     func skip() async throws {
         installSkipGate()
+        boundaries.noteUserSkip()
         await startSkip(skipCoordinator.requestAdvance())
     }
 
