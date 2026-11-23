@@ -144,4 +144,24 @@ public struct AirPlayGapHandoffTrace: Equatable, Sendable {
         return Int((seconds * 1000).rounded())
     }
 }
+
+/// #526 S2 (-Echo): one sample of the DIAG `musicPlaying` stamp. The app
+/// captures the start's attempt and asks this before each stamp and each wait.
+/// A superseded attempt (a pause and resume begins a new one) must not stamp
+/// the resume as `musicPlaying`.
+public enum AirPlayGapMusicPlayingSampler: Equatable, Sendable {
+    public enum Action: Equatable, Sendable {
+        /// MusicKit is `.playing` and the start still owns the player.
+        case stamp
+        /// The start still owns the player, but MusicKit is not `.playing` yet.
+        case wait
+        /// The start is no longer current. Do not stamp; cancel the sampler.
+        case cancel
+    }
+
+    public static func step(isCurrent: Bool, playbackIsPlaying: Bool) -> Action {
+        guard isCurrent else { return .cancel }
+        return playbackIsPlaying ? .stamp : .wait
+    }
+}
 #endif
