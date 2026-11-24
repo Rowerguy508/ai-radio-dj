@@ -994,6 +994,46 @@ final class StudioScreenTests: XCTestCase {
         app.terminateIfRunning()
     }
 
+    /// #461 PR 2 (-Nova): Open-Duo Landscape (820 x 640) Settings renders master-detail
+    /// (categories left, controls right) with a 32 pt center gutter straddling device midpoint
+    /// (x = 410 pt) and a 56 pt trailing rail holding Done (>= 44 pt).
+    @MainActor
+    func testDuoLandscapeSettingsMasterDetail() {
+        let app = launch(scenario: "duoLandscapeSettings")
+        let any = app.descendants(matching: .any)
+        guard let (_, box) = openDuoContainer(app) else { return }
+
+        XCTAssertTrue(any["settings.masterDetail"].waitForExistence(timeout: 15), app.debugDescription)
+        let master = any["settings.master"]
+        let detail = any["settings.detail"]
+        let rail = any["settings.rail"]
+        let done = app.buttons["settings.done"]
+
+        XCTAssertTrue(master.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(detail.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(rail.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(done.waitForExistence(timeout: 5), app.debugDescription)
+
+        let midX = box.midX
+        XCTAssertLessThanOrEqual(master.frame.maxX, midX - 14,
+                                 "Settings master pane crossed fold gutter: maxX=\(master.frame.maxX), midX=\(midX)")
+        XCTAssertGreaterThanOrEqual(detail.frame.minX, midX + 14,
+                                    "Settings detail pane crossed fold gutter: minX=\(detail.frame.minX), midX=\(midX)")
+
+        XCTAssertGreaterThanOrEqual(done.frame.width, 43.5)
+        XCTAssertGreaterThanOrEqual(done.frame.height, 43.5)
+
+        // Default category is Playback & DJ -> talk-over toggle is visible.
+        XCTAssertTrue(app.switches["settings.talkoverToggle"].waitForExistence(timeout: 5), app.debugDescription)
+        save(app, "duo-landscape-settings")
+
+        // Selecting Stations layout updates the right detail pane.
+        let stationsCat = app.buttons["settings.category.stationsLayout"]
+        XCTAssertTrue(stationsCat.waitForExistence(timeout: 5), app.debugDescription)
+        stationsCat.tap()
+        XCTAssertTrue(app.buttons["settings.stationsLayout.tiles"].waitForExistence(timeout: 5), app.debugDescription)
+    }
+
     /// Build 51 issue 2: with the Stations sidebar open the player fell back to the old centred
     /// layout (Playing-from bar, Queue and Tune buttons) and lost the rail. The ~500 pt detail now
     /// keeps the rail, with Play, Skip and Queue on it, and the scrubber stays on screen.
